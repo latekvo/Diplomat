@@ -505,14 +505,37 @@ def test_a_relaunch_from_a_user_service_gets_a_scope_of_its_own(repos, monkeypat
     launcher = str(clone / "packages" / "diplomat-platform" / "linux" / "diplomat")
     started = []
     monkeypatch.setattr(selfupdate.subprocess, "Popen", lambda argv, **k: started.append(argv))
-    monkeypatch.setattr(selfupdate.shutil, "which", lambda name: f"/usr/bin/{name}")
-    for in_service in (True, False):
+    for in_service, installed in ((True, True), (False, True), (True, False)):
         monkeypatch.setattr(selfupdate, "_in_service_cgroup", lambda: in_service)
+        monkeypatch.setattr(selfupdate.shutil, "which",
+                            lambda name: f"/usr/bin/{name}" if installed else None)
         selfupdate.relaunch()
     assert started == [
         ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "bash", launcher],
         ["bash", launcher],
+        ["bash", launcher],
     ]
+
+
+@pytest.mark.parametrize("cgroup, ours", [
+    ("0::/user.slice/user-1000.slice/user@1000.service/app.slice/diplomat-watchdog.service",
+     True),
+    # cgroup v1: one line per hierarchy, the named systemd one last.
+    ("12:pids:/user.slice/user-1000.slice/user@1000.service\n"
+     "1:name=systemd:/user.slice/user-1000.slice/user@1000.service/app.slice/"
+     "diplomat-update.service", True),
+    # A CI runner: a system service, where there is no user manager to ask.
+    ("0::/system.slice/actions.runner.org-repo.runner.service", False),
+    ("0::/user.slice/user-1000.slice/session-2.scope", False),
+    ("0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-p9-i9.scope", False),
+    ("0::/user.slice/user-1000.slice/user@1000.service/init.scope", False),
+], ids=["user-service", "v1-user-service", "system-service", "session", "scope",
+        "manager"])
+def test_only_a_user_managers_service_counts(cgroup, ours, tmp_path, monkeypatch):
+    path = tmp_path / "cgroup"
+    path.write_text(cgroup + "\n")
+    monkeypatch.setattr(selfupdate, "_CGROUP_FILE", path)
+    assert selfupdate._in_service_cgroup() is ours
 
 
 def _user_systemd() -> bool:

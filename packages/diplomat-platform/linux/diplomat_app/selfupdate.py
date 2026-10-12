@@ -233,12 +233,15 @@ def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
         raise UpdateError(f"could not relaunch the applet: {exc}") from exc
 
 
+_CGROUP_FILE = Path("/proc/self/cgroup")
+
+
 def _in_service_cgroup() -> bool:
     """Whether this process runs in a service of the user's systemd manager - the
     unattended jobs' units, which ``systemd-run --user`` can reach. A system service
     (a CI runner) is not one."""
     try:
-        cgroup = Path("/proc/self/cgroup").read_text().rstrip()
+        cgroup = _CGROUP_FILE.read_text().rstrip()
     except OSError:
         return False
     return re.search(r"/user@\d+\.service/.+\.service$", cgroup) is not None
