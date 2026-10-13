@@ -228,8 +228,8 @@ def _launched_env(marker: Path) -> dict[str, str]:
     while not (marker / "relaunched").exists() and time.monotonic() < deadline:
         time.sleep(0.05)
     assert (marker / "relaunched").exists(), "no tray was launched"
-    return dict(ln.split("=", 1) for ln in (marker / "env").read_text().splitlines()
-                if "=" in ln)
+    text = (marker / "env").read_text(errors="surrogateescape")
+    return dict(ln.split("=", 1) for ln in text.splitlines() if "=" in ln)
 
 
 @pytest.fixture()
@@ -501,14 +501,15 @@ def test_relaunch_failure_is_any_exit_inside_the_window():
 def test_a_relaunch_from_a_user_service_gets_a_scope_of_its_own(repos, monkeypatch):
     """From the watchdog's or the updater's unit, the tray is started under
     ``systemd-run --scope``; from anywhere else, by bash alone. The tray's env
-    reaches the launcher either way, but never systemd-run: a runtime dir that is not
-    the manager's would leave it unable to start anything."""
+    reaches the launcher either way, but systemd-run keeps the unit's runtime dir: one
+    that is not the manager's would leave it unable to start anything."""
     _, clone, _ = repos
     launcher = str(clone / "packages" / "diplomat-platform" / "linux" / "diplomat")
     own_runtime = os.environ["XDG_RUNTIME_DIR"]
     started = []
-    monkeypatch.setattr(selfupdate.subprocess, "Popen",
-                        lambda argv, env, **k: started.append((argv, env["XDG_RUNTIME_DIR"])))
+    monkeypatch.setattr(
+        selfupdate.subprocess, "Popen",
+        lambda argv, env, **k: started.append((argv, env["XDG_RUNTIME_DIR"], env["DISPLAY"])))
     for in_service, installed in ((True, True), (False, True), (True, False)):
         monkeypatch.setattr(selfupdate, "_in_service_cgroup", lambda: in_service)
         monkeypatch.setattr(selfupdate.shutil, "which",
@@ -516,10 +517,9 @@ def test_a_relaunch_from_a_user_service_gets_a_scope_of_its_own(repos, monkeypat
         selfupdate.relaunch({"DISPLAY": ":7", "XDG_RUNTIME_DIR": "/run/user/7"})
     assert started == [
         (["systemd-run", "--user", "--scope", "--quiet", "--collect",
-          "--setenv=DISPLAY=:7", "--setenv=XDG_RUNTIME_DIR=/run/user/7",
-          "--", "bash", launcher], own_runtime),
-        (["bash", launcher], "/run/user/7"),
-        (["bash", launcher], "/run/user/7"),
+          "--setenv=XDG_RUNTIME_DIR=/run/user/7", "--", "bash", launcher], own_runtime, ":7"),
+        (["bash", launcher], "/run/user/7", ":7"),
+        (["bash", launcher], "/run/user/7", ":7"),
     ]
 
 
@@ -564,15 +564,17 @@ def _user_systemd() -> bool:
 def test_a_tray_relaunched_inside_a_user_service_leaves_its_cgroup(repos, tmp_path):
     """Through a real transient unit shaped like the watchdog's (a oneshot-like job,
     ``KillMode=process``), handed the env of a tray whose runtime dir is not the
-    manager's: the launched tray's cgroup is a scope, not the unit's, and that env is
+    manager's and whose XAUTHORITY is not UTF-8, which systemd-run's ``--setenv``
+    refuses: the launched tray's cgroup is a scope, not the unit's, and that env is
     the one it runs with."""
     _, _, marker = repos
     tray_runtime = os.environ["XDG_RUNTIME_DIR"]
     probe = tmp_path / "probe.py"
     probe.write_text(
-        "import sys\n"
+        "import os, sys\n"
         "from diplomat_app import selfupdate\n"
-        "child = selfupdate.relaunch({'DISPLAY': ':7', 'XDG_RUNTIME_DIR': sys.argv[1]})\n"
+        "child = selfupdate.relaunch({'DISPLAY': ':7', 'XDG_RUNTIME_DIR': sys.argv[1],\n"
+        "                             'XAUTHORITY': os.fsdecode(b'/home/u\\xe9/.Xauthority')})\n"
         "assert selfupdate.relaunch_failure(child, window=1.0) is None\n"
         "print(open(f'/proc/{child.pid}/cgroup').read().strip())\n")
     # Not XDG_RUNTIME_DIR: the unit's own is how systemd-run reaches the manager.
@@ -586,7 +588,8 @@ def test_a_tray_relaunched_inside_a_user_service_leaves_its_cgroup(repos, tmp_pa
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip().endswith(".scope"), out.stdout
     env = _launched_env(marker)
-    assert (env["XDG_RUNTIME_DIR"], env["DISPLAY"]) == (tray_runtime, ":7")
+    assert (env["XDG_RUNTIME_DIR"], env["DISPLAY"], env["XAUTHORITY"]) == (
+        tray_runtime, ":7", os.fsdecode(b"/home/u\xe9/.Xauthority"))
 
 
 def test_run_scheduled_survives_a_subprocess_timeout(repos, monkeypatch):
@@ -662,6 +665,21 @@ def test_relaunch_does_not_inherit_headless_markers(tmp_path, monkeypatch):
         <= singleton.headless_markers()
     assert not set(env) & singleton.headless_markers()
     assert env.get("DISPLAY") == ":0"   # the display env is still handed through
+
+
+def test_a_running_trays_display_env_is_lifted_byte_for_byte():
+    """What the 06:00 relaunch hands the new tray: a path that is not UTF-8 (a home
+    under a legacy encoding) arrives as the same bytes, as from the recorded env."""
+    xauth = b"/home/u\xe9/.Xauthority"
+    tray = subprocess.Popen(["/bin/sh", "-c", "echo; read _"], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, env={b"XAUTHORITY": xauth, b"DISPLAY": b":7"})
+    try:
+        tray.stdout.readline()  # up, so /proc holds its env
+        env = selfupdate._display_env_of(tray.pid)
+    finally:
+        tray.communicate()
+    assert {k: os.fsencode(v) for k, v in env.items()} == {"XAUTHORITY": xauth,
+                                                          "DISPLAY": b":7"}
 
 
 def _settings_view():
