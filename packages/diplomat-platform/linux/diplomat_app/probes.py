@@ -659,8 +659,8 @@ def gather(records: list[RunRecord], now: float, *,
     ``merged`` and ``tokens`` are passed in rather than probed here: one costs a ``gh``
     call per PR and the other an HTTPS round trip, and neither belongs on a tick that
     also runs on the panel's repaint. Each is whatever the store last carried, and
-    UNAVAILABLE until something refreshes it — which for ``merged`` on this platform is
-    nothing at all, see #111.
+    UNAVAILABLE until something refreshes it: the slow poll
+    (``Store.refresh_merged_statuses``, ``Store.refresh_token_budget``).
     """
     from diplomat_runtime import agentregistry, agentstate, review
 
