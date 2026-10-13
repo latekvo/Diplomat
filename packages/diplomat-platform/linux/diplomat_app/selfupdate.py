@@ -208,15 +208,19 @@ def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
     # __main__.main's headless mode and exit instead of launching the GUI tray.
     for marker in headless_markers():
         env.pop(marker, None)
-    if extra_env:
-        env.update(extra_env)
+    extra = extra_env or {}
     argv = ["bash", str(launcher)]
     if _in_service_cgroup() and shutil.which("systemd-run"):
         # A tray started from a systemd service stays in that unit's cgroup after the
         # oneshot ends, and systemd warns about it on every later run of the unit -
         # every 5 minutes for the watchdog. A scope of its own takes it out; systemd-run
         # execs the launcher in place, so relaunch_failure still watches the applet.
-        argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", *argv]
+        # It reaches the manager by its own XDG_RUNTIME_DIR, and the tray's may name
+        # another, so the tray's env goes to the launcher alone.
+        argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
+                *(f"--setenv={k}={v}" for k, v in extra.items()), "--", *argv]
+    else:
+        env.update(extra)
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         with (log_dir / "diplomat.log").open("ab") as log:
@@ -237,9 +241,9 @@ _CGROUP_FILE = Path("/proc/self/cgroup")
 
 
 def _in_service_cgroup() -> bool:
-    """Whether this process runs in a service of the user's systemd manager - the
-    unattended jobs' units, which ``systemd-run --user`` can reach. A system service
-    (a CI runner) is not one."""
+    """Whether this process runs in a service of the user's systemd manager, which
+    ``systemd-run --user`` can reach: the unattended jobs' units, or a tray started
+    from an autostart entry systemd runs. A system service (a CI runner) is not one."""
     try:
         cgroup = _CGROUP_FILE.read_text().rstrip()
     except OSError:

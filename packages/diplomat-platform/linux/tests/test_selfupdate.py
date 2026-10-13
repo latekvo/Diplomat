@@ -500,20 +500,26 @@ def test_relaunch_failure_is_any_exit_inside_the_window():
 
 def test_a_relaunch_from_a_user_service_gets_a_scope_of_its_own(repos, monkeypatch):
     """From the watchdog's or the updater's unit, the tray is started under
-    ``systemd-run --scope``; from anywhere else, as it always was."""
+    ``systemd-run --scope``; from anywhere else, by bash alone. The tray's env
+    reaches the launcher either way, but never systemd-run: a runtime dir that is not
+    the manager's would leave it unable to start anything."""
     _, clone, _ = repos
     launcher = str(clone / "packages" / "diplomat-platform" / "linux" / "diplomat")
+    own_runtime = os.environ["XDG_RUNTIME_DIR"]
     started = []
-    monkeypatch.setattr(selfupdate.subprocess, "Popen", lambda argv, **k: started.append(argv))
+    monkeypatch.setattr(selfupdate.subprocess, "Popen",
+                        lambda argv, env, **k: started.append((argv, env["XDG_RUNTIME_DIR"])))
     for in_service, installed in ((True, True), (False, True), (True, False)):
         monkeypatch.setattr(selfupdate, "_in_service_cgroup", lambda: in_service)
         monkeypatch.setattr(selfupdate.shutil, "which",
                             lambda name: f"/usr/bin/{name}" if installed else None)
-        selfupdate.relaunch()
+        selfupdate.relaunch({"DISPLAY": ":7", "XDG_RUNTIME_DIR": "/run/user/7"})
     assert started == [
-        ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--", "bash", launcher],
-        ["bash", launcher],
-        ["bash", launcher],
+        (["systemd-run", "--user", "--scope", "--quiet", "--collect",
+          "--setenv=DISPLAY=:7", "--setenv=XDG_RUNTIME_DIR=/run/user/7",
+          "--", "bash", launcher], own_runtime),
+        (["bash", launcher], "/run/user/7"),
+        (["bash", launcher], "/run/user/7"),
     ]
 
 
@@ -557,11 +563,16 @@ def _user_systemd() -> bool:
 @pytest.mark.skipif(not _user_systemd(), reason="no systemd user manager to run a unit")
 def test_a_tray_relaunched_inside_a_user_service_leaves_its_cgroup(repos, tmp_path):
     """Through a real transient unit shaped like the watchdog's (a oneshot-like job,
-    ``KillMode=process``): the launched tray's cgroup is a scope, not the unit's."""
+    ``KillMode=process``), handed the env of a tray whose runtime dir is not the
+    manager's: the launched tray's cgroup is a scope, not the unit's, and that env is
+    the one it runs with."""
+    _, _, marker = repos
+    tray_runtime = os.environ["XDG_RUNTIME_DIR"]
     probe = tmp_path / "probe.py"
     probe.write_text(
+        "import sys\n"
         "from diplomat_app import selfupdate\n"
-        "child = selfupdate.relaunch()\n"
+        "child = selfupdate.relaunch({'DISPLAY': ':7', 'XDG_RUNTIME_DIR': sys.argv[1]})\n"
         "assert selfupdate.relaunch_failure(child, window=1.0) is None\n"
         "print(open(f'/proc/{child.pid}/cgroup').read().strip())\n")
     # Not XDG_RUNTIME_DIR: the unit's own is how systemd-run reaches the manager.
@@ -570,10 +581,12 @@ def test_a_tray_relaunched_inside_a_user_service_leaves_its_cgroup(repos, tmp_pa
     out = subprocess.run(
         ["systemd-run", "--user", "--wait", "--pipe", "--quiet", "--collect",
          "-p", "KillMode=process", *(f"--setenv={k}={v}" for k, v in env.items()),
-         sys.executable, str(probe)],
+         sys.executable, str(probe), tray_runtime],
         env={**os.environ, **_RUNTIME_ENV}, capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip().endswith(".scope"), out.stdout
+    env = _launched_env(marker)
+    assert (env["XDG_RUNTIME_DIR"], env["DISPLAY"]) == (tray_runtime, ":7")
 
 
 def test_run_scheduled_survives_a_subprocess_timeout(repos, monkeypatch):
