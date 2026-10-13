@@ -42,6 +42,8 @@ diplomat_runtime/
   prtarget.py     the whose-PRs axis shared by the wizards
   promptcore.py   shells out to the diplomat-core binary — the ONLY prompt assembly
   review.py       ReviewConfig + terminal spawner
+  reviewaudit.py  a retired review run's review: left PENDING, or split over several
+                  (ReviewAudit.swift's twin)
   runner.py       which agent CLI a spawn runs, and the one command that runs it
   autofix.py      pure monitor decisions: dispatch gate, triggers, backoff, mesh,
                   task cap, rate-limit budget, and the queue behind the cap

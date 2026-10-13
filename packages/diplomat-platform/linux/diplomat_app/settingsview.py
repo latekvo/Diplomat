@@ -473,10 +473,10 @@ class SettingsView(QWidget):
         self._sw_soft_approve.toggled.connect(self._on_soft_approve_toggled)
         verdict_rows.addWidget(self._track(SettingRow(
             "Soft-approve clean PRs", self._sw_soft_approve,
-            summary="One “ran the sweep, all clean” comment — never an APPROVE.",
+            summary="One “ran the sweep, all clean” COMMENT review — never an APPROVE.",
             detail="Off ⇒ a review that finds nothing says nothing. Independent of "
-                   "the verdict switch above: a soft approval is a comment, not a "
-                   "GitHub approval.",
+                   "the verdict switch above: a soft approval is a COMMENT review, "
+                   "not a GitHub approval.",
         )))
         approve.addWidget(self._verdict_rows)
         body.addWidget(approve_nest)

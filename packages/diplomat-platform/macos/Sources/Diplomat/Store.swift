@@ -315,8 +315,8 @@ final class Store: ObservableObject {
     }
 
     /// Soft-approvals: when an auto-review that is NOT submitting a real verdict finds a PR
-    /// perfectly clean, it leaves a friendly "ran the sweep, all clean, thanks for
-    /// contributing" comment — never an APPROVE action. Default ON. Independent of
+    /// perfectly clean, it submits a COMMENT review whose body is a friendly "ran the sweep,
+    /// all clean, thanks for contributing" — never an APPROVE action. Default ON. Independent of
     /// `autoApproveEnabled`: it's what a comments-only review does on a clean PR instead of
     /// staying silent. Moot on any PR that gets a real verdict (that takes precedence).
     @Published var softApproveEnabled: Bool {
@@ -609,8 +609,7 @@ final class Store: ObservableObject {
         // behalf until I explicitly opt in.
         autoApproveEnabled = defaults.object(forKey: Keys.autoApproveEnabled) as? Bool ?? false
         // Soft-approvals ON by default (absent key ⇒ true): a clean comments-only review
-        // still leaves a friendly thank-you note — no APPROVE action, so nothing is submitted
-        // on my behalf.
+        // still submits a thank-you COMMENT review — never an APPROVE on my behalf.
         softApproveEnabled = defaults.object(forKey: Keys.softApproveEnabled) as? Bool ?? true
         verdictWithholdSkill = defaults.object(forKey: Keys.verdictWithholdSkill) as? Bool ?? true
         verdictWithholdInstaller = defaults.object(forKey: Keys.verdictWithholdInstaller) as? Bool ?? true
@@ -1200,10 +1199,37 @@ final class Store: ObservableObject {
             AuditLog.log(r.source, verdict?.state == .failed ? "spawn-failed" : "retire",
                          "\(r.label.isEmpty ? r.runID : r.label) — \(verdict?.reason ?? "no verdict")")
         }
+        // Only a run whose agent is done: a merge retires one that may still be filling
+        // its review.
+        let audited = gone
+            .filter { $0.kind == "review" && !$0.prURL.isEmpty && $0.runsHere
+                && (t.states[$0.runID]?.state == .finished || AgentRegistry.finishedAt($0.runID) != nil) }
+            .map { (label: $0.label.isEmpty ? $0.runID : $0.label, source: $0.source,
+                    url: $0.prURL, since: $0.dispatchedAt) }
+        if !audited.isEmpty { Store.auditReviews(audited, me: me) }
         AgentRegistry.forget(Set(gone.map(\.runID)))
         OpenCodeProbe.forgetAdopted(Set(gone.map(\.runID)))
         await Store.interrupt(stops)
         await settleLedger(priced)
+    }
+
+    /// Warn about each retired review run whose review did not go through GitHub's
+    /// lifecycle (`ReviewAudit`). `me` is the gh login, not the username override: a
+    /// PENDING review is listed to its author alone, and the agent posts as the login.
+    private static func auditReviews(_ runs: [(label: String, source: String, url: String,
+                                               since: TimeInterval)], me: String) {
+        Task.detached(priority: .utility) {
+            for run in runs {
+                var found: [String]
+                do {
+                    found = me.isEmpty ? ["could not check its review: the gh login is not known yet"]
+                        : try await ReviewAudit.audit(prURL: run.url, me: me, since: run.since)
+                } catch {
+                    found = ["could not check its review: \(error.localizedDescription)"]
+                }
+                for line in found { AuditLog.log(run.source, "warn", "\(run.label) \(line)") }
+            }
+        }
     }
 
     /// Stop these 2.x sessions' turns, off the main actor: each request can wait out a
@@ -2972,8 +2998,8 @@ final class Store: ObservableObject {
         // comments-only and the final call stays with me.
         let reasons = verdictPolicy.withholdReasons(files: r.files, authorAssociation: r.authorAssociation)
         let verdict = autoApproveEnabled && reasons.isEmpty
-        // Without a real verdict, a clean review still soft-approves (friendly comment, no
-        // APPROVE) unless the user turned that off too. Moot when `verdict` is true.
+        // Without a real verdict, a clean review still soft-approves (thank-you COMMENT
+        // review, no APPROVE) unless the user turned that off too. Moot when `verdict` is true.
         let soft = softApproveEnabled
         let tag: String
         if verdict {
