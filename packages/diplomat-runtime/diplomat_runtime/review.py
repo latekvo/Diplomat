@@ -550,8 +550,8 @@ def token_export(platform: str = sys.platform) -> str:
     if item:
         read = f"security find-generic-password -s {shlex.quote(item)} -w"
     elif path:
-        # A token holds no whitespace; a file saved with CRLF or a trailing space would
-        # otherwise hand gh a header it rejects.
+        # A token holds no whitespace: one saved with CRLF fails in gh, one with a
+        # trailing space in git.
         read = f"tr -d '[:space:]' < {shlex.quote(path)}"
     else:
         return ""

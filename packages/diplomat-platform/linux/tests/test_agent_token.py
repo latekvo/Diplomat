@@ -207,8 +207,8 @@ def test_an_unreadable_token_starts_nothing(shell, contents, pid, tmp_path, monk
 @pytest.mark.parametrize("shell", _SHELLS)
 def test_whitespace_around_the_token_is_not_part_of_it(shell, tmp_path, monkeypatch,
                                                        token_file):
-    """An editor that saves CRLF, or a paste with a trailing space: ``gh`` would send
-    the stray bytes in its auth header and be refused."""
+    """An editor that saves CRLF, or a paste with a trailing space: ``gh`` refuses a
+    token holding a CR, and git over HTTPS one holding a space."""
     token_file.write_text(f" {DUMMY} \r\n")
     _, cmd = _spawn(tmp_path, monkeypatch, shell, agent=_AGENT)
     subprocess.run([shell, "-c", cmd], cwd=tmp_path, env=_clean_env(tmp_path),
