@@ -2487,8 +2487,10 @@ check(kt.contains("Anything you post on someone else's PR goes in ONE formal Git
 // The lifecycle, step by step: opened PENDING, filled inside, submitted once.
 check(kt.contains("with NO `event` field leaves the review PENDING"), "the review is opened pending")
 check(kt.contains("one pending review per person per PR"), "a leftover pending review is handled")
-check(kt.contains("it is yours — opened earlier in this run, or left by an earlier one: keep using it"),
-      "a tagged or empty pending review is continued, never thrown away")
+check(kt.contains("it is yours — opened earlier in this run, or left by an earlier one. If its `commit_id` is the PR's current head, keep using it, after deleting any of its comments this run is not to post; otherwise delete it"),
+      "a tagged or empty pending review is continued on the current head, replaced on a stale one")
+check(kt.contains("right before it, list the pending review's comments again: one that does not open with the attribution tag is mine, added from the browser, so leave the review unsubmitted"),
+      "a comment of mine added mid-run keeps the review from being submitted")
 check(kt.contains("Post your findings in that review"), "leave-reviews posts the findings in it")
 check(!kt.contains("Do NOT post your findings on the PR"), "…and is not told to keep them")
 check(kt.contains("If it has no comments, or every comment opens with the `\\[[Diplomat](` attribution tag (whatever model name follows it)"),
@@ -2577,6 +2579,9 @@ let ktVerdictOnly = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
                                  specificAuthor: .theirs).buildPrompt()
 check(ktVerdictOnly.contains("with NO `event` field leaves the review PENDING"),
       "a verdict without leave-reviews still goes through the lifecycle")
+check(ktVerdictOnly.contains("Post your findings in that review")
+      && !ktVerdictOnly.contains("Do NOT post your findings on the PR"),
+      "…and posts its findings in it, as the verdict pass requires")
 check(!km.contains("addPullRequestReviewThread"), "my own PR ⇒ no lifecycle")
 
 // ---- the after-run check of a review's lifecycle (mirrors test_reviewaudit.py) ----
@@ -2584,10 +2589,12 @@ section("ReviewAudit")
 do {
     let since: TimeInterval = 1_760_000_000  // 2025-10-09T08:53:20Z
     let before = "2025-10-09T08:00:00Z", after = "2025-10-09T09:30:00Z"
+    let tagged = #"\\[[Diplomat](https://github.com/latekvo/Diplomat) Opus\\]: nit"#
     func review(_ state: String = "COMMENTED", created: String = after, submitted: String = after,
-                threads: Int = 0, replies: Int = 0) -> String {
-        let comments = Array(repeating: #"{"replyTo":null}"#, count: threads)
-            + Array(repeating: #"{"replyTo":{"id":"c"}}"#, count: replies)
+                threads: Int = 0, replies: Int = 0, body: String = "plain",
+                extra: [String] = []) -> String {
+        let comments = Array(repeating: #"{"body":"\#(body)","replyTo":null}"#, count: threads)
+            + Array(repeating: #"{"body":"\#(body)","replyTo":{"id":"c"}}"#, count: replies) + extra
         let sub = state == "PENDING" ? "null" : "\"\(submitted)\""
         return #"{"state":"\#(state)","createdAt":"\#(created)","submittedAt":\#(sub),"#
             + #""comments":{"nodes":[\#(comments.joined(separator: ","))]}}"#
@@ -2600,6 +2607,11 @@ do {
     let pending = "left its review PENDING — never submitted, so only I can see it"
     check(findings([review("PENDING", threads: 2)]) == [pending], "a pending review the run opened")
     check(findings([review("PENDING", created: before)]) == [], "an older pending review is mine")
+    check(findings([review("PENDING", created: before, threads: 1, replies: 1, body: #"\n "# + tagged)])
+          == [pending], "an older pending review every comment of which is tagged is the run's")
+    check(findings([review("PENDING", created: before, threads: 2, body: tagged,
+                           extra: [#"{"body":"mine","replyTo":null}"#])]) == [],
+          "an older pending review with one untagged comment is mine")
     check(findings([review(threads: 1), review(threads: 1), review(threads: 1)])
           == ["posted its findings as 3 separate reviews instead of one"], "a split is reported")
     check(findings([review(threads: 4, replies: 1), review(replies: 1), review()]) == [],

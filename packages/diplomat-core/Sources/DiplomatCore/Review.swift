@@ -220,14 +220,17 @@ public struct ReviewConfig: Codable, Equatable {
     }
 
     /// How a review on someone else's PR is built, whenever this run may submit one, and
-    /// whether its findings go in it. Nothing on my own PRs, which get no review.
+    /// whether its findings go in it — they do under the verdict pass, which posts them
+    /// with its verdict. Nothing on my own PRs, which get no review.
     private func reviewBlocks(_ blocks: [String: String]) -> [String] {
         guard canLeaveReviews else { return [] }
         var out: [String] = []
         if effLeaveReviews || effSoftApprove || effFinalPass, let b = blocks["reviewLifecycle"] {
             out.append(b)
         }
-        if let b = blocks[effLeaveReviews ? "leaveReviews" : "noReviews"] { out.append(b) }
+        if let b = blocks[effLeaveReviews || effFinalPass ? "leaveReviews" : "noReviews"] {
+            out.append(b)
+        }
         return out
     }
 

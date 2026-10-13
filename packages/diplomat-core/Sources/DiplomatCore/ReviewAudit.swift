@@ -3,7 +3,7 @@ import Foundation
 /// Whether a finished review run's review went through GitHub's lifecycle.
 ///
 /// The prompt has the agent open one review PENDING, put every comment inside it, and
-/// submit it (`assets/review.json` → `leaveReviews`). Two ways of not doing that look like
+/// submit it (`assets/review.json` → `reviewLifecycle`). Two ways of not doing that look like
 /// success from here: a review left PENDING is visible to nobody but me, and findings
 /// posted one at a time each become a review of their own. When a review run retires, the
 /// store reads my reviews on its PR (`assets/graphql/my-reviews`) and logs what `findings`
@@ -19,11 +19,17 @@ public enum ReviewAudit {
             public let comments: Comments?
         }
         public struct Comments: Decodable, Equatable { public let nodes: [Comment?] }
-        public struct Comment: Decodable, Equatable { public let replyTo: Reply? }
+        public struct Comment: Decodable, Equatable {
+            public let body: String?
+            public let replyTo: Reply?
+        }
         public struct Reply: Decodable, Equatable { public let id: String? }
         public let author: Login?
         public let reviews: Reviews?
     }
+
+    /// What every comment a run posts opens with (`assets/review.json` → `diplomatTag`).
+    public static let tag = #"\[[Diplomat]("#
 
     /// `(owner, repo, number)` for a github.com PR URL, else nil — gh's GraphQL answers
     /// for its default host only.
@@ -46,13 +52,23 @@ public enum ReviewAudit {
     /// What the reviews of mine on one PR say a run that started at `since` left wrong,
     /// as sentences for the activity feed.
     ///
-    /// Only reviews made since the run started are judged: a PENDING review opened earlier
-    /// may be my own draft in the browser. A split is not judged on a PR of my own, where a
-    /// run replies rather than reviews.
+    /// A PENDING review is the run's when it was opened since the run started, or when every
+    /// comment in it carries the attribution tag — a run continues a tagged one left by an
+    /// earlier run. One opened earlier with an untagged comment, or none, may be my own
+    /// draft in the browser. A split is not judged on a PR of my own, where a run replies
+    /// rather than reviews.
     public static func findings(_ pr: PullRequest, me: String, since: TimeInterval) -> [String] {
         let reviews = (pr.reviews?.nodes ?? []).compactMap { $0 }
         var out: [String] = []
-        if reviews.contains(where: { $0.state == "PENDING" && (at($0.createdAt) ?? 0) >= since }) {
+        func tagged(_ rv: PullRequest.Review) -> Bool {
+            let comments = (rv.comments?.nodes ?? []).compactMap { $0 }
+            return !comments.isEmpty && comments.allSatisfy {
+                ($0.body ?? "").drop(while: \.isWhitespace).hasPrefix(tag)
+            }
+        }
+        if reviews.contains(where: {
+            $0.state == "PENDING" && ((at($0.createdAt) ?? 0) >= since || tagged($0))
+        }) {
             out.append("left its review PENDING — never submitted, so only I can see it")
         }
         let author = (pr.author?.login ?? "").lowercased()

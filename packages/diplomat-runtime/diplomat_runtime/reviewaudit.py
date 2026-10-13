@@ -1,7 +1,7 @@
 """Whether a finished review run's review went through GitHub's lifecycle.
 
 The prompt has the agent open one review PENDING, put every comment inside it, and
-submit it (``assets/review.json`` → ``leaveReviews``). Two ways of not doing that
+submit it (``assets/review.json`` → ``reviewLifecycle``). Two ways of not doing that
 look like success from here: a review left PENDING is visible to nobody but me, and
 findings posted one at a time each become a review of their own. When a review run
 retires, the store reads my reviews on its PR (``assets/graphql/my-reviews``) and
@@ -14,6 +14,9 @@ import re
 from datetime import datetime
 
 from . import gh
+
+#: What every comment a run posts opens with (``assets/review.json`` → ``diplomatTag``).
+TAG = "\\[[Diplomat]("
 
 _PR_URL = re.compile(r"^https?://(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/pull/([0-9]+)/?$")
 
@@ -38,13 +41,22 @@ def findings(pull_request: dict, me: str, since: float) -> list[str]:
     """What the reviews of mine on one PR say a run that started at ``since`` left
     wrong, as sentences for the activity feed.
 
-    Only reviews made since the run started are judged: a PENDING review opened
-    earlier may be my own draft in the browser. A split is not judged on a PR of my
-    own, where a run replies rather than reviews.
+    A PENDING review is the run's when it was opened since the run started, or when
+    every comment in it carries the attribution tag — a run continues a tagged one
+    left by an earlier run. One opened earlier with an untagged comment, or none, may
+    be my own draft in the browser. A split is not judged on a PR of my own, where a
+    run replies rather than reviews.
     """
     reviews = [rv for rv in ((pull_request.get("reviews") or {}).get("nodes") or []) if rv]
     out: list[str] = []
-    if any(rv.get("state") == "PENDING" and (_at(rv.get("createdAt")) or 0) >= since
+
+    def tagged(rv: dict) -> bool:
+        comments = [c for c in ((rv.get("comments") or {}).get("nodes") or []) if c]
+        return bool(comments) and all((c.get("body") or "").lstrip().startswith(TAG)
+                                      for c in comments)
+
+    if any(rv.get("state") == "PENDING"
+           and ((_at(rv.get("createdAt")) or 0) >= since or tagged(rv))
            for rv in reviews):
         out.append("left its review PENDING — never submitted, so only I can see it")
     author = ((pull_request.get("author") or {}).get("login") or "").lower()

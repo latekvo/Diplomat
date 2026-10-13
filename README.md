@@ -454,7 +454,7 @@ prompt:
 - **Mark clean PRs ready for review** — *(never on someone else's)* flip
   perfectly-clean drafts to ready.
 - **Leave reviews (CLAUDE.md format)** — *(never on my own)* post formal per-line reviews;
-  off, the findings stay in the agent's summary.
+  off, the findings stay in the agent's summary (the verdict pass below still posts them).
 - **Reply to others' review threads** — *(never on someone else's)* answer and resolve open threads.
 - **✨ Final E2E pass + verdict** - *(highlighted, off by default; others' and
   unknown-author PRs only - never my own, there is no self-approval)* appends a

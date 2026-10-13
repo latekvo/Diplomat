@@ -15,10 +15,13 @@ SINCE = 1_760_000_000.0  # 2025-10-09T08:53:20Z
 BEFORE = "2025-10-09T08:00:00Z"
 AFTER = "2025-10-09T09:30:00Z"
 URL = "https://github.com/acme/widgets/pull/7"
+TAGGED = "\\[[Diplomat](https://github.com/latekvo/Diplomat) Opus\\]: nit"
 
 
-def _review(state="COMMENTED", created=AFTER, submitted=AFTER, threads=0, replies=0):
-    comments = [{"replyTo": None}] * threads + [{"replyTo": {"id": "c"}}] * replies
+def _review(state="COMMENTED", created=AFTER, submitted=AFTER, threads=0, replies=0,
+            body="plain"):
+    comments = ([{"body": body, "replyTo": None}] * threads
+                + [{"body": body, "replyTo": {"id": "c"}}] * replies)
     return {"state": state, "createdAt": created,
             "submittedAt": None if state == "PENDING" else submitted,
             "comments": {"nodes": comments}}
@@ -40,6 +43,20 @@ def test_a_pending_review_older_than_the_run_is_left_alone():
     """It may be my own draft in the browser, which no run is to blame for."""
     assert reviewaudit.findings(_pr(_review("PENDING", created=BEFORE)), "alice",
                                 SINCE) == []
+
+
+def test_an_older_pending_review_every_comment_of_which_is_tagged_is_reported():
+    """A run continues the tagged review an earlier run left, so it is the run's to
+    submit however old it is."""
+    assert reviewaudit.findings(
+        _pr(_review("PENDING", created=BEFORE, threads=1, replies=1, body="\n " + TAGGED)),
+        "alice", SINCE) == ["left its review PENDING — never submitted, so only I can see it"]
+
+
+def test_an_older_pending_review_with_one_untagged_comment_is_left_alone():
+    pr = _pr(_review("PENDING", created=BEFORE, threads=2, body=TAGGED))
+    pr["reviews"]["nodes"][0]["comments"]["nodes"].append({"body": "mine", "replyTo": None})
+    assert reviewaudit.findings(pr, "alice", SINCE) == []
 
 
 def test_findings_spread_over_several_reviews_are_reported():

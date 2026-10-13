@@ -1,7 +1,8 @@
 # My reviews on one PR, for the check a review run gets when it retires
 # (ReviewAudit.swift / reviewaudit.py). A PENDING review is listed only to its
-# author, which is the point: nobody else can see one. A comment with no replyTo
-# opened a thread, so threads spread over several submitted reviews are findings
+# author, which is the point: nobody else can see one. A comment's body says
+# whether an agent wrote it (the Diplomat attribution tag opens it). A comment with
+# no replyTo opened a thread, so threads spread over several submitted reviews are findings
 # posted one at a time rather than inside one review.
 query ($owner: String!, $name: String!, $number: Int!, $me: String!) {
   repository(owner: $owner, name: $name) {
@@ -12,7 +13,7 @@ query ($owner: String!, $name: String!, $number: Int!, $me: String!) {
           state
           createdAt
           submittedAt
-          comments(first: 50) { nodes { replyTo { id } } }
+          comments(first: 50) { nodes { body replyTo { id } } }
         }
       }
     }
