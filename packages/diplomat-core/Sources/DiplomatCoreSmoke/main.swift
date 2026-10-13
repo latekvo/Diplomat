@@ -2495,6 +2495,8 @@ check(kt.contains("Post your findings in that review"), "leave-reviews posts the
 check(!kt.contains("Do NOT post your findings on the PR"), "…and is not told to keep them")
 check(kt.contains("If one of them does not open with the `\\[[Diplomat](` attribution tag (whatever model name follows it), that review is my own draft from the browser: stop right there"),
       "my draft is looked for before any review work, and stops the run")
+check(kt.contains("was left by an earlier run: you reuse or replace it at (1), and if you end without opening a review, delete it."),
+      "a run that opens no review still clears an earlier run's leftover")
 check(kt.contains("(1) OPEN, only once your findings are final, right before you fill it"),
       "the review is opened late, so the browser cannot add to it meanwhile")
 check(kt.contains("If it has no comments, or every comment opens with the attribution tag, it is yours"),
