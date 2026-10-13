@@ -13,9 +13,9 @@ import os
 import shlex
 import shutil
 import subprocess
-import threading
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -274,22 +274,27 @@ def test_a_readable_token_file_spawns(token_file, monkeypatch):
     assert len(launched) == 1
 
 
-def test_a_fifo_token_file_fails_the_check_without_waiting_for_a_writer(tmp_path):
-    """The check runs on the GUI thread and on the mesh node's loop."""
-    fifo = tmp_path / "agent-token"
-    os.mkfifo(fifo)
-    appconfig.set_value(appconfig.AGENT_TOKEN_FILE, str(fifo))
-    refused = []
+@pytest.mark.parametrize("kind", ["fifo", "device"])
+def test_a_token_file_that_is_not_a_regular_file_is_refused_unread(kind, tmp_path,
+                                                                   monkeypatch):
+    """The check runs on the GUI thread and on the mesh node's loop, where a FIFO with
+    no writer would block the read and /dev/zero never end it."""
+    path = tmp_path / "agent-token" if kind == "fifo" else Path("/dev/zero")
+    if kind == "fifo":
+        os.mkfifo(path)
+    appconfig.set_value(appconfig.AGENT_TOKEN_FILE, str(path))
+    monkeypatch.setattr(review, "open", lambda *a, **k: pytest.fail(f"read {path}"),
+                        raising=False)
+    with pytest.raises(review.SpawnError, match="no agent token"):
+        _check_token("linux")
 
-    def check():
-        with pytest.raises(review.SpawnError, match="no agent token") as exc:
-            _check_token("linux")
-        refused.append(exc)
 
-    thread = threading.Thread(target=check, daemon=True)
-    thread.start()
-    thread.join(5)
-    assert not thread.is_alive() and len(refused) == 1
+def test_a_token_file_reached_through_a_symlink_is_read(tmp_path, token_file):
+    """A token kept in a secrets mount and linked to from where the config points."""
+    link = tmp_path / "linked-token"
+    link.symlink_to(token_file)
+    appconfig.set_value(appconfig.AGENT_TOKEN_FILE, str(link))
+    _check_token("linux")
 
 
 def test_a_relative_token_file_fails_the_spawn(tmp_path, monkeypatch, token_file):

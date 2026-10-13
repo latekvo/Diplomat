@@ -584,8 +584,8 @@ def check_token(platform: str = sys.platform) -> None:
         if not os.path.isabs(path):
             raise SpawnError(f"agentTokenFile is not an absolute path: {path}")
         try:
-            # Not a FIFO: with no writer it would block here, on the GUI thread or the
-            # node's loop.
+            # A regular file only: a FIFO with no writer would block the read, and
+            # /dev/zero never end it - on the GUI thread or the node's loop.
             ok = stat.S_ISREG(os.stat(path).st_mode)
             if ok:
                 with open(path, "rb") as f:
