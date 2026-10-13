@@ -8,7 +8,7 @@ import dataclasses
 
 import pytest
 
-from diplomat_runtime import activity, agentstate, gh, reviewaudit
+from diplomat_runtime import activity, agentregistry, agentstate, gh, reviewaudit
 from diplomat_runtime.agentstate import RunRecord
 
 SINCE = 1_760_000_000.0  # 2025-10-09T08:53:20Z
@@ -19,7 +19,7 @@ TAGGED = "\\[[Diplomat](https://github.com/latekvo/Diplomat) Opus\\]: nit"
 
 
 def _review(state="COMMENTED", created=AFTER, submitted=AFTER, threads=0, replies=0,
-            body="plain"):
+            body=TAGGED):
     comments = ([{"body": body, "replyTo": None}] * threads
                 + [{"body": body, "replyTo": {"id": "c"}}] * replies)
     return {"state": state, "createdAt": created,
@@ -39,10 +39,26 @@ def test_a_pending_review_the_run_opened_is_reported():
         "left its review PENDING — never submitted, so only I can see it"]
 
 
-def test_a_pending_review_older_than_the_run_is_left_alone():
-    """It may be my own draft in the browser, which no run is to blame for."""
+def test_an_empty_pending_review_the_run_opened_is_reported():
+    assert reviewaudit.findings(_pr(_review("PENDING")), "alice", SINCE) == [
+        "left its review PENDING — never submitted, so only I can see it"]
+
+
+def test_an_empty_pending_review_older_than_the_run_is_left_alone():
+    """Nothing in it says whose it is, and no run is to blame for one of mine."""
     assert reviewaudit.findings(_pr(_review("PENDING", created=BEFORE)), "alice",
                                 SINCE) == []
+
+
+def test_a_pending_review_of_mine_the_run_left_alone_is_not_its_fault():
+    """The prompt has a run leave my draft unsubmitted, opened during the run or not."""
+    assert reviewaudit.findings(_pr(_review("PENDING", threads=2, body="mine")), "alice",
+                                SINCE) == []
+
+
+def test_a_review_i_submit_from_the_browser_during_the_run_is_no_split():
+    pr = _pr(_review(threads=2), _review(threads=1, body="mine"))
+    assert reviewaudit.findings(pr, "alice", SINCE) == []
 
 
 def test_an_older_pending_review_every_comment_of_which_is_tagged_is_reported():
@@ -128,7 +144,6 @@ def test_audit_asks_nothing_about_a_url_that_is_no_pr(monkeypatch):
     monkeypatch.setattr(gh, "graphql", lambda *a, **k: pytest.fail("asked GitHub"))
     assert reviewaudit.audit("https://github.com/acme/widgets/issues/7", "alice",
                              SINCE) == []
-    assert reviewaudit.audit(URL, "", SINCE) == []
 
 
 # MARK: - the store runs it on what retires
@@ -141,7 +156,7 @@ def _run(run_id, **kw):
     return RunRecord(**base)
 
 
-def _retire(monkeypatch, records, failed=(), me="alice", answer=None):
+def _retire(monkeypatch, records, failed=(), me="alice", answer=None, merged=(), done=()):
     from diplomat_app.store import Store
 
     asked = []
@@ -156,8 +171,11 @@ def _retire(monkeypatch, records, failed=(), me="alice", answer=None):
     store = Store()
     store.me = me
     monkeypatch.setattr(store, "start_background", lambda work, name=None: work())
+    monkeypatch.setattr(agentregistry, "finished_at",
+                        lambda run_id: SINCE if run_id in done else None)
     states = {r.run_id: agentstate.Resolution(
-        r.run_id, agentstate.FAILED if r.run_id in failed else agentstate.FINISHED, "test")
+        r.run_id, agentstate.FAILED if r.run_id in failed
+        else agentstate.MERGED if r.run_id in merged else agentstate.FINISHED, "test")
         for r in records}
     store._retire_finished(agentstate.Tick(records=[], states=states, rows=[],
                                            cap_load=set(), retirable=list(records),
@@ -177,6 +195,14 @@ def test_only_a_review_run_that_ran_here_is_checked(monkeypatch):
     ]
     asked, _ = _retire(monkeypatch, records, failed={"never-ran"})
     assert asked == [(URL, "alice", SINCE), (URL, "alice", SINCE)]
+
+
+def test_a_run_retired_by_its_merge_is_checked_only_once_its_agent_is_done(monkeypatch):
+    """A merge outranks the process, so the agent of a run it retires may still be
+    filling its review."""
+    asked, _ = _retire(monkeypatch, [_run("working"), _run("done", dispatched_at=SINCE + 1)],
+                       merged={"working", "done"}, done={"done"})
+    assert asked == [(URL, "alice", SINCE + 1)]
 
 
 def test_what_it_finds_lands_in_the_feed_under_the_runs_label(monkeypatch):

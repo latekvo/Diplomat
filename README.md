@@ -1074,8 +1074,8 @@ make clean reviews fully silent again.
 
 Every review of someone else's PR goes through GitHub's review lifecycle: the
 agent opens a pending review, adds every finding (and every reply on an existing
-thread) inside it, then submits it once. When a review agent that ran on this
-machine finishes, Diplomat reads my reviews on its PR and warns in the activity feed (`warn`) if the run
+thread) inside it, then submits it once. When a review agent this machine dispatched and ran
+itself finishes, Diplomat reads my reviews on its PR and warns in the activity feed (`warn`) if the run
 left a review PENDING - unsubmitted, so nobody but me can see it - or spread its
 findings over several reviews instead of one.
 

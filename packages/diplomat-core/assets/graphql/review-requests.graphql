@@ -1,10 +1,10 @@
 # PRs that request MY review (search qualifier in $q), with the timestamps needed
 # to decide whether I still owe a review: the latest "review requested from me"
 # event vs my latest RESPONSE to it. A response is either a submitted review
-# (a soft approval is one: a COMMENT review) OR a top-level comment — older
-# soft approvals are top-level comments, and counting reviews alone leaves such
-# a request perpetually "owed" and re-dispatches it every backoff cycle. A
-# PENDING review has no submittedAt, so it is no response.
+# (a soft approval is one: a COMMENT review) OR a top-level comment of mine —
+# counting reviews alone leaves a request answered by a comment perpetually
+# "owed" and re-dispatches it every backoff cycle. A PENDING review has no
+# submittedAt, so it is no response.
 #
 # $withFiles pulls each PR's changed paths — used ONLY to gate the auto-review
 # verdict (skill/installer withhold), which is off by default, and a big slice of

@@ -41,22 +41,26 @@ def findings(pull_request: dict, me: str, since: float) -> list[str]:
     """What the reviews of mine on one PR say a run that started at ``since`` left
     wrong, as sentences for the activity feed.
 
-    A PENDING review is the run's when it was opened since the run started, or when
-    every comment in it carries the attribution tag — a run continues a tagged one
-    left by an earlier run. One opened earlier with an untagged comment, or none, may
-    be my own draft in the browser. A split is not judged on a PR of my own, where a
-    run replies rather than reviews.
+    Comments tell a run's review from mine, since a run tags every one. A PENDING
+    review is the run's when every comment in it is tagged — however old, as a run
+    continues a tagged one an earlier run left — or when it is empty and was opened
+    since the run started. One with an untagged comment is my draft, which the run is
+    told to leave alone. A split counts the reviews submitted since the run started
+    that open a tagged thread, and is not judged on a PR of my own, where a run
+    replies rather than reviews.
     """
     reviews = [rv for rv in ((pull_request.get("reviews") or {}).get("nodes") or []) if rv]
     out: list[str] = []
 
-    def tagged(rv: dict) -> bool:
-        comments = [c for c in ((rv.get("comments") or {}).get("nodes") or []) if c]
-        return bool(comments) and all((c.get("body") or "").lstrip().startswith(TAG)
-                                      for c in comments)
+    def comments(rv: dict) -> list[dict]:
+        return [c for c in ((rv.get("comments") or {}).get("nodes") or []) if c]
+
+    def tagged(c: dict) -> bool:
+        return (c.get("body") or "").lstrip().startswith(TAG)
 
     if any(rv.get("state") == "PENDING"
-           and ((_at(rv.get("createdAt")) or 0) >= since or tagged(rv))
+           and (all(tagged(c) for c in comments(rv)) if comments(rv)
+                else (_at(rv.get("createdAt")) or 0) >= since)
            for rv in reviews):
         out.append("left its review PENDING — never submitted, so only I can see it")
     author = ((pull_request.get("author") or {}).get("login") or "").lower()
@@ -64,8 +68,7 @@ def findings(pull_request: dict, me: str, since: float) -> list[str]:
         opened = sum(
             1 for rv in reviews
             if (_at(rv.get("submittedAt")) or 0) >= since
-            and any(c and c.get("replyTo") is None
-                    for c in ((rv.get("comments") or {}).get("nodes") or []))
+            and any(c.get("replyTo") is None and tagged(c) for c in comments(rv))
         )
         if opened > 1:
             out.append(f"posted its findings as {opened} separate reviews instead of one")
@@ -77,7 +80,7 @@ def audit(pr_url: str, me: str, since: float) -> list[str]:
     that names no github.com PR. Raises :class:`gh.GHError` when GitHub cannot be
     asked."""
     coords = pr_coordinates(pr_url)
-    if coords is None or not me:
+    if coords is None:
         return []
     owner, repo, number = coords
     env = gh.graphql("my-reviews", with_repo=False,

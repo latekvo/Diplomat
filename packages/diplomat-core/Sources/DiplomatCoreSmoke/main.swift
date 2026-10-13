@@ -2493,8 +2493,14 @@ check(kt.contains("right before it, list the pending review's comments again: on
       "a comment of mine added mid-run keeps the review from being submitted")
 check(kt.contains("Post your findings in that review"), "leave-reviews posts the findings in it")
 check(!kt.contains("Do NOT post your findings on the PR"), "…and is not told to keep them")
-check(kt.contains("If it has no comments, or every comment opens with the `\\[[Diplomat](` attribution tag (whatever model name follows it)"),
+check(kt.contains("If one of them does not open with the `\\[[Diplomat](` attribution tag (whatever model name follows it), that review is my own draft from the browser: stop right there"),
+      "my draft is looked for before any review work, and stops the run")
+check(kt.contains("(1) OPEN, only once your findings are final, right before you fill it"),
+      "the review is opened late, so the browser cannot add to it meanwhile")
+check(kt.contains("If it has no comments, or every comment opens with the attribution tag, it is yours"),
       "a leftover is recognised whatever model or emptiness it has")
+check(kt.contains("Neither rule touches a draft of mine: after a stop, never submit, fill, or delete it."),
+      "the closing submit/delete rules never reach my draft")
 check(kt.contains("`addPullRequestReviewThread` mutation (`pullRequestReviewId`"),
       "findings are added inside the pending review")
 check(kt.contains("`addPullRequestReviewThreadReply` carrying the same `pullRequestReviewId`"),
@@ -2559,6 +2565,8 @@ check(!ktNoReview.lowercased().contains("every finding goes in as an inline comm
 check(ktNoReview.contains("Any review you submit on this PR uses the neutral COMMENT event"),
       "…while still ruling out a verdict")
 check(ktNoReview.contains("Do NOT post your findings on the PR"), "no formal review ⇒ findings stay unposted")
+check(ktNoReview.contains("This outranks every other line here that puts findings in the review"),
+      "…over the blocks that elsewhere put findings in the review")
 // A soft approval posts a review even with findings kept off the PR, so it gets the lifecycle.
 let ktSoftOnly = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
                               markReady: false, leaveReviews: false, replyToReviews: false,
@@ -2591,7 +2599,7 @@ do {
     let before = "2025-10-09T08:00:00Z", after = "2025-10-09T09:30:00Z"
     let tagged = #"\\[[Diplomat](https://github.com/latekvo/Diplomat) Opus\\]: nit"#
     func review(_ state: String = "COMMENTED", created: String = after, submitted: String = after,
-                threads: Int = 0, replies: Int = 0, body: String = "plain",
+                threads: Int = 0, replies: Int = 0, body: String = tagged,
                 extra: [String] = []) -> String {
         let comments = Array(repeating: #"{"body":"\#(body)","replyTo":null}"#, count: threads)
             + Array(repeating: #"{"body":"\#(body)","replyTo":{"id":"c"}}"#, count: replies) + extra
@@ -2606,7 +2614,12 @@ do {
     }
     let pending = "left its review PENDING — never submitted, so only I can see it"
     check(findings([review("PENDING", threads: 2)]) == [pending], "a pending review the run opened")
-    check(findings([review("PENDING", created: before)]) == [], "an older pending review is mine")
+    check(findings([review("PENDING")]) == [pending], "an empty pending review the run opened")
+    check(findings([review("PENDING", created: before)]) == [], "an older empty pending review is mine")
+    check(findings([review("PENDING", threads: 2, body: "mine")]) == [],
+          "a pending review of mine the run left alone is not its fault")
+    check(findings([review(threads: 2), review(threads: 1, body: "mine")]) == [],
+          "a review I submit from the browser during the run is no split")
     check(findings([review("PENDING", created: before, threads: 1, replies: 1, body: #"\n "# + tagged)])
           == [pending], "an older pending review every comment of which is tagged is the run's")
     check(findings([review("PENDING", created: before, threads: 2, body: tagged,
@@ -2627,6 +2640,28 @@ do {
     for notPR in ["https://github.com/acme/widgets/issues/7", "https://ghe.example.com/acme/widgets/pull/7",
                   "https://github.com/acme/widgets/pull/7/files", ""] {
         check(ReviewAudit.coordinates(notPR) == nil, "no coordinates for \(notPR)")
+    }
+    // audit asks gh for my reviews on that PR (mirrors test_audit_asks_for_my_reviews_on_that_pr).
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-audit-\(getpid())")
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let argsFile = dir.appendingPathComponent("args"), gh = dir.appendingPathComponent("gh")
+    let answer = #"{"data":{"repository":{"pullRequest":{"author":{"login":"bob"},"reviews":{"nodes":["#
+        + review("PENDING") + "]}}}}}"
+    try! "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > '\(argsFile.path)'\ncat <<'EOF'\n\(answer)\nEOF\n"
+        .write(to: gh, atomically: true, encoding: .utf8)
+    chmod(gh.path, 0o755)
+    setenv("DIPLOMAT_GH", gh.path, 1)
+    let got = try? await ReviewAudit.audit(prURL: "https://github.com/acme/widgets/pull/7", me: "alice", since: since)
+    unsetenv("DIPLOMAT_GH")
+    let asked = ((try? String(contentsOf: argsFile, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+    check(got == [pending], "audit judges what gh answers, got: \(String(describing: got))")
+    check(asked.first == "api" && asked.dropFirst().first == "graphql"
+          && asked.contains { $0.hasPrefix("query=") }
+          && asked.contains { $0.contains("reviews(last: 30, author: $me)") },
+          "audit runs the my-reviews query")
+    for (flag, value) in [("-f", "owner=acme"), ("-f", "name=widgets"), ("-f", "me=alice"), ("-F", "number=7")] {
+        check(zip(asked, asked.dropFirst()).contains { $0 == (flag, value) }, "audit passes \(flag) \(value)")
     }
 }
 print("ReviewAudit assertions passed")

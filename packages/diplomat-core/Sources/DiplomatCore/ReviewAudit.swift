@@ -52,22 +52,24 @@ public enum ReviewAudit {
     /// What the reviews of mine on one PR say a run that started at `since` left wrong,
     /// as sentences for the activity feed.
     ///
-    /// A PENDING review is the run's when it was opened since the run started, or when every
-    /// comment in it carries the attribution tag — a run continues a tagged one left by an
-    /// earlier run. One opened earlier with an untagged comment, or none, may be my own
-    /// draft in the browser. A split is not judged on a PR of my own, where a run replies
-    /// rather than reviews.
+    /// Comments tell a run's review from mine, since a run tags every one. A PENDING review
+    /// is the run's when every comment in it is tagged — however old, as a run continues a
+    /// tagged one an earlier run left — or when it is empty and was opened since the run
+    /// started. One with an untagged comment is my draft, which the run is told to leave
+    /// alone. A split counts the reviews submitted since the run started that open a tagged
+    /// thread, and is not judged on a PR of my own, where a run replies rather than reviews.
     public static func findings(_ pr: PullRequest, me: String, since: TimeInterval) -> [String] {
         let reviews = (pr.reviews?.nodes ?? []).compactMap { $0 }
         var out: [String] = []
-        func tagged(_ rv: PullRequest.Review) -> Bool {
-            let comments = (rv.comments?.nodes ?? []).compactMap { $0 }
-            return !comments.isEmpty && comments.allSatisfy {
-                ($0.body ?? "").drop(while: \.isWhitespace).hasPrefix(tag)
-            }
+        func comments(_ rv: PullRequest.Review) -> [PullRequest.Comment] {
+            (rv.comments?.nodes ?? []).compactMap { $0 }
         }
-        if reviews.contains(where: {
-            $0.state == "PENDING" && ((at($0.createdAt) ?? 0) >= since || tagged($0))
+        func tagged(_ c: PullRequest.Comment) -> Bool {
+            (c.body ?? "").drop(while: \.isWhitespace).hasPrefix(tag)
+        }
+        if reviews.contains(where: { rv in
+            rv.state == "PENDING" && (comments(rv).isEmpty ? (at(rv.createdAt) ?? 0) >= since
+                                                           : comments(rv).allSatisfy(tagged))
         }) {
             out.append("left its review PENDING — never submitted, so only I can see it")
         }
@@ -75,7 +77,7 @@ public enum ReviewAudit {
         if !author.isEmpty, author != me.lowercased() {
             let opened = reviews.filter { rv in
                 (at(rv.submittedAt) ?? 0) >= since
-                    && (rv.comments?.nodes ?? []).contains { $0 != nil && $0?.replyTo == nil }
+                    && comments(rv).contains { $0.replyTo == nil && tagged($0) }
             }.count
             if opened > 1 {
                 out.append("posted its findings as \(opened) separate reviews instead of one")
@@ -87,7 +89,7 @@ public enum ReviewAudit {
     /// Read my reviews on `prURL` and return `findings`. `[]` for a URL that names no
     /// github.com PR. Throws when GitHub cannot be asked.
     public static func audit(prURL: String, me: String, since: TimeInterval) async throws -> [String] {
-        guard let c = coordinates(prURL), !me.isEmpty else { return [] }
+        guard let c = coordinates(prURL) else { return [] }
         let data = try await GH.graphql("my-reviews", withRepo: false,
                                         variables: [("owner", c.owner), ("name", c.repo), ("me", me)],
                                         typedVariables: [("number", String(c.number))])

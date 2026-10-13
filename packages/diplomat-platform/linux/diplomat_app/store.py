@@ -2531,10 +2531,13 @@ class Store(QObject):
                          f"{r.label or r.run_id} — "
                          f"{verdict.reason if verdict else 'no verdict'}")
         self.refresh_activity()
+        # Only a run whose agent is done: a merge retires one that may still be filling
+        # its review.
         audited = [(r.label or r.run_id, r.source, r.pr_url, r.dispatched_at)
                    for r in gone
                    if r.kind == "review" and r.pr_url and r.runs_here
-                   and r.run_id not in failed]
+                   and (getattr(t.states.get(r.run_id), "state", None) == agentstate.FINISHED
+                        or agentregistry.finished_at(r.run_id) is not None)]
         if audited:
             me = self.me
             self.start_background(lambda: self._audit_reviews(audited, me))

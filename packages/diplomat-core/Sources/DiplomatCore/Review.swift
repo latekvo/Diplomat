@@ -337,8 +337,8 @@ public struct ReviewConfig: Codable, Equatable {
 
     /// The single-PR prompt for a PR we ALREADY know is someone else's (a review
     /// requested from me): no author poll, no CASE A/B — the review-only, hands-off
-    /// disposition directly (leave a formal review if the toggle is on, never touch the
-    /// branch). Used by the review-request monitor.
+    /// disposition directly (a formal review whenever one is to be posted, never touching
+    /// the branch). Used by the review-request monitor.
     private func buildKnownTheirsPrompt(review: CoreAssets.Review?, scope: [String: String],
                                         blocks: [String: String], owner: String, repo: String) -> String {
         let specific = review?.specific ?? [:]

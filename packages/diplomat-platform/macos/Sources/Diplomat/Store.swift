@@ -1199,9 +1199,11 @@ final class Store: ObservableObject {
             AuditLog.log(r.source, verdict?.state == .failed ? "spawn-failed" : "retire",
                          "\(r.label.isEmpty ? r.runID : r.label) — \(verdict?.reason ?? "no verdict")")
         }
+        // Only a run whose agent is done: a merge retires one that may still be filling
+        // its review.
         let audited = gone
             .filter { $0.kind == "review" && !$0.prURL.isEmpty && $0.runsHere
-                && t.states[$0.runID]?.state != .failed }
+                && (t.states[$0.runID]?.state == .finished || AgentRegistry.finishedAt($0.runID) != nil) }
             .map { (label: $0.label.isEmpty ? $0.runID : $0.label, source: $0.source,
                     url: $0.prURL, since: $0.dispatchedAt) }
         if !audited.isEmpty { Store.auditReviews(audited, me: me) }
