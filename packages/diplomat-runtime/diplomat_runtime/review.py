@@ -18,6 +18,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -551,8 +552,9 @@ def token_export(platform: str = sys.platform) -> str:
         read = f"security find-generic-password -s {shlex.quote(item)} -w"
     elif path:
         # A token holds no whitespace: one saved with CRLF fails in gh, one with a
-        # trailing space in git.
-        read = f"tr -d '[:space:]' < {shlex.quote(path)}"
+        # trailing space in git. Nor a NUL, which zsh keeps in GH_TOKEN and cuts the
+        # export at: a leading one would leave the agent on gh's stored login.
+        read = f"tr -d '\\000[:space:]' < {shlex.quote(path)}"
     else:
         return ""
     return (f'GH_TOKEN=$({read}) && [ -n "$GH_TOKEN" ] '
@@ -582,8 +584,12 @@ def check_token(platform: str = sys.platform) -> None:
         if not os.path.isabs(path):
             raise SpawnError(f"agentTokenFile is not an absolute path: {path}")
         try:
-            with open(path, "rb") as f:
-                ok = bool(b"".join(f.read().split()))
+            # Not a FIFO: with no writer it would block here, on the GUI thread or the
+            # node's loop.
+            ok = stat.S_ISREG(os.stat(path).st_mode)
+            if ok:
+                with open(path, "rb") as f:
+                    ok = bool(f.read().replace(b"\0", b"").split())
         except OSError:
             ok = False
         if not ok:

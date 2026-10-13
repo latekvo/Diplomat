@@ -13,6 +13,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 
@@ -115,7 +116,7 @@ def test_no_configured_token_leaves_the_spawn_exactly_as_it_was(monkeypatch):
 def test_linux_reads_the_configured_file():
     appconfig.set_value(appconfig.AGENT_TOKEN_FILE, "/secrets/agent token")
     assert review.token_export("linux") == (
-        "GH_TOKEN=$(tr -d '[:space:]' < '/secrets/agent token') && [ -n \"$GH_TOKEN\" ] "
+        "GH_TOKEN=$(tr -d '\\000[:space:]' < '/secrets/agent token') && [ -n \"$GH_TOKEN\" ] "
         f"&& export GH_TOKEN {_GIT}"
     )
 
@@ -183,8 +184,8 @@ def test_the_agent_gets_the_token(shell, pid, tmp_path, monkeypatch, token_file)
 
 
 @pytest.mark.parametrize("pid", [True, False], ids=["local", "mesh"])
-@pytest.mark.parametrize("contents", [None, "", "\n", " \t\r\n"],
-                         ids=["missing", "empty", "blank", "whitespace"])
+@pytest.mark.parametrize("contents", [None, "", "\n", " \t\r\n", "\0\0\n"],
+                         ids=["missing", "empty", "blank", "whitespace", "nul"])
 @pytest.mark.parametrize("shell", _SHELLS)
 def test_an_unreadable_token_starts_nothing(shell, contents, pid, tmp_path, monkeypatch,
                                             token_file):
@@ -204,12 +205,16 @@ def test_an_unreadable_token_starts_nothing(shell, contents, pid, tmp_path, monk
     assert not (tmp_path / "done").exists()
 
 
+@pytest.mark.parametrize("contents", [f" {DUMMY} \r\n", f"\0{DUMMY}\0\n"],
+                         ids=["padded", "nul"])
 @pytest.mark.parametrize("shell", _SHELLS)
-def test_whitespace_around_the_token_is_not_part_of_it(shell, tmp_path, monkeypatch,
-                                                       token_file):
+def test_whitespace_around_the_token_is_not_part_of_it(shell, contents, tmp_path,
+                                                       monkeypatch, token_file):
     """An editor that saves CRLF, or a paste with a trailing space: ``gh`` refuses a
-    token holding a CR, and git over HTTPS one holding a space."""
-    token_file.write_text(f" {DUMMY} \r\n")
+    token holding a CR, and git over HTTPS one holding a space. Nor is a NUL, which
+    zsh keeps in the variable and cuts the export at: a leading one would hand the
+    agent an empty ``GH_TOKEN``, which ``gh`` reads as its stored login."""
+    token_file.write_text(contents)
     _, cmd = _spawn(tmp_path, monkeypatch, shell, agent=_AGENT)
     subprocess.run([shell, "-c", cmd], cwd=tmp_path, env=_clean_env(tmp_path),
                    capture_output=True, timeout=30)
@@ -242,8 +247,8 @@ def test_the_secret_is_absent_from_the_process_table(tmp_path, monkeypatch, toke
 # MARK: - A token that cannot be read fails the spawn itself
 
 
-@pytest.mark.parametrize("contents", [None, "", "\n", " \t\r\n"],
-                         ids=["missing", "empty", "blank", "whitespace"])
+@pytest.mark.parametrize("contents", [None, "", "\n", " \t\r\n", "\0\0\n"],
+                         ids=["missing", "empty", "blank", "whitespace", "nul"])
 def test_an_unreadable_token_file_fails_the_spawn_before_a_window(contents, token_file,
                                                                   monkeypatch):
     """Before the terminal, so the caller hears the spawn failed: the local tracker
@@ -267,6 +272,24 @@ def test_a_readable_token_file_spawns(token_file, monkeypatch):
     monkeypatch.setattr(review, "popen_detached", lambda *a, **k: launched.append(a))
     _real_spawn("p", None, done_path="/tmp/d")
     assert len(launched) == 1
+
+
+def test_a_fifo_token_file_fails_the_check_without_waiting_for_a_writer(tmp_path):
+    """The check runs on the GUI thread and on the mesh node's loop."""
+    fifo = tmp_path / "agent-token"
+    os.mkfifo(fifo)
+    appconfig.set_value(appconfig.AGENT_TOKEN_FILE, str(fifo))
+    refused = []
+
+    def check():
+        with pytest.raises(review.SpawnError, match="no agent token") as exc:
+            _check_token("linux")
+        refused.append(exc)
+
+    thread = threading.Thread(target=check, daemon=True)
+    thread.start()
+    thread.join(5)
+    assert not thread.is_alive() and len(refused) == 1
 
 
 def test_a_relative_token_file_fails_the_spawn(tmp_path, monkeypatch, token_file):
