@@ -1204,7 +1204,7 @@ final class Store: ObservableObject {
                 && t.states[$0.runID]?.state != .failed }
             .map { (label: $0.label.isEmpty ? $0.runID : $0.label, source: $0.source,
                     url: $0.prURL, since: $0.dispatchedAt) }
-        if !audited.isEmpty, !me.isEmpty { Store.auditReviews(audited, me: me) }
+        if !audited.isEmpty { Store.auditReviews(audited, me: me) }
         AgentRegistry.forget(Set(gone.map(\.runID)))
         OpenCodeProbe.forgetAdopted(Set(gone.map(\.runID)))
         await Store.interrupt(stops)
@@ -1218,9 +1218,10 @@ final class Store: ObservableObject {
                                                since: TimeInterval)], me: String) {
         Task.detached(priority: .utility) {
             for run in runs {
-                let found: [String]
+                var found: [String]
                 do {
-                    found = try await ReviewAudit.audit(prURL: run.url, me: me, since: run.since)
+                    found = me.isEmpty ? ["could not check its review: the gh login is not known yet"]
+                        : try await ReviewAudit.audit(prURL: run.url, me: me, since: run.since)
                 } catch {
                     found = ["could not check its review: \(error.localizedDescription)"]
                 }

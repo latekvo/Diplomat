@@ -133,9 +133,10 @@ def test_owe_review_rules():
 
 
 def test_owe_review_counts_a_soft_approve_comment_as_a_response():
-    """Older soft approvals are top-level comments, not reviews. One must clear the
-    owed state or the monitor re-dispatches every backoff cycle forever (the real #516 regression: request 07-24 06:47 vs a soft-approve
-    comment 24 min later, with the last formal review four days stale)."""
+    """A soft approval is a COMMENT review, but older ones are top-level comments. One
+    must clear the owed state or the monitor re-dispatches every backoff cycle forever
+    (the real #516 regression: request 07-24 06:47 vs a soft-approve comment 24 min
+    later, with the last formal review four days stale)."""
     # Comment posted AFTER the request → responded, not owed (even with no/old review).
     assert _req("2026-07-24T06:47:36Z", my_last_review_at="2026-07-20T11:37:37Z",
                 my_last_comment_at="2026-07-24T07:11:35Z").owe_review is False

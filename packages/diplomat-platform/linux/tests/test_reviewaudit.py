@@ -172,11 +172,13 @@ def test_a_check_that_could_not_run_says_so(monkeypatch):
     assert warns == ["Review-req · r1 could not check its review: gh exited 1: boom"]
 
 
-def test_no_login_no_check(monkeypatch):
+def test_no_login_says_it_could_not_check(monkeypatch):
     """A PENDING review is listed to its author alone, so without the login there is
-    nobody to ask as."""
-    asked, _ = _retire(monkeypatch, [_run("r1")], me="")
+    nobody to ask as — which the feed says rather than reading as a clean run."""
+    asked, warns = _retire(monkeypatch, [_run("r1")], me="")
     assert asked == []
+    assert warns == ["Review-req · r1 could not check its review: "
+                     "the gh login is not known yet"]
 
 
 def test_the_username_override_is_not_who_is_asked(monkeypatch):

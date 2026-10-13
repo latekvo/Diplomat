@@ -53,8 +53,8 @@ enum AutofixMonitor {
         let myLastCommentAt: String? // my latest top-level comment (ISO8601)
 
         /// The most recent time I responded to this PR — a formal review submission OR a
-        /// top-level comment, whichever is later. Older soft approvals are top-level
-        /// comments, so a review-only signal misses them and the request reads as
+        /// top-level comment, whichever is later. A soft approval is a COMMENT review, but
+        /// older ones are top-level comments, so a review-only signal misses them and the request reads as
         /// forever-owed. ISO8601 strings compare chronologically, so `max` picks the latest.
         var myLastResponseAt: String? {
             [myLastReviewAt, myLastCommentAt].compactMap { $0 }.max()

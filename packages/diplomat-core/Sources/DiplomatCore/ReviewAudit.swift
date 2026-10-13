@@ -46,9 +46,9 @@ public enum ReviewAudit {
     /// What the reviews of mine on one PR say a run that started at `since` left wrong,
     /// as sentences for the activity feed.
     ///
-    /// Only what the run itself made is judged: a PENDING review opened earlier may be my
-    /// own draft in the browser. A split is only judged on someone else's PR, the only
-    /// kind the prompt has a run review rather than reply on.
+    /// Only reviews made since the run started are judged: a PENDING review opened earlier
+    /// may be my own draft in the browser. A split is not judged on a PR of my own, where a
+    /// run replies rather than reviews.
     public static func findings(_ pr: PullRequest, me: String, since: TimeInterval) -> [String] {
         let reviews = (pr.reviews?.nodes ?? []).compactMap { $0 }
         var out: [String] = []

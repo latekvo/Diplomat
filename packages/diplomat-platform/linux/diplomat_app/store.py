@@ -2535,7 +2535,7 @@ class Store(QObject):
                    for r in gone
                    if r.kind == "review" and r.pr_url and r.runs_here
                    and r.run_id not in failed]
-        if audited and self.me:
+        if audited:
             me = self.me
             self.start_background(lambda: self._audit_reviews(audited, me))
         agentregistry.forget({r.run_id for r in gone})
@@ -2555,6 +2555,8 @@ class Store(QObject):
         logged = False
         for label, source, url, since in runs:
             try:
+                if not me:
+                    raise ValueError("the gh login is not known yet")
                 found = reviewaudit.audit(url, me, since)
             except Exception as exc:  # noqa: BLE001 — a check that could not run says so
                 found = [f"could not check its review: {exc}"]

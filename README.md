@@ -1052,7 +1052,7 @@ quota; only its terminal was opened by the node rather than by the applet.
 
 Whether an auto-dispatched review may *ever* submit a verdict (approve / request
 changes) on my behalf is a master toggle in Settings - **default OFF**, so every
-auto-review submits a neutral `COMMENT` review and the final call stays with me. When
+auto-review's review is a neutral `COMMENT` one and the final call stays with me. When
 opted in, three independent suppressors (each default ON) still withhold the
 verdict for a PR that touches a SKILL, touches the installer/CLI, or comes from a
 community author (outside `trustedAssociations` in `assets/filters.json`) - those
@@ -1073,8 +1073,8 @@ make clean reviews fully silent again.
 
 Every review of someone else's PR goes through GitHub's review lifecycle: the
 agent opens a pending review, adds every finding (and every reply on an existing
-thread) inside it, then submits it once. When a review agent finishes, Diplomat
-reads my reviews on its PR and warns in the activity feed (`warn`) if the run
+thread) inside it, then submits it once. When a review agent that ran on this
+machine finishes, Diplomat reads my reviews on its PR and warns in the activity feed (`warn`) if the run
 left a review PENDING - unsubmitted, so nobody but me can see it - or spread its
 findings over several reviews instead of one.
 

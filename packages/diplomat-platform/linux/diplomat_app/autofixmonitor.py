@@ -112,8 +112,8 @@ def _parse_review_requests(env: dict, me: str) -> list[ReviewRequest]:
             and ((rv.get("author") or {}).get("login") or "").lower() == lower
             and rv.get("submittedAt")
         ]
-        # My latest top-level comment on this PR — older soft approvals landed here,
-        # not in `reviews`, so a comment counts as a response too.
+        # My latest top-level comment on this PR — a soft approval is a COMMENT review,
+        # but older ones landed here, so a comment counts as a response too.
         my_comment_times = [
             c.get("createdAt")
             for c in ((n.get("comments") or {}).get("nodes") or [])

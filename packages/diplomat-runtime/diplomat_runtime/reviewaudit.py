@@ -38,9 +38,9 @@ def findings(pull_request: dict, me: str, since: float) -> list[str]:
     """What the reviews of mine on one PR say a run that started at ``since`` left
     wrong, as sentences for the activity feed.
 
-    Only what the run itself made is judged: a PENDING review opened earlier may be
-    my own draft in the browser. A split is only judged on someone else's PR, the
-    only kind the prompt has a run review rather than reply on.
+    Only reviews made since the run started are judged: a PENDING review opened
+    earlier may be my own draft in the browser. A split is not judged on a PR of my
+    own, where a run replies rather than reviews.
     """
     reviews = [rv for rv in ((pull_request.get("reviews") or {}).get("nodes") or []) if rv]
     out: list[str] = []

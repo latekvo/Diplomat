@@ -2487,6 +2487,10 @@ check(kt.contains("Leave ONE formal GitHub review on each PR"), "leaveReviews bl
 // The lifecycle, step by step: opened PENDING, filled inside, submitted once.
 check(kt.contains("with NO `event` field leaves the review PENDING"), "the review is opened pending")
 check(kt.contains("one pending review per person per PR"), "a leftover pending review is handled")
+check(kt.contains("If it is the one you opened earlier in this run, keep using it"),
+      "the run's own pending review is never mistaken for a leftover")
+check(kt.contains("If it has no comments, or every comment opens with the `\\[[Diplomat](` attribution tag (whatever model name follows it)"),
+      "a leftover is recognised whatever model or emptiness it has")
 check(kt.contains("`addPullRequestReviewThread` mutation (`pullRequestReviewId`"),
       "findings are added inside the pending review")
 check(kt.contains("`addPullRequestReviewThreadReply` carrying the same `pullRequestReviewId`"),
@@ -2497,7 +2501,7 @@ check(kt.contains("nor through the standalone `pulls/<number>/comments` endpoint
       "single-comment posting is ruled out")
 check(kt.contains("Do NOT mark this PR ready"), "otherNoMarkReady present")
 check(kt.contains("that single clean pass ends the loop"), "max-depth fragment present")
-// Soft-approve: no hard verdict, but a friendly clean comment — never an APPROVE action.
+// Soft-approve: no hard verdict, but a thank-you COMMENT review — never an APPROVE action.
 check(kt.contains("Do NOT submit an APPROVE"), "soft-approve still withholds the APPROVE verdict")
 check(kt.contains("Thank you for contributing"), "soft-approve clean thank-you present")
 check(kt.contains("never as a top-level issue comment"), "the soft approval is a review, not an issue comment")
@@ -2517,14 +2521,14 @@ let kts = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
 check(kts.contains("Do NOT submit an APPROVE"), "no-verdict instruction present")
 check(kts.contains("PR #500 looks clean"), "no-verdict {pr} substituted")
 check(kts.contains("delete any pending review you opened"), "a clean silent review leaves nothing pending")
-check(!kts.contains("Thank you for contributing"), "soft-approve off ⇒ no thank-you comment")
+check(!kts.contains("Thank you for contributing"), "soft-approve off ⇒ no thank-you review")
 check(!kts.contains("still APPROVE"), "no finalPass block")
 print("known-theirs (silent) review prompt assertions passed")
 
 // ---- known-theirs WITH verdict (trusted author: member/maintainer/contributor) ----
 // The review-request monitor sets finalPass=true when the PR author is trusted, so the
 // auto-review closes with an APPROVE/changes-requested verdict instead of comments only.
-// A real verdict outranks the (default-on) soft-approve, so no thank-you comment either.
+// A real verdict outranks the (default-on) soft-approve, so no thank-you review either.
 section("known-theirs review prompt (trusted author → verdict)")
 let ktv = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
                        markReady: false, leaveReviews: true, replyToReviews: false,
@@ -2535,6 +2539,8 @@ check(!ktv.contains("Do NOT submit an APPROVE"), "trusted author ⇒ no no-verdi
 check(!ktv.contains("Thank you for contributing"), "hard verdict outranks soft-approve")
 check(ktv.contains("COMMENT unless a verdict instruction below explicitly tells you to APPROVE"),
       "the lifecycle's COMMENT default yields to the verdict block")
+check(ktv.contains("such a verdict is this same submission's event, never a second review"),
+      "the verdict is the one review's event")
 print("known-theirs (trusted author) review prompt assertions passed")
 
 // The lifecycle belongs to a formal review of someone else's PR, and to nothing else.
@@ -2543,6 +2549,11 @@ let ktNoReview = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
                               specificPR: "500", softApprove: false,
                               specificAuthor: .theirs).buildPrompt()
 check(!ktNoReview.contains("addPullRequestReviewThread"), "no formal review ⇒ no lifecycle")
+check(!ktNoReview.lowercased().contains("every finding goes in as an inline comment")
+      && !ktNoReview.lowercased().contains("post every finding"),
+      "no formal review ⇒ the closing block asks for none")
+check(ktNoReview.contains("Any review you submit on this PR uses the neutral COMMENT event"),
+      "…while still ruling out a verdict")
 check(!km.contains("addPullRequestReviewThread"), "my own PR ⇒ no lifecycle")
 
 // ---- the after-run check of a review's lifecycle (mirrors test_reviewaudit.py) ----
