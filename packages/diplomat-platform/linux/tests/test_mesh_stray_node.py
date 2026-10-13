@@ -145,6 +145,8 @@ def test_the_applet_itself_stops_the_node_when_it_launches(mesh, monkeypatch):
     monkeypatch.setattr(Store, "ensure_allocator_installed_async", lambda self: None)
     monkeypatch.setattr(app_module.DiplomatApp, "trigger_refresh", lambda self: None)
     monkeypatch.setattr(app_module.QTimer, "singleShot", staticmethod(lambda *a: None))
+    # Offscreen Qt still registers a shown tray icon with the desktop's panel.
+    monkeypatch.setattr(app_module.QSystemTrayIcon, "show", lambda self: None)
     launched = app_module.DiplomatApp()
     try:
         _settled(launched.store)

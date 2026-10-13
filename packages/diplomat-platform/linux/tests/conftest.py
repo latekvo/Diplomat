@@ -267,8 +267,8 @@ def isolated_opencode_state(tmp_path, monkeypatch):
     this process's ``PATH`` and the ``XDG_STATE_HOME`` above.
 
     ``shutil.which`` is fenced too: a distro package puts the developer's ``opencode``
-    in ``/usr/bin``, which the tests that build a ``PATH`` keep. A test finds only the
-    fakes it puts there itself."""
+    in ``/usr/bin``, which the tests that build a ``PATH`` keep, so it finds only the
+    fakes a test puts there itself."""
     import shutil
 
     from diplomat_runtime import opencodeapi, usagescan

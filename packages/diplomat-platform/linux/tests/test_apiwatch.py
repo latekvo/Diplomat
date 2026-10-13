@@ -28,7 +28,9 @@ def private_tmux_server(monkeypatch):
     monkeypatch.setenv("TMUX_TMPDIR", sockets)
     yield
     if shutil.which("tmux"):
-        subprocess.run(["tmux", "kill-server"], capture_output=True, check=False)
+        # By its socket: a test that set $TMUX would otherwise name the server killed.
+        socket = os.path.join(sockets, f"tmux-{os.getuid()}", "default")
+        subprocess.run(["tmux", "-S", socket, "kill-server"], capture_output=True, check=False)
     shutil.rmtree(sockets, ignore_errors=True)
 
 
