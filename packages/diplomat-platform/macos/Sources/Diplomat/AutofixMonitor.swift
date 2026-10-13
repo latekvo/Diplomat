@@ -53,10 +53,9 @@ enum AutofixMonitor {
         let myLastCommentAt: String? // my latest top-level comment (ISO8601)
 
         /// The most recent time I responded to this PR — a formal review submission OR a
-        /// top-level comment, whichever is later. A clean PR's auto-response is a friendly
-        /// soft-approve *comment* (never a review verdict), so a review-only signal misses
-        /// it and the request reads as forever-owed. ISO8601 strings compare
-        /// chronologically, so `max` picks the latest.
+        /// top-level comment, whichever is later. Older soft approvals are top-level
+        /// comments, so a review-only signal misses them and the request reads as
+        /// forever-owed. ISO8601 strings compare chronologically, so `max` picks the latest.
         var myLastResponseAt: String? {
             [myLastReviewAt, myLastCommentAt].compactMap { $0 }.max()
         }

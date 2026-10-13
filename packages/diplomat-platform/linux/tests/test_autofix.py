@@ -133,9 +133,8 @@ def test_owe_review_rules():
 
 
 def test_owe_review_counts_a_soft_approve_comment_as_a_response():
-    """A clean PR's auto-response is a friendly top-level comment, never a review
-    verdict. It must clear the owed state or the monitor re-dispatches every backoff
-    cycle forever (the real #516 regression: request 07-24 06:47 vs a soft-approve
+    """Older soft approvals are top-level comments, not reviews. One must clear the
+    owed state or the monitor re-dispatches every backoff cycle forever (the real #516 regression: request 07-24 06:47 vs a soft-approve
     comment 24 min later, with the last formal review four days stale)."""
     # Comment posted AFTER the request → responded, not owed (even with no/old review).
     assert _req("2026-07-24T06:47:36Z", my_last_review_at="2026-07-20T11:37:37Z",

@@ -782,7 +782,7 @@ struct ReviewWizardView: View {
     @State private var includeReady = true
     @State private var specificPR = ""
     @State private var finalPass = false
-    /// Soft-approve a perfectly-clean PR with a friendly thank-you comment (no APPROVE
+    /// Soft-approve a perfectly-clean PR with a thank-you COMMENT review (no APPROVE
     /// action). On by default; hidden for my own PRs (I don't thank myself).
     @State private var softApprove = true
     @State private var status: String?
@@ -1005,9 +1005,9 @@ struct ReviewWizardView: View {
             }
             if config.canSoftApprove {
                 Toggle(isOn: $softApprove) {
-                    Text("Soft-approve clean PRs (thank-you comment)").font(.caption)
+                    Text("Soft-approve clean PRs (thank-you review)").font(.caption)
                 }
-                .help("On a perfectly-clean PR, leave a friendly thank-you comment — never an APPROVE action.")
+                .help("On a perfectly-clean PR, submit a COMMENT review with a friendly thank-you body — never an APPROVE action.")
                 .transition(rowTransition)
             }
         }

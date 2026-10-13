@@ -83,9 +83,9 @@ public struct ReviewConfig: Codable, Equatable {
     /// The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     public var finalPass: Bool
 
-    /// Soft-approve: when a review-only PR comes back perfectly clean, leave a friendly
-    /// "ran the sweep, all clean, thanks for contributing" comment — but NEVER an APPROVE
-    /// action. On by default. Independent of `finalPass`; when `finalPass` submits a real
+    /// Soft-approve: when a review-only PR comes back perfectly clean, submit a COMMENT
+    /// review whose body is a friendly "ran the sweep, all clean, thanks for contributing"
+    /// — but NEVER an APPROVE action. On by default. Independent of `finalPass`; when `finalPass` submits a real
     /// verdict it takes precedence and this is moot.
     public var softApprove: Bool
 
@@ -152,7 +152,7 @@ public struct ReviewConfig: Codable, Equatable {
     public var effReplyToReviews: Bool { replyToReviews && canReplyToReviews }
     public var effFinalPass: Bool { finalPass && canFinalPass }
     // A real verdict (finalPass) outranks a soft approval — when we're submitting APPROVE /
-    // request-changes there's no separate soft-approve comment.
+    // request-changes there's no separate soft-approve review.
     public var effSoftApprove: Bool { softApprove && canSoftApprove && !effFinalPass }
 
     /// Review exactly one PR by number/URL instead of a whose-PRs sweep.
@@ -346,7 +346,7 @@ public struct ReviewConfig: Codable, Equatable {
         out.append(fill(specific["otherNoMarkReady"] ?? ""))
         // Closing disposition, in precedence order: a real approve/changes-requested
         // verdict only under the Final-E2E toggle (manual review or a trusted-author auto
-        // run); else a soft approval (friendly clean comment, no APPROVE action) when that
+        // run); else a soft approval (thank-you COMMENT review, no APPROVE) when that
         // toggle is on (the default); else stay fully silent and leave the call to me.
         if effFinalPass, let b = blocks["finalPass"] {
             out.append(b)
