@@ -102,6 +102,20 @@ def no_host_agent_spawn(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def outside_a_user_service(tmp_path, monkeypatch):
+    """Launch a tray the plain way whatever cgroup the suite runs in.
+
+    From a user manager's service :func:`selfupdate.relaunch` goes through
+    ``systemd-run --user``, which cannot reach the manager from the scratch
+    ``XDG_RUNTIME_DIR`` the launching tests set. The tests about that path pick the
+    cgroup themselves."""
+    from diplomat_app import selfupdate
+
+    monkeypatch.setattr(selfupdate, "_CGROUP_FILE", tmp_path / "no-cgroup")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def no_github_reads(monkeypatch):
     """Fail loudly instead of shelling out to the real ``gh``.
 
