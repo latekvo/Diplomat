@@ -219,6 +219,18 @@ public struct ReviewConfig: Codable, Equatable {
         blocks["diplomatTag"].map { AgentModel.fillTag($0, model: AgentModel.detected()) }
     }
 
+    /// How a review on someone else's PR is built, whenever this run may submit one, and
+    /// whether its findings go in it. Nothing on my own PRs, which get no review.
+    private func reviewBlocks(_ blocks: [String: String]) -> [String] {
+        guard canLeaveReviews else { return [] }
+        var out: [String] = []
+        if effLeaveReviews || effSoftApprove || effFinalPass, let b = blocks["reviewLifecycle"] {
+            out.append(b)
+        }
+        if let b = blocks[effLeaveReviews ? "leaveReviews" : "noReviews"] { out.append(b) }
+        return out
+    }
+
     private func prKind(_ scope: [String: String]) -> String {
         switch (includeDrafts, includeReady) {
         case (true, true):  return scope["prKindBoth"] ?? ""
@@ -268,7 +280,7 @@ public struct ReviewConfig: Codable, Equatable {
         if !isReviewOnly, let ob = chosen.onBranch, !ob.isEmpty { out.append(ob) }
         if let bar = blocks["bar"] { out.append(bar) }
         if effMarkReady, let b = blocks["markReady"] { out.append(b) }
-        if effLeaveReviews, let b = blocks["leaveReviews"] { out.append(b) }
+        out += reviewBlocks(blocks)
         if effReplyToReviews, let b = blocks["reply"] { out.append(b) }
         if let trailer = blocks["trailer"] { out.append(trailer) }
         // Commit-authoring guidance only when we might actually commit — never
@@ -342,7 +354,7 @@ public struct ReviewConfig: Codable, Equatable {
         out.append(chosen.fragment)
         if let bar = blocks["bar"] { out.append(bar) }
         if let b = blocks["reviewOnly"] { out.append(b) }
-        if effLeaveReviews, let b = blocks["leaveReviews"] { out.append(b) }
+        out += reviewBlocks(blocks)
         out.append(fill(specific["otherNoMarkReady"] ?? ""))
         // Closing disposition, in precedence order: a real approve/changes-requested
         // verdict only under the Final-E2E toggle (manual review or a trusted-author auto
@@ -399,7 +411,7 @@ public struct ReviewConfig: Codable, Equatable {
         // CASE B — it's someone else's: review only, hands off the branch.
         out.append(fill(specific["otherHeader"] ?? ""))
         if let b = blocks["reviewOnly"] { out.append(b) }
-        if effLeaveReviews, let b = blocks["leaveReviews"] { out.append(b) }
+        out += reviewBlocks(blocks)
         out.append(fill(specific["otherNoMarkReady"] ?? ""))
 
         if let trailer = blocks["trailer"] { out.append(trailer) }

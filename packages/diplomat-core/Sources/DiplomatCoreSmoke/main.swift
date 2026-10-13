@@ -357,8 +357,8 @@ let mine = ReviewConfig(depth: "max", me: me)
 let other = ReviewConfig(depth: "max", target: .someone, username: "someuser")
 print("mine valid=\(mine.isValid) | other valid=\(other.isValid) | single valid=\(single("337").isValid)")
 check(mine.buildPrompt().contains("mark it ready for review"))
-check(!mine.buildPrompt().contains("Leave ONE formal GitHub review on each PR"))
-check(other.buildPrompt().contains("Leave ONE formal GitHub review on each PR"))
+check(!mine.buildPrompt().contains("Anything you post on someone else's PR goes in ONE formal GitHub review"))
+check(other.buildPrompt().contains("Anything you post on someone else's PR goes in ONE formal GitHub review"))
 // Someone else's PRs are review-only: a hard no-commit guard, and the
 // commit-authoring guidance is dropped (we never touch their branch).
 check(other.buildPrompt().contains("ABSOLUTELY DO NOT touch their branch"))
@@ -2483,12 +2483,14 @@ check(!kt.contains("WHO AUTHORED IT"), "known-theirs skips the author poll")
 check(!kt.contains("CASE A") && !kt.contains("CASE B"), "no case branching")
 check(kt.contains("SOMEONE ELSE'S"), "review-only framing")
 check(kt.contains("ABSOLUTELY DO NOT touch their branch"), "reviewOnly block present")
-check(kt.contains("Leave ONE formal GitHub review on each PR"), "leaveReviews block present")
+check(kt.contains("Anything you post on someone else's PR goes in ONE formal GitHub review"), "leaveReviews block present")
 // The lifecycle, step by step: opened PENDING, filled inside, submitted once.
 check(kt.contains("with NO `event` field leaves the review PENDING"), "the review is opened pending")
 check(kt.contains("one pending review per person per PR"), "a leftover pending review is handled")
-check(kt.contains("If it is the one you opened earlier in this run, keep using it"),
-      "the run's own pending review is never mistaken for a leftover")
+check(kt.contains("it is yours — opened earlier in this run, or left by an earlier one: keep using it"),
+      "a tagged or empty pending review is continued, never thrown away")
+check(kt.contains("Post your findings in that review"), "leave-reviews posts the findings in it")
+check(!kt.contains("Do NOT post your findings on the PR"), "…and is not told to keep them")
 check(kt.contains("If it has no comments, or every comment opens with the `\\[[Diplomat](` attribution tag (whatever model name follows it)"),
       "a leftover is recognised whatever model or emptiness it has")
 check(kt.contains("`addPullRequestReviewThread` mutation (`pullRequestReviewId`"),
@@ -2554,6 +2556,27 @@ check(!ktNoReview.lowercased().contains("every finding goes in as an inline comm
       "no formal review ⇒ the closing block asks for none")
 check(ktNoReview.contains("Any review you submit on this PR uses the neutral COMMENT event"),
       "…while still ruling out a verdict")
+check(ktNoReview.contains("Do NOT post your findings on the PR"), "no formal review ⇒ findings stay unposted")
+// A soft approval posts a review even with findings kept off the PR, so it gets the lifecycle.
+let ktSoftOnly = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
+                              markReady: false, leaveReviews: false, replyToReviews: false,
+                              specificPR: "500", specificAuthor: .theirs).buildPrompt()
+check(ktSoftOnly.contains("with NO `event` field leaves the review PENDING"),
+      "a soft approval without leave-reviews still opens a pending review")
+check(ktSoftOnly.contains("one pending review per person per PR"),
+      "…and meets my draft with the same rule")
+check(ktSoftOnly.contains("Do NOT post your findings on the PR")
+      && !ktSoftOnly.contains("Post your findings in that review"),
+      "…while its findings stay off the PR")
+check(other.buildPrompt().contains("with NO `event` field leaves the review PENDING"),
+      "a sweep of someone else's PRs gets the lifecycle")
+check(!mine.buildPrompt().contains("Do NOT post your findings on the PR"), "my own PRs ⇒ no review blocks at all")
+let ktVerdictOnly = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
+                                 markReady: false, leaveReviews: false, replyToReviews: false,
+                                 specificPR: "500", finalPass: true,
+                                 specificAuthor: .theirs).buildPrompt()
+check(ktVerdictOnly.contains("with NO `event` field leaves the review PENDING"),
+      "a verdict without leave-reviews still goes through the lifecycle")
 check(!km.contains("addPullRequestReviewThread"), "my own PR ⇒ no lifecycle")
 
 // ---- the after-run check of a review's lifecycle (mirrors test_reviewaudit.py) ----

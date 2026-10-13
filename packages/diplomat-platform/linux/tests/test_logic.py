@@ -128,7 +128,7 @@ def test_review_prompt_blocks_by_target():
     mine = review.ReviewConfig(me="latekvo").build_prompt()
     assert "mark it ready for review" in mine
     assert 'replying "Fixed in <commit_hash>"' in mine
-    assert "Leave ONE formal GitHub review on each PR" not in mine
+    assert "Anything you post on someone else's PR goes in ONE formal GitHub review" not in mine
     assert "ABSOLUTELY DO NOT touch their branch" not in mine
 
     # Someone else's PRs: formal-review block only, plus a hard no-commit guard.
@@ -136,7 +136,7 @@ def test_review_prompt_blocks_by_target():
     other = review.ReviewConfig(
         target=PRTarget.SOMEONE, username="someuser"
     ).build_prompt()
-    assert "Leave ONE formal GitHub review on each PR" in other
+    assert "Anything you post on someone else's PR goes in ONE formal GitHub review" in other
     assert "mark it ready for review" not in other
     assert "ABSOLUTELY DO NOT touch their branch" in other
     assert "No AI attribution" not in other
