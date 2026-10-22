@@ -32,7 +32,8 @@ Wants=network-online.target
 Type=oneshot
 # run_scheduled starts the GUI (relaunch(): subprocess.Popen(..., start_new_session=True))
 # to swap a running tray onto the fresh build via acquire_newest_wins, or to bring a dead
-# one back. setsid()/start_new_session creates a new session but does
+# one back. It runs the tray in a scope of its own (systemd-run --scope) where it can; where
+# it cannot, setsid()/start_new_session creates a new session but does
 # NOT move the child out of THIS unit's cgroup, so under the default KillMode=control-group
 # systemd SIGTERM/SIGKILLs it the instant this oneshot deactivates — killing the relaunched
 # tray mid-startup and silently defeating the update swap. KillMode=process kills only the

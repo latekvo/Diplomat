@@ -102,6 +102,20 @@ def no_host_agent_spawn(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def outside_a_user_service(tmp_path, monkeypatch):
+    """Launch a tray the plain way whatever cgroup the suite runs in.
+
+    From a user manager's service :func:`selfupdate.relaunch` goes through
+    ``systemd-run --user``, which cannot reach the manager from the scratch
+    ``XDG_RUNTIME_DIR`` the launching tests set. The tests about that path pick the
+    cgroup themselves."""
+    from diplomat_app import selfupdate
+
+    monkeypatch.setattr(selfupdate, "_CGROUP_FILE", tmp_path / "no-cgroup")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def no_github_reads(monkeypatch):
     """Fail loudly instead of shelling out to the real ``gh``.
 
@@ -250,7 +264,13 @@ def isolated_opencode_state(tmp_path, monkeypatch):
     real, it sources the developer's own profile and rc and names their install and
     their service. It is asked only in a test that picks a shell itself with
     ``DIPLOMAT_SHELL``; anywhere else it names nothing, and the resolver falls back to
-    this process's ``PATH`` and the ``XDG_STATE_HOME`` above."""
+    this process's ``PATH`` and the ``XDG_STATE_HOME`` above.
+
+    ``shutil.which`` is fenced too: a distro package puts the developer's ``opencode``
+    in ``/usr/bin``, which the tests that build a ``PATH`` keep, so it finds only the
+    fakes a test puts there itself."""
+    import shutil
+
     from diplomat_runtime import opencodeapi, usagescan
 
     monkeypatch.setenv("DIPLOMAT_OPENCODE_CONFIG_DIR", str(tmp_path / "opencode" / "config"))
@@ -261,6 +281,21 @@ def isolated_opencode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(usagescan, "_shell_probe",
                         lambda: real_probe() if os.environ.get("DIPLOMAT_SHELL")
                         else (None, None))
+    real_which = shutil.which
+    dirs = [*os.environ.get("PATH", "").split(os.pathsep), "/usr/local/bin", "/usr/bin", "/bin"]
+    host = {os.path.realpath(found) for found in (real_which("opencode", path=d) for d in dirs if d)
+            if found}
+
+    def which(cmd, mode=os.F_OK | os.X_OK, path=None):
+        if cmd != "opencode":
+            return real_which(cmd, mode, path)
+        for d in (os.environ.get("PATH", "") if path is None else path).split(os.pathsep):
+            found = real_which(cmd, mode, d) if d else None
+            if found and os.path.realpath(found) not in host:
+                return found
+        return None
+
+    monkeypatch.setattr(shutil, "which", which)
     opencodeapi._opening_prompts.clear()
     opencodeapi._prompt_misses.clear()
     yield

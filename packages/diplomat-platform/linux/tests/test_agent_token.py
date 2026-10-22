@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -115,7 +116,7 @@ def test_no_configured_token_leaves_the_spawn_exactly_as_it_was(monkeypatch):
 def test_linux_reads_the_configured_file():
     appconfig.set_value(appconfig.AGENT_TOKEN_FILE, "/secrets/agent token")
     assert review.token_export("linux") == (
-        "GH_TOKEN=$(cat -- '/secrets/agent token') && [ -n \"$GH_TOKEN\" ] "
+        "GH_TOKEN=$(tr -d '\\000[:space:]' < '/secrets/agent token') && [ -n \"$GH_TOKEN\" ] "
         f"&& export GH_TOKEN {_GIT}"
     )
 
@@ -142,7 +143,7 @@ def test_a_home_relative_file_is_expanded_by_the_applet(monkeypatch, tmp_path):
     """Quoted for the shell, so the shell will not expand a ``~`` inside it."""
     monkeypatch.setenv("HOME", str(tmp_path))
     appconfig.set_value(appconfig.AGENT_TOKEN_FILE, "~/.diplomat/agent-token")
-    assert f"cat -- {tmp_path}/.diplomat/agent-token)" in review.token_export("linux")
+    assert f"< {tmp_path}/.diplomat/agent-token)" in review.token_export("linux")
 
 
 def test_the_whole_spawn_runs_behind_the_gate(tmp_path, monkeypatch, token_file):
@@ -183,7 +184,8 @@ def test_the_agent_gets_the_token(shell, pid, tmp_path, monkeypatch, token_file)
 
 
 @pytest.mark.parametrize("pid", [True, False], ids=["local", "mesh"])
-@pytest.mark.parametrize("contents", [None, "", "\n"], ids=["missing", "empty", "blank"])
+@pytest.mark.parametrize("contents", [None, "", "\n", " \t\r\n", "\0\0\n"],
+                         ids=["missing", "empty", "blank", "whitespace", "nul"])
 @pytest.mark.parametrize("shell", _SHELLS)
 def test_an_unreadable_token_starts_nothing(shell, contents, pid, tmp_path, monkeypatch,
                                             token_file):
@@ -201,6 +203,23 @@ def test_an_unreadable_token_starts_nothing(shell, contents, pid, tmp_path, monk
     assert not (tmp_path / "out").exists()
     assert not (tmp_path / "pid").exists()
     assert not (tmp_path / "done").exists()
+
+
+@pytest.mark.parametrize("contents", [f" {DUMMY} \r\n", f"\0{DUMMY}\0\n"],
+                         ids=["padded", "nul"])
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_whitespace_around_the_token_is_not_part_of_it(shell, contents, tmp_path,
+                                                       monkeypatch, token_file):
+    """An editor that saves CRLF, or a paste with a trailing space: ``gh`` refuses a
+    token holding a CR, and git over HTTPS one holding a space. Nor is a NUL, which
+    zsh keeps in the variable and cuts the export at: a leading one would hand the
+    agent an empty ``GH_TOKEN``, which ``gh`` reads as its stored login."""
+    token_file.write_text(contents)
+    _, cmd = _spawn(tmp_path, monkeypatch, shell, agent=_AGENT)
+    subprocess.run([shell, "-c", cmd], cwd=tmp_path, env=_clean_env(tmp_path),
+                   capture_output=True, timeout=30)
+    assert (tmp_path / "out").read_text() == DUMMY + "\n"
+    assert (tmp_path / "git-ok").exists()
 
 
 def test_the_secret_is_absent_from_the_process_table(tmp_path, monkeypatch, token_file):
@@ -228,7 +247,8 @@ def test_the_secret_is_absent_from_the_process_table(tmp_path, monkeypatch, toke
 # MARK: - A token that cannot be read fails the spawn itself
 
 
-@pytest.mark.parametrize("contents", [None, "", "\n"], ids=["missing", "empty", "blank"])
+@pytest.mark.parametrize("contents", [None, "", "\n", " \t\r\n", "\0\0\n"],
+                         ids=["missing", "empty", "blank", "whitespace", "nul"])
 def test_an_unreadable_token_file_fails_the_spawn_before_a_window(contents, token_file,
                                                                   monkeypatch):
     """Before the terminal, so the caller hears the spawn failed: the local tracker
@@ -252,6 +272,59 @@ def test_a_readable_token_file_spawns(token_file, monkeypatch):
     monkeypatch.setattr(review, "popen_detached", lambda *a, **k: launched.append(a))
     _real_spawn("p", None, done_path="/tmp/d")
     assert len(launched) == 1
+
+
+@pytest.mark.parametrize("kind", ["fifo", "device"])
+def test_a_token_file_that_is_not_a_regular_file_is_refused_unread(kind, tmp_path,
+                                                                   monkeypatch):
+    """The check runs on the GUI thread and on the mesh node's loop, where a FIFO with
+    no writer would block the read and /dev/zero never end it."""
+    path = tmp_path / "agent-token" if kind == "fifo" else Path("/dev/zero")
+    if kind == "fifo":
+        os.mkfifo(path)
+    appconfig.set_value(appconfig.AGENT_TOKEN_FILE, str(path))
+    monkeypatch.setattr(review, "open", lambda *a, **k: pytest.fail(f"read {path}"),
+                        raising=False)
+    with pytest.raises(review.SpawnError, match="no agent token"):
+        _check_token("linux")
+
+
+def test_a_token_file_reached_through_a_symlink_is_read(tmp_path, token_file):
+    """A token kept in a secrets mount and linked to from where the config points."""
+    link = tmp_path / "linked-token"
+    link.symlink_to(token_file)
+    appconfig.set_value(appconfig.AGENT_TOKEN_FILE, str(link))
+    _check_token("linux")
+
+
+def test_a_relative_token_file_fails_the_spawn(tmp_path, monkeypatch, token_file):
+    """The check reads it from the applet's directory, the gate from the repo's, so a
+    relative path that reads here would start a window on an agent that never runs."""
+    monkeypatch.chdir(token_file.parent)
+    appconfig.set_value(appconfig.AGENT_TOKEN_FILE, token_file.name)
+    with pytest.raises(review.SpawnError, match="not an absolute path"):
+        _check_token("linux")
+
+
+def test_a_refused_mesh_job_stages_no_prompt(tmp_path, monkeypatch):
+    """The Linux mesh spawner stages an OpenCode prompt before it spawns; a token that
+    cannot be read must be refused before that, as on macOS, or every refusal leaves
+    the prompt behind in the temp dir."""
+    from szpontnet import host as szpont_host
+
+    staging = tmp_path / "tmp"
+    staging.mkdir()
+    monkeypatch.setattr(review.tempfile, "tempdir", str(staging))
+    monkeypatch.setattr(szponthost.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(review, "check_token", lambda: _check_token("linux"))
+    monkeypatch.setattr(review, "popen_detached",
+                        lambda *a, **k: pytest.fail("a refused job reached a terminal"))
+    appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
+    appconfig.set_value(appconfig.AGENT_TOKEN_FILE, str(tmp_path / "absent-token"))
+    with pytest.raises(szpont_host.NoRunner, match="no agent token"):
+        szponthost.DiplomatHost().run_job("p", None)
+    assert [p.name for p in staging.iterdir()
+            if p.name.startswith("diplomat-review-")] == []
 
 
 def test_no_configured_token_is_never_checked():
