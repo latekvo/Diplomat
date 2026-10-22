@@ -7,11 +7,11 @@ both applets keep drawing rows, they just quietly disagree about whether your ag
 is still running.
 
 So every case in ``test_agent_state.py`` is driven through both here, and the whole
-tick is diffed: the resolved state, the *reason text*, the display order of the rows,
-the cap load, what is retirable, the free-slot count and the per-PR dedup answer.
-Reasons are compared verbatim rather than loosely, because the reason is what a
-future debugging session reads — two sides that agree on the verdict and disagree on
-why are two sides that will diverge on the next rung.
+tick is diffed: every record's resolved state and *reason text*, drawn or not, the
+display order of the rows, the cap load, what is retirable, the free-slot count and
+the per-PR dedup answer. Reasons are compared verbatim rather than loosely, because
+the reason is what a future debugging session reads — two sides that agree on the
+verdict and disagree on why are two sides that will diverge on the next rung.
 
 Mirrors `test_tooldata_parity.py` / `test_telemetry_parity.py`, including the
 `DIPLOMAT_CORE_BIN` skip guard.
@@ -30,7 +30,7 @@ from diplomat_runtime import agentstate as A
 # The scenario table itself, so the two languages are pinned against exactly the
 # cases the Python side already asserts rather than a second, drifting copy.
 from test_agent_state import (
-    AT_PROMPT, CASES, PAST_DEADLINE, T0, WORKING, ev, proc, rec,
+    AT_PROMPT, CASES, PAST_DEADLINE, RELEASED_UNSEEN, T0, WORKING, ev, proc, rec,
 )
 
 CORE_BIN = os.environ.get("DIPLOMAT_CORE_BIN")
@@ -67,11 +67,14 @@ def _swift(payload: dict) -> dict:
 def _python(records, evidence, now=T0, limit=LIMIT,
             deadline=A.RUN_DEADLINE) -> dict:
     t = A.tick(records, evidence, now, limit, deadline)
+
+    def verdict(s: A.Resolution) -> dict:
+        return {"state": s.state, "reason": s.reason, "wedged": s.wedged,
+                "expired": s.expired, "unfindable": s.unfindable, "lapsed": s.lapsed}
+
     return {
-        "rows": [{"runId": r.run_id, "state": s.state, "reason": s.reason,
-                  "wedged": s.wedged, "expired": s.expired,
-                  "unfindable": s.unfindable, "lapsed": s.lapsed}
-                 for r, s in t.rows],
+        "rows": [{"runId": r.run_id, **verdict(s)} for r, s in t.rows],
+        "states": {run_id: verdict(s) for run_id, s in t.states.items()},
         "capLoad": sorted(t.cap_load),
         "retirable": sorted(r.run_id for r in t.retirable),
         "reapable": sorted(r.run_id for r in t.reapable),
@@ -376,6 +379,9 @@ def test_the_fixture_exercises_every_projection(mixed_results):
     assert any(r["lapsed"] for r in python["rows"]), "no untracked bay lapsed"
     assert python["inFlight"]["315"] is False and "untracked:315" not in python["capLoad"], \
         "a released agent mid-turn must hold neither its PR nor a bay"
+    drawn = {r["runId"]: r["state"] for r in python["rows"]}
+    assert (drawn.get("untracked:315"), "untracked:319" in drawn) == (A.RUNNING, False), \
+        "a released agent is drawn while working, and only then"
     assert "untracked:317" in python["reapable"], "no released agent was closed at once"
     refused = next(r for r in python["records"] if r["runId"] == "untracked:318")
     assert (refused["source"], refused["reapRefusedAt"]) == (A.SOURCE_PANEL, T0 - 60)
@@ -400,6 +406,14 @@ def test_the_tick_after_a_release_agrees_too():
     assert swift == again
     assert [r["runId"] for r in again["records"]].count("untracked:313") == 1
     assert "untracked:313" not in again["capLoad"] and again["inFlight"]["313"] is False
+
+
+@pytest.mark.parametrize("record, evidence, state", RELEASED_UNSEEN)
+def test_a_released_agent_nothing_saw_working_is_left_off_by_both(record, evidence,
+                                                                  state):
+    swift, python = _swift(_payload([record], evidence)), _python([record], evidence)
+    assert swift == python
+    assert (python["rows"], python["states"][record.run_id]["state"]) == ([], state)
 
 
 def test_the_deadline_being_off_agrees_too():

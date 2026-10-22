@@ -1664,7 +1664,7 @@ class Store(QObject):
 
         Not every row: a session waiting at its prompt keeps its place in the list
         and gives its bay back, so the list is longer than the cap exactly as often
-        as a finished window is left open."""
+        as an agent waits on its operator."""
         return len(self._agent_tick().cap_load)
 
     @property

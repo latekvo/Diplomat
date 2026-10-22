@@ -53,13 +53,20 @@ def run() -> int:
     print()
 
     print("RUNS")
-    if not t.rows:
+    listed = {r.run_id for r, _ in t.rows}
+    # What Store.running_tasks draws. Off it: ended runs, and a released agent at its
+    # prompt, whose window may be the one being reaped below.
+    drawn = {r.run_id for r, s in t.rows if s.state not in agentstate.ENDED}
+    undrawn = [(r, t.states[r.run_id]) for r in t.records
+               if r.run_id in t.states and r.run_id not in listed]
+    if not t.rows and not undrawn:
         print("  (none)")
-    for r, s in t.rows:
+    for r, s in t.rows + undrawn:
         who = r.label or (f"#{r.pr_number}" if r.pr_number else r.run_id)
         where = "" if r.placement == agentstate.PLACEMENT_LOCAL else f" [{r.placement}]"
+        hidden = "" if r.run_id in drawn else " (not drawn)"
         age = f"{(now - r.dispatched_at) / 60:.0f}m" if not r.untracked else "?"
-        print(f"  {s.state:<14} {who}{where}")
+        print(f"  {s.state:<14} {who}{where}{hidden}")
         print(f"  {'':<14}   because: {s.reason}")
         print(f"  {'':<14}   run {r.run_id} · pid {r.pid or '-'} · tty {r.tty or '-'} "
               f"· {r.source} · up {age}")

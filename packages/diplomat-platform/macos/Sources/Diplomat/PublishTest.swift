@@ -99,8 +99,8 @@ enum PublishTest {
               store.agentRows.map(\.state) == [.awaitingInput, .running]
                 && store.agentRows.allSatisfy { !$0.reason.isEmpty })
         // The other half of the same call. A session at its prompt keeps its row and
-        // gives its bay back, so the list is longer than the load exactly as often as a
-        // finished window is left open — one row of these two, not two.
+        // gives its bay back, so the list is longer than the load exactly as often as an
+        // agent waits on its operator — one row of these two, not two.
         check("…while the bays measured are the tick's, not the rows'",
               store.autoTasksMeasured == t.capLoad.count && t.capLoad == Set(["live"]))
 

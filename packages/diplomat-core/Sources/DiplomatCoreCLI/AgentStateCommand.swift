@@ -24,8 +24,9 @@ import Foundation
 ///   "evidence": { "processes": {"status": "present", "value": {"4242": {…}}},
 ///                 "liveAgents": {"status": "present", "value": {"404": "pts/3"}}, … } }
 /// ```
-/// Output: the resolved rows in display order, every projection, and the records as
-/// the pipeline left them — so a claim sighting written by the wrong step is a diff.
+/// Output: the resolved rows in display order, every record's verdict whether drawn or
+/// not, every projection, and the records as the pipeline left them — so a claim
+/// sighting written by the wrong step is a diff.
 enum AgentStateCommand {
     static func run(_ obj: [String: Any]) {
         let now = (obj["now"] as? NSNumber)?.doubleValue ?? 0
@@ -42,12 +43,13 @@ enum AgentStateCommand {
         for pr in Set(t.records.compactMap(\.prNumber)) {
             inFlight[String(pr)] = t.inFlight(prNumber: pr)
         }
+        func verdict(_ s: AgentState.Resolution) -> [String: Any] {
+            ["state": s.state.rawValue, "reason": s.reason, "wedged": s.wedged,
+             "expired": s.expired, "unfindable": s.unfindable, "lapsed": s.lapsed]
+        }
         let out: [String: Any] = [
-            "rows": t.rows.map { r, s in
-                ["runId": r.runID, "state": s.state.rawValue, "reason": s.reason,
-                 "wedged": s.wedged, "expired": s.expired,
-                 "unfindable": s.unfindable, "lapsed": s.lapsed]
-            },
+            "rows": t.rows.map { r, s in verdict(s).merging(["runId": r.runID]) { $1 } },
+            "states": t.states.mapValues(verdict),
             "capLoad": t.capLoad.sorted(),
             "retirable": t.retirable.map(\.runID).sorted(),
             // The one destructive projection, so the two sides have to agree on it by
