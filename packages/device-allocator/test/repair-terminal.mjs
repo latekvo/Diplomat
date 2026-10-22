@@ -34,7 +34,7 @@ script(path.join(RC_BIN, 'claude'), 'for a; do :; done; printf "claude-ran %s\\n
 script(USER_SHELL, `[ "$1" = -i ] && { [ -n "$TMUX" ] || exit 0; PATH='${RC_BIN}':$PATH; }
 [ "$2" = -c ] || exit 97; exec /bin/sh -c "$3"`);
 script(TMUX, `printf '%s\\n' "$@" > '${TMUX_RECORD}'; [ "$1" = new-session ] || exit 98
-TMUX=fake exec /bin/sh -c "$2"`);
+TMUX=fake exec /bin/sh -c "$4"`);
 
 process.env.DA_EXPOSE_TEST = '1';
 process.env.DA_BASE_DIR = BASE;
@@ -47,7 +47,7 @@ process.env.PATH = `${BIN}:/usr/bin:/bin`;
 const { ensureDirs } = await import('../src/state.js');
 ensureDirs();
 const { allocations, dispatchRepair } = await import('../src/daemon.js');
-const { resolveTerminal, openArgv, launcherScript, shq } = await import('../src/terminal.js');
+const { resolveTerminal, openArgv, launcherScript, shq, tmuxBinary } = await import('../src/terminal.js');
 const { REPAIRS_DIR } = await import('../src/paths.js');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -114,11 +114,14 @@ assert.equal(path.dirname(launcher), REPAIRS_DIR);
 const TERM_ENV = { PATH: '/usr/bin:/bin', SHELL: USER_SHELL };
 const ran = spawnSync('/bin/sh', [launcher], { input: '\n', encoding: 'utf8', env: TERM_ENV });
 assert.equal(ran.status, 0, ran.stderr);
+// Closing the window only detaches tmux: the session has to end with it, agent and all.
+assert.equal(fs.readFileSync(TMUX_RECORD, 'utf8'), [
+  'new-session', '-s', `diplomat-repair-${path.basename(launcher, '.sh')}`, `/bin/sh ${shq(launcher)}`,
+  ';', 'set-option', 'destroy-unattached', 'on', ''].join('\n'));
 assert.match(ran.stdout, /claude-ran A device managed/);
 assert.match(ran.stdout, /press Enter to close/);
 assert.match(fs.readFileSync(r.repairLog, 'utf8'), /^claude-ran A device managed/);
 assert.match(fs.readFileSync(launcher, 'utf8'), /line one\nline "two"/);
-assert.equal(fs.readFileSync(TMUX_RECORD, 'utf8'), `new-session\n/bin/sh ${shq(launcher)}\n`);
 
 // Already in tmux (Terminal/iTerm type into the operator's tmux pane): no second one.
 fs.rmSync(TMUX_RECORD);
@@ -161,7 +164,24 @@ if (!MAC) {
 }
 runs(staged('/usr/bin:/bin'), { PATH: `${RC_BIN}:/usr/bin:/bin` });
 runs(staged(`${RC_BIN}:/usr/bin:/bin`), { PATH: '/usr/bin:/bin' });
+const DAEMON_BIN = path.join(BASE, 'daemon-bin');
+fs.mkdirSync(DAEMON_BIN);
+script(path.join(DAEMON_BIN, 'claude'), 'echo claude-ran daemon');
+const order = spawnSync('/bin/sh', [staged(`${DAEMON_BIN}:/usr/bin:/bin`)],
+  { input: '\n', encoding: 'utf8', env: { HOME: BASE, PATH: `${RC_BIN}:/usr/bin:/bin` } });
+assert.match(order.stdout, /claude-ran x/, 'the daemon\'s PATH shadowed the window\'s');
 console.log('ok   no $SHELL: window PATH, then the daemon\'s');
+
+// tmux: Linux takes it from PATH, as review.terminal_argv does; macOS keeps
+// TerminalFocus.binary's fixed list, a menu-bar app having no shell PATH.
+fake('tmux', 'exit 0');
+delete process.env.DIPLOMAT_TMUX;
+assert.equal(tmuxBinary('linux'), path.join(BIN, 'tmux'));
+assert.notEqual(tmuxBinary('darwin'), path.join(BIN, 'tmux'));
+process.env.DIPLOMAT_TMUX = TMUX;
+assert.equal(tmuxBinary('linux'), TMUX, 'DIPLOMAT_TMUX wins');
+fs.rmSync(path.join(BIN, 'tmux'));
+console.log('ok   tmux lookup');
 
 // ---- Terminal.app and iTerm keep the input settle ---------------------------
 if (MAC) {

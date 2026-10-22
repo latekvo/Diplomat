@@ -48,31 +48,36 @@ function published() {
   } catch { return ''; }
 }
 
-function onPath(bin) {
+function which(bin) {
   return (process.env.PATH || '').split(path.delimiter)
-    .some((d) => d && fs.existsSync(path.join(d, bin)));
+    .filter(Boolean).map((d) => path.join(d, bin)).find((p) => fs.existsSync(p)) || null;
 }
 
 export function resolveTerminal(platform = process.platform) {
   const v = published();
   if (platform === 'darwin') return MAC_TERMINALS.includes(v) ? v : 'terminal';
   if (LINUX_TERMINALS[v]) return v;
-  return Object.keys(LINUX_TERMINALS).find((k) => onPath(LINUX_TERMINALS[k][0])) || 'xterm';
+  return Object.keys(LINUX_TERMINALS).find((k) => which(LINUX_TERMINALS[k][0])) || 'xterm';
 }
 
-// Twin of TerminalFocus.binary, DIPLOMAT_TMUX included.
-function tmuxBinary() {
+// Twin of TerminalFocus.binary (macOS, DIPLOMAT_TMUX included) and of review.terminal_argv's
+// shutil.which (Linux).
+export function tmuxBinary(platform = process.platform) {
   const env = process.env.DIPLOMAT_TMUX;
   if (env !== undefined) return fs.existsSync(env) ? env : null;
-  return ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux'].find((p) => fs.existsSync(p)) || null;
+  return (platform !== 'darwin' && which('tmux'))
+    || ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux'].find((p) => fs.existsSync(p)) || null;
 }
 
+// Closing the window only detaches tmux, and the agent never exits on its own: the
+// session ends once unattached. `diplomat-` is TerminalFocus.sessionPrefix.
 export function launcherScript(command, launcher) {
   const tmux = tmuxBinary();
+  const session = `diplomat-repair-${path.basename(launcher, '.sh')}`;
   return [
     '#!/bin/sh',
     `export PATH="\${PATH:+$PATH:}"${shq(process.env.PATH || '')}`,
-    ...(tmux ? [`[ -z "$TMUX" ] && exec ${shq(tmux)} new-session ${shq(`/bin/sh ${shq(launcher)}`)}`] : []),
+    ...(tmux ? [`[ -z "$TMUX" ] && exec ${shq(tmux)} new-session -s ${shq(session)} ${shq(`/bin/sh ${shq(launcher)}`)} \\; set-option destroy-unattached on`] : []),
     `"\${SHELL:-/bin/bash}" -i -c ${shq(command)}`,
     "printf '\\n[repair agent exited - press Enter to close] '",
     'read _',
