@@ -119,7 +119,7 @@ def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
         stdout=(tmp_path / "peer.log").open("w"), stderr=subprocess.STDOUT,
     )
 
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
     from diplomat_app.app import DiplomatApp
     from szpontnet import ctl
@@ -138,6 +138,8 @@ def test_applet_meshes_and_dispatches(tmp_path, monkeypatch):
         seed.allocator_setup_done = True
         seed._settings.sync()
 
+        # Offscreen Qt still registers a shown tray icon with the desktop's panel.
+        monkeypatch.setattr(QSystemTrayIcon, "show", lambda self: None)
         app_obj = DiplomatApp()  # the real applet — starts the mesh node itself
 
         def pump(seconds: float) -> None:

@@ -90,8 +90,8 @@ Every switch below is in Settings (⚙︎).
 |---|---|
 | Fix my PRs: conflicts and review threads | **on** |
 | Review PRs that request me | **on**, from any author (an allowlist narrows it) |
-| Submit approve / request-changes verdicts | **off**, inline comments only |
-| Thank-you comment on a perfectly clean PR | **on** |
+| Submit approve / request-changes verdicts | **off**, a neutral `COMMENT` review |
+| Thank-you review (body only) on a perfectly clean PR | **on** |
 | Nudge agents stalled on API errors | **on** |
 | Automatic agents running at once | **2** (1-16) |
 | Hold automatic work when the limit runs low | **on**: 95% confidence, keeps 20% of a window or $1 |

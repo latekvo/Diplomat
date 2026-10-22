@@ -128,7 +128,7 @@ def test_review_prompt_blocks_by_target():
     mine = review.ReviewConfig(me="latekvo").build_prompt()
     assert "mark it ready for review" in mine
     assert 'replying "Fixed in <commit_hash>"' in mine
-    assert "POST a pull-request review" not in mine
+    assert "Anything you post on someone else's PR goes in ONE formal GitHub review" not in mine
     assert "ABSOLUTELY DO NOT touch their branch" not in mine
 
     # Someone else's PRs: formal-review block only, plus a hard no-commit guard.
@@ -136,7 +136,7 @@ def test_review_prompt_blocks_by_target():
     other = review.ReviewConfig(
         target=PRTarget.SOMEONE, username="someuser"
     ).build_prompt()
-    assert "POST a pull-request review" in other
+    assert "Anything you post on someone else's PR goes in ONE formal GitHub review" in other
     assert "mark it ready for review" not in other
     assert "ABSOLUTELY DO NOT touch their branch" in other
     assert "No AI attribution" not in other
@@ -202,17 +202,19 @@ def test_final_pass_never_applies_to_my_own_prs():
 
 def test_soft_approve_leaves_a_thank_you_but_no_verdict():
     # Soft-approve is ON by default: a review-only PR that comes back clean gets a
-    # friendly thank-you comment, but never an APPROVE action. It never applies to my
+    # thank-you COMMENT review, but never an APPROVE action. It never applies to my
     # own PRs (Swift: canSoftApprove = disposition != .mine).
     mine = review.ReviewConfig(me="latekvo")  # target MINE
     assert not mine.can_soft_approve
     assert "Thank you for contributing" not in mine.build_prompt()
 
-    # Someone else's PRs: soft-approve on by default -> the thank-you comment, no APPROVE.
+    # Someone else's PRs: soft-approve on by default -> the thank-you review, no APPROVE.
     other = review.ReviewConfig(target=PRTarget.SOMEONE, username="someuser")
     assert other.can_soft_approve
     other_prompt = other.build_prompt()
     assert "Thank you for contributing" in other_prompt
+    assert "a COMMENT review carrying that body ONLY" in other_prompt
+    assert "never as a top-level issue comment" in other_prompt
     assert "FULL E2E pass" not in other_prompt  # soft, not a hard verdict
 
     # Turning it off -> fully silent (no thank-you), and still no verdict.

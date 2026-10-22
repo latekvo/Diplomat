@@ -46,8 +46,8 @@ slot**, then the **queue** that has no bay yet.
   An agent found only by the `ps` scan — no in-flight record behind it, which is
   what an applet restart leaves — still gets a row, marked *untracked* and drawn by
   its PR number, because it holds a bay while it works, up to the run deadline when
-  one is set. The agent a finished task leaves at its prompt is drawn the same way,
-  holding no bay.
+  one is set. The agent a finished task leaves behind is drawn only while it works
+  again, holding no bay.
 - **Starting** is a task between the queue and its agent: the click (or the drain)
   has taken it, and the spawn has not answered yet. Seconds, and a row for all of
   them, so *execute now* never reads as the click deleting the task. It holds a bay
@@ -156,7 +156,7 @@ pip install -r requirements.txt
 ./diplomat                 # tray applet (left-click the wrench)
 ```
 
-Quit from the panel's ⏻ button or the tray right-click menu. `pkill -f "python -m diplomat_app"`
+Quit from the panel's ⏻ button or the tray right-click menu. `pkill -f "python3? -m diplomat_app"`
 stops it too, but reads as a crash: with the watchdog installed (below) it is back within 5 minutes.
 
 ## Autostart on login
@@ -208,8 +208,8 @@ rate-limit budget's three knobs are the exceptions (see their bullets):
   status, and under the review-requests one the **author allowlist** (*Only these
   authors*, blank = anyone), the **auto-approve** master toggle
   plus its three withhold-the-verdict suppressors (SKILL / installer / community),
-  and the **soft-approve** toggle (default ON — a clean comments-only review leaves
-  a friendly thank-you note, never an APPROVE action). A monitor switched off keeps
+  and the **soft-approve** toggle (default ON — a clean comments-only review is
+  submitted as a COMMENT review with a friendly thank-you body, never an APPROVE). A monitor switched off keeps
   polling and keeps listing what it finds under [Agent tasks](#agent-tasks); what
   stops is the automatic start — which is why the allowlist stays editable while it
   is off, alone in that nest, since it is what decides which requests get listed.

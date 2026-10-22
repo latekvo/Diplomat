@@ -18,6 +18,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -108,9 +109,9 @@ class ReviewConfig(PRSweepConfig):
     specific_pr: str = ""
     # The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     final_pass: bool = False
-    # Soft-approve: when a review-only PR comes back perfectly clean, leave a friendly
-    # "ran the sweep, all clean, thanks for contributing" comment - but NEVER an APPROVE
-    # action. On by default. Outranked by final_pass (a real verdict) when both are set.
+    # Soft-approve: when a review-only PR comes back perfectly clean, submit a COMMENT
+    # review whose body is a friendly "ran the sweep, all clean, thanks for contributing"
+    # - but NEVER an APPROVE action. On by default. Outranked by final_pass (a real verdict) when both are set.
     soft_approve: bool = True
 
     # For a specific PR: whether it's mine, someone else's, or not yet determined.
@@ -550,7 +551,10 @@ def token_export(platform: str = sys.platform) -> str:
     if item:
         read = f"security find-generic-password -s {shlex.quote(item)} -w"
     elif path:
-        read = f"cat -- {shlex.quote(path)}"
+        # A token holds no whitespace: one saved with CRLF fails in gh, one with a
+        # trailing space in git. Nor a NUL, which zsh keeps in GH_TOKEN and cuts the
+        # export at: a leading one would leave the agent on gh's stored login.
+        read = f"tr -d '\\000[:space:]' < {shlex.quote(path)}"
     else:
         return ""
     return (f'GH_TOKEN=$({read}) && [ -n "$GH_TOKEN" ] '
@@ -575,9 +579,17 @@ def check_token(platform: str = sys.platform) -> None:
         if not ok:
             raise SpawnError(f"no agent token in Keychain item '{item}'")
     elif path:
+        # The gate reads it after `cd`-ing into the repo, so a relative path would name
+        # a different file there than here.
+        if not os.path.isabs(path):
+            raise SpawnError(f"agentTokenFile is not an absolute path: {path}")
         try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                ok = bool(f.read().rstrip("\n"))
+            # A regular file only: a FIFO with no writer would block the read, and
+            # /dev/zero never end it - on the GUI thread or the node's loop.
+            ok = stat.S_ISREG(os.stat(path).st_mode)
+            if ok:
+                with open(path, "rb") as f:
+                    ok = bool(f.read().replace(b"\0", b"").split())
         except OSError:
             ok = False
         if not ok:

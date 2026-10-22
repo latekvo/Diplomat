@@ -1041,8 +1041,8 @@ def _resolve_local(record: RunRecord, evidence: Evidence, now: float,
 
 
 def _released(record: RunRecord, alive_reason: str) -> str:
-    """The alive reason, marked for a released run so its row says why it holds
-    nothing."""
+    """The alive reason, marked for a released run so its row, drawn only while
+    running, says why it holds nothing."""
     return f"released; {alive_reason}" if record.released else alive_reason
 
 
@@ -1375,8 +1375,15 @@ def rows(records: list[RunRecord],
     disagree about this (Linux hid panel spawns and drew untracked agents, macOS did
     the reverse), which meant the list and the cap were answering different
     questions.
+
+    Except a released agent not :data:`RUNNING`: its run is over, and a run that is
+    over is not on the list. At its prompt it is kept only for the stillness backstop
+    to close its window; running again, it is a live agent like any other. An
+    unreadable screen reads as running here as everywhere, so it is drawn then too.
     """
-    pairs = [(r, states[r.run_id]) for r in records if r.run_id in states]
+    pairs = [(r, states[r.run_id]) for r in records
+             if r.run_id in states
+             and (not r.released or states[r.run_id].state == RUNNING)]
     return sorted(pairs, key=lambda p: (STATE_ORDER.index(p[1].state),
                                         p[0].dispatched_at, p[0].run_id))
 

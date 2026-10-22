@@ -16,6 +16,8 @@ import DiplomatCore
 /// One more sits with them without needing to: how long a run may go on before the
 /// resolver calls it over, which belongs beside the cap it hands bays back to and is
 /// read by the Linux `DIPLOMAT_AGENTS` dump, a front-end-free path with no store of its own.
+/// And one is published rather than set here: the terminal spawns resolve to, for the
+/// device-allocator daemon, a Node process, to open its repair agents in.
 ///
 /// So those knobs live in the shared `~/.diplomat` tree, alongside the ban list and
 /// the mesh snapshot both front-ends already exchange there. Every reader re-reads on
@@ -47,6 +49,10 @@ enum AppConfig {
     /// name — never the token. See `AgentSpawner.tokenExport`. Same key in
     /// `appconfig.py`, which a mesh node on a Mac spawns by.
     static let agentTokenKeychainItemKey = "agentTokenKeychainItem"
+    /// The terminal this app's spawns resolve to, published for the device-allocator
+    /// daemon to open its repair agents in (`device-allocator/src/terminal.js`).
+    /// Written, never read here: the choice itself stays in UserDefaults.
+    static let spawnTerminalKey = "spawnTerminal"
 
     /// The runner every spawn on this machine uses, resolved here rather than at each
     /// call site because there are two, in different processes: this app's spawner and

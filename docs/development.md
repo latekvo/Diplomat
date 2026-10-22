@@ -292,6 +292,7 @@ packages/
                                    (the task cap and the rate-limit budget), AutofixMesh
         AgentTasks.swift           the Agent-tasks list's sort order + the queue behind the task cap
         ReviewReconcile.swift      pure retry/backoff/dedup decisions for the monitors
+        ReviewAudit.swift          a retired review run's review: left PENDING, or split over several
         AgentActivity.swift        terminal-tail classification: running vs awaiting input
         AgentCompletion.swift      the turn report: the hooks a run is spawned with, and reading them back
         AgentRunner.swift          which agent CLI a spawn runs, and the one command that runs it
