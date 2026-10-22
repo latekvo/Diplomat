@@ -74,7 +74,16 @@ final class Store: ObservableObject {
         didSet { persist(colorOverrides, forKey: Keys.colorOverrides) }
     }
     @Published var terminalChoice: String {
-        didSet { persist(terminalChoice, forKey: Keys.terminalChoice) }
+        didSet {
+            persist(terminalChoice, forKey: Keys.terminalChoice)
+            publishSpawnTerminal()
+        }
+    }
+    /// Hand the allocator daemon the terminal a spawn would open (`AppConfig.spawnTerminalKey`).
+    /// Resolved, because the daemon cannot ask whether Ghostty has its tmux.
+    private func publishSpawnTerminal() {
+        guard !Headless.active else { return }
+        AppConfig.set(AppConfig.spawnTerminalKey, AgentSpawner.resolved(terminal).rawValue)
     }
     /// The repo root every spawned agent `cd`s into (Settings → REPO ROOT). Empty ⇒
     /// fall back to `~/dev/<repo>`; `DIPLOMAT_REPO` outranks both. Stored raw (a typed
@@ -639,6 +648,7 @@ final class Store: ObservableObject {
             startMeshPoll()
             refreshBanList()
             refreshAudit()
+            publishSpawnTerminal()
             Task { await fetchMe() }
             Task { await refreshDeviceState() }
             // Installs the device allocator on first run and refreshes a stale one

@@ -15,6 +15,8 @@ environment at spawn time.
 One more sits with them without needing to: how long a run may go on before the
 resolver calls it over, which belongs beside the cap it hands bays back to and is
 read by the ``DIPLOMAT_AGENTS`` dump, a front-end-free path with no store of its own.
+And one is published rather than set here: the terminal spawns resolve to, for the
+device-allocator daemon, a Node process, to open its repair agents in.
 
 So those knobs live in the shared ``~/.diplomat`` tree, the way the ban list,
 the activity feed and the mesh snapshot already cross process *and* front-end
@@ -56,6 +58,10 @@ AGENT_MODEL = "agentModel"
 #: enters this file — see :func:`review.token_export`.
 AGENT_TOKEN_KEYCHAIN_ITEM = "agentTokenKeychainItem"
 AGENT_TOKEN_FILE = "agentTokenFile"
+#: The terminal this front-end's spawns resolve to, published for the device-allocator
+#: daemon to open its repair agents in (``device-allocator/src/terminal.js``). Written,
+#: never read here: the choice itself stays in the front-end's own store.
+SPAWN_TERMINAL = "spawnTerminal"
 
 
 def path() -> Path:
