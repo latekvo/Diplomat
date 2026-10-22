@@ -30,7 +30,7 @@ from diplomat_runtime import agentstate as A
 # The scenario table itself, so the two languages are pinned against exactly the
 # cases the Python side already asserts rather than a second, drifting copy.
 from test_agent_state import (
-    AT_PROMPT, CASES, PAST_DEADLINE, T0, WORKING, ev, proc, rec,
+    AT_PROMPT, CASES, PAST_DEADLINE, RELEASED_UNSEEN, T0, WORKING, ev, proc, rec,
 )
 
 CORE_BIN = os.environ.get("DIPLOMAT_CORE_BIN")
@@ -406,6 +406,14 @@ def test_the_tick_after_a_release_agrees_too():
     assert swift == again
     assert [r["runId"] for r in again["records"]].count("untracked:313") == 1
     assert "untracked:313" not in again["capLoad"] and again["inFlight"]["313"] is False
+
+
+@pytest.mark.parametrize("record, evidence, state", RELEASED_UNSEEN)
+def test_a_released_agent_nothing_saw_working_is_left_off_by_both(record, evidence,
+                                                                  state):
+    swift, python = _swift(_payload([record], evidence)), _python([record], evidence)
+    assert swift == python
+    assert (python["rows"], python["states"][record.run_id]["state"]) == ([], state)
 
 
 def test_the_deadline_being_off_agrees_too():

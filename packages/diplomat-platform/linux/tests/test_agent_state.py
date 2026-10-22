@@ -960,6 +960,21 @@ def test_an_untracked_agent_nobody_ended_is_still_drawn():
         [("untracked:337", A.AWAITING_INPUT)]
 
 
+#: A released agent in each holding state but RUNNING: nothing saw it working.
+RELEASED_UNSEEN = [
+    pytest.param(released(), ev(processes=A.Observation.unavailable("ps exited 1")),
+                 A.UNKNOWN, id="unknown"),
+    pytest.param(released(dispatched_at=T0 - 5), ev(), A.STARTING, id="starting"),
+]
+
+
+@pytest.mark.parametrize("record, evidence, state", RELEASED_UNSEEN)
+def test_a_released_agent_nothing_saw_working_is_not_drawn(record, evidence, state):
+    t = A.tick([record], evidence, T0, 1)
+    assert t.states["untracked:337"].state == state
+    assert t.rows == []
+
+
 def test_a_released_agents_window_is_still_closed_when_its_screen_goes_still():
     """Released is not forgotten: the backstop that closes a finished agent's window
     after twenty still minutes still reaches it, and the clock carries over from the
