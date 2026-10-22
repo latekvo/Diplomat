@@ -137,13 +137,13 @@ class WizardView(SpawnWizard):
         self.leave_reviews.setChecked(True)
         self.reply = QCheckBox("Reply to others' review threads")
         self.reply.setChecked(True)
-        # Soft-approve a perfectly-clean PR with a friendly thank-you comment (no APPROVE
+        # Soft-approve a perfectly-clean PR with a thank-you COMMENT review (no APPROVE
         # action). On by default; hidden for my own PRs (I don't thank myself).
-        self.soft_approve = QCheckBox("Soft-approve clean PRs (thank-you comment)")
+        self.soft_approve = QCheckBox("Soft-approve clean PRs (thank-you review)")
         self.soft_approve.setChecked(True)
         self.soft_approve.setToolTip(
-            "On a perfectly-clean PR, leave a friendly thank-you comment — "
-            "never an APPROVE action."
+            "On a perfectly-clean PR, submit a COMMENT review with a friendly "
+            "thank-you body — never an APPROVE action."
         )
         for cb in (self.mark_ready, self.leave_reviews, self.reply, self.soft_approve):
             root.addWidget(cb)

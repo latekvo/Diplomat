@@ -357,8 +357,8 @@ let mine = ReviewConfig(depth: "max", me: me)
 let other = ReviewConfig(depth: "max", target: .someone, username: "someuser")
 print("mine valid=\(mine.isValid) | other valid=\(other.isValid) | single valid=\(single("337").isValid)")
 check(mine.buildPrompt().contains("mark it ready for review"))
-check(!mine.buildPrompt().contains("POST a pull-request review"))
-check(other.buildPrompt().contains("POST a pull-request review"))
+check(!mine.buildPrompt().contains("Anything you post on someone else's PR goes in ONE formal GitHub review"))
+check(other.buildPrompt().contains("Anything you post on someone else's PR goes in ONE formal GitHub review"))
 // Someone else's PRs are review-only: a hard no-commit guard, and the
 // commit-authoring guidance is dropped (we never touch their branch).
 check(other.buildPrompt().contains("ABSOLUTELY DO NOT touch their branch"))
@@ -2476,8 +2476,8 @@ check(gated.contains("WHO AUTHORED IT") && gated.contains("CASE A") && gated.con
 print("known-mine review prompt assertions passed")
 
 // ---- known-theirs comprehensive review (review-request monitor) ----
-// Default now: soft-approve ON, no hard verdict → a perfectly-clean PR gets a friendly
-// thank-you comment, but still NO APPROVE action.
+// Default: soft-approve ON, no hard verdict → a perfectly-clean PR gets a thank-you
+// COMMENT review, but still NO APPROVE action.
 section("known-theirs review prompt (default → soft-approve)")
 let kt = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
                       markReady: false, leaveReviews: true, replyToReviews: false,
@@ -2486,12 +2486,42 @@ check(!kt.contains("WHO AUTHORED IT"), "known-theirs skips the author poll")
 check(!kt.contains("CASE A") && !kt.contains("CASE B"), "no case branching")
 check(kt.contains("SOMEONE ELSE'S"), "review-only framing")
 check(kt.contains("ABSOLUTELY DO NOT touch their branch"), "reviewOnly block present")
-check(kt.contains("POST a pull-request review"), "leaveReviews block present")
+check(kt.contains("Anything you post on someone else's PR goes in ONE formal GitHub review"), "leaveReviews block present")
+// The lifecycle, step by step: opened PENDING, filled inside, submitted once.
+check(kt.contains("with NO `event` field leaves the review PENDING"), "the review is opened pending")
+check(kt.contains("one pending review per person per PR"), "a leftover pending review is handled")
+check(kt.contains("it is yours — opened earlier in this run, or left by an earlier one. If its `commit_id` is the PR's current head, keep using it, after deleting any of its comments this run is not to post; otherwise delete it"),
+      "a tagged or empty pending review is continued on the current head, replaced on a stale one")
+check(kt.contains("right before it, list the pending review's comments again: one that does not open with the attribution tag is mine, added from the browser, so leave the review unsubmitted"),
+      "a comment of mine added mid-run keeps the review from being submitted")
+check(kt.contains("Post your findings in that review"), "leave-reviews posts the findings in it")
+check(!kt.contains("Do NOT post your findings on the PR"), "…and is not told to keep them")
+check(kt.contains("If one of them does not open with the `\\[[Diplomat](` attribution tag (whatever model name follows it), that review is my own draft from the browser: stop right there"),
+      "my draft is looked for before any review work, and stops the run")
+check(kt.contains("was left by an earlier run: you reuse or replace it at (1), and if you end without opening a review, delete it."),
+      "a run that opens no review still clears an earlier run's leftover")
+check(kt.contains("(1) OPEN, only once your findings are final, right before you fill it"),
+      "the review is opened late, so the browser cannot add to it meanwhile")
+check(kt.contains("If it has no comments, or every comment opens with the attribution tag, it is yours"),
+      "a leftover is recognised whatever model or emptiness it has")
+check(kt.contains("Neither rule touches a draft of mine: after a stop, never submit, fill, or delete it."),
+      "the closing submit/delete rules never reach my draft")
+check(kt.contains("`addPullRequestReviewThread` mutation (`pullRequestReviewId`"),
+      "findings are added inside the pending review")
+check(kt.contains("`addPullRequestReviewThreadReply` carrying the same `pullRequestReviewId`"),
+      "replies on existing threads land inside it too")
+check(kt.contains("reviews/<id>/events -f event=COMMENT"), "the pending review is submitted as COMMENT")
+check(kt.contains("Never end your turn with the review still PENDING"), "never left pending")
+check(kt.contains("nor through the standalone `pulls/<number>/comments` endpoint"),
+      "single-comment posting is ruled out")
 check(kt.contains("Do NOT mark this PR ready"), "otherNoMarkReady present")
 check(kt.contains("that single clean pass ends the loop"), "max-depth fragment present")
-// Soft-approve: no hard verdict, but a friendly clean comment — never an APPROVE action.
+// Soft-approve: no hard verdict, but a thank-you COMMENT review — never an APPROVE action.
 check(kt.contains("Do NOT submit an APPROVE"), "soft-approve still withholds the APPROVE verdict")
-check(kt.contains("Thank you for contributing"), "soft-approve clean thank-you comment present")
+check(kt.contains("Thank you for contributing"), "soft-approve clean thank-you present")
+check(kt.contains("never as a top-level issue comment"), "the soft approval is a review, not an issue comment")
+check(kt.contains("a COMMENT review carrying that body ONLY"), "the soft approval is a body-only COMMENT review")
+check(!kt.contains("top-level comment (not an inline finding)"), "no standalone soft-approve comment")
 check(!kt.contains("PR #500 looks clean"), "soft-approve replaces the silent no-verdict close")
 check(!kt.contains("still APPROVE"), "the finalPass approve-verdict block is gone")
 check(!kt.contains("fix it directly on the PR's branch"), "never fixes someone else's branch")
@@ -2505,14 +2535,15 @@ let kts = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
                        specificPR: "500", softApprove: false, specificAuthor: .theirs).buildPrompt()
 check(kts.contains("Do NOT submit an APPROVE"), "no-verdict instruction present")
 check(kts.contains("PR #500 looks clean"), "no-verdict {pr} substituted")
-check(!kts.contains("Thank you for contributing"), "soft-approve off ⇒ no thank-you comment")
+check(kts.contains("delete any pending review you opened"), "a clean silent review leaves nothing pending")
+check(!kts.contains("Thank you for contributing"), "soft-approve off ⇒ no thank-you review")
 check(!kts.contains("still APPROVE"), "no finalPass block")
 print("known-theirs (silent) review prompt assertions passed")
 
 // ---- known-theirs WITH verdict (trusted author: member/maintainer/contributor) ----
 // The review-request monitor sets finalPass=true when the PR author is trusted, so the
 // auto-review closes with an APPROVE/changes-requested verdict instead of comments only.
-// A real verdict outranks the (default-on) soft-approve, so no thank-you comment either.
+// A real verdict outranks the (default-on) soft-approve, so no thank-you review either.
 section("known-theirs review prompt (trusted author → verdict)")
 let ktv = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
                        markReady: false, leaveReviews: true, replyToReviews: false,
@@ -2521,7 +2552,131 @@ check(ktv.contains("SOMEONE ELSE'S"), "review-only framing still present with ve
 check(ktv.contains("still APPROVE"), "trusted author ⇒ finalPass APPROVE-verdict block present")
 check(!ktv.contains("Do NOT submit an APPROVE"), "trusted author ⇒ no no-verdict block")
 check(!ktv.contains("Thank you for contributing"), "hard verdict outranks soft-approve")
+check(ktv.contains("COMMENT unless a verdict instruction below explicitly tells you to APPROVE"),
+      "the lifecycle's COMMENT default yields to the verdict block")
+check(ktv.contains("such a verdict is this same submission's event, never a second review"),
+      "the verdict is the one review's event")
 print("known-theirs (trusted author) review prompt assertions passed")
+
+// The lifecycle belongs to a formal review of someone else's PR, and to nothing else.
+let ktNoReview = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
+                              markReady: false, leaveReviews: false, replyToReviews: false,
+                              specificPR: "500", softApprove: false,
+                              specificAuthor: .theirs).buildPrompt()
+check(!ktNoReview.contains("addPullRequestReviewThread"), "no formal review ⇒ no lifecycle")
+check(!ktNoReview.lowercased().contains("every finding goes in as an inline comment")
+      && !ktNoReview.lowercased().contains("post every finding"),
+      "no formal review ⇒ the closing block asks for none")
+check(ktNoReview.contains("Any review you submit on this PR uses the neutral COMMENT event"),
+      "…while still ruling out a verdict")
+check(ktNoReview.contains("Do NOT post your findings on the PR"), "no formal review ⇒ findings stay unposted")
+check(ktNoReview.contains("This outranks every other line here that puts findings in the review"),
+      "…over the blocks that elsewhere put findings in the review")
+// A soft approval posts a review even with findings kept off the PR, so it gets the lifecycle.
+let ktSoftOnly = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
+                              markReady: false, leaveReviews: false, replyToReviews: false,
+                              specificPR: "500", specificAuthor: .theirs).buildPrompt()
+check(ktSoftOnly.contains("with NO `event` field leaves the review PENDING"),
+      "a soft approval without leave-reviews still opens a pending review")
+check(ktSoftOnly.contains("one pending review per person per PR"),
+      "…and meets my draft with the same rule")
+check(ktSoftOnly.contains("Do NOT post your findings on the PR")
+      && !ktSoftOnly.contains("Post your findings in that review"),
+      "…while its findings stay off the PR")
+check(other.buildPrompt().contains("with NO `event` field leaves the review PENDING"),
+      "a sweep of someone else's PRs gets the lifecycle")
+check(!mine.buildPrompt().contains("Do NOT post your findings on the PR"), "my own PRs ⇒ no review blocks at all")
+let ktVerdictOnly = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
+                                 markReady: false, leaveReviews: false, replyToReviews: false,
+                                 specificPR: "500", finalPass: true,
+                                 specificAuthor: .theirs).buildPrompt()
+check(ktVerdictOnly.contains("with NO `event` field leaves the review PENDING"),
+      "a verdict without leave-reviews still goes through the lifecycle")
+check(ktVerdictOnly.contains("Post your findings in that review")
+      && !ktVerdictOnly.contains("Do NOT post your findings on the PR"),
+      "…and posts its findings in it, as the verdict pass requires")
+check(!km.contains("addPullRequestReviewThread"), "my own PR ⇒ no lifecycle")
+
+// ---- the after-run check of a review's lifecycle (mirrors test_reviewaudit.py) ----
+section("ReviewAudit")
+do {
+    let since: TimeInterval = 1_760_000_000  // 2025-10-09T08:53:20Z
+    let before = "2025-10-09T08:00:00Z", after = "2025-10-09T09:30:00Z"
+    let tagged = #"\\[[Diplomat](https://github.com/latekvo/Diplomat) Opus\\]: nit"#
+    func review(_ state: String = "COMMENTED", created: String = after, submitted: String = after,
+                threads: Int = 0, replies: Int = 0, body: String = tagged,
+                commented: String? = nil, extra: [String] = []) -> String {
+        let at = commented ?? created
+        let comments = Array(repeating: #"{"body":"\#(body)","createdAt":"\#(at)","replyTo":null}"#, count: threads)
+            + Array(repeating: #"{"body":"\#(body)","createdAt":"\#(at)","replyTo":{"id":"c"}}"#, count: replies)
+            + extra
+        let sub = state == "PENDING" ? "null" : "\"\(submitted)\""
+        return #"{"state":"\#(state)","createdAt":"\#(created)","submittedAt":\#(sub),"#
+            + #""comments":{"nodes":[\#(comments.joined(separator: ","))]}}"#
+    }
+    func findings(_ reviews: [String], author: String = "bob") -> [String] {
+        let json = #"{"author":{"login":"\#(author)"},"reviews":{"nodes":[\#(reviews.joined(separator: ","))]}}"#
+        let pr = try! JSONDecoder().decode(ReviewAudit.PullRequest.self, from: Data(json.utf8))
+        return ReviewAudit.findings(pr, me: "alice", since: since)
+    }
+    let pending = "left its review PENDING — never submitted, so only I can see it"
+    check(findings([review("PENDING", threads: 2)]) == [pending], "a pending review the run opened")
+    check(findings([review("PENDING")]) == [pending], "an empty pending review the run opened")
+    check(findings([review("PENDING", created: before)]) == [], "an older empty pending review is mine")
+    check(findings([review("PENDING", threads: 2, body: "mine")]) == [],
+          "a pending review of mine the run left alone is not its fault")
+    check(findings([review(threads: 2), review(threads: 1, body: "mine")]) == [],
+          "a review I submit from the browser during the run is no split")
+    check(findings([review("PENDING", created: before, threads: 1, replies: 1, body: #"\n "# + tagged,
+                           commented: after)])
+          == [pending], "an older tagged pending review the run added to is the run's")
+    check(findings([review("PENDING", created: before, threads: 2)]) == [],
+          "an older tagged pending review the run did not touch is an earlier run's")
+    check(findings([review("PENDING", created: before, threads: 2, body: tagged,
+                           extra: [#"{"body":"mine","replyTo":null}"#])]) == [],
+          "an older pending review with one untagged comment is mine")
+    check(findings([review("APPROVED", replies: 1), review("CHANGES_REQUESTED", replies: 2)]) == [],
+          "submitted verdict reviews are not pending")
+    check(findings([review(threads: 1), review(threads: 1), review(threads: 1)])
+          == ["posted its findings as 3 separate reviews instead of one"], "a split is reported")
+    check(findings([review(threads: 4, replies: 1), review(replies: 1), review()]) == [],
+          "replies and a body-only review open no thread")
+    check(findings([review(submitted: before, threads: 1), review(threads: 1)]) == [],
+          "reviews before the run are not its own")
+    check(findings([review(threads: 1), review(threads: 1)], author: "ALICE") == [],
+          "a split on my own PR is not judged")
+    check(findings([review("PENDING"), review(threads: 1), review(threads: 2)])
+          == [pending, "posted its findings as 2 separate reviews instead of one"], "both together")
+    check(ReviewAudit.coordinates("https://github.com/acme/widgets/pull/7/").map { "\($0)" }
+          == "(owner: \"acme\", repo: \"widgets\", number: 7)", "a PR URL's coordinates")
+    for notPR in ["https://github.com/acme/widgets/issues/7", "https://ghe.example.com/acme/widgets/pull/7",
+                  "https://github.com/acme/widgets/pull/7/files", ""] {
+        check(ReviewAudit.coordinates(notPR) == nil, "no coordinates for \(notPR)")
+    }
+    // audit asks gh for my reviews on that PR (mirrors test_audit_asks_for_my_reviews_on_that_pr).
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-audit-\(getpid())")
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let argsFile = dir.appendingPathComponent("args"), gh = dir.appendingPathComponent("gh")
+    let answer = #"{"data":{"repository":{"pullRequest":{"author":{"login":"bob"},"reviews":{"nodes":["#
+        + review("PENDING") + "]}}}}}"
+    try! "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > '\(argsFile.path)'\ncat <<'EOF'\n\(answer)\nEOF\n"
+        .write(to: gh, atomically: true, encoding: .utf8)
+    chmod(gh.path, 0o755)
+    setenv("DIPLOMAT_GH", gh.path, 1)
+    let got = try? await ReviewAudit.audit(prURL: "https://github.com/acme/widgets/pull/7", me: "alice", since: since)
+    unsetenv("DIPLOMAT_GH")
+    let asked = ((try? String(contentsOf: argsFile, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+    check(got == [pending], "audit judges what gh answers, got: \(String(describing: got))")
+    check(asked.first == "api" && asked.dropFirst().first == "graphql"
+          && asked.contains { $0.hasPrefix("query=") }
+          && asked.contains { $0.contains("reviews(last: 30, author: $me)") },
+          "audit runs the my-reviews query")
+    for (flag, value) in [("-f", "owner=acme"), ("-f", "name=widgets"), ("-f", "me=alice"), ("-F", "number=7")] {
+        check(zip(asked, asked.dropFirst()).contains { $0 == (flag, value) }, "audit passes \(flag) \(value)")
+    }
+}
+print("ReviewAudit assertions passed")
 
 // ---- The method every swarm depth dispatches across ----
 // The goldens are regenerated from these fragments, so they pin Swift/Python parity and no

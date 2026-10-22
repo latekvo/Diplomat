@@ -132,11 +132,11 @@ def test_owe_review_rules():
     assert _req("2026-01-01", "2026-01-02").owe_review is False  # already reviewed since
 
 
-def test_owe_review_counts_a_soft_approve_comment_as_a_response():
-    """A clean PR's auto-response is a friendly top-level comment, never a review
-    verdict. It must clear the owed state or the monitor re-dispatches every backoff
-    cycle forever (the real #516 regression: request 07-24 06:47 vs a soft-approve
-    comment 24 min later, with the last formal review four days stale)."""
+def test_owe_review_counts_a_top_level_comment_as_a_response():
+    """A top-level comment of mine answers a review request, so it must clear the
+    owed state or the monitor re-dispatches every backoff cycle forever
+    (the real #516 regression: request 07-24 06:47 vs a soft-approve comment 24 min
+    later, with the last formal review four days stale)."""
     # Comment posted AFTER the request → responded, not owed (even with no/old review).
     assert _req("2026-07-24T06:47:36Z", my_last_review_at="2026-07-20T11:37:37Z",
                 my_last_comment_at="2026-07-24T07:11:35Z").owe_review is False
@@ -187,7 +187,7 @@ def test_parse_review_requests_reads_my_comment_time():
     assert r.requested_at == "2026-07-24T06:47:36Z"
     assert r.my_last_review_at == "2026-07-20T11:37:37Z"  # only MINE, not someone's
     assert r.my_last_comment_at == "2026-07-24T07:11:35Z"  # only MINE, case-insensitive
-    assert r.owe_review is False  # the soft-approve comment answered the re-request
+    assert r.owe_review is False  # my comment answered the re-request
 
 
 # MARK: - VerdictPolicy
@@ -271,7 +271,11 @@ def store(monkeypatch):
     # the developer's box. The default is an empty machine that WAS successfully
     # looked at; a scan-specific test overrides with `fake_probes(...)`.
     fake_probes(monkeypatch)
-    return st
+    # Retiring a finished review run audits its review on GitHub (test_reviewaudit.py).
+    monkeypatch.setattr("diplomat_runtime.reviewaudit.audit", lambda *a: [])
+    yield st
+    # A worker that outlives its test writes into the next test's activity feed.
+    assert st.wait_for_background() == []
 
 
 def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,

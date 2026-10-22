@@ -109,9 +109,9 @@ class ReviewConfig(PRSweepConfig):
     specific_pr: str = ""
     # The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     final_pass: bool = False
-    # Soft-approve: when a review-only PR comes back perfectly clean, leave a friendly
-    # "ran the sweep, all clean, thanks for contributing" comment - but NEVER an APPROVE
-    # action. On by default. Outranked by final_pass (a real verdict) when both are set.
+    # Soft-approve: when a review-only PR comes back perfectly clean, submit a COMMENT
+    # review whose body is a friendly "ran the sweep, all clean, thanks for contributing"
+    # - but NEVER an APPROVE action. On by default. Outranked by final_pass (a real verdict) when both are set.
     soft_approve: bool = True
 
     # For a specific PR: whether it's mine, someone else's, or not yet determined.
