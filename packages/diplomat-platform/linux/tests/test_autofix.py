@@ -271,7 +271,11 @@ def store(monkeypatch):
     # the developer's box. The default is an empty machine that WAS successfully
     # looked at; a scan-specific test overrides with `fake_probes(...)`.
     fake_probes(monkeypatch)
-    return st
+    # Retiring a finished review run audits its review on GitHub (test_reviewaudit.py).
+    monkeypatch.setattr("diplomat_runtime.reviewaudit.audit", lambda *a: [])
+    yield st
+    # A worker that outlives its test writes into the next test's activity feed.
+    assert st.wait_for_background() == []
 
 
 def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
