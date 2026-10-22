@@ -21,6 +21,7 @@ public enum ReviewAudit {
         public struct Comments: Decodable, Equatable { public let nodes: [Comment?] }
         public struct Comment: Decodable, Equatable {
             public let body: String?
+            public let createdAt: String?
             public let replyTo: Reply?
         }
         public struct Reply: Decodable, Equatable { public let id: String? }
@@ -53,9 +54,9 @@ public enum ReviewAudit {
     /// as sentences for the activity feed.
     ///
     /// Comments tell a run's review from mine, since a run tags every one. A PENDING review
-    /// is the run's when every comment in it is tagged — however old, as a run continues a
-    /// tagged one an earlier run left — or when it is empty and was opened since the run
-    /// started. One with an untagged comment is my draft, which the run is told to leave
+    /// is the run's when every comment in it is tagged and it, or one of its comments, was
+    /// created since the run started: a run continues a tagged one an earlier run left by
+    /// adding to it. One with an untagged comment is my draft, which the run is told to leave
     /// alone. A split counts the reviews submitted since the run started that open a tagged
     /// thread, and is not judged on a PR of my own, where a run replies rather than reviews.
     public static func findings(_ pr: PullRequest, me: String, since: TimeInterval) -> [String] {
@@ -68,8 +69,8 @@ public enum ReviewAudit {
             (c.body ?? "").drop(while: \.isWhitespace).hasPrefix(tag)
         }
         if reviews.contains(where: { rv in
-            rv.state == "PENDING" && (comments(rv).isEmpty ? (at(rv.createdAt) ?? 0) >= since
-                                                           : comments(rv).allSatisfy(tagged))
+            rv.state == "PENDING" && comments(rv).allSatisfy(tagged)
+                && ([rv.createdAt] + comments(rv).map(\.createdAt)).contains { (at($0) ?? 0) >= since }
         }) {
             out.append("left its review PENDING — never submitted, so only I can see it")
         }

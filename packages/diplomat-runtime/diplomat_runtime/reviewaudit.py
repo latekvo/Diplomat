@@ -42,10 +42,10 @@ def findings(pull_request: dict, me: str, since: float) -> list[str]:
     wrong, as sentences for the activity feed.
 
     Comments tell a run's review from mine, since a run tags every one. A PENDING
-    review is the run's when every comment in it is tagged — however old, as a run
-    continues a tagged one an earlier run left — or when it is empty and was opened
-    since the run started. One with an untagged comment is my draft, which the run is
-    told to leave alone. A split counts the reviews submitted since the run started
+    review is the run's when every comment in it is tagged and it, or one of its
+    comments, was created since the run started: a run continues a tagged one an
+    earlier run left by adding to it. One with an untagged comment is my draft, which
+    the run is told to leave alone. A split counts the reviews submitted since the run started
     that open a tagged thread, and is not judged on a PR of my own, where a run
     replies rather than reviews.
     """
@@ -59,8 +59,8 @@ def findings(pull_request: dict, me: str, since: float) -> list[str]:
         return (c.get("body") or "").lstrip().startswith(TAG)
 
     if any(rv.get("state") == "PENDING"
-           and (all(tagged(c) for c in comments(rv)) if comments(rv)
-                else (_at(rv.get("createdAt")) or 0) >= since)
+           and all(tagged(c) for c in comments(rv))
+           and any((_at(x.get("createdAt")) or 0) >= since for x in [rv, *comments(rv)])
            for rv in reviews):
         out.append("left its review PENDING — never submitted, so only I can see it")
     author = ((pull_request.get("author") or {}).get("login") or "").lower()

@@ -2602,9 +2602,11 @@ do {
     let tagged = #"\\[[Diplomat](https://github.com/latekvo/Diplomat) Opus\\]: nit"#
     func review(_ state: String = "COMMENTED", created: String = after, submitted: String = after,
                 threads: Int = 0, replies: Int = 0, body: String = tagged,
-                extra: [String] = []) -> String {
-        let comments = Array(repeating: #"{"body":"\#(body)","replyTo":null}"#, count: threads)
-            + Array(repeating: #"{"body":"\#(body)","replyTo":{"id":"c"}}"#, count: replies) + extra
+                commented: String? = nil, extra: [String] = []) -> String {
+        let at = commented ?? created
+        let comments = Array(repeating: #"{"body":"\#(body)","createdAt":"\#(at)","replyTo":null}"#, count: threads)
+            + Array(repeating: #"{"body":"\#(body)","createdAt":"\#(at)","replyTo":{"id":"c"}}"#, count: replies)
+            + extra
         let sub = state == "PENDING" ? "null" : "\"\(submitted)\""
         return #"{"state":"\#(state)","createdAt":"\#(created)","submittedAt":\#(sub),"#
             + #""comments":{"nodes":[\#(comments.joined(separator: ","))]}}"#
@@ -2622,11 +2624,16 @@ do {
           "a pending review of mine the run left alone is not its fault")
     check(findings([review(threads: 2), review(threads: 1, body: "mine")]) == [],
           "a review I submit from the browser during the run is no split")
-    check(findings([review("PENDING", created: before, threads: 1, replies: 1, body: #"\n "# + tagged)])
-          == [pending], "an older pending review every comment of which is tagged is the run's")
+    check(findings([review("PENDING", created: before, threads: 1, replies: 1, body: #"\n "# + tagged,
+                           commented: after)])
+          == [pending], "an older tagged pending review the run added to is the run's")
+    check(findings([review("PENDING", created: before, threads: 2)]) == [],
+          "an older tagged pending review the run did not touch is an earlier run's")
     check(findings([review("PENDING", created: before, threads: 2, body: tagged,
                            extra: [#"{"body":"mine","replyTo":null}"#])]) == [],
           "an older pending review with one untagged comment is mine")
+    check(findings([review("APPROVED", replies: 1), review("CHANGES_REQUESTED", replies: 2)]) == [],
+          "submitted verdict reviews are not pending")
     check(findings([review(threads: 1), review(threads: 1), review(threads: 1)])
           == ["posted its findings as 3 separate reviews instead of one"], "a split is reported")
     check(findings([review(threads: 4, replies: 1), review(replies: 1), review()]) == [],

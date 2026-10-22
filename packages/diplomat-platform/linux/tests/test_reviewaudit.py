@@ -19,9 +19,10 @@ TAGGED = "\\[[Diplomat](https://github.com/latekvo/Diplomat) Opus\\]: nit"
 
 
 def _review(state="COMMENTED", created=AFTER, submitted=AFTER, threads=0, replies=0,
-            body=TAGGED):
-    comments = ([{"body": body, "replyTo": None}] * threads
-                + [{"body": body, "replyTo": {"id": "c"}}] * replies)
+            body=TAGGED, commented=None):
+    at = commented or created
+    comments = ([{"body": body, "createdAt": at, "replyTo": None}] * threads
+                + [{"body": body, "createdAt": at, "replyTo": {"id": "c"}}] * replies)
     return {"state": state, "createdAt": created,
             "submittedAt": None if state == "PENDING" else submitted,
             "comments": {"nodes": comments}}
@@ -61,17 +62,28 @@ def test_a_review_i_submit_from_the_browser_during_the_run_is_no_split():
     assert reviewaudit.findings(pr, "alice", SINCE) == []
 
 
-def test_an_older_pending_review_every_comment_of_which_is_tagged_is_reported():
-    """A run continues the tagged review an earlier run left, so it is the run's to
-    submit however old it is."""
+def test_an_older_tagged_pending_review_the_run_added_to_is_reported():
+    """A run continues the tagged review an earlier run left by adding to it."""
     assert reviewaudit.findings(
-        _pr(_review("PENDING", created=BEFORE, threads=1, replies=1, body="\n " + TAGGED)),
+        _pr(_review("PENDING", created=BEFORE, commented=AFTER, threads=1, replies=1,
+                    body="\n " + TAGGED)),
         "alice", SINCE) == ["left its review PENDING — never submitted, so only I can see it"]
+
+
+def test_an_older_tagged_pending_review_the_run_did_not_touch_is_left_alone():
+    """An earlier run left it, and this run may not have been told about leftovers."""
+    assert reviewaudit.findings(_pr(_review("PENDING", created=BEFORE, threads=2)), "alice",
+                                SINCE) == []
 
 
 def test_an_older_pending_review_with_one_untagged_comment_is_left_alone():
     pr = _pr(_review("PENDING", created=BEFORE, threads=2, body=TAGGED))
     pr["reviews"]["nodes"][0]["comments"]["nodes"].append({"body": "mine", "replyTo": None})
+    assert reviewaudit.findings(pr, "alice", SINCE) == []
+
+
+def test_submitted_verdict_reviews_are_not_pending():
+    pr = _pr(_review("APPROVED", replies=1), _review("CHANGES_REQUESTED", replies=2))
     assert reviewaudit.findings(pr, "alice", SINCE) == []
 
 

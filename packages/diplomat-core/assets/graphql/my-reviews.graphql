@@ -13,7 +13,7 @@ query ($owner: String!, $name: String!, $number: Int!, $me: String!) {
           state
           createdAt
           submittedAt
-          comments(first: 50) { nodes { body replyTo { id } } }
+          comments(first: 50) { nodes { body createdAt replyTo { id } } }
         }
       }
     }
