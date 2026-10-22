@@ -1238,6 +1238,8 @@ and ⏻) swaps the panel to a settings screen:
   is in one, so its agents are run inside **tmux** and read with `capture-pane`;
   without tmux on the box Ghostty is not offered at all, because a run whose screen
   cannot be read holds its task-cap slot until a human closes the window.
+  The device allocator opens its repair agents in the same terminal: the applet
+  publishes the one its spawns resolve to as `spawnTerminal` in `~/.diplomat/config.json`.
 - **Device allocator (MCP)** - install/uninstall the bundled allocator daemon +
   MCP server (see [`packages/device-allocator/README.md`](packages/device-allocator/README.md)), with
   install status, the installed version, and whether it is still current. It

@@ -19,6 +19,12 @@ export const LEASES_PATH = path.join(BASE_DIR, 'leases.json'); // full allocatio
 export const LOG_PATH = path.join(BASE_DIR, 'daemon.log');
 export const REPAIRS_DIR = path.join(BASE_DIR, 'repairs');
 
+// Diplomat's cross-process settings (appconfig.py / AppConfig.swift), relocated by
+// the same DIPLOMAT_CONFIG they honour.
+export const CONFIG_PATH = process.env.DIPLOMAT_CONFIG
+  ? process.env.DIPLOMAT_CONFIG.replace(/^~(?=$|\/)/, os.homedir())
+  : path.join(os.homedir(), '.diplomat', 'config.json');
+
 // Prompt-injection ban list + captured evidence. Lives under the pr-monitor dir
 // (a sibling of device-allocator) because the applet's PR-review monitor reads it
 // to skip banned authors. Overridable with DA_BAN_DIR for tests.

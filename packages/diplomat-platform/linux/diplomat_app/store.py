@@ -470,6 +470,13 @@ class Store(QObject):
     @terminal_choice.setter
     def terminal_choice(self, value: str) -> None:
         self._settings.setValue("terminalChoice", value)
+        self.publish_spawn_terminal()
+
+    def publish_spawn_terminal(self) -> None:
+        """Hand the allocator daemon the terminal a spawn would open
+        (:data:`appconfig.SPAWN_TERMINAL`). Resolved, because the daemon cannot tell
+        an installed terminal from a stale choice."""
+        appconfig.set_value(appconfig.SPAWN_TERMINAL, review.resolved(self.terminal).key)
 
     @property
     def repo_path_override(self) -> str:

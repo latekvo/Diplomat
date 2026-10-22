@@ -23,7 +23,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, execFileSync, execFile } from 'node:child_process';
+import { execFileSync, execFile } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
@@ -42,6 +42,7 @@ import {
 import { writeDiscovery, writeState, writeLeases, readLeases, pidAlive, ensureDirs, atomicWrite } from './state.js';
 import { log } from './log.js';
 import * as dev from './devices.js';
+import { openRepairWindow, shq } from './terminal.js';
 
 const allocations = new Map(); // device key -> allocation record
 let lastPool = []; // cached enumeration, refreshed on a timer
@@ -423,16 +424,9 @@ function spawnRepairAgent(alloc) {
   alloc.status = 'repairing';
   publish();
   if (process.env.DA_NO_SPAWN === '1') { log('repair: agent spawn suppressed (DA_NO_SPAWN)', alloc.key); return; }
-  // Collapse newlines: AppleScript `do script` literals are single-line, so a
-  // newline in the (agent-supplied) broken reason would otherwise produce a
-  // malformed program and the repair would silently never spawn.
-  const prompt = repairPrompt(alloc).replace(/[\r\n]+/g, ' ');
-  const inner = `claude --dangerously-skip-permissions ${shq(prompt)} 2>&1 | tee ${shq(logPath)}`;
-  // Open a visible Terminal so the user can watch the unattended repair.
-  const osa = `tell application "Terminal" to do script ${aq(inner)}`;
+  const inner = `claude --dangerously-skip-permissions ${shq(repairPrompt(alloc))} 2>&1 | tee ${shq(logPath)}`;
   try {
-    spawn('osascript', ['-e', osa], { detached: true, stdio: 'ignore' }).unref();
-    log('repair: agent dispatched', alloc.key, logPath);
+    openRepairWindow(alloc.key, inner, path.join(REPAIRS_DIR, `${id}.sh`));
   } catch (e) { log('repair: spawn failed', alloc.key, String(e)); }
 }
 
@@ -462,8 +456,6 @@ function repairPrompt(alloc) {
   ].filter(Boolean).join(' ');
 }
 
-const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`; // single-quote for the shell
-const aq = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`; // AppleScript string literal
 
 // ---- reclamation loops ----------------------------------------------------
 

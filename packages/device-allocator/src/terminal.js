@@ -1,0 +1,116 @@
+// The window a repair agent runs in: the terminal Diplomat spawns its own agents in.
+//
+// That choice lives in the applet's own settings store, which this process cannot
+// read, so each applet publishes the terminal its spawns resolve to as `spawnTerminal`
+// in the shared ~/.diplomat/config.json (Store.swift / store.py). Nothing published -
+// no applet has run here - falls back to Terminal.app on macOS and the first installed
+// terminal on Linux, the same fallbacks the applets end on.
+//
+// The command is staged in a launcher file rather than handed over inline: Ghostty
+// splits `command:` into words, Linux terminals take an argv, and an AppleScript
+// literal is one line. The launcher also carries this daemon's PATH, because Ghostty
+// runs its command under a bare login PATH that has no `claude` on it.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFile, spawn } from 'node:child_process';
+import { CONFIG_PATH } from './paths.js';
+import { log } from './log.js';
+
+const MAC_TERMINALS = ['ghostty', 'iterm', 'terminal'];
+
+// Twin of review.TERMINALS (diplomat-runtime): key -> argv placed before the command.
+const LINUX_TERMINALS = {
+  'x-terminal-emulator': ['x-terminal-emulator', '-e'],
+  'xfce4-terminal': ['xfce4-terminal', '-x'],
+  'gnome-terminal': ['gnome-terminal', '--'],
+  konsole: ['konsole', '-e'],
+  kitty: ['kitty'],
+  alacritty: ['alacritty', '-e'],
+  xterm: ['xterm', '-e'],
+};
+
+// Seconds between opening an iTerm/Terminal window and typing into it: input typed
+// while the new shell is still starting is dropped. Same as AgentSpawner.inputSettleDelay.
+const INPUT_SETTLE_DELAY = 5;
+
+export const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+const aq = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+
+function published() {
+  try {
+    const v = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')).spawnTerminal;
+    return typeof v === 'string' ? v : '';
+  } catch { return ''; }
+}
+
+function onPath(bin) {
+  return (process.env.PATH || '').split(path.delimiter)
+    .some((d) => d && fs.existsSync(path.join(d, bin)));
+}
+
+export function resolveTerminal(platform = process.platform) {
+  const v = published();
+  if (platform === 'darwin') return MAC_TERMINALS.includes(v) ? v : 'terminal';
+  if (LINUX_TERMINALS[v]) return v;
+  return Object.keys(LINUX_TERMINALS).find((k) => onPath(LINUX_TERMINALS[k][0])) || 'xterm';
+}
+
+export function launcherScript(command) {
+  return [
+    '#!/bin/sh',
+    `export PATH=${shq(process.env.PATH || '')}`,
+    command,
+    "printf '\\n[repair agent exited - press Enter to close] '",
+    'read _',
+    '',
+  ].join('\n');
+}
+
+// [file, args] that open `terminal` on the launcher.
+export function openArgv(terminal, launcher) {
+  const run = `/bin/sh ${shq(launcher)}`;
+  switch (terminal) {
+    case 'ghostty':
+      return ['osascript', ['-e',
+        `tell application "Ghostty" to new window with configuration {command:${aq(run)}}`]];
+    case 'iterm':
+      return ['osascript', [
+        '-e', 'tell application "iTerm"',
+        '-e', 'set w to (create window with default profile)',
+        '-e', `delay ${INPUT_SETTLE_DELAY}`,
+        '-e', `tell current session of w to write text ${aq(run)}`,
+        '-e', 'end tell']];
+    case 'terminal':
+      return ['osascript', [
+        '-e', 'tell application "Terminal"',
+        '-e', 'set t to do script ""',
+        '-e', `delay ${INPUT_SETTLE_DELAY}`,
+        '-e', `do script ${aq(run)} in t`,
+        '-e', 'end tell']];
+    default: {
+      const [bin, ...prefix] = LINUX_TERMINALS[terminal];
+      return [bin, [...prefix, '/bin/sh', launcher]];
+    }
+  }
+}
+
+// Open a window running `command`, staged at `launcher`. Outcome goes to the log only:
+// the caller has already quarantined the device, and the repair TTL frees it if no
+// agent ever reports back.
+export function openRepairWindow(key, command, launcher) {
+  fs.writeFileSync(launcher, launcherScript(command), { mode: 0o755 });
+  const terminal = resolveTerminal();
+  const [file, args] = openArgv(terminal, launcher);
+  if (file === 'osascript') {
+    execFile(file, args, { timeout: 60_000 }, (err, _out, stderr) => {
+      if (err) log('repair: terminal failed', key, terminal, String(stderr || err).trim());
+      else log('repair: agent dispatched', key, terminal, launcher);
+    });
+  } else {
+    const child = spawn(file, args, { detached: true, stdio: 'ignore' });
+    child.on('error', (e) => log('repair: terminal failed', key, terminal, String(e)));
+    child.on('spawn', () => log('repair: agent dispatched', key, terminal, launcher));
+    child.unref();
+  }
+}
