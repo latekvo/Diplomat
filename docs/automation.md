@@ -240,21 +240,21 @@ no gate whatsoever.
 What is *left* comes from the live probe rather than the ledger's last sample:
 samples are 15 minutes apart, and several agents' worth of spending fits in that gap.
 
-Four knobs, in **Settings → PR AUTO-FIX**, and in `~/.diplomat/config.json` beside
-the task cap so the mesh node reads the same ones:
+Four knobs, in **Settings → LIMITS** under the task cap (the same titles on both
+platforms), and in `~/.diplomat/config.json` beside the task cap so the mesh node
+reads the same ones:
 
-- **Hold automatic work when the limit runs low** (`autoBudgetGate`, on) - the
-  master switch.
-- **Confidence** (`autoBudgetConfidence`, `95`) - 50 / 80 / 90 / 95 / 99. Higher is
-  stricter. A hand-edited value the table has no quantile for rounds *up*, never
-  down.
-- **Kept in hand** (`autoBudgetFloorPct`, `20`) - what a window must still have left
-  while the ledger is too thin to price a task. Until at least five auto-tasks have
-  finished and been priced, this is the whole of the answer, so a fresh install
-  spends down to 20% and no further.
-- **Kept on the account** (`autoBudgetReserveUsd`, `1.00`) - the same, in dollars,
-  for a runner billed in money. A separate knob because a percentage of a credit
-  balance is a percentage of however much was last topped up.
+- **Hold work when the limit runs low** (`autoBudgetGate`, on) - the master switch.
+- **Start one only when it fits** (`autoBudgetConfidence`, `95`) -
+  50 / 80 / 90 / 95 / 99. Higher is stricter. A hand-edited value the table has no
+  quantile for rounds *up*, never down.
+- **Keep in hand until it can be priced** (`autoBudgetFloorPct`, `20`) - what a
+  window must still have left while the ledger is too thin to price a task. Until at
+  least five auto-tasks have finished and been priced, this is the whole of the
+  answer, so a fresh install spends down to 20% and no further.
+- **Keep on the account until it can be priced** (`autoBudgetReserveUsd`, `1.00`) -
+  the same, in dollars, for a runner billed in money. A separate knob because a
+  percentage of a credit balance is a percentage of however much was last topped up.
 
 Two failure directions, both deliberate:
 
@@ -297,17 +297,20 @@ anything queued is one that never asked a peer - peer-owned work leaves when the
 drain reaches it and the mesh answers.) The key order is remembered, so your
 arrangement survives the rebuild and a restart.
 
-The one exception is the work **you** ask for by sweeping - a review per PR, or a fix
-per issue (both below): nothing on GitHub records that a PR or an issue was swept, so
-those are remembered instead of re-derived, offered on every poll until each is
-dispatched, wear your own label rather than `Auto · `, and carry a **cancel** button
-beside *execute now* because otherwise only a ban on the author would retire one
-while the PR is open - and nothing at all would retire a fix. They wait in a band of
-their own - behind everything GitHub is already owed (a review requested of you, a
-thread waiting on your reply), ahead of the conflict fixes - so sweeping fifty drafts
-does not bury a review request behind them for a day. A swept PR that lands before
-its turn comes is dropped and forgotten, with a line in the feed saying so - a row
-that vanished silently would read exactly like one that ran.
+The one exception is the work **you** ask for by sweeping - a review per PR, or a
+fix per issue (see [Review PRs](actions.md#review-prs) and [Fix
+issues](actions.md#fix-issues)): nothing on GitHub records that a PR or an issue was
+swept, so those are remembered instead of re-derived, offered on every poll until
+each is dispatched, wear your own label rather than `Auto · `, and carry a
+**cancel** button beside *execute now* because otherwise only a ban on the author
+would retire one while the PR is open - and nothing at all would retire a fix. They
+wait in two bands of their own, swept reviews ahead of swept issue fixes - both
+behind everything GitHub is already owed (a review requested of you, a thread
+waiting on your reply), both ahead of the conflict fixes - so sweeping fifty drafts
+does not bury a review request behind them for a day, and sweeping fifty issues does
+not bury a swept review. A swept PR that lands before its turn comes is dropped and
+forgotten, with a line in the feed saying so - a row that vanished silently would
+read exactly like one that ran.
 
 *Execute now* keeps the task automatic in every other respect:
 same label, same auto-handled counter, same mesh routing - the cap and

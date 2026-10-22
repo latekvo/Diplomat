@@ -235,7 +235,7 @@ Cadences and paths are overridable too, for tuning: `DIPLOMAT_AUTOFIX_SECS`,
 The triage logic is single-sourced in
 [`packages/diplomat-core/assets/`](../packages/diplomat-core/assets/README.md) -
 language-neutral GraphQL queries, the tool catalog, filter constants, and the
-prompt fragments for all three actions. Both front-ends load it and assert their
+prompt fragments for all four actions. Both front-ends load it and assert their
 assembled prompts byte-for-byte against `assets/golden-prompts/`, so they can only
 drift from each other by failing a CI job. Both also run the full monitor stack;
 what stays macOS-only is the per-row **Merge** button, the clickable *session* rows

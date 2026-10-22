@@ -135,6 +135,7 @@ ends speak both, and a peer that advertises only an onion is still reached over 
 An edge that shares neither has no way off the LAN at all, and the Mesh screen flags
 it. `--connect <id>` takes either address and reads the transport off its shape.
 
+<a id="trust-model"></a>
 **Trust model.** The mesh is designed around a LAN you control (IPv4; discovery is
 multicast + subnet broadcast), and - since both WAN transports are on by default - a
 node also publishes an onion, and a QUIC endpoint wherever `szpontnet[wan]` is

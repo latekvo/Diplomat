@@ -191,7 +191,7 @@ relaunch. Manage it with `./install/install-watchdog.sh` /
 
 A two-pane screen matching macOS. Most persist via `QSettings`
 (`~/.config/diplomat/…`); the repo root, the automatic-task cap and the
-rate-limit budget's three knobs are the exceptions (see their bullets):
+spending budget's four knobs are the exceptions (see their bullets):
 
 - **GitHub username** — overrides the `gh`-authenticated login for the "My …" tools.
 - **Repo root** — the local checkout every spawned agent `cd`s into, with a
@@ -224,10 +224,11 @@ rate-limit budget's three knobs are the exceptions (see their bullets):
   at once" has no cap at all.
 - **Hold automatic work when the rate limit runs low** — the
   [spending budget](../../../docs/automation.md#the-spending-budget) (default **on**),
-  with the confidence it must reach that a task fits (default **95%**) and the share
-  of a window to keep in hand while the ledger cannot price one yet (default
-  **20%**). Priced from the same per-task figure the Telemetry screen shows, against
-  both rate-limit windows. Held work waits under [Agent tasks](#agent-tasks) and
+  with the confidence it must reach that a task fits (default **95%**) and what to
+  keep in hand while the ledger cannot price one yet - a share of a window (default
+  **20%**) under Claude Code, or dollars on the account (default **$1.00**) under a
+  runner billed in money. Priced from the same per-task figure the Telemetry screen
+  shows, against both rate-limit windows or both of the OpenRouter ceilings. Held work waits under [Agent tasks](#agent-tasks) and
   starts when a window refills; *execute now* overrides it, a wizard spawn that
   opens a terminal on the spot is never gated, and nothing is held at all while the
   usage probe cannot read a window. In `~/.diplomat/config.json` for the same reason
@@ -279,8 +280,8 @@ python3 -m szpontnet --dispatch audit --prompt "…"
 python3 -m szpontnet --fingerprint    # this device's trust key; --trust/--untrust/--ban to manage
 ```
 
-New devices are **foreign (zero-trust)** until you promote them — see the root
-README's trust model.
+New devices are **foreign (zero-trust)** until you promote them; see the
+[trust model](../../../docs/mesh.md#trust-model).
 
 ## Headless self-tests (no display needed)
 

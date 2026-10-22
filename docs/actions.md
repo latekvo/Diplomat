@@ -14,8 +14,8 @@ default `~/dev/<repo>`) that you watch and steer yourself. The prompt is staged 
 a file and the window runs
 `<agent> [--settings <hooks>] "$(cat <promptfile>)"; printf %s $? > <done>` - where
 `<agent>` is the [agent runner](settings.md#agent-runner) you picked, `<hooks>` is how a Claude
-Code run reports its own turn boundaries, and the trailing sentinel (under
-`~/.diplomat/pr-monitor/done/`) is how the Agent-tasks list knows a run that
+Code run reports its own turn boundaries, and the trailing sentinel
+(`~/.diplomat/agents/<run-id>/done`) is how the Agent-tasks list knows a run that
 *exited* is over.
 
 A **whose-PRs sweep** is not one agent for all of them. It queues one review per PR

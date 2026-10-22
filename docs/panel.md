@@ -46,8 +46,8 @@ clicking an in-use device focuses the holding agent's terminal); and the
 nudges, and daemon-side bans.
 
 The activity feed is **filterable in place**: it heads a row of per-category chips
-with counts - Reviews · Replies · Conflicts · Audit · API restart · Out of quota ·
-Merges · Bans · Mesh · System - and tapping one mutes that category and drops its
+with counts - Reviews · Replies · Conflicts · Audit · Issues · API restart · Out of
+quota · Merges · Bans · Mesh · System - and tapping one mutes that category and drops its
 rows. The taxonomy (which raw action verb maps to which category, plus its icon and
 tint) is shared in [`assets/audit-categories.json`](../packages/diplomat-core/assets/audit-categories.json), with
 `packages/diplomat-core/Sources/DiplomatCore/AuditCategory.swift` as the Swift source of truth.
@@ -118,7 +118,7 @@ bays.
   as long as GitHub still calls the PR conflicting, so waiting costs it nothing.
 
 Four things hold work. The cap holds what there is no slot for, and releases it as
-slots free. The **spending budget** (below) holds everything when the account is
+slots free. The [spending budget](automation.md#the-spending-budget) holds everything when the account is
 too low to afford another agent, and releases it when a window refills or the
 balance is topped up. A
 **monitor you switched off** holds its own work indefinitely: it keeps polling and

@@ -68,9 +68,9 @@ npx szpont                       # or:  pip install szpont && szpont
 This works on macOS 13+ and Linux. It clones Diplomat into `~/.diplomat/checkout`,
 builds it and starts it. Diplomat runs from that checkout and updates itself in
 place. You need **git**, a **Swift toolchain** (Xcode on macOS,
-[swiftly](https://swift.org/install) on Linux) and an authenticated
-[`gh`](https://cli.github.com). `szpont` tells you which one is missing before it
-downloads anything.
+[swiftly](https://swift.org/install) on Linux), **python3** on Linux to run the
+applet, and an authenticated [`gh`](https://cli.github.com). `szpont` checks for all
+but `gh` and names whichever is missing before it downloads anything.
 
 ```bash
 szpont --plan          # print what it would do, and do none of it
@@ -78,8 +78,8 @@ szpont --no-update     # start the checkout as it stands
 DIPLOMAT_SELF_REPO=~/dev/diplomat szpont   # use your own checkout (never pulled)
 ```
 
-Optional extras: **Node.js** for the device allocator, **python3** for the mesh, and
-**tmux** if you want Ghostty windows or are on Linux.
+Optional extras: **Node.js** for the device allocator, **python3** for the mesh on
+macOS, and **tmux** if you want Ghostty windows or are on Linux.
 
 ## Defaults worth knowing
 
@@ -94,7 +94,7 @@ Every switch below is in Settings (⚙︎).
 | Thank-you review (body only) on a perfectly clean PR | **on** |
 | Nudge agents stalled on API errors | **on** |
 | Automatic agents running at once | **2** (1-16) |
-| Hold automatic work when the limit runs low | **on**: 95% confidence, keeps 20% of a window or $1 |
+| Hold automatic work when the limit runs low | **on**: 95% confidence; until a task can be priced, keeps 20% of a window or $1 |
 | Give up on an automatic run after 4 h | **on** |
 | Agent runner | **Claude Code** (or OpenCode, Hermes) |
 | Mesh | **off** |
