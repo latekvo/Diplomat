@@ -2,7 +2,7 @@
 
 The Linux port of the macOS menu-bar wrench: a **system-tray applet** with the
 same dense panel of six `software-mansion/argent` triage tools, reverse lookup,
-the Review-PRs / Resolve-conflicts / Full-E2E-test wizards, the full autonomous
+the Review-PRs / Fix-issues / Resolve-conflicts / Full-E2E-test wizards, the full autonomous
 monitor stack, a Devices view of the device-allocator pool, the Mesh topology
 screen, and settings. It's a thin UI renderer over the shared [`assets/`](../../diplomat-core/assets)
 assets — and it doesn't re-implement prompt assembly at all: it shells out to the
@@ -27,7 +27,7 @@ XEmbed): works on **XFCE** (Notification Area / Status Notifier panel plugin),
 The left pane heads with what this machine is doing, what it is about to do, and how
 much room it has left: the automatic agents it is **running**, the work it is
 **holding**, and an empty bay per free slot of its
-[task cap](../../../README.md#autonomous-monitors). The section is always there. Its
+[task cap](../../../docs/automation.md#autonomous-monitors). The section is always there. Its
 header counts the tasks and captions them with the machine's state — an idle one with
 a cap of two reads `0`, `2 free`, over two empty bays; a saturated one with three
 more owed reads `5`, `3 queued`, over two running agents and the queue behind them.
@@ -62,15 +62,17 @@ slot**, then the **queue** that has no bay yet.
   finding work and queueing it either way. It stays on screen while it is off even
   with the list empty — otherwise the state that empties the list would be the one you
   cannot leave.
-- **Queued** rows are auto-fixes, auto-reviews and reviews you asked for that nothing
+- **Queued** rows are auto-fixes, auto-reviews and the reviews and issue fixes you
+  asked for that nothing
   has started yet. Each
   carries **execute now** — start it immediately, past whatever is holding it — and a
   drag grip: drop a row on another to set the order the queue runs in. That order is
   honoured at the top of the next poll, *before* the monitors go looking for more
   work, so a slot that just freed goes to whatever you put first rather than to
   whichever PR GitHub happened to list first.
-- **Requested reviews** — one row per PR of a Review-PRs sweep — run after every
-  auto-fix and auto-review and before the conflict fixes, because what the monitors
+- **Requested work** - one row per PR of a Review-PRs sweep, one per issue of a
+  Fix-issues sweep - runs after every auto-fix and auto-review and before the
+  conflict fixes, swept reviews ahead of swept issue fixes, because what the monitors
   find is a debt other people can see and a sweep is work you started when you had
   the time for it. Each also carries **cancel**: you asked for it, so nothing else
   will ever take it off the list.
@@ -82,9 +84,10 @@ slot**, then the **queue** that has no bay yet.
   GitHub still calls the PR conflicting, so waiting costs it nothing.
 
 Five things hold work. The cap holds what there is no slot for, and releases it as
-slots free. The [rate-limit budget](../../../README.md#the-rate-limit-budget) holds
+slots free. The [spending budget](../../../docs/automation.md#the-spending-budget) holds
 everything when the account is too low to afford another agent, and releases it when a
-window refills. A **monitor you switched off** holds its own work indefinitely: it
+window refills or the balance is topped up. A **monitor you switched off** holds its
+own work indefinitely: it
 keeps polling and keeps listing what it finds (reading *queued · monitor off*), but
 nothing starts by itself — only *execute now* does. So the toggles decide who starts
 the work, not whether you get to see it, and turning both off does not stop the
@@ -107,14 +110,15 @@ respect: same label, same auto-handled counter, same retry record, and once
 running it occupies a slot like any other automatic agent, so the rest of the queue
 waits behind it.
 
-The exception is the reviews **you** ask for by sweeping your PRs in the Review
-wizard, which queues one review per PR instead of handing every draft to a single
-agent. Nothing on GitHub records that a PR was swept, so those asks are remembered
+The exception is the work **you** ask for by sweeping your PRs in the Review
+wizard or your issues in the Fix-issues wizard, which queues one task per PR or
+issue instead of handing them all to a single agent. Nothing on GitHub records that a PR was swept, so those asks are remembered
 (`QSettings`, beside the arrangement) and re-offered every poll until each is
 dispatched, they carry your own label rather than `Auto · `, and each row has a
 **cancel** beside *execute now* — short of a ban on the PR's author, nothing else
-will ever retire one. They wait in a
-band between the monitors' finds and the conflict fixes, so a fifty-draft sweep never
+will ever retire one. They wait in two
+bands between the monitors' finds and the conflict fixes, reviews ahead of issue
+fixes, so a fifty-draft sweep never
 holds up a review GitHub is already owed.
 
 The rules the list obeys — the queue key, the arrangement, one drag, the free-slot
@@ -131,7 +135,7 @@ here there are no session rows to sort, so the list starts at that order's *star
 - PySide6 (`pip install -r requirements.txt`)
 - GitHub CLI `gh`, authenticated (`gh auth login`). Agents can run on a narrower
   token than that login instead - see
-  [A narrow GitHub token for agents](../../../README.md#a-narrow-github-token-for-agents)
+  [A narrow GitHub token for agents](../../../docs/settings.md#a-narrow-github-token-for-agents)
   (on Linux it is read from the file `agentTokenFile` names)
 - The `diplomat-core` binary for prompt assembly — build it with
   `./install/build-core.sh` (needs a Swift toolchain once), or point
@@ -190,8 +194,10 @@ relaunch. Manage it with `./install/install-watchdog.sh` /
 ## Settings
 
 A two-pane screen matching macOS. Most persist via `QSettings`
-(`~/.config/diplomat/…`); the repo root, the automatic-task cap and the
-rate-limit budget's three knobs are the exceptions (see their bullets):
+(`~/.config/diplomat/…`); the exceptions are the keys a stdlib-only mesh node reads
+too - the repo root, the agent runner and model, the automatic-task cap and the
+spending budget's four knobs - and the run deadline beside the cap, which live in
+the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/diplomat_runtime/appconfig.py)):
 
 - **GitHub username** — overrides the `gh`-authenticated login for the "My …" tools.
 - **Repo root** — the local checkout every spawned agent `cd`s into, with a
@@ -222,13 +228,15 @@ rate-limit budget's three knobs are the exceptions (see their bullets):
   slots. In `~/.diplomat/config.json` for the same reason as the repo root — the node
   that runs peer-routed work has no Qt, and a machine with two answers to "how many
   at once" has no cap at all.
-- **Hold automatic work when the rate limit runs low** — the
-  [rate-limit budget](../../../README.md#the-rate-limit-budget) (default **on**),
-  with the confidence it must reach that a task fits (default **95%**) and the share
-  of a window to keep in hand while the ledger cannot price one yet (default
-  **20%**). Priced from the same per-task figure the Telemetry screen shows, against
-  both rate-limit windows. Held work waits under [Agent tasks](#agent-tasks) and
-  starts when a window refills; *execute now* overrides it, a wizard spawn that
+- **Hold work when the limit runs low** - the
+  [spending budget](../../../docs/automation.md#the-spending-budget) (default **on**),
+  with the confidence it must reach that a task fits (default **95%**) and what to
+  keep in hand while the ledger cannot price one yet - a share of a window (default
+  **20%**) under Claude Code, or dollars on the account (default **$1.00**) under a
+  runner billed in money, once a task has been charged here in the last 14 days. Priced from the same per-task figure the Telemetry screen
+  shows, against both rate-limit windows or both of the OpenRouter ceilings. Held work waits under [Agent tasks](#agent-tasks) and
+  starts when a window refills or the balance is topped up; *execute now* overrides
+  it, a wizard spawn that
   opens a terminal on the spot is never gated, and nothing is held at all while the
   usage probe cannot read a window. In `~/.diplomat/config.json` for the same reason
   as the cap above.
@@ -248,7 +256,7 @@ rate-limit budget's three knobs are the exceptions (see their bullets):
 ## Diplomat Mesh (experimental)
 
 The applet can coordinate duties with the other machines on your LAN — see the
-[root README's Mesh section](../../../README.md#diplomat-mesh-experimental--lan-p2p-duty-coordination)
+[Mesh docs](../../../docs/mesh.md)
 for the model. Enable it in ⚙ Settings; the panel then grows a collapsible
 topology column (live nodes, link states, per-node tier/token editors, per-duty
 strategy controls). The node is [SzpontNet](../../szpontnet-core/README.md), an independent
@@ -279,8 +287,8 @@ python3 -m szpontnet --dispatch audit --prompt "…"
 python3 -m szpontnet --fingerprint    # this device's trust key; --trust/--untrust/--ban to manage
 ```
 
-New devices are **foreign (zero-trust)** until you promote them — see the root
-README's trust model.
+New devices are **foreign (zero-trust)** until you promote them; see the
+[trust model](../../../docs/mesh.md#trust-model).
 
 ## Headless self-tests (no display needed)
 

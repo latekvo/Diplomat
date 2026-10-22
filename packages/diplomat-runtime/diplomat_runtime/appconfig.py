@@ -7,7 +7,7 @@ once, the four knobs of the spending budget those agents are started against,
 which agent CLI a spawn runs (with the model it is pinned to), and where that
 agent's GitHub token is read from. Each is
 consumed by whichever process picks the work up, and one of those is a **mesh
-node** — a separate process that is stdlib-only by design (the root README
+node** — a separate process that is stdlib-only by design (docs/mesh.md
 advertises joining a mesh with "no Qt needed") and that outlives the applet, so it
 can neither read a Qt/UserDefaults store nor be handed the value in its
 environment at spawn time.
