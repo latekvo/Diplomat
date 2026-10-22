@@ -83,9 +83,9 @@ public struct ReviewConfig: Codable, Equatable {
     /// The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     public var finalPass: Bool
 
-    /// Soft-approve: when a review-only PR comes back perfectly clean, leave a friendly
-    /// "ran the sweep, all clean, thanks for contributing" comment — but NEVER an APPROVE
-    /// action. On by default. Independent of `finalPass`; when `finalPass` submits a real
+    /// Soft-approve: when a review-only PR comes back perfectly clean, submit a COMMENT
+    /// review whose body is a friendly "ran the sweep, all clean, thanks for contributing"
+    /// — but NEVER an APPROVE action. On by default. Independent of `finalPass`; when `finalPass` submits a real
     /// verdict it takes precedence and this is moot.
     public var softApprove: Bool
 
@@ -152,7 +152,7 @@ public struct ReviewConfig: Codable, Equatable {
     public var effReplyToReviews: Bool { replyToReviews && canReplyToReviews }
     public var effFinalPass: Bool { finalPass && canFinalPass }
     // A real verdict (finalPass) outranks a soft approval — when we're submitting APPROVE /
-    // request-changes there's no separate soft-approve comment.
+    // request-changes there's no separate soft-approve review.
     public var effSoftApprove: Bool { softApprove && canSoftApprove && !effFinalPass }
 
     /// Review exactly one PR by number/URL instead of a whose-PRs sweep.
@@ -219,6 +219,21 @@ public struct ReviewConfig: Codable, Equatable {
         blocks["diplomatTag"].map { AgentModel.fillTag($0, model: AgentModel.detected()) }
     }
 
+    /// How a review on someone else's PR is built, whenever this run may submit one, and
+    /// whether its findings go in it — they do under the verdict pass, which posts them
+    /// with its verdict. Nothing on my own PRs, which get no review.
+    private func reviewBlocks(_ blocks: [String: String]) -> [String] {
+        guard canLeaveReviews else { return [] }
+        var out: [String] = []
+        if effLeaveReviews || effSoftApprove || effFinalPass, let b = blocks["reviewLifecycle"] {
+            out.append(b)
+        }
+        if let b = blocks[effLeaveReviews || effFinalPass ? "leaveReviews" : "noReviews"] {
+            out.append(b)
+        }
+        return out
+    }
+
     private func prKind(_ scope: [String: String]) -> String {
         switch (includeDrafts, includeReady) {
         case (true, true):  return scope["prKindBoth"] ?? ""
@@ -268,7 +283,7 @@ public struct ReviewConfig: Codable, Equatable {
         if !isReviewOnly, let ob = chosen.onBranch, !ob.isEmpty { out.append(ob) }
         if let bar = blocks["bar"] { out.append(bar) }
         if effMarkReady, let b = blocks["markReady"] { out.append(b) }
-        if effLeaveReviews, let b = blocks["leaveReviews"] { out.append(b) }
+        out += reviewBlocks(blocks)
         if effReplyToReviews, let b = blocks["reply"] { out.append(b) }
         if let trailer = blocks["trailer"] { out.append(trailer) }
         // Commit-authoring guidance only when we might actually commit — never
@@ -322,8 +337,8 @@ public struct ReviewConfig: Codable, Equatable {
 
     /// The single-PR prompt for a PR we ALREADY know is someone else's (a review
     /// requested from me): no author poll, no CASE A/B — the review-only, hands-off
-    /// disposition directly (leave a formal review if the toggle is on, never touch the
-    /// branch). Used by the review-request monitor.
+    /// disposition directly (a formal review whenever one is to be posted, never touching
+    /// the branch). Used by the review-request monitor.
     private func buildKnownTheirsPrompt(review: CoreAssets.Review?, scope: [String: String],
                                         blocks: [String: String], owner: String, repo: String) -> String {
         let specific = review?.specific ?? [:]
@@ -342,11 +357,11 @@ public struct ReviewConfig: Codable, Equatable {
         out.append(chosen.fragment)
         if let bar = blocks["bar"] { out.append(bar) }
         if let b = blocks["reviewOnly"] { out.append(b) }
-        if effLeaveReviews, let b = blocks["leaveReviews"] { out.append(b) }
+        out += reviewBlocks(blocks)
         out.append(fill(specific["otherNoMarkReady"] ?? ""))
         // Closing disposition, in precedence order: a real approve/changes-requested
         // verdict only under the Final-E2E toggle (manual review or a trusted-author auto
-        // run); else a soft approval (friendly clean comment, no APPROVE action) when that
+        // run); else a soft approval (thank-you COMMENT review, no APPROVE) when that
         // toggle is on (the default); else stay fully silent and leave the call to me.
         if effFinalPass, let b = blocks["finalPass"] {
             out.append(b)
@@ -399,7 +414,7 @@ public struct ReviewConfig: Codable, Equatable {
         // CASE B — it's someone else's: review only, hands off the branch.
         out.append(fill(specific["otherHeader"] ?? ""))
         if let b = blocks["reviewOnly"] { out.append(b) }
-        if effLeaveReviews, let b = blocks["leaveReviews"] { out.append(b) }
+        out += reviewBlocks(blocks)
         out.append(fill(specific["otherNoMarkReady"] ?? ""))
 
         if let trailer = blocks["trailer"] { out.append(trailer) }

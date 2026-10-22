@@ -36,6 +36,7 @@ from diplomat_runtime import (
     opencodeapi,
     promptcore,
     review,
+    reviewaudit,
     runner,
     telemetry,
     tmuxwatch,
@@ -470,6 +471,13 @@ class Store(QObject):
     @terminal_choice.setter
     def terminal_choice(self, value: str) -> None:
         self._settings.setValue("terminalChoice", value)
+        self.publish_spawn_terminal()
+
+    def publish_spawn_terminal(self) -> None:
+        """Hand the allocator daemon the terminal a spawn would open
+        (:data:`appconfig.SPAWN_TERMINAL`). Resolved, because the daemon cannot tell
+        an installed terminal from a stale choice."""
+        appconfig.set_value(appconfig.SPAWN_TERMINAL, review.resolved(self.terminal).key)
 
     @property
     def repo_path_override(self) -> str:
@@ -684,7 +692,7 @@ class Store(QObject):
 
     @property
     def soft_approve_enabled(self) -> bool:
-        """Whether a clean comments-only auto-review leaves a friendly thank-you note
+        """Whether a clean comments-only auto-review submits a thank-you COMMENT review
         (no APPROVE action) instead of staying silent. On by default; moot on any PR
         that gets a real verdict."""
         return self._settings.value("softApproveEnabled", True, bool)
@@ -1440,8 +1448,8 @@ class Store(QObject):
     def _dispatch_review_request(self, r, attempt: int = 1) -> bool:
         reasons = self.verdict_policy.withhold_reasons(r.files, r.author_association)
         verdict = self.auto_approve_enabled and not reasons
-        # Without a real verdict, a clean review still soft-approves (friendly comment, no
-        # APPROVE) unless the user turned that off too. Moot when verdict is True.
+        # Without a real verdict, a clean review still soft-approves (thank-you COMMENT
+        # review, no APPROVE) unless the user turned that off too. Moot when verdict is True.
         soft = self.soft_approve_enabled
         if verdict:
             tag = " +verdict"
@@ -2530,6 +2538,16 @@ class Store(QObject):
                          f"{r.label or r.run_id} — "
                          f"{verdict.reason if verdict else 'no verdict'}")
         self.refresh_activity()
+        # Only a run whose agent is done: a merge retires one that may still be filling
+        # its review.
+        audited = [(r.label or r.run_id, r.source, r.pr_url, r.dispatched_at)
+                   for r in gone
+                   if r.kind == "review" and r.pr_url and r.runs_here
+                   and (getattr(t.states.get(r.run_id), "state", None) == agentstate.FINISHED
+                        or agentregistry.finished_at(r.run_id) is not None)]
+        if audited:
+            me = self.me
+            self.start_background(lambda: self._audit_reviews(audited, me))
         agentregistry.forget({r.run_id for r in gone})
         probes.forget_adopted({r.run_id for r in gone})
         for r, exited_at, prompt, session_id, agent_runner in retired:
@@ -2538,6 +2556,25 @@ class Store(QObject):
                                         agent_runner=agent_runner)
         if retired:
             self.telemetry_changed.emit()
+
+    def _audit_reviews(self, runs: list[tuple[str, str, str, float]], me: str) -> None:
+        """Warn about each retired review run whose review did not go through
+        GitHub's lifecycle (:mod:`diplomat_runtime.reviewaudit`). ``me`` is the gh
+        login, not the username override: a PENDING review is listed to its author
+        alone, and the agent posts as the login."""
+        logged = False
+        for label, source, url, since in runs:
+            try:
+                if not me:
+                    raise ValueError("the gh login is not known yet")
+                found = reviewaudit.audit(url, me, since)
+            except Exception as exc:  # noqa: BLE001 — a check that could not run says so
+                found = [f"could not check its review: {exc}"]
+            for line in found:
+                activity.log(source, "warn", f"{label} {line}")
+                logged = True
+        if logged:
+            self.refresh_activity()
 
     def _reap_wedged_windows(self, t: agentstate.Tick) -> set[str]:
         """Close the terminal of every run a backstop ended — the quiescence clock, or

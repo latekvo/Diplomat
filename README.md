@@ -453,7 +453,8 @@ prompt:
   swarm + hard reproductions → full E2E, swarming until one clean pass.
 - **Mark clean PRs ready for review** — *(never on someone else's)* flip
   perfectly-clean drafts to ready.
-- **Leave reviews (CLAUDE.md format)** — *(never on my own)* post formal per-line reviews.
+- **Leave reviews (CLAUDE.md format)** — *(never on my own)* post formal per-line reviews;
+  off, the findings stay in the agent's summary (the verdict pass below still posts them).
 - **Reply to others' review threads** — *(never on someone else's)* answer and resolve open threads.
 - **✨ Final E2E pass + verdict** - *(highlighted, off by default; others' and
   unknown-author PRs only - never my own, there is no self-approval)* appends a
@@ -1052,7 +1053,7 @@ quota; only its terminal was opened by the node rather than by the applet.
 
 Whether an auto-dispatched review may *ever* submit a verdict (approve / request
 changes) on my behalf is a master toggle in Settings - **default OFF**, so every
-auto-review leaves inline comments only and the final call stays with me. When
+auto-review's review is a neutral `COMMENT` one and the final call stays with me. When
 opted in, three independent suppressors (each default ON) still withhold the
 verdict for a PR that touches a SKILL, touches the installer/CLI, or comes from a
 community author (outside `trustedAssociations` in `assets/filters.json`) - those
@@ -1061,13 +1062,22 @@ classes stay comments-only even with approvals enabled.
 ### Soft-approvals (default ON)
 
 A separate toggle governs what a *comments-only* review does when it finds a PR
-perfectly clean - **default ON**. Instead of staying silent, the agent leaves a
-single friendly top-level comment (*"Ran full E2E sweep... Returned perfectly
-clean. Thank you for contributing!"*) and nothing more. A soft-approval is that
-comment alone - it **never** carries an `APPROVE` action, so nothing is submitted
-on my behalf; it's just an acknowledgement. It's independent of the verdict toggle
-above and is moot on any PR that gets a real verdict (that takes precedence). Turn
-it off to make clean reviews fully silent again.
+perfectly clean - **default ON**. Instead of staying silent, the agent submits a
+`COMMENT` review with no inline comments whose body is a single friendly note
+(*"Ran full E2E sweep... Returned perfectly clean. Thank you for contributing!"*).
+A soft-approval is that review alone - it **never** carries an `APPROVE` action;
+it's just an acknowledgement. It's independent of the verdict toggle above and is
+moot on any PR that gets a real verdict (that takes precedence). Turn it off to
+make clean reviews fully silent again.
+
+### One review per PR, submitted
+
+Every review of someone else's PR goes through GitHub's review lifecycle: the
+agent opens a pending review, adds every finding (and every reply on an existing
+thread) inside it, then submits it once. When a review agent this machine dispatched and ran
+itself finishes, Diplomat reads my reviews on its PR and warns in the activity feed (`warn`) if the run
+left a review PENDING - unsubmitted, so nobody but me can see it - or spread its
+findings over several reviews instead of one.
 
 ## Settings
 
@@ -1238,6 +1248,8 @@ and ⏻) swaps the panel to a settings screen:
   is in one, so its agents are run inside **tmux** and read with `capture-pane`;
   without tmux on the box Ghostty is not offered at all, because a run whose screen
   cannot be read holds its task-cap slot until a human closes the window.
+  The device allocator opens its repair agents in the same terminal: the applet
+  publishes the one its spawns resolve to as `spawnTerminal` in `~/.diplomat/config.json`.
 - **Device allocator (MCP)** - install/uninstall the bundled allocator daemon +
   MCP server (see [`packages/device-allocator/README.md`](packages/device-allocator/README.md)), with
   install status, the installed version, and whether it is still current. It
@@ -1564,6 +1576,7 @@ packages/
                                    (the task cap and the rate-limit budget), AutofixMesh
         AgentTasks.swift           the Agent-tasks list's sort order + the queue behind the task cap
         ReviewReconcile.swift      pure retry/backoff/dedup decisions for the monitors
+        ReviewAudit.swift          a retired review run's review: left PENDING, or split over several
         AgentActivity.swift        terminal-tail classification: running vs awaiting input
         AgentCompletion.swift      the turn report: the hooks a run is spawned with, and reading them back
         AgentRunner.swift          which agent CLI a spawn runs, and the one command that runs it

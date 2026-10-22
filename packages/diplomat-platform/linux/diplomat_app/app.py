@@ -146,6 +146,7 @@ class DiplomatApp:
         # forced to reserve simulators/emulators. One-shot and respects an explicit
         # uninstall (see Store.ensure_allocator_installed_async).
         self.store.ensure_allocator_installed_async()
+        self.store.publish_spawn_terminal()
 
         # Join the LAN mesh if the user opted in, so duty coordination is live the
         # moment the panel opens; with it off, stop a node left running.

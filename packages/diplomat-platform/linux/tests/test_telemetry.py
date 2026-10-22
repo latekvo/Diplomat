@@ -477,6 +477,7 @@ def test_a_run_is_priced_before_its_directory_is_deleted(ledger, monkeypatch):
     tick = agentstate.tick([record], agentstate.Evidence(
         processes=agentstate.Observation.present({}),
         sentinels=agentstate.Observation.present({record.run_id})), time.time(), 2)
+    monkeypatch.setattr("diplomat_runtime.reviewaudit.audit", lambda *a: [])
     Store._retire_finished(Store(), tick)
 
     assert seen["prompt"] == "the real prompt"
