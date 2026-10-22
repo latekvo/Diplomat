@@ -61,7 +61,9 @@ in status order: *awaiting input*, *running*, *starting*, *unknown*, *free slot*
 *queued*, so the sessions asking to be read sit at the top and everything not
 started yet is at the bottom. A run that is over is not on the list at all - the
 pass that resolves one retires it, so its row would be up for a single redraw;
-what it leaves behind is its activity line and its ledger entry. The list is
+what it leaves behind is its activity line and its ledger entry. An agent it leaves
+at its prompt is drawn again only if it starts working, and is otherwise closed by
+the [stillness backstop](automation.md#autonomous-monitors). The list is
 always there: an idle machine with a cap of two reads `0 · 2 free` over two empty
 bays.
 
@@ -98,21 +100,24 @@ bays.
 - **Queued** rows are auto-fixes, auto-reviews and the work you asked for by
   sweeping that nothing has started yet. Each
   carries **execute now** - start it immediately, past whatever is holding it -
-  and a drag grip: drop a row on another to set the order the queue runs in. That
+  and a drag grip: drop a row on another in its band to set the order the queue runs
+  in (a drag into another band is refused). That
   order is honoured at the top of the next poll, *before* the monitors go looking
   for more work, so a slot that just freed goes to whatever you put first rather
   than to whichever PR GitHub happened to list first.
 - **Requested work** - one row per PR of a Review-PRs sweep, one row per issue of a
-  Fix-issues sweep - runs after every auto-fix and auto-review and before the
-  conflict fixes, because what the monitors find is a debt other people can see and a
+  Fix-issues sweep - waits in two bands of its own, swept reviews ahead of swept issue
+  fixes, both after every auto-fix and auto-review and before the conflict fixes,
+  because what the monitors find is a debt other people can see and a
   sweep is work you started when you had the time for it. Each also carries
   **cancel**: nothing GitHub does takes one off the list while its PR is open - you
   asked for it - and nothing does at all for a fix, since the monitors read PRs and
   never look at an issue. A fix is keyed by its ISSUE number, so it is a row of its
   own beside a review of the PR that happens to share it.
 - **Resolve-conflicts** rows run last of all, whatever
-  order the monitors found them in, and no drag lifts one out of its band (that
-  drag is refused rather than sprung back on the next poll). An agent working the
+  order the monitors found them in, and no drag lifts one out of its band (a drag
+  between bands is refused rather than sprung back on the next poll). An agent
+  working the
   same branch lands its own merge on the way, so a conflict fix is the work most
   often made unnecessary by the work ahead of it - and the poll re-offers it for
   as long as GitHub still calls the PR conflicting, so waiting costs it nothing.

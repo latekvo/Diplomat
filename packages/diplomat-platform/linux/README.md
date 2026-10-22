@@ -84,7 +84,8 @@ slot**, then the **queue** that has no bay yet.
 Five things hold work. The cap holds what there is no slot for, and releases it as
 slots free. The [spending budget](../../../docs/automation.md#the-spending-budget) holds
 everything when the account is too low to afford another agent, and releases it when a
-window refills. A **monitor you switched off** holds its own work indefinitely: it
+window refills or the balance is topped up. A **monitor you switched off** holds its
+own work indefinitely: it
 keeps polling and keeps listing what it finds (reading *queued · monitor off*), but
 nothing starts by itself — only *execute now* does. So the toggles decide who starts
 the work, not whether you get to see it, and turning both off does not stop the
@@ -190,8 +191,10 @@ relaunch. Manage it with `./install/install-watchdog.sh` /
 ## Settings
 
 A two-pane screen matching macOS. Most persist via `QSettings`
-(`~/.config/diplomat/…`); the repo root, the automatic-task cap and the
-spending budget's four knobs are the exceptions (see their bullets):
+(`~/.config/diplomat/…`); the exceptions are the keys a stdlib-only mesh node reads
+too - the repo root, the agent runner and model, the automatic-task cap, the run
+deadline and the spending budget's four knobs - which live in the shared
+`~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/diplomat_runtime/appconfig.py)):
 
 - **GitHub username** — overrides the `gh`-authenticated login for the "My …" tools.
 - **Repo root** — the local checkout every spawned agent `cd`s into, with a
@@ -222,14 +225,15 @@ spending budget's four knobs are the exceptions (see their bullets):
   slots. In `~/.diplomat/config.json` for the same reason as the repo root — the node
   that runs peer-routed work has no Qt, and a machine with two answers to "how many
   at once" has no cap at all.
-- **Hold automatic work when the rate limit runs low** — the
+- **Hold work when the limit runs low** - the
   [spending budget](../../../docs/automation.md#the-spending-budget) (default **on**),
   with the confidence it must reach that a task fits (default **95%**) and what to
   keep in hand while the ledger cannot price one yet - a share of a window (default
   **20%**) under Claude Code, or dollars on the account (default **$1.00**) under a
   runner billed in money. Priced from the same per-task figure the Telemetry screen
   shows, against both rate-limit windows or both of the OpenRouter ceilings. Held work waits under [Agent tasks](#agent-tasks) and
-  starts when a window refills; *execute now* overrides it, a wizard spawn that
+  starts when a window refills or the balance is topped up; *execute now* overrides
+  it, a wizard spawn that
   opens a terminal on the spot is never gated, and nothing is held at all while the
   usage probe cannot read a window. In `~/.diplomat/config.json` for the same reason
   as the cap above.

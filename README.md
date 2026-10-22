@@ -34,9 +34,10 @@ Hacky on purpose, and built for one maintainer's workflow rather than the public
   Reviews* and *Stale Ready >10d*, plus a search box that tells you which lists a
   PR/issue number is on.
 - **A queue you control** - automatic work waits for a free slot (two at a time by
-  default). You can reorder it, start an item now or cancel it.
+  default). You can reorder it, start an item now, or cancel work you asked for.
 - **A spending brake** - automatic work pauses when your rate-limit window or credit
-  balance gets too low to afford another task, and resumes when it refills.
+  balance gets too low to afford another task, and resumes when the window refills
+  or the balance is topped up.
 - **Telemetry** - cost per task, rate limit left, backlog and throughput over time.
 - **One device per agent** - a bundled MCP server hands each agent its own
   simulator/emulator, so parallel agents never share one.

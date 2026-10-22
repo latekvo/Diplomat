@@ -56,9 +56,10 @@ swift run Diplomat    # launches the menu-bar app (no Dock icon)
 > The app is its own Swift package; the shared core is the one next door
 > (`packages/diplomat-core`), which builds the Linux-buildable `DiplomatCoreSmoke`
 > self-test and the `diplomat-core` prompt CLI the Linux front-end shells out to.
-> Both packages hold more than one executable, so name the target.
+> The core holds more than one executable, so name the target there.
 
-Quit from the panel's ⏻ button, or `pkill Diplomat`.
+Quit from the panel's ⏻ button. `pkill Diplomat` leaves no operator-quit marker, so
+the [watchdog](#autostart-on-login), if installed, relaunches the app within five minutes.
 
 **On Linux?** See [`packages/diplomat-platform/linux/README.md`](../packages/diplomat-platform/linux/README.md)
 - `cd packages/diplomat-platform/linux && ./diplomat`.

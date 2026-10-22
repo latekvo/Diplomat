@@ -109,9 +109,14 @@ terminal - iTerm/Terminal sessions and tmux panes on macOS, tmux panes on Linux;
 status bar shows the CLI back at its prompt reads *awaiting input* and gives its
 slot back while keeping its row. That is the one source here that cannot end a run:
 it is an inference from someone else's UI, not a report. Behind all three sits a
-twenty-minute quiescence backstop for a session wedged mid-turn: a screen that has
-not changed in that long - bar the terminal's own clock, which is not the agent
-moving - is over, and its window is closed.
+twenty-minute stillness backstop: a screen that has not changed in that long - bar
+the terminal's own clock, which is not the agent moving - is over whatever its status
+bar still claims, and its window is closed. That ends a session wedged mid-turn, and
+it is also what closes the window a finished run leaves open: a run its CLI reported
+over (or whose PR merged) retires on the spot, and an agent of it still at its prompt
+becomes a *released* record - holding no bay and no PR, left off the
+[Agent tasks](panel.md#agent-tasks) list unless it starts working again - until twenty
+still minutes close it.
 
 (Only positive evidence counts. An agent that reports nothing and whose terminal
 can't be read - one outside tmux, or a dump that failed - keeps its bay: the
@@ -130,7 +135,8 @@ retired and its window closed with it.
 
 It is the last rung of the ladder, not the first, and that is the whole of its
 safety. Every answer above it is a better one than a clock, so each of them wins:
-a run that ended the ordinary way keeps its window, a pid missing from a table that
+a run that ended the ordinary way is already retired, its window left to the
+stillness backstop, a pid missing from a table that
 was actually read ends the run for that reason instead (the reaper walks out of the
 *remembered* tty, and `pts/<n>` is recycled freely), a session already back at its
 prompt has handed its bay back and is holding a finished task worth reading, and a

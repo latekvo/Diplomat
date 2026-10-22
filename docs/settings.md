@@ -102,9 +102,11 @@ and ⏻) swaps the panel to a settings screen:
     count input + output + cache *writes*, the same three the Claude Code transcript
     scan sums, so one ledger holds every runner in one unit. What those tokens are
     *not* is a share of a rate-limit window: that window is the Anthropic account's,
-    priced from Claude Code's own usage probe, so **limit per task** and the
-    [spending budget](automation.md#the-spending-budget) count the tasks that ran on Claude Code
-    and leave a foreign run to the token figures beside them.
+    priced from Claude Code's own usage probe, so **limit per task** counts the tasks
+    that ran on Claude Code and leaves a foreign run to the token figures beside them.
+    The [spending budget](automation.md#the-spending-budget) gates every runner, each in its
+    own currency: Claude Code against its windows, any other runner in dollars - what
+    its tasks were charged, against what is left on the OpenRouter key and balance.
   - What does *not* carry over: the [Claude API-error watcher](automation.md#autonomous-monitors)
     - its banners are Claude Code's. A foreign agent that errors reads as idle, so
     it gives its task-cap slot back and the monitor that owed the work dispatches it
@@ -115,8 +117,9 @@ and ⏻) swaps the panel to a settings screen:
   targets. The hint warns when the path isn't absolute, or has no `.git` - the
   spawn's `cd` is best-effort, so an agent would otherwise start in your home
   directory unnoticed. `DIPLOMAT_REPO` still outranks the field, and says so in the
-  hint when it's set. Unlike every other setting this one is **not** in UserDefaults:
-  a mesh node spawns agents from its own stdlib-only process, so the pick lives in
+  hint when it's set. Like the runner and every other key a node reads, this one is
+  **not** in UserDefaults: a mesh node spawns agents from its own stdlib-only
+  process, so the pick lives in
   the shared `~/.diplomat/config.json` that both front-ends and the node re-read on
   each spawn - change it and a *running* node picks it up.
 - **Auto-queue fixes for my PRs / Auto-queue reviews that request me** - the two
@@ -127,8 +130,10 @@ and ⏻) swaps the panel to a settings screen:
   stops is the automatic start. Nested under the **review-requests** toggle: the
   **author allowlist** (*Only these authors*, blank = anyone), which stays editable
   while the toggle is off because it is what decides which requests get listed, and -
-  visible only while it's on - the **auto-approve** master toggle and its three
-  withhold-the-verdict suppressors (SKILL / installer / community).
+  visible only while it's on - **May approve / request changes** (the verdict switch)
+  with its three withhold-the-verdict suppressors (SKILL / installer / community), and
+  **Soft-approve clean PRs** (a thank-you COMMENT review, never an APPROVE; independent
+  of the verdict switch).
 - **Run at most N automatic tasks at a time** - this machine's hard cap on
   concurrent automatic agents (**default 2**, range 1-16), across both monitors,
   the work a sweep queues, and any work a mesh peer routes here. The agent a
@@ -137,7 +142,7 @@ and ⏻) swaps the panel to a settings screen:
   the same reason, it lives in the shared `~/.diplomat/config.json` rather than
   UserDefaults - the node that runs peer-routed work is a separate stdlib-only
   process, and a machine with two answers to "how many at once" has no cap at all.
-- **Hold automatic work when the limit runs low** - the
+- **Hold work when the limit runs low** - the
   [spending budget](automation.md#the-spending-budget) (**default on**), with the confidence
   it must reach that a task fits (**default 95%**, one-sided) and what to keep in
   hand while the ledger cannot price a task yet - a share of a window (**default
@@ -145,7 +150,8 @@ and ⏻) swaps the panel to a settings screen:
   runner billed in money. Priced from the same per-task figure the
   [Telemetry](telemetry.md) screen shows, against both rate-limit windows or against
   both of the OpenRouter ceilings. Held work waits under [Agent tasks](panel.md#agent-tasks)
-  and starts when a window refills; *execute now* overrides it, a wizard spawn that
+  and starts when a window refills or the balance is topped up; *execute now*
+  overrides it, a wizard spawn that
   opens a terminal on the spot is never gated, and nothing is held at all while the
   probe cannot read a limit. In `~/.diplomat/config.json` for the same reason as the
   cap above.
@@ -158,7 +164,8 @@ and ⏻) swaps the panel to a settings screen:
   cap it hands bays back to.
 - **Tools - color & visibility** - a **color well** to retint each tool plus a switch
   to hide it; hidden tools drop out of the grid and the reverse-lookup checklist.
-- **Spawn terminal** - which terminal SPAWN AGENT opens: **Ghostty**, **iTerm** or
+- <a id="spawn-terminal"></a>**Spawn terminal** - which terminal SPAWN AGENT opens:
+  **Ghostty**, **iTerm** or
   **Terminal**, tried in that order, with Terminal the always-present fallback.
   Ghostty leads because its window is created *with* the agent command in it, so
   there is no window sitting empty for the command to be typed into and dropped -
@@ -196,7 +203,10 @@ and ⏻) swaps the panel to a settings screen:
   source checkout on disk (`DIPLOMAT_SELF_REPO`). The same path also runs
   **unattended daily at 06:00** - see [Autostart on login](development.md#autostart-on-login).
 
-All of it persists across launches (UserDefaults, `com.ignacy.diplomat`).
+All of it persists across launches: in UserDefaults (`com.ignacy.diplomat`), except
+the keys a mesh node reads too - repo root, agent runner and model, the automatic-task
+cap, the 4h give-up switch and the spending budget's four knobs - which live in the
+shared `~/.diplomat/config.json` ([`AppConfig.swift`](../packages/diplomat-platform/macos/Sources/Diplomat/AppConfig.swift)).
 
 ## Definitions / heuristics (where it's deliberately loose)
 

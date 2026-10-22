@@ -38,7 +38,7 @@ default).)
 
 Dispatching routes a staged prompt to the chosen node over the mesh; the
 receiving machine opens its own terminal running its own agent runner exactly like a local
-SPAWN AGENT (dispatches are the `📤/📥 mesh` rows in the activity feed). If the
+SPAWN AGENT (dispatches are the **Mesh**-category rows in the activity feed). If the
 first target declines - gone, or out of tokens - the dispatch fails over to the
 next candidate by rank. While the mesh is live, the four wizards grow a
 **⬡ Run on mesh** row (checked by default, with a preview of where the duty

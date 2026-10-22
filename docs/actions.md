@@ -8,8 +8,10 @@ The grid carries a **Review PRs** card alongside the tools. Click it and the wiz
 opens where the PR lists normally render; dial in a few choices and hit **SPAWN
 AGENT**.
 
-A **specific PR** is one agent: a fresh terminal window (Ghostty if installed, else
-iTerm, else Terminal) running a detached review session in your **repo root** (Settings;
+A **specific PR** is one agent: a fresh terminal window (the
+[Spawn terminal](settings.md#spawn-terminal) picked in Settings, or the first that can be
+driven when that one can't - Ghostty needs tmux) running a detached review session in
+your **repo root** (Settings;
 default `~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to
 a file and the window runs
 `<agent> [--settings <hooks>] "$(cat <promptfile>)"; printf %s $? > <done>` - where
@@ -38,6 +40,10 @@ prompt:
 - **Leave reviews (CLAUDE.md format)** - *(never on my own)* post formal per-line reviews;
   off, the findings stay in the agent's summary (the verdict pass below still posts them).
 - **Reply to others' review threads** - *(never on someone else's)* answer and resolve open threads.
+- **Soft-approve clean PRs (thank-you review)** - *(on by default; never on my own,
+  and dropped when the verdict pass below is on)* on a perfectly-clean PR, submit a
+  body-only COMMENT review saying what was run and thanking the author - never an
+  APPROVE. It posts even with *Leave reviews* off.
 - **✨ Final E2E pass + verdict** - *(highlighted, off by default; others' and
   unknown-author PRs only - never my own, there is no self-approval)* appends a
   culminating full-E2E pass on the real binaries with big swarms: APPROVE
