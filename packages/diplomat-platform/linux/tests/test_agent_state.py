@@ -937,6 +937,19 @@ def test_a_run_its_cli_reported_over_leaves_the_list():
     assert t2.states["untracked:844"].state == A.AWAITING_INPUT
 
 
+def test_a_released_agent_working_again_is_drawn():
+    """Its run is over, but the agent is not: the operator typed a follow-up, and it
+    is working. Left off the list, a working agent is on the panel nowhere."""
+    reported = {RUN_844: (completion.IDLE, RETIRE_AT - 30)}
+    t1 = A.tick([_run_844()], _mac(RETIRE_AT, tails={"ttys021": AT_PROMPT},
+                                   activity=reported), RETIRE_AT, 1, A.RUN_DEADLINE)
+    t2 = A.tick(_settle(t1), _mac(NEXT_TICK, tails={"ttys021": WORKING}), NEXT_TICK,
+                1, A.RUN_DEADLINE)
+    assert [(r.run_id, s.state, s.reason) for r, s in t2.rows] == \
+        [("untracked:844", A.RUNNING, "released; pid 958 alive; working")]
+    assert t2.cap_load == set() and t2.in_flight(844) is False
+
+
 def test_an_untracked_agent_nobody_ended_is_still_drawn():
     """The filter is on released, not untracked: a session the operator opened by
     hand at its prompt is a live agent nothing here retired, and keeps its row."""
