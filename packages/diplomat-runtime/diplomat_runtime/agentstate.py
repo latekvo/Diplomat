@@ -1378,7 +1378,8 @@ def rows(records: list[RunRecord],
 
     Except a released agent not :data:`RUNNING`: its run is over, and a run that is
     over is not on the list. At its prompt it is kept only for the stillness backstop
-    to close its window; running again, it is a live agent like any other.
+    to close its window; running again, it is a live agent like any other. An
+    unreadable screen reads as running here as everywhere, so it is drawn then too.
     """
     pairs = [(r, states[r.run_id]) for r in records
              if r.run_id in states

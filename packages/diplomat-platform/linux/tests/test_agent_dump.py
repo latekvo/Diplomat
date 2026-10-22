@@ -181,3 +181,30 @@ def test_the_dump_gives_the_verdict_on_a_window_it_reaps_off_the_list(
     assert "  finished       #337 (not drawn)\n" \
            "                   because: released; pid 4242 alive; " \
            "its screen has not changed in 20m\n" in out
+
+
+def test_the_dump_marks_an_ended_run_as_off_the_panel_too(monkeypatch, capsys):
+    """Store.running_tasks leaves ended runs out, so the dump's mark has to as well,
+    or a finished run reads as one the panel still shows."""
+    import time
+
+    from diplomat_runtime import agentregistry, appconfig
+    from diplomat_app import probes
+
+    now = time.time()
+    rec = A.RunRecord(run_id="run-500", pr_number=500, pid=5555, tty="pts/4",
+                      dispatched_at=now - 3600, source=A.SOURCE_AUTO)
+    monkeypatch.setattr(agentregistry, "load", lambda: [rec])
+    monkeypatch.setattr(agentregistry, "adopt_pids", lambda rs: rs)
+    monkeypatch.setattr(appconfig, "run_deadline", lambda: None)
+    monkeypatch.setattr(appconfig, "auto_task_limit", lambda: 2)
+    monkeypatch.setattr(probes, "marker_stats", lambda: (0, 0))
+    monkeypatch.setattr(probes, "gather", lambda records, now, **_: A.Evidence(
+        processes=A.Observation.present({}),
+        tails=A.Observation.present({}),
+        live_agents=A.Observation.present({})))
+
+    agentdump.run()
+    out = capsys.readouterr().out
+
+    assert "  finished       #500 (not drawn)\n" in out

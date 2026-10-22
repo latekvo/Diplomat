@@ -1252,7 +1252,8 @@ public enum AgentState {
     ///
     /// Except a released agent not `.running`: its run is over, and a run that is over
     /// is not on the list. At its prompt it is kept only for the stillness backstop to
-    /// close its window; running again, it is a live agent like any other.
+    /// close its window; running again, it is a live agent like any other. An unreadable
+    /// screen reads as running here as everywhere, so it is drawn then too.
     public static func rows(records: [RunRecord],
                             states: [String: Resolution]) -> [(RunRecord, Resolution)] {
         let rank = Dictionary(uniqueKeysWithValues: stateOrder.enumerated().map { ($1, $0) })

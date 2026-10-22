@@ -53,11 +53,12 @@ def run() -> int:
     print()
 
     print("RUNS")
-    drawn = {r.run_id for r, _ in t.rows}
-    # The panel leaves out a released agent at its prompt, whose window may be the
-    # one being reaped below.
+    listed = {r.run_id for r, _ in t.rows}
+    # What Store.running_tasks draws. Off it: ended runs, and a released agent at its
+    # prompt, whose window may be the one being reaped below.
+    drawn = {r.run_id for r, s in t.rows if s.state not in agentstate.ENDED}
     undrawn = [(r, t.states[r.run_id]) for r in t.records
-               if r.run_id in t.states and r.run_id not in drawn]
+               if r.run_id in t.states and r.run_id not in listed]
     if not t.rows and not undrawn:
         print("  (none)")
     for r, s in t.rows + undrawn:
