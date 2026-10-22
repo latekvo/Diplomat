@@ -667,6 +667,7 @@ def test_relaunch_does_not_inherit_headless_markers(tmp_path, monkeypatch):
     assert env.get("DISPLAY") == ":0"   # the display env is still handed through
 
 
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="the tray's env is read from /proc")
 def test_a_running_trays_display_env_is_lifted_byte_for_byte():
     """What the 06:00 relaunch hands the new tray: a path that is not UTF-8 (a home
     under a legacy encoding) arrives as the same bytes, as from the recorded env."""
