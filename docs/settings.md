@@ -107,8 +107,9 @@ and ⏻) swaps the panel to a settings screen:
     The [spending budget](automation.md#the-spending-budget) gates every runner, each in its
     own currency: Claude Code against its windows, any other runner in dollars - what
     its tasks were charged, against what is left on the OpenRouter key and balance.
-    Only Hermes reports what a task was charged, so the dollar gate holds nothing
-    until a Hermes task has been billed here, and never under OpenCode.
+    Only Hermes reports what a task was charged, and the dollar gate prices any
+    non-Claude runner from the tasks billed here in the last 14 days, so it holds
+    nothing until a Hermes task has been billed in that span.
   - What does *not* carry over: the [Claude API-error watcher](automation.md#autonomous-monitors)
     - its banners are Claude Code's. A foreign agent that errors reads as idle, so
     it gives its task-cap slot back and the monitor that owed the work dispatches it
@@ -149,7 +150,7 @@ and ⏻) swaps the panel to a settings screen:
   it must reach that a task fits (**default 95%**, one-sided) and what to keep in
   hand while the ledger cannot price a task yet - a share of a window (**default
   20%**) under Claude Code, or dollars on the account (**default $1.00**) under a
-  runner billed in money, once one of its tasks has been charged. Priced from the same per-task figure the
+  runner billed in money, once a task has been charged here in the last 14 days. Priced from the same per-task figure the
   [Telemetry](telemetry.md) screen shows, against both rate-limit windows or against
   both of the OpenRouter ceilings. Held work waits under [Agent tasks](panel.md#agent-tasks)
   and starts when a window refills or the balance is topped up; *execute now*
