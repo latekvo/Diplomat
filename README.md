@@ -95,7 +95,7 @@ Every switch below is in Settings (⚙︎).
 | Thank-you review (body only) on a perfectly clean PR | **on** |
 | Nudge agents stalled on API errors | **on** |
 | Automatic agents running at once | **2** (1-16) |
-| Hold automatic work when the limit runs low | **on**: 95% confidence; until a task can be priced, keeps 20% of a window or $1 |
+| Hold automatic work when the limit runs low | **on**: 95% confidence; until a task can be priced, keeps 20% of a window (or $1 of credit once Hermes has billed a task) |
 | Give up on an automatic run after 4 h | **on** |
 | Agent runner | **Claude Code** (or OpenCode, Hermes) |
 | Mesh | **off** |
