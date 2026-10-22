@@ -654,17 +654,20 @@ check(detectModel() == "Opus 5",
 check(detectModel(service: true) == "",
       "an unpinned 2.x run with no config model names no model, never the picker's last")
 // DIPLOMAT_OPENCODE_MAJOR is the Linux runtime's answer. Anything but exactly `1` or `2`
-// asks the binary, here through a shell that finds none, so 1.x.
+// asks the binary, here through a shell and a PATH that find none, so 1.x. Not the
+// system PATH: a distro package puts a real `opencode` in /usr/bin.
 do {
     let emptyShell = modelFixture.appendingPathComponent("noshell")
     FileManager.default.createFile(atPath: emptyShell.path,
                                    contents: Data("#!/bin/sh\nexit 0\n".utf8),
                                    attributes: [.posixPermissions: 0o755])
+    let emptyBin = modelFixture.appendingPathComponent("empty-bin")
+    try FileManager.default.createDirectory(at: emptyBin, withIntermediateDirectories: true)
     let overrides = ["DIPLOMAT_CONFIG": configFile.path, "DIPLOMAT_CLAUDE_DIR": claudeHome.path,
                      "DIPLOMAT_HERMES_CONFIG": hermesConfig.path,
                      "DIPLOMAT_OPENCODE_CONFIG_DIR": openCodeConfig.path,
                      "DIPLOMAT_OPENCODE_STATE_DIR": openCodeState.path,
-                     "SHELL": emptyShell.path, "PATH": "/usr/bin:/bin"]
+                     "SHELL": emptyShell.path, "PATH": emptyBin.path]
     let prior = overrides.keys.map { ($0, ProcessInfo.processInfo.environment[$0]) }
     for (key, value) in overrides { setenv(key, value, 1) }
     defer {

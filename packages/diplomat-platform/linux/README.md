@@ -156,7 +156,7 @@ pip install -r requirements.txt
 ./diplomat                 # tray applet (left-click the wrench)
 ```
 
-Quit from the panel's ⏻ button or the tray right-click menu. `pkill -f "python -m diplomat_app"`
+Quit from the panel's ⏻ button or the tray right-click menu. `pkill -f "python3? -m diplomat_app"`
 stops it too, but reads as a crash: with the watchdog installed (below) it is back within 5 minutes.
 
 ## Autostart on login

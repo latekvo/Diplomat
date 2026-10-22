@@ -68,8 +68,8 @@ def test_the_linux_service_runs_the_launcher_in_watchdog_mode(linux_units) -> No
     exec_line = next(ln for ln in d if ln.startswith("ExecStart="))
     launcher = Path(exec_line.split("/bin/bash ", 1)[1])
     assert launcher == PLATFORM / "linux" / "diplomat" and os.access(launcher, os.X_OK)
-    # The tray it launches is in this oneshot's cgroup: the default KillMode would end
-    # it with the oneshot.
+    # Without systemd-run the tray it launches is in this oneshot's cgroup: the default
+    # KillMode would end it with the oneshot.
     assert "Type=oneshot" in d and "KillMode=process" in d
     assert not any(ln.startswith("RemainAfterExit") for ln in d)
 

@@ -8,11 +8,30 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import uuid
 
 import pytest
 
 from diplomat_runtime import apiwatch, tmuxwatch
+
+
+@pytest.fixture(autouse=True)
+def private_tmux_server(monkeypatch):
+    """The real-tmux tests open, list and kill sessions on whatever server ``tmux``
+    reaches, which is the operator's own when the suite runs inside their tmux. A
+    socket directory of its own keeps them on a server nothing else uses; ``/tmp``
+    because a tmux socket path is capped at 108 bytes."""
+    sockets = tempfile.mkdtemp(prefix="dpt-", dir="/tmp")
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setenv("TMUX_TMPDIR", sockets)
+    yield
+    if shutil.which("tmux"):
+        # By its socket: a test that set $TMUX would otherwise name the server killed.
+        socket = os.path.join(sockets, f"tmux-{os.getuid()}", "default")
+        subprocess.run(["tmux", "-S", socket, "kill-server"], capture_output=True, check=False)
+    shutil.rmtree(sockets, ignore_errors=True)
 
 
 # MARK: - looks_like_api_error
