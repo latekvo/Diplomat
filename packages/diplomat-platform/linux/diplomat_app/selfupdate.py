@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -208,11 +210,22 @@ def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
         env.pop(marker, None)
     if extra_env:
         env.update(extra_env)
+    argv = ["bash", str(launcher)]
+    if _in_service_cgroup() and shutil.which("systemd-run"):
+        # A tray started from a systemd service stays in that unit's cgroup after the
+        # oneshot ends, and systemd warns about it on every later run of the unit -
+        # every 5 minutes for the watchdog. A scope of its own takes it out; systemd-run
+        # execs the launcher in place, so relaunch_failure still watches the applet.
+        # It reaches the manager by XDG_RUNTIME_DIR, and the tray's may name another,
+        # so it keeps this unit's and hands the tray's on.
+        argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
+                f"--setenv=XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']}", "--", *argv]
+        env["XDG_RUNTIME_DIR"] = os.environ["XDG_RUNTIME_DIR"]
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         with (log_dir / "diplomat.log").open("ab") as log:
             return subprocess.Popen(  # noqa: S603 - relaunch ourselves, detached
-                ["bash", str(launcher)],
+                argv,
                 cwd=str(root),
                 start_new_session=True,
                 stdin=subprocess.DEVNULL,
@@ -224,14 +237,29 @@ def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
         raise UpdateError(f"could not relaunch the applet: {exc}") from exc
 
 
+_CGROUP_FILE = Path("/proc/self/cgroup")
+
+
+def _in_service_cgroup() -> bool:
+    """Whether this process runs in a service of the user's systemd manager, which
+    ``systemd-run --user`` can reach: the unattended jobs' units, or a tray started
+    from an autostart entry systemd runs. A system service (a CI runner) is not one."""
+    try:
+        cgroup = _CGROUP_FILE.read_text().rstrip()
+    except OSError:
+        return False
+    return re.search(r"/user@\d+\.service/.+\.service$", cgroup) is not None
+
+
 def relaunch_failure(child: subprocess.Popen, window: float = 3.0) -> int | None:
     """The exit code of a relaunched launcher that ended inside ``window``, else None.
 
-    The launcher execs the applet, so the child's exit is the applet's: any exit
-    inside the window, 0 included, is an applet that ended without taking over
-    the tray (a venv without PySide6, a checkout that no longer imports), and it
-    is reported instead of "restarting…" outliving the button and "relaunched"
-    being logged over the old build. One still running is the applet coming up.
+    The launcher execs the applet, so the child's exit is the applet's, or
+    systemd-run's where it could not start a scope: any exit inside the window,
+    0 included, is a tray that never took over (a venv without PySide6, a checkout
+    that no longer imports), and it is reported instead of "restarting…" outliving
+    the button and "relaunched" being logged over the old build. One still running
+    is the applet coming up.
     """
     deadline = time.monotonic() + window
     while time.monotonic() < deadline:
@@ -266,8 +294,8 @@ def _display_env_of(pid: int) -> dict[str, str]:
         return out
     for entry in raw.split(b"\0"):
         key, sep, val = entry.partition(b"=")
-        if sep and key.decode("utf-8", "replace") in _DISPLAY_ENV_KEYS:
-            out[key.decode("utf-8", "replace")] = val.decode("utf-8", "replace")
+        if sep and os.fsdecode(key) in _DISPLAY_ENV_KEYS:
+            out[os.fsdecode(key)] = os.fsdecode(val)
     return out
 
 

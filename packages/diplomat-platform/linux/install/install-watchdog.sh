@@ -27,8 +27,9 @@ Description=Diplomat liveness check (launch the tray if it died)
 
 [Service]
 Type=oneshot
-# The tray it launches is a detached child in this unit's cgroup; the default
-# KillMode=control-group would kill it the moment this oneshot finishes.
+# The tray it launches gets a scope of its own from systemd-run; without that it is
+# a detached child in this unit's cgroup, which the default KillMode=control-group
+# would kill the moment this oneshot finishes.
 KillMode=process
 Environment=DIPLOMAT_WATCHDOG=1
 ExecStart=/bin/bash ${LAUNCHER}

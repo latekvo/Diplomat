@@ -156,7 +156,7 @@ pip install -r requirements.txt
 ./diplomat                 # tray applet (left-click the wrench)
 ```
 
-Quit from the panel's ⏻ button or the tray right-click menu. `pkill -f "python -m diplomat_app"`
+Quit from the panel's ⏻ button or the tray right-click menu. `pkill -f "python3? -m diplomat_app"`
 stops it too, but reads as a crash: with the watchdog installed (below) it is back within 5 minutes.
 
 ## Autostart on login
@@ -208,8 +208,8 @@ rate-limit budget's three knobs are the exceptions (see their bullets):
   status, and under the review-requests one the **author allowlist** (*Only these
   authors*, blank = anyone), the **auto-approve** master toggle
   plus its three withhold-the-verdict suppressors (SKILL / installer / community),
-  and the **soft-approve** toggle (default ON — a clean comments-only review leaves
-  a friendly thank-you note, never an APPROVE action). A monitor switched off keeps
+  and the **soft-approve** toggle (default ON — a clean comments-only review is
+  submitted as a COMMENT review with a friendly thank-you body, never an APPROVE). A monitor switched off keeps
   polling and keeps listing what it finds under [Agent tasks](#agent-tasks); what
   stops is the automatic start — which is why the allowlist stays editable while it
   is off, alone in that nest, since it is what decides which requests get listed.

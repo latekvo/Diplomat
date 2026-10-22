@@ -414,10 +414,10 @@ struct SettingsView: View {
             }
             if store.autoApproveEnabled { verdictPolicyBlock }
             SettingRow(title: "Soft-approve clean PRs",
-                       summary: "One “ran the sweep, all clean” comment — never an APPROVE.",
+                       summary: "One “ran the sweep, all clean” COMMENT review — never an APPROVE.",
                        detail: "Off ⇒ a review that finds nothing says nothing. Independent "
-                             + "of the verdict switch above: a soft approval is a comment, "
-                             + "not a GitHub approval.") {
+                             + "of the verdict switch above: a soft approval is a COMMENT "
+                             + "review, not a GitHub approval.") {
                 switchControl("Soft-approve clean PRs", $store.softApproveEnabled)
             }
         }

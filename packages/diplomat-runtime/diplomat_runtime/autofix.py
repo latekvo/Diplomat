@@ -170,10 +170,10 @@ class ReviewRequest:
     @property
     def my_last_response_at(self) -> str | None:
         """The most recent time I responded to this PR — a formal review submission
-        OR a top-level comment, whichever is later. A clean PR's auto-response is a
-        friendly soft-approve *comment* (never a review verdict), so a review-only
-        signal misses it and the request reads as forever-owed. ISO8601 strings
-        compare chronologically, so ``max`` picks the latest."""
+        OR a top-level comment, whichever is later: a top-level comment of mine answers
+        the request too, and a review-only signal reads one answered that way as
+        forever-owed. ISO8601 strings compare chronologically, so ``max``
+        picks the latest."""
         times = [t for t in (self.my_last_review_at, self.my_last_comment_at) if t]
         return max(times) if times else None
 
