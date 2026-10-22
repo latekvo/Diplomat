@@ -3,7 +3,11 @@
 //
 // Drives the REAL spawnRepairAgent through dispatchRepair (DA_EXPOSE_TEST seam) with a
 // fake `osascript` on PATH that records its argv, then runs the staged launcher with a
-// fake `claude` and checks the agent ran and its output reached the repair log.
+// fake `claude` and checks the agent ran and its output reached the repair log. That
+// `claude` is off the daemon's PATH, as it is for a daemon the applet started under
+// launchd: only the rc of the operator's interactive shell (a stub $SHELL) puts it on,
+// and that rc execs tmux unless $TMUX is set, as the common "every terminal in tmux"
+// snippet does.
 // Run: node test/repair-terminal.mjs
 
 import fs from 'node:fs';
@@ -16,22 +20,34 @@ const BASE = fs.mkdtempSync(path.join(os.tmpdir(), 'da-repair-term-'));
 const BIN = path.join(BASE, 'bin');
 const CONFIG = path.join(BASE, 'config.json');
 const RECORD = path.join(BASE, 'osascript-argv');
+const RC_BIN = path.join(BASE, 'rc-bin');
+const USER_SHELL = path.join(BASE, 'user-shell');
+const TMUX = path.join(BASE, 'tmux');
+const TMUX_RECORD = path.join(BASE, 'tmux-argv');
 fs.mkdirSync(BIN);
+fs.mkdirSync(RC_BIN);
 fs.writeFileSync(path.join(BASE, 'fake.json'), '[]');
-const fake = (name, body) => fs.writeFileSync(path.join(BIN, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
-fake('claude', 'for a; do :; done; printf "claude-ran %s\\n" "$a"');
+const script = (file, body) => fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+const fake = (name, body) => script(path.join(BIN, name), body);
+script(path.join(RC_BIN, 'claude'), 'for a; do :; done; printf "claude-ran %s\\n" "$a"');
+// Only an interactive shell reads its "rc", which hands off to tmux outside one.
+script(USER_SHELL, `[ "$1" = -i ] && { [ -n "$TMUX" ] || exit 0; PATH='${RC_BIN}':$PATH; }
+[ "$2" = -c ] || exit 97; exec /bin/sh -c "$3"`);
+script(TMUX, `printf '%s\\n' "$@" > '${TMUX_RECORD}'; [ "$1" = new-session ] || exit 98
+TMUX=fake exec /bin/sh -c "$2"`);
 
 process.env.DA_EXPOSE_TEST = '1';
 process.env.DA_BASE_DIR = BASE;
 process.env.DA_FAKE_DEVICES = path.join(BASE, 'fake.json');
 process.env.DIPLOMAT_CONFIG = CONFIG;
+process.env.DIPLOMAT_TMUX = TMUX;
 const REAL_PATH = process.env.PATH;
 process.env.PATH = `${BIN}:/usr/bin:/bin`;
 
 const { ensureDirs } = await import('../src/state.js');
 ensureDirs();
 const { allocations, dispatchRepair } = await import('../src/daemon.js');
-const { resolveTerminal, openArgv } = await import('../src/terminal.js');
+const { resolveTerminal, openArgv, launcherScript, shq } = await import('../src/terminal.js');
 const { REPAIRS_DIR } = await import('../src/paths.js');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -92,22 +108,60 @@ if (MAC) {
 }
 assert.equal(path.dirname(launcher), REPAIRS_DIR);
 
-// The staged command really runs the agent, with the daemon's PATH and the multi-line
-// reason intact, and tees into the log the record points at.
-const ran = spawnSync('/bin/sh', [launcher], { input: '\n', encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
+// The staged command really runs the agent, in tmux under the operator's interactive
+// $SHELL and with the multi-line reason intact, and tees into the log the record
+// points at.
+const TERM_ENV = { PATH: '/usr/bin:/bin', SHELL: USER_SHELL };
+const ran = spawnSync('/bin/sh', [launcher], { input: '\n', encoding: 'utf8', env: TERM_ENV });
 assert.equal(ran.status, 0, ran.stderr);
 assert.match(ran.stdout, /claude-ran A device managed/);
 assert.match(ran.stdout, /press Enter to close/);
 assert.match(fs.readFileSync(r.repairLog, 'utf8'), /^claude-ran A device managed/);
 assert.match(fs.readFileSync(launcher, 'utf8'), /line one\nline "two"/);
+assert.equal(fs.readFileSync(TMUX_RECORD, 'utf8'), `new-session\n/bin/sh ${shq(launcher)}\n`);
+
+// Already in tmux (Terminal/iTerm type into the operator's tmux pane): no second one.
+fs.rmSync(TMUX_RECORD);
+const inTmux = spawnSync('/bin/sh', [launcher], { input: '\n', encoding: 'utf8', env: { ...TERM_ENV, TMUX: 'outer' } });
+assert.match(inTmux.stdout, /claude-ran A device managed/);
+assert.equal(fs.existsSync(TMUX_RECORD), false, 'nested a tmux session');
 
 // The window holds its output until someone has read it.
-const held = spawn('/bin/sh', [launcher], { stdio: ['pipe', 'ignore', 'ignore'], env: { PATH: '/usr/bin:/bin' } });
+const held = spawn('/bin/sh', [launcher], { stdio: ['pipe', 'ignore', 'ignore'], env: TERM_ENV });
 await delay(500);
 assert.equal(held.exitCode, null, 'the launcher exited without waiting for Enter');
 held.stdin.end('\n');
 await new Promise((res) => held.on('exit', res));
 console.log(`ok   ${MAC ? 'Ghostty' : 'konsole'} window runs the agent`);
+
+// No $SHELL (a Linux terminal inheriting the daemon's env) and no tmux: bash, with the
+// window's own PATH ahead of the daemon's. HOME keeps the real rc files out of it.
+const runs = (file, env) => {
+  const out = spawnSync('/bin/sh', [file], { input: '\n', encoding: 'utf8', env: { HOME: BASE, ...env } });
+  assert.equal(out.status, 0, out.stderr);
+  assert.match(out.stdout, /claude-ran x/);
+};
+let nStaged = 0;
+const staged = (daemonPath) => {
+  const file = path.join(BASE, `fallback-${nStaged++}.sh`);
+  const saved = process.env.PATH;
+  process.env.PATH = daemonPath;
+  process.env.DIPLOMAT_TMUX = '/nonexistent-tmux';
+  try { fs.writeFileSync(file, launcherScript('claude x', file)); } finally {
+    process.env.PATH = saved;
+    process.env.DIPLOMAT_TMUX = TMUX;
+  }
+  return file;
+};
+// macOS's /bin/sh fills an unset $SHELL in from passwd: the bash fallback is dash's.
+if (!MAC) {
+  fs.writeFileSync(path.join(BASE, '.bashrc'), `PATH='${RC_BIN}':$PATH\n`);
+  runs(staged('/usr/bin:/bin'), { PATH: '/usr/bin:/bin' });
+  fs.rmSync(path.join(BASE, '.bashrc'));
+}
+runs(staged('/usr/bin:/bin'), { PATH: `${RC_BIN}:/usr/bin:/bin` });
+runs(staged(`${RC_BIN}:/usr/bin:/bin`), { PATH: '/usr/bin:/bin' });
+console.log('ok   no $SHELL: window PATH, then the daemon\'s');
 
 // ---- Terminal.app and iTerm keep the input settle ---------------------------
 if (MAC) {

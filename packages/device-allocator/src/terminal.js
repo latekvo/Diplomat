@@ -8,8 +8,12 @@
 //
 // The command is staged in a launcher file rather than handed over inline: Ghostty
 // splits `command:` into words, Linux terminals take an argv, and an AppleScript
-// literal is one line. The launcher also carries this daemon's PATH, because Ghostty
-// runs its command under a bare login PATH that has no `claude` on it.
+// literal is one line. It runs the command as the applets' own spawns do
+// (AgentSpawner.shellCommand, review.terminal_argv): under the operator's interactive
+// $SHELL (bash if unset), whose rc puts `claude` on PATH where neither Ghostty's bare
+// login PATH nor launchd's has it, and inside tmux wherever tmux exists, so an rc that
+// execs tmux unless $TMUX is set cannot replace that shell first. This daemon's PATH
+// is appended as a fallback.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -56,11 +60,20 @@ export function resolveTerminal(platform = process.platform) {
   return Object.keys(LINUX_TERMINALS).find((k) => onPath(LINUX_TERMINALS[k][0])) || 'xterm';
 }
 
-export function launcherScript(command) {
+// Twin of TerminalFocus.binary, DIPLOMAT_TMUX included.
+function tmuxBinary() {
+  const env = process.env.DIPLOMAT_TMUX;
+  if (env !== undefined) return fs.existsSync(env) ? env : null;
+  return ['/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux'].find((p) => fs.existsSync(p)) || null;
+}
+
+export function launcherScript(command, launcher) {
+  const tmux = tmuxBinary();
   return [
     '#!/bin/sh',
-    `export PATH=${shq(process.env.PATH || '')}`,
-    command,
+    `export PATH="\${PATH:+$PATH:}"${shq(process.env.PATH || '')}`,
+    ...(tmux ? [`[ -z "$TMUX" ] && exec ${shq(tmux)} new-session ${shq(`/bin/sh ${shq(launcher)}`)}`] : []),
+    `"\${SHELL:-/bin/bash}" -i -c ${shq(command)}`,
     "printf '\\n[repair agent exited - press Enter to close] '",
     'read _',
     '',
@@ -99,7 +112,7 @@ export function openArgv(terminal, launcher) {
 // the caller has already quarantined the device, and the repair TTL frees it if no
 // agent ever reports back.
 export function openRepairWindow(key, command, launcher) {
-  fs.writeFileSync(launcher, launcherScript(command), { mode: 0o755 });
+  fs.writeFileSync(launcher, launcherScript(command, launcher), { mode: 0o755 });
   const terminal = resolveTerminal();
   const [file, args] = openArgv(terminal, launcher);
   if (file === 'osascript') {

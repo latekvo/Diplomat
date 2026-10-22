@@ -1,7 +1,8 @@
 """The device-allocator daemon opens repair agents in the terminal this front-end
 publishes as ``spawnTerminal`` in the shared config. Pinned here: what is published
-is the RESOLVED terminal, a change republishes it, and the daemon's own table of Linux
-terminals (``device-allocator/src/terminal.js``) matches :data:`review.TERMINALS`.
+is the RESOLVED terminal, the running applet publishes it at launch and again on a
+change, and the daemon's own table of Linux terminals
+(``device-allocator/src/terminal.js``) matches :data:`review.TERMINALS`.
 """
 
 from __future__ import annotations
@@ -59,3 +60,32 @@ def test_the_daemon_knows_every_linux_terminal():
         for key, argv in re.findall(r"'?([\w-]+)'?: \[([^\]]*)\]", body)
     }
     assert table == {t.key: [t.exec_name, *t.prefix] for t in review.TERMINALS}
+
+
+def test_the_running_applet_publishes_at_launch(monkeypatch):
+    """Not only on a change: the daemon may open a repair before the operator ever
+    touches the setting. Built with every collaborator stubbed, so no tray or timer."""
+    from diplomat_app import app as app_module
+
+    class _Anything:
+        def __getattr__(self, name):
+            return _Anything()
+
+        def __call__(self, *args, **kwargs):
+            return _Anything()
+
+    called = []
+
+    class _Store:
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: called.append(name)
+
+    for name in ("QApplication", "Panel", "QTimer"):
+        monkeypatch.setattr(app_module, name, _Anything())
+    monkeypatch.setattr(app_module, "Store", _Store)
+    monkeypatch.setattr(app_module.DiplomatApp, "_build_tray", lambda self: None)
+    monkeypatch.setattr(app_module.DiplomatApp, "trigger_refresh", lambda self: None)
+    monkeypatch.delenv("DIPLOMAT_PREFILL", raising=False)
+
+    app_module.DiplomatApp()
+    assert called.count("publish_spawn_terminal") == 1
