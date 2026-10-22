@@ -27,7 +27,7 @@ XEmbed): works on **XFCE** (Notification Area / Status Notifier panel plugin),
 The left pane heads with what this machine is doing, what it is about to do, and how
 much room it has left: the automatic agents it is **running**, the work it is
 **holding**, and an empty bay per free slot of its
-[task cap](../../../README.md#autonomous-monitors). The section is always there. Its
+[task cap](../../../docs/automation.md#autonomous-monitors). The section is always there. Its
 header counts the tasks and captions them with the machine's state — an idle one with
 a cap of two reads `0`, `2 free`, over two empty bays; a saturated one with three
 more owed reads `5`, `3 queued`, over two running agents and the queue behind them.
@@ -82,7 +82,7 @@ slot**, then the **queue** that has no bay yet.
   GitHub still calls the PR conflicting, so waiting costs it nothing.
 
 Five things hold work. The cap holds what there is no slot for, and releases it as
-slots free. The [rate-limit budget](../../../README.md#the-rate-limit-budget) holds
+slots free. The [spending budget](../../../docs/automation.md#the-spending-budget) holds
 everything when the account is too low to afford another agent, and releases it when a
 window refills. A **monitor you switched off** holds its own work indefinitely: it
 keeps polling and keeps listing what it finds (reading *queued · monitor off*), but
@@ -131,7 +131,7 @@ here there are no session rows to sort, so the list starts at that order's *star
 - PySide6 (`pip install -r requirements.txt`)
 - GitHub CLI `gh`, authenticated (`gh auth login`). Agents can run on a narrower
   token than that login instead - see
-  [A narrow GitHub token for agents](../../../README.md#a-narrow-github-token-for-agents)
+  [A narrow GitHub token for agents](../../../docs/settings.md#a-narrow-github-token-for-agents)
   (on Linux it is read from the file `agentTokenFile` names)
 - The `diplomat-core` binary for prompt assembly — build it with
   `./install/build-core.sh` (needs a Swift toolchain once), or point
@@ -223,7 +223,7 @@ rate-limit budget's three knobs are the exceptions (see their bullets):
   that runs peer-routed work has no Qt, and a machine with two answers to "how many
   at once" has no cap at all.
 - **Hold automatic work when the rate limit runs low** — the
-  [rate-limit budget](../../../README.md#the-rate-limit-budget) (default **on**),
+  [spending budget](../../../docs/automation.md#the-spending-budget) (default **on**),
   with the confidence it must reach that a task fits (default **95%**) and the share
   of a window to keep in hand while the ledger cannot price one yet (default
   **20%**). Priced from the same per-task figure the Telemetry screen shows, against
@@ -248,7 +248,7 @@ rate-limit budget's three knobs are the exceptions (see their bullets):
 ## Diplomat Mesh (experimental)
 
 The applet can coordinate duties with the other machines on your LAN — see the
-[root README's Mesh section](../../../README.md#diplomat-mesh-experimental--lan-p2p-duty-coordination)
+[Mesh docs](../../../docs/mesh.md)
 for the model. Enable it in ⚙ Settings; the panel then grows a collapsible
 topology column (live nodes, link states, per-node tier/token editors, per-duty
 strategy controls). The node is [SzpontNet](../../szpontnet-core/README.md), an independent

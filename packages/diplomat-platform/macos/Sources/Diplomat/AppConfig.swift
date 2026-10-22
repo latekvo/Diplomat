@@ -10,7 +10,7 @@ import DiplomatCore
 /// where that agent's GitHub token is read from.
 /// Each is consumed by whichever process picks the work up, and one of
 /// those is a **mesh node** — a separate, stdlib-only Python process with neither
-/// UserDefaults nor Qt (the README documents joining a mesh with "no Qt needed"), which
+/// UserDefaults nor Qt (docs/mesh.md documents joining a mesh with "no Qt needed"), which
 /// outlives this app and can't be handed a value at spawn time.
 ///
 /// One more sits with them without needing to: how long a run may go on before the

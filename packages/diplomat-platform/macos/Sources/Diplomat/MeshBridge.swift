@@ -11,7 +11,7 @@ import DiplomatCore
 ///     protocol
 ///     (one NDJSON command → one reply over a loopback TCP connection).
 ///
-/// The mesh node itself is stdlib-only Python that runs on any OS (see the README);
+/// The mesh node itself is stdlib-only Python that runs on any OS (see docs/mesh.md);
 /// a Swift node is future work, so macOS drives the same Python node the Linux applet
 /// does. All blocking calls here are meant to run off the main thread (the Store wraps
 /// them in detached tasks, like `DeviceAllocator`).
