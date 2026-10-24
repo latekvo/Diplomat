@@ -428,6 +428,17 @@ check(cMine.buildPrompt().contains("For each, merge the latest `origin/main`"))
 check(cSingle.buildPrompt().hasPrefix("Take PR #337 in \(cfg.owner)/\(cfg.repo)."))
 check(cSingle.buildPrompt().contains("Merge the latest `origin/main`"))
 check(cMine.buildPrompt().contains("No AI attribution"))
+// A clean local merge of a PR GitHub still calls CONFLICTING must be pushed: left
+// untouched, the PR stays flagged and the conflicts reconciler re-dispatches it forever.
+for p in [cSingle.buildPrompt(), cMine.buildPrompt()] {
+    guard let flagged = p.range(of: "If GitHub says `CONFLICTING`"),
+          let push = p.range(of: "commit that clean merge and push it"),
+          let untouched = p.range(of: "leave that PR untouched") else {
+        check(false, "clean-merge-but-GitHub-conflicting branch missing"); continue
+    }
+    check(flagged.upperBound <= push.lowerBound && push.upperBound <= untouched.lowerBound,
+          "only a PR GitHub does not flag is left untouched")
+}
 print("conflict prompt assertions passed")
 
 section("agent runner")

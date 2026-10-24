@@ -55,7 +55,8 @@ class ConflictWizardView(SpawnWizard):
 
         root.addWidget(widgets.wizard_blurb(
             "Merges the latest main into each PR; where that conflicts, resolves it "
-            "and pushes the merge. Clean merges are left untouched."
+            "and pushes the merge. Clean merges are left untouched unless GitHub "
+            "still flags the PR conflicting."
         ))
 
         # Mesh routing (visible only while the LAN mesh is enabled + running).
