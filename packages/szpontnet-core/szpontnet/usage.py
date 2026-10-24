@@ -27,6 +27,7 @@ sandbox HOME, never read a developer's real logs or credentials).
 
 from __future__ import annotations
 
+import getpass
 import json
 import subprocess
 import sys
@@ -196,19 +197,23 @@ def _oauth_tokens() -> list[str]:
         tok = _token_in(raw)
         if tok:
             out.append(tok)
-    except (OSError, ValueError):
+    except (OSError, ValueError, AttributeError):
         pass
     if sys.platform == "darwin":
-        try:
-            proc = subprocess.run(  # noqa: S603 — fixed argv, reads the user's own item
-                ["security", "find-generic-password",
-                 "-s", "Claude Code-credentials", "-w"],
-                capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SECS, check=False)
-            tok = _token_in(json.loads(proc.stdout.strip() or "{}"))
-            if tok and tok not in out:
-                out.append(tok)
-        except (OSError, ValueError, subprocess.SubprocessError):
-            pass
+        # Under Claude Code's own account first: without ``-a``, ``security`` answers
+        # with whichever same-named item it meets first, and an empty one under
+        # account "unknown" blinded every probe here for a week.
+        for scope in (["-a", getpass.getuser()], []):
+            try:
+                proc = subprocess.run(  # noqa: S603 — fixed argv, reads the user's own item
+                    ["security", "find-generic-password", *scope,
+                     "-s", "Claude Code-credentials", "-w"],
+                    capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SECS, check=False)
+                tok = _token_in(json.loads(proc.stdout.strip() or "{}"))
+                if tok and tok not in out:
+                    out.append(tok)
+            except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+                pass
     return out
 
 
