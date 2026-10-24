@@ -110,7 +110,7 @@ struct ConflictWizardView: View {
     }
 
     private var blurbRow: some View {
-        WizardBlurb("Merges the latest main into each PR; where that conflicts, resolves it and pushes the merge. Clean merges are left untouched.")
+        WizardBlurb("Merges the latest main into each PR; where that conflicts, resolves it and pushes the merge. Clean merges are left untouched unless GitHub still flags the PR conflicting.")
     }
 
     private var spawnButton: some View {
