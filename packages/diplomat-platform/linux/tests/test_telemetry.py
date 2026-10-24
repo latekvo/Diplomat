@@ -1249,7 +1249,7 @@ def test_the_keychain_is_asked_under_claude_codes_own_account(credentials, monke
     ``security`` answered with an empty one under account "unknown" for a week, and
     every sample came back with no reading."""
     log = credentials(file_token=None, keychain_token=None, live={"oat-live"})
-    monkeypatch.setenv("USER", "me")
+    monkeypatch.setattr(quota.getpass, "getuser", lambda: "me")
 
     def run(argv, **_):
         token = "oat-live" if argv[2:4] == ["-a", "me"] else ""

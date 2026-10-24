@@ -120,7 +120,7 @@ def test_the_keychain_is_asked_under_claude_codes_own_account(monkeypatch, tmp_p
     ``security`` answered with an empty one under account "unknown" for a week, and
     the node routed on the local heuristic throughout."""
     monkeypatch.setenv("SZPONTNET_CLAUDE_DIR", str(tmp_path))
-    monkeypatch.setenv("USER", "me")
+    monkeypatch.setattr(usage.getpass, "getuser", lambda: "me")
     monkeypatch.setattr(usage.sys, "platform", "darwin")
 
     def run(argv, **_):

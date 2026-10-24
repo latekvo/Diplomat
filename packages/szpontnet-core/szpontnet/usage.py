@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import getpass
 import json
-import os
 import subprocess
 import sys
 import threading
@@ -204,7 +203,7 @@ def _oauth_tokens() -> list[str]:
         # Under Claude Code's own account first: without ``-a``, ``security`` answers
         # with whichever same-named item it meets first, and an empty one under
         # account "unknown" blinded every probe here for a week.
-        for scope in (["-a", os.environ.get("USER") or getpass.getuser()], []):
+        for scope in (["-a", getpass.getuser()], []):
             try:
                 proc = subprocess.run(  # noqa: S603 — fixed argv, reads the user's own item
                     ["security", "find-generic-password", *scope,
