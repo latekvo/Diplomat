@@ -1,25 +1,23 @@
 # szpont
 
-Install-and-run for **[Diplomat](https://github.com/latekvo/Diplomat)** (Szpont
-Yon) - the menu-bar / system-tray applet that reviews your pull requests, fixes
-your own, resolves conflicts, and keeps one device per agent.
+![The Diplomat panel](https://github.com/user-attachments/assets/bffd7a4b-2859-48ee-bffb-9da8221a4b02)
+
+Installs and starts **[Diplomat](https://github.com/latekvo/Diplomat)** (Szpont Yon),
+a menu-bar / system-tray app that runs coding agents against a GitHub repo: it
+reviews PRs, fixes your own, resolves conflicts, and gives each agent its own
+device.
 
 ```bash
 npx szpont          # or: npm i -g szpont && szpont
 ```
 
-That is the whole install. macOS and Linux.
+macOS and Linux.
 
-## What it actually does
+## How it works
 
-Diplomat is built out of the checkout it runs from - a SwiftUI bundle on macOS, a
-PySide6 package plus the `diplomat-core` Swift binary on Linux - and it keeps
-*being* that checkout: the Update button, the daily 06:00 timer and the commit the
-panel reports are all git operations on it. A package holding a copy would be a
-second Diplomat that no update could reach.
-
-So this package is the steps in between, and every one of them runs a script that
-is already in the repository:
+Diplomat runs from a git checkout, and its Update button and daily 06:00 update are
+git operations on that checkout. So this package doesn't ship a copy of Diplomat; it
+fetches the checkout and runs the scripts already in the repository:
 
 | | macOS | Linux |
 |---|---|---|
@@ -28,11 +26,9 @@ is already in the repository:
 | set it up | - | a venv at `~/.diplomat/venv` with `requirements.txt` in it |
 | start it | `open -n Diplomat.app` | the package's own `./diplomat`, on the venv's interpreter |
 
-Nothing is rebuilt that does not need to be: a venv is left alone until
-`requirements.txt` changes, and the Swift prompt binary is only built when the
-applet would not find one. `git` is needed to fetch Diplomat, and a Swift
-toolchain to build it - if one is missing you are told which and where to get it,
-before anything is downloaded.
+The venv is only rebuilt when `requirements.txt` changes, and the Swift prompt
+binary only when the applet can't find one. You need `git` and a Swift toolchain; if
+either is missing, `szpont` says which before downloading anything.
 
 ```
 szpont --plan        # print what would be run, as JSON, and do none of it
@@ -40,24 +36,22 @@ szpont --no-update   # launch the checkout as it stands
 szpont -- --dump     # everything after -- goes to the applet
 ```
 
-`DIPLOMAT_SELF_REPO` points at a checkout of your own - the same variable the
-running applet reads, and one this launcher never updates, because a working copy
+`DIPLOMAT_SELF_REPO` points at your own checkout, which is never updated since it
 may have work in it. `DIPLOMAT_REPO_URL` clones from a fork.
 
-## The same name on both indexes
+## PyPI
 
 [`pip install szpont`](https://github.com/latekvo/Diplomat/tree/main/packages/szpont)
-installs the same launcher and nothing else. The two implementations are separate
-files in separate languages, so what keeps them one command is
-`test/parity-with-python.mjs`: every machine in `test/scenarios.mjs` is probed by
-both and every fact set planned by both, and the two answers have to be identical.
+installs the same launcher, written separately in Python.
+`test/parity-with-python.mjs` runs both against every machine in
+`test/scenarios.mjs` and fails if their plans differ.
 
-## Its own tests
+## Tests
 
 ```bash
 npm test        # plan, cli, a real clone-build-launch, and the parity check
 ```
 
-The end-to-end test clones from a git repository it makes on disk and runs the
-whole sequence into stub build and launch scripts, so it needs neither the network
-nor a Swift toolchain.
+The end-to-end test clones a git repository it creates on disk and runs the whole
+sequence into stub build and launch scripts, so it needs neither the network nor a
+Swift toolchain.

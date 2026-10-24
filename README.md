@@ -2,63 +2,61 @@
 
 <img width="1146" height="904" alt="The Diplomat panel" src="https://github.com/user-attachments/assets/bffd7a4b-2859-48ee-bffb-9da8221a4b02" />
 
-A menu-bar (macOS) and system-tray (Linux) app that keeps a GitHub repo's review
-and fix queue moving by running coding agents for you. It watches
-`software-mansion/argent` through your `gh` login, and opens each agent in a terminal
-window you can watch and type into.
+Diplomat lives in the macOS menu bar or the Linux system tray and runs coding agents
+against a GitHub repo's review and fix queue. It watches `software-mansion/argent`
+through your `gh` login. Each agent opens in a terminal window, so you can watch it
+and type into it.
 
-Hacky on purpose, and built for one maintainer's workflow rather than the public.
+It's a personal tool, built around one maintainer's workflow, and it's hacky.
 
 ## What it does
 
-**On its own** (on by default):
+Left alone, it:
 
-- **Reviews PRs that request your review.** It runs a full-depth review and leaves
-  inline comments. It never approves or requests changes unless you opt in.
-- **Keeps your own PRs mergeable.** It resolves merge conflicts and works through
-  reviewers' threads, then pushes to your branch.
-- **Unsticks agents.** An agent stalled on a transient Claude API error gets a
-  "continue" typed into its session.
+- reviews PRs that request your review, at full depth, with inline comments. It
+  doesn't approve or request changes unless you turn that on;
+- keeps your own PRs mergeable: it resolves merge conflicts, works through review
+  threads and pushes to your branch;
+- types "continue" into an agent stuck on a transient Claude API error.
 
-**When you ask** (one card each in the panel):
+On request, from the panel:
 
-- **Review PRs** - one PR, or every PR by a given author.
-- **Fix issues** - reproduce, fix, and open a draft PR per issue.
-- **Resolve conflicts** - merge `main` into a set of PRs and fix whatever conflicts.
-- **Full E2E test** - a swarm audits the whole repo and reports findings ranked by
-  severity, optionally with a draft PR for each.
+- review one PR, or every PR by an author;
+- fix issues: reproduce each one, fix it and open a draft PR;
+- merge `main` into a set of PRs and resolve the conflicts;
+- run a full E2E test, where a swarm audits the whole repo and ranks what it finds
+  by severity, optionally with a draft PR per finding.
 
-**Around that:**
+The panel also has six triage lists (*My Approved PRs*, *My Unaddressed Reviews*,
+*Stale Ready >10d* and so on) and a search box that tells you which lists a PR or
+issue is on. Automatic work queues for a free slot, two at a time by default; you
+can reorder the queue, start an item now, or cancel work you asked for. When your
+rate-limit window or credit balance is too low to pay for another task, automatic
+work pauses until the window refills or you top up. A Telemetry card shows cost per
+task, rate limit left, backlog and throughput.
 
-- **Triage lists** - six live lists, such as *My Approved PRs*, *My Unaddressed
-  Reviews* and *Stale Ready >10d*, plus a search box that tells you which lists a
-  PR/issue number is on.
-- **A queue you control** - automatic work waits for a free slot (two at a time by
-  default). You can reorder it, start an item now, or cancel work you asked for.
-- **A spending brake** - automatic work pauses when your rate-limit window or credit
-  balance gets too low to afford another task, and resumes when the window refills
-  or the balance is topped up.
-- **Telemetry** - cost per task, rate limit left, backlog and throughput over time.
-- **One device per agent** - a bundled MCP server hands each agent its own
-  simulator/emulator, so parallel agents never share one.
-- **Mesh** *(experimental, off)* - several of your machines split the work between
-  them, over the LAN or across networks.
+A bundled MCP server gives each agent its own simulator or emulator, so parallel
+agents never share a device. There's also an experimental mesh, off by default, that
+splits the work between several of your machines over the LAN or across networks.
 
-## ⚠️ Billing and usage - read this first
+## Billing
 
-- **Under the Claude Code runner, use only usage-based Anthropic API billing.** That
-  means an API key from the [Anthropic Console](https://console.anthropic.com),
-  governed by the [Commercial Terms](https://www.anthropic.com/legal/commercial-terms)
-  and set as `ANTHROPIC_API_KEY`. Claude Code prefers it over a logged-in plan.
-- **Never use it with a personal Claude Free / Pro / Max plan**
-  ([Consumer Terms](https://www.anthropic.com/legal/consumer-terms)). Diplomat runs
-  unattended background agents, and that is service-style use. The same applies to
-  any provider: a plan sold for interactive personal use is the wrong place for it.
-- **Under OpenCode or Hermes, your provider's bill and terms apply.** Diplomat never
-  holds that credential.
-- **No warranty, no liability.** The software is provided as is. You alone are
-  responsible for your spend, for the commits and pushes agents make, and for
-  complying with your provider's terms.
+Under the Claude Code runner, use usage-based Anthropic API billing only: an API key
+from the [Anthropic Console](https://console.anthropic.com), set as
+`ANTHROPIC_API_KEY` and covered by the
+[Commercial Terms](https://www.anthropic.com/legal/commercial-terms). Claude Code
+prefers it over a logged-in plan.
+
+Don't use it with a personal Claude Free, Pro or Max plan
+([Consumer Terms](https://www.anthropic.com/legal/consumer-terms)). Diplomat runs
+unattended background agents, which is service-style use. The same goes for any
+provider whose plan is sold for interactive personal use.
+
+Under OpenCode or Hermes, your provider's bill and terms apply. Diplomat never holds
+that credential.
+
+There's no warranty. You're responsible for what you spend, for the commits and
+pushes the agents make, and for following your provider's terms.
 
 ## Install
 
@@ -66,12 +64,12 @@ Hacky on purpose, and built for one maintainer's workflow rather than the public
 npx szpont                       # or:  pip install szpont && szpont
 ```
 
-This works on macOS 13+ and Linux. It clones Diplomat into `~/.diplomat/checkout`,
-builds it and starts it. Diplomat runs from that checkout and updates itself in
-place. You need **git**, a **Swift toolchain** (Xcode on macOS,
-[swiftly](https://swift.org/install) on Linux), **python3** on Linux to run the
-applet, and an authenticated [`gh`](https://cli.github.com). `szpont` checks for all
-but `gh` and names whichever is missing before it downloads anything.
+Works on macOS 13+ and Linux. It clones Diplomat into `~/.diplomat/checkout`, builds
+it and starts it. Diplomat runs from that checkout and updates itself in place.
+
+You need git, a Swift toolchain (Xcode on macOS, [swiftly](https://swift.org/install)
+on Linux), python3 on Linux, and a logged-in [`gh`](https://cli.github.com). `szpont`
+checks for everything except `gh` before downloading anything.
 
 ```bash
 szpont --plan          # print what it would do, and do none of it
@@ -79,13 +77,13 @@ szpont --no-update     # start the checkout as it stands
 DIPLOMAT_SELF_REPO=~/dev/diplomat szpont   # use your own checkout (never pulled)
 ```
 
-Optional extras: **Node.js** for the device allocator, **python3** for the mesh on
-macOS, and **tmux** if you want Ghostty windows or are on Linux.
+Optional: Node.js for the device allocator, python3 for the mesh on macOS, and tmux
+for Ghostty windows or on Linux.
 
-## Defaults worth knowing
+## Defaults
 
-The automatic monitors **open real terminal windows and push to your PR branches**.
-Every switch below is in Settings (⚙︎).
+The automatic monitors open real terminal windows and push to your PR branches.
+Everything below can be changed in Settings (⚙︎).
 
 | Behaviour | Default |
 |---|---|
@@ -101,8 +99,8 @@ Every switch below is in Settings (⚙︎).
 | Mesh | **off** |
 
 Agents use your full `gh` login unless you give them
-[a narrow token](docs/settings.md#a-narrow-github-token-for-agents) limited to
-contents and pull requests. That is worth doing.
+[a narrower token](docs/settings.md#a-narrow-github-token-for-agents) limited to
+contents and pull requests, which is safer.
 
 ## Running from a checkout
 
@@ -117,31 +115,32 @@ cd packages/diplomat-platform/linux
 pip install -r requirements.txt && ./install/build-core.sh && ./diplomat
 ```
 
-Linux has the same feature set, minus the per-row Merge button and clickable agent
-rows. See [its README](packages/diplomat-platform/linux/README.md).
+Linux has everything except the per-row Merge button and clickable agent rows. See
+[its README](packages/diplomat-platform/linux/README.md).
 
-## Learn more
+## Docs
 
-| Topic | |
-|---|---|
-| [The panel](docs/panel.md) | the six lists, reverse lookup, the activity feed, the Agent-tasks queue |
-| [Actions](docs/actions.md) | every option of the four wizards |
-| [Automatic work](docs/automation.md) | the monitors, the task cap, when a run counts as done, the spending budget |
-| [Settings](docs/settings.md) | every setting, agent runners, the narrow GitHub token, list definitions |
-| [Telemetry](docs/telemetry.md) | what each figure means and where it comes from |
-| [Mesh](docs/mesh.md) | multi-machine coordination, WAN transports, the trust model |
-| [Development](docs/development.md) | design, headless self-tests, CI, repository layout |
+- [The panel](docs/panel.md): the lists, reverse lookup, the activity feed, the
+  agent-tasks queue
+- [Actions](docs/actions.md): every option of the four wizards
+- [Automatic work](docs/automation.md): the monitors, the task cap, when a run
+  counts as done, the spending budget
+- [Settings](docs/settings.md): every setting, agent runners, the narrow GitHub
+  token, list definitions
+- [Telemetry](docs/telemetry.md): what each figure means and where it comes from
+- [Mesh](docs/mesh.md): multi-machine coordination, WAN transports, the trust model
+- [Development](docs/development.md): design, headless self-tests, CI, repo layout
 
-## How it's built
+## Layout
 
 Both apps are thin UIs over one shared core. GraphQL queries, filters and prompt
-fragments live once in [`assets/`](packages/diplomat-core/assets/README.md), and
-golden-prompt tests on both platforms fail CI if their prompts drift apart.
+fragments live in [`assets/`](packages/diplomat-core/assets/README.md), and
+golden-prompt tests on both platforms fail CI if the prompts drift apart.
 
-| Package | What it is |
+| Package | |
 |---|---|
-| [`diplomat-core`](packages/diplomat-core) | the shared brain: assets, plus Foundation-only Swift that builds on macOS and Linux |
-| [`diplomat-runtime`](packages/diplomat-runtime/README.md) | its Python twin, everything below the UI, with no Qt or AppKit |
+| [`diplomat-core`](packages/diplomat-core) | the shared assets, plus Foundation-only Swift that builds on macOS and Linux |
+| [`diplomat-runtime`](packages/diplomat-runtime/README.md) | the Python side of everything below the UI, with no Qt or AppKit |
 | [`diplomat-platform`](packages/diplomat-platform) | the macOS SwiftUI app and the Linux PySide6 applet |
 | [`device-allocator`](packages/device-allocator/README.md) | the one-device-per-agent MCP server and its daemon |
 | [`szpontnet-core`](packages/szpontnet-core/README.md) / [`szpontnet-spec`](packages/szpontnet-spec/docs/README.md) | the mesh protocol: a stdlib-only reference node, the spec and a conformance suite |
