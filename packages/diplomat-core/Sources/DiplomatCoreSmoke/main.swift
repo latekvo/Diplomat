@@ -433,7 +433,7 @@ check(cMine.buildPrompt().contains("No AI attribution"))
 for p in [cSingle.buildPrompt(), cMine.buildPrompt()] {
     guard let flagged = p.range(of: "If GitHub says `CONFLICTING`"),
           let push = p.range(of: "commit that clean merge and push it"),
-          let untouched = p.range(of: "leave that PR untouched") else {
+          let untouched = p.range(of: "Otherwise there's nothing to resolve here — abort/undo the merge and leave that PR untouched") else {
         check(false, "clean-merge-but-GitHub-conflicting branch missing"); continue
     }
     check(flagged.upperBound <= push.lowerBound && push.upperBound <= untouched.lowerBound,

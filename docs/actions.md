@@ -141,8 +141,8 @@ branches merge-able. A single three-way selector picks *whose* PRs to sweep:
 For each PR it merges the latest `origin/main` into the branch. **Clean merges are left
 untouched** - only where the merge *conflicts* does it resolve every conflict and push the
 merge commit back to the PR's remote branch. The exception is a merge git completes cleanly
-while GitHub still reports the PR conflicting (e.g. over a rename git followed): that
-merge is pushed, since only a new head makes GitHub recompute. The contextual field (handle / PR number)
+while GitHub still reports the PR conflicting: that merge is pushed, since GitHub keeps
+flagging the PR until its head contains main. The contextual field (handle / PR number)
 appears only for the target it applies to.
 
 > Preview the assembled prompt without launching anything:
