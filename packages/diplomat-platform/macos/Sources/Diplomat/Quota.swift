@@ -137,10 +137,6 @@ enum Quota {
         pinnedKeychain = .some(token)
     }
 
-    /// Read the item through `security` rather than the Keychain API: the API call
-    /// from an unsigned or re-signed binary trips an authorization prompt for an item
-    /// another app owns, and a modal appearing behind a background poll is worse than
-    /// no reading at all.
     /// Under Claude Code's own account first: without `-a`, `security` answers with
     /// whichever same-named item it meets first, and an empty one under account
     /// "unknown" blinded every probe here for a week.
@@ -150,9 +146,14 @@ enum Quota {
         }
     }
 
+    /// Read the item through `security` rather than the Keychain API: the API call
+    /// from an unsigned or re-signed binary trips an authorization prompt for an item
+    /// another app owns, and a modal appearing behind a background poll is worse than
+    /// no reading at all.
     private static func keychainTokens() -> [String] {
         if let pinned = pinnedKeychain { return pinned.map { [$0] } ?? [] }
-        let account = ProcessInfo.processInfo.environment["USER"] ?? NSUserName()
+        let user = ProcessInfo.processInfo.environment["USER"] ?? ""
+        let account = user.isEmpty ? NSUserName() : user
         return keychainQueries(account: account).compactMap { args -> String? in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/security")

@@ -1263,6 +1263,24 @@ def test_the_keychain_is_asked_under_claude_codes_own_account(credentials, monke
     assert log == ["oat-live"]
 
 
+def test_an_item_under_another_account_is_still_asked_after_claude_codes_own(
+        credentials, monkeypatch):
+    """The service-only lookup stays as the fallback for an item written under some
+    other account, and goes second: a stale token first costs the round a request."""
+    credentials(file_token=None, keychain_token=None, live=set())
+    monkeypatch.setattr(quota.getpass, "getuser", lambda: "me")
+
+    def run(argv, **_):
+        token = "oat-own" if argv[2:4] == ["-a", "me"] else "oat-other"
+
+        class Done:
+            stdout = json.dumps({"claudeAiOauth": {"accessToken": token}})
+        return Done()
+
+    monkeypatch.setattr(quota.subprocess, "run", run)
+    assert quota._oauth_tokens() == ["oat-own", "oat-other"]
+
+
 def test_a_probe_round_is_counted_whether_or_not_it_answers(credentials):
     """The ratio the blind-gate warning reads. A ceiling with no reading is skipped by
     ``autofix.budget_decide`` and a call where none has one is affordable, so a probe
