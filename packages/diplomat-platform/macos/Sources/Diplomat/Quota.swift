@@ -103,7 +103,7 @@ enum Quota {
         if let data = try? Data(contentsOf: url), let token = accessToken(data) {
             out.append(token)
         }
-        if let token = keychainToken(), !out.contains(token) { out.append(token) }
+        for token in keychainTokens() where !out.contains(token) { out.append(token) }
         return out
     }
 
@@ -141,19 +141,31 @@ enum Quota {
     /// from an unsigned or re-signed binary trips an authorization prompt for an item
     /// another app owns, and a modal appearing behind a background poll is worse than
     /// no reading at all.
-    private static func keychainToken() -> String? {
-        if let pinned = pinnedKeychain { return pinned }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        p.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = Pipe()
-        do { try p.run() } catch { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
-        return accessToken(data)
+    /// Under Claude Code's own account first: without `-a`, `security` answers with
+    /// whichever same-named item it meets first, and an empty one under account
+    /// "unknown" blinded every probe here for a week.
+    static func keychainQueries(account: String) -> [[String]] {
+        [["-a", account], []].map {
+            ["find-generic-password"] + $0 + ["-s", "Claude Code-credentials", "-w"]
+        }
+    }
+
+    private static func keychainTokens() -> [String] {
+        if let pinned = pinnedKeychain { return pinned.map { [$0] } ?? [] }
+        let account = ProcessInfo.processInfo.environment["USER"] ?? NSUserName()
+        return keychainQueries(account: account).compactMap { args -> String? in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+            p.arguments = args
+            let out = Pipe()
+            p.standardOutput = out
+            p.standardError = Pipe()
+            do { try p.run() } catch { return nil }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            guard p.terminationStatus == 0 else { return nil }
+            return accessToken(data)
+        }
     }
 
     // MARK: - The probe

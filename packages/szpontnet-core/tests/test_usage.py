@@ -9,6 +9,7 @@ through, and what else on the node stops while it does.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -112,6 +113,25 @@ def test_a_refused_credential_is_not_the_last_word(refusals, monkeypatch):
     session, week = usage.windows()
     assert session is not None and session.frac_left == 0.6
     assert log == ["stale", "live"], "the refused credential ended the round"
+
+
+def test_the_keychain_is_asked_under_claude_codes_own_account(monkeypatch, tmp_path):
+    """Two Keychain items can share the service name. Asked by service alone,
+    ``security`` answered with an empty one under account "unknown" for a week, and
+    the node routed on the local heuristic throughout."""
+    monkeypatch.setenv("SZPONTNET_CLAUDE_DIR", str(tmp_path))
+    monkeypatch.setenv("USER", "me")
+    monkeypatch.setattr(usage.sys, "platform", "darwin")
+
+    def run(argv, **_):
+        token = "oat-live" if argv[2:4] == ["-a", "me"] else ""
+
+        class Done:
+            stdout = json.dumps({"claudeAiOauth": {"accessToken": token}})
+        return Done()
+
+    monkeypatch.setattr(usage.subprocess, "run", run)
+    assert usage._oauth_tokens() == ["oat-live"]
 
 
 def test_a_credential_that_answers_costs_the_round_nothing_extra(refusals):

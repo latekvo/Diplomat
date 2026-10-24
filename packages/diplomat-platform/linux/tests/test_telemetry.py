@@ -1244,6 +1244,25 @@ def test_every_credential_refused_is_still_no_reading(credentials):
     assert log == ["oat-stale", "oat-also-stale"]
 
 
+def test_the_keychain_is_asked_under_claude_codes_own_account(credentials, monkeypatch):
+    """Two Keychain items can share the service name. Asked by service alone,
+    ``security`` answered with an empty one under account "unknown" for a week, and
+    every sample came back with no reading."""
+    log = credentials(file_token=None, keychain_token=None, live={"oat-live"})
+    monkeypatch.setenv("USER", "me")
+
+    def run(argv, **_):
+        token = "oat-live" if argv[2:4] == ["-a", "me"] else ""
+
+        class Done:
+            stdout = json.dumps({"claudeAiOauth": {"accessToken": token}})
+        return Done()
+
+    monkeypatch.setattr(quota.subprocess, "run", run)
+    assert quota.fractions_left() == (0.6, 0.9)
+    assert log == ["oat-live"]
+
+
 def test_a_probe_round_is_counted_whether_or_not_it_answers(credentials):
     """The ratio the blind-gate warning reads. A ceiling with no reading is skipped by
     ``autofix.budget_decide`` and a call where none has one is affordable, so a probe

@@ -84,6 +84,14 @@ enum QuotaTest {
         Quota.pinKeychain(nil)
         check("a logged-out machine offers nothing", Quota.oauthTokens().isEmpty)
 
+        // Two items can share the service name; only Claude Code's own account names
+        // the live one.
+        check("the Keychain is asked under the account first, then by service alone",
+              Quota.keychainQueries(account: "me") == [
+                  ["find-generic-password", "-a", "me", "-s", "Claude Code-credentials", "-w"],
+                  ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
+              ])
+
         print("\nQUOTA TEST \(pass ? "OK" : "FAILED")")
         return pass
     }
