@@ -23,7 +23,9 @@ import AppKit
 /// the singleton's victims are checked too: they must leave out a headless instance (an
 /// idle copy of this binary under `DIPLOMAT_RELAUNCH_TEST=hold`) and keep one carrying
 /// no headless marker (the staying bundle, named like the app) - a marker being a mode
-/// `Headless.modes` turns on, not any value under its name.
+/// `Headless.modes` turns on, not any value under its name - and of those, end only
+/// one started before the fresh instance: the staying bundle, started after this
+/// process, is spared.
 ///
 ///     DIPLOMAT_RELAUNCH_TEST=1 swift run Diplomat
 ///
@@ -142,6 +144,13 @@ enum RelaunchTest {
         check("an instance carrying no headless marker is a victim",
               !staying.isEmpty && staying.allSatisfy { victims.contains($0) },
               "victims \(victims), staying \(staying)")
+        let older = SingleInstance.olderInstances().map(\.processIdentifier)
+        check("an instance started after this one is spared",
+              !staying.isEmpty && !staying.contains { older.contains($0) }, "older \(older), staying \(staying)")
+        check("of two instances the one started first is the older",
+              !staying.isEmpty && SingleInstance.startedBefore(staying[0], idle)
+                  && !SingleInstance.startedBefore(idle, staying[0]))
+        check("a process is not older than itself", !SingleInstance.startedBefore(getpid(), getpid()))
         check("a flag set to anything but 1 is no marker",
               !Headless.isActive(in: ["DIPLOMAT_SELF_UPDATE": "0"])
                   && !Headless.isActive(in: ["DIPLOMAT_QUEUE_TEST": "true"]))
