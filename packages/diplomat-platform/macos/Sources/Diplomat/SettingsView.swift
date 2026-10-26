@@ -754,8 +754,8 @@ struct SettingsView: View {
             SettingRow(title: "Reserve a simulator before using it",
                        summary: allocatorSummary,
                        detail: "Installs an MCP server, a skill and an always-on rule. "
-                             + "Reclaims a device when its agent dies, or on the idle "
-                             + "limits below.",
+                             + "Reclaims a device when its agent dies or it sits idle "
+                             + "past the limits below.",
                        stacked: true) {
                 VStack(alignment: .leading, spacing: 7) {
                     allocatorMarks(s)
@@ -763,22 +763,17 @@ struct SettingsView: View {
                 }
             }
             idleLimitRow(title: "Shut down a free device after",
-                         summary: "Booted, held by no agent, nothing changing on its screen.",
-                         detail: SettingsView.idleLimitDetail,
+                         summary: "A booted device no agent holds, once its screen stops changing.",
+                         detail: nil,
                          value: $store.deviceIdleFreeMinutes,
                          range: AppConfig.deviceIdleFreeRange, step: 1)
-            idleLimitRow(title: "Take a device back from its agent after",
-                         summary: "Held, but nothing changing on its screen. It then counts as free.",
-                         detail: nil,
+            idleLimitRow(title: "Take a held device back after",
+                         summary: "From its agent, once its screen stops changing. It then counts as free.",
+                         detail: "A change to either reaches the allocator within a minute.",
                          value: $store.deviceIdleLeasedMinutes,
                          range: AppConfig.deviceIdleLeasedRange, step: 5)
         }
     }
-
-    private static let idleLimitDetail = """
-        The allocator daemon re-reads both limits every minute, so a change applies \
-        without a restart.
-        """
 
     /// One of the daemon's idle limits, in minutes, where 0 turns it off.
     private func idleLimitRow(title: String, summary: String, detail: String?,

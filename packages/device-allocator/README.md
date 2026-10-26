@@ -87,7 +87,8 @@ one is exactly the thing that just died:
   30 min, and shuts down a booted device nobody holds after 5 min without a change -
   a repair agent's cold boot, a lease freed without a shutdown, an emulator started by
   hand. Both limits are Diplomat settings (`deviceIdleLeasedMinutes`,
-  `deviceIdleFreeMinutes` in `~/.diplomat/config.json`, re-read every sweep; 0 = never);
+  `deviceIdleFreeMinutes` in `~/.diplomat/config.json`, re-read every sweep; 0 = never).
+  The screenshot it compares leaves out the status bar, whose clock ticks every minute;
 * **a repair TTL** (2h) returns a quarantined device to the pool even if the repair
   agent never reports back — without it, one broken report shrinks the pool forever.
 
