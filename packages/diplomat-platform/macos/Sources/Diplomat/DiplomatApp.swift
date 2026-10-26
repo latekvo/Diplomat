@@ -268,7 +268,7 @@ enum QuitFlow {
     }
 }
 
-/// Singleton enforcement: the newest instance wins and force-quits the rest.
+/// Singleton enforcement: the newest instance wins and force-quits the older ones.
 enum SingleInstance {
     static let bundleID = "com.ignacy.diplomat"
     static let execName = "Diplomat"
@@ -300,13 +300,38 @@ enum SingleInstance {
         return URL(fileURLWithPath: String(cString: buf)).lastPathComponent
     }
 
+    /// The other GUI instances that started before this one: newest-wins ends only
+    /// these. Two instances launched at once (the LaunchAgent and a login item, both
+    /// at login) would otherwise each end the other and leave none.
+    static func olderInstances() -> [NSRunningApplication] {
+        let myPid = ProcessInfo.processInfo.processIdentifier
+        return otherInstances().filter { startedBefore($0.processIdentifier, myPid) }
+    }
+
+    /// Whether `a` started before `b`, a tie going to the lower pid. False when either
+    /// start time is unreadable, which is a process already gone.
+    static func startedBefore(_ a: pid_t, _ b: pid_t) -> Bool {
+        guard let ta = startTime(a), let tb = startTime(b) else { return false }
+        if ta.tv_sec != tb.tv_sec { return ta.tv_sec < tb.tv_sec }
+        if ta.tv_usec != tb.tv_usec { return ta.tv_usec < tb.tv_usec }
+        return a < b
+    }
+
+    private static func startTime(_ pid: pid_t) -> timeval? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        return info.kp_proc.p_un.__p_starttime
+    }
+
     static func terminateOthers() {
-        let initial = otherInstances()
+        let initial = olderInstances()
         guard !initial.isEmpty else { return }
         log("found \(initial.count) old instance(s), terminating")
         for app in initial { app.terminate() }      // ask nicely first
         usleep(400_000)                              // 0.4s grace
-        let survivors = otherInstances()             // re-query: terminated apps drop out
+        let survivors = olderInstances()             // re-query: terminated apps drop out
         for app in survivors { app.forceTerminate() }
         if !survivors.isEmpty { log("force-killed \(survivors.count) survivor(s)") }
     }

@@ -1045,7 +1045,7 @@ class SettingsView(QWidget):
         self._alloc_row = self._track(SettingRow(
             "Reserve a simulator before using it", controls, stacked=True,
             detail="Installs an MCP server, a skill and an always-on rule. Reclaims a "
-                   "device when its agent dies or it sits idle for 15 minutes.",
+                   "device when its agent dies or it sits idle past the limits below.",
         ))
         if deviceallocator.package_available():
             self._alloc_row.set_summary(
@@ -1057,7 +1057,45 @@ class SettingsView(QWidget):
                 "DIPLOMAT_DEVICE_ALLOCATOR_DIR to point at it.", color=_ORANGE
             )
         body.addWidget(self._alloc_row)
+
+        self._idle_free = self._idle_slider(
+            "Shut down a free device after", appconfig.MAX_DEVICE_IDLE_FREE_MINUTES, 1,
+            self.store.device_idle_free_minutes, self._on_idle_free_changed,
+        )
+        body.addWidget(self._track(SettingRow(
+            "Shut down a free device after", self._idle_free, stacked=True,
+            summary="A booted device no agent holds, once its screen stops changing.",
+        )))
+        self._idle_leased = self._idle_slider(
+            "Take a held device back after", appconfig.MAX_DEVICE_IDLE_LEASED_MINUTES, 5,
+            self.store.device_idle_leased_minutes, self._on_idle_leased_changed,
+        )
+        body.addWidget(self._track(SettingRow(
+            "Take a held device back after", self._idle_leased, stacked=True,
+            summary="From its agent, once its screen stops changing. It then counts "
+                    "as free.",
+            detail="A change to either reaches the allocator within a minute.",
+        )))
         return card
+
+    def _idle_slider(self, label: str, maximum: int, step: int, value: int,
+                     on_changed) -> SliderSetting:
+        slider = SliderSetting(
+            label=label, minimum=0, maximum=maximum, step=step,
+            min_label="never", max_label=f"{maximum} min", tint=_CYAN,
+        )
+        slider.set_badge_text(lambda n: "never" if n == 0 else f"{n} min")
+        slider.set_value(value)
+        slider.changed.connect(on_changed)
+        return slider
+
+    def _on_idle_free_changed(self, value: int) -> None:
+        self.store.device_idle_free_minutes = value
+        self.store.changed.emit()
+
+    def _on_idle_leased_changed(self, value: int) -> None:
+        self.store.device_idle_leased_minutes = value
+        self.store.changed.emit()
 
     def _refresh_allocator_ui(self) -> None:
         s = self.store.allocator_install

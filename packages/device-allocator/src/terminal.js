@@ -18,7 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
-import { CONFIG_PATH } from './paths.js';
+import { readConfig } from './state.js';
 import { log } from './log.js';
 
 const MAC_TERMINALS = ['ghostty', 'iterm', 'terminal'];
@@ -42,10 +42,8 @@ export const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 const aq = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
 function published() {
-  try {
-    const v = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')).spawnTerminal;
-    return typeof v === 'string' ? v : '';
-  } catch { return ''; }
+  const v = readConfig().spawnTerminal;
+  return typeof v === 'string' ? v : '';
 }
 
 function which(bin) {

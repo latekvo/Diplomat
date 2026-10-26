@@ -16,8 +16,9 @@ import DiplomatCore
 /// One more sits with them without needing to: how long a run may go on before the
 /// resolver calls it over, which belongs beside the cap it hands bays back to and is
 /// read by the Linux `DIPLOMAT_AGENTS` dump, a front-end-free path with no store of its own.
-/// And one is published rather than set here: the terminal spawns resolve to, for the
-/// device-allocator daemon, a Node process, to open its repair agents in.
+/// And three are for the device-allocator daemon, a Node process: the terminal spawns
+/// resolve to, published rather than set here, for it to open its repair agents in,
+/// and the two idle limits it shuts devices down and takes them back by.
 ///
 /// So those knobs live in the shared `~/.diplomat` tree, alongside the ban list and
 /// the mesh snapshot both front-ends already exchange there. Every reader re-reads on
@@ -53,6 +54,13 @@ enum AppConfig {
     /// daemon to open its repair agents in (`device-allocator/src/terminal.js`).
     /// Written, never read here: the choice itself stays in UserDefaults.
     static let spawnTerminalKey = "spawnTerminal"
+    /// Minutes a booted device no agent holds may go with nothing changing on its screen
+    /// before the device-allocator daemon shuts it down; 0 = never. Same key on the
+    /// Linux side.
+    static let deviceIdleFreeMinutesKey = "deviceIdleFreeMinutes"
+    /// Minutes a device an agent holds may go the same way before the daemon takes it
+    /// back, after which it counts as free; 0 = never. Same key on the Linux side.
+    static let deviceIdleLeasedMinutesKey = "deviceIdleLeasedMinutes"
 
     /// The runner every spawn on this machine uses, resolved here rather than at each
     /// call site because there are two, in different processes: this app's spawner and
@@ -137,6 +145,31 @@ enum AppConfig {
     static var autoTaskLimit: Int {
         AgentDispatchGate.clampAutoTaskLimit(
             int(autoTaskLimitKey, fallback: AgentDispatchGate.defaultAutoTaskLimit))
+    }
+
+    /// The idle limits' defaults and the ranges the Settings sliders offer. The daemon
+    /// takes any non-negative number from a hand edit; these bound only what this app
+    /// shows and writes.
+    static let deviceIdleFreeDefault = 5
+    static let deviceIdleFreeRange = 0...60
+    static let deviceIdleLeasedDefault = 30
+    static let deviceIdleLeasedRange = 0...240
+
+    /// `minutes` within `range`, or `fallback` below it: the daemon does not accept a
+    /// negative limit, so reading one as "never" would misstate what it does.
+    static func clampIdleMinutes(_ minutes: Int, _ range: ClosedRange<Int>,
+                                 fallback: Int) -> Int {
+        minutes < range.lowerBound ? fallback : min(minutes, range.upperBound)
+    }
+
+    static var deviceIdleFreeMinutes: Int {
+        clampIdleMinutes(int(deviceIdleFreeMinutesKey, fallback: deviceIdleFreeDefault),
+                         deviceIdleFreeRange, fallback: deviceIdleFreeDefault)
+    }
+
+    static var deviceIdleLeasedMinutes: Int {
+        clampIdleMinutes(int(deviceIdleLeasedMinutesKey, fallback: deviceIdleLeasedDefault),
+                         deviceIdleLeasedRange, fallback: deviceIdleLeasedDefault)
     }
 
     /// One boolean key, or `fallback` when it's absent or isn't one. A number is NOT

@@ -251,6 +251,31 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The device-allocator daemon's two idle limits, in minutes (0 = never). In the
+    /// shared file because their reader is the daemon, a Node process; normalised in
+    /// memory as well as on disk, like the cap above.
+    @Published var deviceIdleFreeMinutes: Int {
+        didSet {
+            let clamped = AppConfig.clampIdleMinutes(deviceIdleFreeMinutes,
+                                                     AppConfig.deviceIdleFreeRange,
+                                                     fallback: AppConfig.deviceIdleFreeDefault)
+            if clamped != deviceIdleFreeMinutes { deviceIdleFreeMinutes = clamped }
+            guard !Headless.active else { return }
+            AppConfig.setInt(AppConfig.deviceIdleFreeMinutesKey, clamped)
+        }
+    }
+
+    @Published var deviceIdleLeasedMinutes: Int {
+        didSet {
+            let clamped = AppConfig.clampIdleMinutes(deviceIdleLeasedMinutes,
+                                                     AppConfig.deviceIdleLeasedRange,
+                                                     fallback: AppConfig.deviceIdleLeasedDefault)
+            if clamped != deviceIdleLeasedMinutes { deviceIdleLeasedMinutes = clamped }
+            guard !Headless.active else { return }
+            AppConfig.setInt(AppConfig.deviceIdleLeasedMinutesKey, clamped)
+        }
+    }
+
     /// Latest state from the auto-fix monitor's own poll (nil until the first). Drives
     /// the top-of-panel status pill; freshness (`isLive`) decides active vs. offline.
     @Published var autofixStatus: AutofixStatus?
@@ -608,6 +633,8 @@ final class Store: ObservableObject {
         autoBudgetConfidence = AppConfig.autoBudgetConfidence
         autoBudgetFloorPct = AppConfig.autoBudgetFloorPct
         autoBudgetReserveUsd = AppConfig.autoBudgetReserveUsd
+        deviceIdleFreeMinutes = AppConfig.deviceIdleFreeMinutes
+        deviceIdleLeasedMinutes = AppConfig.deviceIdleLeasedMinutes
         // Default ON (absent key ⇒ true): the pill only lights up on a live heartbeat,
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true

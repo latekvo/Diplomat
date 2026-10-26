@@ -17,8 +17,8 @@
 //   GET  /health
 //
 // Reclamation: a device is freed when the owning agent's MCP-server PID dies
-// (reaper) or when its screen shows zero motion past the idle limit (15 min
-// by default — see IDLE_LIMIT_MS).
+// (reaper) or when its screen shows zero motion past the leased idle limit, and a
+// booted device nobody holds is shut down past the free idle limit (idleSweep).
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -35,18 +35,22 @@ import { promisify } from 'node:util';
 const pexecFile = promisify(execFile);
 import {
   SOCKET_PATH, DISCOVERY_PATH, STATE_PATH, LEASES_PATH, REPAIRS_DIR,
-  IDLE_LIMIT_MS, REAP_INTERVAL_MS, IDLE_INTERVAL_MS, POOL_INTERVAL_MS, ALLOC_GRACE_MS,
+  LEASED_IDLE_DEFAULT_MIN, FREE_IDLE_DEFAULT_MIN, STOPPING_GRACE_MS,
+  REAP_INTERVAL_MS, IDLE_INTERVAL_MS, POOL_INTERVAL_MS, ALLOC_GRACE_MS,
   QUOTA, AWAIT_TIMEOUT_MS, REPAIR_TTL_MS, BAN_DIR, BANNED_PATH, INJECTIONS_DIR, AUDIT_PATH,
   ADB_BIN,
 } from './paths.js';
 import {
-  writeDiscovery, writeState, writeLeases, readLeases, pidAlive, ensureDirs, atomicWrite, sweepDeadTmp,
+  writeDiscovery, writeState, writeLeases, readLeases, readConfig, pidAlive, ensureDirs, atomicWrite,
+  sweepDeadTmp,
 } from './state.js';
 import { log } from './log.js';
 import * as dev from './devices.js';
 import { openRepairWindow, shq } from './terminal.js';
 
 const allocations = new Map(); // device key -> allocation record
+const freeMotion = new Map(); // key of a booted, unallocated device -> {hash, lastMotionAt}
+const stopping = new Map(); // key -> deadline of a device this daemon is shutting down
 let lastPool = []; // cached enumeration, refreshed on a timer
 let lastState = { updatedAt: null, devices: [] };
 
@@ -67,10 +71,21 @@ async function currentPool() {
   return [...await dev.listApple(), ...await dev.listAndroid()];
 }
 
+// Shut down but still enumerated as booted: handing it out would give an agent a
+// device that disappears under it.
+function isStopping(d) {
+  const until = stopping.get(d.key);
+  if (until == null) return false;
+  if (d.state === 'booted' && Date.now() < until) return true;
+  stopping.delete(d.key);
+  return false;
+}
+
 async function selectDevice(req, exclude = new Set()) {
   const all = await currentPool();
   const free = all.filter(
-    (d) => !allocations.has(d.key) && !exclude.has(d.key) && dev.matchesRequirements(d, req),
+    (d) => !allocations.has(d.key) && !exclude.has(d.key) && !isStopping(d)
+      && dev.matchesRequirements(d, req),
   );
   if (!free.length) return null;
   // Prefer a device that is already booted (cheaper, and "prefer running devices").
@@ -144,7 +159,39 @@ async function handleRequest(p, exclude = new Set()) {
   // An ownerless lease would be unreclaimable and quota-invisible — reject it.
   if (!p.ownerPid) throw httpError(400, 'ownerPid is required');
   const req = reqOf(p);
-  const reserved = await withLock(async () => {
+  // A device this daemon is shutting down is waited out (STOPPING_GRACE_MS at most)
+  // rather than answered with needs-create, which would send the agent off to create
+  // a device it doesn't need.
+  let reserved;
+  do {
+    if (reserved) await delay(1000);
+    reserved = await reserveFor(p, req, exclude);
+  } while (reserved.outcome === 'stopping');
+  if (reserved.outcome) return reserved; // exhausted / needs-create: nothing to boot
+  await bootAlloc(reserved); // outside the lock
+  // Released/killed while we were booting (bootAlloc already cleaned up): telling
+  // the agent "allocated, yours exclusively" for a freed — possibly already shut
+  // down, possibly re-allocated — device would be a lie.
+  if (allocations.get(reserved.key) !== reserved) {
+    throw httpError(409, `device ${reserved.name || reserved.key} was released during boot`);
+  }
+  if (reserved.status === 'error') {
+    // Don't pin a device that failed to boot — return it to the pool and report,
+    // so the agent can retry or report-device-broken rather than hold a zombie.
+    // If we started the boot, also shut the half-booted device down (an Android
+    // emulator that registered with adb but never finished booting keeps running).
+    if (reserved.bootedByUs) shutdownAlloc(reserved);
+    await withLock(async () => {
+      if (allocations.get(reserved.key) === reserved) { allocations.delete(reserved.key); publish(); }
+    });
+    throw httpError(503, `device ${reserved.name || reserved.key} failed to boot`);
+  }
+  return publicAlloc(reserved);
+}
+
+// The locked half of handleRequest: quota, then a claimed or selected device reserved.
+function reserveFor(p, req, exclude) {
+  return withLock(async () => {
     reapDeadOwners();
     // Quota gate first. The pool is effectively unbounded (agents create devices
     // on demand), so we cap CONCURRENCY, not inventory. Exhausted -> the agent is
@@ -167,6 +214,7 @@ async function handleRequest(p, exclude = new Set()) {
       if (specific && allocations.has(specific.key)) {
         throw httpError(409, `device ${p.deviceId} is already allocated`);
       }
+      if (specific && isStopping(specific)) return { outcome: 'stopping' };
       if (specific && !exclude.has(specific.key)) return reserve(specific, p, req);
       // Vega (Fire TV) has no enumeration CLI, so a created device can never show
       // up in the pool — trust the claim and track it as an unmanaged allocation
@@ -187,33 +235,18 @@ async function handleRequest(p, exclude = new Set()) {
       return { outcome: 'needs-create', requirements: req, missingDeviceId: p.deviceId };
     }
     const chosen = await selectDevice(req, exclude);
+    if (!chosen && (await currentPool()).some((d) => !allocations.has(d.key) && !exclude.has(d.key)
+        && isStopping(d) && dev.matchesRequirements(d, req))) {
+      return { outcome: 'stopping' };
+    }
     if (!chosen) {
       // Under quota but nothing matches -> the agent must create a device to spec
       // (there is NO fixed pool) and then call request-device again.
       return { outcome: 'needs-create', requirements: req };
     }
     return reserve(chosen, p, req);
+  
   });
-  if (reserved.outcome) return reserved; // exhausted / needs-create: nothing to boot
-  await bootAlloc(reserved); // outside the lock
-  // Released/killed while we were booting (bootAlloc already cleaned up): telling
-  // the agent "allocated, yours exclusively" for a freed — possibly already shut
-  // down, possibly re-allocated — device would be a lie.
-  if (allocations.get(reserved.key) !== reserved) {
-    throw httpError(409, `device ${reserved.name || reserved.key} was released during boot`);
-  }
-  if (reserved.status === 'error') {
-    // Don't pin a device that failed to boot — return it to the pool and report,
-    // so the agent can retry or report-device-broken rather than hold a zombie.
-    // If we started the boot, also shut the half-booted device down (an Android
-    // emulator that registered with adb but never finished booting keeps running).
-    if (reserved.bootedByUs) shutdownAlloc(reserved);
-    await withLock(async () => {
-      if (allocations.get(reserved.key) === reserved) { allocations.delete(reserved.key); publish(); }
-    });
-    throw httpError(503, `device ${reserved.name || reserved.key} failed to boot`);
-  }
-  return publicAlloc(reserved);
 }
 
 // Wait for a concurrency slot to free (called by an agent after 'exhausted').
@@ -490,7 +523,18 @@ function reapDeadOwners() {
   if (changed) publish();
 }
 
+// A limit from Diplomat's settings in ms, re-read each sweep so a change lands within
+// a minute; 0 never reaps. The env var overrides it for tests.
+function idleLimitMs(envVar, key, defaultMin) {
+  const env = Number(process.env[envVar]);
+  if (env > 0) return env;
+  const v = readConfig()[key];
+  return (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : defaultMin) * 60 * 1000;
+}
+
 async function idleSweep() {
+  const leasedLimit = idleLimitMs('DA_IDLE_LIMIT_MS', 'deviceIdleLeasedMinutes', LEASED_IDLE_DEFAULT_MIN);
+  const freeLimit = idleLimitMs('DA_FREE_IDLE_LIMIT_MS', 'deviceIdleFreeMinutes', FREE_IDLE_DEFAULT_MIN);
   let changed = false;
   for (const a of [...allocations.values()]) {
     if (a.status !== 'ready') continue;
@@ -504,7 +548,7 @@ async function idleSweep() {
     // needs and let selectDevice re-hand the device mid-repair.
     if (allocations.get(a.key) !== a || a.status !== 'ready') continue;
     if (a.motionHash && h === a.motionHash) {
-      if (Date.now() - a.lastMotionAt > IDLE_LIMIT_MS) {
+      if (leasedLimit && Date.now() - a.lastMotionAt > leasedLimit) {
         log('reap: idle >limit, freeing', a.key, 'idleMs', Date.now() - a.lastMotionAt);
         allocations.delete(a.key);
         if (a.bootedByUs) shutdownAlloc(a);
@@ -516,9 +560,34 @@ async function idleSweep() {
     }
   }
   if (changed) publish();
+  await sweepFreeDevices(freeLimit);
+}
+
+// Booted devices no lease covers: a repair agent's cold boot, a lease freed without
+// a shutdown (the daemon didn't boot it), an emulator started by hand. No other path
+// ever stops these.
+async function sweepFreeDevices(limit) {
+  const free = lastPool.filter((d) => d.state === 'booted' && !allocations.has(d.key));
+  for (const key of freeMotion.keys()) {
+    if (!free.some((d) => d.key === key)) freeMotion.delete(key);
+  }
+  for (const d of free) {
+    const h = await dev.motionHash(d);
+    if (h == null) continue;
+    const m = freeMotion.get(d.key);
+    if (!m || m.hash !== h) { freeMotion.set(d.key, { hash: h, lastMotionAt: Date.now() }); continue; }
+    if (!limit || Date.now() - m.lastMotionAt <= limit) continue;
+    await withLock(async () => {
+      if (allocations.has(d.key)) return; // claimed during the screenshot
+      log('reap: idle free device >limit, shutting down', d.key, 'idleMs', Date.now() - m.lastMotionAt);
+      freeMotion.delete(d.key);
+      shutdownAlloc(d);
+    });
+  }
 }
 
 function shutdownAlloc(a) {
+  stopping.set(a.key, Date.now() + STOPPING_GRACE_MS);
   try {
     if (dev.isApplePlatform(a.platform)) dev.shutdownIOS(a.udid);
     else dev.shutdownAndroid(a.serial);
@@ -547,10 +616,7 @@ async function handleKill(p) {
       let was = 'already-off';
       if (d.state === 'booted') {
         was = 'running-free';
-        try {
-          if (dev.isApplePlatform(d.platform)) dev.shutdownIOS(d.udid || d.handle);
-          else dev.shutdownAndroid(d.serial || d.handle);
-        } catch (e) { log('kill shutdown error', d.key, String(e)); }
+        shutdownAlloc(d);
       }
       publish();
       log('killed', d.key, was);
@@ -996,6 +1062,6 @@ async function start() {
 // Test seam: with DA_EXPOSE_TEST=1 the module can be imported to drive the real
 // handlers directly (deterministic concurrency tests) without binding the socket.
 // Unset in every real run, so production behavior is unchanged.
-export { allocations, idleSweep, handleBroken, dispatchRepair, handleRequest };
+export { allocations, idleSweep, handleBroken, dispatchRepair, handleRequest, refreshPool };
 
 if (process.env.DA_EXPOSE_TEST !== '1') start();

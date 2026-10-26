@@ -1,8 +1,13 @@
 """Newest-wins singleton (the Linux analogue of macOS
 SingleInstance.terminateOthers). A freshly launched tray instance terminates
-*every other live instance of the applet* — matched by process identity, not by
-the name of a pidfile — then claims the pidfile. So there's never more than one
-wrench in the tray.
+*every live instance of the applet that started before it* — matched by process
+identity, not by the name of a pidfile — then claims the pidfile. So there's
+never more than one wrench in the tray.
+
+Only older instances: two trays launched together (two autostart mechanisms at
+login) each see the other, and if each ended every other instance both would die,
+leaving none. Ordering by start time, lower pid first within one clock tick, gives
+every pair one answer, so exactly the newest survives.
 
 Why identity and not just the pidfile: the pidfile path is derived from the
 product name (``.../diplomat/diplomat.pid``). Keying the whole guarantee on it
@@ -95,23 +100,30 @@ def _other_instances() -> set[int]:
     return procscan.scan_own_pids(_is_applet_gui)
 
 
+def _started_before(pid: int, me: int) -> bool:
+    """Whether ``pid`` started before ``me``; the lower pid is older on a tie."""
+    return (procscan.start_time(pid), pid) < (procscan.start_time(me), me)
+
+
 class SingleInstance:
     @staticmethod
     def acquire_newest_wins() -> None:
         me = os.getpid()
-        # Terminate every other live tray instance — whatever it's named and
-        # whichever pidfile it wrote. The recorded pidfile pid is folded in for the
-        # common case (the scan catches it too), but it MUST pass the same identity
-        # check: a tray that exited uncleanly leaves a stale pidfile, and the OS
+        # Terminate every older live tray instance — whatever it's named and
+        # whichever pidfile it wrote. A newer one is left alone: it ends this one.
+        # The recorded pidfile pid is folded in for the common case (the scan
+        # catches it too), but it MUST pass the same identity and age checks: a
+        # tray that exited uncleanly leaves a stale pidfile, and the OS
         # recycles that pid to an unrelated same-uid process (an editor, a shell, a
         # build). Folding it in on liveness ALONE would SIGTERM/SIGKILL that innocent
         # process. _is_applet_gui verifies the pid is really a GUI tray of this applet
         # before it can become a victim.
-        victims = _other_instances()
+        victims = {p for p in _other_instances() if _started_before(p, me)}
         pf = _pidfile()
         try:
             old = int(pf.read_text().strip())
-            if old and old != me and _alive(old) and _is_applet_gui(old):
+            if (old and old != me and _alive(old) and _is_applet_gui(old)
+                    and _started_before(old, me)):
                 victims.add(old)
         except (OSError, ValueError):
             pass
