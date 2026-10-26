@@ -182,11 +182,9 @@ public enum AgentDispatchGate {
     /// because capacity is the measurement already in hand — a saturated device has
     /// no slot to spend a budget on, so the probe is never worth taking.
     ///
-    /// The disk leads all three. An agent started on a nearly full disk cannot finish
-    /// and pushes the machine toward ENOSPC, wherever its bay or its budget stands;
-    /// a freed bay does not free space, so it is the hold the operator has to act on
-    /// and the one the feed should name while several hold; and one `statfs` is the
-    /// cheapest of the measurements.
+    /// The disk leads all three: an agent on a nearly full disk cannot finish whatever
+    /// its bay or budget, and a freed bay frees no space, so it is the hold the feed
+    /// should name.
     public static func decide(source: Source, banned: Bool, agentOnPR: Bool,
                               meshStandsDown: Bool, atCapacity: Bool,
                               unaffordable: Bool = false,

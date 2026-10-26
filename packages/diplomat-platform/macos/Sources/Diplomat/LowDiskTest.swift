@@ -1,26 +1,20 @@
 import Foundation
 import DiplomatCore
 
-/// Headless self-test of the free-disk floor against a real filesystem, driven by
-/// `DIPLOMAT_LOWDISK_TEST=1`.
+/// Headless self-test of the free-disk floor and the run book against a real volume
+/// (`scripts/full-volume.sh`), through their real entry points: `dispatchAgent` with
+/// the repo root on the volume, `AgentRegistry` with the book there, and
+/// `SelfUpdate.runScheduled` with a scratch checkout one commit behind its origin.
+/// Free space is the real probe's; only the floor is set, relative to the volume.
 ///
-/// `scripts/full-volume.sh` mounts a small APFS image, and both holds are driven
-/// through their real entry points with the work pointed at it: `dispatchAgent` with
-/// the agents' repo root on the volume, and `SelfUpdate.runScheduled` with a scratch
-/// checkout there that is one commit behind its origin. Free space is read by the
-/// real probe; only the floor is set, through `DIPLOMAT_MIN_FREE_DISK_MIB`, relative
-/// to what the volume has, so it can stand above or below it.
-///
-/// It never spawns: a booked agent holds the only bay, re-booked before every offer so
-/// it is never past the spawn grace that would free it, and a dispatch the disk lets
-/// through stops at the cap. The feed, the run book, the config file and the process
-/// table are scratch or pinned, as in `QueueTest`; the updater's build and launch are
-/// fixtures, its fetch and merge are real git against the scratch origin.
+/// It never spawns: a booked agent holds the only bay, so a dispatch the disk lets
+/// through stops at the cap. Feed, book, config and process table are scratch or
+/// pinned as in `QueueTest`; the updater's build and launch are fixtures, its fetch
+/// and merge real git.
 ///
 ///   DIPLOMAT_LOWDISK_TEST=1 swift run Diplomat
 ///
-/// A machine that cannot mount the volume skips (exit 0), unless
-/// `DIPLOMAT_FULL_VOLUME_REQUIRED=1`, where the script fails and so does this.
+/// Skips (exit 0) where no volume can mount, unless `DIPLOMAT_FULL_VOLUME_REQUIRED=1`.
 enum LowDiskTest {
     @discardableResult
     @MainActor

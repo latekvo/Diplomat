@@ -2943,10 +2943,8 @@ final class Store: ObservableObject {
             && !AuthorAllowlist.allows(job.authorLogin ?? "", in: reviewAllowlist)
         var agentOnPR = false
         if let n = job.prNumber { agentOnPR = await inFlight(n) }
-        // First of the machine's own measurements, and taken for the drain as well: a
-        // low disk holds the job whatever the cap or the budget would say, so neither
-        // is measured once it does. Off the main actor, since a volume can be a network
-        // mount. Only "execute now" goes past it.
+        // First: a low disk holds the job whatever the cap or the budget would say. Off
+        // the main actor, since a volume can be a network mount.
         var disk: DiskFloor.Reading?
         if source == .auto, !agentOnPR, !forced {
             disk = await Task.detached(priority: .utility) { Store.agentDisk() }.value

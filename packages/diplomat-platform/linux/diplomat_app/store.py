@@ -1298,10 +1298,9 @@ class Store(QObject):
                 autofix.author_allowed(job.author_login or "", self.review_allowlist)
             )
             agent_on_pr = bool(job.pr_url) and self._in_flight(job.pr_url)
-            # The disk first: it outranks every other hold on auto work, and one
-            # statvfs per volume is the cheapest measurement here. Both volumes an
-            # agent fills — the repo root it makes its worktree in, and ~/.diplomat
-            # with the tool caches beside it — and the fuller one is the answer.
+            # The disk first: it outranks every other hold on auto work. Measured on
+            # the fuller of the two volumes an agent fills: the repo root (its
+            # worktree) and ~/.diplomat (the tool caches).
             disk = None
             low_disk = False
             if source == autofix.SOURCE_AUTO and not agent_on_pr and not forced:
