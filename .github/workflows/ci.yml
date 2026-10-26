@@ -296,6 +296,8 @@ jobs:
       - name: Install the library (with the trust extra) and pytest
         run: pip install -e './packages/szpontnet-core[trust]' pytest
       - name: Unit + host-seam tests
+        env:
+          DIPLOMAT_FULL_VOLUME_REQUIRED: '1'
         run: pytest packages/szpontnet-core/tests -q -m 'not tor_e2e and not iroh_e2e'
       # The onion path against a real tor daemon — here the simulated one, which
       # needs no network and no `tor` installed but still runs every line of the
