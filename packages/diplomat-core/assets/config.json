@@ -1,4 +1,6 @@
 {
   "owner": "software-mansion",
-  "repo": "argent"
+  "repo": "argent",
+  "minFreeDiskGiB": 5,
+  "_minFreeDiskGiBComment": "The free space automatic agent work and the scheduled self-update hold to (DiskFloor.swift / diskfloor.py). 5 GiB: one more agent's worktree plus its npm ci is ~2 GiB, and macOS needs room for a few more 1 GiB swapfiles before a full disk freezes it. DIPLOMAT_MIN_FREE_DISK_MIB overrides it."
 }
