@@ -146,8 +146,8 @@ def test_a_run_that_ends_on_a_full_disk_is_retired_once_it_drains(
 
 def test_the_applet_launches_on_a_full_disk(on_volume, quiet_poll, crashes, monkeypatch):
     """``run_app``'s launch sequence with nothing on the disk writable, and then the
-    loop it starts: the launch must not die on bookkeeping, a display env it can't
-    replace must survive whole, and the config the allocator daemon reads is
+    loop it starts: the launch must not die on bookkeeping, the recorded display env
+    must stay whole, and the config the allocator daemon reads is
     published once there is room."""
     from diplomat_app import selfupdate, singleton
     from diplomat_app.store import Store
@@ -165,7 +165,8 @@ def test_the_applet_launches_on_a_full_disk(on_volume, quiet_poll, crashes, monk
     st.me = "alice"
     st.publish_spawn_terminal()
     assert appconfig.get(appconfig.SPAWN_TERMINAL) == ""
-    assert selfupdate._recorded_display_env()["DISPLAY"] == ":0"
+    # Whole either way: APFS refuses the rewrite, a tmpfs reuses the bytes it frees.
+    assert selfupdate._recorded_display_env().get("DISPLAY") in (":0", ":1")
 
     loop = _Loop(st)
     try:
