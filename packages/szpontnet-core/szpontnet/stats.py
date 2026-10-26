@@ -187,7 +187,7 @@ def load(now: float | None = None) -> NodeStats:
 
 
 def save(st: NodeStats) -> None:
-    """Atomic write (tmp + rename); best-effort, never raises."""
+    """Atomic write (tmp + rename); raises ``OSError`` when it can't be written."""
     write_atomic(stats_path(), {
         "plan": st.plan,
         "acc": st.acc,

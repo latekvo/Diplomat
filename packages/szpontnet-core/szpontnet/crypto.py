@@ -25,6 +25,7 @@ so is treated as *foreign* by any peer on the shipped zero-trust default (and as
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import os
 from pathlib import Path
@@ -89,7 +90,11 @@ class DeviceKey:
 
 def load_or_create() -> "DeviceKey | None":
     """Load this machine's keypair, minting + persisting one on first run.
-    Returns None when ``cryptography`` is unavailable (the node runs keyless)."""
+    Returns None when ``cryptography`` is unavailable (the node runs keyless).
+
+    Raises :class:`identity.IdentityNotSaved` when a minted key can't be persisted:
+    every peer's allowlist names this key, so one that is gone after a restart
+    would quietly demote this machine to a stranger."""
     if not AVAILABLE:
         return None
     path = key_path()
@@ -103,17 +108,20 @@ def load_or_create() -> "DeviceKey | None":
     raw = priv.private_bytes(serialization.Encoding.Raw,
                              serialization.PrivateFormat.Raw,
                              serialization.NoEncryption())
+    tmp = path.with_suffix(".key.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".key.tmp")
         # Write private-key material 0600 from the start (never world-readable).
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(raw.hex() + "\n")
         os.replace(tmp, path)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        raise identity.IdentityNotSaved(
+            f"couldn't save {path}: {exc.strerror or exc}") from exc
+    with contextlib.suppress(OSError):
         os.chmod(path, 0o600)
-    except OSError:
-        pass  # best-effort: an unwritable HOME still yields an in-memory key
     return DeviceKey(priv)
 
 

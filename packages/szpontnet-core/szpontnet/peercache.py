@@ -46,7 +46,7 @@ def load() -> dict[str, tuple[str, int]]:
 
 
 def save(cache: dict[str, tuple[str, int]]) -> None:
-    """Atomic write (tmp + rename); best-effort, never raises into the node."""
+    """Atomic write (tmp + rename); raises ``OSError`` when it can't be written."""
     body = {pid: {"addr": addr, "tcpPort": port}
             for pid, (addr, port) in sorted(cache.items())}
     write_atomic(path(), body, indent=1)

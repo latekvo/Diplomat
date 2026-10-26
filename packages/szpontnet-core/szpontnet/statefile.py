@@ -48,7 +48,7 @@ def stamp(snapshot: dict) -> dict:
 
 
 def write_state(snapshot: dict) -> None:
-    """Atomic write (tmp + rename); best-effort, never raises into the node."""
+    """Atomic write (tmp + rename); raises ``OSError`` when it can't be written."""
     stamp(snapshot)
     write_atomic(state_path(), snapshot, indent=1)
 

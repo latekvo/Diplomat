@@ -89,7 +89,7 @@ def load() -> dict[str, WanEntry]:
 
 
 def save(cache: dict[str, WanEntry]) -> None:
-    """Atomic write (tmp + rename); best-effort, never raises into the node."""
+    """Atomic write (tmp + rename); raises ``OSError`` when it can't be written."""
     body = {pid: {"endpoint": e.endpoint, "onion": e.onion,
                   "fingerprint": e.fingerprint}
             for pid, e in sorted(cache.items())}
