@@ -13,12 +13,35 @@ export function atomicWrite(file, obj, mode = 0o644) {
   // fsync before rename: without it a crash/power loss can leave a zero-length
   // file after the rename commits — fatal for banned.json (a torn read there
   // resets the ban list).
-  const fd = fs.openSync(tmp, 'w', mode);
   try {
-    fs.writeFileSync(fd, `${JSON.stringify(obj, null, 2)}\n`);
-    fs.fsyncSync(fd);
-  } finally { fs.closeSync(fd); }
-  fs.renameSync(tmp, file);
+    const fd = fs.openSync(tmp, 'w', mode);
+    try {
+      fs.writeFileSync(fd, `${JSON.stringify(obj, null, 2)}\n`);
+      fs.fsyncSync(fd);
+    } finally { fs.closeSync(fd); }
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    // A full disk fails the write or the rename. Should even this unlink fail (APFS
+    // can), this process's next write of the file reuses the name.
+    try { fs.unlinkSync(tmp); } catch {}
+    throw e;
+  }
+}
+
+// A writer that died between creating its tmp file and renaming it (killed, or on a
+// full disk that refused even the unlink) leaves the tmp for good: no later process
+// writes under its pid again.
+export function sweepDeadTmp(file) {
+  const dir = path.dirname(file);
+  const prefix = `${path.basename(file)}.tmp.`;
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return; }
+  for (const n of names) {
+    const pid = Number(n.slice(prefix.length));
+    if (n.startsWith(prefix) && Number.isInteger(pid) && !pidAlive(pid)) {
+      try { fs.unlinkSync(path.join(dir, n)); } catch {}
+    }
+  }
 }
 
 export function writeDiscovery() {
