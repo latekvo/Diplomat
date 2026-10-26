@@ -13,8 +13,8 @@ import Glibc
 ///
 /// Free space is what `statfs` reports available to an unprivileged writer
 /// (`f_bavail`), the number `shutil.disk_usage` reads on the Python side. Not
-/// `volumeAvailableCapacityForImportantUsageKey`: that one counts space macOS could
-/// purge on demand, and purging is what fell behind the writers when the disk filled.
+/// `volumeAvailableCapacityForImportantUsageKey`: that one counts purgeable space, which
+/// no write can use until macOS has purged it.
 public enum DiskFloor {
     public struct Reading: Equatable {
         /// The path asked about; the reading is for the volume holding it.

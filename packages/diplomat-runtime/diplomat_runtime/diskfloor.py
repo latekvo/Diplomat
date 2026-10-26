@@ -6,8 +6,8 @@ shared with the Swift twin ``DiskFloor``; ``DIPLOMAT_MIN_FREE_DISK_MIB`` overrid
 
 Free space is what ``statvfs`` reports available to an unprivileged writer
 (``f_bavail``), which is what :func:`shutil.disk_usage` returns and the number
-``DiskFloor`` reads with ``statfs`` on macOS. Not the figure that counts space macOS
-could purge on demand: purging is what fell behind the writers when the disk filled.
+``DiskFloor`` reads with ``statfs`` on macOS. Not the figure that counts purgeable
+space, which no write can use until macOS has purged it.
 """
 
 from __future__ import annotations
