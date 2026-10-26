@@ -250,3 +250,33 @@ def test_a_missing_opencode_is_not_promised_to_an_rc(make_view, monkeypatch):
     assert view._runner_row._summary.text() == (
         "Neither your login shell nor this app's PATH has an `opencode` executable — "
         "check it if spawned runs finish instantly without doing anything.")
+
+
+@pytest.mark.parametrize("slider,key,maximum,step", [
+    ("_idle_free", "deviceIdleFreeMinutes", 60, 1),
+    ("_idle_leased", "deviceIdleLeasedMinutes", 240, 5),
+])
+def test_an_idle_limit_slider_writes_its_key_and_reads_zero_as_never(
+        view, slider, key, maximum, step):
+    """Both limits are read by the device-allocator daemon from the shared config, so
+    the slider has to land there, not in QSettings."""
+    from diplomat_runtime import appconfig
+
+    control = getattr(view, slider)
+    assert (control.minimum(), control.maximum(), control._step) == (0, maximum, step)
+    control._slider.setValue(2 * step)
+    assert appconfig.read()[key] == 2 * step
+    assert control.badge() == f"{2 * step} min"
+    control._slider.setValue(0)
+    assert appconfig.read()[key] == 0
+    assert control.badge() == "never"
+
+
+def test_the_idle_limit_sliders_open_on_the_stored_values(make_view):
+    from diplomat_runtime import appconfig
+
+    appconfig.set_int(appconfig.DEVICE_IDLE_FREE_MINUTES, 12)
+    appconfig.set_int(appconfig.DEVICE_IDLE_LEASED_MINUTES, 0)
+    view = make_view()
+    assert view._idle_free.value() == 12
+    assert view._idle_leased.badge() == "never"

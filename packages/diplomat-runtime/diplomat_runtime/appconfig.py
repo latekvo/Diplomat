@@ -15,8 +15,10 @@ environment at spawn time.
 One more sits with them without needing to: how long a run may go on before the
 resolver calls it over, which belongs beside the cap it hands bays back to and is
 read by the ``DIPLOMAT_AGENTS`` dump, a front-end-free path with no store of its own.
-And one is published rather than set here: the terminal spawns resolve to, for the
-device-allocator daemon, a Node process, to open its repair agents in.
+The device-allocator daemon, a Node process, reads three more: the terminal spawns
+resolve to (published rather than set here), to open its repair agents in, and the
+two idle limits after which it takes a device back from its agent or shuts down one
+no agent holds.
 
 So those knobs live in the shared ``~/.diplomat`` tree, the way the ban list,
 the activity feed and the mesh snapshot already cross process *and* front-end
@@ -62,6 +64,17 @@ AGENT_TOKEN_FILE = "agentTokenFile"
 #: daemon to open its repair agents in (``device-allocator/src/terminal.js``). Written,
 #: never read here: the choice itself stays in the front-end's own store.
 SPAWN_TERMINAL = "spawnTerminal"
+#: Minutes a booted device no agent holds may show no change on its screen before the
+#: device-allocator daemon shuts it down; 0 never does. Read on each idle sweep.
+DEVICE_IDLE_FREE_MINUTES = "deviceIdleFreeMinutes"
+#: Minutes a device an agent holds may show no change on its screen before the daemon
+#: takes it back, after which it counts as free; 0 never does.
+DEVICE_IDLE_LEASED_MINUTES = "deviceIdleLeasedMinutes"
+
+DEFAULT_DEVICE_IDLE_FREE_MINUTES = 5
+MAX_DEVICE_IDLE_FREE_MINUTES = 60
+DEFAULT_DEVICE_IDLE_LEASED_MINUTES = 30
+MAX_DEVICE_IDLE_LEASED_MINUTES = 240
 
 
 def path() -> Path:
@@ -215,3 +228,30 @@ def auto_budget_reserve_usd() -> float:
     return autofix.clamp_budget_reserve_usd(
         get_float(AUTO_BUDGET_RESERVE_USD, autofix.DEFAULT_BUDGET_RESERVE_USD)
     )
+
+
+def clamp_device_idle_minutes(value: int, maximum: int) -> int:
+    """An idle limit held inside the range its Settings slider offers. The daemon
+    honours any non-negative number a hand edit leaves, so this bounds only what the
+    UI shows and writes."""
+    return max(0, min(maximum, value))
+
+
+def _device_idle_minutes(key: str, default: int, maximum: int) -> int:
+    value = get_int(key, default)
+    return default if value < 0 else clamp_device_idle_minutes(value, maximum)
+
+
+def device_idle_free_minutes() -> int:
+    """:data:`DEVICE_IDLE_FREE_MINUTES` for Settings to show: anything but a
+    non-negative integer reads as the default."""
+    return _device_idle_minutes(DEVICE_IDLE_FREE_MINUTES,
+                                DEFAULT_DEVICE_IDLE_FREE_MINUTES,
+                                MAX_DEVICE_IDLE_FREE_MINUTES)
+
+
+def device_idle_leased_minutes() -> int:
+    """:func:`device_idle_free_minutes` for :data:`DEVICE_IDLE_LEASED_MINUTES`."""
+    return _device_idle_minutes(DEVICE_IDLE_LEASED_MINUTES,
+                                DEFAULT_DEVICE_IDLE_LEASED_MINUTES,
+                                MAX_DEVICE_IDLE_LEASED_MINUTES)
