@@ -63,6 +63,20 @@ def environ_bytes(pid: int) -> bytes:
         return b""
 
 
+def start_time(pid: int) -> int:
+    """When a pid started, in clock ticks since boot; 0 when it can't be read.
+
+    ``comm`` (field 2) may hold spaces and parentheses, so the fields are counted
+    from the last ``)``. Unreadable reads as oldest: the caller has just matched
+    this pid's ``/proc`` entry, so an unreadable ``stat`` means it already exited.
+    """
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_bytes()
+        return int(raw[raw.rindex(b")") + 1:].split()[19])  # field 22
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
 def module_arg(tokens: list[str]) -> str | None:
     """The module name in a ``python -m <module>`` argv, or ``None``.
 
