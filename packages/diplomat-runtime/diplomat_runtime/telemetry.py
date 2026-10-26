@@ -390,7 +390,7 @@ def observe_owed(kind: str, duty: str, owed: dict[str, int]) -> None:
     dropped work it actually did.
     """
     prefix = f"{kind}:"
-    ledger = load()
+    ledger = _with_unwritten()
     known = {t.key for t in ledger.tasks if t.key.startswith(prefix)}
     for key, pr in owed.items():
         if key and key not in known:
@@ -407,12 +407,17 @@ def sample_due(now: float | None = None) -> bool:
     own last sample rather than a timer, so an applet that restarts every few
     minutes doesn't sample every launch."""
     now = time.time() if now is None else now
-    taken = [s.at for s in load().samples[-1:]]
-    # One the ledger has not taken yet counts too, or every turn on a full disk
-    # would queue another.
-    with _append_lock:
-        taken += [e["at"] for e in map(json.loads, _unwritten) if e.get("ev") == "sample"]
+    taken = [s.at for s in _with_unwritten().samples[-1:]]
     return not taken or now - max(taken) >= SAMPLE_INTERVAL_SECS
+
+
+def _with_unwritten() -> Ledger:
+    """The ledger as this process has recorded it: the file, then the events a full
+    disk is still holding. What decides whether to record again reads this, or every
+    poll on a full disk would queue the same event once more."""
+    with _append_lock:
+        held = [line.decode("utf-8") for line in _unwritten]
+    return fold(read_lines() + held) if held else load()
 
 
 def record_sample(session_left: float | None, week_left: float | None,

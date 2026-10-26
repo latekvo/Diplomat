@@ -798,7 +798,8 @@ Ask the node to shut down cleanly. Reply: [`ok`](#ok--error).
 
 ### `ok` / `error`
 
-Generic command results.
+Generic command results. A command that edits a [state file](08-state.md) the
+node could not save replies `error`, though the edit is applied.
 
 ```json
 {"t": "ok", "v": 1}

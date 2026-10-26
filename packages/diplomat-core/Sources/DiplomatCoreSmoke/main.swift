@@ -60,9 +60,13 @@ check(DiskFloor.floor(env: [:]) == 5 << 30,
 check(DiskFloor.floor(env: [DiskFloor.envOverride: "64"]) == 64 << 20,
       "the override is in MiB")
 check(DiskFloor.floor(env: [DiskFloor.envOverride: "0"]) == 0, "an override of 0 turns it off")
-for junk in ["", "-1", "5GiB", "1.5"] {
+for junk in ["", "-1", "+64", " 64", "5GiB", "1.5"] {
     check(DiskFloor.floor(env: [DiskFloor.envOverride: junk]) == 5 << 30,
           "an override that is not a whole MiB count falls back to the asset: \(junk)")
+}
+for huge in ["9223372036854775807", "99999999999999999999999"] {
+    check(DiskFloor.floor(env: [DiskFloor.envOverride: huge]).map { $0 > 1 << 60 } == true,
+          "an override past what Int64 holds is a floor no disk passes: \(huge)")
 }
 let diskTmp = FileManager.default.temporaryDirectory.path
 check((DiskFloor.free(at: diskTmp) ?? 0) > 0, "the temp dir's volume reads")

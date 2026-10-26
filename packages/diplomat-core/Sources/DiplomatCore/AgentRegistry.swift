@@ -370,10 +370,16 @@ public enum AgentRegistry {
     ///
     /// Called with what the resolver found retirable — positive evidence the agent
     /// ended — never on a timer.
-    public static func forget(_ runIDs: Set<String>) {
-        guard !runIDs.isEmpty else { return }
-        update { $0.filter { !runIDs.contains($0.runID) } }
+    ///
+    /// False when the book can't be written, with every directory still in place: the
+    /// runs are still booked, and their directories hold what prices them. Python twin:
+    /// `agentregistry.forget`.
+    @discardableResult
+    public static func forget(_ runIDs: Set<String>) -> Bool {
+        guard !runIDs.isEmpty else { return true }
+        guard update({ $0.filter { !runIDs.contains($0.runID) } }) else { return false }
         for id in runIDs { try? FileManager.default.removeItem(at: runDir(id)) }
+        return true
     }
 
     // MARK: - Encoding

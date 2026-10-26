@@ -150,8 +150,9 @@ enum LowDiskTest {
             return AgentState.RunRecord(runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
                                         prNumber: number, kind: "review", label: "Review · #\(number)")
         }
+        let booked = record(10)
         check("with room a run is booked",
-              AgentRegistry.createRun(record(10), prompt: "p") != nil
+              AgentRegistry.createRun(booked, prompt: "p") != nil
                   && AgentRegistry.load().map(\.prNumber) == [10],
               "\(AgentRegistry.load().map(\.prNumber))")
         check("fill for the run book", volume("fill") == 0)
@@ -161,7 +162,13 @@ enum LowDiskTest {
               "\(AgentRegistry.load().map(\.prNumber))")
         check("…and no run directory is left",
               !fm.fileExists(atPath: AgentRegistry.runDir(refused.runID).path))
+        check("a run the book cannot drop is not forgotten", !AgentRegistry.forget([booked.runID]))
+        check("…it stays booked", AgentRegistry.load().map(\.runID) == [booked.runID])
+        check("…with the prompt that prices it",
+              fm.fileExists(atPath: AgentRegistry.promptPath(booked.runID).path))
         check("drain for the run book", volume("drain") == 0)
+        check("with room it is forgotten", AgentRegistry.forget([booked.runID])
+                  && AgentRegistry.load().isEmpty)
         setenv("DIPLOMAT_AGENTS_DIR", scratch.appendingPathComponent("agents").path, 1)
 
         // MARK: the 06:00 updater

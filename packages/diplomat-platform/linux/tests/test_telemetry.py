@@ -170,6 +170,24 @@ def test_owed_work_is_queued_once_and_only_once(ledger):
     assert all(t.queued_at is not None for t in tasks)
 
 
+def test_a_ledger_that_takes_no_writes_still_records_each_event_once(ledger):
+    """Polls keep coming while a full disk refuses the ledger, and each one must see
+    what the earlier ones are still holding."""
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(ledger.parent, 0o500)
+    try:
+        owed = {"review:h/o/r#1@aa": 1, "review:h/o/r#2@bb": 2}
+        for _ in range(3):
+            telemetry.observe_owed("review", "review", owed)
+        for _ in range(3):
+            telemetry.observe_owed("review", "review", {})
+    finally:
+        os.chmod(ledger.parent, 0o700)
+    telemetry.observe_owed("review", "review", {"review:h/o/r#3@cc": 3})
+    events = [json.loads(line)["ev"] for line in ledger.read_text().splitlines()]
+    assert events.count("queued") == 3 and events.count("cleared") == 2, events
+
+
 def test_work_that_stops_being_owed_before_anyone_took_it_is_cleared(ledger):
     telemetry.observe_owed("review", "review", {"review:h/o/r#1@aa": 1})
     telemetry.observe_owed("review", "review", {})     # the reviewer resolved it

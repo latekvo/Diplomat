@@ -3,14 +3,15 @@
 # "the disk is full" is exercised against the kernel rather than a mocked error.
 #
 #   full-volume.sh mount   <dir> [size]  mount an empty volume at <dir> (default 8m)
-#   full-volume.sh fill    <dir>         fill it until create, append and rename all fail
+#   full-volume.sh fill    <dir>         fill it until no byte of data can land
 #   full-volume.sh drain   <dir>         free the space fill took
 #   full-volume.sh unmount <dir>         detach it and delete its backing store
 #
 # macOS: an APFS disk image (no root needed). APFS keeps reserves that a single
 # dd leaves behind, so fill keeps going in smaller pieces until even a rename of
 # an existing file fails - which is how the real disk failed. Linux: a tmpfs,
-# which needs root or passwordless sudo.
+# which needs root or passwordless sudo; there a new file or a rename still
+# succeeds (it costs an inode, not data), and only the data write fails.
 #
 # Exits 77 when this machine cannot mount one. A caller treats that as a skip,
 # unless DIPLOMAT_FULL_VOLUME_REQUIRED=1 (CI sets it), when it is a failure.

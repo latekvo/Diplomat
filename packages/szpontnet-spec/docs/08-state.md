@@ -8,9 +8,13 @@ because the reference implementation's UIs and CLI read them, and a compatible
 implementation that wants to drive those tools should match the shapes.
 
 All five are written **atomically** (write a temp file, then rename over the
-target) so a concurrent reader never sees a torn file, and all are best-effort
-(an unwritable home directory is non-fatal - the node keeps running with in-memory
-state).
+target) so a concurrent reader never sees a torn file. A write that fails (a full
+disk) is non-fatal: the node keeps running on its in-memory state and retries the
+file until it saves, and a control command whose edit is not saved yet replies
+[`error`](04-messages.md#ok--error) (the edit is live, but a restart before the
+save loses it). The one exception is an identity minted on first run - `id` or
+`device.key` - which a node does not start without saving, since an unsaved one
+would come back as a different machine.
 
 The reference paths live under `~/.diplomat/mesh/` (overridable via
 `SZPONTNET_DIR`).
@@ -82,9 +86,8 @@ start the node reads this file, and only if it is missing or malformed does it
 generate a fresh keypair and persist it (atomically, `0600` from creation). The
 derived **public** key is what the node advertises as
 [`NodeInfo.pubkey`](04-messages.md#nodeinfo); its **fingerprint** = `sha256(public
-key)` is what the trust allowlist matches on. Writing is best-effort: if the file is
-unwritable the node still runs with the freshly-minted key **in memory** (so it can
-prove its identity for the current process, but takes a new identity on restart).
+key)` is what the trust allowlist matches on. A freshly-minted key that cannot be
+written stops the start, and the next start mints again.
 
 A node MAY run **keyless** (the reference degrades this way when its crypto library
 is unavailable): it advertises no `pubkey`, can never be verified, and is therefore

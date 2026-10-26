@@ -27,9 +27,14 @@ def test_the_override_is_in_mib_and_zero_turns_it_off():
     assert diskfloor.floor({diskfloor.ENV_OVERRIDE: "0"}) == 0
 
 
-@pytest.mark.parametrize("junk", ["", "-1", "5GiB", "1.5"])
+@pytest.mark.parametrize("junk", ["", "-1", "+64", " 64", "5GiB", "1.5"])
 def test_an_override_that_is_not_a_whole_mib_count_falls_back(junk):
     assert diskfloor.floor({diskfloor.ENV_OVERRIDE: junk}) == 5 * _GIB
+
+
+@pytest.mark.parametrize("huge", ["9223372036854775807", "99999999999999999999999"])
+def test_an_override_past_what_int64_holds_is_a_floor_no_disk_passes(huge):
+    assert diskfloor.floor({diskfloor.ENV_OVERRIDE: huge}) > 1 << 60
 
 
 def test_the_override_is_read_from_the_environment(monkeypatch):

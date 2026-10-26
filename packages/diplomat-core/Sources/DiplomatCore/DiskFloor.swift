@@ -35,7 +35,9 @@ public enum DiskFloor {
     /// The floor in bytes, or nil when neither the override nor the asset names one.
     public static func floor(env: [String: String] = ProcessInfo.processInfo.environment)
         -> Int64? {
-        if let raw = env[envOverride], let mib = Int64(raw), mib >= 0 {
+        if let raw = env[envOverride], !raw.isEmpty, raw.allSatisfy({ $0.isASCII && $0.isNumber }) {
+            // Digits only, as Python's `isdigit` reads it; past Int64 means no disk passes.
+            let mib = min(Int64(raw) ?? .max, Int64.max >> 20)
             return mib << 20
         }
         guard let gib = (try? CoreAssets.config())?.minFreeDiskGiB, gib.isFinite, gib >= 0

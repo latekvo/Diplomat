@@ -956,7 +956,7 @@ final class Store: ObservableObject {
     /// retired, and retirement is what would otherwise close its ledger entry.
     func forgetRun(_ runID: String) {
         let priced = Store.pricingInputs(AgentRegistry.load().filter { $0.runID == runID })
-        AgentRegistry.forget([runID])
+        guard bookWritten(AgentRegistry.forget([runID])) else { return }
         Task {
             await settleLedger(priced)
             await settleAgents()
@@ -1001,7 +1001,11 @@ final class Store: ObservableObject {
                 source: AgentDispatchGate.Source.auto.rawValue,
                 placement: onThisMachine ? .meshHere : .meshPeer,
                 node: node, workKey: job.workKey, ledgerKey: job.ledgerKey),
-            prompt: job.prompt) else { return }
+            prompt: job.prompt) else {
+            bookWritten(false)
+            return
+        }
+        bookWritten(true)
         if onThisMachine {
             AgentRegistry.stageRunner(record.runID, AppConfig.agentRunner.rawValue)
         }
@@ -1205,6 +1209,18 @@ final class Store: ObservableObject {
         // no tokens — and a `done` against its key would count it among the completed
         // ones. Its ledger entry stays open, which is what it is: still owed.
         let priced = Store.pricingInputs(gone.filter { t.states[$0.runID]?.state != .failed })
+        // Only a run whose agent is done: a merge retires one that may still be filling
+        // its review. Decided here, while the sentinel `forget` deletes is still there.
+        let audited = gone
+            .filter { $0.kind == "review" && !$0.prURL.isEmpty && $0.runsHere
+                && (t.states[$0.runID]?.state == .finished || AgentRegistry.finishedAt($0.runID) != nil) }
+            .map { (label: $0.label.isEmpty ? $0.runID : $0.label, source: $0.source,
+                    url: $0.prURL, since: $0.dispatchedAt) }
+        await Store.interrupt(stops)
+        // Before anything is said or priced, because a run the book still holds (a full
+        // disk) is retired again next tick: nothing below may happen to one that stays,
+        // or it is logged and priced twice.
+        guard bookWritten(AgentRegistry.forget(Set(gone.map(\.runID)))) else { return }
         // Forgetting deletes every trace a run leaves — record, directory, prompt,
         // handle — so a retirement that was wrong is otherwise just a row that stopped
         // being there. This line is the only thing that says which rung decided.
@@ -1213,17 +1229,8 @@ final class Store: ObservableObject {
             AuditLog.log(r.source, verdict?.state == .failed ? "spawn-failed" : "retire",
                          "\(r.label.isEmpty ? r.runID : r.label) — \(verdict?.reason ?? "no verdict")")
         }
-        // Only a run whose agent is done: a merge retires one that may still be filling
-        // its review.
-        let audited = gone
-            .filter { $0.kind == "review" && !$0.prURL.isEmpty && $0.runsHere
-                && (t.states[$0.runID]?.state == .finished || AgentRegistry.finishedAt($0.runID) != nil) }
-            .map { (label: $0.label.isEmpty ? $0.runID : $0.label, source: $0.source,
-                    url: $0.prURL, since: $0.dispatchedAt) }
         if !audited.isEmpty { Store.auditReviews(audited, me: me) }
-        AgentRegistry.forget(Set(gone.map(\.runID)))
         OpenCodeProbe.forgetAdopted(Set(gone.map(\.runID)))
-        await Store.interrupt(stops)
         await settleLedger(priced)
     }
 
@@ -1972,6 +1979,26 @@ final class Store: ObservableObject {
         diskLogged = true
         AuditLog.log("auto", "low-disk", "Deferring auto work — " + DiskFloor.describe(disk))
         refreshAudit()
+    }
+
+    /// Whether the run book refused its last write (a full disk): one feed line when it
+    /// stops saving, one when it saves again. No retry needed, since each tick re-derives
+    /// its writes from the book. Python twin: `Store._write_book`.
+    private var bookUnsaved = false
+
+    @discardableResult
+    private func bookWritten(_ ok: Bool) -> Bool {
+        if !ok, !bookUnsaved {
+            bookUnsaved = true
+            AuditLog.log("auto", "warn",
+                         "Can't write the agent run book — runs are not booked or retired until it saves")
+            refreshAudit()
+        } else if ok, bookUnsaved {
+            bookUnsaved = false
+            AuditLog.log("auto", "poll-recovered", "Agent run book saving again")
+            refreshAudit()
+        }
+        return ok
     }
 
     /// Note that automatic work is being held for want of budget — once per episode,

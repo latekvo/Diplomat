@@ -1525,7 +1525,8 @@ class Store(QObject):
                        source: str, ledger_key: str = "", label: str = "",
                        kind: str = "") -> None:
         """Register a run, then spawn its agent into it. Raises
-        :class:`review.SpawnError`, with the run forgotten, when no terminal launched.
+        :class:`review.SpawnError` when the run can't be booked or no terminal
+        launched; the run is forgotten unless the book refuses that write too.
 
         The record is written BEFORE the spawn, not after. A terminal takes seconds to
         open and the poll that dispatched it can ask about the same PR again inside
@@ -2607,8 +2608,16 @@ class Store(QObject):
              agentregistry.run_runner(r.run_id))
             for r in gone if r.ledger_key and r.run_id not in failed
         ]
-        # First, because a run the book still holds is retired again next tick:
-        # nothing below may happen to one that stays, or it is logged and priced twice.
+        # Only a run whose agent is done: a merge retires one that may still be filling
+        # its review. Decided here, while the sentinel `forget` deletes is still there.
+        audited = [(r.label or r.run_id, r.source, r.pr_url, r.dispatched_at)
+                   for r in gone
+                   if r.kind == "review" and r.pr_url and r.runs_here
+                   and (getattr(t.states.get(r.run_id), "state", None) == agentstate.FINISHED
+                        or agentregistry.finished_at(r.run_id) is not None)]
+        # Before anything is said or priced, because a run the book still holds is
+        # retired again next tick: nothing below may happen to one that stays, or it is
+        # logged and priced twice.
         if not self._write_book(lambda: agentregistry.forget({r.run_id for r in gone})):
             return
         # Logged with the evidence that ended it, because forgetting deletes every trace
@@ -2622,13 +2631,6 @@ class Store(QObject):
                          f"{r.label or r.run_id} — "
                          f"{verdict.reason if verdict else 'no verdict'}")
         self.refresh_activity()
-        # Only a run whose agent is done: a merge retires one that may still be filling
-        # its review.
-        audited = [(r.label or r.run_id, r.source, r.pr_url, r.dispatched_at)
-                   for r in gone
-                   if r.kind == "review" and r.pr_url and r.runs_here
-                   and (getattr(t.states.get(r.run_id), "state", None) == agentstate.FINISHED
-                        or agentregistry.finished_at(r.run_id) is not None)]
         if audited:
             me = self.me
             self.start_background(lambda: self._audit_reviews(audited, me))

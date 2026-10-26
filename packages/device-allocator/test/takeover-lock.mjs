@@ -7,6 +7,8 @@
 //    reusing that pid would read it as a live holder and defer forever.
 // 2. The lock cannot be created at all (a read-only dir here; ENOSPC on a full disk):
 //    the daemon says so and exits 1, rather than defer to a holder that does not exist.
+// 3. The lock exists but names no pid (a peer between its create and its write, or one
+//    whose write a full disk refused): a young one is held, an old one reclaimed.
 // Run: node test/takeover-lock.mjs
 
 import { spawn } from 'node:child_process';
@@ -47,6 +49,30 @@ try {
   console.log('  PASS a failed takeover re-listen releases the startup lock');
 } finally {
   fs.rmSync(relisten, { recursive: true, force: true });
+}
+
+for (const [age, held] of [[0, true], [60, false]]) {
+  const base = blockedBase();
+  const lock = path.join(base, 'daemon.sock.lock');
+  fs.writeFileSync(lock, '');
+  const at = Date.now() / 1000 - age;
+  fs.utimesSync(lock, at, at);
+  try {
+    const code = await runDaemon(base);
+    const logText = fs.readFileSync(path.join(base, 'daemon.log'), 'utf8');
+    assert.equal(code, 0, logText);
+    if (held) {
+      assert.match(logText, /the startup lock is held/, logText);
+      assert.ok(fs.existsSync(lock), 'a young empty lock was taken from its creator');
+      console.log('  PASS a young lock with no pid is held');
+    } else {
+      assert.match(logText, /could not acquire the socket/, logText);
+      assert.ok(!fs.existsSync(lock), 'an old empty lock was never reclaimed');
+      console.log('  PASS an old lock with no pid is reclaimed');
+    }
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
 }
 
 if (process.getuid?.() === 0) {

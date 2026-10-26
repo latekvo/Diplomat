@@ -902,6 +902,11 @@ function onListening() {
 // daemon takes over. Held only for the few ms of takeover, then released; a crash while
 // holding it leaves a stale lock the next daemon reclaims by pid-liveness.
 const LOCK_PATH = `${SOCKET_PATH}.lock`;
+const LOCK_FRESH_MS = 5000; // far past the few ms a takeover holds it
+
+function lockAgeMs() {
+  try { return Date.now() - fs.statSync(LOCK_PATH).mtimeMs; } catch { return Infinity; }
+}
 
 function acquireTakeoverLock() {
   // An open fd (lock held) or null if a LIVE daemon already holds it. Throws when the
@@ -916,6 +921,9 @@ function acquireTakeoverLock() {
       let holder = 0;
       try { holder = Number(fs.readFileSync(LOCK_PATH, 'utf8').trim()) || 0; } catch {}
       if (holder && holder !== process.pid && pidAlive(holder)) return null; // a live holder
+      // No pid yet: a peer between its create and its write, or one whose write a full
+      // disk refused. Either is taking over right now, so a young empty lock is held.
+      if (!holder && lockAgeMs() < LOCK_FRESH_MS) return null;
       // Stale lock (holder dead/unreadable): drop it and retry the exclusive create once.
       // If another recoverer wins the re-create, our second attempt sees a live holder and
       // returns null (defers) — so the O_EXCL create, not the unlink, decides the winner.

@@ -342,7 +342,8 @@ async function scenarioDeadWritersTmp() {
   const base = path.join(VOL, 'c');
   // As in the incident: daemons that died with their tmp files still on disk.
   const deadPid = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout;
-  const dead = [path.join(base, 'daemon.json'), path.join(base, 'leases.json'), path.join(VOL, 'ban', 'banned.json')]
+  const dead = ['daemon.json', 'state.json', 'leases.json'].map((f) => path.join(base, f))
+    .concat(path.join(VOL, 'ban', 'banned.json'))
     .map((f) => `${f}.tmp.${deadPid}`);
   for (const f of dead) fs.writeFileSync(f, '{');
   const live = path.join(base, `state.json.tmp.${ME}`);
