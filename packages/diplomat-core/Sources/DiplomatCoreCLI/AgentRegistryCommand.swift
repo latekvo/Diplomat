@@ -42,7 +42,7 @@ enum AgentRegistryCommand {
             withJSONObject: out, options: [.sortedKeys, .prettyPrinted]) else {
             die("could not serialise the registry", 1)
         }
-        FileHandle.standardOutput.write(data)
+        emit(data)
     }
 
     /// The `--settings` payload this side would stage, re-parsed so the comparison is
@@ -59,7 +59,7 @@ enum AgentRegistryCommand {
             options: [.sortedKeys, .prettyPrinted]) else {
             die("could not serialise the hook settings", 1)
         }
-        FileHandle.standardOutput.write(data)
+        emit(data)
     }
 
     private static func encode(_ r: AgentState.RunRecord) -> [String: Any] {

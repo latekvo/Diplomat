@@ -10,7 +10,7 @@ enum Launch {
     static func main() {
         let unrunnable = Headless.unrunnable(in: ProcessInfo.processInfo.environment)
         guard unrunnable.isEmpty else {
-            FileHandle.standardError.write(Data(Headless.refusal(unrunnable).utf8))
+            try? FileHandle.standardError.write(contentsOf: Data(Headless.refusal(unrunnable).utf8))
             exit(64)   // EX_USAGE
         }
         DiplomatApp.main()
@@ -333,7 +333,7 @@ enum SingleInstance {
     }
 
     private static func log(_ msg: String) {
-        FileHandle.standardError.write(Data("Diplomat singleton: \(msg)\n".utf8))
+        try? FileHandle.standardError.write(contentsOf: Data("Diplomat singleton: \(msg)\n".utf8))
     }
 }
 

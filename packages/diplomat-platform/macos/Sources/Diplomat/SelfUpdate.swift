@@ -326,8 +326,8 @@ enum SelfUpdate {
             try host.rebuild()
         } catch {
             host.log("build failed: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
-            // build-app.sh replaces the bundle only after a clean compile, so the last
-            // good one is still there to bring back.
+            // build-app.sh swaps a new bundle in only once it is compiled and fully
+            // assembled, so the last good one is still there to bring back.
             _ = revive(host, quietly: false)
             return 1
         }
