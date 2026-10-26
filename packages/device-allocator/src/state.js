@@ -3,7 +3,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { BASE_DIR, DISCOVERY_PATH, STATE_PATH, LEASES_PATH, SOCKET_PATH } from './paths.js';
+import { BASE_DIR, DISCOVERY_PATH, STATE_PATH, LEASES_PATH, SOCKET_PATH, CONFIG_PATH } from './paths.js';
 
 export function ensureDirs() { fs.mkdirSync(BASE_DIR, { recursive: true }); }
 
@@ -48,6 +48,14 @@ export function readLeases() {
     const d = JSON.parse(fs.readFileSync(LEASES_PATH, 'utf8'));
     return Array.isArray(d.leases) ? d.leases : [];
   } catch { return []; }
+}
+
+// Diplomat's shared settings, or {} when the file is absent, corrupt or not an object.
+export function readConfig() {
+  try {
+    const v = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch { return {}; }
 }
 
 export function pidAlive(pid) {

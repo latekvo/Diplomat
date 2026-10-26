@@ -83,7 +83,11 @@ Three independent ways a device comes back, because an agent that promises to fr
 one is exactly the thing that just died:
 
 * **the reaper** (every 10s) frees anything whose owning PID is gone;
-* **the idle sweep** (every 2 min) frees a device with no screen motion for 15 min;
+* **the idle sweep** (every minute) frees a lease whose screen has not changed for
+  30 min, and shuts down a booted device nobody holds after 5 min without a change -
+  a repair agent's cold boot, a lease freed without a shutdown, an emulator started by
+  hand. Both limits are Diplomat settings (`deviceIdleLeasedMinutes`,
+  `deviceIdleFreeMinutes` in `~/.diplomat/config.json`, re-read every sweep; 0 = never);
 * **a repair TTL** (2h) returns a quarantined device to the pool even if the repair
   agent never reports back — without it, one broken report shrinks the pool forever.
 

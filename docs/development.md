@@ -272,8 +272,9 @@ packages/
   device-allocator/            ← the `diplomat-device-allocator` MCP server + daemon (see its README),
                                  arbitrating simulator/emulator allocation between the agents on this
                                  machine (request/await/free/change/broken + repair; leases persist across
-                                 daemon restarts in ~/.diplomat/device-allocator/, idle devices reclaimed
-                                 after 15 min; a prompt-injection report bans the author and terminates
+                                 daemon restarts in ~/.diplomat/device-allocator/, idle leases reclaimed
+                                 after 30 min and idle unheld devices shut down after 5, both settings;
+                                 a prompt-injection report bans the author and terminates
                                  the reporting agent). Standalone: any MCP client can point at src/mcp.js
 
   diplomat-core/               ← the shared triage brain: everything both front-ends agree on
