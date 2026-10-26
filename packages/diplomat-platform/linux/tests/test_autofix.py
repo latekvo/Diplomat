@@ -1156,6 +1156,28 @@ def test_dispatch_gate_matrix_parity():
         autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, True, False, True)
         == autofix.VERDICT_UNAFFORDABLE
     )
+    # The free-disk floor: auto only, ahead of capacity, the budget and mesh - a
+    # freed bay frees no space - and behind an agent already on the PR.
+    assert (
+        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, False, False,
+                                low_disk=True)
+        == autofix.VERDICT_LOW_DISK
+    )
+    assert (
+        autofix.dispatch_decide(autofix.SOURCE_PANEL, False, False, False, False,
+                                low_disk=True)
+        == autofix.VERDICT_PROCEED
+    )  # one agent on a tight disk is the operator's call
+    assert (
+        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, True, True, True,
+                                low_disk=True)
+        == autofix.VERDICT_LOW_DISK
+    )
+    assert (
+        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, True, False, False,
+                                low_disk=True)
+        == autofix.VERDICT_IN_FLIGHT
+    )
     # The auto-review allowlist: not a trigger asymmetry - a click is refused for an
     # unlisted author exactly as a poll is - and second only to the ban, so that every
     # other reason to hold reads as "would have run, but". Both are pinned for both

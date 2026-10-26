@@ -23,6 +23,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from pathlib import Path
 
 from diplomat_runtime import (
     activity,
@@ -33,6 +34,7 @@ from diplomat_runtime import (
     autobudget,
     autofix,
     core,
+    diskfloor,
     opencodeapi,
     promptcore,
     review,
@@ -307,10 +309,13 @@ class Store(QObject):
         # out-of-budget one (see _log_unaffordable). Two flags, not one: a machine
         # can saturate and drain several times over inside a single spell of having
         # nothing left to spend, and each episode is worth one line of its own.
+        # The low-disk one (see _log_low_disk) is a third for the same reason.
         self._capacity_logged = False
         self._budget_logged = False
+        self._disk_logged = False
         # Automatic work nothing has started yet — held by the task cap, by the
-        # spending budget, or by its own monitor being switched off — in the order
+        # free-disk floor, by the spending budget, or by its own monitor being
+        # switched off — in the order
         # it will run. The panel's Agent-tasks list.
         #
         # Deliberately NOT persisted. A deferral writes no attempt record precisely so
@@ -1193,7 +1198,7 @@ class Store(QObject):
 
     def dispatch_agent(self, job: autofix.AgentJob, source: str, attempt: int = 1,
                        bypass_capacity: bool = False,
-                       bypass_budget: bool = False) -> str:
+                       forced: bool = False) -> str:
         """Run one agent job through the shared gate (``autofix.dispatch_decide`` -
         the pure, tested decision both platforms mirror) and, on proceed, spawn and
         register it. Returns the verdict: ``"spawned"``, an ``autofix.VERDICT_*``
@@ -1208,9 +1213,10 @@ class Store(QObject):
         An AUTO job is additionally capped at ``auto_task_limit`` concurrent
         agents on this device (``_auto_tasks_running``), held outright while its own
         monitor is switched off (:meth:`is_paused`) or the queue is
-        (:attr:`queue_auto_run`), and held again when what is left of the limits it
-        spends against will not cover it (:mod:`autobudget`); a panel click is subject to
-        none of them. Every one of those refusals
+        (:attr:`queue_auto_run`), held when the disk agents write to is below its
+        free-space floor (:mod:`diskfloor`), and held again when what is left of the
+        limits it spends against will not cover it (:mod:`autobudget`); a panel click
+        is subject to none of them. Every one of those refusals
         queues the job (:meth:`_stage_queued`), which is what the panel's
         Agent-tasks list shows as *queued*.
 
@@ -1225,10 +1231,11 @@ class Store(QObject):
         measurement — not just its verdict — so neither pays for a second ``ps``
         scan, and so a forced run cannot re-queue itself.
 
-        ``bypass_budget`` is only the second of those. The drain runs the machine's
-        own automatic work, and work that could not be afforded when it was found
-        cannot be afforded by having waited in a list; only the operator pressing
-        "execute now" overrides the budget, exactly as only they override the cap."""
+        ``forced`` is only the second of those, and lifts the budget and the disk
+        floor. The drain runs the machine's own automatic work, and work that could
+        not be afforded when it was found cannot be afforded by having waited in a
+        list, nor does a disk drain by being waited on; only the operator pressing
+        "execute now" overrides those two, exactly as only they override the cap."""
         if job.pr_number is not None:
             with self._dispatching_lock:
                 if job.pr_number in self._dispatching_prs:
@@ -1248,13 +1255,26 @@ class Store(QObject):
                 autofix.author_allowed(job.author_login or "", self.review_allowlist)
             )
             agent_on_pr = bool(job.pr_url) and self._in_flight(job.pr_url)
+            # The disk first: it outranks every other hold on auto work, and one
+            # statvfs per volume is the cheapest measurement here. Both volumes an
+            # agent fills — the repo root it makes its worktree in, and ~/.diplomat
+            # with the tool caches beside it — and the fuller one is the answer.
+            disk = None
+            low_disk = False
+            if source == autofix.SOURCE_AUTO and not agent_on_pr and not forced:
+                disk = diskfloor.lowest([review.repo_path(),
+                                         str(Path.home() / ".diplomat")])
+                low_disk = disk is not None and disk.low
+                if not low_disk:
+                    self._disk_logged = False
             # Measured only for an auto job that would otherwise run: the count
             # costs a `ps` scan, a panel click is never capped, and an in-flight
             # PR spawns nothing either way — so in both of those the answer would
             # be discarded. Finding room is also what re-arms the "deferring" note.
             at_capacity = False
             paused = False
-            if source == autofix.SOURCE_AUTO and not agent_on_pr and not bypass_capacity:
+            if (source == autofix.SOURCE_AUTO and not agent_on_pr and not bypass_capacity
+                    and not low_disk):
                 full = self._auto_tasks_running() >= self.auto_task_limit
                 if not full:
                     self._capacity_logged = False
@@ -1275,15 +1295,19 @@ class Store(QObject):
             # difference between deferring work and forcing it.
             budget = autofix.Budget(affordable=True)
             if (source == autofix.SOURCE_AUTO and not agent_on_pr
-                    and not bypass_budget and not at_capacity
+                    and not forced and not at_capacity and not low_disk
                     and autobudget.enabled()):
                 budget = autobudget.decide()
                 if budget.affordable:
                     self._budget_logged = False
             verdict = autofix.dispatch_decide(
                 source, banned, agent_on_pr, False, at_capacity,
-                not budget.affordable, outside_allowlist,
+                not budget.affordable, outside_allowlist, low_disk,
             )
+            if verdict == autofix.VERDICT_LOW_DISK:
+                self._log_low_disk(disk)
+                self._stage_queued(job, attempt)
+                return verdict
             if verdict == autofix.VERDICT_AT_CAPACITY:
                 # A paused monitor is not a saturated device: it queues silently,
                 # because the operator switched it off on purpose and the row says
@@ -1706,6 +1730,17 @@ class Store(QObject):
                      f"Deferring auto work — {autobudget.shortfall(budget)}")
         self.refresh_activity()
 
+    def _log_low_disk(self, disk: diskfloor.Reading) -> None:
+        """Note that automatic work is being held for want of disk — once per
+        episode, like :meth:`_log_at_capacity`, and cleared the moment a dispatch
+        finds the disk above its floor again."""
+        if self._disk_logged:
+            return
+        self._disk_logged = True
+        activity.log("auto", "low-disk",
+                     f"Deferring auto work — {diskfloor.describe(disk)}")
+        self.refresh_activity()
+
     # MARK: - the queue behind the cap
     #
     # A refusal writes no attempt record, so every poll re-offers whatever GitHub
@@ -2093,8 +2128,8 @@ class Store(QObject):
             # Every remaining entry would be priced against the same windows and get
             # the same answer, and the dispatch has already re-staged this one for the
             # commit at the end of the cycle. Draining on would cost a round of
-            # refusals to no end.
-            if verdict == autofix.VERDICT_UNAFFORDABLE:
+            # refusals to no end. The same holds for a disk below its floor.
+            if verdict in (autofix.VERDICT_UNAFFORDABLE, autofix.VERDICT_LOW_DISK):
                 return
 
     def _drop_queued_task(self, task_id: str) -> None:
@@ -2164,9 +2199,9 @@ class Store(QObject):
         and record the attempt its monitor would have recorded.
 
         ``forced`` is the operator's "execute now", and is the only thing that also
-        overrides the spending budget. The drain does not: it is the machine
-        starting its own automatic work, and a task that could not be afforded when
-        it was found is not afforded by having waited in a list.
+        overrides the spending budget and the disk floor. The drain does not: it is
+        the machine starting its own automatic work, and a task that could not be
+        afforded when it was found is not afforded by having waited in a list.
 
         Dispatched as ``SOURCE_AUTO`` whatever put it in the queue, including a review
         the operator asked for. That is not about who wanted the work but about what
@@ -2188,7 +2223,7 @@ class Store(QObject):
         try:
             verdict = self.dispatch_agent(
                 entry.job, autofix.SOURCE_AUTO, entry.attempt, bypass_capacity=True,
-                bypass_budget=forced,
+                forced=forced,
             )
         finally:
             # Paired with the line above whatever the dispatch does, because the band
@@ -2220,17 +2255,17 @@ class Store(QObject):
         self._save_attempts(key, attempts)
 
     def execute_queued_task_async(self, task_id: str) -> None:
-        """The queued row's "execute now": start this task immediately, past the two
+        """The queued row's "execute now": start this task immediately, past the
         holds that are the machine's own judgement.
 
         It stays AUTO work — same ``Auto · `` label, same auto-handled counter, mesh
         routing still applies, and once running it occupies a slot like any other
-        automatic agent, so the rest of the queue waits behind it. Of the five
+        automatic agent, so the rest of the queue waits behind it. Of the six
         asymmetries the gate draws between a click and a monitor tick (capacity,
-        budget, mesh, counters, label) this borrows exactly two: the cap and the
-        spending budget, which are the two the operator is overriding. Both are
-        estimates of what this machine should do next, and the operator looking at
-        the row knows something they do not.
+        disk, budget, mesh, counters, label) this borrows exactly three: the cap, the
+        disk floor and the spending budget, which are the three the operator is
+        overriding. All three are judgements of what this machine should do next,
+        and the operator looking at the row knows something they do not.
 
         On a worker thread, like every other dispatch path: it assembles nothing but
         it does spawn a terminal, and on a live mesh it waits on a node round-trip.

@@ -22,6 +22,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from diplomat_runtime import diskfloor
+
 from .singleton import SingleInstance, headless_markers
 
 
@@ -419,7 +421,15 @@ def run_scheduled() -> int:
     other path a tray that is not running is launched unless the operator quit it
     (``revive``). A conflict or an unreachable origin is logged and left for a
     human rather than retried destructively.
+
+    Nothing is fetched, merged or built while the checkout's volume is below the
+    free-disk floor (:mod:`diskfloor`): a merge that hits ENOSPC halfway leaves a
+    half-updated checkout, and that checkout is the code the tray runs from.
     """
+    disk = diskfloor.lowest([str(repo_root())])
+    if disk is not None and disk.low:
+        _sched_log(f"skip: {diskfloor.describe(disk)}")
+        return revive(quietly=False)
     st = check()
     if st["error"]:
         _sched_log(f"skip: cannot reach origin ({st['error']})")
