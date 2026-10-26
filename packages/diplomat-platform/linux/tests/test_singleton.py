@@ -1,11 +1,12 @@
 """Tests for the newest-wins singleton.
 
-The property that matters: newest-wins terminates *every other live tray
+The property that matters: newest-wins terminates *every older live tray
 instance of the applet, under any name it has launched as* — so the
 ``argent_utils`` -> ``diplomat_app`` rename can never again leave two wrenches in
-the tray (with the orphan stuck on "Restarting…"). The matchers below decide who
-counts as "another tray instance"; the acquire test proves an old instance is
-signaled and the pidfile is claimed regardless of the old instance's name.
+the tray (with the orphan stuck on "Restarting…"), and two trays launched together
+leave one rather than none. The matchers below decide who counts as "another tray
+instance"; the acquire tests prove an old instance is signaled and the pidfile is
+claimed regardless of the old instance's name, and that a newer one is spared.
 """
 
 from __future__ import annotations
@@ -94,7 +95,21 @@ def isolated_runtime(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_acquire_signals_recorded_instance_by_pidfile(isolated_runtime, monkeypatch):
+def _start_times(monkeypatch, times: dict[int, int], default: int = 100):
+    """Stub each pid's start time; this process started at 200 unless ``times``
+    says otherwise, every other pid at ``default`` (older)."""
+    times = {os.getpid(): 200, **times}
+    monkeypatch.setattr(procscan, "start_time", lambda pid: times.get(pid, default))
+
+
+@pytest.fixture
+def others_are_older(monkeypatch):
+    _start_times(monkeypatch, {})
+
+
+def test_acquire_signals_recorded_instance_by_pidfile(
+    isolated_runtime, monkeypatch, others_are_older
+):
     """Even if the /proc scan finds nothing (old instance under a name we can't
     see), the pid recorded in the pidfile is still SIGTERM'd and replaced — provided
     it still verifies as a GUI tray of this applet (identity, not liveness alone)."""
@@ -122,7 +137,9 @@ def test_acquire_signals_recorded_instance_by_pidfile(isolated_runtime, monkeypa
     assert pf.read_text().strip() == str(os.getpid())
 
 
-def test_acquire_spares_recycled_non_applet_pid(isolated_runtime, monkeypatch):
+def test_acquire_spares_recycled_non_applet_pid(
+    isolated_runtime, monkeypatch, others_are_older
+):
     """A tray that exited uncleanly leaves a stale pidfile; the OS recycles that pid
     to an unrelated same-uid process (an editor, a shell). The fold-in must NOT
     signal it — a pid may become a victim only if it still verifies as an applet
@@ -145,7 +162,7 @@ def test_acquire_spares_recycled_non_applet_pid(isolated_runtime, monkeypatch):
 
 
 def test_acquire_terminates_scanned_instance_under_any_name(
-    isolated_runtime, monkeypatch
+    isolated_runtime, monkeypatch, others_are_older
 ):
     """The rename case: an old tray running under a *different* module name is
     found by the /proc scan and terminated even though no pidfile names it."""
@@ -165,7 +182,7 @@ def test_acquire_terminates_scanned_instance_under_any_name(
 
 
 def test_acquire_escalates_to_sigkill_when_sigterm_ignored(
-    isolated_runtime, monkeypatch
+    isolated_runtime, monkeypatch, others_are_older
 ):
     """A wedged instance that ignores SIGTERM is forced down, so the guarantee
     can never degrade to two wrenches."""
@@ -181,6 +198,76 @@ def test_acquire_escalates_to_sigkill_when_sigterm_ignored(
 
     assert (999002, signal.SIGTERM) in signalled
     assert (999002, signal.SIGKILL) in signalled
+
+
+# ---- acquire_newest_wins: only instances older than this one --------------
+
+
+def _reap_stubs(monkeypatch, others: set[int]) -> list[tuple[int, int]]:
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(singleton, "_other_instances", lambda: set(others))
+    monkeypatch.setattr(procscan, "alive", lambda pid: False)
+    monkeypatch.setattr(
+        procscan.os, "kill", lambda pid, sig: signalled.append((pid, sig))
+    )
+    return signalled
+
+
+def test_acquire_spares_a_newer_instance(isolated_runtime, monkeypatch):
+    """Two trays launched together each see the other; the older one must leave
+    the newer alone, or each ends the other and no tray is left."""
+    signalled = _reap_stubs(monkeypatch, {999003, 999004})
+    _start_times(monkeypatch, {999003: 100, 999004: 300})
+
+    SingleInstance.acquire_newest_wins()
+
+    assert signalled == [(999003, signal.SIGTERM)]
+    assert singleton._pidfile().read_text().strip() == str(os.getpid())
+
+
+def test_acquire_breaks_a_start_time_tie_by_pid(isolated_runtime, monkeypatch):
+    """Within one clock tick the lower pid counts as older."""
+    me = os.getpid()
+    signalled = _reap_stubs(monkeypatch, {me - 1, me + 1})
+    _start_times(monkeypatch, {}, default=200)  # everyone, me included
+
+    SingleInstance.acquire_newest_wins()
+
+    assert signalled == [(me - 1, signal.SIGTERM)]
+
+
+def test_acquire_spares_a_newer_recorded_instance(isolated_runtime, monkeypatch):
+    """The pidfile fold-in passes the same age check as the scan: a newer tray that
+    claimed the pidfile first is not this instance's to end."""
+    signalled = _reap_stubs(monkeypatch, set())
+    monkeypatch.setattr(singleton, "_alive", lambda pid: pid == 424242)
+    monkeypatch.setattr(singleton, "_is_applet_gui", lambda pid: pid == 424242)
+    _start_times(monkeypatch, {424242: 300})
+    singleton._pidfile().write_text("424242")
+
+    SingleInstance.acquire_newest_wins()
+
+    assert signalled == []
+
+
+@pytest.mark.parametrize("a_start, b_start", [(100, 116), (100, 100)])
+def test_two_simultaneous_launches_leave_exactly_one(
+    isolated_runtime, monkeypatch, a_start, b_start
+):
+    """Run newest-wins as each of two trays A (pid 1000) and B (pid 1001) that see
+    each other: exactly one of them is ended, whether they started 160 ms apart or
+    in one tick."""
+    times = {1000: a_start, 1001: b_start}
+    monkeypatch.setattr(procscan, "start_time", times.__getitem__)
+    monkeypatch.setattr(singleton, "_alive", lambda pid: False)  # scan only
+    ended = set()
+    for me, other in ((1000, 1001), (1001, 1000)):
+        monkeypatch.setattr(singleton.os, "getpid", lambda me=me: me)
+        signalled = _reap_stubs(monkeypatch, {other})
+        SingleInstance.acquire_newest_wins()
+        ended |= {pid for pid, sig in signalled if sig == signal.SIGTERM}
+
+    assert ended == {1000}
 
 
 def test_running_pid_is_pidfile_only(isolated_runtime, monkeypatch):

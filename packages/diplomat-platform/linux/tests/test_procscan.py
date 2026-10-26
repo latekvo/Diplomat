@@ -11,10 +11,10 @@ as much as the escalation itself:
 * never a process owned by another uid,
 * never an entry that can't be read (the safe direction — "not mine").
 
-Every case below runs against **both** copies. That is the whole point of the
-file: a guard added to one and missed in the other means the copy that missed it
-force-kills an unrelated process of the same user, and nothing else in either
-suite would notice.
+Every case below runs against **both** copies, bar ``start_time``, which only the
+tray's carries. That is the whole point of the file: a guard added to one and
+missed in the other means the copy that missed it force-kills an unrelated process
+of the same user, and nothing else in either suite would notice.
 
 The two singleton test modules stub the scan out to exercise their own identity
 matchers; these exercise the scan itself.
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 
 import pytest
 
@@ -216,3 +217,62 @@ def test_terminate_survives_a_pid_that_is_already_gone(procscan, monkeypatch):
     procscan.terminate({1, 2})
 
     assert sent == [(2, signal.SIGTERM)]
+
+
+# ---- start_time: the tray's copy only (the node orders no instances by age) --
+
+
+def _stat_files(monkeypatch, tmp_path, stats: dict[int, bytes]):
+    """Serve ``/proc/<pid>/stat`` from ``tmp_path``; a pid absent from ``stats``
+    has no entry, as one that exited does."""
+    for pid, raw in stats.items():
+        (tmp_path / "proc" / str(pid)).mkdir(parents=True)
+        (tmp_path / "proc" / str(pid) / "stat").write_bytes(raw)
+    monkeypatch.setattr(diplomat_procscan, "Path",
+                        lambda p: tmp_path / str(p).lstrip("/"))
+
+
+def _stat_line(comm: bytes, starttime: int) -> bytes:
+    # Fields 3-21 are filler; starttime is field 22, and two more follow it.
+    return (b"4242 (" + comm + b") S " + b" ".join([b"1"] * 18)
+            + b" %d 123456 789\n" % starttime)
+
+
+def test_start_time_reads_field_22(monkeypatch, tmp_path):
+    _stat_files(monkeypatch, tmp_path, {4242: _stat_line(b"python3", 98765)})
+    assert diplomat_procscan.start_time(4242) == 98765
+
+
+def test_start_time_counts_fields_after_the_last_paren(monkeypatch, tmp_path):
+    """``comm`` is whatever the process named itself: spaces and a ``)`` inside it
+    must not shift the field count."""
+    _stat_files(monkeypatch, tmp_path, {4242: _stat_line(b"a) b (c d", 55555)})
+    assert diplomat_procscan.start_time(4242) == 55555
+
+
+@pytest.mark.parametrize("raw", [b"", b"4242 python3 S 1 2", b"4242 (x) S 1 2\n"])
+def test_start_time_is_zero_when_malformed(monkeypatch, tmp_path, raw):
+    _stat_files(monkeypatch, tmp_path, {4242: raw})
+    assert diplomat_procscan.start_time(4242) == 0
+
+
+def test_start_time_is_zero_when_unreadable(monkeypatch, tmp_path):
+    _stat_files(monkeypatch, tmp_path, {})
+    assert diplomat_procscan.start_time(4242) == 0
+
+
+@pytest.mark.skipif(not os.path.exists("/proc/self/stat"), reason="reads the real /proc")
+def test_start_time_matches_the_kernel_clock():
+    """Against the real ``/proc``: a child spawned now started at about the current
+    uptime, which no neighbouring field of ``stat`` reads as."""
+    child = subprocess.Popen(["sleep", "5"])
+    try:
+        with open("/proc/uptime") as f:
+            uptime = float(f.read().split()[0])
+        tick = os.sysconf("SC_CLK_TCK")
+        started = diplomat_procscan.start_time(child.pid)
+        assert abs(started - uptime * tick) < 2 * tick
+        assert started >= diplomat_procscan.start_time(os.getpid())
+    finally:
+        child.kill()
+        child.wait()
