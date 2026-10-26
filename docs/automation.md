@@ -1,6 +1,6 @@
 # Automatic work
 
-The monitors that dispatch agents without being asked, the task cap, how a run is known to be over, and the spending budget that holds work when the account runs low.
+The monitors that dispatch agents without being asked, the task cap, how a run is known to be over, the free-disk floor that holds work when the disk runs low, and the spending budget that holds work when the account does.
 
 ## Autonomous monitors
 
@@ -202,6 +202,26 @@ and ran itself finishes, Diplomat reads my reviews on its PR and warns in the
 activity feed (`warn`) if the run left a review PENDING - unsubmitted, so nobody but
 me can see it - or spread its findings over several reviews instead of one.
 
+## The free-disk floor
+
+An agent makes a worktree and installs dependencies into it, so one started on a
+nearly full disk cannot finish and pushes the machine toward ENOSPC - where swap
+cannot grow and macOS freezes. Automatic work is held while the volume of the agents'
+repo root, or of `~/.diplomat`, has less free than the floor: **5 GiB**, set in
+`packages/diplomat-core/assets/config.json` (`minFreeDiskGiB`) for both platforms and
+overridable with `DIPLOMAT_MIN_FREE_DISK_MIB`. Free means what `statfs` reports
+available to an ordinary writer, not the larger figure macOS quotes with purgeable
+space counted in.
+
+It is held like the cap holds it - queued, no attempt record, offered again next
+poll - and it is checked first, ahead of the cap and the budget: a freed bay frees no
+space, so the disk is the hold you have to act on. The feed carries one `low-disk`
+line per episode naming the volume, its free space and the floor. *Execute now* and
+a wizard SPAWN go past it. A **mesh peer's job routed here** is declined
+(`mesh-low-disk`) and fails over. The [06:00 update](development.md#autostart-on-login)
+skips its merge and build below the same floor, since a merge that runs out of space
+halfway leaves a half-updated checkout.
+
 ## The spending budget
 
 The cap bounds how many automatic agents run at once. The budget bounds whether any
@@ -319,7 +339,7 @@ forgotten, with a line in the feed saying so - a row that vanished silently woul
 read exactly like one that ran.
 
 *Execute now* keeps the task automatic in every other respect:
-same label, same auto-handled counter, same mesh routing - the cap and
-the rate-limit budget are the two holds it overrides. So a click can land the agent on a peer rather than
+same label, same auto-handled counter, same mesh routing - the cap, the free-disk
+floor and the rate-limit budget are the three holds it overrides. So a click can land the agent on a peer rather than
 here, and what the starting row becomes is a mesh row saying which; it occupies a
 slot of this machine's cap only when it actually runs on this machine.

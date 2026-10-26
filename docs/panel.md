@@ -122,8 +122,9 @@ bays.
   often made unnecessary by the work ahead of it - and the poll re-offers it for
   as long as GitHub still calls the PR conflicting, so waiting costs it nothing.
 
-Four things hold work. The cap holds what there is no slot for, and releases it as
-slots free. The [spending budget](automation.md#the-spending-budget) holds everything when the account is
+Five things hold work. The cap holds what there is no slot for, and releases it as
+slots free. The [free-disk floor](automation.md#the-free-disk-floor) holds everything
+while the disk agents write to is nearly full. The [spending budget](automation.md#the-spending-budget) holds everything when the account is
 too low to afford another agent, and releases it when a window refills or the
 balance is topped up. A
 **monitor you switched off** holds its own work indefinitely: it keeps polling and

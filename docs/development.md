@@ -116,7 +116,9 @@ instance that greets you at login is the one **Update** rebuilds; nothing is cop
 It also installs a **second** agent, `com.ignacy.diplomat.autoupdate`, which fires
 daily at **06:00** and runs the app binary headless (`DIPLOMAT_SELF_UPDATE=1`):
 merge upstream if behind, rebuild the bundle, and relaunch a running instance onto
-it. It's the unattended twin of the Settings **Update** button, and it logs to
+it - unless the checkout's volume is below the
+[free-disk floor](automation.md#the-free-disk-floor), when it logs a `skip:` and does
+neither. It's the unattended twin of the Settings **Update** button, and it logs to
 `~/Library/Logs/diplomat-autoupdate.log`. Manage it on its own with:
 
 ```bash
@@ -162,6 +164,11 @@ DIPLOMAT_QUEUE_TEST=1 swift run Diplomat      # self-test: the queue behind the 
                                                      #   lifetime, and that neither liveness source
                                                      #   touches the other's rows). Spawns nothing;
                                                      #   redirects its own audit writes.
+DIPLOMAT_LOWDISK_TEST=1 swift run Diplomat    # self-test: the free-disk floor against a real
+                                                     #   volume (scripts/full-volume.sh) filled and drained,
+                                                     #   through the dispatcher and the 06:00 updater.
+                                                     #   Spawns nothing; skips where no volume can mount
+                                                     #   unless DIPLOMAT_FULL_VOLUME_REQUIRED=1.
 DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a screen to PNG (out
                                                      #   path: DIPLOMAT_RENDER_OUT). States: panel|panel-procs
                                                      #   natural|settings[-explain]|settings-live|approved
@@ -346,6 +353,7 @@ packages/
         HermesProbe.swift          reads a Hermes run's session out of ~/.hermes/state.db, read-only
         TrackTest.swift            E2E self-test of the run book + this platform's probes (DIPLOMAT_TRACK_TEST)
         QueueTest.swift            self-test of the deferred-task queue (DIPLOMAT_QUEUE_TEST)
+        LowDiskTest.swift          self-test of the free-disk floor on a real volume (DIPLOMAT_LOWDISK_TEST)
         SweepTest.swift            self-test of asking each runner's own store (DIPLOMAT_SWEEP_TEST)
         ApiWatchTest.swift         self-test of who the API-error watcher may type into (DIPLOMAT_APIWATCH_TEST)
         PublishTest.swift          self-test of what a resolved tick hands the panel (DIPLOMAT_PUBLISH_TEST)

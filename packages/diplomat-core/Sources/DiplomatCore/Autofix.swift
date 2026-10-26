@@ -113,6 +113,8 @@ public enum AutofixDiff {
 /// - capacity: only auto work is held to the device's automatic-task cap — a
 ///   human's click is one deliberate agent, not a monitor emptying its queue
 ///   (`decide`);
+/// - disk: only auto work is held to the free-space floor (`DiskFloor`) — a human
+///   starting one agent on a tight disk is their call (`decide`);
 /// - budget: only auto work is held to what is left of the limits it spends
 ///   against — a human spending their own last slice is their call (`decide`);
 /// - mesh: only auto origination is mesh-gated — a human clicking THIS machine's
@@ -150,11 +152,14 @@ public enum AgentDispatchGate {
         /// Too little of the rate-limit windows is left to cover another automatic
         /// task (auto only). Deferred, not dropped — see `decide`.
         case unaffordable
+        /// The disk agents write to is below its free-space floor (auto only).
+        /// Deferred, not dropped — see `decide`.
+        case lowDisk
     }
 
     /// The one decision both interfaces obey, in fixed precedence: ban, then the
-    /// auto-review allowlist, then in-flight, then (auto only) this device's
-    /// concurrency cap, then (auto only) its spending budget, then (auto only) mesh.
+    /// auto-review allowlist, then in-flight, then (auto only) this device's free
+    /// disk, its concurrency cap, its spending budget, and mesh.
     ///
     /// The two author verdicts lead together because they are the same kind of fact —
     /// a standing statement about a person, true before this poll and after it — while
@@ -176,13 +181,21 @@ public enum AgentDispatchGate {
     /// window to refill or a balance to be topped up. It ranks BELOW capacity only
     /// because capacity is the measurement already in hand — a saturated device has
     /// no slot to spend a budget on, so the probe is never worth taking.
+    ///
+    /// The disk leads all three. An agent started on a nearly full disk cannot finish
+    /// and pushes the machine toward ENOSPC, wherever its bay or its budget stands;
+    /// a freed bay does not free space, so it is the hold the operator has to act on
+    /// and the one the feed should name while several hold; and one `statfs` is the
+    /// cheapest of the measurements.
     public static func decide(source: Source, banned: Bool, agentOnPR: Bool,
                               meshStandsDown: Bool, atCapacity: Bool,
                               unaffordable: Bool = false,
-                              outsideAllowlist: Bool = false) -> Verdict {
+                              outsideAllowlist: Bool = false,
+                              lowDisk: Bool = false) -> Verdict {
         if banned { return .banned }
         if outsideAllowlist { return .notAllowed }
         if agentOnPR { return .inFlight }
+        if source == .auto, lowDisk { return .lowDisk }
         if source == .auto, atCapacity { return .atCapacity }
         if source == .auto, unaffordable { return .unaffordable }
         if source == .auto, meshStandsDown { return .standDown }

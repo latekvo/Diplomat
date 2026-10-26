@@ -16,6 +16,8 @@ public enum CoreAssets {
     public struct Config: Decodable {
         public let owner: String
         public let repo: String
+        /// See `DiskFloor`.
+        public let minFreeDiskGiB: Double?
     }
 
     public struct CatalogFile: Decodable {

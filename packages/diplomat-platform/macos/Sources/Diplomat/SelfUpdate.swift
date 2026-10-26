@@ -1,4 +1,5 @@
 import AppKit
+import DiplomatCore
 import Foundation
 
 /// Self-update for the macOS app: fast-forward the checkout, rebuild the `.app`
@@ -293,6 +294,7 @@ enum SelfUpdate {
         var operatorQuit: () -> Bool = { OperatorQuit.isMarked }
         var launch: () throws -> Void = { try SelfUpdate.relaunch() }
         var log: (String) -> Void = SelfUpdate.schedLog
+        var disk: () -> DiskFloor.Reading? = { DiskFloor.lowest(of: [RepoPaths.root.path]) }
     }
 
     /// Headless daily update for the launchd 6AM job. Never throws; returns an exit code.
@@ -300,9 +302,16 @@ enum SelfUpdate {
     /// Fetches, and if behind, merges upstream and rebuilds, then relaunches a running
     /// app onto the new build. On every other path an app that is not running is
     /// launched unless the operator quit it (`revive`). A conflict or unreachable origin
-    /// is logged and left for a human rather than retried destructively. Mirrors
+    /// is logged and left for a human rather than retried destructively, and so is a
+    /// checkout whose volume is below the free-disk floor. Mirrors
     /// `selfupdate.run_scheduled`.
     static func runScheduled(_ host: Host = Host()) -> Int32 {
+        // Before the fetch, which writes too: a merge or build that runs out of space
+        // halfway leaves a half-updated checkout behind.
+        if let disk = host.disk(), disk.low {
+            host.log("skip: \(DiskFloor.describe(disk))")
+            return revive(host, quietly: false)
+        }
         let st = host.check()
         if let e = st.error {
             host.log("skip: cannot reach origin (\(e))")

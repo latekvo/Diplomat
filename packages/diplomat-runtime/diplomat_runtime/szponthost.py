@@ -105,27 +105,28 @@ class DiplomatHost(szpont_host.Host):
 
     def at_job_capacity(self, running_keys: list[str]) -> bool:
         """Should a dispatch routed here be declined and failed over to another
-        node? Two reasons say yes, and the library asks for them as one question:
+        node? Three reasons say yes, and the library asks for them as one question:
+        the disk agents write to is below its free-space floor (:mod:`diskfloor`),
         this machine is already at its cap on concurrent automatic tasks (Settings →
         PR AUTO-FIX, 2 by default), or it has too little left to afford the job —
         of a rate-limit window, or of the money an account billed in money has
         (:mod:`autobudget`).
 
-        The applet enforces both on the work IT originates; this is the other half —
-        work a mesh peer routes in, which the applet never sees and which spends
-        this machine's cap and this machine's limit just the same. Every input comes
-        from the shared config file and the shared ledger
-        (:func:`appconfig.auto_task_limit`, :func:`autobudget.decide`), so a device
-        cannot end up with one answer for work it found itself and another for work
-        it was sent.
+        The applet enforces all three on the work IT originates; this is the other
+        half — work a mesh peer routes in, which the applet never sees and which
+        fills this machine's disk and spends its cap and its limit just the same.
+        Every input comes from the shared config file, the shared assets and the
+        shared ledger (:func:`appconfig.auto_task_limit`, :func:`diskfloor.lowest`,
+        :func:`autobudget.decide`), so a device cannot end up with one answer for
+        work it found itself and another for work it was sent.
 
-        A budget decline is logged here rather than left to the node's own
+        A disk or budget decline is logged here rather than left to the node's own
         `mesh-at-capacity` line, which can only say the machine is busy — it is the
         difference between a peer waiting minutes for an agent to finish and waiting
         hours for a window to refill — or indefinitely, for an account to be topped
         up — and the operator reading the feed is the one who needs to know which.
 
-        Failing the slot over is the right outcome for both: the mesh ranks peers
+        Failing the slot over is the right outcome for all three: the mesh ranks peers
         surplus-first, so the node with limit to spend is exactly the one that picks
         this up.
 
@@ -155,8 +156,12 @@ class DiplomatHost(szpont_host.Host):
         screen. A booting agent shows the bare prompt of a finished one, and subtracted
         there it hands back the bay its own dispatch just took.
         """
-        from . import appconfig, autobudget, autofix, core, tmuxwatch
+        from . import appconfig, autobudget, autofix, core, diskfloor, review, tmuxwatch
 
+        disk = diskfloor.lowest([review.repo_path(), str(Path.home() / ".diplomat")])
+        if disk is not None and disk.low:
+            self.log("mesh-low-disk", f"Declined a peer's job — {diskfloor.describe(disk)}")
+            return True
         if autobudget.enabled():
             budget = autobudget.decide()
             if not budget.affordable:

@@ -1,3 +1,4 @@
+import DiplomatCore
 import Foundation
 
 /// Self-test for who brings a dead app back - `DIPLOMAT_WATCHDOG_TEST=1`.
@@ -33,12 +34,19 @@ enum WatchdogTest {
             var running = false
             var quit = false
             var launchFails = false
+            var lowDisk = false
             var launches = 0
+            var checks = 0
             var lines: [String] = []
 
             var host: SelfUpdate.Host {
                 var h = SelfUpdate.Host()
+                h.disk = {
+                    DiskFloor.Reading(path: "/checkout", free: self.lowDisk ? 1 << 30 : 9 << 30,
+                                      floor: 5 << 30)
+                }
                 h.check = {
+                    self.checks += 1
                     var r = SelfUpdate.CheckResult()
                     r.commit = "abc1234"
                     if self.offline { r.error = "could not resolve host" } else { r.behind = self.behind; r.ahead = 0 }
@@ -67,10 +75,19 @@ enum WatchdogTest {
             ("updated in place", machine { $0.behind = 2 }),
             ("origin unreachable", machine { $0.offline = true }),
             ("merge refused", machine { $0.behind = 1; $0.pullFails = true }),
+            ("disk below the floor", machine { $0.behind = 1; $0.lowDisk = true }),
         ] {
             let code = SelfUpdate.runScheduled(m.host)
             check("\(name): launched once", m.launches == 1 && code == 0, "launches \(m.launches), exit \(code)")
             check("\(name): the log says so", m.lines.last == "app not running: launched it", "\(m.lines)")
+        }
+        do {
+            let m = machine { $0.behind = 1; $0.lowDisk = true }
+            _ = SelfUpdate.runScheduled(m.host)
+            check("disk below the floor: not even a fetch, and the log says why",
+                  m.checks == 0
+                      && m.lines.first == "skip: 1.0 GiB free on /checkout, below the 5.0 GiB floor",
+                  "checks \(m.checks), \(m.lines)")
         }
         do {
             let m = machine { $0.behind = 1; $0.buildFails = true }

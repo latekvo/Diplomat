@@ -53,6 +53,34 @@ for kind in ToolKind.allCases {
     check(kind.systemImage != "questionmark.circle", "catalog sfSymbol missing for \(kind.rawValue)")
 }
 
+section("free-disk floor")
+// Python twin: test_diskfloor.py asserts the same numbers and wording.
+check(DiskFloor.floor(env: [:]) == 5 << 30,
+      "the floor is config.json's 5 GiB, got \(String(describing: DiskFloor.floor(env: [:])))")
+check(DiskFloor.floor(env: [DiskFloor.envOverride: "64"]) == 64 << 20,
+      "the override is in MiB")
+check(DiskFloor.floor(env: [DiskFloor.envOverride: "0"]) == 0, "an override of 0 turns it off")
+for junk in ["", "-1", "5GiB", "1.5"] {
+    check(DiskFloor.floor(env: [DiskFloor.envOverride: junk]) == 5 << 30,
+          "an override that is not a whole MiB count falls back to the asset: \(junk)")
+}
+let diskTmp = FileManager.default.temporaryDirectory.path
+check((DiskFloor.free(at: diskTmp) ?? 0) > 0, "the temp dir's volume reads")
+check(DiskFloor.free(at: diskTmp + "/diplomat-no-such/deeper") != nil,
+      "a path not made yet reads its nearest existing ancestor's volume")
+let tmpReading = DiskFloor.lowest(of: [diskTmp], env: [DiskFloor.envOverride: "1"])
+check(tmpReading?.path == diskTmp && tmpReading?.floor == 1 << 20 && tmpReading?.low == false,
+      "a reading names its path and floor, got \(String(describing: tmpReading))")
+check(DiskFloor.size(5 << 30) == "5.0 GiB" && DiskFloor.size(1_288_490_189) == "1.2 GiB",
+      "GiB to one decimal")
+check(DiskFloor.size(0) == "0 MiB" && DiskFloor.size((1 << 30) - 1) == "1023 MiB",
+      "whole MiB under a GiB")
+check(DiskFloor.describe(.init(path: "/v", free: 3 << 20, floor: 5 << 30))
+      == "3 MiB free on /v, below the 5.0 GiB floor", "the reason line")
+check(DiskFloor.Reading(path: "/v", free: 5 << 30, floor: 5 << 30).low == false
+      && DiskFloor.Reading(path: "/v", free: (5 << 30) - 1, floor: 5 << 30).low,
+      "exactly the floor is enough, a byte under is not")
+
 section("filters on synthetic fixture")
 let now = Date()
 let old = now.addingTimeInterval(-15 * 86400)
@@ -1522,6 +1550,22 @@ check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
                                meshStandsDown: true, atCapacity: false,
                                unaffordable: true) == .unaffordable,
       "the budget outranks mesh, for the reason capacity does")
+check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
+                               meshStandsDown: false, atCapacity: false,
+                               lowDisk: true) == .lowDisk,
+      "the free-disk floor gates auto dispatch")
+check(AgentDispatchGate.decide(source: .panel, banned: false, agentOnPR: false,
+                               meshStandsDown: false, atCapacity: false,
+                               lowDisk: true) == .proceed,
+      "one agent on a tight disk is the operator's call — panel is never disk-gated")
+check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
+                               meshStandsDown: true, atCapacity: true, unaffordable: true,
+                               lowDisk: true) == .lowDisk,
+      "the disk outranks capacity, the budget and mesh — a freed bay frees no space")
+check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: true,
+                               meshStandsDown: false, atCapacity: false,
+                               lowDisk: true) == .inFlight,
+      "an agent already on the PR outranks the disk — nothing would start either way")
 // The auto-review allowlist: an author verdict like the ban, so it holds whoever
 // asks, and it ranks below the ban because a ban's remedy is the only one that would
 // work on an author carrying both.
