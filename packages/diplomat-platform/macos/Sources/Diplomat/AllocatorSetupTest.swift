@@ -11,10 +11,11 @@ import Foundation
 ///
 ///     DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
 ///
-/// Pure decision logic: no installer is shelled, no `~/.claude*` is read, nothing is
-/// written. The second half decodes real installer payloads, because the decision is
-/// only as good as the fields it reads — a silently-dropped `outdated` would leave
-/// every machine stale while this table still passed.
+/// Pure decision logic: no installer is shelled, no `~/.claude*` is read, and the only
+/// file written is a scratch `DIPLOMAT_CONFIG`. The second half decodes real installer
+/// payloads, because the decision is only as good as the fields it reads — a
+/// silently-dropped `outdated` would leave every machine stale while this table still
+/// passed. The last reads the daemon's idle limits back the way Settings shows them.
 ///
 /// Twin of `diplomat-platform/linux/tests/test_allocator_update.py`. Exit code is pass/fail, so CI can
 /// gate on it.
@@ -102,6 +103,46 @@ enum AllocatorSetupTest {
             check("an old installer's version is absent, not a lie", old.version == nil)
             check("an old install is left alone",
                   !DeviceAllocator.needsInstall(status: old, setupDone: true))
+        }
+
+        // ---- the daemon's idle limits, as Settings reads them from the shared file ----
+
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-allocator-test-\(UUID().uuidString)")
+        let previousConfig = ProcessInfo.processInfo.environment["DIPLOMAT_CONFIG"]
+        setenv("DIPLOMAT_CONFIG", scratch.appendingPathComponent("config.json").path, 1)
+        defer {
+            if let previousConfig { setenv("DIPLOMAT_CONFIG", previousConfig, 1) }
+            else { unsetenv("DIPLOMAT_CONFIG") }
+            try? FileManager.default.removeItem(at: scratch)
+        }
+        /// Both limits read back from a file holding `free` and `leased` as raw JSON
+        /// values. The keys are spelled out, so they pin what the daemon reads too.
+        func idleLimits(_ free: String?, _ leased: String?) -> (Int, Int) {
+            var fields: [String] = []
+            if let free { fields.append(#""deviceIdleFreeMinutes":\#(free)"#) }
+            if let leased { fields.append(#""deviceIdleLeasedMinutes":\#(leased)"#) }
+            let json = "{" + fields.joined(separator: ",") + "}"
+            try? FileManager.default.createDirectory(at: scratch,
+                                                     withIntermediateDirectories: true)
+            try? json.write(to: AppConfig.url, atomically: true, encoding: .utf8)
+            return (AppConfig.deviceIdleFreeMinutes, AppConfig.deviceIdleLeasedMinutes)
+        }
+
+        // (case, free in the file, leased in the file, expected free, expected leased)
+        let idleCases: [(String, String?, String?, Int, Int)] = [
+            ("absent keys read as the defaults", nil, nil, 5, 30),
+            ("0 is never, not absent", "0", "0", 0, 0),
+            ("in-range values are kept", "12", "45", 12, 45),
+            ("a hand-edited bool is not 1 minute", "true", "false", 5, 30),
+            ("a string is not a number", #""10""#, #""60""#, 5, 30),
+            ("a negative limit is the default, not never", "-1", "-30", 5, 30),
+            ("past the slider's range clamps to its end", "61", "999", 60, 240),
+        ]
+        for (name, free, leased, wantFree, wantLeased) in idleCases {
+            let got = idleLimits(free, leased)
+            check("idle limits: \(name)", got == (wantFree, wantLeased),
+                  "got \(got), expected (\(wantFree), \(wantLeased))")
         }
 
         print(failures.isEmpty

@@ -188,7 +188,12 @@ and ⏻) swaps the panel to a settings screen:
   the skill, rule, CLAUDE.md block or registration out from under an installed
   copy - the status then reads **Out of date** and names what drifted. An
   allocator you *uninstall* here stays uninstalled; only an existing install is
-  ever refreshed.
+  ever refreshed. Two idle limits sit under it, counted in minutes with nothing
+  changing on the device's screen: a booted device no agent holds is shut down
+  after **5** (0-60), and a device an agent holds is taken back after **30** (0-240),
+  after which it counts as free. 0 turns either off. They are
+  `deviceIdleFreeMinutes` and `deviceIdleLeasedMinutes` in `~/.diplomat/config.json`,
+  which the daemon re-reads every minute.
 - **Mesh (LAN P2P)** - opt into [Diplomat Mesh](mesh.md):
   a toggle that starts/stops the local node (off by default), with live node/peer
   status. The node outlives the app, so a launch with the toggle off stops one an
@@ -208,8 +213,8 @@ and ⏻) swaps the panel to a settings screen:
 
 All of it persists across launches: in UserDefaults (`com.ignacy.diplomat`), except
 the keys a mesh node reads too - repo root, agent runner and model, the automatic-task
-cap, the 4h give-up switch and the spending budget's four knobs - which live in the
-shared `~/.diplomat/config.json` ([`AppConfig.swift`](../packages/diplomat-platform/macos/Sources/Diplomat/AppConfig.swift)).
+cap, the 4h give-up switch and the spending budget's four knobs - and the allocator
+daemon's two idle limits, which live in the shared `~/.diplomat/config.json` ([`AppConfig.swift`](../packages/diplomat-platform/macos/Sources/Diplomat/AppConfig.swift)).
 
 ## Definitions / heuristics (where it's deliberately loose)
 

@@ -624,6 +624,35 @@ class Store(QObject):
         )
 
     @property
+    def device_idle_free_minutes(self) -> int:
+        """:func:`appconfig.device_idle_free_minutes`. In the shared config, not
+        QSettings, because the device-allocator daemon is what reads it."""
+        return appconfig.device_idle_free_minutes()
+
+    @device_idle_free_minutes.setter
+    def device_idle_free_minutes(self, value: int) -> None:
+        appconfig.set_int(
+            appconfig.DEVICE_IDLE_FREE_MINUTES,
+            appconfig.clamp_device_idle_minutes(
+                int(value), appconfig.MAX_DEVICE_IDLE_FREE_MINUTES
+            ),
+        )
+
+    @property
+    def device_idle_leased_minutes(self) -> int:
+        """:func:`appconfig.device_idle_leased_minutes`, shared for the same reason."""
+        return appconfig.device_idle_leased_minutes()
+
+    @device_idle_leased_minutes.setter
+    def device_idle_leased_minutes(self, value: int) -> None:
+        appconfig.set_int(
+            appconfig.DEVICE_IDLE_LEASED_MINUTES,
+            appconfig.clamp_device_idle_minutes(
+                int(value), appconfig.MAX_DEVICE_IDLE_LEASED_MINUTES
+            ),
+        )
+
+    @property
     def queued_task_order(self) -> list[str]:
         """The operator's drag order for the deferred-work queue, by queue key.
 

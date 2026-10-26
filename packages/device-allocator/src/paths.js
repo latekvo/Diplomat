@@ -60,11 +60,14 @@ export const EMULATOR_BIN =
 const SDK_ADB = path.join(ANDROID_HOME, 'platform-tools', 'adb');
 export const ADB_BIN = process.env.ADB_PATH || (fs.existsSync(SDK_ADB) ? SDK_ADB : 'adb');
 
-// Tunables (overridable for tests). A device with zero screen motion for 15 min is
-// reclaimed; the sweep runs every 2 min so reclamation lands close to the threshold.
-export const IDLE_LIMIT_MS = Number(process.env.DA_IDLE_LIMIT_MS) || 15 * 60 * 1000;
+// Tunables (overridable for tests). The idle limits are Diplomat settings
+// (deviceIdleLeasedMinutes / deviceIdleFreeMinutes in CONFIG_PATH, read each sweep);
+// these are their defaults. The sweep runs every minute so reclamation lands close to
+// the limit.
+export const LEASED_IDLE_DEFAULT_MIN = 30;
+export const FREE_IDLE_DEFAULT_MIN = 5;
 export const REAP_INTERVAL_MS = Number(process.env.DA_REAP_INTERVAL_MS) || 10 * 1000;
-export const IDLE_INTERVAL_MS = Number(process.env.DA_IDLE_INTERVAL_MS) || 2 * 60 * 1000;
+export const IDLE_INTERVAL_MS = Number(process.env.DA_IDLE_INTERVAL_MS) || 60 * 1000;
 export const POOL_INTERVAL_MS = Number(process.env.DA_POOL_INTERVAL_MS) || 8 * 1000;
 export const ALLOC_GRACE_MS = Number(process.env.DA_ALLOC_GRACE_MS) || 20 * 1000;
 
@@ -77,3 +80,7 @@ export const AWAIT_TIMEOUT_MS = Number(process.env.DA_AWAIT_TIMEOUT_MS) || 15 * 
 // to the pool anyway. The repair agent is told to notify /repaired when done, but
 // it can die or forget — without a TTL a broken report shrinks the pool forever.
 export const REPAIR_TTL_MS = Number(process.env.DA_REPAIR_TTL_MS) || 2 * 60 * 60 * 1000;
+
+// How long a device the daemon just shut down is kept out of selection while it may
+// still enumerate as booted: `emu kill` and `simctl shutdown` return before it is gone.
+export const STOPPING_GRACE_MS = Number(process.env.DA_STOPPING_GRACE_MS) || 60 * 1000;
