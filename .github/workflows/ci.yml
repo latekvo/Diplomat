@@ -95,6 +95,8 @@ jobs:
       # fixture steps and a scratch quit mark. RELAUNCH_TEST opens throwaway bundles it
       # lays out itself plus an idle copy of the binary, and ends every one of them; it
       # terminates nothing else. REPOPATHS_TEST lays its checkouts out in a scratch dir.
+      # LOWDISK_TEST mounts and fills a small disk image of its own and keeps its feed,
+      # run book and config scratch, as QUEUE_TEST does.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
       # and not by oversight: both drive real throwaway terminal windows and need a
@@ -145,6 +147,7 @@ jobs:
           DIPLOMAT_APIWATCH_TEST=1 swift run Diplomat
           DIPLOMAT_PUBLISH_TEST=1 swift run Diplomat
           DIPLOMAT_SPAWN_SCRIPT_TEST=1 swift run Diplomat
+          DIPLOMAT_FULL_VOLUME_REQUIRED=1 DIPLOMAT_LOWDISK_TEST=1 swift run Diplomat
           # Twice, for the two arms of the terminal ladder. The first takes whichever
           # one the runner's own tmux decides; the second forces the machine without
           # tmux, where Ghostty must be refused rather than offered — a spawn there
@@ -173,6 +176,13 @@ jobs:
       - name: Installer self-test
         working-directory: packages/diplomat-platform/macos
         run: bash tests/installers.sh
+      # A real filled volume: assembly keeps the last good Diplomat.app, and the app
+      # and diplomat-core exit with their own codes rather than abort on ENOSPC.
+      - name: Full-disk survival
+        working-directory: packages/diplomat-platform/macos
+        env:
+          DIPLOMAT_FULL_VOLUME_REQUIRED: '1'
+        run: bash tests/full-disk.sh
 
   # The shared core advertises "compiles on macOS *and* Linux". This guards that
   # invariant by building + running the diplomat-core package on Linux (the SwiftUI
@@ -241,6 +251,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           DIPLOMAT_CORE_BIN: ${{ github.workspace }}/core-bin/diplomat-core
+          DIPLOMAT_FULL_VOLUME_REQUIRED: '1'
         run: pytest packages/diplomat-platform/linux/tests -q
       # The real `python -m` entry, which the suite does not launch: on a machine with
       # a tray running, a build that failed this would terminate it.
@@ -406,5 +417,7 @@ jobs:
       # Those were two hand-written lists of the same files and they had drifted
       # apart in both directions — a test can now only be skipped by not existing.
       # The runner prints a banner per file, so a failure still names itself.
-      - name: Daemon, MCP, installer drift, agent-kill, repair and wipe tests
+      - name: Daemon, MCP, installer drift, agent-kill, repair, wipe and full-disk tests
+        env:
+          DIPLOMAT_FULL_VOLUME_REQUIRED: '1'
         run: npm test
