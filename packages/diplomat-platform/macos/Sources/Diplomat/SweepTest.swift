@@ -52,7 +52,7 @@ enum SweepTest {
                 AgentState.RunRecord(runID: AgentRegistry.newRunID(now: dispatched),
                                      dispatchedAt: dispatched, prNumber: 7, kind: "review",
                                      label: "Review · #7"),
-                prompt: prompt)
+                prompt: prompt)!
             AgentRegistry.stageRunner(record.runID, runner.rawValue)
             return record
         }
@@ -230,7 +230,7 @@ enum SweepTest {
                 AgentState.RunRecord(runID: AgentRegistry.newRunID(now: dispatched),
                                      dispatchedAt: dispatched, prNumber: pr,
                                      placement: placement),
-                prompt: prompt ?? "Review PR #\(pr) in o/r")
+                prompt: prompt ?? "Review PR #\(pr) in o/r")!
             AgentRegistry.stageRunner(record.runID, AgentRunner.opencode.rawValue)
             if let port { _ = AgentRegistry.stagePort(record.runID, port) }
             return record

@@ -883,12 +883,14 @@ final class Store: ObservableObject {
                       ledgerKey: String = "", terminal preferred: SpawnTerminal,
                       restoreFocusTo restoreBID: String? = nil) async throws -> SpawnTerminal {
         let now = Date().timeIntervalSince1970
-        let record = AgentRegistry.createRun(
+        guard let record = AgentRegistry.createRun(
             AgentState.RunRecord(runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
                                  prNumber: prNumber, prURL: prURL ?? "", kind: kind,
                                  label: label, source: source, placement: .local,
                                  ledgerKey: ledgerKey),
-            prompt: prompt)
+            prompt: prompt) else {
+            throw AgentSpawner.SpawnError.write("could not register the run")
+        }
         let runner = AppConfig.agentRunner
         AgentRegistry.stageRunner(record.runID, runner.rawValue)
         var service = false
@@ -987,7 +989,9 @@ final class Store: ObservableObject {
         // without one.)
         guard !job.workKey.isEmpty else { return }
         let now = Date().timeIntervalSince1970
-        let record = AgentRegistry.createRun(
+        // The job already runs, so an unbooked one is reported rather than undone: the
+        // untracked scan still finds an agent here, and a peer's holds its claim.
+        guard let record = AgentRegistry.createRun(
             AgentState.RunRecord(
                 runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
                 prNumber: job.prNumber, prURL: job.prURL ?? "", kind: job.kind,
@@ -997,7 +1001,7 @@ final class Store: ObservableObject {
                 source: AgentDispatchGate.Source.auto.rawValue,
                 placement: onThisMachine ? .meshHere : .meshPeer,
                 node: node, workKey: job.workKey, ledgerKey: job.ledgerKey),
-            prompt: job.prompt)
+            prompt: job.prompt) else { return }
         if onThisMachine {
             AgentRegistry.stageRunner(record.runID, AppConfig.agentRunner.rawValue)
         }

@@ -140,6 +140,30 @@ enum LowDiskTest {
         check("…and gets a line of its own", lowDiskLines().count == 2, "\(lowDiskLines())")
         check("drain again", volume("drain") == 0)
 
+        // MARK: the run book
+
+        // What the floor lets through - a manual start, a mesh landing - is still booked
+        // before it runs, and a book the disk refuses must refuse the run with it.
+        setenv("DIPLOMAT_AGENTS_DIR", vol.appendingPathComponent("agents").path, 1)
+        func record(_ number: Int) -> AgentState.RunRecord {
+            let now = Date().timeIntervalSince1970
+            return AgentState.RunRecord(runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
+                                        prNumber: number, kind: "review", label: "Review · #\(number)")
+        }
+        check("with room a run is booked",
+              AgentRegistry.createRun(record(10), prompt: "p") != nil
+                  && AgentRegistry.load().map(\.prNumber) == [10],
+              "\(AgentRegistry.load().map(\.prNumber))")
+        check("fill for the run book", volume("fill") == 0)
+        let refused = record(11)
+        check("on a full volume the run is refused", AgentRegistry.createRun(refused, prompt: "p") == nil)
+        check("…the book holds only the run before it", AgentRegistry.load().map(\.prNumber) == [10],
+              "\(AgentRegistry.load().map(\.prNumber))")
+        check("…and no run directory is left",
+              !fm.fileExists(atPath: AgentRegistry.runDir(refused.runID).path))
+        check("drain for the run book", volume("drain") == 0)
+        setenv("DIPLOMAT_AGENTS_DIR", scratch.appendingPathComponent("agents").path, 1)
+
         // MARK: the 06:00 updater
 
         let origin = scratch.appendingPathComponent("origin.git")

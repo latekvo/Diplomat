@@ -2088,7 +2088,7 @@ do {
     let now = Date().timeIntervalSince1970
     let run = AgentRegistry.createRun(
         AgentState.RunRecord(runID: AgentRegistry.newRunID(now: now), dispatchedAt: now),
-        prompt: "p").runID
+        prompt: "p")!.runID
 
     check(AgentRegistry.boundSession(run) == "", "a run binds no session before one is found")
     AgentRegistry.bindSession(run, "ses_00d61ec0")

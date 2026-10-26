@@ -635,7 +635,7 @@ enum QueueTest {
                 prURL: "https://github.com/software-mansion/argent/pull/21",
                 kind: "review", label: "Auto · Review · #21",
                 source: AgentDispatchGate.Source.auto.rawValue, pid: 4242),
-            prompt: "")
+            prompt: "")!
         let reached = Latch(), released = Latch(), raced = Latch()
         Store.settleGate = {
             if reached.isOpen { raced.open() } else { reached.open() }

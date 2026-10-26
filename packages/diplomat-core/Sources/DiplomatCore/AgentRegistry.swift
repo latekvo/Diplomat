@@ -180,11 +180,12 @@ public enum AgentRegistry {
         return after == before ? true : write(after)
     }
 
-    /// Append one run, read-modify-write under the lock.
-    public static func add(_ record: AgentState.RunRecord) {
+    /// Append one run, read-modify-write under the lock. False when it could not be saved.
+    @discardableResult
+    public static func add(_ record: AgentState.RunRecord) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        write(loadUnlocked() + [record])
+        return write(loadUnlocked() + [record])
     }
 
     /// Stage a run's directory and register it.
@@ -194,15 +195,24 @@ public enum AgentRegistry {
     /// user message IS this text — and a run directory that outlives `/tmp` cleanup
     /// keeps that link. 0600, because the prompt can quote a private repo and `$HOME` is
     /// readable by other local users under a default umask.
+    ///
+    /// Nil, leaving nothing behind, when the prompt or the record can't be written (a
+    /// full disk): the agent reads its prompt from that file, and an agent the book never
+    /// heard of holds a bay nothing counts. Python twin: `agentregistry.create_run`.
     @discardableResult
     public static func createRun(_ record: AgentState.RunRecord,
-                                 prompt: String) -> AgentState.RunRecord {
+                                 prompt: String) -> AgentState.RunRecord? {
         let dir = runDir(record.runID)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? prompt.write(to: promptPath(record.runID), atomically: true, encoding: .utf8)
+        guard (try? FileManager.default.createDirectory(at: dir,
+                                                        withIntermediateDirectories: true)) != nil,
+              (try? prompt.write(to: promptPath(record.runID), atomically: true,
+                                 encoding: .utf8)) != nil,
+              add(record) else {
+            try? FileManager.default.removeItem(at: dir)
+            return nil
+        }
         try? FileManager.default.setAttributes([.posixPermissions: 0o600],
                                                ofItemAtPath: promptPath(record.runID).path)
-        add(record)
         return record
     }
 

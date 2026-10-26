@@ -15,6 +15,7 @@ The volume needs root or passwordless sudo on Linux; without it these skip, unle
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,52 +24,24 @@ from diplomat_runtime import activity, autofix, diskfloor
 from test_autofix import _spawn_recorder, store  # noqa: F401 — the shared Store
 # fixture and spawn stub, as test_autobudget.py reuses them.
 
-_SCRIPT = Path(__file__).resolve().parents[4] / "scripts" / "full-volume.sh"
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts"))
+from full_volume import FullVolume, full_volume as volume  # noqa: E402,F401  (a fixture)
+
 _LOW_DISK = "low_disk"  # spelled out so a gate that lacks the verdict fails on the value
 
 
-class _Volume:
-    def __init__(self, path: Path):
-        self.path = path
-
-    def _run(self, cmd: str) -> None:
-        subprocess.run(["bash", str(_SCRIPT), cmd, str(self.path)], check=True,
-                       capture_output=True, text=True)
-
-    def fill(self) -> None:
-        self._run("fill")
-
-    def drain(self) -> None:
-        self._run("drain")
-
-    def free_mib(self) -> int:
-        return (diskfloor.free(str(self.path)) or 0) >> 20
-
-
-@pytest.fixture
-def volume(tmp_path):
-    path = tmp_path / "vol"
-    mounted = subprocess.run(["bash", str(_SCRIPT), "mount", str(path), "32m"],
-                             capture_output=True, text=True, check=False)
-    if mounted.returncode == 77:
-        pytest.skip(mounted.stderr.strip())
-    # With DIPLOMAT_FULL_VOLUME_REQUIRED=1 the script exits 1 instead of 77.
-    assert mounted.returncode == 0, mounted.stderr
-    try:
-        yield _Volume(path)
-    finally:
-        subprocess.run(["bash", str(_SCRIPT), "unmount", str(path)], capture_output=True,
-                       check=False)
+def _free_mib(volume: FullVolume) -> int:
+    return (diskfloor.free(str(volume.path)) or 0) >> 20
 
 
 def _floor_mib(monkeypatch, mib: int) -> None:
     monkeypatch.setenv(diskfloor.ENV_OVERRIDE, str(mib))
 
 
-def _floor_between_full_and_drained(monkeypatch, volume: _Volume) -> None:
+def _floor_between_full_and_drained(monkeypatch, volume: FullVolume) -> None:
     """Above what a filled volume holds, below what a drained one does."""
-    half = volume.free_mib() // 2
-    assert half >= 1, f"the drained volume holds only {volume.free_mib()} MiB"
+    half = _free_mib(volume) // 2
+    assert half >= 1, f"the drained volume holds only {_free_mib(volume)} MiB"
     _floor_mib(monkeypatch, half)
 
 
@@ -212,7 +185,7 @@ def test_the_updater_merges_nothing_below_the_floor(tmp_path, monkeypatch, volum
         assert revived[-1] is False, f"{why}: the tray was not looked after"
 
     # A floor above everything the volume holds: room to fetch and merge, still held.
-    _floor_mib(monkeypatch, volume.free_mib() + 64)
+    _floor_mib(monkeypatch, _free_mib(volume) + 64)
     held("floor above the volume")
 
     # The real thing: a volume filled to ENOSPC. The skip is the disk's, not a fetch
