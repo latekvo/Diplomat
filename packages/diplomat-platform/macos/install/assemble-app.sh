@@ -4,9 +4,10 @@
 # build-app.sh calls it after the compile; tests/full-disk.sh calls it directly.
 #
 # The new bundle is assembled beside <dest.app>, on the same volume, and renamed
-# into place only once complete. On any failure - a full disk above all - it exits
-# non-zero with the bundle already there untouched: the watchdog and the
-# self-updater relaunch exactly that path, so losing it leaves nothing to run.
+# into place only once complete. On a failure - a full disk above all - it exits
+# non-zero with the old bundle still at <dest.app> (or, should moving it back fail
+# too, at the path it names): the watchdog and the self-updater relaunch exactly
+# <dest.app>, so losing it leaves nothing to run.
 set -euo pipefail
 [ "$#" -eq 4 ] || { echo "usage: $0 <binary> <assets-dir> <checkout> <dest.app>" >&2; exit 2; }
 BIN="$1"; ASSETS="$2"; CHECKOUT="$3"; APP="${4%/}"

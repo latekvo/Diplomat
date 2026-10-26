@@ -3,8 +3,8 @@
 // EADDRINUSE, /health cannot connect, and the unlink is refused.
 //
 // 1. The re-listen fails (EADDRINUSE again here; ENOSPC on a full disk): the daemon
-//    gives the lock back. Left behind, it names a dead pid, and a later daemon
-//    reusing that pid would read it as a live holder and defer forever.
+//    gives the lock back. Left behind, it names a dead pid, and once any other
+//    process reuses that pid every later daemon reads it as a live holder and defers.
 // 2. The lock cannot be created at all (a read-only dir here; ENOSPC on a full disk):
 //    the daemon says so and exits 1, rather than defer to a holder that does not exist.
 // 3. The lock exists but names no pid (a peer between its create and its write, or one
