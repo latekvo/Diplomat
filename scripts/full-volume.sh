@@ -48,16 +48,20 @@ case "$cmd" in
     ;;
   fill)
     mkdir -p "$ballast"
-    # Big pieces first for speed, then ever smaller ones for the tail.
-    for bs in 65536 4096 512 1; do
-      dd if=/dev/zero bs="$bs" >> "$ballast/0" 2>/dev/null || true
+    # Big pieces first for speed, then ever smaller ones for the tail. APFS hands
+    # back reserved blocks once pending writes are flushed, so a second pass after
+    # a sync takes what the first one could not.
+    for pass in 1 2; do
+      for bs in 65536 4096 512 1; do
+        dd if=/dev/zero bs="$bs" >> "$ballast/0" 2>/dev/null || true
+      done
+      # Directory entries and metadata live in space dd cannot reach.
+      i=0
+      while [ "$i" -lt 10000 ] && mkdir "$ballast/d$pass.$i" 2>/dev/null; do i=$((i + 1)); done
+      i=0
+      while [ "$i" -lt 10000 ] && { printf x > "$ballast/f$pass.$i"; } 2>/dev/null; do i=$((i + 1)); done
+      sync
     done
-    # Directory entries and metadata live in space dd cannot reach.
-    i=0
-    while [ "$i" -lt 10000 ] && mkdir "$ballast/d$i" 2>/dev/null; do i=$((i + 1)); done
-    i=0
-    while [ "$i" -lt 10000 ] && { printf x > "$ballast/f$i"; } 2>/dev/null; do i=$((i + 1)); done
-    dd if=/dev/zero bs=1 >> "$ballast/0" 2>/dev/null || true
     probe="$dir/.full-volume-probe.$$"
     if { printf x > "$probe"; } 2>/dev/null && [ -s "$probe" ]; then
       rm -f "$probe"
