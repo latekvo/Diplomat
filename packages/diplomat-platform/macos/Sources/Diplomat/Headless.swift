@@ -16,6 +16,7 @@ enum Headless {
         "DIPLOMAT_RENDER": true,
         "DIPLOMAT_TRACK_TEST": false,
         "DIPLOMAT_QUEUE_TEST": false,
+        "DIPLOMAT_LOWDISK_TEST": false,
         "DIPLOMAT_PUBLISH_TEST": false,
         "DIPLOMAT_SWEEP_TEST": false,
         "DIPLOMAT_QUOTA_TEST": false,
