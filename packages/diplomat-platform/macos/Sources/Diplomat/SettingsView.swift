@@ -754,14 +754,49 @@ struct SettingsView: View {
             SettingRow(title: "Reserve a simulator before using it",
                        summary: allocatorSummary,
                        detail: "Installs an MCP server, a skill and an always-on rule. "
-                             + "Reclaims a device when its agent dies or it sits idle for "
-                             + "15 minutes.",
+                             + "Reclaims a device when its agent dies, or on the idle "
+                             + "limits below.",
                        stacked: true) {
                 VStack(alignment: .leading, spacing: 7) {
                     allocatorMarks(s)
                     allocatorButtons(s)
                 }
             }
+            idleLimitRow(title: "Shut down a free device after",
+                         summary: "Booted, held by no agent, nothing changing on its screen.",
+                         detail: SettingsView.idleLimitDetail,
+                         value: $store.deviceIdleFreeMinutes,
+                         range: AppConfig.deviceIdleFreeRange, step: 1)
+            idleLimitRow(title: "Take a device back from its agent after",
+                         summary: "Held, but nothing changing on its screen. It then counts as free.",
+                         detail: nil,
+                         value: $store.deviceIdleLeasedMinutes,
+                         range: AppConfig.deviceIdleLeasedRange, step: 5)
+        }
+    }
+
+    private static let idleLimitDetail = """
+        The allocator daemon re-reads both limits every minute, so a change applies \
+        without a restart.
+        """
+
+    /// One of the daemon's idle limits, in minutes, where 0 turns it off.
+    private func idleLimitRow(title: String, summary: String, detail: String?,
+                              value: Binding<Int>, range: ClosedRange<Int>,
+                              step: Int) -> some View {
+        let n = value.wrappedValue
+        let badge: String = n == 0 ? "never" : "\(n) min"
+        return SettingRow(title: title, summary: summary, detail: detail, stacked: true) {
+            SliderSetting(label: title,
+                          value: Binding(
+                              get: { Double(value.wrappedValue) },
+                              set: { value.wrappedValue = Int($0.rounded()) }
+                          ),
+                          range: Double(range.lowerBound)...Double(range.upperBound),
+                          step: Double(step),
+                          badge: badge,
+                          minLabel: "never", maxLabel: "\(range.upperBound) min",
+                          tint: .cyan)
         }
     }
 
