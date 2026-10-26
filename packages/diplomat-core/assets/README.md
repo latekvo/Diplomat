@@ -12,7 +12,7 @@ threshold in one file and both platforms pick it up; the golden-prompt tests
 
 | File | What it holds |
 |------|---------------|
-| `config.json` | repo coordinates (`owner` / `repo`) |
+| `config.json` | repo coordinates (`owner` / `repo`), and `minFreeDiskGiB`, the free-disk floor automatic work and the scheduled self-update hold to (`../Sources/DiplomatCore/DiskFloor.swift`, `diplomat_runtime/diskfloor.py`) |
 | `graphql/viewer.graphql` | `{ viewer { login } }` |
 | `graphql/prs.graphql` | open-PR query (uses `$owner`/`$name` variables) |
 | `graphql/issues.graphql` | open-issue query (uses `$owner`/`$name` variables) |
