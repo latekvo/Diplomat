@@ -34,8 +34,16 @@ import Foundation
 // caller should point it at the repo's core/ directory.
 
 func die(_ msg: String, _ code: Int32) -> Never {
-    FileHandle.standardError.write(Data(("diplomat-core: " + msg + "\n").utf8))
+    try? FileHandle.standardError.write(contentsOf: Data(("diplomat-core: " + msg + "\n").utf8))
     exit(code)
+}
+
+/// Write the answer to stdout, or exit 1 when it cannot land (a full disk under a
+/// redirect), so the caller never takes a short answer for the whole one.
+func emit(_ data: Data) {
+    do { try FileHandle.standardOutput.write(contentsOf: data) } catch {
+        die("could not write the output: \(error.localizedDescription)", 1)
+    }
 }
 
 func prTarget(_ s: String?) -> PRTarget {
@@ -144,4 +152,4 @@ default:
     die("unknown kind \"\(kind)\" (expected review | conflicts | audit | issues)", 1)
 }
 
-FileHandle.standardOutput.write(Data(prompt.utf8))
+emit(Data(prompt.utf8))
