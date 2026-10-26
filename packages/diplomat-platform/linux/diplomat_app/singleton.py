@@ -18,6 +18,7 @@ as a cheap record for the headless 6AM updater (``running_pid``).
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -51,7 +52,10 @@ def _pidfile() -> Path:
         os.path.expanduser("~"), ".cache"
     )
     d = Path(base) / "diplomat"
-    d.mkdir(parents=True, exist_ok=True)
+    # Unmade (a full disk), every read here finds no pidfile and the write fails
+    # quietly: a startup or a quit must not die on bookkeeping.
+    with contextlib.suppress(OSError):
+        d.mkdir(parents=True, exist_ok=True)
     return d / "diplomat.pid"
 
 

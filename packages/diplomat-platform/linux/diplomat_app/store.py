@@ -302,6 +302,11 @@ class Store(QObject):
         self._probe_warned: dict[str, bool] = {}
         self._marker_warned = False
         self._quota_warned = False
+        # Why the run book stopped taking writes, for one line per episode; "" while
+        # it takes them (see _write_book).
+        self._book_error = ""
+        # Whether the spawn terminal still has to reach the shared config.
+        self._terminal_unpublished = False
         # Whether the "deferring auto work" note has been logged for the current
         # at-capacity episode (see _log_at_capacity), and for the current
         # out-of-budget one (see _log_unaffordable). Two flags, not one: a machine
@@ -476,8 +481,15 @@ class Store(QObject):
     def publish_spawn_terminal(self) -> None:
         """Hand the allocator daemon the terminal a spawn would open
         (:data:`appconfig.SPAWN_TERMINAL`). Resolved, because the daemon cannot tell
-        an installed terminal from a stale choice."""
-        appconfig.set_value(appconfig.SPAWN_TERMINAL, review.resolved(self.terminal).key)
+        an installed terminal from a stale choice. One the disk refused is published
+        again by the next monitor poll."""
+        try:
+            appconfig.set_value(appconfig.SPAWN_TERMINAL,
+                                review.resolved(self.terminal).key)
+        except OSError:
+            self._terminal_unpublished = True
+        else:
+            self._terminal_unpublished = False
 
     @property
     def repo_path_override(self) -> str:
@@ -887,6 +899,8 @@ class Store(QObject):
 
     def _autofix_poll_once(self) -> None:
         self._poll_error_this_cycle = None
+        if self._terminal_unpublished:
+            self.publish_spawn_terminal()
         # Both slow-refresh probes, ahead of the settle below — the pass that reads
         # them. The macOS twin takes the same two on ITS slow refresh, and a reading
         # only one front-end takes is two applets answering differently about one run
@@ -1518,13 +1532,17 @@ class Store(QObject):
         spawn, so the probe asks the per-user service about it from the first tick.
         """
         now = time.time()
-        record = agentregistry.create_run(
-            agentstate.RunRecord(
-                run_id=agentregistry.new_run_id(now), dispatched_at=now,
-                pr_number=number, pr_url=url or "", kind=kind, label=label,
-                source=source, placement=agentstate.PLACEMENT_LOCAL,
-                ledger_key=ledger_key),
-            prompt)
+        try:
+            record = agentregistry.create_run(
+                agentstate.RunRecord(
+                    run_id=agentregistry.new_run_id(now), dispatched_at=now,
+                    pr_number=number, pr_url=url or "", kind=kind, label=label,
+                    source=source, placement=agentstate.PLACEMENT_LOCAL,
+                    ledger_key=ledger_key),
+                prompt)
+        except OSError as exc:
+            raise review.SpawnError(
+                f"couldn't register the run: {exc.strerror or exc}") from exc
         chosen = agentregistry.stage_runner(record.run_id)
         port = None
         staged = {}
@@ -1545,7 +1563,9 @@ class Store(QObject):
                          settings_file=agentregistry.stage_hooks(record.run_id),
                          session=tmuxwatch.session_name(record.run_id), **staged)
         except review.SpawnError:
-            agentregistry.forget({record.run_id})
+            # Unwritten, the record stays booked with no pid, and the tick retires it
+            # as FAILED once the spawn grace runs out.
+            self._write_book(lambda: agentregistry.forget({record.run_id}))
             raise
 
     def _track_mesh_run(self, url: str | None, number: int | None, source: str,
@@ -1567,15 +1587,17 @@ class Store(QObject):
         would point its probe at a session that is somebody else's.
         """
         now = time.time()
-        record = agentregistry.create_run(
-            agentstate.RunRecord(
-                run_id=agentregistry.new_run_id(now), dispatched_at=now,
-                pr_number=number, pr_url=url or "", kind=kind, label=label,
-                source=source,
-                placement=(agentstate.PLACEMENT_MESH_HERE if here
-                           else agentstate.PLACEMENT_MESH_PEER),
-                node=node, work_key=work_key, ledger_key=ledger_key),
-            prompt)
+        record = agentstate.RunRecord(
+            run_id=agentregistry.new_run_id(now), dispatched_at=now,
+            pr_number=number, pr_url=url or "", kind=kind, label=label,
+            source=source,
+            placement=(agentstate.PLACEMENT_MESH_HERE if here
+                       else agentstate.PLACEMENT_MESH_PEER),
+            node=node, work_key=work_key, ledger_key=ledger_key)
+        # The job already runs, so an unbooked one is reported rather than undone: the
+        # untracked scan still finds an agent here, and a peer's holds its claim.
+        if not self._write_book(lambda: agentregistry.create_run(record, prompt)):
+            return
         if here:
             agentregistry.stage_runner(record.run_id)
 
@@ -2460,7 +2482,30 @@ class Store(QObject):
             out.extend(r for r in t.records if r.untracked and r.run_id not in booked)
             return out
 
-        agentregistry.update(merge)
+        self._write_book(lambda: agentregistry.update(merge))
+
+    def _write_book(self, write) -> bool:
+        """Run one write to the run book and say whether it landed.
+
+        A tick re-derives what it writes from the book on disk, so one that failed is
+        simply written by a later tick: this only has to keep the feed to one line
+        when the book stops taking writes, and one more when it takes them again.
+        ``write`` returns False when it found nothing to write, which says nothing
+        about the disk.
+        """
+        try:
+            wrote = write()
+        except OSError as exc:
+            if not self._book_error:
+                self._book_error = exc.strerror or str(exc)
+                activity.log("auto", "warn",
+                             f"Can't write the agent run book ({self._book_error}) "
+                             f"— runs are not booked or retired until it saves")
+            return False
+        if self._book_error and wrote is not False:
+            self._book_error = ""
+            activity.log("auto", "poll-recovered", "Agent run book saving again")
+        return True
 
     def _retire_finished(self, t: agentstate.Tick) -> None:
         """Price what has ended and drop it from the book.
@@ -2527,6 +2572,10 @@ class Store(QObject):
              agentregistry.run_runner(r.run_id))
             for r in gone if r.ledger_key and r.run_id not in failed
         ]
+        # First, because a run the book still holds is retired again next tick:
+        # nothing below may happen to one that stays, or it is logged and priced twice.
+        if not self._write_book(lambda: agentregistry.forget({r.run_id for r in gone})):
+            return
         # Logged with the evidence that ended it, because forgetting deletes every trace
         # a run leaves: the record, the directory and the prompt all go, and a retirement
         # that turns out to be wrong is then a row that was simply not there any more.
@@ -2548,7 +2597,6 @@ class Store(QObject):
         if audited:
             me = self.me
             self.start_background(lambda: self._audit_reviews(audited, me))
-        agentregistry.forget({r.run_id for r in gone})
         probes.forget_adopted({r.run_id for r in gone})
         for r, exited_at, prompt, session_id, agent_runner in retired:
             telemetry.record_completion(r.ledger_key, prompt, r.dispatched_at,
@@ -2639,10 +2687,10 @@ class Store(QObject):
                          f"closed {record.label or record.run_id}'s window — "
                          f"{reason.split('; ')[-1]}")
         if refused:
-            agentregistry.update(lambda book: [
+            self._write_book(lambda: agentregistry.update(lambda book: [
                 dataclasses.replace(r, reap_refused_at=t.now)
                 if r.run_id in refused else r
-                for r in book])
+                for r in book]))
         return refused
 
     def _in_flight(self, url: str) -> bool:
