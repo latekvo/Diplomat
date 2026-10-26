@@ -332,18 +332,46 @@ export async function motionHash(dev) {
   }
   try {
     if (isApplePlatform(dev.platform)) {
-      const tmp = path.join(os.tmpdir(), `da-shot-${dev.udid}.png`);
-      const r = await run('xcrun', ['simctl', 'io', dev.udid, 'screenshot', tmp], { timeout: 20000 });
+      const tmp = path.join(os.tmpdir(), `da-shot-${dev.udid}.bmp`);
+      const r = await run('xcrun', ['simctl', 'io', dev.udid, 'screenshot', '--type=bmp', tmp], { timeout: 20000 });
       if (!r.ok) return null;
       const buf = fs.readFileSync(tmp);
       try { fs.unlinkSync(tmp); } catch {}
-      return sha(buf);
+      return bmpFrameHash(buf);
     }
     if (isAndroidPlatform(dev.platform) && dev.serial) {
-      const r = await runBuf(ADB_BIN, ['-s', dev.serial, 'exec-out', 'screencap', '-p'], { timeout: 20000 });
+      const r = await runBuf(ADB_BIN, ['-s', dev.serial, 'exec-out', 'screencap'], { timeout: 20000 });
       if (!r.ok || !r.buf?.length) return null;
-      return sha(r.buf);
+      return rawFrameHash(r.buf);
     }
   } catch (e) { log('motionHash error', dev.key, String(e)); }
   return null;
+}
+
+// The status bar's clock and icons change every minute on a screen nothing else moves
+// on, so the top STATUS_BAND of a frame is left out of its hash. Both formats are
+// uncompressed, so rows are cut without decoding; an unexpected layout hashes whole.
+const STATUS_BAND = 0.06;
+
+// `screencap` without -p: width, height, format (+ colorspace from Android 12), then
+// 4-byte pixels, rows top-down.
+export function rawFrameHash(buf) {
+  const w = buf.readUInt32LE(0);
+  const h = buf.readUInt32LE(4);
+  const hdr = buf.length - w * h * 4;
+  if (hdr !== 12 && hdr !== 16) return sha(buf);
+  return sha(buf.subarray(hdr + Math.ceil(h * STATUS_BAND) * w * 4));
+}
+
+// BMP rows are padded to 4 bytes and stored bottom-up unless the height is negative.
+export function bmpFrameHash(buf) {
+  if (buf.length < 30 || buf.toString('latin1', 0, 2) !== 'BM') return sha(buf);
+  const off = buf.readUInt32LE(10);
+  const w = buf.readInt32LE(18);
+  const h = Math.abs(buf.readInt32LE(22));
+  const row = Math.ceil((w * buf.readUInt16LE(28)) / 32) * 4;
+  const end = off + h * row;
+  if (end > buf.length) return sha(buf);
+  const skip = Math.ceil(h * STATUS_BAND) * row;
+  return sha(buf.readInt32LE(22) > 0 ? buf.subarray(off, end - skip) : buf.subarray(off + skip, end));
 }
