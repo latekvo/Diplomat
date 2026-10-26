@@ -62,7 +62,7 @@ def load_default_level() -> str:
 
 def save(entries: dict[str, str], default_level: str = "") -> None:
     """Atomic write (tmp + rename) of the allowlist and, when set, the persisted
-    ``defaultLevel``. Best-effort, never raises."""
+    ``defaultLevel``. Raises ``OSError`` when it can't be written."""
     payload: dict = {}
     if default_level in ("personal", "foreign"):
         payload["defaultLevel"] = default_level

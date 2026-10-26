@@ -30,6 +30,7 @@ missing ``HOME`` costs that file, never the poll.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -255,12 +256,15 @@ def totals() -> Totals:
     # double-count everything in it.
     files = {k: v for k, v in files.items() if k in seen}
 
-    write_atomic(cursor_path(), {
-        "startedAt": state.get("startedAt") or time.time(),
-        "scannedAt": time.time(),
-        "totals": {"repo": repo, "other": other},
-        "files": files,
-    })
+    # Unsaved, the next scan starts again from the stored cursor AND the stored totals,
+    # so it re-reads exactly the bytes these totals counted and the sum stays exact.
+    with contextlib.suppress(OSError):
+        write_atomic(cursor_path(), {
+            "startedAt": state.get("startedAt") or time.time(),
+            "scannedAt": time.time(),
+            "totals": {"repo": repo, "other": other},
+            "files": files,
+        })
     return Totals(repo=repo, other=other)
 
 

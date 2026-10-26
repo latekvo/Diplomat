@@ -92,6 +92,14 @@ class SettingsView(QWidget):
 
         root.addLayout(self._header_row())
 
+        # A write to the shared config the disk refused. Everything reads that file,
+        # so the control has moved and the setting has not; this line says so.
+        self._save_error = QLabel("")
+        self._save_error.setWordWrap(True)
+        self._save_error.setStyleSheet(f"color: {_RED}; font-size: 11px;")
+        self._save_error.hide()
+        root.addWidget(self._save_error)
+
         # Two columns, matching the macOS SettingsView and the main panel: identity +
         # automation behaviour on the left, appearance + environment on the right. Each
         # column pushes its cards up with a bottom stretch so the two stay top-aligned
@@ -142,6 +150,19 @@ class SettingsView(QWidget):
             # (and in non-mesh render/test paths). The Panel's own poll keeps
             # mesh_state fresh while a node is live.
             store.refresh_mesh_state()
+
+    def _save(self, write) -> bool:
+        """Run one write to the shared config file and say whether it landed."""
+        try:
+            write()
+        except OSError as exc:
+            self._save_error.setText(f"⚠ Couldn't save that change "
+                                     f"({exc.strerror or exc}), so it has no effect "
+                                     f"— set it again once the disk has room.")
+            self._save_error.show()
+            return False
+        self._save_error.hide()
+        return True
 
     def _track(self, row: SettingRow) -> SettingRow:
         self._rows.append(row)
@@ -245,7 +266,7 @@ class SettingsView(QWidget):
         self._model_field = QLineEdit(self.store.agent_model)
         self._model_field.setClearButtonEnabled(True)
         self._model_field.textChanged.connect(
-            lambda text: setattr(self.store, "agent_model", text)
+            lambda text: self._save(lambda: setattr(self.store, "agent_model", text))
         )
         model_row.addWidget(self._model_field, 1)
         providers = QPushButton("Connect a provider…")
@@ -264,7 +285,7 @@ class SettingsView(QWidget):
         return card
 
     def _on_runner_changed(self, key: object) -> None:
-        self.store.agent_runner = str(key)
+        self._save(lambda: setattr(self.store, "agent_runner", str(key)))
         self._refresh_runner_ui()
 
     def _refresh_runner_ui(self) -> None:
@@ -334,7 +355,7 @@ class SettingsView(QWidget):
         body.addWidget(self._repo_row)
 
         def on_text(text: str) -> None:
-            self.store.repo_path_override = text
+            self._save(lambda: setattr(self.store, "repo_path_override", text))
             self._refresh_repo_ui()
 
         self._repo_field.textChanged.connect(on_text)
@@ -645,25 +666,26 @@ class SettingsView(QWidget):
         self._limits_pill.set_state(f"≤ {self.store.auto_task_limit} at a time", _GREY)
 
     def _on_auto_limit_changed(self, value: int) -> None:
-        self.store.auto_task_limit = value
+        self._save(lambda: setattr(self.store, "auto_task_limit", value))
         self._refresh_limits_pill()
         self.store.changed.emit()
 
     def _on_budget_gate_toggled(self, on: bool) -> None:
-        appconfig.set_bool(appconfig.AUTO_BUDGET_GATE, on)
+        self._save(lambda: appconfig.set_bool(appconfig.AUTO_BUDGET_GATE, on))
         self._budget_knobs.setVisible(on)
         self.store.changed.emit()
 
     def _on_budget_confidence_changed(self, level: object) -> None:
-        appconfig.set_int(appconfig.AUTO_BUDGET_CONFIDENCE, int(level))
+        self._save(lambda: appconfig.set_int(appconfig.AUTO_BUDGET_CONFIDENCE, int(level)))
         self.store.changed.emit()
 
     def _on_budget_floor_changed(self, value: int) -> None:
-        appconfig.set_float(appconfig.AUTO_BUDGET_FLOOR_PCT, float(value))
+        self._save(lambda: appconfig.set_float(appconfig.AUTO_BUDGET_FLOOR_PCT, float(value)))
         self.store.changed.emit()
 
     def _on_budget_reserve_changed(self, value: int) -> None:
-        appconfig.set_float(appconfig.AUTO_BUDGET_RESERVE_USD, float(value))
+        self._save(lambda: appconfig.set_float(appconfig.AUTO_BUDGET_RESERVE_USD,
+                                               float(value)))
         self.store.changed.emit()
 
     def _on_autofix_toggled(self, on: bool) -> None:
@@ -796,7 +818,7 @@ class SettingsView(QWidget):
         return card
 
     def _on_run_deadline_toggled(self, on: bool) -> None:
-        appconfig.set_bool(appconfig.RUN_DEADLINE, on)
+        self._save(lambda: appconfig.set_bool(appconfig.RUN_DEADLINE, on))
         self.store.changed.emit()
 
     def _on_apiwatch_toggled(self, on: bool) -> None:

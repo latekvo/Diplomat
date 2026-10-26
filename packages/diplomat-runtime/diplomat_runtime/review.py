@@ -14,6 +14,7 @@ staged prompt (:mod:`runner`), detached from the applet.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
@@ -347,11 +348,15 @@ def write_prompt(prompt: str) -> str:
     # 0600 via mkstemp: /tmp is world-readable and multi-user, and a mesh
     # dispatch stages the prompt here too — don't leave it readable to other
     # local users (nor world-readable by umask).
+    path = ""
     try:
         fd, path = tempfile.mkstemp(prefix="diplomat-review-", suffix=".txt")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(prompt)
     except OSError as exc:
+        if path:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
         raise SpawnError(f"Couldn't stage prompt: {exc}") from exc
     return path
 
@@ -383,6 +388,9 @@ def stage_opencode_session(prompt_file: str) -> str | None:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(body)
     except OSError as exc:
+        for path in runner.opencode_staged(prompt_file):
+            with contextlib.suppress(OSError):
+                os.unlink(path)
         raise SpawnError(f"Couldn't stage the OpenCode session: {exc}") from exc
     return session_id
 

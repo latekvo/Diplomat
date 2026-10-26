@@ -253,6 +253,7 @@ def _stage_hooks(done_path: str | None) -> str | None:
             completion.settings_json(str(base.with_suffix(".activity")), done_path),
             encoding="utf-8")
     except OSError:
+        settings.unlink(missing_ok=True)
         return None
     return str(settings)
 

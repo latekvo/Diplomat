@@ -34,11 +34,13 @@ the number.
 Writes are atomic (:mod:`.atomicjson`) and guarded by a process-local lock: the poll
 worker, a panel click and the free-slot sweep all reach this. Cross-process readers
 (the mesh node asking whether this box has room) only ever read, and ``os.replace``
-means they never see a torn file.
+means they never see a torn file. A write to the book that fails raises ``OSError``
+with the book unchanged on disk.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import uuid
@@ -146,7 +148,7 @@ def save(records: list[RunRecord]) -> None:
             {"version": SCHEMA_VERSION, "runs": [r.to_json() for r in records]})
 
 
-def update(transform: Callable[[list[RunRecord]], list[RunRecord]]) -> None:
+def update(transform: Callable[[list[RunRecord]], list[RunRecord]]) -> bool:
     """Replace the book with ``transform`` of what is on disk, read-modify-write
     under the lock.
 
@@ -154,15 +156,17 @@ def update(transform: Callable[[list[RunRecord]], list[RunRecord]]) -> None:
     :func:`save`: between those two a spawn on another thread registers against a
     list this caller already copied, and the save drops it - an agent that nothing
     counts, which is a bay of the cap the machine then spends twice. Unchanged
-    books are not rewritten.
+    books are not rewritten; returns whether this one was.
     """
     with _lock:
         before = load()
         after = transform(before)
-        if after != before:
-            atomicjson.write_atomic(
-                runs_path(),
-                {"version": SCHEMA_VERSION, "runs": [r.to_json() for r in after]})
+        if after == before:
+            return False
+        atomicjson.write_atomic(
+            runs_path(),
+            {"version": SCHEMA_VERSION, "runs": [r.to_json() for r in after]})
+        return True
 
 
 def add(record: RunRecord) -> None:
@@ -191,17 +195,23 @@ def create_run(record: RunRecord, prompt: str) -> RunRecord:
     run back to its Claude transcript when it finishes (``usagescan.task_run`` —
     the transcript's opening user message IS this text), and a run directory that
     outlives ``/tmp`` cleanup keeps that link.
+
+    Raises ``OSError``, leaving nothing behind, when the prompt or the record can't be
+    written: the agent reads its prompt from that file, and an agent the book never
+    heard of holds a bay nothing counts.
     """
     d = run_dir(record.run_id)
     try:
         d.mkdir(parents=True, exist_ok=True)
         prompt_path(record.run_id).write_text(prompt, encoding="utf-8")
-        # The prompt can name a private repo and quote its contents; /tmp and $HOME
-        # are both readable by other local users under a default umask.
-        os.chmod(prompt_path(record.run_id), 0o600)
+        add(record)
     except OSError:
-        pass
-    add(record)
+        _remove_dir(d)
+        raise
+    # The prompt can name a private repo and quote its contents; /tmp and $HOME
+    # are both readable by other local users under a default umask.
+    with contextlib.suppress(OSError):
+        os.chmod(prompt_path(record.run_id), 0o600)
     return record
 
 
@@ -456,17 +466,22 @@ def finished_at(run_id: str) -> float | None:
         return None
 
 
-def forget(run_ids: set[str]) -> None:
-    """Drop these runs from the book and delete their directories.
+def forget(run_ids: set[str]) -> bool:
+    """Drop these runs from the book and delete their directories. Returns whether
+    the book was rewritten, as :func:`update` does.
 
     Called with what the resolver found retirable — positive evidence the agent ended
     — never on a timer.
+
+    Raises ``OSError`` when the book can't be written, with every directory still in
+    place: the runs are still booked, and their directories hold what prices them.
     """
     if not run_ids:
-        return
-    update(lambda records: [r for r in records if r.run_id not in run_ids])
+        return False
+    wrote = update(lambda records: [r for r in records if r.run_id not in run_ids])
     for run_id in run_ids:
         _remove_dir(run_dir(run_id))
+    return wrote
 
 
 def _remove_dir(d: Path) -> None:
