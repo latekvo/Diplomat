@@ -713,9 +713,11 @@ enum AllocatorUI {
 
     /// What the REMOTE POOL card says, and offers, over a snapshot with no remote pool
     /// while a provider is set. The snapshot outlives its daemon, so only one that
-    /// answers is called running. Twin of `devicesview.predates_pool`.
+    /// answers is called running. A start or restart only for an installed allocator, as
+    /// `AllocatorButtons` offers them. Twin of `devicesview.predates_pool`.
     static func predatesPool(_ s: AllocatorInstall?) -> (note: String, action: DaemonAction?) {
         guard let s else { return (snapshotPredatesPoolNote, nil) }
+        guard s.installed else { return (uninstalledPredatesPoolNote, nil) }
         return s.daemonRunning ? (predatesPoolNote, .restart) : (stoppedPredatesPoolNote, .start)
     }
 
@@ -724,6 +726,9 @@ enum AllocatorUI {
     static let stoppedPredatesPoolNote = "The allocator daemon is not running, and the one "
         + "that left this snapshot predates remote pools. Update the checkout if it has none "
         + "either, then Start daemon."
+    static let uninstalledPredatesPoolNote = "The allocator is not installed, and the daemon "
+        + "that left this snapshot predates remote pools. Update the checkout if it has none "
+        + "either, then Install."
     /// A change to config.json that did not land.
     static var saveError: String {
         "⚠ Couldn't save that change to \(AppConfig.url.path), so it has no effect until it "

@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { callDaemon, daemonHealth } from './ipc.js';
+import { procIdentity } from './state.js';
 import { LOG_PATH, BASE_DIR, REMOTE_ACQUIRE_BUDGET_MS, REMOTE_ATTACH_BUDGET_MS } from './paths.js';
 import { PLATFORMS as DEVICE_PLATFORMS, FORMATS } from './devices.js';
 
@@ -183,24 +184,6 @@ async function ensureDaemon() {
     if (await daemonHealth(1000)) return;
   }
   throw new Error('device-allocator daemon failed to start');
-}
-
-// A stable per-incarnation identity for a pid, so a PID reused after the original process
-// exits is never mistaken for it. Linux: /proc/<pid>/stat field 22 (starttime, jiffies
-// since boot). Elsewhere (macOS): `ps -o lstart=`. '' when it can't be read.
-function procIdentity(pid) {
-  try {
-    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    // comm (field 2) is parenthesized and may contain spaces/')' — split the tail after
-    // the LAST ')': starttime is overall field 22 = index 19 of that tail (state is [0]).
-    const tail = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
-    if (tail[19]) return tail[19];
-  } catch {}
-  try {
-    return execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: 2000 })
-      .toString().trim();
-  } catch {}
-  return '';
 }
 
 // The command name of a pid (Linux /proc, else `ps -o comm=`), lowercased; '' if unknown.

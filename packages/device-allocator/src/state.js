@@ -3,6 +3,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { BASE_DIR, DISCOVERY_PATH, STATE_PATH, LEASES_PATH, SOCKET_PATH, CONFIG_PATH } from './paths.js';
 
 export function ensureDirs() { fs.mkdirSync(BASE_DIR, { recursive: true }); }
@@ -47,6 +48,7 @@ export function sweepDeadTmp(file) {
 export function writeDiscovery() {
   atomicWrite(DISCOVERY_PATH, {
     pid: process.pid,
+    identity: procIdentity(process.pid),
     startedAt: new Date().toISOString(),
     socket: SOCKET_PATH,
     version: 1,
@@ -85,4 +87,24 @@ export function pidAlive(pid) {
   if (!pid) return false;
   try { process.kill(pid, 0); return true; }
   catch (e) { return e.code === 'EPERM'; } // alive but not ours-to-signal
+}
+
+// A stable per-incarnation identity for a pid, so a PID reused after the original process
+// exits is never mistaken for it. The same from any process, and no wall-clock step moves
+// it. Linux: /proc/<pid>/stat field 22 (starttime, jiffies since boot; Linux ps derives
+// lstart from the current clock). Elsewhere (macOS): `ps -o lstart=`, in one locale and
+// zone. '' when it can't be read.
+export function procIdentity(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // comm (field 2) is parenthesized and may contain spaces/')' — split the tail after
+    // the LAST ')': starttime is overall field 22 = index 19 of that tail (state is [0]).
+    const tail = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+    if (tail[19]) return tail[19];
+  } catch {}
+  try {
+    return execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)],
+      { timeout: 2000, env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).toString().trim();
+  } catch {}
+  return '';
 }

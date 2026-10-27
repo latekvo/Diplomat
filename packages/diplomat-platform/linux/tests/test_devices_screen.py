@@ -638,6 +638,21 @@ def test_with_no_daemon_running_the_remote_card_offers_a_start_not_a_restart(
     assert not {"Start daemon", "Restart daemon"} & set(_buttons(view))
 
 
+@pytest.mark.parametrize("running", [False, True])
+def test_an_allocator_that_is_not_installed_is_offered_no_start_or_restart_by_the_remote_card(
+        screen, running):
+    """As the ALLOCATOR card offers neither: a start after an uninstall would run a
+    daemon for an allocator the operator removed."""
+    view = screen("devices-screen")
+    store = view.store
+    store.device_remote_provider = "~/pool/provider.mjs"
+    store.allocator_install = {**store.allocator_install, "installed": False,
+                               "daemonRunning": running}
+    store.allocator_changed.emit()
+    assert not {"Start daemon", "Restart daemon"} & set(_buttons(view))
+    assert any("not installed" in t for t in _texts(view))
+
+
 def _installer(monkeypatch, gates: dict):
     """Stand in for ``install.js``: each argument's reply, held until its gate (if
     any) is set, and the arguments in the order they were asked."""
@@ -719,6 +734,38 @@ def test_a_provider_set_by_hand_shows_on_the_screens_next_poll(app, monkeypatch)
     appconfig.set_value(appconfig.DEVICE_REMOTE_PROVIDER, "~/by/hand.mjs")
     view._install_timer.timeout.emit()
     assert view.provider_field.text() == "~/by/hand.mjs"
+
+
+def test_idle_limits_set_by_hand_show_on_the_screens_next_poll_and_in_settings(
+        app, monkeypatch):
+    from diplomat_app.devicesview import DevicesView
+    from diplomat_app.panel import Panel
+    from diplomat_app.store import Store
+
+    monkeypatch.delenv("DIPLOMAT_RENDER", raising=False)
+    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
+    store = Store()
+    panel = Panel(store)
+    view = DevicesView(store, live=False)
+    settings = panel.settings_view
+
+    def sliders():
+        return ([s.value() for s, _row in view._idle],
+                [settings._idle_free.value(), settings._idle_leased.value()])
+
+    assert sliders() == ([5, 30], [5, 30])
+    appconfig.set_int(appconfig.DEVICE_IDLE_FREE_MINUTES, 12)
+    appconfig.set_int(appconfig.DEVICE_IDLE_LEASED_MINUTES, 90)
+    view._install_timer.timeout.emit()
+    assert sliders() == ([12, 90], [12, 90])
+    assert view._drawn_limit == 90
+
+    appconfig.set_int(appconfig.DEVICE_IDLE_LEASED_MINUTES, 120)
+    panel._set_screen("settings")
+    assert sliders()[1] == [12, 120]
+    panel.deleteLater()
+    view.deleteLater()
 
 
 def test_a_rows_actions_are_only_what_the_daemon_does_for_it(app):

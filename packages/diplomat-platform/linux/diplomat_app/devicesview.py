@@ -125,6 +125,9 @@ PREDATES_POOL_NOTE = ("The running allocator daemon reports no remote pool: it p
 STOPPED_PREDATES_POOL_NOTE = ("The allocator daemon is not running, and the one that left "
                               "this snapshot predates remote pools. Update the checkout if it "
                               "has none either, then Start daemon.")
+UNINSTALLED_PREDATES_POOL_NOTE = ("The allocator is not installed, and the daemon that left "
+                                  "this snapshot predates remote pools. Update the checkout "
+                                  "if it has none either, then Install.")
 #: Before the first ``--check`` says whether a daemon runs.
 SNAPSHOT_PREDATES_POOL_NOTE = ("The allocator's snapshot has no remote pool: the daemon "
                                "that wrote it predates one.")
@@ -133,10 +136,13 @@ SNAPSHOT_PREDATES_POOL_NOTE = ("The allocator's snapshot has no remote pool: the
 def predates_pool(s: dict | None) -> tuple[str, str | None]:
     """What the REMOTE POOL card says, and offers (``"start"``, ``"restart"`` or
     nothing), over a snapshot with no remote pool while a provider is set. The snapshot
-    outlives its daemon, so only one that answers is called running. Twin of
+    outlives its daemon, so only one that answers is called running. A start or restart
+    only for an installed allocator, as :class:`AllocatorControls` offers them. Twin of
     ``AllocatorUI.predatesPool`` in DevicesScreen.swift."""
     if s is None:
         return SNAPSHOT_PREDATES_POOL_NOTE, None
+    if not s.get("installed"):
+        return UNINSTALLED_PREDATES_POOL_NOTE, None
     if s.get("daemonRunning"):
         return PREDATES_POOL_NOTE, "restart"
     return STOPPED_PREDATES_POOL_NOTE, "start"
@@ -244,7 +250,8 @@ class AllocatorControls(QWidget):
 
 class _IdleLimitSlider(SliderSetting):
     """One idle limit's slider, written through ``save`` and re-read on every
-    ``store.changed``: Settings and the Devices screen both set the same two limits."""
+    ``store.changed`` (Settings and the Devices screen both set the same two limits) and
+    ``store.device_config_reloaded`` (config.json is also edited by hand)."""
 
     def __init__(self, store: Store, attr: str, save, *, label: str, maximum: int,
                  step: int) -> None:
@@ -257,6 +264,7 @@ class _IdleLimitSlider(SliderSetting):
         self.sync()
         self.changed.connect(self._on_changed)
         store.changed.connect(self.sync)
+        store.device_config_reloaded.connect(self.sync)
 
     def sync(self) -> None:
         self.set_value(getattr(self._store, self._attr))
@@ -618,7 +626,7 @@ class DevicesView(QWidget):
         root.addStretch(1)
 
         # `daemonRunning` comes from `--check` alone, which no poll runs, and the
-        # provider is also set by hand.
+        # provider and the idle limits are also set by hand.
         self._install_timer = QTimer(self)
         self._install_timer.setInterval(15_000)
         self._install_timer.timeout.connect(self._poll)
@@ -632,6 +640,7 @@ class DevicesView(QWidget):
         store.allocator_changed.connect(self._on_allocator_changed)
         store.remote_changed.connect(self._rebuild_remote)
         store.changed.connect(self._sync_limits)
+        store.device_config_reloaded.connect(self._sync_limits)
         self.rebuild()
 
     def opened(self) -> None:
@@ -646,6 +655,7 @@ class DevicesView(QWidget):
         self._clock_timer.stop()
 
     def _poll(self) -> None:
+        self.store.reload_device_config()
         self._rebuild_remote()
         self.store.refresh_allocator_install_async()
 

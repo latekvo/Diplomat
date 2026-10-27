@@ -227,6 +227,8 @@ class Store(QObject):
     allocator_changed = Signal()
     # Emitted when one of the Devices screen's two remote-pool calls starts or answers.
     remote_changed = Signal()
+    # Emitted by reload_device_config.
+    device_config_reloaded = Signal()
     # Emitted when the activity feed (audit.jsonl) or ban list snapshot changes.
     activity_changed = Signal()
     # Emitted when the mesh topology snapshot (state.json) meaningfully changes.
@@ -694,6 +696,12 @@ class Store(QObject):
                 int(value), appconfig.MAX_DEVICE_IDLE_LEASED_MINUTES
             ),
         )
+
+    def reload_device_config(self) -> None:
+        """Have what shows the device keys of config.json, which is also edited by hand,
+        read them again; the properties read the file on every access. Twin of
+        ``Store.reloadDeviceConfig`` in Store.swift."""
+        self.device_config_reloaded.emit()
 
     @property
     def device_remote_provider(self) -> str:

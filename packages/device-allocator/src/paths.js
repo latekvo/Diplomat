@@ -13,7 +13,7 @@ export const BASE_DIR =
   process.env.DA_BASE_DIR || path.join(os.homedir(), '.diplomat', 'device-allocator');
 
 export const SOCKET_PATH = path.join(BASE_DIR, 'daemon.sock');
-export const DISCOVERY_PATH = path.join(BASE_DIR, 'daemon.json'); // {pid, startedAt, socket}
+export const DISCOVERY_PATH = path.join(BASE_DIR, 'daemon.json'); // {pid, identity, startedAt, socket}
 export const STATE_PATH = path.join(BASE_DIR, 'state.json'); // public snapshot the applet reads
 export const LEASES_PATH = path.join(BASE_DIR, 'leases.json'); // full allocation records, for restart rehydration
 export const REMOTE_RELEASES_PATH = path.join(BASE_DIR, 'remote-releases.json'); // leases given back but not confirmed

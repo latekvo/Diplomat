@@ -43,9 +43,9 @@ such as one still shutting down, and a stop signals only a process that is still
 Real devices somewhere else, lent to this machine's agents before its own simulators and
 emulators are booted. Diplomat knows nothing about any particular pool: a **provider module** you
 point it at does the talking (see the [allocator's README](../packages/device-allocator/README.md#a-remote-device-pool)).
-A daemon from before remote pools reports none: the card then says so and offers **Restart
-daemon**, or **Start daemon** when the snapshot is all that is left of it, after updating the
-checkout if it has no remote pool either.
+A daemon from before remote pools reports none: the card then says so and, with the allocator
+installed, offers **Restart daemon**, or **Start daemon** when the snapshot is all that is left of
+it, after updating the checkout if it has no remote pool either.
 
 - **Provider module** - the module's path (`~` allowed). Blank means no remote pool. It is
   `deviceRemoteProvider` in `~/.diplomat/config.json`, which the daemon re-reads on every request

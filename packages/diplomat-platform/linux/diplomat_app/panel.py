@@ -968,6 +968,8 @@ class Panel(QWidget):
         if name == "mesh" and self.store.mesh_enabled:
             # Fresh topology the moment the screen opens (the 2s poll follows).
             self.store.refresh_mesh_state()
+        if name == "settings":
+            self.store.reload_device_config()
         if name == "telemetry":
             # Re-fold on open. The screen is otherwise only repainted when a
             # sample lands (every 15 min), and the monitors append between those.

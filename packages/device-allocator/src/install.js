@@ -20,7 +20,7 @@ import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readDiscovery } from './state.js';
+import { readDiscovery, procIdentity } from './state.js';
 import { DISCOVERY_PATH } from './paths.js';
 import { daemonHealth } from './ipc.js';
 
@@ -309,12 +309,15 @@ function uninjectClaudeMd() {
 
 // The pid a daemon.json names, while that process is still the daemon that wrote it.
 // A daemon that dies without its exit handler (kill -9, a crash, a power loss) leaves
-// the file behind, and its pid can later belong to any process of the user's: the one
-// it names must be running a daemon.js, started no later than the file says it was.
+// the file behind, and its pid can later belong to any process of the user's. The file
+// carries the daemon's procIdentity; one from a daemon that predates that field is
+// matched instead by its command (a daemon.js) and its start, no later than the file.
 function discoveredDaemonPid(disc) {
   const pid = disc?.pid;
-  const wrote = Date.parse(disc?.startedAt);
-  if (!Number.isInteger(pid) || pid <= 0 || Number.isNaN(wrote) || !pidAlive(pid)) return null;
+  if (!Number.isInteger(pid) || pid <= 0 || !pidAlive(pid)) return null;
+  if (disc.identity) return procIdentity(pid) === disc.identity ? pid : null;
+  const wrote = Date.parse(disc.startedAt);
+  if (Number.isNaN(wrote)) return null;
   let out;
   try {
     out = execFileSync('ps', ['-o', 'lstart=,command=', '-p', String(pid)],
