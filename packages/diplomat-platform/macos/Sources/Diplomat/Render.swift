@@ -752,8 +752,10 @@ enum Render {
     /// `DIPLOMAT_RENDER=devices-screen[-remote[-away]|-off]` — see the mode's case.
     @MainActor
     @discardableResult
-    private static func seedDevicesScreen(_ mode: String, store: Store) -> Bool {
+    static func seedDevicesScreen(_ mode: String, store: Store) -> Bool {
         seedDeviceState(store)
+        // Store.init read the operator's own config.json: never show their provider.
+        store.setDeviceRemoteProvider("")
         // Loaded already: the panel's first-appearance GitHub poll would put a spinner
         // (or an error) in the snapshot's header.
         store.hasLoaded = true
@@ -810,7 +812,7 @@ enum Render {
                            loginUrl: "https://lab-pool.example/login?session=7f3a")
         store.deviceState = DeviceState(devices: local.devices + leases, daemonPid: 51734,
                                         remote: status)
-        store.deviceRemoteProvider = "~/.diplomat/remote/lab-pool.mjs"
+        store.setDeviceRemoteProvider("~/.diplomat/remote/lab-pool.mjs")
         store.auditEntries.insert(
             AuditEntry(at: "2026-07-03T09:20:00Z", source: "daemon", action: "remote-lease-ended",
                        detail: "Galaxy S23 taken from smoke test: the pool reclaimed it"), at: 0)

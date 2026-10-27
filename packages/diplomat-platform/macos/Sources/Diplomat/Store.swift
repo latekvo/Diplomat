@@ -276,14 +276,24 @@ final class Store: ObservableObject {
         }
     }
 
-    /// The remote device pool's provider module (Devices → REMOTE POOL), stored raw;
-    /// empty removes the key, which turns the remote pool off.
-    @Published var deviceRemoteProvider: String {
-        didSet {
-            guard !Headless.active else { return }
-            AppConfig.set(AppConfig.deviceRemoteProviderKey,
-                          deviceRemoteProvider.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
+    /// The remote device pool's provider module (Devices → REMOTE POOL) as config.json,
+    /// which the daemon reads, holds it; empty = no remote pool.
+    @Published private(set) var deviceRemoteProvider: String
+
+    /// Store the provider trimmed (empty removes the key, which turns the remote pool
+    /// off) and say whether the write landed. A headless run keeps it in memory alone.
+    @discardableResult
+    func setDeviceRemoteProvider(_ raw: String) -> Bool {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !Headless.active, !AppConfig.set(AppConfig.deviceRemoteProviderKey, value) { return false }
+        if value != deviceRemoteProvider { deviceRemoteProvider = value }
+        return true
+    }
+
+    /// Re-read the provider from config.json, which is also set by hand.
+    func reloadDeviceRemoteProvider() {
+        let value = AppConfig.string(AppConfig.deviceRemoteProviderKey)
+        if value != deviceRemoteProvider { deviceRemoteProvider = value }
     }
 
     /// The Devices screen's two remote-pool calls. In the Store, not the screen: a
@@ -741,12 +751,13 @@ final class Store: ObservableObject {
     }
 
     /// End a device's quarantine (Devices → Repaired). The daemon logs the success
-    /// itself; only a refusal is this app's to report.
+    /// itself; only a refusal is this app's to report, under the daemon's action so
+    /// the Devices screen's Recent card shows it.
     func markDeviceRepaired(_ key: String) async {
         let ok = await Task.detached(priority: .userInitiated) {
             DeviceAllocator.markRepaired(key: key)
         }.value
-        if !ok { AuditLog.log("panel", "warn", "Mark-repaired FAILED for device \(key)") }
+        if !ok { AuditLog.log("panel", "repair-done", "Repaired FAILED for device \(key)") }
         refreshAudit()
         await refreshDeviceState()
     }
@@ -837,20 +848,33 @@ final class Store: ObservableObject {
     }
 
     func uninstallAllocator() async {
-        allocatorInstall = await Task.detached(priority: .utility) { DeviceAllocator.uninstall() }.value
+        let result = await Task.detached(priority: .utility) { DeviceAllocator.uninstall() }.value
+        allocatorInstall = result
         // An explicit uninstall is a settled choice — the launch-time install must
         // not put it back on the next start.
         allocatorSetupDone = true
-        AuditLog.log("panel", "allocator-uninstall", "Uninstalled device allocator")
+        AuditLog.log("panel", "allocator-uninstall",
+                     "Uninstalled device allocator (ok: \(result.reportsInstalled && !result.installed))")
         refreshAudit()
         await refreshDeviceState()
     }
 
     func startAllocatorDaemon() async {
         let result = await Task.detached(priority: .userInitiated) { DeviceAllocator.startDaemon() }.value
-        allocatorInstall = result
+        allocatorInstall = result.installStatus(over: allocatorInstall)
         AuditLog.log("panel", "allocator-install",
                      "Started the device-allocator daemon (ok: \(result.daemonRunning))")
+        refreshAudit()
+        await refreshDeviceState()
+    }
+
+    /// Devices → Restart daemon: replace the running daemon with this checkout's.
+    func restartAllocatorDaemon() async {
+        let result = await Task.detached(priority: .userInitiated) { DeviceAllocator.restartDaemon() }.value
+        allocatorInstall = result.installStatus(over: allocatorInstall)
+        let why = result.error.map { ": \($0)" } ?? ""
+        AuditLog.log("panel", "allocator-install",
+                     "Restarted the device-allocator daemon (ok: \(result.daemonRunning && result.error == nil))\(why)")
         refreshAudit()
         await refreshDeviceState()
     }

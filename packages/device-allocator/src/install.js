@@ -4,6 +4,7 @@
 //   node src/install.js --install      -> register MCP + skill + rule + CLAUDE.md, start daemon
 //   node src/install.js --uninstall    -> undo all of the above, stop daemon
 //   node src/install.js --start-daemon -> just ensure the daemon is running
+//   node src/install.js --restart-daemon -> stop the running daemon, start this checkout's
 //
 // Coercion is installed across every layer the research surfaced, strongest first:
 //   1. MCP server registration (so the server — and its `instructions` field — is
@@ -317,14 +318,36 @@ async function startDaemon() {
   }
   return (await daemonHealth()) != null;
 }
+/// The pid it signalled, or null when there was none to signal.
 async function stopDaemon() {
   try {
     // The serving daemon's own pid, else daemon.json's for one too wedged to answer.
     // Both go through paths.js (honors DA_BASE_DIR) — a hardcoded ~/.diplomat path
     // here would SIGTERM the user's real daemon from a test-sandboxed uninstall.
     const pid = (await daemonHealth())?.pid || readDiscovery()?.pid;
-    if (pid) process.kill(pid, 'SIGTERM');
+    if (pid) { process.kill(pid, 'SIGTERM'); return pid; }
   } catch {}
+  return null;
+}
+
+function pidAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+
+// A daemon never exits by itself and startDaemon() keeps any that answers, so this is
+// how one started from older code is replaced. Leases survive: the new daemon reloads
+// leases.json. The old one shuts down every simulator/emulator it booted on its way
+// out (shutdownBootedSync, up to 15 s each), hence the long wait.
+const RESTART_EXIT_MS = 60000;
+async function restartDaemon() {
+  const pid = await stopDaemon();
+  const deadline = Date.now() + RESTART_EXIT_MS;
+  while (pid && pidAlive(pid) && Date.now() < deadline) await delay(200);
+  if (pid && pidAlive(pid)) {
+    return `the running daemon (pid ${pid}) did not exit within ${RESTART_EXIT_MS / 1000} s`;
+  }
+  await startDaemon();
+  return null;
 }
 
 // One-time migration from the pre-rename install (argent-device-allocator +
@@ -393,6 +416,12 @@ try {
     case '--install': { const s = await doInstall(); out = { action: 'install', ...s, installed: installed(s) }; break; }
     case '--uninstall': { const s = await doUninstall(); out = { action: 'uninstall', ...s, installed: installed(s) }; break; }
     case '--start-daemon': out = { action: 'start-daemon', ...await status(), daemonRunning: await startDaemon() }; break;
+    case '--restart-daemon': {
+      const error = await restartDaemon();
+      const s = await status();
+      out = { action: 'restart-daemon', ...(error ? { error } : {}), ...s, installed: installed(s) };
+      break;
+    }
     case '--check':
     default: { const s = await status(); out = { action: 'check', ...s, installed: installed(s) }; break; }
   }

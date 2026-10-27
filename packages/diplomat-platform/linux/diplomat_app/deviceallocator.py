@@ -450,7 +450,7 @@ def _refusal(reply: DaemonReply | None) -> str | None:
         return "the allocator daemon did not answer"
     error = _string(reply.get("error"))
     if reply.status == 404 and error and error.startswith("unknown route"):
-        return "this allocator has no remote device pool — update it"
+        return "this allocator has no remote device pool — update it, then restart its daemon"
     if not reply.ok:
         return (error or _string(reply.get("reason"))
                 or f"the allocator answered HTTP {reply.status}")
@@ -543,8 +543,25 @@ def uninstall() -> dict | None:
 
 
 def start_daemon() -> dict | None:
-    """Start the daemon if none answers; reports the install status with it."""
+    """Start the daemon if none answers. The reply has no ``installed``: see
+    :func:`with_install_status`."""
     return _run_installer("--start-daemon")
+
+
+def restart_daemon() -> dict | None:
+    """Stop the running daemon and start this checkout's, the one way to replace a
+    daemon started from older code: ``--install`` and ``--start-daemon`` keep any
+    daemon that answers. Leases survive; the old daemon shuts down the devices it
+    booted."""
+    return _run_installer("--restart-daemon")
+
+
+def with_install_status(reply: dict | None, previous: dict | None) -> dict | None:
+    """``reply``, keeping ``previous``'s install status when the reply does not report
+    one, so a reply without ``installed`` never reads as "not installed"."""
+    if reply is None or "installed" in reply or not previous or "installed" not in previous:
+        return reply
+    return {**reply, "installed": previous["installed"]}
 
 
 # MARK: device-entry interpretation (mirrors DeviceAllocation in Swift)

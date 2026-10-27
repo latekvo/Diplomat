@@ -197,10 +197,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in exit(await MeshStrayTest.run() ? 0 : 1) }
         }
         // Allocator-setup self-test: proves a launch reinstalls a stale allocator and
-        // leaves a deliberately-uninstalled one alone. Pure decision logic — shells no
-        // installer, reads no ~/.claude. Exit code = pass/fail.
+        // leaves a deliberately-uninstalled one alone, and drives the Devices screen's
+        // actions through a stand-in installer in a scratch dir. Reads no ~/.claude and
+        // calls no daemon. Exit code = pass/fail.
         if env["DIPLOMAT_ALLOCATOR_TEST"] == "1" {
-            exit(AllocatorSetupTest.run() ? 0 : 1)
+            Task { @MainActor in exit(await AllocatorSetupTest.run() ? 0 : 1) }
         }
         // Checkout-location self-test: proves the bundle szpont builds and launchd starts
         // names the checkout around it, a copy kept elsewhere names the one it recorded,

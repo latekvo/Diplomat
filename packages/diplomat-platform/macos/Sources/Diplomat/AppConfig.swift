@@ -117,28 +117,30 @@ enum AppConfig {
     /// node reading concurrently never sees a torn file. Keys the file already holds
     /// survive a normal write; a file that failed to parse (see `read`) is rewritten from
     /// defaults, so a *corrupt* file loses the other keys — each then falls back to its
-    /// own default, the same degradation an absent file gets. Best-effort: an unwritable
-    /// HOME must never throw into the UI.
-    static func set(_ key: String, _ value: String) {
+    /// own default, the same degradation an absent file gets. Never throws into the UI:
+    /// an unwritable HOME is the `false` it returns, which a caller may ignore.
+    @discardableResult
+    static func set(_ key: String, _ value: String) -> Bool {
         var obj = read()
         if value.isEmpty { obj.removeValue(forKey: key) } else { obj[key] = value }
-        write(obj)
+        return write(obj)
     }
 
     /// `set` for a number, which has no "empty means remove" spelling of its own.
-    static func setInt(_ key: String, _ value: Int) {
+    @discardableResult
+    static func setInt(_ key: String, _ value: Int) -> Bool {
         var obj = read()
         obj[key] = value
-        write(obj)
+        return write(obj)
     }
 
-    private static func write(_ obj: [String: Any]) {
+    private static func write(_ obj: [String: Any]) -> Bool {
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         guard let data = try? JSONSerialization.data(withJSONObject: obj,
                                                     options: [.prettyPrinted, .sortedKeys])
-        else { return }
-        try? data.write(to: url, options: .atomic)
+        else { return false }
+        return (try? data.write(to: url, options: .atomic)) != nil
     }
 
     /// How many automatic agents this device will run at once, clamped to the range

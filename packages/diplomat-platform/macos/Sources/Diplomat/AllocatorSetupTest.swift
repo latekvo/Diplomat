@@ -12,18 +12,20 @@ import SwiftUI
 ///
 ///     DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
 ///
-/// Pure decision logic: no installer is shelled, no `~/.claude*` is read, and the only
-/// file written is a scratch `DIPLOMAT_CONFIG`. The second half decodes real installer
-/// payloads, because the decision is only as good as the fields it reads — a
-/// silently-dropped `outdated` would leave every machine stale while this table still
+/// The decision half is pure logic, and no `~/.claude*` is read. The second half decodes
+/// real installer payloads, because the decision is only as good as the fields it reads —
+/// a silently-dropped `outdated` would leave every machine stale while this table still
 /// passed. Then the daemon's idle limits are read back the way Settings shows them, and
 /// the Devices screen's inputs decoded: snapshots with no, a full, and a garbled remote
-/// pool, and the daemon's replies to the remote-pool calls. No daemon is called.
+/// pool, and the daemon's replies to the remote-pool calls. Last, the Devices screen's
+/// actions run through a real `Store` against a stand-in `install.js` and a daemon
+/// directory with no daemon in it, all in a scratch dir with the feed and config.
 ///
 /// The decision half is the twin of `diplomat-platform/linux/tests/test_allocator_update.py`. Exit code is pass/fail, so CI can
 /// gate on it.
 enum AllocatorSetupTest {
-    static func run() -> Bool {
+    @MainActor
+    static func run() async -> Bool {
         var failures: [String] = []
         func check(_ name: String, _ cond: Bool, _ detail: String = "") {
             if cond { print("  ok    \(name)") }
@@ -210,7 +212,7 @@ enum AllocatorSetupTest {
               DeviceAllocator.signInReply(nil) == .reason("the allocator daemon did not answer"))
         check("a daemon without the route says it has no remote pool",
               DeviceAllocator.devicesReply(reply(#"{"error":"unknown route /remote/devices"}"#, 404))
-                == .reason("this allocator has no remote device pool — update it"))
+                == .reason("this allocator has no remote device pool — update it, then restart its daemon"))
         check("a signed-in reply is ok", DeviceAllocator.signInReply(reply(#"{"ok":true}"#, 200)) == .ok)
         check("a refused sign-in carries its reason",
               DeviceAllocator.signInReply(reply(#"{"ok":false,"reason":"timed out"}"#, 200)) == .reason("timed out"))
@@ -231,6 +233,139 @@ enum AllocatorSetupTest {
         check("idle colour: orange from two thirds", DeviceAllocation.idleColor(20, limit: 30) == .orange)
         check("idle colour: quiet below that", DeviceAllocation.idleColor(14, limit: 30) == .secondary)
         check("idle colour: never with no limit", DeviceAllocation.idleColor(500, limit: 0) == .secondary)
+
+        // ---- the Devices screen's actions, through a Store and a stand-in installer ----
+
+        print("allocator: the Devices screen's actions")
+        let fm = FileManager.default
+        let pkg = scratch.appendingPathComponent("pkg")
+        let calls = pkg.appendingPathComponent("calls.log")
+        let replies = pkg.appendingPathComponent("replies.json")
+        try? fm.createDirectory(at: pkg.appendingPathComponent("src"), withIntermediateDirectories: true)
+        // Prints the reply set for its argument and records that it was asked.
+        try? #"""
+        const fs = require('fs'), path = require('path');
+        const arg = process.argv[2];
+        fs.appendFileSync(path.join(__dirname, '..', 'calls.log'), arg + '\n');
+        const replies = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'replies.json'), 'utf8'));
+        process.stdout.write(JSON.stringify(replies[arg] || {}));
+        """#.write(to: pkg.appendingPathComponent("src/install.js"), atomically: true, encoding: .utf8)
+        func answer(_ byArg: [String: String]) {
+            let body = byArg.map { "\"\($0.key)\":\($0.value)" }.joined(separator: ",")
+            try? "{\(body)}".write(to: replies, atomically: true, encoding: .utf8)
+            try? fm.removeItem(at: calls)
+        }
+        func asked() -> [String] {
+            ((try? String(contentsOf: calls, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        }
+        let parts = #""mcpRegistered":true,"skillInstalled":true,"ruleInstalled":true,"claudeMdInjected":true,"version":"0.1.0","drift":[],"outdated":false"#
+        // What `install.js --start-daemon` prints: no `installed`.
+        let startReply = #"{"action":"start-daemon",\#(parts),"daemonRunning":true}"#
+        let checkReply = #"{"action":"check",\#(parts),"daemonRunning":true,"installed":true}"#
+        for (name, value) in [
+            ("DIPLOMAT_DEVICE_ALLOCATOR_DIR", pkg.path),
+            ("DA_BASE_DIR", scratch.appendingPathComponent("da").path),
+            ("DIPLOMAT_AUDIT_DIR", scratch.appendingPathComponent("feed").path),
+            ("DIPLOMAT_AGENTS_DIR", scratch.appendingPathComponent("agents").path),
+            ("DIPLOMAT_CLAUDE_DIR", scratch.appendingPathComponent("claude").path),
+            ("DIPLOMAT_QUOTA_PROBE", "0"),
+        ] { setenv(name, value, 1) }
+        try? #"{"deviceRemoteProvider":"~/operator/own-pool.mjs"}"#
+            .write(to: AppConfig.url, atomically: true, encoding: .utf8)
+        let store = Store()
+        func feed() -> [String] {
+            AuditLog.read().filter { DevicesScreen.eventActions.contains($0.action) }.map(\.detail)
+        }
+        func settle() async { try? await Task.sleep(nanoseconds: 300_000_000) }
+
+        let start = decode(startReply, "a --start-daemon reply")
+        check("a --start-daemon reply does not report the install", start?.reportsInstalled == false)
+        if DeviceAllocator.nodeAvailable {
+            answer(["--start-daemon": startReply])
+            store.allocatorInstall = decode(checkReply, "a --check reply")
+            await store.startAllocatorDaemon()
+            check("Start daemon keeps an installed allocator installed",
+                  store.allocatorInstall?.installed == true && store.allocatorInstall?.daemonRunning == true,
+                  "got \(String(describing: store.allocatorInstall))")
+            check("…and asked the installer to start it", asked() == ["--start-daemon"], "got \(asked())")
+
+            answer(["--restart-daemon": #"{"action":"restart-daemon",\#(parts),"daemonRunning":true,"installed":true}"#])
+            await store.restartAllocatorDaemon()
+            await settle()
+            check("Restart daemon asks the installer for a restart", asked() == ["--restart-daemon"],
+                  "got \(asked())")
+            check("…and the Recent card says it worked",
+                  feed().first == "Restarted the device-allocator daemon (ok: true)", "got \(feed())")
+            answer(["--restart-daemon": #"{"action":"restart-daemon","error":"the running daemon (pid 9) did not exit within 60 s",\#(parts),"daemonRunning":false,"installed":true}"#])
+            await store.restartAllocatorDaemon()
+            await settle()
+            check("a restart whose old daemon never left says so on the Recent card",
+                  feed().first == "Restarted the device-allocator daemon (ok: false): the running "
+                    + "daemon (pid 9) did not exit within 60 s", "got \(feed())")
+        } else {
+            print("  skip  the installer calls: no node on this machine")
+        }
+
+        // No daemon answers in the scratch DA_BASE_DIR, so Repaired fails.
+        await store.markDeviceRepaired("appletv:ATV1")
+        await settle()
+        check("a failed Repaired shows on the Recent card",
+              feed().first == "Repaired FAILED for device appletv:ATV1", "got \(feed())")
+
+        // ---- the provider, which config.json holds and is also set by hand ----
+
+        check("the provider is read from config.json", store.deviceRemoteProvider == "~/operator/own-pool.mjs")
+        try? #"{"deviceRemoteProvider":"~/by/hand.mjs"}"#.write(to: AppConfig.url, atomically: true, encoding: .utf8)
+        store.reloadDeviceRemoteProvider()
+        check("a provider set by hand is picked up on reload", store.deviceRemoteProvider == "~/by/hand.mjs")
+        check("a write that lands says so", AppConfig.set("probeKey", "x") && AppConfig.string("probeKey") == "x")
+        let blocker = scratch.appendingPathComponent("not-a-dir")
+        try? "".write(to: blocker, atomically: true, encoding: .utf8)
+        setenv("DIPLOMAT_CONFIG", blocker.appendingPathComponent("config.json").path, 1)
+        check("a write that cannot land says so", !AppConfig.set(AppConfig.deviceRemoteProviderKey, "~/x.mjs"))
+        setenv("DIPLOMAT_CONFIG", scratch.appendingPathComponent("config.json").path, 1)
+
+        // A render seeds a real Store, which read the operator's own config.json.
+        for mode in ["devices-screen", "devices-screen-off", "devices-screen-remote", "devices-screen-remote-away"] {
+            store.setDeviceRemoteProvider("~/operator/own-pool.mjs")
+            Render.seedDevicesScreen(mode, store: store)
+            check("the \(mode) render shows no provider of the operator's",
+                  !store.deviceRemoteProvider.contains("operator"), "got \(store.deviceRemoteProvider)")
+        }
+
+        // ---- the --check poll runs only while the screen's window is on screen ----
+
+        if DeviceAllocator.nodeAvailable, let screen = NSScreen.main {
+            answer(["--check": checkReply])
+            let view = DevicesScreen(isPresented: .constant(true), live: true, pollNanoseconds: 150_000_000)
+                .environmentObject(store)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                                  styleMask: .borderless, backing: .buffered, defer: false)
+            window.contentView = NSHostingView(rootView: view)
+            // Two points of it on screen: enough to count as visible, too little to notice.
+            window.setFrameOrigin(NSPoint(x: screen.frame.maxX - 2, y: screen.frame.minY))
+            window.isReleasedWhenClosed = false
+            func polls(within secs: Double) async -> Int {
+                let before = asked().count
+                try? await Task.sleep(nanoseconds: UInt64(secs * 1e9))
+                return asked().count - before
+            }
+            window.orderFrontRegardless()
+            let shown = await polls(within: 1.5)
+            if shown == 0 && !window.occlusionState.contains(.visible) {
+                print("  skip  the poll's visibility: no window is ever visible here")
+            } else {
+                check("the screen polls --check while its window is up", shown >= 2, "polled \(shown)")
+                window.orderOut(nil)
+                _ = await polls(within: 0.5)
+                let hidden = await polls(within: 1.0)
+                check("…and not once it is hidden", hidden == 0, "polled \(hidden) times")
+                window.orderFrontRegardless()
+                check("…and again once it is back", await polls(within: 1.0) >= 1)
+            }
+            window.orderOut(nil)
+            window.contentView = nil
+        }
 
         print(failures.isEmpty
             ? "\nALLOCATOR TEST OK"

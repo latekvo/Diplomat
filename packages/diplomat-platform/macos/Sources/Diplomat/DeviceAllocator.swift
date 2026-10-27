@@ -234,6 +234,11 @@ struct AllocatorInstall: Decodable, Equatable {
     /// Which artifacts drifted (`skill`, `rule`, `claudeMd`, `mcp`) — shown beside
     /// the status so "out of date" says what, not just that.
     var drift: [String] = []
+    /// Whether the reply said `installed` at all. `--start-daemon`'s does not, and its
+    /// silence says nothing about the install (see `installStatus(over:)`).
+    var reportsInstalled = false
+    /// What went wrong, when the installer says (a restart whose old daemon never exited).
+    var error: String?
 
     init() {}
 
@@ -247,7 +252,10 @@ struct AllocatorInstall: Decodable, Equatable {
         ruleInstalled = (try? c.decode(Bool.self, forKey: .ruleInstalled)) ?? false
         claudeMdInjected = (try? c.decode(Bool.self, forKey: .claudeMdInjected)) ?? false
         daemonRunning = (try? c.decode(Bool.self, forKey: .daemonRunning)) ?? false
-        installed = (try? c.decode(Bool.self, forKey: .installed)) ?? false
+        let installedField = try? c.decode(Bool.self, forKey: .installed)
+        installed = installedField ?? false
+        reportsInstalled = installedField != nil
+        error = try? c.decode(String.self, forKey: .error)
         version = try? c.decode(String.self, forKey: .version)
         outdated = (try? c.decode(Bool.self, forKey: .outdated)) ?? false
         drift = (try? c.decode([String].self, forKey: .drift)) ?? []
@@ -255,7 +263,17 @@ struct AllocatorInstall: Decodable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case mcpRegistered, skillInstalled, ruleInstalled, claudeMdInjected, daemonRunning
-        case installed, version, outdated, drift
+        case installed, version, outdated, drift, error
+    }
+
+    /// This reply, keeping `previous`'s install status when the reply does not report
+    /// one, so a reply without `installed` never reads as "not installed".
+    func installStatus(over previous: AllocatorInstall?) -> AllocatorInstall {
+        guard !reportsInstalled, let previous else { return self }
+        var merged = self
+        merged.installed = previous.installed
+        merged.reportsInstalled = previous.reportsInstalled
+        return merged
     }
 
     /// Unknown until the first check completes (so the UI can say "checking…").
@@ -380,7 +398,7 @@ enum DeviceAllocator {
     private static func refusal(_ r: DaemonReply?) -> String? {
         guard let r else { return "the allocator daemon did not answer" }
         if r.status == 404, r.json?["error"]?.string?.hasPrefix("unknown route") == true {
-            return "this allocator has no remote device pool — update it"
+            return "this allocator has no remote device pool — update it, then restart its daemon"
         }
         if !(200..<300).contains(r.status) {
             return r.json?["error"]?.string ?? r.json?["reason"]?.string
@@ -497,8 +515,13 @@ enum DeviceAllocator {
     static func check() -> AllocatorInstall { runInstaller("--check") }
     static func install() -> AllocatorInstall { runInstaller("--install") }
     static func uninstall() -> AllocatorInstall { runInstaller("--uninstall") }
-    /// Start the daemon if none answers; reports the install status with it.
+    /// Start the daemon if none answers. The reply has no `installed`: see
+    /// `AllocatorInstall.installStatus(over:)`.
     static func startDaemon() -> AllocatorInstall { runInstaller("--start-daemon") }
+    /// Stop the running daemon and start this checkout's, the one way to replace a daemon
+    /// started from older code: `--install` and `--start-daemon` keep any daemon that
+    /// answers. Leases survive; the old daemon shuts down the devices it booted.
+    static func restartDaemon() -> AllocatorInstall { runInstaller("--restart-daemon") }
 
     private static func runInstaller(_ arg: String) -> AllocatorInstall {
         guard packageAvailable, let node = resolveNode() else { return .unknown }

@@ -200,8 +200,10 @@ DIPLOMAT_SPAWN_FOCUS_TEST=1 ...                  # E2E that background spawns ke
 DIPLOMAT_DEVICE_DUMP=1   ...                     # device-allocator paths + daemon state, printed, plus the
                                                      #   installed version and what (if anything) has drifted
 DIPLOMAT_ALLOCATOR_TEST=1 ...                    # the launch-time allocator decision: reinstall a stale copy,
-                                                     #   leave an uninstalled one alone. Shells no installer;
-                                                     #   exit code = verdict
+                                                     #   leave an uninstalled one alone; the Devices screen's
+                                                     #   actions against a stand-in installer in a scratch
+                                                     #   dir, and its poll stopping while hidden (flashes a
+                                                     #   2pt window at the screen's edge); exit code = verdict
 DIPLOMAT_MESH_STRAY_TEST=1 ...                   # a launch with the mesh off stops the node state.json names,
                                                      #   and not a reused pid, another dir's node or identity.
                                                      #   Scratch state dirs; exit code = verdict

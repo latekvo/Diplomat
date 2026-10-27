@@ -15,6 +15,7 @@ Also home to the allocator controls Settings builds its own card from.
 
 from __future__ import annotations
 
+import html
 import os
 import time
 from datetime import datetime, timezone
@@ -66,8 +67,17 @@ def _clear(layout) -> None:
             _clear(item.layout())
 
 
-def _note(text: str, tint: str | None = None) -> QLabel:
+def _plain(text: str = "") -> QLabel:
+    """A label that shows its text as it is. Qt's default guesses HTML from the text,
+    and much of what this screen shows (agent names, provider reasons, paths) comes
+    from the daemon or a provider."""
     label = QLabel(text)
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    return label
+
+
+def _note(text: str, tint: str | None = None) -> QLabel:
+    label = _plain(text)
     label.setWordWrap(True)
     label.setStyleSheet(muted(10) if tint is None else f"color: {tint}; font-size: 10px;")
     return label
@@ -109,18 +119,35 @@ def allocator_summary() -> tuple[str, str | None]:
     return "So two agents never drive the same emulator at once.", None
 
 
+PREDATES_POOL_NOTE = ("The running allocator daemon reports no remote pool: it predates "
+                      "one. Update the checkout if it has none either, then Restart daemon.")
+
+#: Twin of ``AllocatorUI.restartHelp`` in DevicesScreen.swift.
+RESTART_HELP = ("Stop the running daemon and start this checkout's. Agents keep their "
+                "leases; a simulator or emulator the allocator booted is shut down as the "
+                "old daemon exits.")
+
+
+def restart_button(store: Store) -> QPushButton:
+    button = QPushButton("Restart daemon")
+    button.setToolTip(RESTART_HELP)
+    button.setEnabled(allocator_ready())
+    button.clicked.connect(store.restart_allocator_daemon_async)
+    return button
+
+
 class AllocatorControls(QWidget):
     """The install's four marks (and the daemon's), what drifted, and the buttons that
-    install, update, uninstall, start the daemon and re-check. :meth:`refresh` takes
-    the installer's latest ``--check``."""
+    install, update, uninstall, start or restart the daemon and re-check.
+    :meth:`refresh` takes the installer's latest ``--check``."""
 
     _MARKS = (("mcpRegistered", "MCP"), ("skillInstalled", "skill"),
               ("ruleInstalled", "rule"), ("claudeMdInjected", "CLAUDE.md"))
 
-    def __init__(self, store: Store, *, offers_start: bool = False) -> None:
+    def __init__(self, store: Store, *, offers_daemon: bool = False) -> None:
         super().__init__()
         self.store = store
-        self._offers_start = offers_start
+        self._offers_daemon = offers_daemon
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(7)
@@ -136,7 +163,7 @@ class AllocatorControls(QWidget):
         marks.addStretch(1)
         col.addLayout(marks)
 
-        self.drift = QLabel("")
+        self.drift = _plain("")
         self.drift.setWordWrap(True)
         self.drift.setStyleSheet(f"color: {_ORANGE}; font-size: 9px; font-family: monospace;")
         col.addWidget(self.drift)
@@ -156,6 +183,8 @@ class AllocatorControls(QWidget):
         self.start.setEnabled(ready)
         self.start.clicked.connect(store.start_allocator_daemon_async)
         buttons.addWidget(self.start)
+        self.restart = restart_button(store)
+        buttons.addWidget(self.restart)
         recheck = QPushButton("⟲")
         recheck.setFixedWidth(34)
         recheck.setToolTip("Re-check status")
@@ -180,7 +209,8 @@ class AllocatorControls(QWidget):
         self.drift.setText("stale: " + ", ".join(str(d) for d in drift) if drift else "")
         self.install.setText("Update" if outdated else "Reinstall" if installed else "Install")
         self.uninstall.setVisible(installed)
-        self.start.setVisible(self._offers_start and installed and not running)
+        self.start.setVisible(self._offers_daemon and installed and not running)
+        self.restart.setVisible(self._offers_daemon and installed and running)
 
 
 class _IdleLimitSlider(SliderSetting):
@@ -248,7 +278,7 @@ def remote_pill(r: da.RemoteStatus | None, *, snapshot: bool) -> tuple[str, str]
 
 def _link(text: str, url: str, px: int, *, mono: bool = False) -> QLabel:
     family = " font-family: monospace;" if mono else ""
-    label = QLabel(f'<a href="{url}">{text}</a>')
+    label = QLabel(f'<a href="{html.escape(url)}">{html.escape(text)}</a>')
     label.setTextFormat(Qt.TextFormat.RichText)
     label.setOpenExternalLinks(True)
     label.setStyleSheet(f"font-size: {px}px;{family}")
@@ -267,10 +297,10 @@ def _remote_status_view(status: da.RemoteStatus) -> QWidget:
     col.setSpacing(4)
     head = QHBoxLayout()
     head.setSpacing(6)
-    name = QLabel(status.provider or "provider")
+    name = _plain(status.provider or "provider")
     name.setStyleSheet("font-size: 11px; font-weight: 600;")
     head.addWidget(name)
-    state = QLabel(status.state)
+    state = _plain(status.state)
     state.setStyleSheet(muted(9, mono=True))
     head.addWidget(state)
     head.addStretch(1)
@@ -295,11 +325,11 @@ def _remote_status_view(status: da.RemoteStatus) -> QWidget:
     for key, value in status.extras:
         row = QHBoxLayout()
         row.setSpacing(6)
-        k = QLabel(key)
+        k = _plain(key)
         k.setStyleSheet(muted(9, mono=True))
         k.setMinimumWidth(70)
         row.addWidget(k)
-        v = QLabel(value)
+        v = _plain(value)
         v.setWordWrap(True)
         v.setStyleSheet("font-size: 9px; font-family: monospace;")
         row.addWidget(v, 1)
@@ -339,15 +369,15 @@ def _call_line(call: RemoteCall, label: str, running: str) -> QWidget | None:
         rl = QHBoxLayout(row)
         rl.setContentsMargins(6, 3, 6, 3)
         rl.setSpacing(6)
-        name = QLabel(d.name or d.id)
+        name = _plain(d.name or d.id)
         name.setStyleSheet("font-size: 10px;")
         rl.addWidget(name)
-        specs = QLabel(_specs(d))
+        specs = _plain(_specs(d))
         specs.setStyleSheet(muted(9))
         rl.addWidget(specs)
         rl.addStretch(1)
         if d.state:
-            state = QLabel(d.state)
+            state = _plain(d.state)
             state.setStyleSheet(muted(9, bold=True))
             rl.addWidget(state)
         col.addWidget(row)
@@ -358,7 +388,7 @@ def _call_line(call: RemoteCall, label: str, running: str) -> QWidget | None:
 
 def _badge(dev: dict) -> QLabel:
     text, color = da.status_badge(dev)
-    badge = QLabel(text)
+    badge = _plain(text)
     badge.setStyleSheet(
         f"color: {color}; font-weight: 700; font-size: 9px;"
         f" background-color: {tint_bg(color, 0.14)}; border-radius: 7px; padding: 2px 6px;"
@@ -398,17 +428,17 @@ class DeviceScreenRow(QWidget):
         text.setSpacing(2)
         name_row = QHBoxLayout()
         name_row.setSpacing(4)
-        name = QLabel(dev.get("name") or dev.get("handle") or key)
+        name = _plain(dev.get("name") or dev.get("handle") or key)
         name.setStyleSheet("font-size: 11px; font-weight: 700;")
         name_row.addWidget(name)
         for field in ("version", "format"):
             if dev.get(field):
-                extra = QLabel(str(dev[field]))
+                extra = _plain(str(dev[field]))
                 extra.setStyleSheet(muted(9))
                 name_row.addWidget(extra)
         chip_text = (f"remote · {provider}" if provider else "remote") if remote else "local"
         chip_tint = _INDIGO if remote else _GREY
-        chip = QLabel(chip_text)
+        chip = _plain(chip_text)
         chip.setStyleSheet(
             f"color: {chip_tint}; background-color: {tint_bg(chip_tint, 0.14)};"
             " border-radius: 6px; padding: 0px 5px; font-size: 8px; font-weight: 700;")
@@ -420,18 +450,18 @@ class DeviceScreenRow(QWidget):
         if status != "repairing" and pid is not None:
             holder = QHBoxLayout()
             holder.setSpacing(6)
-            who = QLabel(f"● {owner.get('agentName') or f'pid {pid}'}")
+            who = _plain(f"● {owner.get('agentName') or f'pid {pid}'}")
             who.setStyleSheet(f"color: {tint}; font-size: 9px; font-weight: 600;")
             holder.addWidget(who)
             started = dev.get("allocatedAt")
             if isinstance(started, (int, float)):
-                held = QLabel(f"since {_clock(started / 1000)} "
+                held = _plain(f"since {_clock(started / 1000)} "
                               f"({Fmt.duration(time.time() - started / 1000)})")
                 held.setStyleSheet(muted(9))
                 holder.addWidget(held)
             minutes = da.idle_minutes(dev)
             if minutes is not None:
-                idle = QLabel(f"idle {minutes}m")
+                idle = _plain(f"idle {minutes}m")
                 color = da.idle_color(minutes, idle_limit)
                 idle.setStyleSheet(muted(9) if color is None
                                    else f"color: {color}; font-size: 9px;")
@@ -443,7 +473,7 @@ class DeviceScreenRow(QWidget):
         text.addWidget(handle)
         if status == "repairing":
             reason = dev.get("brokenReason")
-            repair = QLabel(f"repair: {reason}" if reason else "repair dispatched")
+            repair = _plain(f"repair: {reason}" if reason else "repair dispatched")
             repair.setWordWrap(True)
             repair.setStyleSheet(f"color: {_PURPLE}; font-size: 9px;")
             text.addWidget(repair)
@@ -531,7 +561,7 @@ class DevicesView(QWidget):
         root.setSpacing(12)
         root.addLayout(self._build_header())
 
-        self._save_error = QLabel("")
+        self._save_error = _plain("")
         self._save_error.setWordWrap(True)
         self._save_error.setStyleSheet(f"color: {_RED}; font-size: 11px;")
         self._save_error.hide()
@@ -619,16 +649,16 @@ class DevicesView(QWidget):
         row.setContentsMargins(2, 0, 2, 0)
         row.setSpacing(6)
         row.addWidget(GlyphLabel(glyphs.G_DEVICES, 16, glyphs.MUTED, font_px=14))
-        title = QLabel("Devices")
+        title = _plain("Devices")
         title.setStyleSheet("font-weight: 700; font-size: 13px;")
         row.addWidget(title)
-        self._counts = QLabel("")
+        self._counts = _plain("")
         self._counts.setStyleSheet(muted(10, mono=True))
         row.addWidget(self._counts)
         row.addStretch(1)
-        self._dot = QLabel("●")
+        self._dot = _plain("●")
         row.addWidget(self._dot)
-        self._light = QLabel("")
+        self._light = _plain("")
         self._light.setStyleSheet(muted(9))
         row.addWidget(self._light)
         done = QPushButton("Done")
@@ -721,7 +751,7 @@ class DevicesView(QWidget):
         self._daemon_pill = Pill("")
         self._daemon_row = SettingRow("Daemon", self._daemon_pill)
         body.addWidget(self._daemon_row)
-        self.allocator_controls = AllocatorControls(self.store, offers_start=True)
+        self.allocator_controls = AllocatorControls(self.store, offers_daemon=True)
         summary, tint = allocator_summary()
         reserve = SettingRow("Reserve a simulator before using it", self.allocator_controls,
                              stacked=True)
@@ -888,9 +918,11 @@ class DevicesView(QWidget):
         elif remote is not None:
             self._status_col.addWidget(_remote_status_view(remote))
         elif self.store.device_remote_provider.strip():
-            self._status_col.addWidget(_note(
-                "The running allocator reports no remote pool: it predates one. Update "
-                "the checkout, then reinstall the allocator.", _ORANGE))
+            self._status_col.addWidget(_note(PREDATES_POOL_NOTE, _ORANGE))
+            row = QHBoxLayout()
+            row.addWidget(restart_button(self.store))
+            row.addStretch(1)
+            self._status_col.addLayout(row)
         else:
             self._status_col.addWidget(_note("No remote pool configured."))
 
@@ -913,7 +945,7 @@ class DevicesView(QWidget):
         _clear(self._leases_col)
         leases = [d for d in (state or {}).get("devices", []) if da.is_remote(d)]
         if leases:
-            head = QLabel(f"LEASED HERE · {len(leases)}")
+            head = _plain(f"LEASED HERE · {len(leases)}")
             head.setStyleSheet(muted(9, bold=True) + " letter-spacing: 0.5px;")
             self._leases_col.addWidget(head)
         for dev in leases:
@@ -921,16 +953,16 @@ class DevicesView(QWidget):
             row.setSpacing(6)
             glyph, tint = _platform(dev)
             row.addWidget(GlyphLabel(glyph, 12, tint, font_px=9))
-            name = QLabel(dev.get("name") or dev.get("key", ""))
+            name = _plain(dev.get("name") or dev.get("key", ""))
             name.setStyleSheet("font-size: 10px;")
             row.addWidget(name)
-            handle = QLabel(dev.get("handle") or "attaching")
+            handle = _plain(dev.get("handle") or "attaching")
             handle.setStyleSheet(muted(9, mono=True))
             row.addWidget(handle)
             row.addStretch(1)
             who = (dev.get("owner") or {}).get("agentName")
             if who:
-                agent = QLabel(who)
+                agent = _plain(who)
                 agent.setStyleSheet(muted(9))
                 row.addWidget(agent)
             row.addWidget(_badge(dev))

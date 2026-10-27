@@ -17,12 +17,18 @@ import DiplomatCore
 struct DevicesScreen: View {
     @EnvironmentObject var store: Store
     @Binding var isPresented: Bool
-    /// Whether the screen keeps the install status fresh while it is up. Off in a
-    /// render, whose seeded status a real `--check` would overwrite.
+    /// Whether the screen keeps the install status and the provider fresh while it is
+    /// on screen. Off in a render, whose seeded state a real read would overwrite.
     var live: Bool = !Headless.isRender
+    var pollNanoseconds: UInt64 = 15_000_000_000
 
     /// The provider field while it is being edited; nil shows the stored value.
     @State private var providerDraft: String?
+    /// Why the last provider change did not reach config.json.
+    @State private var saveError: String?
+    /// MenuBarExtra hides the popover without tearing this view down, so the poll
+    /// follows the window rather than the view's lifetime.
+    @State private var onScreen = false
     @State private var inUseExpanded = true
     @State private var freeExpanded = true
 
@@ -43,12 +49,21 @@ struct DevicesScreen: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .task {
-            guard live else { return }
+        // Live only: a render's ImageRenderer draws an AppKit view as a placeholder.
+        .background {
+            if live {
+                WindowVisibility { shown in
+                    DispatchQueue.main.async { if onScreen != shown { onScreen = shown } }
+                }
+            }
+        }
+        .task(id: onScreen) {
+            guard live, onScreen else { return }
             // `daemonRunning` comes from `--check` alone, which no poll runs.
             while !Task.isCancelled {
+                store.reloadDeviceRemoteProvider()
                 await store.refreshAllocatorInstall()
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                try? await Task.sleep(nanoseconds: pollNanoseconds)
             }
         }
     }
@@ -126,7 +141,7 @@ struct DevicesScreen: View {
 
     /// The feed's allocator lines. An `auto` kill-device line is the agent reaper
     /// closing a window, not a device, so it stays out.
-    private static let eventActions: Set<String> = [
+    static let eventActions: Set<String> = [
         "kill-device", "release-device", "repair-done", "remote-lease-ended",
         "allocator-install", "allocator-uninstall",
     ]
@@ -160,7 +175,7 @@ struct DevicesScreen: View {
                        summary: AllocatorUI.summary, stacked: true) {
                 VStack(alignment: .leading, spacing: 7) {
                     AllocatorMarks(status: s)
-                    AllocatorButtons(status: s, offersStart: true)
+                    AllocatorButtons(status: s, offersDaemon: true)
                 }
             }
             AllocatorIdleLimits()
@@ -190,6 +205,9 @@ struct DevicesScreen: View {
                      pill: RemoteUI.pill(remote, snapshot: store.deviceState != nil)) {
             SettingRow(title: "Provider module", summary: providerSummary, stacked: true) {
                 providerField
+            }
+            if let saveError {
+                note(saveError, tint: .red)
             }
             remoteStatusBlock
             SettingRow(title: "Pool", stacked: true) { remoteCalls }
@@ -221,7 +239,7 @@ struct DevicesScreen: View {
             if !draft.isEmpty {
                 Button {
                     providerDraft = nil
-                    store.deviceRemoteProvider = ""
+                    save("")
                 } label: { Image(systemName: "xmark.circle.fill") }
                 .buttonStyle(.borderless).foregroundStyle(.secondary)
                 .help("Clear: turn the remote pool off")
@@ -239,8 +257,17 @@ struct DevicesScreen: View {
     /// path the file names on its next request, half-typed or not.
     private func applyProvider() {
         guard let d = providerDraft else { return }
-        store.deviceRemoteProvider = d.trimmingCharacters(in: .whitespacesAndNewlines)
-        providerDraft = nil
+        if save(d) { providerDraft = nil }
+    }
+
+    /// Write one provider change and say whether it landed; a failure stays on screen
+    /// until a change lands.
+    @discardableResult
+    private func save(_ provider: String) -> Bool {
+        let ok = store.setDeviceRemoteProvider(provider)
+        saveError = ok ? nil : "⚠ Couldn't save that change to \(AppConfig.url.path), so it has "
+            + "no effect until it is made again."
+        return ok
     }
 
     private func chooseProvider() {
@@ -253,7 +280,7 @@ struct DevicesScreen: View {
         NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url {
             providerDraft = nil
-            store.deviceRemoteProvider = url.path
+            save(url.path)
         }
     }
 
@@ -263,12 +290,13 @@ struct DevicesScreen: View {
             note("No snapshot from the allocator yet, so no remote status either.")
         } else if let r = remote {
             RemoteStatusView(status: r)
+        } else if storedProvider.isEmpty {
+            note("No remote pool configured.")
         } else {
-            note(storedProvider.isEmpty
-                 ? "No remote pool configured."
-                 : "The running allocator reports no remote pool: it predates one. Update the "
-                   + "checkout, then reinstall the allocator.",
-                 tint: storedProvider.isEmpty ? .secondary : .orange)
+            VStack(alignment: .leading, spacing: 6) {
+                note(AllocatorUI.predatesPoolNote, tint: .orange)
+                RestartDaemonButton()
+            }
         }
     }
 
@@ -677,6 +705,14 @@ enum AllocatorUI {
 
     static var ready: Bool { DeviceAllocator.packageAvailable && DeviceAllocator.nodeAvailable }
 
+    static let predatesPoolNote = "The running allocator daemon reports no remote pool: it "
+        + "predates one. Update the checkout if it has none either, then Restart daemon."
+
+    /// Twin of `devicesview.RESTART_HELP`.
+    static let restartHelp = "Stop the running daemon and start this checkout's. Agents keep "
+        + "their leases; a simulator or emulator the allocator booted is shut down as the old "
+        + "daemon exits."
+
     static var summary: String {
         if !DeviceAllocator.packageAvailable {
             return "⚠ Package not found at \(DeviceAllocator.packageDir). Set "
@@ -714,11 +750,23 @@ struct AllocatorMarks: View {
     }
 }
 
+struct RestartDaemonButton: View {
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        Button { Task { await store.restartAllocatorDaemon() } } label: { Text("Restart daemon") }
+            .buttonStyle(.bordered).controlSize(.small)
+            .disabled(!AllocatorUI.ready)
+            .help(AllocatorUI.restartHelp)
+    }
+}
+
 struct AllocatorButtons: View {
     @EnvironmentObject var store: Store
     let status: AllocatorInstall?
-    /// Offer to start a daemon that an installed allocator has not got running.
-    var offersStart = false
+    /// Offer to start a daemon that an installed allocator has not got running, and to
+    /// restart one that is.
+    var offersDaemon = false
 
     var body: some View {
         let s = status
@@ -733,10 +781,13 @@ struct AllocatorButtons: View {
                 Button { Task { await store.uninstallAllocator() } } label: { Text("Uninstall") }
                     .buttonStyle(.bordered).controlSize(.small)
             }
-            if offersStart, let s, s.installed, !s.daemonRunning {
+            if offersDaemon, let s, s.installed, !s.daemonRunning {
                 Button { Task { await store.startAllocatorDaemon() } } label: { Text("Start daemon") }
                     .buttonStyle(.bordered).controlSize(.small)
                     .disabled(!AllocatorUI.ready)
+            }
+            if offersDaemon, let s, s.installed, s.daemonRunning {
+                RestartDaemonButton()
             }
             Button { Task { await store.refreshAllocatorInstall() } } label: {
                 Image(systemName: "arrow.clockwise")
@@ -780,5 +831,41 @@ struct AllocatorIdleLimits: View {
                           minLabel: "never", maxLabel: "\(range.upperBound) min",
                           tint: .cyan)
         }
+    }
+}
+
+/// Reports whether the window around it is on screen, now and on every change.
+struct WindowVisibility: NSViewRepresentable {
+    let onChange: (Bool) -> Void
+
+    func makeNSView(context: Context) -> Reader {
+        let view = Reader()
+        view.onChange = onChange
+        return view
+    }
+
+    func updateNSView(_ view: Reader, context: Context) { view.onChange = onChange }
+
+    final class Reader: NSView {
+        var onChange: (Bool) -> Void = { _ in }
+        private var token: NSObjectProtocol?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            token.map(NotificationCenter.default.removeObserver)
+            token = nil
+            if let window {
+                token = NotificationCenter.default.addObserver(
+                    forName: NSWindow.didChangeOcclusionStateNotification, object: window,
+                    queue: .main) { [weak self] _ in self?.report() }
+            }
+            report()
+        }
+
+        private func report() {
+            onChange(window.map { $0.isVisible && $0.occlusionState.contains(.visible) } ?? false)
+        }
+
+        deinit { token.map(NotificationCenter.default.removeObserver) }
     }
 }

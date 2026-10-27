@@ -3118,10 +3118,11 @@ class Store(QObject):
 
     def mark_device_repaired_async(self, key: str) -> None:
         """End a device's quarantine (Devices → Repaired). The daemon logs the
-        success itself; only a refusal is this applet's to report."""
+        success itself; only a refusal is this applet's to report, under the daemon's
+        action so the Devices screen's Recent card shows it."""
         def work() -> None:
             if not deviceallocator.mark_repaired(key):
-                activity.log("panel", "warn", f"Mark-repaired FAILED for device {key}")
+                activity.log("panel", "repair-done", f"Repaired FAILED for device {key}")
             self._after_device_action()
         self.start_background(work)
 
@@ -3157,10 +3158,26 @@ class Store(QObject):
     def start_allocator_daemon_async(self) -> None:
         def work() -> None:
             result = deviceallocator.start_daemon()
-            self.allocator_install = result
+            self.allocator_install = deviceallocator.with_install_status(
+                result, self.allocator_install)
             running = "true" if (result or {}).get("daemonRunning") else "false"
             activity.log("panel", "allocator-install",
                          f"Started the device-allocator daemon (ok: {running})")
+            self.allocator_changed.emit()
+            self._after_device_action()
+        self.start_background(work)
+
+    def restart_allocator_daemon_async(self) -> None:
+        """Devices → Restart daemon: replace the running daemon with this checkout's."""
+        def work() -> None:
+            result = deviceallocator.restart_daemon()
+            self.allocator_install = deviceallocator.with_install_status(
+                result, self.allocator_install)
+            error = (result or {}).get("error")
+            ok = "true" if (result or {}).get("daemonRunning") and not error else "false"
+            activity.log("panel", "allocator-install",
+                         f"Restarted the device-allocator daemon (ok: {ok})"
+                         + (f": {error}" if error else ""))
             self.allocator_changed.emit()
             self._after_device_action()
         self.start_background(work)
@@ -3224,19 +3241,26 @@ class Store(QObject):
     def install_allocator_async(self) -> None:
         def work() -> None:
             deviceallocator.ensure_deps()
-            self.allocator_install = deviceallocator.install()
+            result = deviceallocator.install()
+            self.allocator_install = result
             self.allocator_setup_done = True
+            ok = "true" if (result or {}).get("installed") else "false"
+            activity.log("panel", "allocator-install", f"Installed device allocator (ok: {ok})")
             self.allocator_changed.emit()
-            self.refresh_device_state()
+            self._after_device_action()
         self.start_background(work)
 
     def uninstall_allocator_async(self) -> None:
         def work() -> None:
-            self.allocator_install = deviceallocator.uninstall()
+            result = deviceallocator.uninstall()
+            self.allocator_install = result
             # An explicit uninstall is a settled choice — don't auto-reinstall.
             self.allocator_setup_done = True
+            ok = "true" if result is not None and result.get("installed") is False else "false"
+            activity.log("panel", "allocator-uninstall",
+                         f"Uninstalled device allocator (ok: {ok})")
             self.allocator_changed.emit()
-            self.refresh_device_state()
+            self._after_device_action()
         self.start_background(work)
 
     # MARK: self-update

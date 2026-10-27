@@ -25,7 +25,7 @@ from diplomat_app import deviceallocator as da
 pytest.importorskip("PySide6")
 
 ROW = {"key": "ios:A", "platform": "ios", "name": "iPhone", "status": "free"}
-NO_POOL = "this allocator has no remote device pool — update it"
+NO_POOL = "this allocator has no remote device pool — update it, then restart its daemon"
 
 
 @pytest.fixture
@@ -340,6 +340,101 @@ def test_a_headless_run_never_writes_the_provider(monkeypatch):
     assert not appconfig.path().exists()
 
 
+#: What ``install.js --start-daemon`` prints: no ``installed`` key.
+START_REPLY = {"action": "start-daemon", "mcpRegistered": True, "skillInstalled": True,
+               "ruleInstalled": True, "claudeMdInjected": True, "daemonRunning": True,
+               "version": "0.1.0", "drift": [], "outdated": False}
+INSTALLED = {**START_REPLY, "action": "check", "daemonRunning": False, "installed": True}
+
+
+@pytest.mark.parametrize("started", [True, False])
+def test_starting_the_daemon_keeps_the_install_status(app, monkeypatch, started):
+    from diplomat_app.store import Store
+
+    monkeypatch.setattr(da, "start_daemon", lambda: {**START_REPLY, "daemonRunning": started})
+    store = Store()
+    store.allocator_install = INSTALLED
+    store.start_allocator_daemon_async()
+    assert store.wait_for_background(5) == []
+    assert store.allocator_install["installed"] is True
+    assert store.allocator_install["daemonRunning"] is started
+    assert activity.read()[0].detail == \
+        f"Started the device-allocator daemon (ok: {'true' if started else 'false'})"
+
+
+def test_a_reply_that_reports_the_install_status_is_taken_as_it_says():
+    assert da.with_install_status({**START_REPLY, "installed": False}, INSTALLED)["installed"] \
+        is False
+    assert da.with_install_status(START_REPLY, None) == START_REPLY
+    assert da.with_install_status(None, INSTALLED) is None
+
+
+def test_a_restart_shells_the_installer_and_reports_what_happened(app, monkeypatch):
+    from diplomat_app.store import Store
+
+    shelled = []
+    replies = iter([
+        {**START_REPLY, "action": "restart-daemon", "installed": True},
+        {**START_REPLY, "action": "restart-daemon", "installed": True, "daemonRunning": False,
+         "error": "the running daemon (pid 9) did not exit within 60 s"},
+    ])
+    monkeypatch.setattr(da, "_run_installer", lambda arg: shelled.append(arg) or next(replies))
+    store = Store()
+    for _ in range(2):
+        store.restart_allocator_daemon_async()
+        assert store.wait_for_background(5) == []
+    assert shelled == ["--restart-daemon"] * 2
+    assert [e.detail for e in activity.read()][:2] == [
+        "Restarted the device-allocator daemon (ok: false): the running daemon (pid 9) did "
+        "not exit within 60 s",
+        "Restarted the device-allocator daemon (ok: true)"]
+
+
+def test_a_failed_repaired_shows_on_the_screens_recent_card(app, monkeypatch):
+    from diplomat_app.devicesview import allocator_events
+    from diplomat_app.store import Store
+
+    monkeypatch.setattr(da, "mark_repaired", lambda key: False)
+    store = Store()
+    store.mark_device_repaired_async("appletv:ATV1")
+    assert store.wait_for_background(5) == []
+    assert [e.detail for e in allocator_events(activity.read())] == \
+        ["Repaired FAILED for device appletv:ATV1"]
+
+
+@pytest.mark.parametrize("outcome, line", [
+    ({"installed": True}, "Installed device allocator (ok: true)"),
+    ({"installed": False}, "Installed device allocator (ok: false)"),
+    (None, "Installed device allocator (ok: false)"),
+])
+def test_an_install_is_logged_with_what_really_happened(app, monkeypatch, outcome, line):
+    from diplomat_app.devicesview import allocator_events
+    from diplomat_app.store import Store
+
+    monkeypatch.setattr(da, "ensure_deps", lambda: True)
+    monkeypatch.setattr(da, "install", lambda: outcome)
+    store = Store()
+    store.install_allocator_async()
+    assert store.wait_for_background(5) == []
+    assert [e.detail for e in allocator_events(activity.read())] == [line]
+
+
+@pytest.mark.parametrize("outcome, line", [
+    ({"installed": False}, "Uninstalled device allocator (ok: true)"),
+    ({"installed": True}, "Uninstalled device allocator (ok: false)"),
+    (None, "Uninstalled device allocator (ok: false)"),
+])
+def test_an_uninstall_is_logged_with_what_really_happened(app, monkeypatch, outcome, line):
+    from diplomat_app.devicesview import allocator_events
+    from diplomat_app.store import Store
+
+    monkeypatch.setattr(da, "uninstall", lambda: outcome)
+    store = Store()
+    store.uninstall_allocator_async()
+    assert store.wait_for_background(5) == []
+    assert [e.detail for e in allocator_events(activity.read())] == [line]
+
+
 # MARK: the screen
 
 def _texts(widget) -> list[str]:
@@ -426,6 +521,67 @@ def test_the_screen_with_the_daemon_off_and_no_snapshot(screen):
     assert view._remote_pill.text() == "unknown"
     assert view._light.text() == "daemon not running"
     assert "Start daemon" in _buttons(view)
+    assert "Restart daemon" not in _buttons(view)
+
+
+def test_a_running_daemon_can_be_restarted_from_the_allocator_card(screen):
+    view = screen("devices-screen")
+    controls = view.allocator_controls
+    assert controls.restart.isVisibleTo(view) and not controls.start.isVisibleTo(view)
+    assert "leases" in controls.restart.toolTip()
+
+
+def test_a_daemon_predating_the_pool_is_offered_a_restart_where_the_screen_says_so(
+        screen, monkeypatch):
+    from PySide6.QtWidgets import QPushButton
+    from diplomat_app import devicesview
+    from diplomat_app.store import Store
+
+    restarts = []
+    monkeypatch.setattr(Store, "restart_allocator_daemon_async",
+                        lambda self: restarts.append(self))
+    view = screen("devices-screen")
+    view.store.device_remote_provider = "~/pool/provider.mjs"
+    view.rebuild()
+    assert devicesview.PREDATES_POOL_NOTE in _texts(view)
+    assert "reinstall" not in devicesview.PREDATES_POOL_NOTE
+    in_note = [b for b in view.findChildren(QPushButton)
+               if b.text() == "Restart daemon" and b is not view.allocator_controls.restart]
+    assert len(in_note) == 1
+    in_note[0].click()
+    assert restarts == [view.store]
+
+
+def test_text_from_the_daemon_and_the_provider_is_never_read_as_html(screen):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel
+    from diplomat_app.store import RemoteCall
+
+    view = screen("devices-screen-remote-away")
+    store = view.store
+    state = store.device_state
+    tag = "<table>"
+    state["devices"][0] = {**state["devices"][0], "name": f"iPhone {tag}", "owner": {
+        "agentName": f"fix the {tag} layout", "ownerPid": 7}}
+    state["remote"] = da.RemoteStatus(
+        state=f"weird{tag}", provider=f"pool{tag}", reason=f"HTTP 502: <html>{tag}</html>",
+        url="https://h/a?b=<i>", extras=((f"k{tag}", f"v{tag}"),))
+    store.remote_listing = RemoteCall(reply=da.RemoteReply(devices=(da.RemotePoolDevice(
+        id="x", name=f"S24 {tag}", state=f"leased{tag}"),)), at=0.0)
+    store.audit_entries = [activity.AuditEntry("2026-07-03T09:14:00Z", "panel",
+                                               "release-device", f"Freed it from x {tag}")]
+    view.rebuild()
+    labels = [lb for lb in view.findChildren(QLabel)
+              if any(t in lb.text() for t in (tag, "<i>", "&lt;i&gt;"))]
+    shown = {lb.text() for lb in labels if lb.textFormat() == Qt.TextFormat.PlainText}
+    assert {f"● fix the {tag} layout", f"⚠ HTTP 502: <html>{tag}</html>", f"k{tag}",
+            f"v{tag}", f"pool{tag}", f"S24 {tag}", f"leased{tag}", f"iPhone {tag}",
+            f"Freed it from x {tag}", f"weird{tag}"} <= shown, shown
+    # The one label that is rich text on purpose, the link, carries the text escaped.
+    rich = [lb for lb in labels if lb.textFormat() != Qt.TextFormat.PlainText]
+    assert [lb.text() for lb in rich] == \
+        ['<a href="https://h/a?b=&lt;i&gt;">https://h/a?b=&lt;i&gt;</a>']
+    assert view._remote_pill.textFormat() == Qt.TextFormat.PlainText
 
 
 def test_a_rows_actions_are_only_what_the_daemon_does_for_it(app):
@@ -465,7 +621,7 @@ def test_idle_time_is_coloured_toward_the_configured_leased_limit(app):
     assert da.idle_color(20, 30) == "#FF9500"
     assert da.idle_color(19, 30) is None
     assert da.idle_color(500, 0) is None
-    # Under the default 15-minute reading this would already be red.
+    # The thresholds scale with the limit: 14 minutes is quiet under a long one.
     assert da.idle_color(14, 240) is None
     assert da.idle_minutes({"idleMs": 59_999}) is None
     assert da.idle_minutes({"idleMs": 60_000}) == 1
