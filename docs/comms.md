@@ -29,8 +29,8 @@ its own switch in Settings.
 
 Nothing Comms queues jumps the machine: the [task cap](automation.md#autonomous-monitors), the
 [spending budget](automation.md#the-spending-budget) and the ban list hold it exactly as they hold a
-monitor's work, and a queued row can be dragged or cancelled like any other. Comms work runs on this
-machine only; the mesh never sees it.
+monitor's work, and a queued row can be dragged or cancelled like any other. What Comms queues runs
+on this machine only; a review it hands to a monitor's find goes wherever that find was going.
 
 ## The Comms screen
 
@@ -59,7 +59,7 @@ Slack text is written by other people, so Comms treats it as data from end to en
 - Your own messages, bots, and people from other organisations (Slack Connect) are never pinged. A
   **sender allowlist** narrows it to the people you name.
 - The **Investigate** agent's prompt quotes the message between untrusted-data markers - a message
-  cannot close them early, however it spells the marker - and forbids,
+  cannot close them early: every line of it is quoted - and forbids,
   whatever the message says: pushing, any GitHub write (PRs, issues, reviews, comments), posting
   anywhere, and touching secrets. It works in its own worktree and its deliverable is the report
   file - what you do with it is yours to decide.
@@ -125,9 +125,11 @@ All of them are on the **Comms (Slack)** card.
   trimmed to its newest half past 2 MB.
 - `reports/<id>.md` - the investigations' reports.
 
-To check a token and see what triage would do with the last hour of Slack, without queueing
-anything or touching the files above: `DIPLOMAT_COMMS_POLL=1 ./Diplomat.app/Contents/MacOS/Diplomat`
-(Linux: `DIPLOMAT_COMMS_POLL=1 ./diplomat`). It exits non-zero when the poll fails.
+To check a token and see what triage would do with the last hour of Slack (its oldest eight
+messages, as one poll would), without queueing anything or touching the files above:
+`DIPLOMAT_COMMS_POLL=1 ./Diplomat.app/Contents/MacOS/Diplomat` (Linux: `DIPLOMAT_COMMS_POLL=1
+./diplomat`). It exits non-zero when the poll fails. With `DIPLOMAT_COMMS_DIR` set it polls that
+directory instead, and moves its watermark like a real poll.
 
 ## Limits
 

@@ -183,7 +183,8 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   scratch dir); telemetry-panel (the same inside the panel)
                                                      #   comms (the Comms screen over a synthetic events.jsonl in a
                                                      #   scratch dir); comms-panel; comms-badge (the main panel with
-                                                     #   unread pings); comms-empty (no token yet)
+                                                     #   unread pings); comms-empty (no token yet);
+                                                     #   settings-comms-error (the Comms card's failing pill)
                                                      #   popover (REAL NSWindow snapshot incl. the legacy
                                                      #   scroller - pair with DIPLOMAT_POPOVER_CAP=400
                                                      #   to force the scrolling state)
@@ -334,7 +335,7 @@ packages/
                                  so the Linux front-end shells out for Review/Issues/Conflicts/Audit prompts
                                  instead of reimplementing them; `tool-data` and `telemetry` expose the two
                                  engines the Linux side reimplements, so the parity tests can diff them;
-                                 `comms-tick`, `comms-feed` and `comms-effect` run Comms for the Linux applet
+                                 `comms-tick`, `comms-auth`, `comms-feed` and `comms-effect` run Comms for the Linux applet
 
   diplomat-runtime/            ← the platform-neutral Python half: the twin of diplomat-core plus
                                  everything below the UI that has no Swift counterpart
