@@ -53,6 +53,55 @@ for kind in ToolKind.allCases {
     check(kind.systemImage != "questionmark.circle", "catalog sfSymbol missing for \(kind.rawValue)")
 }
 
+section("free-disk floor")
+// Python twin: test_diskfloor.py asserts the same numbers and wording.
+check(DiskFloor.floor(env: [:]) == 5 << 30,
+      "the floor is config.json's 5 GiB, got \(String(describing: DiskFloor.floor(env: [:])))")
+check(DiskFloor.floor(env: [DiskFloor.envOverride: "64"]) == 64 << 20,
+      "the override is in MiB")
+check(DiskFloor.floor(env: [DiskFloor.envOverride: "0"]) == 0, "an override of 0 turns it off")
+for junk in ["", "-1", "+64", " 64", "5GiB", "1.5"] {
+    check(DiskFloor.floor(env: [DiskFloor.envOverride: junk]) == 5 << 30,
+          "an override that is not a whole MiB count falls back to the asset: \(junk)")
+}
+for huge in ["9223372036854775807", "99999999999999999999999"] {
+    check(DiskFloor.floor(env: [DiskFloor.envOverride: huge]).map { $0 > 1 << 60 } == true,
+          "an override past what Int64 holds is a floor no disk passes: \(huge)")
+}
+let diskTmp = FileManager.default.temporaryDirectory.path
+check((DiskFloor.free(at: diskTmp) ?? 0) > 0, "the temp dir's volume reads")
+check(DiskFloor.free(at: diskTmp + "/diplomat-no-such/deeper") != nil,
+      "a path not made yet reads its nearest existing ancestor's volume")
+let tmpReading = DiskFloor.lowest(of: [diskTmp], env: [DiskFloor.envOverride: "1"])
+check(tmpReading?.path == diskTmp && tmpReading?.floor == 1 << 20 && tmpReading?.low == false,
+      "a reading names its path and floor, got \(String(describing: tmpReading))")
+check(DiskFloor.size(5 << 30) == "5.0 GiB" && DiskFloor.size(1_288_490_189) == "1.2 GiB",
+      "GiB to one decimal")
+check(DiskFloor.size(0) == "0 MiB" && DiskFloor.size((1 << 30) - 1) == "1023 MiB",
+      "whole MiB under a GiB")
+check(DiskFloor.describe(.init(path: "/v", free: 3 << 20, floor: 5 << 30))
+      == "3 MiB free on /v, below the 5.0 GiB floor", "the reason line")
+check(DiskFloor.Reading(path: "/v", free: 5 << 30, floor: 5 << 30).low == false
+      && DiskFloor.Reading(path: "/v", free: (5 << 30) - 1, floor: 5 << 30).low,
+      "exactly the floor is enough, a byte under is not")
+check(DiskFloor.floor(env: [:], asset: 2.5) == 5 << 29, "the asset is in GiB")
+check(DiskFloor.floor(env: [:], asset: 1e10) == .max,
+      "an asset floor past what Int64 holds is one no disk passes, not a trap")
+for junk in [-1, .nan, .infinity] as [Double] {
+    check(DiskFloor.floor(env: [:], asset: junk) == nil, "an asset floor of \(junk) is none")
+}
+// The floor rides in config.json beside the repo coordinates, and a bad one must not
+// take them down with it: `diskfloor.floor` ignores it, and `config()` still answers.
+for value in ["\"5\"", "true", "null", "[5]"] {
+    let raw = #"{"owner": "o", "repo": "r", "minFreeDiskGiB": "# + value + "}"
+    let cfg = try? JSONDecoder().decode(CoreAssets.Config.self, from: Data(raw.utf8))
+    check(cfg?.owner == "o" && cfg?.repo == "r" && cfg?.minFreeDiskGiB == nil,
+          "a minFreeDiskGiB of \(value) drops only the floor, got \(String(describing: cfg))")
+}
+check((try? JSONDecoder().decode(CoreAssets.Config.self,
+                                 from: Data(#"{"owner": "o", "repo": "r"}"#.utf8)))
+          .map { $0.minFreeDiskGiB == nil } == true, "no minFreeDiskGiB is no floor")
+
 section("filters on synthetic fixture")
 let now = Date()
 let old = now.addingTimeInterval(-15 * 86400)
@@ -1522,6 +1571,22 @@ check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
                                meshStandsDown: true, atCapacity: false,
                                unaffordable: true) == .unaffordable,
       "the budget outranks mesh, for the reason capacity does")
+check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
+                               meshStandsDown: false, atCapacity: false,
+                               lowDisk: true) == .lowDisk,
+      "the free-disk floor gates auto dispatch")
+check(AgentDispatchGate.decide(source: .panel, banned: false, agentOnPR: false,
+                               meshStandsDown: false, atCapacity: false,
+                               lowDisk: true) == .proceed,
+      "one agent on a tight disk is the operator's call — panel is never disk-gated")
+check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
+                               meshStandsDown: true, atCapacity: true, unaffordable: true,
+                               lowDisk: true) == .lowDisk,
+      "the disk outranks capacity, the budget and mesh — a freed bay frees no space")
+check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: true,
+                               meshStandsDown: false, atCapacity: false,
+                               lowDisk: true) == .inFlight,
+      "an agent already on the PR outranks the disk — nothing would start either way")
 // The auto-review allowlist: an author verdict like the ban, so it holds whoever
 // asks, and it ranks below the ban because a ban's remedy is the only one that would
 // work on an author carrying both.
@@ -2044,7 +2109,7 @@ do {
     let now = Date().timeIntervalSince1970
     let run = AgentRegistry.createRun(
         AgentState.RunRecord(runID: AgentRegistry.newRunID(now: now), dispatchedAt: now),
-        prompt: "p").runID
+        prompt: "p")!.runID
 
     check(AgentRegistry.boundSession(run) == "", "a run binds no session before one is found")
     AgentRegistry.bindSession(run, "ses_00d61ec0")
@@ -2100,6 +2165,25 @@ do {
           "a run registered during an update is in the book it leaves")
     AgentRegistry.forget(["upd-b", "upd-c"])
     print("run book sidecar assertions passed")
+}
+
+section("a run the book refuses")
+// A book that takes no write while the run's own directory does: the order a disk
+// fills in, since the book is rewritten whole and the prompt is one small file.
+do {
+    let book = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-refused-\(UUID().uuidString)", isDirectory: true)
+    setenv("DIPLOMAT_AGENTS_DIR", book.path, 1)
+    defer { try? FileManager.default.removeItem(at: book) }
+    try? FileManager.default.createDirectory(at: AgentRegistry.runsPath(),
+                                             withIntermediateDirectories: true)
+    let now = Date().timeIntervalSince1970
+    let id = AgentRegistry.newRunID(now: now)
+    check(AgentRegistry.createRun(AgentState.RunRecord(runID: id, dispatchedAt: now),
+                                  prompt: "p") == nil,
+          "a run the book cannot record is refused")
+    check(!FileManager.default.fileExists(atPath: AgentRegistry.runDir(id).path),
+          "…and leaves no run directory behind")
 }
 
 section("a hand-edited run book and ledger")

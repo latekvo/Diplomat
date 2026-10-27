@@ -111,11 +111,11 @@ class Host:
         willing to, so a further dispatch should be declined and failed over to
         another node rather than started here.
 
-        Asked immediately before every personal spawn. A ceiling on concurrent
-        work is a deployment's policy — how heavy one job is, how much of the
-        machine the operator is willing to give it — and the *processes* that make
-        it up belong to the application too, so neither half is the library's to
-        decide.
+        Asked immediately before every spawn, personal or confined. A ceiling on
+        concurrent work is a deployment's policy — how heavy one job is, how much of
+        the machine the operator is willing to give it — and the *processes* that
+        make it up belong to the application too, so neither half is the library's
+        to decide.
 
         ``running_keys`` is the work keys of the jobs THIS NODE currently has live.
         They are passed in rather than left for the host to discover because a job

@@ -83,8 +83,9 @@ slot**, then the **queue** that has no bay yet.
   unnecessary by the work ahead of it — and the poll re-offers it for as long as
   GitHub still calls the PR conflicting, so waiting costs it nothing.
 
-Five things hold work. The cap holds what there is no slot for, and releases it as
-slots free. The [spending budget](../../../docs/automation.md#the-spending-budget) holds
+Six things hold work. The cap holds what there is no slot for, and releases it as
+slots free. The [free-disk floor](../../../docs/automation.md#the-free-disk-floor)
+holds everything while the disk agents write to is nearly full. The [spending budget](../../../docs/automation.md#the-spending-budget) holds
 everything when the account is too low to afford another agent, and releases it when a
 window refills or the balance is topped up. A **monitor you switched off** holds its
 own work indefinitely: it
@@ -94,7 +95,7 @@ the work, not whether you get to see it, and turning both off does not stop the
 3-minute GitHub poll. **Auto-execute queue** holds every kind at once, the reviews you
 asked for included — which is the one thing no monitor toggle speaks for. The
 **author allowlist** holds every review request from outside it, whoever asks and
-whatever else is free; it is the only one of the five that drops the work rather than
+whatever else is free; it is the only one of the six that drops the work rather than
 listing it, because nothing about it changes on the next poll.
 
 The queue is a view of what the monitors would re-offer, not a second copy of their
@@ -176,7 +177,8 @@ login (the cross-desktop analogue of the macOS LaunchAgent).
 It also installs a **systemd user timer** (`diplomat-update.timer`) that fires
 daily at **06:00** and runs the launcher headless (`DIPLOMAT_SELF_UPDATE=1`):
 fetch, merge if behind, rebuild `diplomat-core`, and relaunch a running tray
-onto it. `Persistent=true`, so a 06:00 missed while the machine was off
+onto it - none of it while the checkout's volume is below the
+[free-disk floor](../../../docs/automation.md#the-free-disk-floor). `Persistent=true`, so a 06:00 missed while the machine was off
 runs at the next boot. Without `systemctl` the install warns and carries on —
 only the schedule is lost, the Settings ▸ UPDATE button still works. Manage it
 alone with `./install/install-autoupdate.sh` / `./install/uninstall-autoupdate.sh`.

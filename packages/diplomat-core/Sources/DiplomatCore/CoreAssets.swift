@@ -16,6 +16,18 @@ public enum CoreAssets {
     public struct Config: Decodable {
         public let owner: String
         public let repo: String
+        /// See `DiskFloor`. Nil when absent or not a number: a bad floor drops only the
+        /// floor, as it does in `diskfloor.floor`, and leaves the repo coordinates read.
+        public let minFreeDiskGiB: Double?
+
+        private enum CodingKeys: String, CodingKey { case owner, repo, minFreeDiskGiB }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            owner = try c.decode(String.self, forKey: .owner)
+            repo = try c.decode(String.self, forKey: .repo)
+            minFreeDiskGiB = try? c.decodeIfPresent(Double.self, forKey: .minFreeDiskGiB)
+        }
     }
 
     public struct CatalogFile: Decodable {

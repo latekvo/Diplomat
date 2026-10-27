@@ -910,12 +910,14 @@ final class Store: ObservableObject {
                       ledgerKey: String = "", terminal preferred: SpawnTerminal,
                       restoreFocusTo restoreBID: String? = nil) async throws -> SpawnTerminal {
         let now = Date().timeIntervalSince1970
-        let record = AgentRegistry.createRun(
+        guard let record = AgentRegistry.createRun(
             AgentState.RunRecord(runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
                                  prNumber: prNumber, prURL: prURL ?? "", kind: kind,
                                  label: label, source: source, placement: .local,
                                  ledgerKey: ledgerKey),
-            prompt: prompt)
+            prompt: prompt) else {
+            throw AgentSpawner.SpawnError.write("could not register the run")
+        }
         let runner = AppConfig.agentRunner
         AgentRegistry.stageRunner(record.runID, runner.rawValue)
         var service = false
@@ -931,7 +933,7 @@ final class Store: ObservableObject {
             guard let minted = OpenCodeCLI.stageSession(
                 promptFile: AgentRegistry.promptPath(record.runID),
                 directory: AgentSpawner.repoPath, model: AppConfig.agentModel) else {
-                AgentRegistry.forget([record.runID])
+                bookWritten(AgentRegistry.forget([record.runID]))
                 throw AgentSpawner.SpawnError.write("could not stage the OpenCode session")
             }
             AgentRegistry.bindSession(record.runID, minted)
@@ -959,14 +961,14 @@ final class Store: ObservableObject {
             // tick instead of from whichever one adopts its pid.
             var seeded = record
             seeded.tty = result.tty
-            Store.persistRunChanges([seeded])
+            bookWritten(Store.persistRunChanges([seeded]))
             AuditLog.log(source, auditAction ?? kind,
                          label + (plan.tokenItem.isEmpty ? "" : AgentSpawner.tokenAuditNote))
             return result.terminal
         } catch {
             // Nothing is running, so the record would be a bay held for an agent that
             // never started — and, being a record, one nothing can ever retire.
-            AgentRegistry.forget([record.runID])
+            bookWritten(AgentRegistry.forget([record.runID]))
             throw error
         }
     }
@@ -981,7 +983,7 @@ final class Store: ObservableObject {
     /// retired, and retirement is what would otherwise close its ledger entry.
     func forgetRun(_ runID: String) {
         let priced = Store.pricingInputs(AgentRegistry.load().filter { $0.runID == runID })
-        AgentRegistry.forget([runID])
+        guard bookWritten(AgentRegistry.forget([runID])) else { return }
         Task {
             await settleLedger(priced)
             await settleAgents()
@@ -1014,7 +1016,9 @@ final class Store: ObservableObject {
         // without one.)
         guard !job.workKey.isEmpty else { return }
         let now = Date().timeIntervalSince1970
-        let record = AgentRegistry.createRun(
+        // The job already runs, so an unbooked one is reported rather than undone: the
+        // untracked scan still finds an agent here, and a peer's holds its claim.
+        guard let record = AgentRegistry.createRun(
             AgentState.RunRecord(
                 runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
                 prNumber: job.prNumber, prURL: job.prURL ?? "", kind: job.kind,
@@ -1024,7 +1028,11 @@ final class Store: ObservableObject {
                 source: AgentDispatchGate.Source.auto.rawValue,
                 placement: onThisMachine ? .meshHere : .meshPeer,
                 node: node, workKey: job.workKey, ledgerKey: job.ledgerKey),
-            prompt: job.prompt)
+            prompt: job.prompt) else {
+            bookWritten(.failed)
+            return
+        }
+        bookWritten(.written)
         if onThisMachine {
             AgentRegistry.stageRunner(record.runID, AppConfig.agentRunner.rawValue)
         }
@@ -1109,7 +1117,7 @@ final class Store: ObservableObject {
         let settle = Task {
             let pass = await agentTick()
             if Headless.active, let gate = Store.settleGate { await gate() }
-            Store.persistRunChanges(pass.tick.records)
+            bookWritten(Store.persistRunChanges(pass.tick.records))
             publish(pass)
             await retireFinished(pass)
             noteSilentProbes()
@@ -1151,10 +1159,11 @@ final class Store: ObservableObject {
     /// the whole reason one is kept rather than re-derived from the process table every
     /// tick. Only a synthesized one: a tracked record missing from the book was retired
     /// while this tick resolved, and writing it back would raise the dead.
-    private static func persistRunChanges(_ learned: [AgentState.RunRecord]) {
+    private static func persistRunChanges(
+        _ learned: [AgentState.RunRecord]) -> AgentRegistry.BookWrite {
         let fresh = Dictionary(learned.map { ($0.runID, $0) },
                                uniquingKeysWith: { _, last in last })
-        AgentRegistry.update { book in
+        return AgentRegistry.update { book in
             var out = book.map { r -> AgentState.RunRecord in
                 guard let f = fresh[r.runID] else { return r }
                 var merged = r
@@ -1228,6 +1237,18 @@ final class Store: ObservableObject {
         // no tokens — and a `done` against its key would count it among the completed
         // ones. Its ledger entry stays open, which is what it is: still owed.
         let priced = Store.pricingInputs(gone.filter { t.states[$0.runID]?.state != .failed })
+        // Only a run whose agent is done: a merge retires one that may still be filling
+        // its review. Decided here, while the sentinel `forget` deletes is still there.
+        let audited = gone
+            .filter { $0.kind == "review" && !$0.prURL.isEmpty && $0.runsHere
+                && (t.states[$0.runID]?.state == .finished || AgentRegistry.finishedAt($0.runID) != nil) }
+            .map { (label: $0.label.isEmpty ? $0.runID : $0.label, source: $0.source,
+                    url: $0.prURL, since: $0.dispatchedAt) }
+        await Store.interrupt(stops)
+        // Before anything is said or priced, because a run the book still holds (a full
+        // disk) is retired again next tick: nothing below may happen to one that stays,
+        // or it is logged and priced twice.
+        guard bookWritten(AgentRegistry.forget(Set(gone.map(\.runID)))) else { return }
         // Forgetting deletes every trace a run leaves — record, directory, prompt,
         // handle — so a retirement that was wrong is otherwise just a row that stopped
         // being there. This line is the only thing that says which rung decided.
@@ -1236,17 +1257,8 @@ final class Store: ObservableObject {
             AuditLog.log(r.source, verdict?.state == .failed ? "spawn-failed" : "retire",
                          "\(r.label.isEmpty ? r.runID : r.label) — \(verdict?.reason ?? "no verdict")")
         }
-        // Only a run whose agent is done: a merge retires one that may still be filling
-        // its review.
-        let audited = gone
-            .filter { $0.kind == "review" && !$0.prURL.isEmpty && $0.runsHere
-                && (t.states[$0.runID]?.state == .finished || AgentRegistry.finishedAt($0.runID) != nil) }
-            .map { (label: $0.label.isEmpty ? $0.runID : $0.label, source: $0.source,
-                    url: $0.prURL, since: $0.dispatchedAt) }
         if !audited.isEmpty { Store.auditReviews(audited, me: me) }
-        AgentRegistry.forget(Set(gone.map(\.runID)))
         OpenCodeProbe.forgetAdopted(Set(gone.map(\.runID)))
-        await Store.interrupt(stops)
         await settleLedger(priced)
     }
 
@@ -1340,14 +1352,14 @@ final class Store: ObservableObject {
             AuditLog.log("auto", "kill-device", "closed \(who)'s window — \(why)")
         }
         if !refused.isEmpty {
-            AgentRegistry.update { book in
+            bookWritten(AgentRegistry.update { book in
                 book.map { r -> AgentState.RunRecord in
                     guard refused.contains(r.runID) else { return r }
                     var stamped = r
                     stamped.reapRefusedAt = t.now
                     return stamped
                 }
-            }
+            })
         }
         return refused
     }
@@ -1971,11 +1983,54 @@ final class Store: ObservableObject {
     }
 
     /// Whether the "deferring auto work" note has been logged for the current
-    /// at-capacity episode, and for the current out-of-budget one. Two flags, not one:
-    /// a machine can saturate and drain several times over inside a single spell of
-    /// having nothing left to spend, and each episode is worth one line of its own.
+    /// at-capacity episode, the current out-of-budget one and the current low-disk
+    /// one. A flag each: a machine can saturate and drain several times over inside a
+    /// single spell of having nothing left to spend, and each episode is worth one line
+    /// of its own.
     private var capacityLogged = false
     private var budgetLogged = false
+    private var diskLogged = false
+
+    /// The free space of whichever volume an agent here runs out of first: the repo
+    /// root its worktree goes in, or the `~/.diplomat` tree beside the tool caches.
+    nonisolated static func agentDisk() -> DiskFloor.Reading? {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return DiskFloor.lowest(of: [RepoPaths.agentRepo,
+                                     home.appendingPathComponent(".diplomat").path])
+    }
+
+    /// Note that automatic work is being held for want of disk — once per episode,
+    /// like `logAtCapacity`, and cleared by the first dispatch that finds the disk
+    /// above its floor again.
+    private func logLowDisk(_ disk: DiskFloor.Reading?) {
+        guard !diskLogged, let disk else { return }
+        diskLogged = true
+        AuditLog.log("auto", "low-disk", "Deferring auto work — " + DiskFloor.describe(disk))
+        refreshAudit()
+    }
+
+    /// Whether the run book refused its last write (a full disk): one feed line when it
+    /// stops saving, one when a write lands again. Every write to the book reports here.
+    /// No retry needed, since each tick re-derives its writes from the book. Python twin:
+    /// `Store._write_book`.
+    private var bookUnsaved = false
+
+    /// Whether the write landed. Only `.written` ends a spell of `.failed`: `.unchanged`
+    /// touched no disk.
+    @discardableResult
+    private func bookWritten(_ w: AgentRegistry.BookWrite) -> Bool {
+        if w == .failed, !bookUnsaved {
+            bookUnsaved = true
+            AuditLog.log("auto", "warn",
+                         "Can't write the agent run book — runs are not booked or retired until it saves")
+            refreshAudit()
+        } else if w == .written, bookUnsaved {
+            bookUnsaved = false
+            AuditLog.log("auto", "poll-recovered", "Agent run book saving again")
+            refreshAudit()
+        }
+        return w != .failed
+    }
 
     /// Note that automatic work is being held for want of budget — once per episode,
     /// like `logAtCapacity`, and cleared the moment a dispatch finds room again.
@@ -2163,11 +2218,11 @@ final class Store: ObservableObject {
             capacityLogged = false
             switch await runQueuedTask(entry, forced: false) {
             case .failed: return
-            // Every remaining entry would be priced against the same windows and get
-            // the same answer, and the dispatch has already re-staged this one for the
-            // commit at the end of the cycle. Draining on would cost a round of
-            // refusals to no end.
-            case .unaffordable: return
+            // Every remaining entry would be priced against the same windows, or the
+            // same disk, and get the same answer, and the dispatch has already
+            // re-staged this one for the commit at the end of the cycle. Draining on
+            // would cost a round of refusals to no end.
+            case .unaffordable, .lowDisk: return
             default: break
             }
         }
@@ -2441,7 +2496,7 @@ final class Store: ObservableObject {
         // `.notAllowed` is listed only because the switch is exhaustive: an ask can
         // never draw it, since the allowlist answers for the review monitor's own
         // finds and an ask is not one (`AgentJob.counter`).
-        case .inFlight, .atCapacity, .unaffordable, .failed, .notAllowed: break
+        case .inFlight, .atCapacity, .unaffordable, .lowDisk, .failed, .notAllowed: break
         }
     }
 
@@ -2503,9 +2558,9 @@ final class Store: ObservableObject {
     /// record the attempt its monitor would have recorded.
     ///
     /// `forced` is the operator's "execute now", and is the only thing that also
-    /// overrides the spending budget. The drain does not: it is the machine starting
-    /// its own automatic work, and a task that could not be afforded when it was found
-    /// is not afforded by having waited in a list.
+    /// overrides the spending budget and the disk floor. The drain does not: it is the
+    /// machine starting its own automatic work, and a task that could not be afforded
+    /// when it was found is not afforded by having waited in a list.
     ///
     /// Dispatched as `.auto` whatever put it in the queue, including a review the
     /// operator asked for. That is not about who wanted the work but about what
@@ -2535,7 +2590,7 @@ final class Store: ObservableObject {
         beginStarting(entry)
         let outcome = await dispatchAgent(entry.job, source: .auto,
                                           attemptNumber: entry.attemptNumber,
-                                          bypassCapacity: true, bypassBudget: forced)
+                                          bypassCapacity: true, forced: forced)
         endStarting(entry.id)
         if outcome.wasHandled { recordQueuedAttempt(entry) }
         settleRequested(entry, outcome)
@@ -2595,12 +2650,12 @@ final class Store: ObservableObject {
     ///
     /// It stays AUTO work — same `Auto · ` label, same auto-handled counter, mesh
     /// routing still applies, and once running it occupies a slot like any other
-    /// automatic agent, so the rest of the queue waits behind it. Of the six
+    /// automatic agent, so the rest of the queue waits behind it. Of the seven
     /// asymmetries the gate draws between a click and a monitor tick (focus, capacity,
-    /// budget, mesh, counters, label) this borrows exactly two: the cap and the
-    /// spending budget, which are the two the operator is overriding. Both are
-    /// estimates of what this machine should do next, and the operator looking at the
-    /// row knows something they do not.
+    /// disk, budget, mesh, counters, label) this borrows exactly three: the cap, the
+    /// disk floor and the spending budget, which are the three the operator is
+    /// overriding. All three are this machine's judgement of what it should do next,
+    /// and the operator looking at the row knows something it does not.
     ///
     /// The ROW answers the click at once — `runQueuedTask` moves it into the starting
     /// band before it suspends, so it reads as starting from the frame after the
@@ -2632,8 +2687,8 @@ final class Store: ObservableObject {
         case .notAllowed:
             error = "\(entry.job.label): the PR's author is not on the auto-review list "
                   + "(add them, or review it from the wizard)."
-        case .atCapacity, .unaffordable:
-            break   // unreachable: the run bypasses both holds the operator overrode
+        case .atCapacity, .unaffordable, .lowDisk:
+            break   // unreachable: the run bypasses the holds the operator overrode
         }
         refreshAudit()
     }
@@ -2795,9 +2850,9 @@ final class Store: ObservableObject {
     enum AutoCounter { case reviewRequests, myReviews, conflicts }
 
     /// One unit of automatic work nothing has started yet: the whole job, held by the
-    /// device's task cap, by the spending budget, or by a switch the operator set
-    /// (its own monitor, or the queue itself), until a slot frees or the operator runs
-    /// it. Rebuilt from live evidence on each poll — see `queuedTasks`.
+    /// device's task cap, by the spending budget, by the disk floor, or by a switch the
+    /// operator set (its own monitor, or the queue itself), until a slot frees or the
+    /// operator runs it. Rebuilt from live evidence on each poll — see `queuedTasks`.
     struct QueuedAgentTask: Identifiable, Equatable {
         /// `AgentTaskQueue.key` — stable across polls and applet restarts, which is
         /// what lets the operator's drag order outlive the list itself.
@@ -2818,6 +2873,7 @@ final class Store: ObservableObject {
         case standDown
         case atCapacity
         case unaffordable
+        case lowDisk
         case failed(String)
         var didSpawn: Bool { if case .spawned = self { return true }; return false }
         /// The work is now being handled — spawned locally OR stood down to a peer
@@ -2825,15 +2881,16 @@ final class Store: ObservableObject {
         /// start the retry backoff, mirroring the Python reference which treats
         /// `("spawned", VERDICT_STAND_DOWN)` as handled. `.failed` deliberately does
         /// NOT count (a transient spawn error retries next poll); nor do `.inFlight`
-        /// / `.banned` / `.notAllowed` / `.atCapacity` / `.unaffordable`. Using
-        /// `.didSpawn` here instead would re-dispatch peer-owned work to the mesh on
+        /// / `.banned` / `.notAllowed` / `.atCapacity` / `.unaffordable` / `.lowDisk`.
+        /// Using `.didSpawn` here instead would re-dispatch peer-owned work to the mesh on
         /// every poll, the backoff never engaging — and counting either deferral as
         /// handled would drop held work into a 5m–3h cooldown instead of offering it
         /// again the moment an agent finishes or the window refills.
         var wasHandled: Bool {
             switch self {
             case .spawned, .standDown: return true
-            case .inFlight, .banned, .notAllowed, .atCapacity, .unaffordable, .failed:
+            case .inFlight, .banned, .notAllowed, .atCapacity, .unaffordable, .lowDisk,
+                 .failed:
                 return false
             }
         }
@@ -2850,9 +2907,10 @@ final class Store: ObservableObject {
     ///
     /// An AUTO job is additionally capped at `autoTaskLimit` concurrent agents on
     /// this device (`AgentState.capLoad`), held outright while its own monitor is
-    /// switched off (`isPaused`) or the queue is (`queueAutoRun`), and held again
+    /// switched off (`isPaused`) or the queue is (`queueAutoRun`), held again
     /// when what is left of the limits it spends against will not cover it
-    /// (`AutoBudget`);
+    /// (`AutoBudget`), and held while the disk agents write to is below its floor
+    /// (`DiskFloor`);
     /// a panel click is subject to none of them. Every one of those refusals queues
     /// the job (`stageQueued`), which is what the panel's Agent-tasks list shows as
     /// *queued*.
@@ -2864,15 +2922,16 @@ final class Store: ObservableObject {
     /// not just its verdict — so neither pays for a second `ps` scan, and so a forced
     /// run cannot re-queue itself.
     ///
-    /// `bypassBudget` is only the second of those. The drain runs the machine's own
-    /// automatic work, and work that could not be afforded when it was found cannot be
-    /// afforded by having waited in a list; only the operator pressing "execute now"
-    /// overrides the budget, exactly as only they override the cap.
+    /// `forced` is only the second of those, and it also overrides the budget and the
+    /// disk floor. The drain runs the machine's own automatic work, and work that could
+    /// not be afforded when it was found, or had no room on disk, gains neither by
+    /// having waited in a list; only the operator pressing "execute now" overrides
+    /// them, exactly as only they override the cap.
     @discardableResult
     func dispatchAgent(_ job: AgentJob, source: AgentDispatchGate.Source,
                        attemptNumber: Int = 1,
                        bypassCapacity: Bool = false,
-                       bypassBudget: Bool = false) async -> DispatchOutcome {
+                       forced: Bool = false) async -> DispatchOutcome {
         if let n = job.prNumber {
             if resolvingPRs.contains(n) { return .inFlight }
             resolvingPRs.insert(n)
@@ -2888,12 +2947,20 @@ final class Store: ObservableObject {
             && !AuthorAllowlist.allows(job.authorLogin ?? "", in: reviewAllowlist)
         var agentOnPR = false
         if let n = job.prNumber { agentOnPR = await inFlight(n) }
+        // First: a low disk holds the job whatever the cap or the budget would say. Off
+        // the main actor, since a volume can be a network mount.
+        var disk: DiskFloor.Reading?
+        if source == .auto, !agentOnPR, !forced {
+            disk = await Task.detached(priority: .utility) { Store.agentDisk() }.value
+            if disk?.low != true { diskLogged = false }
+        }
+        let lowDisk = disk?.low == true
         // Measured only for an auto job that would otherwise run: the count costs a
         // `ps` scan, a panel click is never capped, and an in-flight PR spawns
         // nothing either way — so in both of those the answer would be discarded.
         // Finding room is also what re-arms the "deferring" note.
         var atCapacity = false, paused = false
-        if source == .auto, !agentOnPR, !bypassCapacity {
+        if source == .auto, !agentOnPR, !bypassCapacity, !lowDisk {
             let full = await agentTick().tick.capLoad.count >= autoTaskLimit
             if !full { capacityLogged = false }
             // A switched-off monitor has no room for its own work, whatever the
@@ -2913,7 +2980,7 @@ final class Store: ObservableObject {
         // set and this one clear — that is the whole difference between deferring work
         // and forcing it.
         var budget = AgentDispatchGate.Budget(affordable: true)
-        if source == .auto, !agentOnPR, !bypassBudget, !atCapacity, AutoBudget.enabled {
+        if source == .auto, !agentOnPR, !forced, !lowDisk, !atCapacity, AutoBudget.enabled {
             // Off the main actor: the probe behind it dials the usage endpoint.
             budget = await Task.detached(priority: .utility) { AutoBudget.decide() }.value
             if budget.affordable { budgetLogged = false }
@@ -2922,7 +2989,12 @@ final class Store: ObservableObject {
                                         agentOnPR: agentOnPR, meshStandsDown: false,
                                         atCapacity: atCapacity,
                                         unaffordable: !budget.affordable,
-                                        outsideAllowlist: outsideAllowlist) {
+                                        outsideAllowlist: outsideAllowlist,
+                                        lowDisk: lowDisk) {
+        case .lowDisk:
+            logLowDisk(disk)
+            stageQueued(job, attemptNumber: attemptNumber)
+            return .lowDisk
         case .atCapacity:
             // A paused monitor is not a saturated device: it queues silently, because
             // the operator switched it off on purpose and the row says the rest.
@@ -3191,11 +3263,11 @@ final class Store: ObservableObject {
             self.error = "Resolve #\(number) failed to spawn — see the activity log."
         case .inFlight:
             self.error = "Resolve #\(number): an agent is already on this PR."
-        case .spawned, .banned, .standDown, .atCapacity, .unaffordable, .notAllowed:
-            // `.standDown`, `.atCapacity` and `.unaffordable` are answers only a monitor
-            // gets — none of the mesh gate, the automatic-task cap and the spending
-            // budget applies to a click — and `.notAllowed` speaks for the review
-            // monitor's finds, never a conflict.
+        case .spawned, .banned, .standDown, .atCapacity, .unaffordable, .lowDisk, .notAllowed:
+            // `.standDown`, `.atCapacity`, `.unaffordable` and `.lowDisk` are answers
+            // only a monitor gets — none of the mesh gate, the automatic-task cap, the
+            // spending budget and the disk floor applies to a click — and `.notAllowed`
+            // speaks for the review monitor's finds, never a conflict.
             break
         }
     }

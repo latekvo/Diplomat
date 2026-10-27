@@ -51,6 +51,8 @@ enum QueueTest {
         // differently depending on how much of their window was left when they ran the
         // suite. Off, it reports no reading, which the gate treats as no opinion.
         setenv("DIPLOMAT_QUOTA_PROBE", "0", 1)
+        // And the disk floor, or every dispatch here measures the developer's own disk.
+        setenv(DiskFloor.envOverride, "0", 1)
         // And the run book, for the same reason one layer down: every agent this test
         // stands up is a real record, and one written into the operator's book would be
         // an agent their panel draws and their cap holds a bay for.
@@ -631,7 +633,7 @@ enum QueueTest {
                 prURL: "https://github.com/software-mansion/argent/pull/21",
                 kind: "review", label: "Auto · Review · #21",
                 source: AgentDispatchGate.Source.auto.rawValue, pid: 4242),
-            prompt: "")
+            prompt: "")!
         let reached = Latch(), released = Latch(), raced = Latch()
         Store.settleGate = {
             if reached.isOpen { raced.open() } else { reached.open() }

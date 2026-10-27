@@ -72,6 +72,6 @@ enum Daemon {
     private static func shq(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
-    private static func out(_ s: String) { FileHandle.standardOutput.write(Data(s.utf8)) }
-    private static func err(_ s: String) { FileHandle.standardError.write(Data(s.utf8)) }
+    private static func out(_ s: String) { try? FileHandle.standardOutput.write(contentsOf: Data(s.utf8)) }
+    private static func err(_ s: String) { try? FileHandle.standardError.write(contentsOf: Data(s.utf8)) }
 }

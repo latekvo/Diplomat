@@ -217,6 +217,28 @@ def test_a_run_retired_by_its_merge_is_checked_only_once_its_agent_is_done(monke
     assert asked == [(URL, "alice", SINCE + 1)]
 
 
+def test_a_merged_run_is_judged_done_by_the_sentinel_retiring_it_deletes(monkeypatch, tmp_path):
+    """The real sentinel, not a stand-in: retiring a run deletes its directory, and the
+    `done` file in it is the only word that its agent finished."""
+    from diplomat_app.store import Store
+
+    monkeypatch.setenv("DIPLOMAT_AGENTS_DIR", str(tmp_path / "agents"))
+    rec = _run("done")
+    agentregistry.create_run(rec, "prompt")
+    agentregistry.done_path("done").write_text("0")
+    asked = []
+    monkeypatch.setattr(reviewaudit, "audit", lambda url, who, since: asked.append(url) or [])
+    store = Store()
+    store.me = "alice"
+    monkeypatch.setattr(store, "start_background", lambda work, name=None: work())
+    states = {"done": agentstate.Resolution("done", agentstate.MERGED, "test")}
+    store._retire_finished(agentstate.Tick(records=[], states=states, rows=[],
+                                           cap_load=set(), retirable=[rec],
+                                           reapable=[], free_slots=0))
+    assert agentregistry.load() == []
+    assert asked == [URL]
+
+
 def test_what_it_finds_lands_in_the_feed_under_the_runs_label(monkeypatch):
     _, warns = _retire(monkeypatch, [_run("r1")], answer=["left it PENDING"])
     assert warns == ["Review-req · r1 left it PENDING"]

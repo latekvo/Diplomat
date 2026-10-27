@@ -42,7 +42,7 @@ enum ToolDataCommand {
             withJSONObject: out, options: [.sortedKeys, .prettyPrinted]) else {
             die("could not serialise tool data", 1)
         }
-        FileHandle.standardOutput.write(data)
+        emit(data)
     }
 
     /// ISO-8601 with fractional seconds optional — what both front-ends get from the

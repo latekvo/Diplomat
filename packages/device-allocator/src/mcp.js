@@ -22,8 +22,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { callDaemon } from './ipc.js';
-import { daemonAlive } from './state.js';
+import { callDaemon, daemonHealth } from './ipc.js';
 import { LOG_PATH, BASE_DIR } from './paths.js';
 import { PLATFORMS as DEVICE_PLATFORMS, FORMATS } from './devices.js';
 
@@ -156,20 +155,23 @@ const TOOLS = [
 // ---- daemon lifecycle -----------------------------------------------------
 
 async function ensureDaemon() {
-  if (daemonAlive()) {
-    try { await callDaemon('GET', '/health', null, { timeout: 2000 }); return; } catch {}
-  }
+  if (await daemonHealth()) return;
   try { fs.mkdirSync(BASE_DIR, { recursive: true }); } catch {}
   let out = 'ignore';
   try { out = fs.openSync(LOG_PATH, 'a'); } catch {}
-  const child = spawn(process.execPath, [DAEMON_JS], {
-    detached: true,
-    stdio: ['ignore', out, out],
-  });
-  child.unref();
+  try {
+    const child = spawn(process.execPath, [DAEMON_JS], {
+      detached: true,
+      stdio: ['ignore', out, out],
+    });
+    child.unref();
+  } finally {
+    // The child holds its own copy; this server outlives many spawns.
+    if (out !== 'ignore') fs.closeSync(out);
+  }
   for (let i = 0; i < 60; i++) {
     await delay(200);
-    try { await callDaemon('GET', '/health', null, { timeout: 1000 }); return; } catch {}
+    if (await daemonHealth(1000)) return;
   }
   throw new Error('device-allocator daemon failed to start');
 }

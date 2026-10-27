@@ -358,10 +358,19 @@ class MeshNode:
         # Local ban list: devices that accepted a SzpontRequest of ours and failed
         # to deliver it (or were banned manually). Machine-local, never gossiped.
         self._banned = banned.load()
+        # The operator's explicit default-trust choice ("" until they make one) — all
+        # trusted.json persists of it, see _write_trusted.
+        self._default_trust_choice = trust.load_default_level()
         # Trust level for an UNKNOWN device (not in the allowlist / unverified): the
         # operator's persisted panel choice if any, else the node baseline (env /
         # network model, ships 'foreign' → a new device is zero-trust until promoted).
-        self._default_trust = trust.load_default_level() or config.default_trust()
+        self._default_trust = self._default_trust_choice or config.default_trust()
+        # State files whose last write failed, by name → a writer that saves what is
+        # in memory at the time it runs. Retried every snapshot tick (_save_owed), so
+        # a full disk costs durability for its duration, never the node or its data.
+        self._unsaved: dict[str, Callable[[], None]] = {}
+        # Why the current run of failed writes started; "" while every file is saved.
+        self._save_error = ""
         self.platform = identity.detect_platform()
         self.epoch = time.time()
         # Cached automatic token-budget read (refreshed on its own loop, so neither
@@ -1095,7 +1104,7 @@ class MeshNode:
         self._peer_cache[peer_id] = entry
         while len(self._peer_cache) > _MAX_PEER_CACHE:
             del self._peer_cache[next(iter(self._peer_cache))]
-        peercache.save(self._peer_cache)
+        self._save("peers.json", lambda: peercache.save(self._peer_cache))
 
     def _redial_targets(self) -> list[tuple[str, str, int]]:
         """Cached peers this node should be dialing right now: an address is
@@ -1236,7 +1245,7 @@ class MeshNode:
             # too — otherwise _wan_backoff accretes orphaned entries under id churn
             # (the unbounded-growth class the caches are already bounded against).
             self._wan_backoff.pop(evicted, None)
-        wancache.save(self._wan_cache)
+        self._save("wan.json", lambda: wancache.save(self._wan_cache))
 
     def _wan_is_personal(self, peer_id: str, entry: wancache.WanEntry) -> bool:
         """Whether a WAN-cache entry belongs to a peer we trust as PERSONAL — the
@@ -2085,11 +2094,11 @@ class MeshNode:
         new = identity.apply_attrs(self.local, attrs)
         if new != self.local:
             self.local = new
-            identity.save(new)
+            self._save("node.json", lambda: identity.save(self.local))
             changed = True
         if stats.touches_stats(attrs):  # plan / quotaLeft / usageAvg / usage edits
             self.stats = stats.apply_stat_attrs(self.stats, attrs)
-            stats.save(self.stats)
+            self._save("stats.json", lambda: stats.save(self.stats))
             changed = True
         if changed:
             self._bump_and_gossip()
@@ -2731,7 +2740,7 @@ class MeshNode:
         """Book quota against this node's accounting and re-advertise the fresher
         surplus so the mesh's load balancing tracks real consumption."""
         self.stats = stats.record(self.stats, units)
-        stats.save(self.stats)
+        self._save("stats.json", lambda: stats.save(self.stats))
         self._bump_and_gossip()
 
     def _spawn_local(self, job: Job) -> tuple[str, str, bool]:
@@ -2770,10 +2779,7 @@ class MeshNode:
         # than useless — the dispatcher reads a decline as "this node can't", fails
         # the slot over, and lands a SECOND agent on the work elsewhere. Only once
         # the job is genuinely new does how busy the machine is decide it.
-        if at_job_capacity(list(self._agents)):
-            log("mesh-at-capacity",
-                f"Mesh: declined {job.duty} from "
-                f"{self._node_name(job.requested_by)} — this machine is at capacity")
+        if self._at_capacity(job, job.requested_by):
             return "declined", "at job capacity", False
         done_path = self._agent_done_path(wk) if wk else None
         try:
@@ -2912,6 +2918,16 @@ class MeshNode:
         d.mkdir(parents=True, exist_ok=True)
         return d / (f"in-{token}.json" if incoming else f"out-{token}.json")
 
+    def _at_capacity(self, job: Job, requester_id: str) -> bool:
+        """Whether the host says this machine is too busy for ``job``
+        ([Host.at_job_capacity]); a yes is logged, and the caller declines."""
+        if not at_job_capacity(list(self._agents)):
+            return False
+        log("mesh-at-capacity",
+            f"Mesh: declined {job.duty} from "
+            f"{self._node_name(requester_id)} — this machine is at capacity")
+        return True
+
     def _run_confined(self, job: Job, requester_id: str) -> tuple[str, str, bool]:
         """Run a foreign request under zero trust: launch the confinement runner on
         the (untrusted) prompt, book usage, and start watching for its result file to
@@ -2943,10 +2959,14 @@ class MeshNode:
         if (job.id not in self._confined_running
                 and len(self._confined_running) >= _MAX_FOREIGN):
             return "failed", "confined-execution capacity reached", False
-        result_path = self._result_path(job.id)
+        # The sandbox runs on this machine, so the machine's own ceiling holds for it
+        # as for a personal job — asked after the dedup above, for the same reason.
+        if self._at_capacity(job, requester_id):
+            return "declined", "at job capacity", False
         try:
+            result_path = self._result_path(job.id)
             spawnjob.spawn_confined(job.prompt, str(result_path))
-        except spawnjob.JobSpawnError as exc:
+        except (OSError, spawnjob.JobSpawnError) as exc:
             log("spawn-failed",
                 f"Mesh confined {job.duty} failed here: {exc}")
             return "failed", str(exc), False
@@ -3239,8 +3259,8 @@ class MeshNode:
                 f"Mesh: {duty} from {self._node_name(executor_id)} returned "
                 f"no result ({result.get('error') or 'failed'})")
             return
-        path = self._result_path(job_id, incoming=True)
         try:
+            path = self._result_path(job_id, incoming=True)
             path.write_text(json.dumps({
                 "jobId": job_id, "duty": duty, "from": executor_id,
                 "output": str(result.get("output", "")),
@@ -3555,6 +3575,8 @@ class MeshNode:
         if t == "set-attr":
             self._on_set_attr(msg)
             self._flush_state()
+            if str(msg.get("target", "")) in ("", "self", self.local.id):
+                return self._saved_reply("node.json", "stats.json")
             return {"t": "ok"}
         if t == "set-overrides":
             duty = str(msg.get("duty", ""))
@@ -3598,11 +3620,14 @@ class MeshNode:
                 return {"t": "error", "reason": "trust needs a fingerprint"}
             self.add_trusted(fp, str(msg.get("label", "")))
             self._flush_state()
-            return {"t": "ok"}
+            return self._saved_reply("trusted.json", "banned.json")
         if t == "untrust":
-            self.remove_trusted(str(msg.get("fingerprint", "")).strip())
+            fp = str(msg.get("fingerprint", "")).strip()
+            if not fp:
+                return {"t": "error", "reason": "untrust needs a fingerprint"}
+            self.remove_trusted(fp)
             self._flush_state()
-            return {"t": "ok"}
+            return self._saved_reply("trusted.json")
         if t == "ban":
             fp = str(msg.get("fingerprint", "")).strip()
             node_id = str(msg.get("node", "")).strip()
@@ -3611,7 +3636,7 @@ class MeshNode:
             self.ban_device(fp, node_id, label=str(msg.get("label", "")),
                             reason=str(msg.get("reason", "")) or "manual")
             self._flush_state()
-            return {"t": "ok"}
+            return self._saved_reply("banned.json", "trusted.json")
         if t == "unban":
             fp = str(msg.get("fingerprint", "")).strip()
             node_id = str(msg.get("node", "")).strip()
@@ -3620,13 +3645,13 @@ class MeshNode:
             if not self.unban_device(fp, node_id):
                 return {"t": "error", "reason": "no matching ban"}
             self._flush_state()
-            return {"t": "ok"}
+            return self._saved_reply("banned.json")
         if t == "set-default-trust":
             level = str(msg.get("level", "")).strip().lower()
             if not self.set_default_trust(level):
                 return {"t": "error", "reason": "level must be 'personal' or 'foreign'"}
             self._flush_state()
-            return {"t": "ok"}
+            return self._saved_reply("trusted.json")
         if t == "set-wan":
             transport = str(msg.get("transport", "")).strip().lower()
             if not self.set_overrides_wan(transport):
@@ -3668,17 +3693,7 @@ class MeshNode:
 
     def add_trusted(self, fingerprint: str, label: str = "") -> None:
         self._trusted[fingerprint] = label
-        # Persist the operator's EXPLICIT default-trust choice (what is already on
-        # disk), NOT self._default_trust. At boot self._default_trust is resolved as
-        # `load_default_level() or config.default_trust()`, so when the operator has
-        # never toggled the default it holds the env/mesh.json BASELINE. Writing that
-        # baseline here as `defaultLevel` would pin it — a later
-        # SZPONTNET_DEFAULT_TRUST change (e.g. a foreign lockdown) is then silently
-        # shadowed forever, since the persisted value wins over env at the next boot.
-        # `load_default_level()` is "" unless the operator explicitly set the default
-        # (set_default_trust), so an allowlist edit never converts a baseline into an
-        # authoritative persisted choice.
-        trust.save(self._trusted, trust.load_default_level())
+        self._save("trusted.json", self._write_trusted)
         # An explicit promotion is the operator's newest word — it lifts any ban
         # (trusted and banned are mutually exclusive states).
         if self.unban_device(fingerprint):
@@ -3690,10 +3705,20 @@ class MeshNode:
 
     def remove_trusted(self, fingerprint: str) -> None:
         if self._trusted.pop(fingerprint, None) is not None:
-            # Preserve only the operator's EXPLICIT persisted default (see add_trusted):
-            # an allowlist edit must never pin the env/mesh.json baseline as a choice.
-            trust.save(self._trusted, trust.load_default_level())
+            self._save("trusted.json", self._write_trusted)
             log("mesh-up", f"Mesh: untrusting device {fingerprint[:16]}")
+
+    def _write_trusted(self) -> None:
+        """Persist the allowlist with the operator's EXPLICIT default-trust choice,
+        NOT self._default_trust. At boot self._default_trust is resolved as
+        `load_default_level() or config.default_trust()`, so when the operator has
+        never toggled the default it holds the env/mesh.json BASELINE. Writing that
+        baseline as `defaultLevel` would pin it — a later SZPONTNET_DEFAULT_TRUST
+        change (e.g. a foreign lockdown) is then silently shadowed forever, since the
+        persisted value wins over env at the next boot. `_default_trust_choice` is ""
+        unless the operator explicitly set the default (set_default_trust), so an
+        allowlist edit never converts a baseline into an authoritative choice."""
+        trust.save(self._trusted, self._default_trust_choice)
 
     def set_default_trust(self, level: str) -> bool:
         """Set the trust level applied to UNKNOWN devices (the panel's default-trust
@@ -3703,7 +3728,8 @@ class MeshNode:
         if level not in ("personal", "foreign") or level == self._default_trust:
             return level in ("personal", "foreign")
         self._default_trust = level
-        trust.save(self._trusted, self._default_trust)
+        self._default_trust_choice = level
+        self._save("trusted.json", self._write_trusted)
         log("mesh-up", f"Mesh: default trust level for new devices → {level}")
         return True
 
@@ -3720,7 +3746,7 @@ class MeshNode:
             self._banned,
             banned.entry(fingerprint, node_id, label=label, reason=reason,
                          job_id=job_id))
-        banned.save(self._banned)
+        self._save("banned.json", lambda: banned.save(self._banned))
         who = label or (node_id[:8] if node_id else fingerprint[:16])
         log("warn", f"Mesh: BANNED device {who} — {reason or 'manual'}")
 
@@ -3728,7 +3754,7 @@ class MeshNode:
         """Lift a ban (the operator's recovery path). True if one matched."""
         self._banned, removed = banned.remove(self._banned, fingerprint, node_id)
         if removed:
-            banned.save(self._banned)
+            self._save("banned.json", lambda: banned.save(self._banned))
             log("mesh-up",
                 f"Mesh: unbanned device "
                 f"{fingerprint[:16] or node_id[:8]}")
@@ -3745,7 +3771,45 @@ class MeshNode:
         next `_snapshot_loop` write (up to stateWriteIntervalSecs away), so the
         panel's post-reply re-read would show stale values. Flushing here makes a
         local edit visible the instant the ctl reply returns."""
+        self._save("state.json", self._write_snapshot)
+
+    def _write_snapshot(self) -> None:
         statefile.write_state(self.snapshot())
+
+    def _save(self, name: str, write: Callable[[], None]) -> bool:
+        """Run ``write`` (it saves the state file ``name`` from memory) and say whether
+        it landed. One that didn't stays owed in ``_unsaved`` and is retried every
+        snapshot tick; the first failure of a run is logged, the rest are not."""
+        try:
+            write()
+        except OSError as exc:
+            self._unsaved[name] = write
+            if not self._save_error:
+                self._save_error = exc.strerror or str(exc)
+                log("warn", f"Mesh: can't save {name} ({self._save_error}) — running "
+                            "on what is in memory, and retrying until it saves")
+            return False
+        self._unsaved.pop(name, None)
+        return True
+
+    def _save_owed(self) -> None:
+        """Write the snapshot and retry every state file still owed."""
+        for name, write in {**self._unsaved, "state.json": self._write_snapshot}.items():
+            self._save(name, write)
+        if self._save_error and not self._unsaved:
+            log("mesh-up", "Mesh: state files saved again")
+            self._save_error = ""
+
+    def _saved_reply(self, *names: str) -> dict:
+        """The control reply for an edit whose point is to change these files: ``ok``
+        once they are on disk, else an error — the edit is live, but it is not saved
+        until the disk has room, and a restart before then loses it."""
+        owed = [n for n in names if n in self._unsaved]
+        if not owed:
+            return {"t": "ok"}
+        return {"t": "error",
+                "reason": f"applied, but {', '.join(owed)} could not be saved "
+                          f"({self._save_error}); it is saved once there is room"}
 
     def snapshot(self) -> dict:
         stale, timeout = self.proto["peerStaleSecs"], self.proto["peerTimeoutSecs"]
@@ -3844,7 +3908,7 @@ class MeshNode:
             # Age the local accounting so the displayed usageAvg/quota decay even
             # while idle (local only — no gossip churn; peers hear on real change).
             self.stats = self.stats.decayed(time.time())
-            statefile.write_state(self.snapshot())
+            self._save_owed()
             await asyncio.sleep(self.proto["stateWriteIntervalSecs"])
 
     async def _token_loop(self) -> None:

@@ -3,8 +3,10 @@
 .swiftpm/
 *.xcodeproj
 DerivedData/
-# The bundle build-app.sh produces, beside the macOS package it is built from.
+# The bundle build-app.sh produces, beside the macOS package it is built from,
+# and what an assembly cut short by a crash leaves beside it.
 Diplomat.app/
+.Diplomat.app.*/
 
 # Python (diplomat-platform/linux, szpontnet-core, szpontnet-spec)
 __pycache__/

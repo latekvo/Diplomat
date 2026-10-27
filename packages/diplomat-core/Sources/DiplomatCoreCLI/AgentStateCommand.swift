@@ -82,7 +82,7 @@ enum AgentStateCommand {
             withJSONObject: out, options: [.sortedKeys, .prettyPrinted]) else {
             die("could not serialise agent state", 1)
         }
-        FileHandle.standardOutput.write(data)
+        emit(data)
     }
 
     // MARK: - Decoding

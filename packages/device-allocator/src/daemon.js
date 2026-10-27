@@ -34,7 +34,7 @@ import { promisify } from 'node:util';
 // reserved for exit-time teardown (shutdownBootedSync), where blocking is fine.
 const pexecFile = promisify(execFile);
 import {
-  SOCKET_PATH, DISCOVERY_PATH, REPAIRS_DIR,
+  SOCKET_PATH, DISCOVERY_PATH, STATE_PATH, LEASES_PATH, REPAIRS_DIR,
   LEASED_IDLE_DEFAULT_MIN, FREE_IDLE_DEFAULT_MIN, STOPPING_GRACE_MS,
   REAP_INTERVAL_MS, IDLE_INTERVAL_MS, POOL_INTERVAL_MS, ALLOC_GRACE_MS,
   QUOTA, AWAIT_TIMEOUT_MS, REPAIR_TTL_MS, BAN_DIR, BANNED_PATH, INJECTIONS_DIR, AUDIT_PATH,
@@ -42,6 +42,7 @@ import {
 } from './paths.js';
 import {
   writeDiscovery, writeState, writeLeases, readLeases, readConfig, pidAlive, ensureDirs, atomicWrite,
+  sweepDeadTmp,
 } from './state.js';
 import { log } from './log.js';
 import * as dev from './devices.js';
@@ -667,10 +668,28 @@ function publish() {
     m[bucket] = (m[bucket] || 0) + 1; return m;
   }, {});
   lastState = { updatedAt: new Date().toISOString(), daemonPid: process.pid, counts, devices };
-  writeState(lastState);
-  // Full lease records too, so a restarted daemon rehydrates instead of silently
-  // dropping every lease (see rehydrateLeases).
-  writeLeases([...allocations.values()]);
+  persist(lastState);
+}
+
+// The daemon's background disk writes. One that fails (a full disk) is not thrown
+// but retried by the next publish(), which the pool refresh makes every
+// POOL_INTERVAL_MS, so the files catch up once space returns. Logged once per
+// outage, not once per attempt.
+let discoveryWritten = false;
+let persistFailing = false;
+function persist(snapshot) {
+  let failure = null;
+  const attempt = (write) => { try { write(); return true; } catch (e) { failure ||= e; return false; } };
+  if (!discoveryWritten) discoveryWritten = attempt(writeDiscovery);
+  if (snapshot) {
+    attempt(() => writeState(snapshot));
+    // Full lease records too, so a restarted daemon rehydrates instead of silently
+    // dropping every lease (see rehydrateLeases).
+    attempt(() => writeLeases([...allocations.values()]));
+  }
+  if (failure && !persistFailing) log('persist failed, retrying on every publish:', String(failure));
+  if (!failure && persistFailing) log('persist recovered');
+  persistFailing = failure != null;
 }
 
 // The lease table lives in memory, but clients auto-respawn a dead daemon — if a
@@ -790,6 +809,13 @@ function readBanned() {
   }
 }
 
+// banned.json is the whole point of a ban or an unban, so a write that fails (a
+// full disk) fails the request, with nothing changed.
+function writeBanned(data, what) {
+  try { atomicWrite(BANNED_PATH, data); }
+  catch (e) { throw httpError(507, `${what} not recorded: ${e.message}`); }
+}
+
 // Un-ban an author (the applet's panel calls this instead of editing banned.json
 // directly, so ban/unban writes are serialized in one process and a concurrent
 // injection report can't be lost to a read-modify-write race).
@@ -801,7 +827,7 @@ async function handleUnban(p) {
     const before = data.banned.length;
     data.banned = data.banned.filter((b) => (b.login || '').toLowerCase() !== login.toLowerCase());
     if (data.banned.length !== before) {
-      atomicWrite(BANNED_PATH, data);
+      writeBanned(data, `unban of @${login}`);
       appendAudit('panel', 'unban', `Un-banned @${login}`);
       log('unbanned', login);
     }
@@ -836,7 +862,7 @@ async function handleReportInjection(p) {
     const existing = data.banned.find((b) => (b.login || '').toLowerCase() === login.toLowerCase());
     if (existing) Object.assign(existing, entry, { firstAt: existing.firstAt || existing.at });
     else data.banned.push({ ...entry, firstAt: at });
-    atomicWrite(BANNED_PATH, data);
+    writeBanned(data, `ban on @${login}`);
     appendAudit('agent', 'ban', `Banned @${login} for prompt injection${p.pr ? ` (${p.pr})` : ''} — reporting agent terminated`);
     log('prompt-injection reported; banned', login, 'pr', p.pr || '?', 'gh', cap.ghCaptured, 'shot', cap.screenshotCaptured, 'dir', dir);
     return { banned: true, login, total: data.banned.length, evidenceDir: dir,
@@ -926,7 +952,7 @@ function shutdownBootedSync() {
 
 function onListening() {
   try { fs.chmodSync(SOCKET_PATH, 0o600); } catch {}
-  writeDiscovery();
+  persist();
   log('daemon listening', SOCKET_PATH, 'pid', process.pid);
   refreshPool();
   setInterval(reapDeadOwners, REAP_INTERVAL_MS);
@@ -942,19 +968,28 @@ function onListening() {
 // daemon takes over. Held only for the few ms of takeover, then released; a crash while
 // holding it leaves a stale lock the next daemon reclaims by pid-liveness.
 const LOCK_PATH = `${SOCKET_PATH}.lock`;
+const LOCK_FRESH_MS = 5000; // far past the few ms a takeover holds it
+
+function lockAgeMs() {
+  try { return Date.now() - fs.statSync(LOCK_PATH).mtimeMs; } catch { return Infinity; }
+}
 
 function acquireTakeoverLock() {
-  // An open fd (lock held) or null if a LIVE daemon already holds it.
+  // An open fd (lock held) or null if a LIVE daemon already holds it. Throws when the
+  // lock cannot be created at all (a full disk), which is no sign of a holder.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const fd = fs.openSync(LOCK_PATH, 'wx'); // atomic O_CREAT | O_EXCL
       try { fs.writeSync(fd, String(process.pid)); } catch {}
       return fd;
     } catch (e) {
-      if (e.code !== 'EEXIST') return null;
+      if (e.code !== 'EEXIST') throw e;
       let holder = 0;
       try { holder = Number(fs.readFileSync(LOCK_PATH, 'utf8').trim()) || 0; } catch {}
       if (holder && holder !== process.pid && pidAlive(holder)) return null; // a live holder
+      // No pid yet: a peer between its create and its write, or one whose write a full
+      // disk refused. Either is taking over right now, so a young empty lock is held.
+      if (!holder && lockAgeMs() < LOCK_FRESH_MS) return null;
       // Stale lock (holder dead/unreadable): drop it and retry the exclusive create once.
       // If another recoverer wins the re-create, our second attempt sees a live holder and
       // returns null (defers) — so the O_EXCL create, not the unlink, decides the winner.
@@ -975,12 +1010,17 @@ function releaseTakeoverLock(fd) {
 // unlink + retry once). A second EADDRINUSE means a fresh daemon bound in the gap — defer
 // to it rather than take over again.
 let retriedListen = false;
+let takeoverLock = null; // held across the takeover's re-listen
 server.on('error', async (e) => {
+  // That re-listen failed (a peer bound in the gap, or a full disk): the lock goes too.
+  if (takeoverLock != null) { releaseTakeoverLock(takeoverLock); takeoverLock = null; }
   if (e.code === 'EADDRINUSE') {
     if (await socketHealthy()) { log('a live daemon already owns the socket; exiting'); process.exit(0); }
     if (retriedListen) { log('could not acquire the socket (contended); deferring'); process.exit(0); }
     retriedListen = true;
-    const lockFd = acquireTakeoverLock();
+    let lockFd;
+    try { lockFd = acquireTakeoverLock(); }
+    catch (err) { log('cannot take the startup lock', String(err)); process.exit(1); }
     if (lockFd == null) {
       // Another daemon is (or just finished) taking over. Give it a beat, then defer to it.
       await delay(300);
@@ -993,7 +1033,8 @@ server.on('error', async (e) => {
       log('a live daemon already owns the socket; exiting'); process.exit(0);
     }
     try { fs.unlinkSync(SOCKET_PATH); } catch {}
-    server.listen(SOCKET_PATH, () => { releaseTakeoverLock(lockFd); onListening(); });
+    takeoverLock = lockFd;
+    server.listen(SOCKET_PATH, () => { releaseTakeoverLock(takeoverLock); takeoverLock = null; onListening(); });
     return;
   }
   log('server error', String(e));
@@ -1004,6 +1045,7 @@ async function start() {
   ensureDirs();
   // If a healthy daemon is already serving, never start a second one.
   if (await socketHealthy()) { log('another daemon is already live; exiting'); process.exit(0); }
+  for (const f of [DISCOVERY_PATH, STATE_PATH, LEASES_PATH, BANNED_PATH]) sweepDeadTmp(f);
   rehydrateLeases();
   // NB: no pre-listen unlink — see the error handler above.
   server.listen(SOCKET_PATH, onListening);

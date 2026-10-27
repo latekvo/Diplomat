@@ -1,10 +1,11 @@
 // Drives the real stdio MCP server (src/mcp.js) over JSON-RPC, the same way
 // Claude Code does, against a fake device pool. Proves: the handshake carries
 // the coercive `instructions`, request-device is advertised with the alwaysLoad
-// meta, and a tools/call actually allocates a device through the daemon.
+// meta, a tools/call actually allocates a device through the daemon, and starting
+// that daemon leaves the server holding none of its fds.
 // Run: node test/mcp-protocol.mjs
 
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -50,6 +51,16 @@ function rpc(method, params) {
 }
 function notify(method, params) { child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`); }
 
+// Paths a process holds open.
+function openFiles(pid) {
+  if (process.platform === 'linux') {
+    const dir = `/proc/${pid}/fd`;
+    return fs.readdirSync(dir).map((fd) => { try { return fs.readlinkSync(path.join(dir, fd)); } catch { return ''; } });
+  }
+  return execFileSync('lsof', ['-p', String(pid), '-Fn'], { encoding: 'utf8' })
+    .split('\n').filter((l) => l.startsWith('n')).map((l) => l.slice(1));
+}
+
 let ok = 0;
 const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
 
@@ -93,6 +104,11 @@ try {
   const text = called.content?.[0]?.text || '';
   assert.ok(/UDID-1/.test(text) && /Allocated/.test(text), `unexpected allocation result: ${text}`);
   pass('tools/call request-device allocates a device end-to-end through the daemon');
+
+  // That call started the daemon with daemon.log as its stdout/stderr.
+  const log = fs.realpathSync(path.join(BASE, 'daemon.log'));
+  assert.ok(!openFiles(child.pid).includes(log), 'the MCP server kept its copy of the daemon log fd');
+  pass('the MCP server holds no fd of the daemon it started');
 
   const freed = await rpc('tools/call', { name: 'free-device', arguments: { deviceId: 'UDID-1' } });
   assert.ok(/Released/.test(freed.content?.[0]?.text || ''), 'free-device did not release');

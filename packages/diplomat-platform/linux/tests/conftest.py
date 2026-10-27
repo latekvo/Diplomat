@@ -160,6 +160,15 @@ def nothing_closed(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_free_disk_floor(monkeypatch):
+    """Turn the free-disk floor off, so no dispatch or self-update test passes or
+    fails by how full the disk running the suite is. The tests about the floor set
+    their own (test_lowdisk.py, test_diskfloor.py)."""
+    monkeypatch.setenv("DIPLOMAT_MIN_FREE_DISK_MIB", "0")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_activity_feed(tmp_path, monkeypatch):
     """Redirect the shared ``~/.diplomat/pr-monitor`` activity feed to a per-test temp
     dir so tests never scribble on the user's real audit.jsonl. The monitor + API-error

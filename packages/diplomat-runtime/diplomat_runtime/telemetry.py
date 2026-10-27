@@ -53,6 +53,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,21 +118,57 @@ def ledger_path() -> Path:
     return _dir() / str(_model_get("ledgerFile", "telemetry.jsonl"))
 
 
+#: Events no append could write yet, oldest first, each a whole line. Every append
+#: writes these ahead of its own, so a full disk delays the ledger rather than losing
+#: what it would have said — a run's completion is priced nowhere else. Capped, since
+#: a disk that never recovers must not take the applet's memory with it.
+_unwritten: list[bytes] = []
+_MAX_UNWRITTEN = 10_000
+#: Whether the last write stopped mid-line, which the next one must close before it
+#: starts its own, or both lines are lost to the reader.
+_torn = False
+#: Why appends started failing; "" while they land. One feed line per episode.
+_append_error = ""
+_append_lock = threading.Lock()
+
+
 def append(event: dict) -> None:
-    """Append one event. Best-effort and atomic (``O_APPEND``); never raises into
-    the caller, because a monitor poll must not fail over bookkeeping."""
+    """Append one event, after any an earlier append could not write. Atomic per
+    line (``O_APPEND``); never raises into the caller, because a monitor poll must
+    not fail over bookkeeping."""
+    global _torn, _append_error
     line = (json.dumps(event, separators=(",", ":")) + "\n").encode("utf-8")
-    try:
-        _dir().mkdir(parents=True, exist_ok=True)
-        path = ledger_path()
-        _rotate_if_large(path)
-        fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    with _append_lock:
+        _unwritten.append(line)
+        del _unwritten[:-_MAX_UNWRITTEN]
         try:
-            os.write(fd, line)
-        finally:
-            os.close(fd)
-    except OSError:
-        pass
+            _dir().mkdir(parents=True, exist_ok=True)
+            path = ledger_path()
+            _rotate_if_large(path)
+            fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+            try:
+                head = b"\n" if _torn else b""
+                written = os.write(fd, head + b"".join(_unwritten)) - len(head)
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            if not _append_error:
+                from . import activity
+
+                _append_error = exc.strerror or str(exc)
+                activity.log("auto", "warn",
+                             f"Can't write the telemetry ledger ({_append_error}) — "
+                             "keeping its events until it can")
+            return
+        if written >= 0:
+            while _unwritten and written >= len(_unwritten[0]):
+                written -= len(_unwritten.pop(0))
+            _torn = written > 0
+        if _append_error and not _unwritten:
+            from . import activity
+
+            _append_error = ""
+            activity.log("auto", "poll-recovered", "Telemetry ledger writing again")
 
 
 def _rotate_if_large(path: Path) -> None:
@@ -320,9 +357,14 @@ def load() -> Ledger:
 
 def _reset_cache() -> None:
     """Test hook: forget the cached fold (a test that rewrites the ledger inside
-    one filesystem timestamp tick would otherwise read the previous one)."""
-    global _fold_cache
+    one filesystem timestamp tick would otherwise read the previous one), and any
+    events an earlier test's ledger could not take."""
+    global _fold_cache, _torn, _append_error
     _fold_cache = None
+    with _append_lock:
+        _unwritten.clear()
+        _torn = False
+        _append_error = ""
 
 
 def observe_owed(kind: str, duty: str, owed: dict[str, int]) -> None:
@@ -348,7 +390,7 @@ def observe_owed(kind: str, duty: str, owed: dict[str, int]) -> None:
     dropped work it actually did.
     """
     prefix = f"{kind}:"
-    ledger = load()
+    ledger = _with_unwritten()
     known = {t.key for t in ledger.tasks if t.key.startswith(prefix)}
     for key, pr in owed.items():
         if key and key not in known:
@@ -365,10 +407,17 @@ def sample_due(now: float | None = None) -> bool:
     own last sample rather than a timer, so an applet that restarts every few
     minutes doesn't sample every launch."""
     now = time.time() if now is None else now
-    samples = load().samples
-    if not samples:
-        return True
-    return now - samples[-1].at >= SAMPLE_INTERVAL_SECS
+    taken = [s.at for s in _with_unwritten().samples[-1:]]
+    return not taken or now - max(taken) >= SAMPLE_INTERVAL_SECS
+
+
+def _with_unwritten() -> Ledger:
+    """The ledger as this process has recorded it: the file, then the events a full
+    disk is still holding. What decides whether to record again reads this, or every
+    poll on a full disk would queue the same event once more."""
+    with _append_lock:
+        held = [line.decode("utf-8") for line in _unwritten]
+    return fold(read_lines() + held) if held else load()
 
 
 def record_sample(session_left: float | None, week_left: float | None,

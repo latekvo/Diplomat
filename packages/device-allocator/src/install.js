@@ -16,9 +16,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { daemonAlive, readDiscovery } from './state.js';
+import { readDiscovery } from './state.js';
+import { daemonHealth } from './ipc.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = path.resolve(__dirname, '..');
@@ -204,13 +206,13 @@ function drift() {
   return stale;
 }
 
-function status() {
+async function status() {
   const s = {
     mcpRegistered: mcpRegistered(),
     skillInstalled: fs.existsSync(path.join(SKILL_DIR, 'SKILL.md')),
     ruleInstalled: fs.existsSync(RULE_DEST),
     claudeMdInjected: claudeMdInjected(),
-    daemonRunning: daemonAlive(),
+    daemonRunning: (await daemonHealth()) != null,
     nodePath: CMD_NODE,
     mcpJs: MCP_JS,
     version: VERSION,
@@ -228,7 +230,7 @@ function status() {
   s.outdated = installed(s) && s.drift.length > 0;
   return s;
 }
-function installed(s = status()) {
+function installed(s) {
   return s.mcpRegistered && s.skillInstalled && s.ruleInstalled && s.claudeMdInjected;
 }
 
@@ -303,24 +305,25 @@ function uninjectClaudeMd() {
   } catch {}
 }
 
-function startDaemon() {
-  if (daemonAlive()) return true;
+async function startDaemon() {
+  if (await daemonHealth()) return true;
   const child = spawn(CMD_NODE, [DAEMON_JS], { detached: true, stdio: 'ignore' });
   child.unref();
   // give it a moment to bind
   const deadline = Date.now() + 6000;
   while (Date.now() < deadline) {
-    if (daemonAlive()) return true;
-    try { execFileSync('sleep', ['0.2']); } catch {}
+    if (await daemonHealth(1000)) return true;
+    await delay(200);
   }
-  return daemonAlive();
+  return (await daemonHealth()) != null;
 }
-function stopDaemon() {
+async function stopDaemon() {
   try {
-    // Via paths.js discovery (honors DA_BASE_DIR) — a hardcoded ~/.diplomat path
+    // The serving daemon's own pid, else daemon.json's for one too wedged to answer.
+    // Both go through paths.js (honors DA_BASE_DIR) — a hardcoded ~/.diplomat path
     // here would SIGTERM the user's real daemon from a test-sandboxed uninstall.
-    const disc = readDiscovery();
-    if (disc && disc.pid) process.kill(disc.pid, 'SIGTERM');
+    const pid = (await daemonHealth())?.pid || readDiscovery()?.pid;
+    if (pid) process.kill(pid, 'SIGTERM');
   } catch {}
 }
 
@@ -365,16 +368,16 @@ function migrateLegacy() {
   } catch {}
 }
 
-function doInstall() {
+async function doInstall() {
   migrateLegacy();
   registerMcp();
   installSkillAndRule();
   injectClaudeMd();
-  startDaemon();
+  await startDaemon();
   return status();
 }
-function doUninstall() {
-  stopDaemon();
+async function doUninstall() {
+  await stopDaemon();
   unregisterMcp();
   uninstallSkillAndRule();
   uninjectClaudeMd();
@@ -387,14 +390,14 @@ const arg = process.argv[2] || '--check';
 let out;
 try {
   switch (arg) {
-    case '--install': { const s = doInstall(); out = { action: 'install', ...s, installed: installed(s) }; break; }
-    case '--uninstall': { const s = doUninstall(); out = { action: 'uninstall', ...s, installed: installed(s) }; break; }
-    case '--start-daemon': out = { action: 'start-daemon', ...status(), daemonRunning: startDaemon() }; break;
+    case '--install': { const s = await doInstall(); out = { action: 'install', ...s, installed: installed(s) }; break; }
+    case '--uninstall': { const s = await doUninstall(); out = { action: 'uninstall', ...s, installed: installed(s) }; break; }
+    case '--start-daemon': out = { action: 'start-daemon', ...await status(), daemonRunning: await startDaemon() }; break;
     case '--check':
-    default: out = { action: 'check', ...status(), installed: installed() }; break;
+    default: { const s = await status(); out = { action: 'check', ...s, installed: installed(s) }; break; }
   }
 } catch (e) {
   // Always emit parseable JSON (with current status) so the applet degrades cleanly.
-  out = { action: arg.replace(/^--/, ''), error: e.message || String(e), ...status(), installed: false };
+  out = { action: arg.replace(/^--/, ''), error: e.message || String(e), ...await status(), installed: false };
 }
 process.stdout.write(`${JSON.stringify(out, null, 2)}\n`);

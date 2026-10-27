@@ -64,7 +64,7 @@ def load() -> list[dict]:
 
 
 def save(entries: list[dict]) -> None:
-    """Atomic write (tmp + rename); best-effort, never raises."""
+    """Atomic write (tmp + rename); raises ``OSError`` when it can't be written."""
     write_atomic(banned_path(), {"banned": entries})
 
 

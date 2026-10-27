@@ -393,6 +393,8 @@ def parse_work_key(key: str) -> tuple[str, str, str, int] | None:
 # - capacity: only auto work is held to the device's automatic-task cap - a
 #   human's click is one deliberate agent, not a monitor emptying its queue
 #   (dispatch_decide);
+# - disk: only auto work is held to the free-space floor (:mod:`diskfloor`) - a
+#   human starting one agent on a tight disk is their call (dispatch_decide);
 # - budget: only auto work is held to what is left of the limits it spends
 #   against - a human spending their own last slice is their call (dispatch_decide);
 # - mesh: only auto origination is mesh-gated - a human clicking THIS machine's
@@ -415,6 +417,7 @@ VERDICT_STAND_DOWN = "stand_down"  # mesh: another node originates (auto only)
 VERDICT_AT_CAPACITY = "at_capacity"  # this device already runs its cap (auto only)
 VERDICT_UNAFFORDABLE = "unaffordable"  # not enough rate limit left (auto only)
 VERDICT_NOT_ALLOWED = "not_allowed"  # author outside the auto-review allowlist
+VERDICT_LOW_DISK = "low_disk"  # the disk agents write to is below its floor (auto only)
 
 
 def dispatch_decide(
@@ -425,10 +428,11 @@ def dispatch_decide(
     at_capacity: bool,
     unaffordable: bool = False,
     outside_allowlist: bool = False,
+    low_disk: bool = False,
 ) -> str:
     """The one decision both interfaces obey, in fixed precedence: ban, then the
-    auto-review allowlist, then in-flight, then (auto only) this device's
-    concurrency cap, then (auto only) its rate-limit budget, then (auto only) mesh.
+    auto-review allowlist, then in-flight, then (auto only) this device's free
+    disk, its concurrency cap, its rate-limit budget, and mesh.
 
     The two author verdicts lead together because they are the same kind of fact -
     a standing statement about a person, true before this poll and after it - while
@@ -449,13 +453,21 @@ def dispatch_decide(
     would claim the work for, and holding the job costs nothing but the wait for a
     window to refill or a balance to be topped up. It ranks BELOW capacity only
     because capacity is the measurement already in hand — a saturated device has no
-    slot to spend a budget on, so the probe is never worth taking."""
+    slot to spend a budget on, so the probe is never worth taking.
+
+    The disk leads all three. An agent started on a nearly full disk cannot finish
+    and pushes the machine toward ENOSPC, wherever its bay or its budget stands; a
+    freed bay does not free space, so it is the hold the operator has to act on and
+    the one the feed should name while several hold; and one ``statvfs`` is the
+    cheapest of the measurements."""
     if banned:
         return VERDICT_BANNED
     if outside_allowlist:
         return VERDICT_NOT_ALLOWED
     if agent_on_pr:
         return VERDICT_IN_FLIGHT
+    if source == SOURCE_AUTO and low_disk:
+        return VERDICT_LOW_DISK
     if source == SOURCE_AUTO and at_capacity:
         return VERDICT_AT_CAPACITY
     if source == SOURCE_AUTO and unaffordable:

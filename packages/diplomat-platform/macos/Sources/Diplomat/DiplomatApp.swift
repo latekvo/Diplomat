@@ -10,7 +10,7 @@ enum Launch {
     static func main() {
         let unrunnable = Headless.unrunnable(in: ProcessInfo.processInfo.environment)
         guard unrunnable.isEmpty else {
-            FileHandle.standardError.write(Data(Headless.refusal(unrunnable).utf8))
+            try? FileHandle.standardError.write(contentsOf: Data(Headless.refusal(unrunnable).utf8))
             exit(64)   // EX_USAGE
         }
         DiplomatApp.main()
@@ -117,6 +117,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // no gh auth, so a CI runner can host it.
         if env["DIPLOMAT_QUEUE_TEST"] == "1" {
             Task { @MainActor in let ok = await QueueTest.run(); exit(ok ? 0 : 1) }
+        }
+        // Self-test of the free-disk floor: the dispatcher and the 06:00 updater against
+        // a real volume filled and drained. Spawns nothing; skips where none can mount.
+        if env["DIPLOMAT_LOWDISK_TEST"] == "1" {
+            Task { @MainActor in let ok = await LowDiskTest.run(); exit(ok ? 0 : 1) }
         }
         // Self-test of what a resolved tick hands the panel: the rows, and the bays
         // measured beside them. The evidence is a literal, so it reads no `ps` and
@@ -358,7 +363,7 @@ enum SingleInstance {
     }
 
     private static func log(_ msg: String) {
-        FileHandle.standardError.write(Data("Diplomat singleton: \(msg)\n".utf8))
+        try? FileHandle.standardError.write(contentsOf: Data("Diplomat singleton: \(msg)\n".utf8))
     }
 }
 

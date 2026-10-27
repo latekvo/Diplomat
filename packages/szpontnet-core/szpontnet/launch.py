@@ -7,6 +7,7 @@ easy to get subtly wrong, so they live in one place rather than in each caller.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import subprocess
@@ -24,11 +25,15 @@ def write_prompt(prompt: str) -> str:
     dispatched prompt lands here — don't leave it readable to other local users
     (nor world-readable by umask).
     """
+    path = ""
     try:
         fd, path = tempfile.mkstemp(prefix="szpont-job-", suffix=".txt")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(prompt)
     except OSError as exc:
+        if path:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
         raise JobSpawnError(f"couldn't stage prompt: {exc}") from exc
     return path
 

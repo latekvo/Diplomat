@@ -115,7 +115,12 @@ export function openArgv(terminal, launcher) {
 // the caller has already quarantined the device, and the repair TTL frees it if no
 // agent ever reports back.
 export function openRepairWindow(key, command, launcher) {
-  fs.writeFileSync(launcher, launcherScript(command, launcher), { mode: 0o755 });
+  try { fs.writeFileSync(launcher, launcherScript(command, launcher), { mode: 0o755 }); }
+  catch (e) {
+    // A full disk can leave it half-written; no window opens on it, so drop it.
+    try { fs.unlinkSync(launcher); } catch {}
+    throw e;
+  }
   const terminal = resolveTerminal();
   const [file, args] = openArgv(terminal, launcher);
   if (file === 'osascript') {

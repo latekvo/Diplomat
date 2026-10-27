@@ -7,10 +7,12 @@ snapshot (:mod:`szpontnet.atomicjson`), and the applet's shared
 resolving the repo the agents work in must not depend on the mesh add-on being
 installed).
 
-The write tests pin the two behaviours every call site relies on: the write is
-atomic (no lingering ``.tmp``, target replaced whole) and ``indent`` controls the
-on-disk shape (the snapshot and peer cache use ``indent=1``, the rest ``indent=2``),
-so each file keeps its exact format.
+The write tests pin the behaviours every call site relies on: the write is atomic
+(no lingering ``.tmp``, target replaced whole), one that fails raises with the target
+untouched and the ``.tmp`` gone (each caller decides what an unsaved file means, and
+none can report a save that did not happen), and ``indent`` controls the on-disk
+shape (the snapshot and peer cache use ``indent=1``, the rest ``indent=2``), so each
+file keeps its exact format.
 
 The read tests pin the contract that makes a corrupt state file survivable — every
 way a file can fail to hold a JSON object collapses to ``None``. That is the point
@@ -27,8 +29,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), *[".."] * 4, "scripts"))
 
 import pytest  # noqa: E402
+from full_volume import full_volume  # noqa: E402,F401  (a fixture)
 
 from diplomat_runtime import atomicjson as diplomat_atomicjson  # noqa: E402
 from szpontnet import atomicjson as szpontnet_atomicjson  # noqa: E402
@@ -95,14 +99,27 @@ def test_replaces_existing_file_atomically(tmp_path, write_atomic, read_object):
     assert json.loads(p.read_text()) == {"fresh": 1}
 
 
-def test_unwritable_target_is_swallowed(tmp_path, write_atomic, read_object):
-    # A directory where the file should be — os.replace/mkdir fails; the write is
-    # best-effort and must never raise into the caller (an unwritable HOME still
-    # gets an in-memory identity, a rendered-but-unsaved snapshot, etc.).
+def test_an_unwritable_target_raises_and_leaves_no_tmp(tmp_path, write_atomic,
+                                                       read_object):
+    # A directory where the file should be: the rename fails after the tmp is written.
     p = tmp_path / "s.json"
     p.mkdir()
-    write_atomic(p, {"x": 1})  # must not raise
+    with pytest.raises(OSError):
+        write_atomic(p, {"x": 1})
     assert p.is_dir()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_a_full_disk_raises_and_keeps_the_old_file(full_volume, write_atomic,
+                                                   read_object):
+    """More than the volume holds: the tmp is created and the write into it fails
+    part way, which is where a full disk leaves a half-written ``.tmp`` behind."""
+    p = full_volume.path / "s.json"
+    write_atomic(p, {"v": "old"})
+    with pytest.raises(OSError):
+        write_atomic(p, {"v": "x" * (32 << 20)})
+    assert read_object(p) == {"v": "old"}
+    assert full_volume.leftovers() == []
 
 
 # ---- read_object: every failure collapses to None ------------------------

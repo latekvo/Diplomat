@@ -23,6 +23,15 @@ from .atomicjson import read_object, write_atomic
 TOKEN_STATES = ("auto", "ok", "low", "out")
 
 
+class IdentityNotSaved(Exception):
+    """This machine's identity was minted just now and could not be written down.
+
+    A node running on it would come back as a different machine on its next start,
+    a stranger to every peer that trusted, claimed against or routed to it - so it
+    does not start at all, and the next launch mints again.
+    """
+
+
 def mesh_dir() -> Path:
     """State directory: ``SZPONTNET_DIR`` if set (tests give every fake node
     its own), else whatever the host answers — see :meth:`.host.Host.state_dir`."""
@@ -94,7 +103,9 @@ def load() -> LocalNode:
     ``strengthAuto`` on, so its tier is (re)computed from the machine's specs on
     every load and persisted. An explicit ``tier`` in the file with no
     ``strengthAuto`` flag is treated as a pin (back-compat: that's how a
-    hand-written node.json expresses a chosen tier)."""
+    hand-written node.json expresses a chosen tier).
+
+    Raises :class:`IdentityNotSaved` when a minted id can't be persisted."""
     _, _, default_tier = config.tier_bounds()
     # A missing / corrupt / non-object node.json falls back to defaults rather than
     # aborting startup: `in raw` / `raw.get` below would raise on a bare scalar.
@@ -120,14 +131,20 @@ def load() -> LocalNode:
         strength_auto=auto,
     )
     # First run, a corrupt file, or a refreshed auto tier: persist the current view.
+    # Only a minted id has to land; a tier that didn't is re-detected next load.
     if raw.get("id") != node.id or node.to_dict() != raw:
-        save(node)
+        try:
+            save(node)
+        except OSError as exc:
+            if raw.get("id") != node.id:
+                raise IdentityNotSaved(
+                    f"couldn't save {node_path()}: {exc.strerror or exc}") from exc
     return node
 
 
 def save(node: LocalNode) -> None:
-    """Atomic write (tmp + rename) so a concurrent reader never sees a torn file."""
-    # best-effort: an unwritable HOME still gets an in-memory identity
+    """Atomic write (tmp + rename) so a concurrent reader never sees a torn file.
+    Raises ``OSError`` when it can't be written."""
     write_atomic(node_path(), node.to_dict())
 
 

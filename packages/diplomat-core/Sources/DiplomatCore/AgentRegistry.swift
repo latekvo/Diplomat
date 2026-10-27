@@ -163,6 +163,9 @@ public enum AgentRegistry {
         return write(records)
     }
 
+    /// What one write to the book did. `unchanged` says nothing about the disk.
+    public enum BookWrite: Equatable { case written, unchanged, failed }
+
     /// Replace the book with `transform` of what is on disk, read-modify-write under
     /// the lock.
     ///
@@ -172,19 +175,21 @@ public enum AgentRegistry {
     /// cap spent twice. Unchanged books are not rewritten.
     @discardableResult
     public static func update(
-        _ transform: ([AgentState.RunRecord]) -> [AgentState.RunRecord]) -> Bool {
+        _ transform: ([AgentState.RunRecord]) -> [AgentState.RunRecord]) -> BookWrite {
         lock.lock()
         defer { lock.unlock() }
         let before = loadUnlocked()
         let after = transform(before)
-        return after == before ? true : write(after)
+        if after == before { return .unchanged }
+        return write(after) ? .written : .failed
     }
 
-    /// Append one run, read-modify-write under the lock.
-    public static func add(_ record: AgentState.RunRecord) {
+    /// Append one run, read-modify-write under the lock. False when it could not be saved.
+    @discardableResult
+    public static func add(_ record: AgentState.RunRecord) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        write(loadUnlocked() + [record])
+        return write(loadUnlocked() + [record])
     }
 
     /// Stage a run's directory and register it.
@@ -194,15 +199,24 @@ public enum AgentRegistry {
     /// user message IS this text — and a run directory that outlives `/tmp` cleanup
     /// keeps that link. 0600, because the prompt can quote a private repo and `$HOME` is
     /// readable by other local users under a default umask.
+    ///
+    /// Nil, leaving nothing behind, when the prompt or the record can't be written (a
+    /// full disk): the agent reads its prompt from that file, and an agent the book never
+    /// heard of holds a bay nothing counts. Python twin: `agentregistry.create_run`.
     @discardableResult
     public static func createRun(_ record: AgentState.RunRecord,
-                                 prompt: String) -> AgentState.RunRecord {
+                                 prompt: String) -> AgentState.RunRecord? {
         let dir = runDir(record.runID)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? prompt.write(to: promptPath(record.runID), atomically: true, encoding: .utf8)
+        guard (try? FileManager.default.createDirectory(at: dir,
+                                                        withIntermediateDirectories: true)) != nil,
+              (try? prompt.write(to: promptPath(record.runID), atomically: true,
+                                 encoding: .utf8)) != nil,
+              add(record) else {
+            try? FileManager.default.removeItem(at: dir)
+            return nil
+        }
         try? FileManager.default.setAttributes([.posixPermissions: 0o600],
                                                ofItemAtPath: promptPath(record.runID).path)
-        add(record)
         return record
     }
 
@@ -360,10 +374,17 @@ public enum AgentRegistry {
     ///
     /// Called with what the resolver found retirable — positive evidence the agent
     /// ended — never on a timer.
-    public static func forget(_ runIDs: Set<String>) {
-        guard !runIDs.isEmpty else { return }
-        update { $0.filter { !runIDs.contains($0.runID) } }
+    ///
+    /// `.failed` when the book can't be written, with every directory still in place:
+    /// the runs are still booked, and their directories hold what prices them. Python
+    /// twin: `agentregistry.forget`.
+    @discardableResult
+    public static func forget(_ runIDs: Set<String>) -> BookWrite {
+        guard !runIDs.isEmpty else { return .unchanged }
+        let wrote = update { $0.filter { !runIDs.contains($0.runID) } }
+        guard wrote != .failed else { return .failed }
         for id in runIDs { try? FileManager.default.removeItem(at: runDir(id)) }
+        return wrote
     }
 
     // MARK: - Encoding

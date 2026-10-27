@@ -123,3 +123,34 @@ def test_a_node_with_no_host_is_uncapped(node, spawned):
     for n in range(5):
         assert node._spawn_local(_job(f"review:github.com/o/r#{n}@sha"))[0] == "spawned"
     assert len(spawned) == 5
+
+
+@pytest.fixture
+def sandboxed(monkeypatch):
+    """Record what reached the confinement runner instead of launching anything."""
+    calls: list[str] = []
+    from szpontnet import node as node_mod
+
+    monkeypatch.setattr(node_mod.spawnjob, "spawn_confined",
+                        lambda prompt, result_file: calls.append(prompt) or "/p")
+    return calls
+
+
+def test_a_full_machine_declines_a_foreign_job_too(node, sandboxed):
+    """A foreign job's sandbox runs on this machine — its disk, its quota — so the
+    host's ceiling holds for it as for a personal one, and the slot fails over."""
+    busy = _Busy()
+    host.set_host(busy)
+    assert node._run_confined(_job(), "peer") == ("declined", "at job capacity", False)
+    assert busy.asked == [[]]
+    assert sandboxed == []
+    assert node._confined_running == {}
+
+
+def test_a_foreign_job_already_running_here_is_deduped_not_declined(node, sandboxed):
+    busy = _Busy()
+    host.set_host(busy)
+    node._agents["review:github.com/o/r#1@sha"] = {"done": "", "at": 0.0, "job": "j0"}
+    assert node._run_confined(_job(), "peer") == ("spawned", "", True)
+    assert busy.asked == []
+    assert sandboxed == []

@@ -104,7 +104,7 @@ enum TelemetryCommand {
             withJSONObject: out, options: [.sortedKeys, .prettyPrinted]) else {
             die("could not serialise telemetry", 1)
         }
-        FileHandle.standardOutput.write(data)
+        emit(data)
     }
 
     private static func dist(_ d: Telemetry.Distribution) -> [String: Any] {

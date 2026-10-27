@@ -54,7 +54,8 @@ async def _stop_when_orphaned(node, parent: int, interval: float = 1.0) -> None:
 
 
 def _run_node() -> int:
-    from . import env, singlelock, singleton
+    from . import env, identity, singlelock, singleton
+    from .host import log
     from .node import MeshNode
 
     # Captured before anything slow (lock, reaper, MeshNode startup) so it is still
@@ -88,8 +89,14 @@ def _run_node() -> int:
         print(f"mesh singleton: reaped {len(reaped)} stale node(s) {sorted(reaped)}",
               file=sys.stderr)
 
-    async def main() -> None:
-        node = MeshNode()
+    async def main() -> int:
+        try:
+            node = MeshNode()
+        except identity.IdentityNotSaved as exc:
+            why = f"{exc} — a new identity it would lose on restart"
+            print(f"mesh node not starting: {why}", file=sys.stderr)
+            log("warn", f"Mesh node not starting: {why}")
+            return 1
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError):
@@ -108,12 +115,12 @@ def _run_node() -> int:
                 with contextlib.suppress(asyncio.CancelledError):
                     await orphan_watch
         print("mesh node stopped", file=sys.stderr)
+        return 0
 
     try:
-        asyncio.run(main())
+        return asyncio.run(main())
     finally:
         singlelock.release(lock)
-    return 0
 
 
 def _daemonize() -> int:
@@ -325,8 +332,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.daemon:
         return _daemonize()
     if args.fingerprint:
-        from . import crypto
-        key = crypto.load_or_create()
+        from . import crypto, identity
+        try:
+            key = crypto.load_or_create()
+        except identity.IdentityNotSaved as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
         print(key.fingerprint if key else "(keyless: cryptography not installed)")
         return 0
     if args.status:

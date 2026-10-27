@@ -11,7 +11,7 @@ APP="Diplomat.app"
 
 # Always rebuild the bundle so the install reflects the current source. (A stale
 # pre-existing Diplomat.app must NOT be deployed as-is — that silently ships old
-# code.) build-app.sh rm -rf's and rebuilds, so this is idempotent.
+# code.) build-app.sh rebuilds and swaps the new bundle in, so this is idempotent.
 "$HERE/build-app.sh"
 
 # launchd starts the bundle where build-app.sh writes it, so the login instance is

@@ -290,7 +290,7 @@ enum TrackTest {
         let record = AgentRegistry.createRun(
             AgentState.RunRecord(runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
                                  prNumber: 1, kind: "review", label: "self-test"),
-            prompt: "self-test")
+            prompt: "self-test")!
         defer { AgentRegistry.forget([record.runID]) }
         // A benign stand-in for the agent, NAMED as one: every scan that counts, adopts
         // or reaps an agent asks `AgentRunner.isAgentLine`, so a stand-in under any other
