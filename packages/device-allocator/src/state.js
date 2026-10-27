@@ -89,16 +89,14 @@ export function pidAlive(pid) {
   catch (e) { return e.code === 'EPERM'; } // alive but not ours-to-signal
 }
 
-// A stable per-incarnation identity for a pid, so a PID reused after the original process
-// exits is never mistaken for it. The same from any process, and no wall-clock step moves
-// it. Linux: /proc/<pid>/stat field 22 (starttime, jiffies since boot; Linux ps derives
-// lstart from the current clock). Elsewhere (macOS): `ps -o lstart=`, in one locale and
-// zone. '' when it can't be read.
+// One incarnation of a pid, read alike from any process and unmoved by a wall-clock step.
+// Linux: /proc starttime (ticks since boot, so unique within one boot only; Linux ps
+// derives lstart from the clock). Elsewhere: ps lstart in a fixed locale and zone. ''
+// when unreadable.
 export function procIdentity(pid) {
   try {
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    // comm (field 2) is parenthesized and may contain spaces/')' — split the tail after
-    // the LAST ')': starttime is overall field 22 = index 19 of that tail (state is [0]).
+    // comm (field 2) may hold spaces and ')': after the last ')', field 22 is index 19.
     const tail = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
     if (tail[19]) return tail[19];
   } catch {}

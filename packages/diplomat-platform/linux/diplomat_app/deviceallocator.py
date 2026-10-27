@@ -60,8 +60,7 @@ def deps_installed() -> bool:
 
 
 def base_dir() -> Path:
-    """The daemon's directory. ``DA_BASE_DIR`` relocates it, as it does for the daemon
-    (``src/paths.js``), so this applet can be pointed at a scratch daemon."""
+    """The daemon's directory, relocated by ``DA_BASE_DIR`` as in ``src/paths.js``."""
     env = os.environ.get("DA_BASE_DIR")
     if env:
         return Path(env).expanduser()
@@ -152,8 +151,6 @@ def ensure_deps() -> bool:
 
 
 def read_state() -> dict | None:
-    """The daemon's public snapshot, decoded by :func:`decode_state`. None if it has
-    never run, or the file is not a snapshot."""
     try:
         with open(state_path(), "r") as f:
             raw = json.load(f)
@@ -180,8 +177,6 @@ _ROW_OPTIONAL_STRINGS = ("name", "version", "apiVersion", "handle", "brokenReaso
 
 
 def _row_readable(row) -> bool:
-    """Whether one ``devices[]`` entry has the shape the screen reads: the three
-    required strings, and every optional field absent, null or of its type."""
     if not isinstance(row, dict):
         return False
     if not all(isinstance(row.get(k), str) for k in _ROW_STRINGS):
@@ -203,14 +198,8 @@ def _row_readable(row) -> bool:
 
 
 def decode_state(raw) -> dict | None:
-    """The snapshot as the applet reads it: ``devices`` (the daemon's rows),
-    ``daemonPid``, and ``remote`` (a :class:`RemoteStatus`, or None when the snapshot
-    has none, as from a daemon without a remote pool).
-
-    A row this build cannot read drops that row alone, and an unreadable ``remote``
-    or ``daemonPid`` never costs the device list. ``updatedAt`` is left out: it
-    changes on every publish and would defeat the Store's publish-on-change guard.
-    """
+    """``updatedAt`` is left out: it changes on every publish and would defeat the
+    Store's publish-on-change guard."""
     if not isinstance(raw, dict) or not isinstance(raw.get("devices"), list):
         return None
     pid = raw.get("daemonPid")
@@ -241,7 +230,6 @@ def json_text(v) -> str:
 
 
 def _string(v) -> str | None:
-    """A non-empty string, and nothing else."""
     return v if isinstance(v, str) and v else None
 
 
@@ -250,8 +238,7 @@ _ISO_INSTANT = re.compile(
 
 
 def parse_instant(v) -> float | None:
-    """Epoch seconds from an ISO-8601 instant, with or without milliseconds
-    (``Date.toISOString`` writes them), or from epoch milliseconds."""
+    """Epoch seconds from an ISO-8601 instant or from epoch milliseconds."""
     if isinstance(v, str):
         if not _ISO_INSTANT.fullmatch(v):
             return None
@@ -266,10 +253,8 @@ def parse_instant(v) -> float | None:
 
 @dataclass(frozen=True)
 class RemoteStatus:
-    """The remote device pool's status as the daemon publishes it (``remote`` in the
-    snapshot): the provider's name, a ``state``, and whatever else the provider adds.
-    The known extras are read leniently; every other key is kept, in key order, as a
-    ``(key, text)`` pair to be shown as it stands."""
+    """The snapshot's ``remote``. Every key it does not name is kept, sorted, as a
+    ``(key, text)`` pair shown as it stands."""
 
     #: ``off``, ``loading``, ``error``, ``on``, ``signed-out``, ``signing-in``,
     #: ``sign-in-unanswered``, or ``unknown`` when the snapshot names none.
@@ -284,15 +269,14 @@ class RemoteStatus:
 
     @classmethod
     def from_json(cls, v) -> RemoteStatus | None:
-        """None for an absent or ``null`` value. Any other value that is not an object
-        is a status that cannot be read, shown as such rather than as an absent pool."""
+        """A non-object is an unreadable status, never an absent pool."""
         if v is None:
             return None
         if not isinstance(v, dict):
             return cls(state="unknown", extras=(("remote", json_text(v)),))
         known = {"provider", "state", "reason", "url", "loginUrl"}
         retry_at = parse_instant(v["retryAt"]) if "retryAt" in v else None
-        # An unparseable retryAt is still shown, as what it says.
+        # An unparseable retryAt stays an extra, shown as it stands.
         if retry_at is not None:
             known.add("retryAt")
         reason = v.get("reason")
@@ -311,8 +295,6 @@ class RemoteStatus:
 
 @dataclass(frozen=True)
 class DaemonReply:
-    """One daemon answer: its HTTP status, and its body when that is JSON."""
-
     status: int
     json: object = None
 
@@ -339,8 +321,7 @@ class RemotePoolDevice:
 
 @dataclass(frozen=True)
 class RemoteReply:
-    """What the daemon answered a remote-pool call with: signed in (``ok``), a pool
-    listing (``devices``), or why neither (``reason``)."""
+    """Signed in (``ok``), a listing (``devices``), or why neither (``reason``)."""
 
     ok: bool = False
     devices: tuple[RemotePoolDevice, ...] | None = None
@@ -365,13 +346,9 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
 
 def call(endpoint: str, body: dict | None = None, *,
          timeout_secs: float) -> DaemonReply | None:
-    """POST a JSON body to one of the daemon's endpoints over its unix socket, and
-    return its answer whatever the HTTP status: None only when there was no answer
-    (no socket, a body that won't encode, the connection refused, or the daemon
-    silent for ``timeout_secs``).
-
-    Blocking; call it off the GUI thread. Each call is its own connection, so a long
-    one (a sign-in) holds up no other."""
+    """Any HTTP status is an answer; None is no answer at all. Blocking, so off the GUI
+    thread. Each call is its own connection, so a long one (a sign-in) holds up no
+    other."""
     path = socket_path()
     if not path.exists():
         return None
@@ -398,22 +375,20 @@ def call(endpoint: str, body: dict | None = None, *,
 
 
 def post(endpoint: str, body: dict, *, timeout_secs: float) -> bool:
-    """Whether the daemon answered 2xx. A 4xx/5xx is a refusal, never a success: a
-    device that left the pool between the poll snapshot and the click answers 404,
-    and the activity feed must not assert an action that never happened."""
+    """A 4xx is never a success: a device gone since the snapshot answers 404, and the
+    activity feed must not log an action that never happened."""
     reply = call(endpoint, body, timeout_secs=timeout_secs)
     return reply is not None and reply.ok
 
 
 def kill_device(key: str) -> bool:
-    """Free a device and shut it down (``/kill``), or hand a remote lease back to its
-    pool. Generous timeout: the daemon shuts a real simulator/emulator down inline."""
+    """Free a device and shut it down, or return a remote lease. The daemon shuts a
+    simulator/emulator down inline, hence the timeout."""
     return post("kill", {"key": key}, timeout_secs=25)
 
 
 def release_device(key: str, owner_pid: int) -> bool:
-    """Take a device back from the agent holding it (``/release`` on its behalf). The
-    daemon shuts down a device it booted itself, and returns a remote lease."""
+    """Take a device back from the agent holding it, releasing on its behalf."""
     reply = call("release", {"ownerPid": owner_pid, "deviceId": key}, timeout_secs=25)
     if reply is None or not reply.ok:
         return False
@@ -423,24 +398,22 @@ def release_device(key: str, owner_pid: int) -> bool:
 
 
 def mark_repaired(key: str) -> bool:
-    """End a device's quarantine (``/repaired``), putting it back in the pool."""
+    """End a device's quarantine."""
     return post("repaired", {"key": key}, timeout_secs=10)
 
 
-#: The daemon answers a sign-in only once the browser sign-in finishes or gives up,
-#: which takes up to ten minutes.
+#: The daemon answers a sign-in once the browser sign-in ends: up to ten minutes.
 SIGN_IN_TIMEOUT_SECS = 11 * 60 + 30
 #: A listing is a network call on the daemon's side.
 LISTING_TIMEOUT_SECS = 90
 
 
 def remote_sign_in() -> RemoteReply:
-    """Re-prompt the remote pool's sign-in (``/remote/sign-in``)."""
     return sign_in_reply(call("remote/sign-in", timeout_secs=SIGN_IN_TIMEOUT_SECS))
 
 
 def remote_devices() -> RemoteReply:
-    """What the remote pool lists now (``/remote/devices``). Never prompts a sign-in."""
+    """Never prompts a sign-in."""
     return devices_reply(call("remote/devices", timeout_secs=LISTING_TIMEOUT_SECS))
 
 
@@ -549,10 +522,8 @@ def start_daemon() -> dict | None:
 
 
 def restart_daemon() -> dict | None:
-    """Stop the running daemon and start this checkout's, the one way to replace a
-    daemon started from older code: ``--install`` and ``--start-daemon`` keep any
-    daemon that answers. Local leases survive; the old daemon shuts down the devices
-    it booted and gives remote ones back to their pool."""
+    """The one way to replace a daemon from older code: ``--install`` and
+    ``--start-daemon`` keep any that answers."""
     return _run_installer("--restart-daemon")
 
 
@@ -581,8 +552,7 @@ def free_count(state: dict) -> int:
 
 
 def is_remote(dev: dict) -> bool:
-    """A device leased from the remote pool. A daemon without one writes no
-    ``source``, and every one of its rows is local."""
+    """A daemon without a remote pool writes no ``source``: its rows are all local."""
     return dev.get("source") == "remote"
 
 
@@ -593,7 +563,6 @@ GREY = "#8E8E93"
 
 
 def status_badge(dev: dict) -> tuple[str, str]:
-    """The word and tint of the status capsule a device row ends on."""
     status = dev.get("status", "free")
     if status == "ready":
         return ("in use", "#34C759") if is_allocated(dev) else ("free", GREY)
@@ -607,7 +576,7 @@ def status_badge(dev: dict) -> tuple[str, str]:
 
 
 def idle_minutes(dev: dict) -> int | None:
-    """Whole minutes idle (None under a minute). The daemon floors idleMs to minutes."""
+    """Whole minutes idle, floored as the daemon does; None under a minute."""
     ms = dev.get("idleMs")
     if not _is_number(ms) or not math.isfinite(ms) or ms < 60_000:
         return None
@@ -615,9 +584,8 @@ def idle_minutes(dev: dict) -> int | None:
 
 
 def idle_color(minutes: int, limit: int) -> str | None:
-    """The tint idle time takes as it nears ``limit``, the leased idle limit in
-    minutes past which the daemon takes the device back (0 = never); None for the
-    ordinary muted text."""
+    """``limit``: the leased idle minutes after which the daemon takes the device back,
+    0 = never. None is the ordinary muted text."""
     if limit <= 0:
         return None
     if minutes >= limit - 1:

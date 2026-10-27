@@ -2,23 +2,13 @@ import SwiftUI
 import AppKit
 import DiplomatCore
 
-/// The Devices screen: everything about the device-allocator module in one place,
-/// swapped in for the main panel body when the header's device button (or the left
-/// column's Devices header) is tapped.
-///
-/// Lists on the left, controls on the right, as on the main panel: every device in the
-/// daemon's snapshot with the actions the daemon takes for it, and the allocator events
-/// from the activity feed; then the allocator itself (daemon, install, idle limits) and
-/// the remote device pool (its provider module, its status, sign-in, what it lists, and
-/// the devices leased from it).
-///
-/// Every remote field is optional: against a daemon with no remote pool the card says so
-/// and the rest of the screen is unchanged.
+/// The Devices screen. Every remote field is optional: against a daemon with no remote
+/// pool the card says so and the rest of the screen is unchanged.
 struct DevicesScreen: View {
     @EnvironmentObject var store: Store
     @Binding var isPresented: Bool
-    /// Whether the screen keeps the install status and the provider fresh while it is
-    /// on screen. Off in a render, whose seeded state a real read would overwrite.
+    /// Keeps the install status and the provider fresh while on screen; off in a render,
+    /// whose seeded state a real read would overwrite.
     var live: Bool = !Headless.isRender
     var pollNanoseconds: UInt64 = 15_000_000_000
 
@@ -139,8 +129,8 @@ struct DevicesScreen: View {
                         onKill: { Task { await store.killDevice(dev.key) } })
     }
 
-    /// The feed's allocator lines. An `auto` kill-device line is the agent reaper
-    /// closing a window, not a device, so it stays out.
+    /// The feed's allocator lines. An `auto` kill-device is the agent reaper closing a
+    /// window, not a device.
     static let eventActions: Set<String> = [
         "kill-device", "release-device", "repair-done", "remote-lease-ended",
         "allocator-install", "allocator-uninstall",
@@ -197,7 +187,6 @@ struct DevicesScreen: View {
 
     private var remote: RemoteStatus? { store.deviceState?.remote }
 
-    /// Whether the daemon has a pool to call: one it reports, and not off.
     private var remoteCallable: Bool { remote.map { $0.state != "off" } ?? false }
 
     private var remoteCard: some View {
@@ -260,8 +249,7 @@ struct DevicesScreen: View {
         if save(d) { providerDraft = nil }
     }
 
-    /// Write one provider change and say whether it landed; a failure stays on screen
-    /// until a change lands.
+    /// A failure stays on screen until a change lands.
     @discardableResult
     private func save(_ provider: String) -> Bool {
         let ok = store.setDeviceRemoteProvider(provider)
@@ -359,7 +347,6 @@ struct DevicesScreen: View {
 // MARK: - remote pool pieces
 
 enum RemoteUI {
-    /// One word per state the daemon publishes; an unknown one is shown as it is.
     static func pill(_ r: RemoteStatus?, snapshot: Bool) -> StatusPill {
         guard let r else {
             return StatusPill(text: snapshot ? "not available" : "unknown", tint: .secondary,
@@ -379,8 +366,6 @@ enum RemoteUI {
     }
 }
 
-/// The provider's status, every key of it: the known ones in words, the rest as
-/// `key value` lines.
 private struct RemoteStatusView: View {
     let status: RemoteStatus
 
@@ -441,7 +426,6 @@ private struct RemoteStatusView: View {
     }
 }
 
-/// What the last sign-in or listing answered, or that it is still waiting.
 private struct RemoteCallLine: View {
     let call: Store.RemoteCall
     let label: String
@@ -500,14 +484,12 @@ private struct RemoteCallLine: View {
 
 // MARK: - one device
 
-/// A device on the Devices screen: what it is, where it comes from, who holds it and
-/// for how long, and the daemon actions that apply to it.
 struct DeviceScreenRow: View {
     let dev: DeviceAllocation
     let tracked: [Store.AgentRow]
     /// The remote pool's name, for a leased row's source chip.
     let provider: String?
-    /// The leased idle limit, in minutes (0 = never), which the idle time is coloured toward.
+    /// The leased idle limit in minutes (0 = never), which idle time is coloured toward.
     let idleLimit: Int
     let onFree: () -> Void
     let onRepaired: () -> Void
@@ -589,8 +571,7 @@ struct DeviceScreenRow: View {
         return "since \(Fmt.clock(at)) (\(Fmt.duration(now.timeIntervalSince(at))))"
     }
 
-    /// Only what the daemon does for this row: a lease's holder can be dropped, a
-    /// quarantine ended, and any running device killed (a remote one returned).
+    /// Only the actions the daemon takes for this row.
     @ViewBuilder
     private var actions: some View {
         HStack(spacing: 4) {
@@ -626,7 +607,6 @@ struct DeviceScreenRow: View {
     }
 }
 
-/// The status capsule a device row ends on.
 struct DeviceStatusBadge: View {
     let dev: DeviceAllocation
 
@@ -671,14 +651,14 @@ extension DeviceAllocation {
         }
     }
 
-    /// Whole minutes idle (nil under a minute). The daemon floors idleMs to minutes.
+    /// Whole minutes idle, floored as the daemon does; nil under a minute.
     var idleMinutes: Int? {
         guard let ms = idleMs, ms >= 60_000 else { return nil }
         return clampedInt(ms / 60_000)
     }
 
-    /// Idle time coloured toward red as it nears `limit`, the leased idle limit in
-    /// minutes, past which the daemon takes the device back (0 = never).
+    /// `limit`: the leased idle minutes after which the daemon takes the device back,
+    /// 0 = never.
     static func idleColor(_ minutes: Int, limit: Int) -> Color {
         guard limit > 0 else { return .secondary }
         if minutes >= limit - 1 { return .red }
@@ -690,10 +670,9 @@ extension DeviceAllocation {
 // MARK: - allocator controls (shared with Settings)
 
 enum AllocatorUI {
-    /// "Installed" alone would be a true statement about a machine still running the
-    /// copies some earlier checkout laid down, so the stale case says so and the marks
-    /// name what drifted. Amber for stale, not green: it is working, but not from this
-    /// checkout. Mirrors `settingsview._refresh_allocator_ui`.
+    /// "Installed" alone would be true of a machine running an earlier checkout's
+    /// copies, so a stale install says so, in amber: working, but not from this checkout.
+    /// Twin of `devicesview.allocator_pill`.
     static func pill(_ s: AllocatorInstall?) -> StatusPill {
         guard let s else { return StatusPill(text: "checking…", tint: .secondary) }
         let version = s.version ?? "?"
@@ -711,9 +690,9 @@ enum AllocatorUI {
 
     enum DaemonAction { case start, restart }
 
-    /// What the REMOTE POOL card says, and offers, over a snapshot with no remote pool
-    /// while a provider is set. The snapshot outlives its daemon, so only one that
-    /// answers is called running. A start or restart only for an installed allocator, as
+    /// The REMOTE POOL card's note and offer over a snapshot with no remote pool while a
+    /// provider is set. The snapshot outlives its daemon, so only one that answers is
+    /// called running; a start or restart only for an installed allocator, as
     /// `AllocatorButtons` offers them. Twin of `devicesview.predates_pool`.
     static func predatesPool(_ s: AllocatorInstall?) -> (note: String, action: DaemonAction?) {
         guard let s, s != .unknown else { return (snapshotPredatesPoolNote, nil) }
@@ -840,7 +819,6 @@ struct AllocatorButtons: View {
     }
 }
 
-/// The daemon's two idle limits, in minutes, where 0 turns either off.
 struct AllocatorIdleLimits: View {
     @EnvironmentObject var store: Store
 

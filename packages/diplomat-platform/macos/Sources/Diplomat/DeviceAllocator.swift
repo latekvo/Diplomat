@@ -10,9 +10,8 @@ import DiplomatCore
 ///     (the live pool + who holds what), polled by the Store.
 ///   - `call()` and its wrappers ask the daemon, over its unix socket, to act on a
 ///     device or on the remote device pool.
-///   - `check()/install()/uninstall()/startDaemon()` shell the package's `install.js`
-///     so the Devices and Settings screens can show install status and one-click
-///     (un)install the MCP server + skill + always-on rule.
+///   - `check()`, `install()` and their siblings shell the package's `install.js` for
+///     the Devices and Settings screens' install controls.
 
 // MARK: - state model (mirrors the daemon's public snapshot)
 
@@ -35,8 +34,8 @@ struct DeviceAllocation: Decodable, Identifiable, Equatable {
     let brokenReason: String?
     let repairLog: String?
     let format: String?
-    /// `local`, or `remote` for a device leased from the remote device pool. A daemon
-    /// without a remote pool writes none, and every one of its rows is local.
+    /// `local` or `remote`. A daemon without a remote pool writes none: its rows are all
+    /// local.
     var source: String? = nil
 
     var id: String { key }
@@ -65,7 +64,6 @@ enum JSONValue: Decodable, Equatable {
         return nil
     }
 
-    /// A non-empty string, and nothing else.
     var string: String? {
         if case .string(let s) = self, !s.isEmpty { return s }
         return nil
@@ -86,10 +84,8 @@ enum JSONValue: Decodable, Equatable {
     }
 }
 
-/// The remote device pool's status as the daemon publishes it (`remote` in the
-/// snapshot): the provider's name, a `state`, and whatever else the provider adds.
-/// The known extras are read leniently; every other key is kept, in key order, to be
-/// shown as it stands.
+/// The snapshot's `remote`. Every key it does not name is kept, sorted, to be shown as
+/// it stands.
 struct RemoteStatus: Equatable {
     struct Extra: Equatable, Hashable { let key: String; let value: String }
 
@@ -115,8 +111,7 @@ struct RemoteStatus: Equatable {
         self.extras = extras
     }
 
-    /// nil for `null`. Any other value that is not an object is a status that cannot
-    /// be read, shown as such rather than as an absent pool.
+    /// nil for `null`; any other non-object is an unreadable status, never an absent pool.
     init?(json: JSONValue) {
         guard case .object(let o) = json else {
             if json == .null { return nil }
@@ -125,7 +120,7 @@ struct RemoteStatus: Equatable {
         }
         var known: Set<String> = ["provider", "state", "reason", "url", "loginUrl"]
         let retryAt = o["retryAt"].flatMap(RemoteStatus.date)
-        // An unparseable retryAt is still shown, as what it says.
+        // An unparseable retryAt stays an extra, shown as it stands.
         if retryAt != nil { known.insert("retryAt") }
         self.init(provider: o["provider"]?.string,
                   state: o["state"]?.string ?? "unknown",
@@ -137,8 +132,7 @@ struct RemoteStatus: Equatable {
                       .map { Extra(key: $0, value: o[$0]?.text ?? "") })
     }
 
-    /// An ISO-8601 instant, with or without milliseconds (`Date.toISOString` writes
-    /// them), or epoch milliseconds.
+    /// An ISO-8601 instant or epoch milliseconds.
     static func date(_ v: JSONValue) -> Date? {
         switch v {
         case .string(let s):
@@ -157,10 +151,9 @@ struct RemoteStatus: Equatable {
 
 struct DeviceState: Decodable, Equatable {
     let devices: [DeviceAllocation]
-    /// The daemon that wrote the snapshot. `updatedAt` is left undecoded: it changes on
-    /// every publish and would defeat the Store's "publish only on change" guard.
+    /// `updatedAt` is left undecoded: it changes on every publish and would defeat the
+    /// Store's "publish only on change" guard.
     var daemonPid: Int? = nil
-    /// nil when the snapshot has no `remote` key, as from a daemon without a remote pool.
     var remote: RemoteStatus? = nil
 
     init(devices: [DeviceAllocation], daemonPid: Int? = nil, remote: RemoteStatus? = nil) {
@@ -169,8 +162,6 @@ struct DeviceState: Decodable, Equatable {
         self.remote = remote
     }
 
-    /// A row this build cannot read drops that row alone, and an unreadable `remote`
-    /// or `daemonPid` never costs the device list.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         devices = try c.decode([Lossy<DeviceAllocation>].self, forKey: .devices)
@@ -210,7 +201,6 @@ enum RemoteReply: Equatable {
     case reason(String)
 }
 
-/// One daemon answer: its HTTP status, and its body when that is JSON.
 struct DaemonReply: Equatable {
     let status: Int
     let json: JSONValue?
@@ -300,8 +290,7 @@ enum DeviceAllocator {
     private static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
     static var installJS: String { packageDir + "/src/install.js" }
     static var nodeModulesDir: String { packageDir + "/node_modules" }
-    /// The daemon's directory. `DA_BASE_DIR` relocates it, as it does for the daemon
-    /// (`src/paths.js`), so this app can be pointed at a scratch daemon.
+    /// The daemon's directory, relocated by `DA_BASE_DIR` as in `src/paths.js`.
     static var baseDir: URL {
         if let env = ProcessInfo.processInfo.environment["DA_BASE_DIR"], !env.isEmpty {
             return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
@@ -311,14 +300,9 @@ enum DeviceAllocator {
     static var stateURL: URL { baseDir.appendingPathComponent("state.json") }
     static var socketPath: String { baseDir.appendingPathComponent("daemon.sock").path }
 
-    /// POST a JSON body to one of the daemon's endpoints over its unix socket, and
-    /// return its answer whatever the HTTP status: nil only when there was no answer
-    /// (no socket, a body that won't encode, curl unlaunchable, the connection refused
-    /// or timed out). The transport is `curl` because `URLSession` cannot speak to a
-    /// unix socket at all.
-    ///
-    /// Blocking for up to `timeoutSecs`; call it off the main actor. Each call is its
-    /// own curl, so a long one (a sign-in) holds up no other.
+    /// Any HTTP status is an answer; nil is no answer at all. `curl`, as `URLSession`
+    /// cannot speak to a unix socket. Blocking for up to `timeoutSecs`, so off the main
+    /// actor; each call is its own curl, so a long one (a sign-in) holds up no other.
     static func call(_ endpoint: String, body: [String: Any] = [:],
                      timeoutSecs: Int) -> DaemonReply? {
         guard FileManager.default.fileExists(atPath: socketPath),
@@ -350,25 +334,21 @@ enum DeviceAllocator {
                            json: try? JSONDecoder().decode(JSONValue.self, from: raw[..<nl]))
     }
 
-    /// Whether the daemon answered 2xx. A 4xx/5xx is a refusal, never a success: a
-    /// device that left the pool between the poll snapshot and the click answers 404,
-    /// and the audit feed must not assert an action that never happened.
+    /// A 4xx is never a success: a device gone since the snapshot answers 404, and the
+    /// audit feed must not log an action that never happened.
     static func post(_ endpoint: String, body: [String: Any], timeoutSecs: Int) -> Bool {
         call(endpoint, body: body, timeoutSecs: timeoutSecs).map { (200..<300).contains($0.status) }
             ?? false
     }
 
-    /// Ask the daemon to force-kill a device by key (free any allocation + shut the
-    /// sim/emulator down, or hand a remote lease back to its pool). Backs the per-device
-    /// X. Best-effort; returns whether the request succeeded.
+    /// Free a device and shut it down, or return a remote lease.
     @discardableResult
     static func killDevice(key: String) -> Bool {
         // Generous timeout: the daemon shuts a real simulator/emulator down inline.
         post("kill", body: ["key": key], timeoutSecs: 25)
     }
 
-    /// Take a device back from the agent holding it (`/release` on its behalf). The
-    /// daemon shuts down a device it booted itself, and returns a remote lease.
+    /// Take a device back from the agent holding it, releasing on its behalf.
     static func releaseDevice(key: String, ownerPid: Int) -> Bool {
         guard let r = call("release", body: ["ownerPid": ownerPid, "deviceId": key],
                            timeoutSecs: 25),
@@ -378,19 +358,17 @@ enum DeviceAllocator {
         return false
     }
 
-    /// End a device's quarantine (`/repaired`), putting it back in the pool.
+    /// End a device's quarantine.
     static func markRepaired(key: String) -> Bool {
         post("repaired", body: ["key": key], timeoutSecs: 10)
     }
 
-    /// Re-prompt the remote pool's sign-in. The daemon answers only once the browser
-    /// sign-in finishes or gives up, which takes up to ten minutes.
+    /// The daemon answers once the browser sign-in ends: up to ten minutes.
     static func remoteSignIn() -> RemoteReply {
         signInReply(call("remote/sign-in", timeoutSecs: 11 * 60 + 30))
     }
 
-    /// What the remote pool lists now. A network call on the daemon's side; it never
-    /// prompts a sign-in.
+    /// A network call on the daemon's side; never prompts a sign-in.
     static func remoteDevices() -> RemoteReply {
         devicesReply(call("remote/devices", timeoutSecs: 90))
     }
@@ -519,10 +497,8 @@ enum DeviceAllocator {
     /// Start the daemon if none answers. The reply has no `installed`: see
     /// `AllocatorInstall.installStatus(over:)`.
     static func startDaemon() -> AllocatorInstall { runInstaller("--start-daemon") }
-    /// Stop the running daemon and start this checkout's, the one way to replace a daemon
-    /// started from older code: `--install` and `--start-daemon` keep any daemon that
-    /// answers. Local leases survive; the old daemon shuts down the devices it booted and
-    /// gives remote ones back to their pool.
+    /// The one way to replace a daemon from older code: `--install` and `--start-daemon`
+    /// keep any that answers.
     static func restartDaemon() -> AllocatorInstall { runInstaller("--restart-daemon") }
 
     private static func runInstaller(_ arg: String) -> AllocatorInstall {

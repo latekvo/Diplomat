@@ -1,16 +1,6 @@
-"""The Devices screen: everything about the device-allocator module in one place.
-
-The Linux twin of DevicesScreen.swift, swapped in for the panel body by the header's
-device button or the left pane's Devices header. Lists on the left, controls on the
-right, as on the main panel: every device in the daemon's snapshot with the actions
-the daemon takes for it, and the allocator events from the activity feed; then the
-allocator itself (daemon, install, idle limits) and the remote device pool (its
-provider module, its status, sign-in, what it lists, and the devices leased from it).
-
-Every remote field is optional: against a daemon with no remote pool the card says so
-and the rest of the screen is unchanged.
-
-Also home to the allocator controls Settings builds its own card from.
+"""The Devices screen, twin of DevicesScreen.swift, and the allocator controls Settings
+builds its card from. Every remote field is optional: against a daemon with no remote
+pool the card says so and the rest of the screen is unchanged.
 """
 
 from __future__ import annotations
@@ -69,9 +59,8 @@ def _clear(layout) -> None:
 
 
 def _plain(text: str = "") -> QLabel:
-    """A label that shows its text as it is. Qt's default guesses HTML from the text,
-    and much of what this screen shows (agent names, provider reasons, paths) comes
-    from the daemon or a provider."""
+    """Qt guesses HTML otherwise, and agent names, provider reasons and paths come from
+    the daemon or a provider."""
     label = QLabel(text)
     label.setTextFormat(Qt.TextFormat.PlainText)
     return label
@@ -91,10 +80,8 @@ def _clock(epoch: float) -> str:
 # MARK: - allocator controls (shared with Settings)
 
 def allocator_pill(s: dict | None) -> tuple[str, str]:
-    """"Installed" alone would be a true statement about a machine still running the
-    copies some earlier checkout laid down, so the stale case says so and the marks
-    name what drifted. Amber for stale, not green: it is working, but not from this
-    checkout."""
+    """"Installed" alone would be true of a machine running an earlier checkout's
+    copies, so a stale install says so, in amber: working, but not from this checkout."""
     if s is None:
         return "checking…", _GREY
     version = s.get("version") or "?"
@@ -110,7 +97,6 @@ def allocator_ready() -> bool:
 
 
 def allocator_summary() -> tuple[str, str | None]:
-    """The install row's one-liner, and its tint when it is a warning."""
     if not da.package_available():
         return (f"⚠ Package not found at {da.package_dir()}. Set "
                 "DIPLOMAT_DEVICE_ALLOCATOR_DIR to point at it.", _ORANGE)
@@ -134,11 +120,10 @@ SNAPSHOT_PREDATES_POOL_NOTE = ("The allocator's snapshot has no remote pool: the
 
 
 def predates_pool(s: dict | None) -> tuple[str, str | None]:
-    """What the REMOTE POOL card says, and offers (``"start"``, ``"restart"`` or
-    nothing), over a snapshot with no remote pool while a provider is set. The snapshot
-    outlives its daemon, so only one that answers is called running. A start or restart
-    only for an installed allocator, as :class:`AllocatorControls` offers them. Twin of
-    ``AllocatorUI.predatesPool`` in DevicesScreen.swift."""
+    """The REMOTE POOL card's note and offer over a snapshot with no remote pool while a
+    provider is set. The snapshot outlives its daemon, so only one that answers is
+    called running; a start or restart only for an installed allocator, as
+    :class:`AllocatorControls` offers them. Twin of ``AllocatorUI.predatesPool``."""
     if s is None:
         return SNAPSHOT_PREDATES_POOL_NOTE, None
     if not s.get("installed"):
@@ -170,10 +155,6 @@ def start_button(store: Store) -> QPushButton:
 
 
 class AllocatorControls(QWidget):
-    """The install's four marks (and the daemon's), what drifted, and the buttons that
-    install, update, uninstall, start or restart the daemon and re-check.
-    :meth:`refresh` takes the installer's latest ``--check``."""
-
     _MARKS = (("mcpRegistered", "MCP"), ("skillInstalled", "skill"),
               ("ruleInstalled", "rule"), ("claudeMdInjected", "CLAUDE.md"))
 
@@ -249,9 +230,8 @@ class AllocatorControls(QWidget):
 
 
 class _IdleLimitSlider(SliderSetting):
-    """One idle limit's slider, written through ``save`` and re-read on every
-    ``store.changed`` (Settings and the Devices screen both set the same two limits) and
-    ``store.device_config_reloaded`` (config.json is also edited by hand)."""
+    """Re-read on ``store.changed`` (Settings and the Devices screen set the same limits)
+    and ``store.device_config_reloaded`` (config.json is also edited by hand)."""
 
     def __init__(self, store: Store, attr: str, save, *, label: str, maximum: int,
                  step: int) -> None:
@@ -275,9 +255,7 @@ class _IdleLimitSlider(SliderSetting):
 
 
 def idle_limit_rows(store: Store, save) -> list[tuple[SliderSetting, SettingRow]]:
-    """The daemon's two idle limits, in minutes, where 0 turns either off: a slider and
-    the row it sits in for each. ``save`` runs one write to the shared config and says
-    whether it landed."""
+    """``save`` runs one write to the shared config and says whether it landed."""
     free = _IdleLimitSlider(store, "device_idle_free_minutes", save,
                             label="Shut down a free device after",
                             maximum=appconfig.MAX_DEVICE_IDLE_FREE_MINUTES, step=1)
@@ -299,7 +277,6 @@ def idle_limit_rows(store: Store, save) -> list[tuple[SliderSetting, SettingRow]
 # MARK: - remote pool pieces
 
 def remote_pill(r: da.RemoteStatus | None, *, snapshot: bool) -> tuple[str, str]:
-    """One word per state the daemon publishes; an unknown one is shown as it is."""
     if r is None:
         return ("not available" if snapshot else "unknown"), _GREY
     return {
@@ -323,8 +300,6 @@ def _link(text: str, url: str, px: int, *, mono: bool = False) -> QLabel:
 
 
 def _remote_status_view(status: da.RemoteStatus) -> QWidget:
-    """The provider's status, every key of it: the known ones in words, the rest as
-    ``key value`` lines."""
     host = QWidget()
     host.setObjectName("remoteStatus")
     host.setStyleSheet(f"#remoteStatus {{ background-color: {tint_bg(_INDIGO, 0.07)};"
@@ -381,7 +356,6 @@ def _specs(d: da.RemotePoolDevice) -> str:
 
 
 def _call_line(call: RemoteCall, label: str, running: str) -> QWidget | None:
-    """What the last sign-in or listing answered, or that it is still waiting."""
     if call.running:
         return _note(f"⟳ {running}")
     reply = call.reply
@@ -440,9 +414,6 @@ def _platform(dev: dict) -> tuple[str, str]:
 
 
 class DeviceScreenRow(QWidget):
-    """A device on the Devices screen: what it is, where it comes from, who holds it
-    and for how long, and the daemon actions that apply to it."""
-
     def __init__(self, dev: dict, *, provider: str | None, idle_limit: int,
                  store: Store) -> None:
         super().__init__()
@@ -523,8 +494,7 @@ class DeviceScreenRow(QWidget):
         actions.setSpacing(4)
         actions.addStretch(1)
         self.actions: dict[str, QPushButton] = {}
-        # Only what the daemon does for this row: a lease's holder can be dropped, a
-        # quarantine ended, and any running device killed (a remote one returned).
+        # Only the actions the daemon takes for this row.
         if remote:
             # A remote row exists only while leased.
             self._action(actions, "Return", _INDIGO, lambda: store.kill_device_async(key),
@@ -562,8 +532,8 @@ class DeviceScreenRow(QWidget):
 
 # MARK: - the screen
 
-#: The feed's allocator lines. An ``auto`` kill-device line is the agent reaper
-#: closing a window, not a device, so it stays out.
+#: The feed's allocator lines. An ``auto`` kill-device is the agent reaper closing a
+#: window, not a device.
 EVENT_ACTIONS = frozenset({
     "kill-device", "release-device", "repair-done", "remote-lease-ended",
     "allocator-install", "allocator-uninstall",
@@ -577,9 +547,8 @@ def allocator_events(entries: list) -> list:
 
 
 class DevicesView(QWidget):
-    """The Devices screen. Emits ``done`` when the user is finished, like the other
-    screens. ``live`` keeps the install status fresh while the screen is up; off in a
-    render, whose seeded status a real ``--check`` would overwrite."""
+    """``live`` keeps the install status fresh while the screen is up; off in a render,
+    whose seeded status a real ``--check`` would overwrite."""
 
     done = Signal()
 
@@ -673,7 +642,6 @@ class DevicesView(QWidget):
         self._rebuild_remote()
 
     def _save(self, write) -> bool:
-        """Run one write to the shared config file and say whether it landed."""
         try:
             write()
         except OSError as exc:
@@ -980,7 +948,6 @@ class DevicesView(QWidget):
         else:
             self._status_col.addWidget(_note("No remote pool configured."))
 
-        # Whether the daemon has a pool to call: one it reports, and not off.
         callable_ = remote is not None and remote.state != "off"
         why = "" if callable_ else " (no remote pool is on)"
         self.sign_in.setEnabled(callable_ and not self.store.remote_sign_in.running)

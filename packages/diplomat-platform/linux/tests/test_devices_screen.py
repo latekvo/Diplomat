@@ -1,9 +1,6 @@
-"""The Devices screen and what it stands on: the daemon's snapshot read lossily, the
-daemon's replies to the actions and the remote-pool calls, the provider setting, and
-the screen in each state that builds a different tree.
-
-The decoding and reply cases are the twins of the macOS ``DIPLOMAT_ALLOCATOR_TEST``
-(AllocatorSetupTest.swift), so the two applets read one daemon the same way.
+"""The Devices screen and what it stands on. The decoding and reply cases are twins of
+the macOS ``DIPLOMAT_ALLOCATOR_TEST`` (AllocatorSetupTest.swift), so the two applets
+read one daemon the same way.
 """
 
 from __future__ import annotations

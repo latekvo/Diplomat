@@ -1157,7 +1157,7 @@ async function start() {
     for (const a of leased) allocations.delete(a.key);
     if (leased.length) try { writeLeases([...allocations.values()]); } catch (e) { log('bye: leases write failed', String(e)); }
     shutdownBootedSync();
-    // Not when a daemon that took over while this one was blocked above owns them now.
+    // Unless a daemon that took over while this one was blocked owns them.
     const owner = readDiscovery()?.pid;
     if (!owner || owner === process.pid || !pidAlive(owner)) {
       try { fs.unlinkSync(SOCKET_PATH); } catch {}

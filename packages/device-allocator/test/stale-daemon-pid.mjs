@@ -1,15 +1,7 @@
-// install.js against a daemon.json that outlived its daemon, and beside a daemon that is
-// alive but not answering.
-//
-// A daemon killed without its exit handler leaves daemon.json naming its pid, which any
-// later process of the user's may hold: --uninstall and --restart-daemon must not signal
-// it. A daemon that is alive but silent (one shutting down blocks its event loop while it
-// shuts its simulators down) must not get a second daemon started beside it, and a
-// daemon that took the socket from it must keep it once the silent one exits.
-//
-// Against a throwaway HOME + DA_BASE_DIR and a fake device pool. The user's own daemon
-// may run this same daemon.js: only daemons under that DA_BASE_DIR are counted or
-// signalled.
+// install.js beside a daemon.json that outlived its daemon, and beside a daemon alive but
+// silent (one shutting down blocks its event loop while it shuts its simulators down).
+// Against a throwaway HOME + DA_BASE_DIR; the user's own daemon may run this same
+// daemon.js, so only daemons under that DA_BASE_DIR are counted or signalled.
 // Run: node test/stale-daemon-pid.mjs
 
 import { execFileSync, spawn } from 'node:child_process';
@@ -64,7 +56,6 @@ function environ(pid) {
   try { return execFileSync('ps', ['-E', '-ww', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).split(/\s+/); }
   catch { return []; }
 }
-// This run's daemons: this checkout's daemon.js, under this run's DA_BASE_DIR.
 function daemons() {
   let pids;
   try { pids = execFileSync('pgrep', ['-f', DAEMON_JS], { encoding: 'utf8' }).trim().split('\n').map(Number); }
@@ -78,7 +69,7 @@ function victim(cmd, args) {
   children.push(child);
   return child;
 }
-// Whether a victim still runs, once an exit (if any) has been reaped.
+// Still running, once any exit has had time to be reaped.
 async function survived(child) {
   await sleep(500);
   return child.exitCode === null && child.signalCode === null;
@@ -90,7 +81,6 @@ const ok = (name, cond) => { assert.ok(cond, name); console.log('  PASS', name);
 try {
   console.log('install: a stale daemon.json, and a silent daemon');
 
-  // A pid now held by something that is not a daemon at all.
   const sleeper = victim('sleep', ['300']);
   await sleep(300);
   staleDiscovery(sleeper.pid, new Date());
@@ -105,14 +95,13 @@ try {
   run('--uninstall');
   ok('--uninstall leaves a non-daemon whose identity daemon.json records', await survived(forged));
 
-  // A process that looks like a daemon, but started after the daemon.json was written.
+  // A daemon.js lookalike, which by command and start alone passes for the file's daemon.
   const lookalike = victim(process.execPath, ['-e', 'setInterval(() => {}, 1e9)', DAEMON_JS]);
   await sleep(300);
-  // Named with another process's identity: by command and start time alone it would
-  // pass for the daemon that wrote the file.
   staleDiscovery(lookalike.pid, new Date(), 'not-its-own');
   run('--uninstall');
   ok('--uninstall leaves a pid whose identity is not the one daemon.json records', await survived(lookalike));
+  // No identity, and a start after the file's.
   staleDiscovery(lookalike.pid, new Date(Date.now() - 3600_000));
   const restarted = run('--restart-daemon');
   ok('--restart-daemon leaves a reused pid alone', await survived(lookalike));
@@ -123,9 +112,8 @@ try {
   for (const c of children) c.kill('SIGKILL');
   await until(() => lookalike.signalCode != null, 5000);
 
-  // The daemon that answers, stopped: alive, its daemon.json its own, and silent. Its
-  // startedAt an hour before its start, as Linux ps lstart reads it after a forward
-  // wall-clock step.
+  // The real daemon, stopped so it is silent, with a startedAt an hour before its start,
+  // as Linux ps lstart reads it after a forward wall-clock step.
   fs.writeFileSync(DISCOVERY, JSON.stringify({ ...own, startedAt: new Date(Date.parse(own.startedAt) - 3600_000).toISOString() }));
   process.kill(first, 'SIGSTOP');
   const refused = run('--start-daemon');
@@ -133,7 +121,6 @@ try {
     refused.daemonRunning === false && refused.error?.includes(`pid ${first}`));
   ok('…and starts no second one', JSON.stringify(daemons()) === JSON.stringify([first]));
 
-  // A daemon that takes the socket from the silent one, which then exits.
   const second = spawn(process.execPath, [DAEMON_JS], { env: ENV, stdio: 'ignore', detached: true });
   second.unref();
   ok('a second daemon takes the socket from the silent one',
@@ -144,7 +131,6 @@ try {
   ok('…leaving the socket to the one that took it', (await health()) === second.pid);
   ok('…and its daemon.json', discoveryPid() === second.pid);
 
-  // A silent daemon that really is this one is still stopped.
   process.kill(second.pid, 'SIGSTOP');
   run('--uninstall');
   process.kill(second.pid, 'SIGCONT');

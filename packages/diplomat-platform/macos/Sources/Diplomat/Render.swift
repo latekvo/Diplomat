@@ -297,12 +297,11 @@ enum Render {
                             seedOpenPRs: s.contains("prs") || s.contains("all"))
                 .frame(height: 560)
         case let s where s.hasPrefix("devices-screen"):
-            // The Devices screen inside the panel, so the header's device button (open,
-            // with its in-use badge) is in the shot. Plain: a daemon with no remote pool,
-            // as on a checkout without one. "-remote": a provider mid-sign-in with two
-            // remote leases (one still attaching) and a pool listing. "-remote-away": the
-            // sign-in went unanswered, plus a key this app does not know. "-off": the
-            // allocator installed but its daemon not running, and no snapshot.
+            // Inside the panel, so the header's device button is in the shot. Plain: a
+            // daemon with no remote pool. "-remote": a provider mid-sign-in with two remote
+            // leases (one still attaching) and a pool listing. "-remote-away": the sign-in
+            // went unanswered, plus a key this app does not know. "-off": installed, the
+            // daemon not running, no snapshot.
             let _ = seedDevicesScreen(s, store: store)
             ContentView(showDevices: true)
         case let s where s.hasPrefix("devices"):

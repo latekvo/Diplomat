@@ -307,12 +307,10 @@ function uninjectClaudeMd() {
   } catch {}
 }
 
-// The pid a daemon.json names, while that process is still the daemon that wrote it.
-// A daemon that dies without its exit handler (kill -9, a crash, a power loss) leaves
-// the file behind, and its pid can later belong to any process of the user's. The
-// process must run a daemon.js, and match the file's procIdentity (boot-relative on
-// Linux, so it can recur after a reboot); a file from a daemon that predates that field
-// is matched instead by a start no later than the file.
+// The pid daemon.json names while it is still the daemon that wrote it: one killed past
+// its exit handler leaves the file, and its pid can pass to any process. It must run a
+// daemon.js and carry the file's procIdentity, which on Linux can recur after a reboot;
+// a file without one is matched by a start no later than the file instead.
 function discoveredDaemonPid(disc) {
   const pid = disc?.pid;
   if (!Number.isInteger(pid) || pid <= 0 || !pidAlive(pid)) return null;
@@ -342,9 +340,8 @@ function liveDiscoveredPid() {
   return pid;
 }
 
-/// {running, error?}. Never spawns beside a daemon that is alive but silent, such as
-/// one shutting down: the new one would take its socket, leaving two daemons on the
-/// same devices.
+/// {running, error?}. Never spawns beside a live but silent daemon (one shutting down):
+/// the new one would take its socket, leaving two daemons on the same devices.
 async function startDaemon() {
   if (await daemonHealth()) return { running: true };
   const silent = liveDiscoveredPid();
@@ -361,7 +358,7 @@ async function startDaemon() {
   }
   return { running: (await daemonHealth()) != null };
 }
-/// The pid it signalled, or null when there was none to signal.
+/// The pid it signalled, else null.
 async function stopDaemon() {
   try {
     // The serving daemon's own pid, else daemon.json's for one too wedged to answer.
@@ -377,10 +374,9 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 }
 
-// A daemon never exits by itself and startDaemon() keeps any that answers, so this is
-// how one started from older code is replaced. Leases survive: the new daemon reloads
-// leases.json. The old one shuts down every simulator/emulator it booted on its way
-// out (shutdownBootedSync, up to 15 s each), hence the long wait.
+// The one way to replace a daemon from older code, as startDaemon() keeps any that
+// answers; leases survive in leases.json. The old daemon shuts down each device it
+// booted on its way out (shutdownBootedSync, up to 15 s each), hence the long wait.
 const RESTART_EXIT_MS = 60000;
 async function restartDaemon() {
   const pid = await stopDaemon();

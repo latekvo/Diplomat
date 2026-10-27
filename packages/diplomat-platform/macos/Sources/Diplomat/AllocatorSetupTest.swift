@@ -15,10 +15,8 @@ import SwiftUI
 /// The decision half is pure logic, and no `~/.claude*` is read. The second half decodes
 /// real installer payloads, because the decision is only as good as the fields it reads —
 /// a silently-dropped `outdated` would leave every machine stale while this table still
-/// passed. Then the daemon's idle limits are read back the way Settings shows them, and
-/// the Devices screen's inputs decoded: snapshots with no, a full, and a garbled remote
-/// pool, and the daemon's replies to the remote-pool calls. Last, the Devices screen's
-/// actions run through a real `Store` against a stand-in `install.js` and a daemon
+/// passed. Then the Devices screen's inputs (idle limits, snapshots, remote-pool replies)
+/// and its actions, through a real `Store` against a stand-in `install.js` and a daemon
 /// directory with no daemon in it, all in a scratch dir with the feed and config.
 ///
 /// The decision half is the twin of `diplomat-platform/linux/tests/test_allocator_update.py`. Exit code is pass/fail, so CI can

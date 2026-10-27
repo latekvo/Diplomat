@@ -97,12 +97,11 @@ def _device_fixture(store: Store) -> None:
 
 
 def _devices_screen_fixture(store: Store, mode: str) -> None:
-    """``devices-screen[-remote[-away]|-off]``, the Devices screen in each state that
-    builds a different tree. Plain: a daemon with no remote pool, as on a checkout
-    without one. ``-remote``: a provider mid-sign-in with two remote leases (one still
-    attaching) and a pool listing. ``-remote-away``: the sign-in went unanswered, plus
-    a key this applet does not know. ``-off``: the allocator installed but its daemon
-    not running, and no snapshot. Mirrors ``Render.seedDevicesScreen`` on macOS."""
+    """Each mode builds a different tree. Plain: a daemon with no remote pool.
+    ``-remote``: a provider mid-sign-in with two remote leases (one still attaching)
+    and a pool listing. ``-remote-away``: the sign-in went unanswered, plus a key this
+    applet does not know. ``-off``: installed, the daemon not running, no snapshot.
+    Twin of ``Render.seedDevicesScreen``."""
     from diplomat_runtime import activity
     from . import deviceallocator as da
     from .store import RemoteCall
@@ -555,8 +554,7 @@ def run(what: str, out: str) -> int:
         _telemetry_scratch()
         _telemetry_ledger_fixture()
 
-    # The screens shell `--check` as they are built, whose answer would overwrite the
-    # seeded install status.
+    # The screens shell `--check` as they are built, overwriting the seeded status.
     if what.startswith("devices-screen"):
         store.refresh_allocator_install_async = lambda: None
 

@@ -286,7 +286,6 @@ struct ContentView: View {
     /// Telemetry or Settings.
     @State private var screen: PanelScreen
 
-    /// The panel's five interchangeable body screens.
     enum PanelScreen { case main, devices, mesh, telemetry, settings }
 
     /// `showSettings` / `showTelemetry` / `showDevices` seed the initial screen — used by

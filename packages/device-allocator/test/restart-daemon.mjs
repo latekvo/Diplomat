@@ -1,9 +1,5 @@
-// `install.js --restart-daemon`: the one installer action that replaces a running
-// daemon. `--start-daemon` and `--install` keep any daemon that answers, so a daemon
-// started from older code would otherwise run until someone killed it.
-//
-// Against a throwaway HOME + DA_BASE_DIR and a fake device pool, so it never reaches
-// the developer's real daemon, ~/.claude or simulators.
+// `install.js --restart-daemon`, against a throwaway HOME + DA_BASE_DIR and a fake device
+// pool, never the developer's real daemon, ~/.claude or simulators.
 // Run: node test/restart-daemon.mjs
 
 import { execFileSync } from 'node:child_process';
@@ -16,8 +12,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_JS = path.join(__dirname, '..', 'src', 'install.js');
 
-// /tmp, not os.tmpdir(): macOS's per-user tmpdir is long enough to push the socket
-// path past the unix-socket length limit.
+// /tmp, not os.tmpdir(): macOS's per-user tmpdir pushes the socket past the length limit.
 const BASE = fs.mkdtempSync('/tmp/dae.');
 const HOME = path.join(BASE, 'home');
 const SOCKET = path.join(BASE, 'daemon.sock');

@@ -290,8 +290,8 @@ final class Store: ObservableObject {
     /// Set while `reloadDeviceConfig` copies the file in, which is no change to write back.
     private var reloadingDeviceConfig = false
 
-    /// The remote device pool's provider module (Devices → REMOTE POOL) as config.json,
-    /// which the daemon reads, holds it; empty = no remote pool.
+    /// The remote device pool's provider module, in config.json because the daemon reads
+    /// it; empty = no remote pool.
     @Published private(set) var deviceRemoteProvider: String
 
     /// Store the provider trimmed (empty removes the key, which turns the remote pool
@@ -756,7 +756,6 @@ final class Store: ObservableObject {
         await refreshDeviceState()
     }
 
-    /// Take a device back from the agent holding it (Devices → Free).
     func releaseDevice(_ dev: DeviceAllocation) async {
         guard let pid = dev.owner?.ownerPid else { return }
         let key = dev.key
@@ -770,9 +769,8 @@ final class Store: ObservableObject {
         await refreshDeviceState()
     }
 
-    /// End a device's quarantine (Devices → Repaired). The daemon logs the success
-    /// itself; only a refusal is this app's to report, under the daemon's action so
-    /// the Devices screen's Recent card shows it.
+    /// The daemon logs a success itself; only a refusal is this app's to report, under
+    /// the daemon's action so the Recent card shows it.
     func markDeviceRepaired(_ key: String) async {
         let ok = await Task.detached(priority: .userInitiated) {
             DeviceAllocator.markRepaired(key: key)
@@ -782,8 +780,7 @@ final class Store: ObservableObject {
         await refreshDeviceState()
     }
 
-    /// Ask the remote pool to sign in again. One at a time; the poll and every other
-    /// daemon call go on while it waits.
+    /// One at a time; the poll and other daemon calls go on while it waits.
     func remoteSignInNow() async {
         guard remoteSignIn != .running else { return }
         remoteSignIn = .running
@@ -810,8 +807,7 @@ final class Store: ObservableObject {
     }
 
     /// Shell the installer's `--check` (Node startup, ~100-300ms) off-main and
-    /// publish the result, unless an allocator action ran meanwhile. Called when
-    /// Settings opens, on the Devices screen's poll, and by Re-check.
+    /// publish the result, unless an allocator action ran meanwhile.
     func refreshAllocatorInstall() async {
         guard !allocatorBusy else { return }
         let actions = allocatorActions
@@ -820,7 +816,6 @@ final class Store: ObservableObject {
         allocatorInstall = status
     }
 
-    /// Run one allocator action, unless one is running already.
     private func allocatorAction(_ body: () async -> Void) async {
         guard !allocatorBusy else { return }
         allocatorBusy = true
@@ -911,7 +906,6 @@ final class Store: ObservableObject {
         }
     }
 
-    /// Devices → Restart daemon: replace the running daemon with this checkout's.
     func restartAllocatorDaemon() async {
         await allocatorAction {
             let result = await Task.detached(priority: .userInitiated) { DeviceAllocator.restartDaemon() }.value

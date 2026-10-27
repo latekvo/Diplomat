@@ -205,8 +205,8 @@ def stop_stray_node(exit_wait: float = 10.0) -> tuple[str, int, int, str]:
 
 @dataclass(frozen=True)
 class RemoteCall:
-    """One of the Devices screen's remote-pool calls: idle, running, or what it was
-    last answered (``reply``) and when (``at``, epoch seconds)."""
+    """A remote-pool call: idle, running, or its last ``reply`` and when (``at``,
+    epoch seconds)."""
 
     running: bool = False
     reply: deviceallocator.RemoteReply | None = None
@@ -698,9 +698,9 @@ class Store(QObject):
         )
 
     def reload_device_config(self) -> None:
-        """Have what shows the device keys of config.json, which is also edited by hand,
-        read them again; the properties read the file on every access. Twin of
-        ``Store.reloadDeviceConfig`` in Store.swift."""
+        """Have the views of config.json's device keys, which are also edited by hand,
+        re-read them; the properties read the file on every access. Twin of
+        ``Store.reloadDeviceConfig``."""
         self.device_config_reloaded.emit()
 
     @property
@@ -3081,12 +3081,7 @@ class Store(QObject):
     # MARK: device allocator
 
     def refresh_device_state(self) -> None:
-        """Re-read the daemon's public state file (cheap) and signal on change.
-
-        The decoded snapshot leaves out the `updatedAt` the daemon stamps on every
-        publish, which would otherwise force a needless rebuild of the device rows
-        every 8s.
-        """
+        """Re-read the daemon's public state file (cheap) and signal on change."""
         new = deviceallocator.read_state()
         if new != self.device_state:
             self.device_state = new
@@ -3109,7 +3104,6 @@ class Store(QObject):
         self.start_background(work)
 
     def _allocator_action(self, work) -> None:
-        """Run one allocator action off the UI thread, unless one is running already."""
         with self._allocator_lock:
             if self.allocator_busy:
                 return
@@ -3130,9 +3124,8 @@ class Store(QObject):
         self.refresh_device_state()
 
     def kill_device_async(self, key: str) -> None:
-        """Free a device and shut it down, or return a remote lease (Devices → Kill /
-        Return). Logged after the call, with the real outcome: the activity feed must
-        not assert a kill that failed."""
+        """Logged after the call, with the real outcome: the activity feed must not
+        assert a kill that failed."""
         def work() -> None:
             ok = deviceallocator.kill_device(key)
             activity.log("panel", "kill-device",
@@ -3141,7 +3134,6 @@ class Store(QObject):
         self.start_background(work)
 
     def release_device_async(self, dev: dict) -> None:
-        """Take a device back from the agent holding it (Devices → Free)."""
         owner = dev.get("owner") or {}
         pid = owner.get("ownerPid")
         if pid is None:
@@ -3158,9 +3150,8 @@ class Store(QObject):
         self.start_background(work)
 
     def mark_device_repaired_async(self, key: str) -> None:
-        """End a device's quarantine (Devices → Repaired). The daemon logs the
-        success itself; only a refusal is this applet's to report, under the daemon's
-        action so the Devices screen's Recent card shows it."""
+        """The daemon logs a success itself; only a refusal is this applet's to report,
+        under the daemon's action so the Recent card shows it."""
         def work() -> None:
             if not deviceallocator.mark_repaired(key):
                 activity.log("panel", "repair-done", f"Repaired FAILED for device {key}")
@@ -3168,9 +3159,8 @@ class Store(QObject):
         self.start_background(work)
 
     def remote_sign_in_async(self) -> None:
-        """Ask the remote pool to sign in again. One at a time, off the GUI thread:
-        the daemon answers only once the browser sign-in is over, and the poll and
-        every other daemon call go on meanwhile."""
+        """One at a time, off the GUI thread: the daemon answers only once the browser
+        sign-in is over."""
         if self.remote_sign_in.running:
             return
         self.remote_sign_in = RemoteCall(running=True)
@@ -3184,7 +3174,6 @@ class Store(QObject):
         self.start_background(work, name="remote-sign-in")
 
     def list_remote_pool_async(self) -> None:
-        """What the remote pool lends now (Devices → List pool devices)."""
         if self.remote_listing.running:
             return
         self.remote_listing = RemoteCall(running=True)
@@ -3211,7 +3200,6 @@ class Store(QObject):
         self._allocator_action(work)
 
     def restart_allocator_daemon_async(self) -> None:
-        """Devices → Restart daemon: replace the running daemon with this checkout's."""
         def work() -> None:
             result = deviceallocator.restart_daemon()
             self.allocator_install = deviceallocator.with_install_status(

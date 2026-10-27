@@ -96,8 +96,7 @@ def _icon_button(glyph: str, tooltip: str) -> QToolButton:
 
 
 class _BadgedButton(QToolButton):
-    """A header icon button with a count on its corner: the Devices button, whose
-    badge counts the devices in use."""
+    """The Devices header button: a glyph with the in-use count on its corner."""
 
     def __init__(self, glyph: str) -> None:
         super().__init__()
@@ -200,8 +199,7 @@ def _running_detail(agent: autofix.RunningAgent) -> str:
 
 
 def _device_detail(dev: dict, allocated: bool, idle_limit: int) -> str:
-    """The line under a device's name, as rich text: its idle time is coloured toward
-    ``idle_limit``, the leased idle limit."""
+    """Rich text, idle time coloured toward ``idle_limit``, the leased idle limit."""
     if dev.get("status") == "repairing":
         reason = dev.get("brokenReason")
         return html.escape(f"repair: {reason}" if reason else "repair dispatched")
@@ -271,7 +269,7 @@ class Panel(QWidget):
         self._build_main_page()
         self._screens["main"] = self.body.addWidget(self.main_page)
 
-        # Page: devices (the allocator's pool, its daemon and its remote pool).
+        # Page: devices.
         self.devices_view = DevicesView(store)
         self.devices_view.done.connect(lambda: self._set_screen("main"))
         devices_scroll = QScrollArea()
