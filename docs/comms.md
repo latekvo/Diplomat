@@ -59,7 +59,7 @@ Slack text is written by other people, so Comms treats it as data from end to en
 - Your own messages, bots, and people from other organisations (Slack Connect) are never pinged. A
   **sender allowlist** narrows it to the people you name.
 - The **Investigate** agent's prompt quotes the message between untrusted-data markers - a message
-  cannot close them early: every line of it is quoted - and forbids,
+  cannot close them early: every line of it is quoted with a leading "|" - and forbids,
   whatever the message says: pushing, any GitHub write (PRs, issues, reviews, comments), posting
   anywhere, and touching secrets. It works in its own worktree and its deliverable is the report
   file - what you do with it is yours to decide.
