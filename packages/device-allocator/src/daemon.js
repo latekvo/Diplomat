@@ -6,15 +6,20 @@
 // the reclaim loops. Each agent's stdio MCP server is a thin client of this.
 //
 // It listens on a unix socket and exposes:
-//   POST /request  {ownerPid, agentName, platform, version}      -> allocate (boots if needed)
+//   POST /request  {ownerPid, agentName, platform, version, source} -> allocate (boots if needed)
 //   POST /release  {ownerPid, deviceId?}                          -> free (all of owner's if id omitted)
 //   POST /change   {ownerPid, deviceId?, platform?, version?}     -> allocate new + free old (old kept on failure)
 //   POST /broken   {ownerPid, deviceId?, reason?}                 -> quarantine + repair + allocate other
 //   POST /repaired {key | deviceId}                               -> end quarantine, device back to pool
 //   POST /unban    {login}                                        -> remove an author from the ban list
 //   POST /kill     {key | deviceId}                               -> force-free + shut down (panel X)
+//   POST /remote/sign-in                                          -> re-prompt the remote pool's sign-in
+//   POST /remote/devices                                          -> what the remote pool lists now
 //   GET  /state                                                   -> public snapshot
 //   GET  /health
+//
+// A request tries the remote device pool (src/remote.js), when one is configured, before
+// the local simulators/emulators; `source` pins it to one of the two.
 //
 // Reclamation: a device is freed when the owning agent's MCP-server PID dies
 // (reaper) or when its screen shows zero motion past the leased idle limit, and a
@@ -46,6 +51,7 @@ import {
 } from './state.js';
 import { log } from './log.js';
 import * as dev from './devices.js';
+import * as remote from './remote.js';
 import { openRepairWindow, shq } from './terminal.js';
 
 const allocations = new Map(); // device key -> allocation record
@@ -108,9 +114,10 @@ function allocatedByHandle(deviceId) {
       || a.key === deviceId || a.avd === deviceId);
 }
 
-// Devices currently held by a live agent — these count toward the quota.
+// Local devices currently held by a live agent — these count toward the quota, which
+// guards this machine's CPU; a remote device runs elsewhere and is capped by its pool.
 function activeCount() {
-  return [...allocations.values()].filter((a) => a.ownerPid != null).length;
+  return [...allocations.values()].filter((a) => a.ownerPid != null && a.source !== 'remote').length;
 }
 
 function reqOf(p) {
@@ -118,11 +125,12 @@ function reqOf(p) {
     platform: (p.platform || 'any').toLowerCase(),
     format: p.format ? String(p.format).toLowerCase() : undefined,
     version: p.version && String(p.version).toLowerCase() !== 'any' ? String(p.version) : 'any',
+    source: ['remote', 'local'].includes(p.source) ? p.source : 'any',
   };
 }
 function publicAlloc(a) {
   return {
-    outcome: 'allocated', deviceId: a.handle, key: a.key, platform: a.platform,
+    outcome: 'allocated', deviceId: a.handle, key: a.key, platform: a.platform, source: a.source || 'local',
     format: a.format || null, name: a.name, version: a.version, apiVersion: a.apiVersion,
     status: a.status, agentName: a.agentName, allocatedAt: a.allocatedAt,
   };
@@ -138,6 +146,7 @@ function reserve(chosen, p, req) {
     agentName: p.agentName || `pid:${p.ownerPid}`, requirements: req,
     status: 'booting', bootedByUs: !wasBooted,
     allocatedAt: Date.now(), lastMotionAt: Date.now(), motionHash: null,
+    ...(chosen.lease ? { source: 'remote', remote: chosen.lease } : {}),
   };
   allocations.set(chosen.key, alloc);
   publish();
@@ -159,6 +168,56 @@ async function handleRequest(p, exclude = new Set()) {
   // An ownerless lease would be unreclaimable and quota-invisible — reject it.
   if (!p.ownerPid) throw httpError(400, 'ownerPid is required');
   const req = reqOf(p);
+  let remoteSkipped = null;
+  if (!p.deviceId && req.source !== 'local') {
+    const r = await requestRemote(p, req, exclude);
+    if (r.outcome) return r;
+    if (req.source === 'remote') return { outcome: 'remote-unavailable', reason: r.reason, requirements: req };
+    if (r.applies) remoteSkipped = r.reason;
+  }
+  const local = await requestLocal(p, req, exclude);
+  return remoteSkipped ? { ...local, remoteSkipped } : local;
+}
+
+// A leased remote device, attached and ready, or {reason, applies} when there is none.
+async function requestRemote(p, req, exclude) {
+  const got = await remote.acquire(req, exclude);
+  if (!got.lease) return got;
+  const alloc = await withLock(async () => reserve({ ...got.device, lease: got.lease }, p, req));
+  try {
+    alloc.serial = alloc.handle = await remote.attach(alloc.remote, (why) => remoteLeaseEnded(alloc, why));
+  } catch (e) {
+    log('remote: attach failed', alloc.key, String(e));
+    remote.release(alloc.remote);
+    await withLock(async () => {
+      if (allocations.get(alloc.key) === alloc) { allocations.delete(alloc.key); publish(); }
+    });
+    return { applies: true, reason: `${alloc.name} was leased but could not be attached: ${e.message}` };
+  }
+  // Freed or killed while attaching: given back then, but the attach that finished
+  // since may have opened what that release had nothing to close yet.
+  if (allocations.get(alloc.key) !== alloc) {
+    remote.release(alloc.remote);
+    throw httpError(409, `device ${alloc.name} was released during boot`);
+  }
+  alloc.status = 'ready';
+  alloc.lastMotionAt = Date.now();
+  publish();
+  return publicAlloc(alloc);
+}
+
+// The pool ended a lease under its holder: expiry, the device or its host gone.
+function remoteLeaseEnded(alloc, why) {
+  remote.release(alloc.remote); // a lease we only lost contact with may still be live
+  withLock(async () => {
+    if (allocations.get(alloc.key) !== alloc) return;
+    allocations.delete(alloc.key);
+    publish();
+    appendAudit('daemon', 'remote-lease-ended', `${alloc.name} taken from ${alloc.agentName}: ${why}`);
+  });
+}
+
+async function requestLocal(p, req, exclude) {
   // A device this daemon is shutting down is waited out (STOPPING_GRACE_MS at most)
   // rather than answered with needs-create, which would send the agent off to create
   // a device it doesn't need.
@@ -333,6 +392,7 @@ async function handleChange(p) {
       platform: p.platform || old?.requirements?.platform,
       format: p.format || old?.requirements?.format,
       version: p.version || old?.requirements?.version,
+      source: p.source || old?.requirements?.source,
     }, exclude);
   } catch (e) { await restoreOld(); throw e; }
   if (result.outcome !== 'allocated') {
@@ -350,7 +410,12 @@ async function handleChange(p) {
 
 async function handleBroken(p) {
   const [old] = findOwned(p.ownerPid, p.deviceId);
-  if (old) {
+  if (old?.source === 'remote') {
+    // Nothing here can repair a remote device; its pool resets what is returned.
+    await withLock(async () => { allocations.delete(old.key); publish(); });
+    shutdownAlloc(old);
+    log('remote: reported broken, lease returned', old.key, p.reason || '');
+  } else if (old) {
     // Quarantine: keep it in the table (so it can't be re-handed out) but flip
     // it to 'repairing' and drop the owner so the reaper leaves it alone.
     old.status = 'repairing';
@@ -363,13 +428,15 @@ async function handleBroken(p) {
   }
   // Immediately hand the reporting agent a different device with the same needs.
   const exclude = new Set(old ? [old.key] : []);
-  return handleRequest({
+  const next = await handleRequest({
     ownerPid: p.ownerPid,
     agentName: p.agentName,
     platform: old?.requirements?.platform || p.platform,
     format: old?.requirements?.format || p.format,
     version: old?.requirements?.version || p.version,
+    source: old?.requirements?.source || p.source,
   }, exclude);
+  return old?.source === 'remote' ? { ...next, returnedToPool: true } : next;
 }
 
 // The repair agent (or the user, via curl) reports a quarantined device healthy
@@ -587,6 +654,7 @@ async function sweepFreeDevices(limit) {
 }
 
 function shutdownAlloc(a) {
+  if (a.source === 'remote') { remote.release(a.remote); return; }
   stopping.set(a.key, Date.now() + STOPPING_GRACE_MS);
   try {
     if (dev.isApplePlatform(a.platform)) dev.shutdownIOS(a.udid);
@@ -638,7 +706,7 @@ function publish() {
   const devices = lastPool.map((d) => {
     const a = allocations.get(d.key);
     return {
-      key: d.key, platform: d.platform, format: d.format || null,
+      key: d.key, platform: d.platform, source: 'local', format: d.format || null,
       name: d.name, version: d.version, apiVersion: d.apiVersion,
       handle: a?.handle || d.handle || null,
       status: a ? a.status : (d.state === 'booted' ? 'running-free' : 'free'),
@@ -655,7 +723,7 @@ function publish() {
   for (const [key, a] of allocations) {
     if (!devices.find((d) => d.key === key)) {
       devices.push({
-        key, platform: a.platform, format: a.format || null,
+        key, platform: a.platform, source: a.source || 'local', format: a.format || null,
         name: a.name, version: a.version, apiVersion: a.apiVersion,
         handle: a.handle || null, status: a.status,
         owner: { agentName: a.agentName, ownerPid: a.ownerPid }, allocatedAt: a.allocatedAt,
@@ -667,7 +735,7 @@ function publish() {
     const bucket = d.owner ? 'allocated' : (d.status === 'free' ? 'free' : 'free-running');
     m[bucket] = (m[bucket] || 0) + 1; return m;
   }, {});
-  lastState = { updatedAt: new Date().toISOString(), daemonPid: process.pid, counts, devices };
+  lastState = { updatedAt: new Date().toISOString(), daemonPid: process.pid, counts, devices, remote: remote.status() };
   persist(lastState);
 }
 
@@ -702,7 +770,10 @@ function rehydrateLeases() {
   for (const a of readLeases()) {
     if (!a || !a.key || allocations.has(a.key)) continue;
     const keep = a.status === 'repairing' || (a.ownerPid && pidAlive(a.ownerPid));
-    if (!keep) continue;
+    if (!keep) {
+      if (a.source === 'remote') remote.release(a.remote); // else it sits leased until it expires
+      continue;
+    }
     // A lease caught mid-boot: the boot promise died with the old daemon. Treat
     // it as ready — exclusivity is what matters; a truly broken device gets
     // reported by its owner.
@@ -711,6 +782,14 @@ function rehydrateLeases() {
     a.lastMotionAt = Date.now();
     allocations.set(a.key, a);
     restored++;
+    // The tunnel died with the old daemon: reopen it on the same port, so the agent's
+    // adb serial still works, or drop the lease if the pool has ended it meanwhile.
+    if (a.source === 'remote') {
+      const port = Number(String(a.serial).split(':')[1]) || 0;
+      remote.attach(a.remote, (why) => remoteLeaseEnded(a, why), port)
+        .then((serial) => { a.serial = a.handle = serial; publish(); })
+        .catch((e) => remoteLeaseEnded(a, e.message));
+    }
   }
   if (restored) log('rehydrated', restored, 'lease(s) from a previous daemon');
 }
@@ -909,6 +988,8 @@ const server = http.createServer((req, res) => {
         case '/report-injection': result = await handleReportInjection(p); break;
         case '/unban': result = await handleUnban(p); break;
         case '/kill': result = await handleKill(p); break;
+        case '/remote/sign-in': result = await remote.signIn(); publish(); break;
+        case '/remote/devices': result = await remote.devices(); break;
         default: return send(404, { error: `unknown route ${req.url}` });
       }
       send(200, result);
@@ -939,7 +1020,7 @@ function socketHealthy() {
 function shutdownBootedSync() {
   if (process.env.DA_FAKE_DEVICES != null) return;
   for (const a of allocations.values()) {
-    if (!a.bootedByUs) continue;
+    if (!a.bootedByUs || a.source === 'remote') continue;
     try {
       if (dev.isApplePlatform(a.platform) && a.udid) {
         execFileSync('xcrun', ['simctl', 'shutdown', a.udid], { timeout: 15000, stdio: 'ignore' });
@@ -955,6 +1036,7 @@ function onListening() {
   persist();
   log('daemon listening', SOCKET_PATH, 'pid', process.pid);
   refreshPool();
+  remote.load().then(publish);
   setInterval(reapDeadOwners, REAP_INTERVAL_MS);
   setInterval(refreshPool, POOL_INTERVAL_MS);
   setInterval(idleSweep, IDLE_INTERVAL_MS);
@@ -1049,7 +1131,9 @@ async function start() {
   rehydrateLeases();
   // NB: no pre-listen unlink — see the error handler above.
   server.listen(SOCKET_PATH, onListening);
-  const bye = () => {
+  const bye = async () => {
+    const leased = [...allocations.values()].filter((a) => a.source === 'remote');
+    await Promise.race([Promise.all(leased.map((a) => remote.release(a.remote))), delay(3000)]);
     shutdownBootedSync();
     try { fs.unlinkSync(SOCKET_PATH); } catch {}
     try { fs.unlinkSync(DISCOVERY_PATH); } catch {}

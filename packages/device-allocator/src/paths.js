@@ -84,3 +84,7 @@ export const REPAIR_TTL_MS = Number(process.env.DA_REPAIR_TTL_MS) || 2 * 60 * 60
 // How long a device the daemon just shut down is kept out of selection while it may
 // still enumerate as booted: `emu kill` and `simctl shutdown` return before it is gone.
 export const STOPPING_GRACE_MS = Number(process.env.DA_STOPPING_GRACE_MS) || 60 * 1000;
+
+// The longest a request waits on the remote device pool (src/remote.js) before falling
+// back to a local device. It covers a provider's browser sign-in, so it is generous.
+export const REMOTE_ACQUIRE_BUDGET_MS = Number(process.env.DA_REMOTE_ACQUIRE_BUDGET_MS) || 11 * 60 * 1000;

@@ -18,7 +18,7 @@ import { log } from './log.js';
 
 const pexec = promisify(execFile);
 
-async function run(cmd, args, opts = {}) {
+export async function run(cmd, args, opts = {}) {
   try {
     const { stdout, stderr } = await pexec(cmd, args, {
       maxBuffer: 64 * 1024 * 1024, timeout: opts.timeout ?? 30000, ...opts,
@@ -175,9 +175,14 @@ async function androidRunningMap() {
 }
 
 const ANDROID_RELEASE = {
-  35: '15', 34: '14', 33: '13', 32: '12', 31: '12', 30: '11', 29: '10', 28: '9', 27: '8.1',
+  36: '16', 35: '15', 34: '14', 33: '13', 32: '12', 31: '12', 30: '11', 29: '10', 28: '9', 27: '8.1',
 };
 function androidRelease(api) { return ANDROID_RELEASE[Number(api)] || String(api); }
+// The newest API level a release ships with ("12" is both 31 and 32), or null.
+export function androidApi(release) {
+  const hits = Object.keys(ANDROID_RELEASE).filter((api) => ANDROID_RELEASE[api] === String(release));
+  return hits.length ? String(Math.max(...hits.map(Number))) : null;
+}
 
 // ---- requirement matching -------------------------------------------------
 
