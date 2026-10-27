@@ -176,6 +176,7 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   activity[-filtered] (audit feed + its filter chips)
                                                      #   wizard[-other|-specific[-mine|-theirs]|-wrong|-banned]
                                                      #   devices[-open|-procs]|conflicts[-other|-specific|-wrong]
+                                                     #   devices-screen[-remote[-away]|-off] (the Devices screen)
                                                      #   audit[-issues|-prs|-all]
                                                      #   mesh (⬡ screen over a synthetic topology); mesh-blocked
                                                      #   (the not-discoverable banner); mesh-reminder (trust modal)
@@ -361,6 +362,7 @@ packages/
         BanList.swift / AuditLog.swift   ban list (the daemon's banned.json) + the unified activity feed (audit.jsonl)
         DeviceAllocator.swift      allocator daemon state reader + installer bridge
         DeviceFocus.swift          click an in-use device → focus the holding agent's terminal
+        DevicesScreen.swift        the Devices screen: devices, allocator, remote pool
         Daemon.swift               first-run login-daemon opt-in (TTY Accept [y/N])
         Render.swift               headless ImageRenderer snapshots for UI checks
         Color+Hex.swift            Color ↔ "#RRGGBB" for persisted tint overrides
