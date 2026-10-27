@@ -44,9 +44,9 @@ extension Store {
     static let commsMaxPollInterval: TimeInterval = 86_400
 
     /// Stand in for `gh` in the Comms self-test: handed the arguments of a `gh pr view` or
-    /// `gh issue view`, answers with what gh would print, or nil for a gh that failed.
+    /// `gh issue view`, answers with what gh would print, or throws what gh would.
     /// Headless only.
-    static var commsGHOverride: (@MainActor ([String]) async -> Data?)?
+    static var commsGHOverride: (@MainActor ([String]) async throws -> Data)?
 
     /// The largest stretch of `events.jsonl` a refresh reads on the main actor. More than
     /// that — the first read of a long log, or the one after a rotation — is read and
@@ -275,9 +275,10 @@ extension Store {
             return CommsActResult(verb: "comms-ping", outcome: off ?? "ping only",
                                   feedLine: Store.pingLine(m))
         case .review(let n):
-            let found = await commsLookup(.pr, n)
-            guard let pr = found, pr.isOpen else {
-                return refused("comms-review", who, Store.notOpen("PR", n, found))
+            let pr: CommsTarget
+            switch await commsLookup(.pr, n) {
+            case .found(let t) where t.isOpen: pr = t
+            case let other: return refused("comms-review", who, Store.notOpen("PR", n, other))
             }
             let mine = !effectiveMe.isEmpty && pr.author.lowercased() == effectiveMe.lowercased()
             if !mine, BanList.isBanned(pr.author, in: bannedAuthors) {
@@ -289,9 +290,10 @@ extension Store {
                                        config: .review(cfg)),
                          verb: "comms-review", who: who, front: true)
         case .fixIssue(let n):
-            let found = await commsLookup(.issue, n)
-            guard let issue = found, issue.isOpen else {
-                return refused("comms-fix", who, Store.notOpen("issue", n, found))
+            let issue: CommsTarget
+            switch await commsLookup(.issue, n) {
+            case .found(let t) where t.isOpen: issue = t
+            case let other: return refused("comms-fix", who, Store.notOpen("issue", n, other))
             }
             if BanList.isBanned(issue.author, in: bannedAuthors) {
                 return refused("comms-fix", who, "@\(issue.author) is banned, so #\(n) was not queued")
@@ -330,8 +332,11 @@ extension Store {
                                   running: row.record)
         }
         let suffix = front ? ", at the front of its band" : ""
-        if let twin = (queuedTasks + startingTasks).first(where: {
-            Store.commsTwinKeys(ask.key).contains($0.id) }) {
+        let twins = Store.commsTwinKeys(ask.key)
+        // Only a find that will run: a paused monitor's waits for "execute now" or its
+        // toggle, where an ask is never paused (`isPaused`).
+        if let twin = startingTasks.first(where: { twins.contains($0.id) })
+            ?? queuedTasks.first(where: { twins.contains($0.id) && !isPaused($0.job.counter) }) {
             if front { moveQueuedTaskToFront(twin.id) }
             let outcome = "already queued" + suffix
             return CommsActResult(verb: verb, outcome: outcome, queueKey: twin.id,
@@ -397,9 +402,29 @@ extension Store {
         }
     }
 
-    private static func notOpen(_ noun: String, _ n: Int, _ found: CommsTarget?) -> String {
-        guard let found else { return "no \(noun) #\(n) in this repo, so nothing was queued" }
-        return "\(noun) #\(n) is \(found.state.lowercased()), so nothing was queued"
+    private static func notOpen(_ noun: String, _ n: Int, _ lookup: CommsLookup) -> String {
+        switch lookup {
+        case .found(let t): return "\(noun) #\(n) is \(t.state.lowercased()), so nothing was queued"
+        case .missing:      return "no \(noun) #\(n) in this repo, so nothing was queued"
+        case .unasked(let why):
+            return "couldn't ask GitHub about \(noun) #\(n) (\(why)), so nothing was queued"
+        }
+    }
+
+    /// What asking GitHub about a PR or an issue came to.
+    enum CommsLookup {
+        case found(CommsTarget)
+        /// GitHub answered that the repo has no such PR or issue.
+        case missing
+        /// GitHub did not answer: gh failed, timed out or printed no PR or issue.
+        case unasked(String)
+    }
+
+    /// Whether gh failed because GitHub knows no such number - how `gh pr view` and
+    /// `gh issue view` both say it - rather than because it could not be asked.
+    static func ghSaysNotFound(_ error: Error) -> Bool {
+        guard case GHError.process(_, let stderr) = error else { return false }
+        return stderr.contains("Could not resolve to")
     }
 
     nonisolated static func snippet(_ text: String, max: Int = 80) -> String {
@@ -413,36 +438,44 @@ extension Store {
     ///
     /// `gh issue view` answers a PR's number with that PR, so an answer is an issue only
     /// when its url says so; a PR's number is no issue.
-    private func commsLookup(_ kind: CommsTargetKind, _ n: Int) async -> CommsTarget? {
+    private func commsLookup(_ kind: CommsTargetKind, _ n: Int) async -> CommsLookup {
         switch kind {
         case .pr:
             if let pr = prs.first(where: { $0.number == n }) {
-                return CommsTarget(number: n, url: pr.url, author: pr.author, isOpen: true, state: "OPEN")
+                return .found(CommsTarget(number: n, url: pr.url, author: pr.author, isOpen: true,
+                                          state: "OPEN"))
             }
         case .issue:
             if let issue = issues.first(where: { $0.number == n }) {
-                return CommsTarget(number: n, url: issue.url, author: issue.author, isOpen: true,
-                                   state: "OPEN")
+                return .found(CommsTarget(number: n, url: issue.url, author: issue.author,
+                                          isOpen: true, state: "OPEN"))
             }
         }
         let (owner, repo) = CoreAssets.repoCoordinates()
         let verb = kind == .pr ? "pr" : "issue"
         let args = [verb, "view", String(n), "--repo", "\(owner)/\(repo)",
                     "--json", "number,url,author,state"]
-        let answer: Data?
-        if Headless.active, let stub = Store.commsGHOverride {
-            answer = await stub(args)
-        } else {
-            answer = try? await GH.run(args)
+        let data: Data
+        do {
+            if Headless.active, let stub = Store.commsGHOverride {
+                data = try await stub(args)
+            } else {
+                data = try await GH.run(args)
+            }
+        } catch {
+            if Store.ghSaysNotFound(error) { return .missing }
+            let why = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            return .unasked(Store.snippet(why, max: 120))
         }
-        guard let data = answer,
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let state = obj["state"] as? String else { return nil }
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let state = obj["state"] as? String else {
+            return .unasked("gh printed no PR or issue")
+        }
         let url = obj["url"] as? String ?? ""
-        if kind == .issue, !url.contains("/issues/") { return nil }
+        if kind == .issue, !url.contains("/issues/") { return .missing }
         let author = (obj["author"] as? [String: Any])?["login"] as? String ?? ""
-        return CommsTarget(number: n, url: url, author: author, isOpen: state == "OPEN",
-                           state: state)
+        return .found(CommsTarget(number: n, url: url, author: author, isOpen: state == "OPEN",
+                                  state: state))
     }
 
     /// Publish the poll's health, and log only its transitions: a failing token fails
@@ -505,10 +538,38 @@ extension Store {
         }
         let running = Set(agentRows.map(\.record.label))
         for item in commsItems where item.startedAt != nil && item.finishedAt == nil
+            && !Store.commsNeverStarted(item)
             && !running.contains(item.label ?? "") && !waiting.contains(item.queueKey ?? "") {
             lines.append(CommsEvent(kind: .finished, id: item.message.id, label: item.label))
         }
         if !lines.isEmpty { recordComms(lines) }
+    }
+
+    /// The run wearing `label` failed to spawn. An agent row may already have shown it
+    /// starting, and a ping taken that start for its own (`noteCommsRuns`, or `queue`'s
+    /// "already running"): those pings say it never ran, where the `finished` its
+    /// vanished row would earn reads as work done.
+    func commsSpawnFailed(label: String, why: String) {
+        if let reading = commsLogRead {
+            Task { [weak self] in
+                await reading.value
+                self?.commsSpawnFailed(label: label, why: why)
+            }
+            return
+        }
+        let outcome = Store.commsNeverStartedOutcome + " (\(Store.snippet(why, max: 120)))"
+        let lines = commsItems
+            .filter { $0.label == label && $0.startedAt != nil && $0.finishedAt == nil
+                && !Store.commsNeverStarted($0) }
+            .map { CommsEvent(kind: .action, id: $0.message.id, outcome: outcome) }
+        if !lines.isEmpty { recordComms(lines) }
+    }
+
+    static let commsNeverStartedOutcome = "its agent never started, so nothing ran"
+
+    /// A ping whose run failed to spawn (`commsSpawnFailed`): there is no run to finish.
+    static func commsNeverStarted(_ item: CommsItem) -> Bool {
+        item.outcome?.hasPrefix(commsNeverStartedOutcome) == true
     }
 }
 
@@ -581,8 +642,10 @@ enum CommsLogReader {
 enum CommsToken {
     static let timeout: TimeInterval = 10
 
+    static let envVar = "DIPLOMAT_SLACK_TOKEN"
+
     static func read(item: String) -> String? {
-        if let env = ProcessInfo.processInfo.environment["DIPLOMAT_SLACK_TOKEN"], !env.isEmpty {
+        if let env = ProcessInfo.processInfo.environment[envVar], !env.isEmpty {
             return env
         }
         let p = Process()

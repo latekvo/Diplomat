@@ -26,7 +26,7 @@ import tempfile
 from dataclasses import dataclass, replace
 from enum import Enum
 
-from . import appconfig, core, runner
+from . import appconfig, comms, core, runner
 from .configbase import PRSweepConfig
 from .depths import DepthLadder
 from .prtarget import PRTarget
@@ -406,7 +406,7 @@ def shell_command(prompt_file: str, done_path: str | None = None,
                   pid_path: str | None = None, port: int | None = None,
                   settings_file: str | None = None,
                   opencode_session: str | None = None) -> str:
-    """``cd '<repo>' 2>/dev/null; <agent>; [{ printf %s $? > done; } 2>/dev/null || :;] exec "$SHELL" -i``
+    """``cd '<repo>' 2>/dev/null; unset DIPLOMAT_SLACK_TOKEN; <agent>; [{ printf %s $? > done; } 2>/dev/null || :;] exec "$SHELL" -i``
 
     ``<agent>`` is :func:`runner.agent_command` — ``claude "$(cat '<file>')"``, another
     runner's spelling of the same thing, or OpenCode 2.x's ``opencode api`` chain
@@ -492,7 +492,11 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     exiting, so between them one covers the run that ends and the other the run that
     goes back to its prompt.
 
-    When the operator configured an agent token, everything after the ``cd`` runs
+    The Slack token (:data:`comms.TOKEN_ENV`) is unset right after the ``cd``, so an
+    agent reading untrusted Slack text never holds it, whatever terminal or tmux
+    server environment the command starts in.
+
+    When the operator configured an agent token, everything after that ``unset`` runs
     behind :func:`token_export`, whose export the agent inherits.
     """
     repo = shlex.quote(repo_path())
@@ -508,7 +512,7 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     token = token_export()
     if token:
         body = f"{token} && {{ {body}}}; "
-    return f'cd {repo} 2>/dev/null; {body}exec "$SHELL" -i'
+    return f'cd {repo} 2>/dev/null; unset {comms.TOKEN_ENV}; {body}exec "$SHELL" -i'
 
 
 #: Appended to the audit line of a run spawned behind :func:`token_export`. Same text
@@ -687,8 +691,12 @@ def spawn_env() -> dict:
     the tmux *client* and stops there: the session's command is started by the
     already-running server, with the server's environment. Anything the agent itself
     must see belongs in the command (:func:`runner.agent_command`), not here.
+
+    The Slack token is dropped too, so a server this launch starts never holds it;
+    the agent's own shell unsets it whatever its server holds (:func:`shell_command`).
     """
-    return {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
+    return {k: v for k, v in os.environ.items()
+            if k not in ("TMUX", "TMUX_PANE", comms.TOKEN_ENV)}
 
 
 def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = None,

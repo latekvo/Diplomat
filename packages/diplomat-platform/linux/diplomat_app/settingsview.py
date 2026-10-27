@@ -1026,7 +1026,7 @@ class SettingsView(QWidget):
         if not st.comms_enabled:
             self._comms_pill.set_state("off", _GREY)
         elif st.comms_error:
-            self._comms_pill.set_state("error", _RED)
+            self._comms_pill.set_state(st.comms_snippet(st.comms_error, 48), _RED)
         elif not st.comms_configured:
             self._comms_pill.set_state("no token", _ORANGE)
         else:

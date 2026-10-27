@@ -416,12 +416,16 @@ class ActivityRow(QFrame):
         row.setSpacing(8)
         row.addWidget(GlyphLabel(glyph, 18, glyph_color, font_px=13),
                       0, Qt.AlignmentFlag.AlignTop)
+        # Plain: a feed line quotes agent names and daemon messages, which Qt would
+        # otherwise guess to be HTML.
         d = QLabel(detail)
+        d.setTextFormat(Qt.TextFormat.PlainText)
         d.setWordWrap(True)
         d.setStyleSheet("font-size: 10px;")
         row.addWidget(d, 1)
         if source:
             badge = QLabel(source)
+            badge.setTextFormat(Qt.TextFormat.PlainText)
             badge.setStyleSheet(
                 f"color: {source_color}; background-color: {tint_bg(source_color, 0.15)};"
                 " border-radius: 5px; padding: 1px 5px; font-size: 8px; font-weight: 700;"

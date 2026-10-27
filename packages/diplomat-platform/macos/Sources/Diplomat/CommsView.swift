@@ -198,7 +198,7 @@ struct CommsView: View {
         if item.finishedAt != nil { return .done }
         let key = item.queueKey ?? ""
         if store.startingTasks.contains(where: { $0.id == key }) { return .running }
-        if item.startedAt != nil { return .running }
+        if item.startedAt != nil, !Store.commsNeverStarted(item) { return .running }
         if store.queuedTasks.contains(where: { $0.id == key }) { return .queued }
         return .notQueued
     }

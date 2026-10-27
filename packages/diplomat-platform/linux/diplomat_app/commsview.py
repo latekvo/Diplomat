@@ -131,10 +131,11 @@ def report_path(item: dict) -> Path | None:
 
 def job_status(item: dict, waiting: set[str]) -> str:
     """``done`` / ``running`` / ``queued`` — or ``not queued`` for an ask that left
-    the queue without starting (cancelled, or retired by its PR closing)."""
+    the queue without starting (cancelled, retired by its PR closing, or dispatched
+    to a terminal that never ran it)."""
     if item.get("finishedAt"):
         return "done"
-    if item.get("startedAt"):
+    if item.get("startedAt") and not comms.never_started(item):
         return "running"
     return "queued" if item.get("queueKey") in waiting else "not queued"
 
