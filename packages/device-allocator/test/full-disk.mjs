@@ -8,8 +8,11 @@
 // 2. A daemon started on an already-full volume, both fresh and over a crashed
 //    daemon's stale socket: it serves wherever the kernel can still bind a socket
 //    (tmpfs always, APFS when a sliver is left), and otherwise exits 1 rather than
-//    claim a live peer holds the socket. Either way it catches up, or starts, once
-//    space returns.
+//    claim a live peer holds the socket. One serving without the daemon.json the
+//    disk refused is still found on its socket: an MCP tool call starts no
+//    throwaway daemon, --check sees it and --uninstall stops it. Once space
+//    returns, its own tick writes daemon.json with no request to prompt it, and
+//    every daemon catches up, or starts.
 // 3. A starting daemon removes the tmp files of writers that died mid-write.
 //
 // A machine that cannot mount a volume skips (exit 77 from the fixture), unless
@@ -25,6 +28,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DAEMON = path.join(__dirname, '..', 'src', 'daemon.js');
+const MCP = path.join(__dirname, '..', 'src', 'mcp.js');
+const INSTALL = path.join(__dirname, '..', 'src', 'install.js');
 const VOLUME_SH = path.join(__dirname, '..', '..', '..', 'scripts', 'full-volume.sh');
 
 // Short: the daemon's socket path lives under it and sun_path caps at 104 bytes.
@@ -34,6 +39,12 @@ const BIN = path.join(ROOT, 'bin');
 const FAKE = path.join(ROOT, 'fake.json');
 const CONFIG = path.join(ROOT, 'config.json');
 const TERMINAL_RECORD = path.join(ROOT, 'terminal-argv');
+const HOME = path.join(ROOT, 'home');
+// Every node process a client starts appends its script here, off the full volume.
+const TRACE = path.join(ROOT, 'node-starts');
+const TRACER = path.join(ROOT, 'trace.cjs');
+fs.writeFileSync(TRACER, `require('fs').appendFileSync(${JSON.stringify(TRACE)}, process.argv[1] + '\\n');\n`);
+fs.mkdirSync(HOME);
 
 fs.writeFileSync(FAKE, JSON.stringify([
   ...['A', 'B', 'C', 'D', 'E'].map((id) => ({
@@ -102,6 +113,43 @@ function startDaemon(base) {
   daemons.push(child);
   return child;
 }
+// A client's environment: the sandboxed HOME, and every node it starts traced.
+const clientEnv = (base) => ({ ...process.env, HOME, DA_BASE_DIR: base, DA_BAN_DIR: path.join(VOL, 'ban'),
+  DA_FAKE_DEVICES: FAKE, NODE_OPTIONS: `--require ${TRACER}` });
+const daemonStarts = () => (fs.existsSync(TRACE) ? fs.readFileSync(TRACE, 'utf8').split('\n') : [])
+  .filter((l) => l.endsWith(`${path.sep}daemon.js`));
+// One tool call through the real stdio MCP server; the result text once it has exited.
+function mcpCall(base, name, args) {
+  const child = spawn(process.execPath, [MCP], { stdio: ['pipe', 'pipe', 'ignore'], env: clientEnv(base) });
+  const send = (m) => child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...m })}\n`);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${name}: no answer`)); }, 20000);
+    let buf = '';
+    let text;
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (c) => {
+      buf += c;
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        const m = JSON.parse(line);
+        if (m.id === 1) {
+          send({ method: 'notifications/initialized' });
+          send({ id: 2, method: 'tools/call', params: { name, arguments: args } });
+        } else if (m.id === 2) { text = m.result.content[0].text; child.stdin.end(); }
+      }
+    });
+    child.on('exit', () => { clearTimeout(timer); text === undefined ? reject(new Error(`${name}: exited unanswered`)) : resolve(text); });
+    send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'full-disk', version: '0' } } });
+  });
+}
+function installer(base, arg) {
+  const r = spawnSync(process.execPath, [INSTALL, arg], { encoding: 'utf8', env: clientEnv(base), timeout: 30000 });
+  return JSON.parse(r.stdout);
+}
+const discoveredPid = (base) => { try { return readJson(path.join(base, 'daemon.json')).pid; } catch { return null; } };
+const gone = (d) => d.exitCode !== null || d.signalCode !== null;
+
 async function waitHealth(base) {
   for (let i = 0; i < 60; i++) { try { return await call(base, 'GET', '/health'); } catch { await delay(100); } }
   throw new Error(`daemon on ${base} never became healthy`);
@@ -324,10 +372,34 @@ async function scenarioStartFull() {
   const ours = (f) => started.some((d) => f.endsWith(`.tmp.${d.pid}`));
   assert.deepEqual((await leakedTmpFiles()).filter(ours), [], 'tmp files left on the full volume');
   pass('no tmp file left behind');
+
+  const serving = bases.filter((_, i) => outcomes[i] === 'serving');
+  for (const base of serving) {
+    const d = started[bases.indexOf(base)];
+    assert.notEqual(discoveredPid(base), d.pid, `${base}: daemon.json landed on a full disk; nothing to prove`);
+    assert.match(await mcpCall(base, 'free-device', {}), /You held no device to release/);
+    assert.deepEqual(daemonStarts(), [], 'a tool call started a throwaway daemon beside the serving one');
+    assert.equal(installer(base, '--check').daemonRunning, true, `${base}: --check missed the serving daemon`);
+  }
+  if (outcomes[0] === 'serving') {
+    installer(fresh, '--uninstall');
+    await waitExit(started[0]);
+    assert.ok(gone(started[0]), '--uninstall left the serving daemon running');
+  }
+  if (serving.length) pass(`clients find ${serving.length} daemon(s) serving without daemon.json`);
   await settle('drain');
 
+  const kept = started.filter((d) => !gone(d));
+  for (const d of kept) {
+    const base = bases[started.indexOf(d)];
+    let landed = false;
+    for (let t = 0; t < 60 && !landed; t++) { landed = discoveredPid(base) === d.pid; if (!landed) await delay(50); }
+    assert.ok(landed, `${base}: daemon.json never named the serving daemon`);
+  }
+  if (kept.length) pass('daemon.json lands once space returns, with no request to prompt it');
+
   for (const [i, base] of bases.entries()) {
-    if (outcomes[i] === 'exited') started[i] = startDaemon(base);
+    if (gone(started[i])) started[i] = startDaemon(base);
     await waitHealth(base);
     await caughtUp(base, started[i].pid);
   }

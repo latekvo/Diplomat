@@ -1,5 +1,5 @@
-// Persistence helpers: atomic JSON writes, the daemon discovery/liveness file,
-// the public state snapshot the applet polls, and PID/daemon liveness checks.
+// Persistence helpers: atomic JSON writes, the daemon discovery file,
+// the public state snapshot the applet polls, and the PID liveness check.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -85,10 +85,4 @@ export function pidAlive(pid) {
   if (!pid) return false;
   try { process.kill(pid, 0); return true; }
   catch (e) { return e.code === 'EPERM'; } // alive but not ours-to-signal
-}
-
-export function daemonAlive() {
-  const d = readDiscovery();
-  if (!d || !pidAlive(d.pid)) return false;
-  return fs.existsSync(SOCKET_PATH);
 }

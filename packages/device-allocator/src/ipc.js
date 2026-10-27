@@ -5,6 +5,13 @@
 import http from 'node:http';
 import { SOCKET_PATH } from './paths.js';
 
+// {ok, pid} from the daemon serving the socket, or null when none answers. Clients
+// key liveness on this, not on daemon.json: a full disk can refuse that file to a
+// daemon that is serving, and a crash leaves it naming one that is not.
+export async function daemonHealth(timeout = 2000) {
+  try { return await callDaemon('GET', '/health', null, { timeout }); } catch { return null; }
+}
+
 export function callDaemon(method, route, body, opts = {}) {
   const socketPath = opts.socketPath || SOCKET_PATH;
   const timeout = opts.timeout ?? 180000;
