@@ -1090,11 +1090,11 @@ class SettingsView(QWidget):
         return slider
 
     def _on_idle_free_changed(self, value: int) -> None:
-        self.store.device_idle_free_minutes = value
+        self._save(lambda: setattr(self.store, "device_idle_free_minutes", value))
         self.store.changed.emit()
 
     def _on_idle_leased_changed(self, value: int) -> None:
-        self.store.device_idle_leased_minutes = value
+        self._save(lambda: setattr(self.store, "device_idle_leased_minutes", value))
         self.store.changed.emit()
 
     def _refresh_allocator_ui(self) -> None:

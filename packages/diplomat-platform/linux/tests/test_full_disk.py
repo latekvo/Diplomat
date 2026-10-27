@@ -21,7 +21,8 @@ import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from diplomat_runtime import activity, agentregistry, appconfig, telemetry, usagescan
+from diplomat_runtime import (activity, agentregistry, appconfig, autofix, telemetry,
+                              usagescan)
 from test_autofix import register_run, store  # noqa: F401
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts"))
@@ -207,6 +208,31 @@ def test_a_setting_the_disk_refuses_says_so(on_volume, monkeypatch):
     assert st.wait_for_background() == []
 
 
+@pytest.mark.parametrize("which", ["free", "leased"])
+def test_an_idle_limit_the_disk_refuses_says_so(on_volume, crashes, which):
+    """The allocator's idle limits live in the same shared config as every other
+    setting, so a refused write is shown the same way rather than escaping the slot."""
+    from diplomat_app.settingsview import SettingsView
+    from diplomat_app.store import Store
+
+    QApplication.instance() or QApplication([])
+    st = Store()
+    view = SettingsView(st)
+    slider = getattr(view, f"_idle_{which}")
+    before = getattr(st, f"device_idle_{which}_minutes")
+    on_volume.fill()
+    slider.changed.emit(before + 1)
+    assert crashes == []
+    assert getattr(st, f"device_idle_{which}_minutes") == before
+    assert "Couldn't save" in view._save_error.text()
+    assert not view._save_error.isHidden()
+
+    on_volume.drain()
+    slider.changed.emit(before + 1)
+    assert getattr(st, f"device_idle_{which}_minutes") == before + 1
+    assert view._save_error.isHidden()
+
+
 def test_a_spawn_the_disk_cannot_book_is_refused_not_launched(
         on_volume, store, monkeypatch):
     """An agent reads its prompt from the run directory, and a run the book never heard
@@ -229,6 +255,28 @@ def test_a_spawn_the_disk_cannot_book_is_refused_not_launched(
     assert agentregistry.load() == []
     assert not any(p.is_dir() for p in (on_volume.path / "agents").glob("*"))
     assert on_volume.leftovers() == []
+
+
+def test_a_failed_spawn_the_disk_cannot_unbook_is_still_a_failed_dispatch(
+        on_volume, store, monkeypatch):
+    """The disk fills between booking the run and the terminal refusing to open. The
+    dispatch answers "failed" as for any spawn that did not launch, and the run stays
+    booked for the tick to retire rather than an ``OSError`` taking the poll down."""
+    from diplomat_runtime import review
+
+    def refused(*a, **k):
+        on_volume.fill()
+        raise review.SpawnError("no terminal")
+
+    monkeypatch.setattr(review, "spawn", refused)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    job = autofix.AgentJob(
+        kind="review", audit_action="review", label="Review · #7", prompt="PROMPT",
+        pr_url="https://github.com/o/r/pull/7", pr_number=7,
+        counter="review_requests", duty="review")
+    assert store.dispatch_agent(job, autofix.SOURCE_PANEL) == "failed"
+    assert [r.pr_number for r in agentregistry.load()] == [7]
+    assert len(_feed("Can't write the agent run book")) == 1
 
 
 def test_a_mesh_run_the_disk_cannot_book_is_reported(on_volume, store):
