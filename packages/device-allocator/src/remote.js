@@ -30,53 +30,62 @@ import { run, matchesRequirements, androidApi } from './devices.js';
 import { log } from './log.js';
 import * as wsock from './wsock.js';
 
-let loaded = { path: null, provider: null, error: null };
+const instances = new Map(); // module path -> {provider, error, ready}
+let onChange = null;
 
-function providerPath() {
+// Called whenever a provider finishes loading, so the snapshot can follow.
+export function watch(fn) { onChange = fn; }
+
+function configuredPath() {
   if (process.env.DA_REMOTE_PROVIDER) return process.env.DA_REMOTE_PROVIDER;
   if (process.env.DA_FAKE_DEVICES != null) return null;
   const p = readConfig().deviceRemoteProvider;
   return typeof p === 'string' && p ? p.replace(/^~(?=$|\/)/, os.homedir()) : null;
 }
 
-// The configured provider, loaded once per path; null when none is configured.
-async function provider() {
-  const p = providerPath();
-  if (!p) return null;
-  if (loaded.path !== p) {
-    loaded = { path: p, provider: null, error: null };
-    try {
-      const mod = await import(pathToFileURL(p).href);
-      loaded.provider = mod.default({ log, run, adb: ADB_BIN, stateDir: BASE_DIR, atomicWrite, matchesRequirements, androidApi, wsock });
-    } catch (e) {
-      loaded.error = String(e.message || e);
-      log('remote: provider failed to load', p, loaded.error);
-    }
+// The provider at `path`, loaded once and shared by concurrent callers. A lease is
+// always handled by the provider that granted it, even after the setting has moved on.
+async function provider(path) {
+  let entry = instances.get(path);
+  if (!entry) {
+    entry = { provider: null, error: null };
+    entry.ready = import(pathToFileURL(path).href)
+      .then((mod) => { entry.provider = mod.default({ log, run, adb: ADB_BIN, stateDir: BASE_DIR, atomicWrite, matchesRequirements, androidApi, wsock }); })
+      .catch((e) => { entry.error = String(e.message || e); log('remote: provider failed to load', path, entry.error); })
+      .finally(() => onChange?.());
+    instances.set(path, entry);
   }
-  if (loaded.error) throw new Error(`the remote pool provider (${p}) failed to load: ${loaded.error}`);
-  return loaded.provider;
+  await entry.ready;
+  if (entry.error) throw new Error(`the remote pool provider (${path}) failed to load: ${entry.error}`);
+  return entry.provider;
 }
 
 // Loads the configured provider ahead of the first request, so the snapshot shows it.
 export async function load() {
-  try { await provider(); } catch {}
+  const path = configuredPath();
+  if (path) try { await provider(path); } catch {}
 }
 
 export function status() {
-  if (!providerPath()) return { provider: null, state: 'off' };
-  if (loaded.error) return { provider: null, state: 'error', reason: loaded.error };
-  if (!loaded.provider) return { provider: null, state: 'loading' };
-  try { return { provider: loaded.provider.name, ...loaded.provider.status() }; }
-  catch (e) { return { provider: loaded.provider.name, state: 'error', reason: String(e.message || e) }; }
+  const path = configuredPath();
+  if (!path) return { provider: null, state: 'off' };
+  const entry = instances.get(path);
+  if (!entry) { load(); return { provider: null, state: 'loading' }; }
+  if (entry.error) return { provider: null, state: 'error', reason: entry.error };
+  if (!entry.provider) return { provider: null, state: 'loading' };
+  try { return { provider: entry.provider.name, ...entry.provider.status() }; }
+  catch (e) { return { provider: entry.provider.name, state: 'error', reason: String(e.message || e) }; }
 }
 
 // Like the provider's acquire, but bounded: a provider stuck past the budget (a sign-in
 // nobody finishes, a hung network) costs the agent that long and no more, and a lease
 // that lands after the budget is handed straight back.
+// A granted lease comes back with `provider`, the module path every later call for it takes.
 export async function acquire(req, exclude) {
+  const path = configuredPath();
+  if (!path) return { applies: false, reason: 'no remote device pool is configured' };
   let p;
-  try { p = await provider(); } catch (e) { return { applies: true, reason: e.message }; }
-  if (!p) return { applies: false, reason: 'no remote device pool is configured' };
+  try { p = await provider(path); } catch (e) { return { applies: true, reason: e.message }; }
   const work = Promise.resolve().then(() => p.acquire(req, exclude))
     .catch((e) => ({ applies: true, reason: `${p.name} failed: ${e.message || e}` }));
   let timer;
@@ -85,23 +94,22 @@ export async function acquire(req, exclude) {
   });
   const got = await Promise.race([work, late]);
   clearTimeout(timer);
-  if (got) return got;
+  if (got) return got.lease ? { ...got, provider: path } : got;
   work.then((g) => { if (g.lease) p.release(g.lease); });
   return { applies: true, reason: `${p.name} did not answer within ${Math.round(REMOTE_ACQUIRE_BUDGET_MS / 1000)} s` };
 }
 
-export async function attach(lease, onEnd, port = 0) {
-  const p = await provider();
-  if (!p) throw new Error('no remote device pool is configured any more');
-  return p.attach(lease, onEnd, port);
+export async function attach(path, lease, onEnd, port = 0) {
+  return (await provider(path)).attach(lease, onEnd, port);
 }
 
-export async function release(lease) {
-  try { await (await provider())?.release(lease); } catch (e) { log('remote: release failed', String(e)); }
+export async function release(path, lease) {
+  try { await (await provider(path)).release(lease); } catch (e) { log('remote: release failed', String(e)); }
 }
 
 export async function signIn() {
-  const p = await provider();
+  const path = configuredPath();
+  const p = path && await provider(path);
   if (!p) return { ok: false, reason: 'no remote device pool is configured' };
   if (!p.signIn) return { ok: false, reason: `${p.name} has no sign-in` };
   const reason = await p.signIn();
@@ -109,7 +117,8 @@ export async function signIn() {
 }
 
 export async function devices() {
-  const p = await provider();
+  const path = configuredPath();
+  const p = path && await provider(path);
   if (!p) return { reason: 'no remote device pool is configured' };
   if (!p.devices) return { reason: `${p.name} does not list its devices` };
   return p.devices();

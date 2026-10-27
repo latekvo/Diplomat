@@ -5,7 +5,7 @@
 // pool ends drops the allocation; a restarted daemon reattaches on the same port.
 // Run: node test/remote-pool.mjs
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
@@ -129,7 +129,7 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   assert.ok(await echoes(r.deviceId), echoes.why);
   assert.deepEqual(box.events(), ['lease pool:P16', 'attach pool:P16']);
   const row = (await stateOf(d)).devices.find((x) => x.key === 'pool:P16');
-  assert.deepEqual([row.source, row.status, row.handle], ['remote', 'ready', r.deviceId]);
+  assert.deepEqual([row.source, row.status, row.handle, row.idleMs], ['remote', 'ready', r.deviceId, 0]);
   pass('android goes to the remote pool first; the device is attached and in the snapshot');
 
   const ios = await d.call('POST', '/request', { ownerPid: ME, platform: 'ios' });
@@ -227,6 +227,39 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   pass('a provider that fails to load is reported and falls back');
   await d.call('POST', '/release', { ownerPid: ME });
   await d.stop();
+}
+
+// 3b. The setting changing under a running allocator: the snapshot follows it, and a
+//     lease is still given back through the provider that granted it. Run outside the
+//     daemon, since a fake device pool ignores the setting.
+{
+  const box = sandbox({ config: { deviceRemoteProvider: PROVIDER } });
+  const script = `
+    import fs from 'node:fs';
+    import * as remote from ${JSON.stringify(path.join(__dirname, '..', 'src', 'remote.js'))};
+    const out = [];
+    const settle = () => new Promise((r) => setTimeout(r, 200));
+    out.push(remote.status()); await settle(); out.push(remote.status());
+    const got = await remote.acquire({ platform: 'android', version: 'any', format: 'any' }, new Set());
+    fs.writeFileSync(process.env.DIPLOMAT_CONFIG, JSON.stringify({ deviceRemoteProvider: process.env.MISSING }));
+    out.push(remote.status()); await settle(); out.push(remote.status().state);
+    await remote.release(got.provider, got.lease);
+    fs.writeFileSync(process.env.DIPLOMAT_CONFIG, '{}');
+    out.push(remote.status());
+    console.log(JSON.stringify(out));`;
+  const env = { ...process.env, DA_BASE_DIR: box.dir, DIPLOMAT_CONFIG: path.join(box.dir, 'config.json'),
+    FAKE_POOL_DIR: path.join(box.dir, 'pool'), MISSING: path.join(box.dir, 'missing.mjs') };
+  delete env.DA_FAKE_DEVICES;
+  delete env.DA_REMOTE_PROVIDER;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), [
+    { provider: null, state: 'loading' }, { provider: 'Test Pool', state: 'on' },
+    { provider: null, state: 'loading' }, 'error',
+    { provider: null, state: 'off' },
+  ]);
+  assert.deepEqual(box.events(), ['lease pool:P16', 'release pool:P16']);
+  pass('the snapshot follows a changed setting; a lease goes back through the provider that granted it');
 }
 
 // 4. Leases ending: by the pool, by the owner dying, by a broken report, by a stop;

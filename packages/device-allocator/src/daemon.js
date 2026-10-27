@@ -146,7 +146,7 @@ function reserve(chosen, p, req) {
     agentName: p.agentName || `pid:${p.ownerPid}`, requirements: req,
     status: 'booting', bootedByUs: !wasBooted,
     allocatedAt: Date.now(), lastMotionAt: Date.now(), motionHash: null,
-    ...(chosen.lease ? { source: 'remote', remote: chosen.lease } : {}),
+    ...(chosen.lease ? { source: 'remote', remote: chosen.lease, remoteProvider: chosen.provider } : {}),
   };
   allocations.set(chosen.key, alloc);
   publish();
@@ -183,12 +183,12 @@ async function handleRequest(p, exclude = new Set()) {
 async function requestRemote(p, req, exclude) {
   const got = await remote.acquire(req, exclude);
   if (!got.lease) return got;
-  const alloc = await withLock(async () => reserve({ ...got.device, lease: got.lease }, p, req));
+  const alloc = await withLock(async () => reserve({ ...got.device, lease: got.lease, provider: got.provider }, p, req));
   try {
-    alloc.serial = alloc.handle = await remote.attach(alloc.remote, (why) => remoteLeaseEnded(alloc, why));
+    alloc.serial = alloc.handle = await remote.attach(alloc.remoteProvider, alloc.remote, (why) => remoteLeaseEnded(alloc, why));
   } catch (e) {
     log('remote: attach failed', alloc.key, String(e));
-    remote.release(alloc.remote);
+    remote.release(alloc.remoteProvider, alloc.remote);
     await withLock(async () => {
       if (allocations.get(alloc.key) === alloc) { allocations.delete(alloc.key); publish(); }
     });
@@ -197,7 +197,7 @@ async function requestRemote(p, req, exclude) {
   // Freed or killed while attaching: given back then, but the attach that finished
   // since may have opened what that release had nothing to close yet.
   if (allocations.get(alloc.key) !== alloc) {
-    remote.release(alloc.remote);
+    remote.release(alloc.remoteProvider, alloc.remote);
     throw httpError(409, `device ${alloc.name} was released during boot`);
   }
   alloc.status = 'ready';
@@ -208,7 +208,7 @@ async function requestRemote(p, req, exclude) {
 
 // The pool ended a lease under its holder: expiry, the device or its host gone.
 function remoteLeaseEnded(alloc, why) {
-  remote.release(alloc.remote); // a lease we only lost contact with may still be live
+  remote.release(alloc.remoteProvider, alloc.remote); // a lease we only lost contact with may still be live
   withLock(async () => {
     if (allocations.get(alloc.key) !== alloc) return;
     allocations.delete(alloc.key);
@@ -654,7 +654,7 @@ async function sweepFreeDevices(limit) {
 }
 
 function shutdownAlloc(a) {
-  if (a.source === 'remote') { remote.release(a.remote); return; }
+  if (a.source === 'remote') { remote.release(a.remoteProvider, a.remote); return; }
   stopping.set(a.key, Date.now() + STOPPING_GRACE_MS);
   try {
     if (dev.isApplePlatform(a.platform)) dev.shutdownIOS(a.udid);
@@ -727,7 +727,9 @@ function publish() {
         name: a.name, version: a.version, apiVersion: a.apiVersion,
         handle: a.handle || null, status: a.status,
         owner: { agentName: a.agentName, ownerPid: a.ownerPid }, allocatedAt: a.allocatedAt,
-        idleMs: null, brokenReason: a.brokenReason || null, repairLog: a.repairLog || null,
+        // A remote device is idle-swept like a local one; a quarantined one is not.
+        idleMs: a.source === 'remote' ? Math.floor((Date.now() - a.lastMotionAt) / 60000) * 60000 : null,
+        brokenReason: a.brokenReason || null, repairLog: a.repairLog || null,
       });
     }
   }
@@ -771,7 +773,7 @@ function rehydrateLeases() {
     if (!a || !a.key || allocations.has(a.key)) continue;
     const keep = a.status === 'repairing' || (a.ownerPid && pidAlive(a.ownerPid));
     if (!keep) {
-      if (a.source === 'remote') remote.release(a.remote); // else it sits leased until it expires
+      if (a.source === 'remote') remote.release(a.remoteProvider, a.remote); // else it sits leased until it expires
       continue;
     }
     // A lease caught mid-boot: the boot promise died with the old daemon. Treat
@@ -786,7 +788,7 @@ function rehydrateLeases() {
     // adb serial still works, or drop the lease if the pool has ended it meanwhile.
     if (a.source === 'remote') {
       const port = Number(String(a.serial).split(':')[1]) || 0;
-      remote.attach(a.remote, (why) => remoteLeaseEnded(a, why), port)
+      remote.attach(a.remoteProvider, a.remote, (why) => remoteLeaseEnded(a, why), port)
         .then((serial) => { a.serial = a.handle = serial; publish(); })
         .catch((e) => remoteLeaseEnded(a, e.message));
     }
@@ -1036,7 +1038,8 @@ function onListening() {
   persist();
   log('daemon listening', SOCKET_PATH, 'pid', process.pid);
   refreshPool();
-  remote.load().then(publish);
+  remote.watch(publish);
+  remote.load();
   setInterval(reapDeadOwners, REAP_INTERVAL_MS);
   setInterval(refreshPool, POOL_INTERVAL_MS);
   setInterval(idleSweep, IDLE_INTERVAL_MS);
@@ -1133,7 +1136,7 @@ async function start() {
   server.listen(SOCKET_PATH, onListening);
   const bye = async () => {
     const leased = [...allocations.values()].filter((a) => a.source === 'remote');
-    await Promise.race([Promise.all(leased.map((a) => remote.release(a.remote))), delay(3000)]);
+    await Promise.race([Promise.all(leased.map((a) => remote.release(a.remoteProvider, a.remote))), delay(3000)]);
     shutdownBootedSync();
     try { fs.unlinkSync(SOCKET_PATH); } catch {}
     try { fs.unlinkSync(DISCOVERY_PATH); } catch {}
