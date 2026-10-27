@@ -189,6 +189,7 @@ public enum CoreAssets {
         public let seenLimit: Int
         public let searchCount: Int
         public let maxSearchPages: Int
+        public let catchUpHours: Int
         public let httpTimeoutSecs: Double
         public let model: String
         public let classifierTimeoutSecs: Double
@@ -203,8 +204,8 @@ public enum CoreAssets {
 
         private enum CodingKeys: String, CodingKey {
             case pollSecs, minPollSecs, maxPerTick, indexLagSecs, seenLimit, searchCount,
-                 maxSearchPages, httpTimeoutSecs, model, classifierTimeoutSecs, maxLogBytes,
-                 labelSummaryMax, queries, classifier, investigate
+                 maxSearchPages, catchUpHours, httpTimeoutSecs, model, classifierTimeoutSecs,
+                 maxLogBytes, labelSummaryMax, queries, classifier, investigate
         }
     }
 

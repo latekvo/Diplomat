@@ -8,19 +8,47 @@ import Foundation
 ///                 real classifier; stdout = {"me": {...}|null, "items": [{"message",
 ///                 "decision"}], "error": "..."|null}. Exits 0 when `error` is set: a
 ///                 failed tick is an answer, not a crash.
+///   comms-auth    no stdin; env DIPLOMAT_SLACK_TOKEN. auth.test through the tick's own
+///                 transport; stdout = {"ok": true, "user", "userId", "team", "teamId"} or
+///                 {"ok": false, "error": "<the tick's wording>"}. Exits 0 either way.
 ///   comms-feed    [--limit N]  stdout = the folded [CommsItem], newest first (default 200).
 ///   comms-effect  stdin = {"decision", "message", "toggles", "settings"?}; stdout = the
 ///                 CommsEffect.
 ///
-/// All three read and write `$DIPLOMAT_COMMS_DIR` (default `~/.diplomat/comms`).
+/// The tick, the feed and the effect read and write `$DIPLOMAT_COMMS_DIR` (default
+/// `~/.diplomat/comms`).
 enum CommsCommand {
     static func tick(_ input: Data) {
         let settings = decode(CommsSettings.self, input, "CommsSettings")
-        let token = ProcessInfo.processInfo.environment["DIPLOMAT_SLACK_TOKEN"] ?? ""
         let result = CommsWatch.tick(token: token, settings: settings) {
             CommsClassifier.run($0, settings: settings)
         }
         emitJSON(result)
+    }
+
+    static func auth() {
+        let answer: [String: Any]
+        if token.isEmpty {
+            answer = ["ok": false, "error": CommsWatch.noToken]
+        } else {
+            do {
+                let (me, team) = try SlackAPI(token: token).auth()
+                answer = ["ok": true, "user": me.handle, "userId": me.userID,
+                          "team": team, "teamId": me.teamID]
+            } catch {
+                answer = ["ok": false, "error": error.localizedDescription]
+            }
+        }
+        guard var data = try? JSONSerialization.data(withJSONObject: answer,
+                                                     options: [.sortedKeys]) else {
+            die("could not encode the answer", 1)
+        }
+        data.append(UInt8(ascii: "\n"))
+        emit(data)
+    }
+
+    private static var token: String {
+        ProcessInfo.processInfo.environment["DIPLOMAT_SLACK_TOKEN"] ?? ""
     }
 
     static func feed(_ arguments: [String]) {

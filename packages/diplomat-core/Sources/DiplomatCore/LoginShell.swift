@@ -31,7 +31,7 @@ public enum LoginShell {
     }
 
     /// The executable `name` as `shell` locates it, or nil when it names none in time.
-    /// `environment` is the smoke test's; nil inherits.
+    /// `environment`, when given, replaces this process's own.
     public static func locate(_ name: String, shell: String,
                               environment: [String: String]? = nil) -> String? {
         guard let out = OpenCodeCLI.run(shell, arguments(shell: shell, probe: locateProbe(name)),

@@ -174,7 +174,7 @@ public enum SlackError: LocalizedError, Equatable {
         case .http(let code):
             return "Slack answered HTTP \(code)"
         case .api(let code) where code == "missing_scope":
-            return "Slack: missing_scope. The token needs the user scopes search:read and users:read."
+            return "Slack: missing_scope. The token needs the user scope search:read."
         case .api(let code) where ["invalid_auth", "not_authed", "token_revoked",
                                    "token_expired", "account_inactive"].contains(code):
             return "Slack rejected the token (\(code))"
@@ -228,12 +228,16 @@ public struct SlackAPI {
     }
 
     /// `auth.test`: who the token is.
-    public func authTest() throws -> CommsIdentity {
+    public func authTest() throws -> CommsIdentity { try auth().me }
+
+    /// `auth.test`, with the workspace's name as well.
+    public func auth() throws -> (me: CommsIdentity, team: String) {
         let obj = try call("auth.test", [])
         guard let user = obj["user_id"] as? String, let team = obj["team_id"] as? String else {
             throw SlackError.badResponse
         }
-        return CommsIdentity(userID: user, teamID: team, handle: obj["user"] as? String ?? "")
+        return (CommsIdentity(userID: user, teamID: team, handle: obj["user"] as? String ?? ""),
+                obj["team"] as? String ?? "")
     }
 
     /// One page of `search.messages`, newest first.
@@ -342,7 +346,9 @@ public struct SlackAPI {
 #endif
 
     /// One exchange through `curl`, so only Comms depends on it. The token travels in a
-    /// config read from stdin, never in argv where `ps` would show it.
+    /// config read from stdin, never in argv where `ps` would show it, and `-q` comes
+    /// first so no `~/.curlrc` (a `verbose` that would print it, a `write-out` that
+    /// would corrupt the answer) is read.
     public static func curl(_ request: Request) throws -> (status: Int, headers: [String: String], body: Data) {
         guard let curl = ["/usr/bin/curl", "/bin/curl"].first(where: {
             FileManager.default.isExecutableFile(atPath: $0)
@@ -355,7 +361,7 @@ public struct SlackAPI {
         }
         var config = "url = \(quoted(request.url.absoluteString))\n"
         for (k, v) in request.headers { config += "header = \(quoted("\(k): \(v)"))\n" }
-        let args = ["-sS", "--max-time", String(Int(request.timeout)), "-K", "-",
+        let args = ["-q", "-sS", "--max-time", String(Int(request.timeout)), "-K", "-",
                     "-D", "-", "-o", "-"]
         switch CommsClassifier.execute(curl, args, input: Data(config.utf8),
                                        timeout: request.timeout + 5) {

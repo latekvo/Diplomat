@@ -3,15 +3,17 @@ import Foundation
 /// One line of Comms' own log, `events.jsonl`. Every line shares `at` (ISO 8601),
 /// `kind` and `id` (`<channelID>:<ts>`; `""` for an `error`):
 ///
-/// - `ping`     + `message`                         — the tick, per new message
-/// - `decision` + `decision`                        — the tick, once triage answers
+/// - `ping`     + `message`                         — the tick, per new message, as it hands it over
+/// - `decision` + `decision`                        — the tick, right after that ping
 /// - `action`   + `outcome`, `queueKey`?, `label`?  — the front-end, once it has acted
 /// - `started`  + `label`                           — the front-end, when the ask's agent spawned
 /// - `finished` + `label`                           — the front-end, when that run left the agent list
-/// - `error`    + `detail`                          — the tick, on going from a good tick to a failing one
+/// - `error`    + `detail`                          — the tick, on going from a good tick to a failing
+///                                                    one, and for messages it skipped unread
 ///
 /// A front-end that writes its own lines (the Linux one, from Python) writes this
-/// shape: one JSON object per line, appended.
+/// shape: one JSON object per line, appended to a 0600 file while holding
+/// `CommsLog.lockURL`.
 public struct CommsEvent: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case ping, decision, action, started, finished, error
@@ -61,8 +63,9 @@ public struct CommsItem: Codable, Equatable, Sendable {
 }
 
 /// Comms' own directory: `$DIPLOMAT_COMMS_DIR`, else `~/.diplomat/comms/`. It holds
-/// `state.json` (the tick's watermark, `CommsWatch`), `events.jsonl` (this log) and
-/// `reports/` (the investigations' reports).
+/// `state.json` (the tick's watermark, `CommsWatch`), `events.jsonl` (this log),
+/// `events.lock` and `reports/` (the investigations' reports), all private to the
+/// operator: the directories 0700, the files 0600.
 public enum CommsLog {
     public static var dir: URL {
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_COMMS_DIR"], !env.isEmpty {
@@ -80,21 +83,59 @@ public enum CommsLog {
         dir.appendingPathComponent("reports", isDirectory: true)
     }
 
+    /// The lock every writer of `events.jsonl` holds (`flock`, exclusive) around an
+    /// append or a rotation, the Linux front-end's Python appender included: a line
+    /// appended while a rotation reads and renames would land in the replaced file.
+    public static func lockURL(in dir: URL = dir) -> URL {
+        dir.appendingPathComponent("events.lock")
+    }
+
     static var maxBytes: Int { (try? CoreAssets.comms())?.maxLogBytes ?? 2 << 20 }
 
-    /// Append one event. `O_APPEND`, so a line from the other writer (the front-end's
-    /// `action` lines, or a second process over a shared home) is never overwritten;
-    /// `write(2)`, so a full disk costs the line rather than aborting the process.
+    /// `dir` and its `reports/`, created if missing and made 0700 either way: the log
+    /// holds the full text of the operator's DMs, and their home may be readable by
+    /// other local users.
+    public static func prepare(_ dir: URL = dir) {
+        let fm = FileManager.default
+        for d in [dir, reportsDir(in: dir)] {
+            try? fm.createDirectory(at: d, withIntermediateDirectories: true,
+                                    attributes: [.posixPermissions: 0o700])
+            chmod(d.path, 0o700)
+        }
+    }
+
+    /// Append one event, under the log's lock. `O_APPEND`, so a line from another
+    /// writer is never overwritten; `write(2)`, so a full disk costs the line rather
+    /// than aborting the process.
     public static func append(_ event: CommsEvent, in dir: URL = dir) {
         guard var line = try? encoder.encode(event) else { return }
         line.append(UInt8(ascii: "\n"))
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        prepare(dir)
+        let lock = open(lockURL(in: dir).path, O_RDWR | O_CREAT, 0o600)
+        guard lock >= 0 else { return }
+        defer { close(lock) }
+        guard flock(lock, LOCK_EX) == 0 else { return }
         let url = eventsURL(in: dir)
         rotateIfLarge(url)
-        let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+        let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
         guard fd >= 0 else { return }
         defer { close(fd) }
+        fchmod(fd, 0o600)
         _ = line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+    }
+
+    /// `data` written to `url` whole or not at all, readable by its owner alone: a 0600
+    /// temp file beside it, renamed over it.
+    static func writePrivate(_ data: Data, to url: URL) {
+        let tmp = url.path + ".tmp-\(getpid())-\(UUID().uuidString)"
+        let fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { return }
+        let wrote = data.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+        close(fd)
+        guard wrote == data.count, rename(tmp, url.path) == 0 else {
+            unlink(tmp)
+            return
+        }
     }
 
     /// Every event that decodes, oldest first. A torn or foreign line costs that line.
@@ -137,14 +178,14 @@ public enum CommsLog {
     }
 
     /// Past `maxLogBytes`, keep the newest half — cut at a line boundary, so the file
-    /// still starts with a whole event.
+    /// still starts with a whole event. Called with the log's lock held.
     private static func rotateIfLarge(_ url: URL) {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? Int, size > maxBytes,
               let data = try? Data(contentsOf: url) else { return }
         let mid = data.index(data.startIndex, offsetBy: data.count / 2)
         guard let nl = data[mid...].firstIndex(of: UInt8(ascii: "\n")) else { return }
-        try? Data(data[data.index(after: nl)...]).write(to: url, options: .atomic)
+        writePrivate(Data(data[data.index(after: nl)...]), to: url)
     }
 
     // MARK: - JSON

@@ -13,6 +13,7 @@ import Foundation
 //   diplomat-core agent-state       < fixture.json   # prints what every agent run resolves to
 //   diplomat-core agent-registry    < runs.json      # round-trips the run book on disk
 //   diplomat-core comms-tick        < settings.json  # one Slack watcher tick (see CommsCommand)
+//   diplomat-core comms-auth                         # who DIPLOMAT_SLACK_TOKEN is (auth.test)
 //   diplomat-core comms-feed        [--limit N]      # the Comms screen's rows
 //   diplomat-core comms-effect      < request.json   # what a triaged ping makes a front-end do
 //
@@ -75,16 +76,21 @@ func specificAuthor(_ s: String?) -> SpecificAuthor {
 let args = CommandLine.arguments
 guard args.count >= 2,
       ["build-prompt", "tool-data", "telemetry", "agent-state", "agent-registry",
-       "comms-tick", "comms-feed", "comms-effect"].contains(args[1]) else {
+       "comms-tick", "comms-auth", "comms-feed", "comms-effect"].contains(args[1]) else {
     die("usage: diplomat-core (build-prompt | tool-data | telemetry | agent-state"
         + " | agent-registry | comms-tick | comms-effect)  (JSON on stdin)"
-        + "\n       diplomat-core comms-feed [--limit N]", 1)
+        + "\n       diplomat-core comms-feed [--limit N]"
+        + "\n       diplomat-core comms-auth", 1)
 }
 
-// The one subcommand that reads no stdin: a caller that leaves it attached to a
-// terminal must not hang it.
+// The subcommands that read no stdin: a caller that leaves it attached to a terminal
+// must not hang them.
 if args[1] == "comms-feed" {
     CommsCommand.feed(Array(args.dropFirst(2)))
+    exit(0)
+}
+if args[1] == "comms-auth" {
+    CommsCommand.auth()
     exit(0)
 }
 

@@ -90,8 +90,9 @@ public enum CommsAction: String, Codable, CaseIterable, Sendable {
 /// The triage's answer, valid by construction: every initializer — the memberwise one,
 /// JSON decoding, `parse` — routes through the same check, so a decision that names a
 /// PR action without a positive number cannot exist. It reads `none` instead, with the
-/// reason recorded. Whether the number names an OPEN PR or issue of the repo is the
-/// front-end's check, made against GitHub before it acts.
+/// reason recorded. Whether the message holds that number is `checked(against:)`;
+/// whether it names an OPEN PR or issue of the repo is the front-end's check, made
+/// against GitHub before it acts.
 public struct CommsDecision: Codable, Equatable, Sendable {
     public let action: CommsAction
     /// The PR or issue number for `review` / `fix_issue` / `bump`; 0 otherwise.
@@ -122,6 +123,18 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// A `none` that says why nothing was decided.
     public static func none(_ reason: String) -> CommsDecision {
         CommsDecision(action: .none, number: 0, summary: "", reason: reason)
+    }
+
+    /// This decision, or `none` when it names a number `message` does not contain: as
+    /// `#N`, `/pull/N`, `/issues/N` or `N`, with no letter or digit either side.
+    /// `CommsWatch.tick` applies it to every answer, so a guessed number never acts.
+    public func checked(against message: CommsMessage) -> CommsDecision {
+        guard action.needsNumber, !CommsMatch.containsWord(message.text, String(number)) else {
+            return self
+        }
+        return CommsDecision(action: .none, number: 0, summary: summary,
+                             reason: "answered \(action.rawValue) #\(number), a number the "
+                                 + "message does not contain; \(reason)")
     }
 
     private enum CodingKeys: String, CodingKey { case action, number, summary, reason }
@@ -415,10 +428,13 @@ public enum CommsTS {
         Int((date.timeIntervalSince1970 * 1_000_000).rounded(.down))
     }
 
-    /// The `after:` date for a search that must reach back to `watermark`: the UTC day
-    /// BEFORE the watermark's day, because `after:` is day-granular and exclusive.
+    /// The `after:` date for a search that must reach back to `watermark`. `after:` is
+    /// day-granular and exclusive, and Slack may read its date in the operator's own
+    /// timezone, so the date is the day before the watermark's day at UTC-12, the
+    /// westernmost offset: under any offset, the local midnight that ends that date is
+    /// at or before the watermark.
     public static func afterDay(_ watermark: Int) -> String {
-        let day = (watermark / 1_000_000) / 86_400 - 1
+        let day = (watermark / 1_000_000 - 12 * 3_600) / 86_400 - 1
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone(identifier: "UTC")
@@ -536,15 +552,72 @@ public enum CommsText {
     /// The words both prompts fence a message between (`BEGIN …` / `END …`).
     public static let fenceMarker = "UNTRUSTED SLACK MESSAGE"
 
-    /// `text` with every spelling of the fence marker replaced, so a message cannot
-    /// close its own fence early and have what follows read as the prompt's own words.
+    /// `text` with every copy of the fence marker replaced, so a message cannot close
+    /// its own fence early and have what follows read as the prompt's own words. A copy
+    /// is the marker's letters in order with anything but letters and digits between
+    /// them (whitespace of any kind, punctuation, zero-width or combining characters),
+    /// in any case, and in fullwidth, accented or Cyrillic/Greek look-alike letters.
     public static func defang(_ text: String) -> String {
-        var out = text
-        while let r = out.range(of: fenceMarker, options: [.caseInsensitive]) {
-            out.replaceSubrange(r, with: "[fence marker removed]")
+        let scalars = Array(text.unicodeScalars)
+        // The letters and digits of `text`, folded, each with the scalar it came from.
+        var skeleton: [Unicode.Scalar] = []
+        var origin: [Int] = []
+        for (i, s) in scalars.enumerated() {
+            for f in fold(s) {
+                skeleton.append(f)
+                origin.append(i)
+            }
         }
-        return out
+        let marker = Array(fenceMarker.unicodeScalars.filter { $0 != " " })
+        var cuts: [(from: Int, to: Int)] = []
+        var k = 0
+        while k + marker.count <= skeleton.count {
+            if skeleton[k..<k + marker.count].elementsEqual(marker) {
+                cuts.append((origin[k], origin[k + marker.count - 1]))
+                k += marker.count
+            } else {
+                k += 1
+            }
+        }
+        guard !cuts.isEmpty else { return text }
+        var out = String.UnicodeScalarView()
+        var next = 0
+        for cut in cuts {
+            out.append(contentsOf: scalars[next..<cut.from])
+            out.append(contentsOf: "[fence marker removed]".unicodeScalars)
+            next = cut.to + 1
+        }
+        out.append(contentsOf: scalars[next...])
+        return String(out)
     }
+
+    /// `s` as the uppercase ASCII letters or digits it reads as; empty for anything else.
+    private static func fold(_ s: Unicode.Scalar) -> [Unicode.Scalar] {
+        if let latin = lookalikes[s.value] { return [latin] }
+        // Compatibility decomposition turns fullwidth and styled letters into ASCII, and
+        // an accented one into its base letter plus combining marks, which drop out.
+        let base = s.isASCII ? String(s) : String(s).decomposedStringWithCompatibilityMapping
+        return base.uppercased().unicodeScalars.filter {
+            $0.isASCII && ("A"..."Z" ~= $0 || "0"..."9" ~= $0)
+        }
+    }
+
+    /// Cyrillic and Greek letters drawn like a Latin capital, by code point.
+    private static let lookalikes: [UInt32: Unicode.Scalar] = {
+        let pairs: [(String, Unicode.Scalar)] = [
+            ("Аа", "A"), ("В", "B"), ("Сс", "C"), ("ЕеЁё", "E"), ("Нн", "H"), ("ІіЇї", "I"),
+            ("Јј", "J"), ("Кк", "K"), ("Мм", "M"), ("Оо", "O"), ("Рр", "P"), ("Ѕѕ", "S"),
+            ("Тт", "T"), ("Хх", "X"), ("Уу", "Y"), ("Ԁԁ", "D"), ("Ԍ", "G"), ("Ӏ", "L"),
+            ("Α", "A"), ("Β", "B"), ("Ε", "E"), ("Ζ", "Z"), ("Η", "H"), ("Ιι", "I"),
+            ("Κκ", "K"), ("Μ", "M"), ("Ν", "N"), ("Οο", "O"), ("Ρρ", "P"), ("Ττ", "T"),
+            ("Υυ", "Y"), ("Χχ", "X"),
+        ]
+        var map: [UInt32: Unicode.Scalar] = [:]
+        for (from, to) in pairs {
+            for s in from.unicodeScalars { map[s.value] = to }
+        }
+        return map
+    }()
 
     /// `template` with each `{name}` replaced by `values[name]`, in one pass: a value
     /// is never scanned again, so a message that contains `{reportPath}` stays as typed

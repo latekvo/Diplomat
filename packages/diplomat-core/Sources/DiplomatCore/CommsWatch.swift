@@ -83,7 +83,8 @@ public enum CommsClassifier {
             return c.path
         }
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        let found = LoginShell.locate("claude", shell: shell) ?? LoginShell.onPath("claude")
+        let found = LoginShell.locate("claude", shell: shell, environment: childEnvironment)
+            ?? LoginShell.onPath("claude")
         cached = found.map { ($0, now) }
         return found
     }
@@ -123,6 +124,15 @@ public enum CommsClassifier {
         case exited(Int32, Data, Data)
     }
 
+    /// This process's environment without `DIPLOMAT_SLACK_TOKEN`: what every child the
+    /// watcher starts gets (`claude`, the login shell that locates it, and curl, which
+    /// is handed the token on stdin).
+    static var childEnvironment: [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        env["DIPLOMAT_SLACK_TOKEN"] = nil
+        return env
+    }
+
     /// Run `exe` with `input` as stdin, waiting at most `timeout`; past it the process is
     /// stopped as `GH.run` stops one (terminate, then SIGKILL). stdin, stdout and stderr
     /// are files: a pipe the child fills blocks it, and corelibs only sees an exit once
@@ -152,6 +162,7 @@ public enum CommsClassifier {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: exe)
         proc.arguments = args
+        proc.environment = childEnvironment
         proc.currentDirectoryURL = fm.temporaryDirectory
         proc.standardInput = stdin
         proc.standardOutput = stdout
@@ -183,23 +194,42 @@ public struct CommsState: Codable, Equatable, Sendable {
     /// The failure the last tick ended on, nil after a good one: what makes an `error`
     /// event fire on the transition only.
     public var error: String?
+    /// The last triage's failure (`CommsClassifier.failurePrefix`), nil once one
+    /// succeeds: a tick with nothing to triage still ends on it.
+    public var classifierError: String?
+    /// Messages taken for triage and not yet handed to a front-end: the tick that took
+    /// them did not return. The next tick hands them over first.
+    public var undelivered: [CommsTickResult.Item]
+    /// Per query whose matches did not fit in `maxSearchPages`, the oldest match's ts
+    /// already reported, so one shortfall logs one `error` event.
+    public var gaps: [String: String]
 
     public init(watermark: String? = nil, seen: [String] = [], me: CommsIdentity? = nil,
-                error: String? = nil) {
+                error: String? = nil, classifierError: String? = nil,
+                undelivered: [CommsTickResult.Item] = [], gaps: [String: String] = [:]) {
         self.watermark = watermark
         self.seen = seen
         self.me = me
         self.error = error
+        self.classifierError = classifierError
+        self.undelivered = undelivered
+        self.gaps = gaps
     }
 
-    private enum CodingKeys: String, CodingKey { case watermark, seen, me, error }
+    private enum CodingKeys: String, CodingKey {
+        case watermark, seen, me, error, classifierError, undelivered, gaps
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(watermark: try? c.decodeIfPresent(String.self, forKey: .watermark),
                   seen: (try? c.decodeIfPresent([String].self, forKey: .seen)) ?? [],
                   me: try? c.decodeIfPresent(CommsIdentity.self, forKey: .me),
-                  error: try? c.decodeIfPresent(String.self, forKey: .error))
+                  error: try? c.decodeIfPresent(String.self, forKey: .error),
+                  classifierError: try? c.decodeIfPresent(String.self, forKey: .classifierError),
+                  undelivered: (try? c.decodeIfPresent([CommsTickResult.Item].self,
+                                                       forKey: .undelivered)) ?? [],
+                  gaps: (try? c.decodeIfPresent([String: String].self, forKey: .gaps)) ?? [:])
     }
 
     public static func url(in dir: URL = CommsLog.dir) -> URL {
@@ -215,13 +245,14 @@ public struct CommsState: Codable, Equatable, Sendable {
         return state
     }
 
-    /// Written whole and atomically, so a crash mid-write leaves the previous state.
+    /// Written whole and atomically, so a crash mid-write leaves the previous state, and
+    /// 0600, since `undelivered` holds message text.
     public func save(in dir: URL = CommsLog.dir) {
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys]
         guard let data = try? enc.encode(self) else { return }
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? data.write(to: Self.url(in: dir), options: .atomic)
+        CommsLog.prepare(dir)
+        CommsLog.writePrivate(data, to: Self.url(in: dir))
     }
 }
 
@@ -262,14 +293,29 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
 
 /// One poll of Slack: search, filter, triage, log.
 public enum CommsWatch {
+    /// The decision a message carries when the tick that took it ended inside its triage.
+    static let interrupted = "the tick ended before its triage answered, so it was not triaged"
+
+    /// The error a tick, or `diplomat-core comms-auth`, answers an empty token with.
+    public static let noToken = "no Slack token is configured"
+
     /// Run one tick against the state in `dir`.
     ///
     /// The first tick only learns who the token is and sets the watermark to `now`: an
-    /// operator turning Comms on is not asked to triage a backlog. Every later tick runs
-    /// the `comms.json` queries from the day before the watermark, keeps the matches
-    /// `CommsMatch.message` turns into pings, drops those at or below the watermark or
-    /// already `seen`, and triages the oldest `maxPerTick` of the rest, each logged as a
-    /// `ping` before `classify` is called and a `decision` after.
+    /// operator turning Comms on is not asked to triage a backlog. Nor is one turning it
+    /// back on: a watermark more than `catchUpHours` old moves up to `now` less
+    /// `indexLagSecs`, and one `error` event names the stretch that was not triaged.
+    /// Every other tick runs the `comms.json` queries from `CommsTS.afterDay`, keeps the
+    /// matches `CommsMatch.message` turns into pings, drops those at or below the
+    /// watermark or already `seen`, and triages the oldest `maxPerTick` of the rest. A
+    /// query with more matches above the watermark than `maxSearchPages` pages hold is
+    /// read newest first as far as they go, and one `error` event names the stretch
+    /// below that went unread.
+    ///
+    /// A triaged message is handed over in the result and logged then, as a `ping` and
+    /// its `decision` (`CommsDecision.checked` against the message). It is saved as
+    /// taken before its triage runs, so a tick that never returns hands it over on the
+    /// next one, as triaged or as an interrupted `none`, and never triages it twice.
     ///
     /// The watermark trails `now` by `indexLagSecs`, because Slack's search index can
     /// return a message well after it was posted; `seen` is what keeps a message inside
@@ -277,28 +323,38 @@ public enum CommsWatch {
     /// it stops short of the first one left over, so the next tick picks up there.
     ///
     /// Slack failing (no token, a bad one, a missing scope, a rate limit) leaves the
-    /// watermark where it was and is the result's `error`; so is the classifier failing
-    /// (`CommsClassifier.failurePrefix`). An `error` event is logged only on the tick
-    /// that goes from working to failing.
+    /// watermark where it was and is the result's `error`. So is the last triage failing
+    /// (`CommsClassifier.failurePrefix`), on every tick until a triage succeeds. An
+    /// `error` event is logged only on the tick that goes from working to failing.
     public static func tick(token: String, settings: CommsSettings, now: Date = Date(),
                             dir: URL = CommsLog.dir, api: SlackAPI? = nil,
                             classify: (CommsMessage) -> CommsDecision) -> CommsTickResult {
         var state = CommsState.load(in: dir)
 
-        /// Save the state with how this tick ended, logging an `error` on the transition.
-        func finish(_ items: [CommsTickResult.Item], error: String?) -> CommsTickResult {
+        /// Log and hand over what was triaged, and save the state with how this tick
+        /// ended, logging an `error` on the transition.
+        func finish(error: String?) -> CommsTickResult {
+            let items = state.undelivered
+            for item in items {
+                CommsLog.append(CommsEvent(kind: .ping, id: item.message.id, message: item.message),
+                                in: dir)
+                CommsLog.append(CommsEvent(kind: .decision, id: item.message.id,
+                                           decision: item.decision), in: dir)
+            }
+            let error = error ?? state.classifierError
             if let error, state.error == nil {
-                CommsLog.append(CommsEvent(at: now, kind: .error, id: "", detail: error), in: dir)
+                CommsLog.append(CommsEvent(kind: .error, id: "", detail: error), in: dir)
             }
             state.error = error
+            state.undelivered = []
             state.save(in: dir)
             return CommsTickResult(me: state.me, items: items, error: error)
         }
 
         guard let assets = try? CoreAssets.comms() else {
-            return finish([], error: "assets/comms.json could not be read")
+            return finish(error: "assets/comms.json could not be read")
         }
-        guard !token.isEmpty else { return finish([], error: "no Slack token is configured") }
+        guard !token.isEmpty else { return finish(error: noToken) }
         let api = api ?? SlackAPI(token: token)
         let me: CommsIdentity
         do {
@@ -307,29 +363,53 @@ public enum CommsWatch {
             me = try api.authTest()
             state.me = me
         } catch {
-            return finish([], error: error.localizedDescription)
+            return finish(error: error.localizedDescription)
         }
-        guard let watermark = state.watermark.flatMap(CommsTS.number) else {
+        guard var watermark = state.watermark.flatMap(CommsTS.number) else {
             state.watermark = CommsTS.string(CommsTS.number(now))
-            return finish([], error: nil)
+            return finish(error: nil)
+        }
+        let lagged = CommsTS.number(now) - assets.indexLagSecs * 1_000_000
+        if watermark < CommsTS.number(now) - assets.catchUpHours * 3_600 * 1_000_000 {
+            CommsLog.append(CommsEvent(kind: .error, id: "", detail:
+                "Comms had read Slack only up to \(iso(watermark)), more than "
+                + "\(assets.catchUpHours) hours ago; messages before \(iso(lagged)) "
+                + "were not triaged"), in: dir)
+            watermark = max(watermark, lagged)
+            state.watermark = CommsTS.string(watermark)
+            state.gaps = [:]
         }
         let queries = assets.queries
 
         let after = CommsTS.afterDay(watermark)
-        var searches = [CommsText.fill(queries.dm, ["after": after]),
-                        CommsText.fill(queries.mention, ["after": after, "user": me.userID])]
+        // Each query with the name an `error` event about it calls its matches by.
+        var searches = [
+            ("DMs", CommsText.fill(queries.dm, ["after": after])),
+            ("mentions", CommsText.fill(queries.mention, ["after": after, "user": me.userID])),
+        ]
         for keyword in settings.keywords {
             let k = keyword.replacingOccurrences(of: "\"", with: "")
-            searches.append(CommsText.fill(queries.keyword, ["after": after, "keyword": k]))
+            searches.append(("matches of \"\(k)\"",
+                             CommsText.fill(queries.keyword, ["after": after, "keyword": k])))
         }
         var found: [String: SlackMatch] = [:]
+        var gaps: [String: Int] = [:]
         do {
-            for query in searches {
-                try collect(query, above: watermark, into: &found, api: api, assets: assets)
+            for (label, query) in searches {
+                gaps[label] = try collect(query, above: watermark, into: &found, api: api,
+                                          assets: assets)
             }
         } catch {
-            return finish([], error: error.localizedDescription)
+            return finish(error: error.localizedDescription)
         }
+        for (label, oldest) in gaps.sorted(by: { $0.key < $1.key })
+        where state.gaps[label] != CommsTS.string(oldest) {
+            CommsLog.append(CommsEvent(kind: .error, id: "", detail:
+                "Slack holds more \(label) than one poll reads "
+                + "(\(assets.maxSearchPages) pages of \(assets.searchCount)); those from "
+                + "\(iso(watermark)) to \(iso(oldest)) were not triaged"), in: dir)
+        }
+        state.gaps = gaps.mapValues(CommsTS.string)
 
         let seen = Set(state.seen)
         let pending = found.values
@@ -340,24 +420,18 @@ public enum CommsWatch {
         let take = pending.prefix(settings.maxPerTick)
         let rest = pending.dropFirst(settings.maxPerTick)
 
-        var items: [CommsTickResult.Item] = []
-        var classifierError: String?
         for (_, message) in take {
-            CommsLog.append(CommsEvent(at: now, kind: .ping, id: message.id, message: message), in: dir)
-            // Recorded before the triage runs: a crash inside it costs this ping its
-            // decision, never a second ping.
             state.seen.append(message.id)
+            state.undelivered.append(CommsTickResult.Item(message: message,
+                                                          decision: .none(interrupted)))
             state.save(in: dir)
-            let decision = classify(message)
-            CommsLog.append(CommsEvent(at: now, kind: .decision, id: message.id,
-                                       decision: decision), in: dir)
-            if decision.reason.hasPrefix(CommsClassifier.failurePrefix) {
-                classifierError = classifierError ?? decision.reason
-            }
-            items.append(CommsTickResult.Item(message: message, decision: decision))
+            let decision = classify(message).checked(against: message)
+            state.undelivered[state.undelivered.count - 1].decision = decision
+            state.classifierError = decision.reason.hasPrefix(CommsClassifier.failurePrefix)
+                ? decision.reason : nil
+            state.save(in: dir)
         }
 
-        let lagged = CommsTS.number(now) - assets.indexLagSecs * 1_000_000
         let next = rest.first.map { max(watermark, min(lagged, $0.n - 1)) }
             ?? max(watermark, lagged)
         state.watermark = CommsTS.string(next)
@@ -365,22 +439,29 @@ public enum CommsWatch {
         state.seen = Array(state.seen.filter { id in
             CommsTS.number(String(id.split(separator: ":").last ?? "")).map { $0 > next } ?? false
         }.suffix(assets.seenLimit))
-        return finish(items, error: classifierError)
+        return finish(error: nil)
+    }
+
+    private static func iso(_ ts: Int) -> String {
+        CommsLog.isoString(Date(timeIntervalSince1970: TimeInterval(ts / 1_000_000)))
     }
 
     /// Every match of `query`, newest first, into `found`: pages until one reaches back
-    /// to the watermark, comes back short, or `maxSearchPages` have been read.
+    /// to the watermark, comes back short, or is the last. Past `maxSearchPages` it
+    /// stops, and returns the oldest match read: everything below it and above the
+    /// watermark went unread.
     private static func collect(_ query: String, above watermark: Int,
                                 into found: inout [String: SlackMatch], api: SlackAPI,
-                                assets: CoreAssets.CommsModel) throws {
+                                assets: CoreAssets.CommsModel) throws -> Int? {
         var page = 1
         while true {
             let (matches, pages) = try api.search(query: query, page: page,
                                                   count: assets.searchCount)
             for m in matches where found[m.id] == nil { found[m.id] = m }
             let oldest = matches.compactMap { CommsTS.number($0.ts) }.min()
-            guard page < min(pages, assets.maxSearchPages), matches.count >= assets.searchCount,
-                  let oldest, oldest > watermark else { return }
+            guard page < pages, matches.count >= assets.searchCount,
+                  let oldest, oldest > watermark else { return nil }
+            guard page < assets.maxSearchPages else { return oldest }
             page += 1
         }
     }
