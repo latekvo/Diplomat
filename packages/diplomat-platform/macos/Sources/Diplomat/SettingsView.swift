@@ -49,6 +49,7 @@ struct SettingsView: View {
             // poll on EVERY Settings open — three GraphQL searches against the shared
             // 5000 pt/hr budget (and potential agent dispatch) from a view-appear
             // hook; the monitor's own cadence + wake trigger keep the rows fresh.
+            store.reloadDeviceConfig()
             await store.refreshAllocatorInstall()
             // Cheap local git fetch/compare — off the UI thread inside the Store.
             store.refreshUpdateStatus()

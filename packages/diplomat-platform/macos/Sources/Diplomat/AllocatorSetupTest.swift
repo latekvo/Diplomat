@@ -242,17 +242,21 @@ enum AllocatorSetupTest {
         let calls = pkg.appendingPathComponent("calls.log")
         let replies = pkg.appendingPathComponent("replies.json")
         try? fm.createDirectory(at: pkg.appendingPathComponent("src"), withIntermediateDirectories: true)
-        // Prints the reply set for its argument and records that it was asked.
+        // Prints the reply set for its argument, after the delay set for it, and records
+        // that it was asked.
         try? #"""
         const fs = require('fs'), path = require('path');
         const arg = process.argv[2];
         fs.appendFileSync(path.join(__dirname, '..', 'calls.log'), arg + '\n');
         const replies = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'replies.json'), 'utf8'));
-        process.stdout.write(JSON.stringify(replies[arg] || {}));
+        setTimeout(() => process.stdout.write(JSON.stringify(replies[arg] || {})),
+                   (replies.delayMs || {})[arg] || 0);
         """#.write(to: pkg.appendingPathComponent("src/install.js"), atomically: true, encoding: .utf8)
-        func answer(_ byArg: [String: String]) {
-            let body = byArg.map { "\"\($0.key)\":\($0.value)" }.joined(separator: ",")
-            try? "{\(body)}".write(to: replies, atomically: true, encoding: .utf8)
+        func answer(_ byArg: [String: String], delayMs: [String: Int] = [:]) {
+            var fields = byArg.map { "\"\($0.key)\":\($0.value)" }
+            let delays = delayMs.map { "\"\($0.key)\":\($0.value)" }.joined(separator: ",")
+            fields.append("\"delayMs\":{\(delays)}")
+            try? "{\(fields.joined(separator: ","))}".write(to: replies, atomically: true, encoding: .utf8)
             try? fm.removeItem(at: calls)
         }
         func asked() -> [String] {
@@ -302,6 +306,34 @@ enum AllocatorSetupTest {
             check("a restart whose old daemon never left says so on the Recent card",
                   feed().first == "Restarted the device-allocator daemon (ok: false): the running "
                     + "daemon (pid 9) did not exit within 60 s", "got \(feed())")
+
+            // Mid-restart no daemon answers: a --check then reads "not running", which
+            // would offer a Start daemon that leaves a second daemon behind.
+            let running = #"{"action":"restart-daemon",\#(parts),"daemonRunning":true,"installed":true}"#
+            let notRunning = #"{"action":"check",\#(parts),"daemonRunning":false,"installed":true}"#
+            answer(["--restart-daemon": running, "--check": notRunning, "--start-daemon": startReply],
+                   delayMs: ["--restart-daemon": 1500])
+            let restart = Task { await store.restartAllocatorDaemon() }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            check("a restart in flight marks the allocator busy", store.allocatorBusy)
+            await store.refreshAllocatorInstall()
+            await store.startAllocatorDaemon()
+            check("…which holds the poll and refuses a start", asked() == ["--restart-daemon"],
+                  "got \(asked())")
+            await restart.value
+            check("…until it is over", !store.allocatorBusy
+                    && store.allocatorInstall?.daemonRunning == true,
+                  "got busy \(store.allocatorBusy), \(String(describing: store.allocatorInstall))")
+
+            answer(["--restart-daemon": running, "--check": notRunning], delayMs: ["--check": 1500])
+            let poll = Task { await store.refreshAllocatorInstall() }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            await store.restartAllocatorDaemon()
+            await poll.value
+            check("a --check that a restart overlapped is dropped",
+                  asked().sorted() == ["--check", "--restart-daemon"]
+                    && store.allocatorInstall?.daemonRunning == true,
+                  "asked \(asked()), got \(String(describing: store.allocatorInstall))")
         } else {
             print("  skip  the installer calls: no node on this machine")
         }
@@ -316,7 +348,7 @@ enum AllocatorSetupTest {
 
         check("the provider is read from config.json", store.deviceRemoteProvider == "~/operator/own-pool.mjs")
         try? #"{"deviceRemoteProvider":"~/by/hand.mjs"}"#.write(to: AppConfig.url, atomically: true, encoding: .utf8)
-        store.reloadDeviceRemoteProvider()
+        store.reloadDeviceConfig()
         check("a provider set by hand is picked up on reload", store.deviceRemoteProvider == "~/by/hand.mjs")
         check("a write that lands says so", AppConfig.set("probeKey", "x") && AppConfig.string("probeKey") == "x")
         let blocker = scratch.appendingPathComponent("not-a-dir")
@@ -324,6 +356,44 @@ enum AllocatorSetupTest {
         setenv("DIPLOMAT_CONFIG", blocker.appendingPathComponent("config.json").path, 1)
         check("a write that cannot land says so", !AppConfig.set(AppConfig.deviceRemoteProviderKey, "~/x.mjs"))
         setenv("DIPLOMAT_CONFIG", scratch.appendingPathComponent("config.json").path, 1)
+
+        // ---- the idle limits, which config.json holds too ----
+
+        store.writesDeviceConfig = true
+        try? #"{"deviceIdleLeasedMinutes":90,"deviceIdleFreeMinutes":7}"#
+            .write(to: AppConfig.url, atomically: true, encoding: .utf8)
+        store.reloadDeviceConfig()
+        check("idle limits set by hand are picked up on reload",
+              store.deviceIdleLeasedMinutes == 90 && store.deviceIdleFreeMinutes == 7,
+              "got \(store.deviceIdleLeasedMinutes), \(store.deviceIdleFreeMinutes)")
+        try? #"{"deviceIdleLeasedMinutes":999}"#.write(to: AppConfig.url, atomically: true, encoding: .utf8)
+        store.reloadDeviceConfig()
+        check("…read as the daemon reads them, and not written back",
+              store.deviceIdleLeasedMinutes == 240
+                && (try? String(contentsOf: AppConfig.url, encoding: .utf8)) == #"{"deviceIdleLeasedMinutes":999}"#)
+        setenv("DIPLOMAT_CONFIG", blocker.appendingPathComponent("config.json").path, 1)
+        store.deviceIdleLeasedMinutes = 60
+        check("an idle limit that cannot be saved says so", store.deviceIdleSaveFailed)
+        setenv("DIPLOMAT_CONFIG", scratch.appendingPathComponent("config.json").path, 1)
+        store.deviceIdleLeasedMinutes = 45
+        check("…until a change lands", !store.deviceIdleSaveFailed && AppConfig.deviceIdleLeasedMinutes == 45)
+        store.writesDeviceConfig = false
+
+        // ---- the remote card over a snapshot from a daemon with no remote pool ----
+
+        var stopped = AllocatorInstall()
+        stopped.installed = true
+        var answering = stopped
+        answering.daemonRunning = true
+        let whenStopped = AllocatorUI.predatesPool(stopped)
+        check("a stopped daemon is offered a start, not a restart",
+              whenStopped.action == .start && !whenStopped.note.contains("running allocator"),
+              "got \(whenStopped)")
+        check("a daemon that answers is offered a restart",
+              AllocatorUI.predatesPool(answering) == (AllocatorUI.predatesPoolNote, .restart))
+        check("before the first check, neither",
+              AllocatorUI.predatesPool(nil).action == nil
+                && !AllocatorUI.predatesPool(nil).note.contains("running"))
 
         // A render seeds a real Store, which read the operator's own config.json.
         for mode in ["devices-screen", "devices-screen-off", "devices-screen-remote", "devices-screen-remote-away"] {

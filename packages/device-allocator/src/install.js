@@ -17,10 +17,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { readDiscovery } from './state.js';
+import { DISCOVERY_PATH } from './paths.js';
 import { daemonHealth } from './ipc.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -306,17 +307,56 @@ function uninjectClaudeMd() {
   } catch {}
 }
 
+// The pid a daemon.json names, while that process is still the daemon that wrote it.
+// A daemon that dies without its exit handler (kill -9, a crash, a power loss) leaves
+// the file behind, and its pid can later belong to any process of the user's: the one
+// it names must be running a daemon.js, started no later than the file says it was.
+function discoveredDaemonPid(disc) {
+  const pid = disc?.pid;
+  const wrote = Date.parse(disc?.startedAt);
+  if (!Number.isInteger(pid) || pid <= 0 || Number.isNaN(wrote) || !pidAlive(pid)) return null;
+  let out;
+  try {
+    out = execFileSync('ps', ['-o', 'lstart=,command=', '-p', String(pid)],
+      { encoding: 'utf8', timeout: 2000, env: { ...process.env, LC_ALL: 'C' } });
+  } catch { return null; }
+  // "Tue Oct 27 22:05:29 2026  node /x/src/daemon.js"
+  const words = out.trim().split(/\s+/);
+  const started = Date.parse(words.slice(0, 5).join(' '));
+  // lstart has whole seconds; startedAt is written once the daemon listens.
+  if (Number.isNaN(started) || started > wrote + 1000) return null;
+  return words.slice(5).some((w) => path.basename(w) === 'daemon.js') ? pid : null;
+}
+
+/// This BASE_DIR's daemon.json pid while it is a live daemon; a stale file is removed.
+function liveDiscoveredPid() {
+  const disc = readDiscovery();
+  if (!disc) return null;
+  const pid = discoveredDaemonPid(disc);
+  if (pid == null && readDiscovery()?.startedAt === disc.startedAt) {
+    try { fs.unlinkSync(DISCOVERY_PATH); } catch {}
+  }
+  return pid;
+}
+
+/// {running, error?}. Never spawns beside a daemon that is alive but silent, such as
+/// one shutting down: the new one would take its socket, leaving two daemons on the
+/// same devices.
 async function startDaemon() {
-  if (await daemonHealth()) return true;
+  if (await daemonHealth()) return { running: true };
+  const silent = liveDiscoveredPid();
+  if (silent) {
+    return { running: false, error: `the daemon (pid ${silent}) is running but not answering; it may be shutting down` };
+  }
   const child = spawn(CMD_NODE, [DAEMON_JS], { detached: true, stdio: 'ignore' });
   child.unref();
   // give it a moment to bind
   const deadline = Date.now() + 6000;
   while (Date.now() < deadline) {
-    if (await daemonHealth(1000)) return true;
+    if (await daemonHealth(1000)) return { running: true };
     await delay(200);
   }
-  return (await daemonHealth()) != null;
+  return { running: (await daemonHealth()) != null };
 }
 /// The pid it signalled, or null when there was none to signal.
 async function stopDaemon() {
@@ -324,7 +364,7 @@ async function stopDaemon() {
     // The serving daemon's own pid, else daemon.json's for one too wedged to answer.
     // Both go through paths.js (honors DA_BASE_DIR) — a hardcoded ~/.diplomat path
     // here would SIGTERM the user's real daemon from a test-sandboxed uninstall.
-    const pid = (await daemonHealth())?.pid || readDiscovery()?.pid;
+    const pid = (await daemonHealth())?.pid || liveDiscoveredPid();
     if (pid) { process.kill(pid, 'SIGTERM'); return pid; }
   } catch {}
   return null;
@@ -346,8 +386,7 @@ async function restartDaemon() {
   if (pid && pidAlive(pid)) {
     return `the running daemon (pid ${pid}) did not exit within ${RESTART_EXIT_MS / 1000} s`;
   }
-  await startDaemon();
-  return null;
+  return (await startDaemon()).error ?? null;
 }
 
 // One-time migration from the pre-rename install (argent-device-allocator +
@@ -363,7 +402,8 @@ function migrateLegacy() {
   //    move its state dir out from under a live writer.
   try {
     const disc = readJson(path.join(LEGACY.base, 'device-allocator', 'daemon.json'));
-    if (disc && disc.pid) { try { process.kill(disc.pid, 'SIGTERM'); } catch {} }
+    const pid = discoveredDaemonPid(disc);
+    if (pid) { try { process.kill(pid, 'SIGTERM'); } catch {} }
   } catch {}
   // 2. Move the state we own (mesh identity + the daemon's two dirs) to ~/.diplomat.
   //    mesh is also migrated at applet startup; both use mergeMoveDir so whichever
@@ -415,7 +455,11 @@ try {
   switch (arg) {
     case '--install': { const s = await doInstall(); out = { action: 'install', ...s, installed: installed(s) }; break; }
     case '--uninstall': { const s = await doUninstall(); out = { action: 'uninstall', ...s, installed: installed(s) }; break; }
-    case '--start-daemon': out = { action: 'start-daemon', ...await status(), daemonRunning: await startDaemon() }; break;
+    case '--start-daemon': {
+      const { running, error } = await startDaemon();
+      out = { action: 'start-daemon', ...(error ? { error } : {}), ...await status(), daemonRunning: running };
+      break;
+    }
     case '--restart-daemon': {
       const error = await restartDaemon();
       const s = await status();

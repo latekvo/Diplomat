@@ -46,8 +46,8 @@ import {
   ADB_BIN,
 } from './paths.js';
 import {
-  writeDiscovery, writeState, writeLeases, readLeases, readConfig, pidAlive, ensureDirs, atomicWrite,
-  sweepDeadTmp,
+  writeDiscovery, readDiscovery, writeState, writeLeases, readLeases, readConfig, pidAlive, ensureDirs,
+  atomicWrite, sweepDeadTmp,
 } from './state.js';
 import { log } from './log.js';
 import * as dev from './devices.js';
@@ -1157,8 +1157,12 @@ async function start() {
     for (const a of leased) allocations.delete(a.key);
     if (leased.length) try { writeLeases([...allocations.values()]); } catch (e) { log('bye: leases write failed', String(e)); }
     shutdownBootedSync();
-    try { fs.unlinkSync(SOCKET_PATH); } catch {}
-    try { fs.unlinkSync(DISCOVERY_PATH); } catch {}
+    // Not when a daemon that took over while this one was blocked above owns them now.
+    const owner = readDiscovery()?.pid;
+    if (!owner || owner === process.pid || !pidAlive(owner)) {
+      try { fs.unlinkSync(SOCKET_PATH); } catch {}
+      try { fs.unlinkSync(DISCOVERY_PATH); } catch {}
+    }
     process.exit(0);
   };
   process.on('SIGINT', bye);

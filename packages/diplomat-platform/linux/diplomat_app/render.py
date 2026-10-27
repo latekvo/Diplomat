@@ -108,6 +108,8 @@ def _devices_screen_fixture(store: Store, mode: str) -> None:
     from .store import RemoteCall
 
     _device_fixture(store)
+    # The Store reads the operator's own config.json: never show their provider.
+    store.device_remote_provider = ""
     off = mode.endswith("off")
     store.allocator_install = {
         "installed": True, "version": "0.1.0", "mcpRegistered": True,

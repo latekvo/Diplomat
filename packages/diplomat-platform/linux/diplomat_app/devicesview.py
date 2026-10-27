@@ -20,6 +20,7 @@ import os
 import time
 from datetime import datetime, timezone
 
+from PySide6 import QtGui
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -121,6 +122,25 @@ def allocator_summary() -> tuple[str, str | None]:
 
 PREDATES_POOL_NOTE = ("The running allocator daemon reports no remote pool: it predates "
                       "one. Update the checkout if it has none either, then Restart daemon.")
+STOPPED_PREDATES_POOL_NOTE = ("The allocator daemon is not running, and the one that left "
+                              "this snapshot predates remote pools. Update the checkout if it "
+                              "has none either, then Start daemon.")
+#: Before the first ``--check`` says whether a daemon runs.
+SNAPSHOT_PREDATES_POOL_NOTE = ("The allocator's snapshot has no remote pool: the daemon "
+                               "that wrote it predates one.")
+
+
+def predates_pool(s: dict | None) -> tuple[str, str | None]:
+    """What the REMOTE POOL card says, and offers (``"start"``, ``"restart"`` or
+    nothing), over a snapshot with no remote pool while a provider is set. The snapshot
+    outlives its daemon, so only one that answers is called running. Twin of
+    ``AllocatorUI.predatesPool`` in DevicesScreen.swift."""
+    if s is None:
+        return SNAPSHOT_PREDATES_POOL_NOTE, None
+    if s.get("daemonRunning"):
+        return PREDATES_POOL_NOTE, "restart"
+    return STOPPED_PREDATES_POOL_NOTE, "start"
+
 
 #: Twin of ``AllocatorUI.restartHelp`` in DevicesScreen.swift.
 RESTART_HELP = ("Stop the running daemon and start this checkout's. Agents keep their "
@@ -131,8 +151,15 @@ RESTART_HELP = ("Stop the running daemon and start this checkout's. Agents keep 
 def restart_button(store: Store) -> QPushButton:
     button = QPushButton("Restart daemon")
     button.setToolTip(RESTART_HELP)
-    button.setEnabled(allocator_ready())
+    button.setEnabled(allocator_ready() and not store.allocator_busy)
     button.clicked.connect(store.restart_allocator_daemon_async)
+    return button
+
+
+def start_button(store: Store) -> QPushButton:
+    button = QPushButton("Start daemon")
+    button.setEnabled(allocator_ready() and not store.allocator_busy)
+    button.clicked.connect(store.start_allocator_daemon_async)
     return button
 
 
@@ -170,26 +197,22 @@ class AllocatorControls(QWidget):
 
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
-        ready = allocator_ready()
         self.install = QPushButton("Install")
         self.install.setStyleSheet("font-weight: 700;")
-        self.install.setEnabled(ready)
         self.install.clicked.connect(store.install_allocator_async)
         buttons.addWidget(self.install)
         self.uninstall = QPushButton("Uninstall")
         self.uninstall.clicked.connect(store.uninstall_allocator_async)
         buttons.addWidget(self.uninstall)
-        self.start = QPushButton("Start daemon")
-        self.start.setEnabled(ready)
-        self.start.clicked.connect(store.start_allocator_daemon_async)
+        self.start = start_button(store)
         buttons.addWidget(self.start)
         self.restart = restart_button(store)
         buttons.addWidget(self.restart)
-        recheck = QPushButton("⟲")
-        recheck.setFixedWidth(34)
-        recheck.setToolTip("Re-check status")
-        recheck.clicked.connect(store.refresh_allocator_install_async)
-        buttons.addWidget(recheck)
+        self.recheck = QPushButton("⟲")
+        self.recheck.setFixedWidth(34)
+        self.recheck.setToolTip("Re-check status")
+        self.recheck.clicked.connect(store.refresh_allocator_install_async)
+        buttons.addWidget(self.recheck)
         buttons.addStretch(1)
         col.addLayout(buttons)
         self.refresh(None)
@@ -211,6 +234,12 @@ class AllocatorControls(QWidget):
         self.uninstall.setVisible(installed)
         self.start.setVisible(self._offers_daemon and installed and not running)
         self.restart.setVisible(self._offers_daemon and installed and running)
+        idle = not self.store.allocator_busy
+        ready = allocator_ready() and idle
+        for button in (self.install, self.start, self.restart):
+            button.setEnabled(ready)
+        self.uninstall.setEnabled(idle)
+        self.recheck.setEnabled(idle)
 
 
 class _IdleLimitSlider(SliderSetting):
@@ -510,7 +539,8 @@ class DeviceScreenRow(QWidget):
 
     def _action(self, layout: QHBoxLayout, title: str, tint: str, slot, tip: str) -> None:
         btn = QPushButton(title)
-        btn.setToolTip(tip)
+        # A tooltip guesses HTML from its text, and the tip may carry an agent's name.
+        btn.setToolTip(QtGui.Qt.convertFromPlainText(tip))
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet(
             f"QPushButton {{ color: {tint}; background-color: {tint_bg(tint, 0.14)};"
@@ -587,10 +617,11 @@ class DevicesView(QWidget):
         root.addLayout(body)
         root.addStretch(1)
 
-        # `daemonRunning` comes from `--check` alone, which no poll runs.
+        # `daemonRunning` comes from `--check` alone, which no poll runs, and the
+        # provider is also set by hand.
         self._install_timer = QTimer(self)
         self._install_timer.setInterval(15_000)
-        self._install_timer.timeout.connect(store.refresh_allocator_install_async)
+        self._install_timer.timeout.connect(self._poll)
         # Advances the held-since durations, counted from a fixed instant.
         self._clock_timer = QTimer(self)
         self._clock_timer.setInterval(30_000)
@@ -598,7 +629,7 @@ class DevicesView(QWidget):
 
         store.devices_changed.connect(self.rebuild)
         store.activity_changed.connect(self._rebuild_events)
-        store.allocator_changed.connect(self._refresh_allocator)
+        store.allocator_changed.connect(self._on_allocator_changed)
         store.remote_changed.connect(self._rebuild_remote)
         store.changed.connect(self._sync_limits)
         self.rebuild()
@@ -613,6 +644,15 @@ class DevicesView(QWidget):
     def closed(self) -> None:
         self._install_timer.stop()
         self._clock_timer.stop()
+
+    def _poll(self) -> None:
+        self._rebuild_remote()
+        self.store.refresh_allocator_install_async()
+
+    def _on_allocator_changed(self) -> None:
+        # The remote card offers a start or a restart by whether the daemon runs.
+        self._refresh_allocator()
+        self._rebuild_remote()
 
     def rebuild(self) -> None:
         self._refresh_header()
@@ -918,11 +958,14 @@ class DevicesView(QWidget):
         elif remote is not None:
             self._status_col.addWidget(_remote_status_view(remote))
         elif self.store.device_remote_provider.strip():
-            self._status_col.addWidget(_note(PREDATES_POOL_NOTE, _ORANGE))
-            row = QHBoxLayout()
-            row.addWidget(restart_button(self.store))
-            row.addStretch(1)
-            self._status_col.addLayout(row)
+            note, action = predates_pool(self.store.allocator_install)
+            self._status_col.addWidget(_note(note, _ORANGE))
+            if action is not None:
+                row = QHBoxLayout()
+                row.addWidget(restart_button(self.store) if action == "restart"
+                              else start_button(self.store))
+                row.addStretch(1)
+                self._status_col.addLayout(row)
         else:
             self._status_col.addWidget(_note("No remote pool configured."))
 

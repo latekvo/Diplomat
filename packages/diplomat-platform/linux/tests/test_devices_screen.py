@@ -584,6 +584,143 @@ def test_text_from_the_daemon_and_the_provider_is_never_read_as_html(screen):
     assert view._remote_pill.textFormat() == Qt.TextFormat.PlainText
 
 
+def test_an_agents_name_in_the_free_tooltip_is_never_read_as_html(app):
+    from PySide6.QtGui import QTextDocument
+    from diplomat_app.devicesview import DeviceScreenRow
+    from diplomat_app.store import Store
+
+    row = DeviceScreenRow({"key": "k", "platform": "ios", "status": "ready",
+                           "owner": {"agentName": "fix the <table> layout", "ownerPid": 3}},
+                          provider=None, idle_limit=30, store=Store())
+    shown = QTextDocument()
+    shown.setHtml(row.actions["Free"].toolTip())
+    assert shown.toPlainText().startswith("Take it back from fix the <table> layout. ")
+
+
+@pytest.mark.parametrize("mode", ["devices-screen", "devices-screen-off",
+                                  "devices-screen-remote", "devices-screen-remote-away"])
+def test_no_render_shows_the_operators_own_provider(app, monkeypatch, mode):
+    from diplomat_app import render
+    from diplomat_app.store import Store
+
+    appconfig.set_value(appconfig.DEVICE_REMOTE_PROVIDER, "~/operator/own-pool.mjs")
+    monkeypatch.setenv("DIPLOMAT_RENDER", mode)
+    store = Store()
+    render._devices_screen_fixture(store, mode)
+    assert "operator" not in store.device_remote_provider
+
+
+def test_with_no_daemon_running_the_remote_card_offers_a_start_not_a_restart(
+        screen, monkeypatch):
+    from diplomat_app import devicesview
+    from diplomat_app.store import Store
+
+    starts = []
+    monkeypatch.setattr(Store, "start_allocator_daemon_async", lambda self: starts.append(self))
+    view = screen("devices-screen")
+    store = view.store
+    store.device_remote_provider = "~/pool/provider.mjs"
+    store.allocator_install = {**store.allocator_install, "daemonRunning": False}
+    store.allocator_changed.emit()
+    texts = _texts(view)
+    assert "Restart daemon" not in _buttons(view)
+    assert not any("running allocator daemon" in t for t in texts)
+    assert devicesview.STOPPED_PREDATES_POOL_NOTE in texts
+    in_note = [b for b in view.findChildren(devicesview.QPushButton)
+               if b.text() == "Start daemon" and b is not view.allocator_controls.start]
+    assert len(in_note) == 1
+    in_note[0].click()
+    assert starts == [store]
+
+    store.allocator_install = None
+    store.allocator_changed.emit()
+    assert devicesview.SNAPSHOT_PREDATES_POOL_NOTE in _texts(view)
+    assert not {"Start daemon", "Restart daemon"} & set(_buttons(view))
+
+
+def _installer(monkeypatch, gates: dict):
+    """Stand in for ``install.js``: each argument's reply, held until its gate (if
+    any) is set, and the arguments in the order they were asked."""
+    asked = []
+    replies = {
+        "--restart-daemon": {**START_REPLY, "action": "restart-daemon", "installed": True},
+        "--check": {**INSTALLED, "daemonRunning": False},
+        "--start-daemon": START_REPLY,
+    }
+
+    def run(arg):
+        asked.append(arg)
+        gate = gates.get(arg)
+        if gate is not None:
+            assert gate.wait(5)
+        return replies[arg]
+    monkeypatch.setattr(da, "_run_installer", run)
+    return asked
+
+
+def test_a_restart_in_flight_holds_the_poll_and_every_other_allocator_action(
+        app, monkeypatch):
+    import threading
+    from diplomat_app.devicesview import AllocatorControls
+    from diplomat_app.store import Store
+
+    release = threading.Event()
+    asked = _installer(monkeypatch, {"--restart-daemon": release})
+    store = Store()
+    store.allocator_install = {**INSTALLED, "daemonRunning": True}
+    controls = AllocatorControls(store, offers_daemon=True)
+    store.restart_allocator_daemon_async()
+    assert store.allocator_busy
+    controls.refresh(store.allocator_install)
+    assert not any(b.isEnabled() for b in (controls.install, controls.uninstall,
+                                           controls.restart, controls.recheck))
+    store.refresh_allocator_install_async()
+    store.start_allocator_daemon_async()
+    store.install_allocator_async()
+    store.uninstall_allocator_async()
+    release.set()
+    assert store.wait_for_background(5) == []
+    assert asked == ["--restart-daemon"]
+    assert not store.allocator_busy
+    assert store.allocator_install["daemonRunning"] is True
+
+
+def test_a_check_that_a_restart_overlapped_is_dropped(app, monkeypatch):
+    import threading
+    from diplomat_app.store import Store
+
+    release = threading.Event()
+    asked = _installer(monkeypatch, {"--check": release})
+    store = Store()
+    store.refresh_allocator_install_async()
+    for _ in range(50):
+        if asked:
+            break
+        time.sleep(0.02)
+    store.restart_allocator_daemon_async()
+    for _ in range(100):
+        if not store.allocator_busy:
+            break
+        time.sleep(0.02)
+    release.set()
+    assert store.wait_for_background(5) == []
+    assert asked == ["--check", "--restart-daemon"]
+    assert store.allocator_install["daemonRunning"] is True
+
+
+def test_a_provider_set_by_hand_shows_on_the_screens_next_poll(app, monkeypatch):
+    from diplomat_app.devicesview import DevicesView
+    from diplomat_app.store import Store
+
+    monkeypatch.delenv("DIPLOMAT_RENDER", raising=False)
+    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
+    view = DevicesView(Store(), live=False)
+    assert view.provider_field.text() == ""
+    appconfig.set_value(appconfig.DEVICE_REMOTE_PROVIDER, "~/by/hand.mjs")
+    view._install_timer.timeout.emit()
+    assert view.provider_field.text() == "~/by/hand.mjs"
+
+
 def test_a_rows_actions_are_only_what_the_daemon_does_for_it(app):
     from diplomat_app.devicesview import DeviceScreenRow
     from diplomat_app.store import Store

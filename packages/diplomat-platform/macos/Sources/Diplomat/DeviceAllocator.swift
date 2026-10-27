@@ -237,7 +237,8 @@ struct AllocatorInstall: Decodable, Equatable {
     /// Whether the reply said `installed` at all. `--start-daemon`'s does not, and its
     /// silence says nothing about the install (see `installStatus(over:)`).
     var reportsInstalled = false
-    /// What went wrong, when the installer says (a restart whose old daemon never exited).
+    /// What went wrong, when the installer says (a restart whose old daemon never exited,
+    /// a start beside a daemon that does not answer).
     var error: String?
 
     init() {}

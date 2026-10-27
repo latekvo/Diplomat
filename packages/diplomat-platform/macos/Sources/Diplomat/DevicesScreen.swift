@@ -61,7 +61,7 @@ struct DevicesScreen: View {
             guard live, onScreen else { return }
             // `daemonRunning` comes from `--check` alone, which no poll runs.
             while !Task.isCancelled {
-                store.reloadDeviceRemoteProvider()
+                store.reloadDeviceConfig()
                 await store.refreshAllocatorInstall()
                 try? await Task.sleep(nanoseconds: pollNanoseconds)
             }
@@ -265,8 +265,7 @@ struct DevicesScreen: View {
     @discardableResult
     private func save(_ provider: String) -> Bool {
         let ok = store.setDeviceRemoteProvider(provider)
-        saveError = ok ? nil : "⚠ Couldn't save that change to \(AppConfig.url.path), so it has "
-            + "no effect until it is made again."
+        saveError = ok ? nil : AllocatorUI.saveError
         return ok
     }
 
@@ -293,9 +292,14 @@ struct DevicesScreen: View {
         } else if storedProvider.isEmpty {
             note("No remote pool configured.")
         } else {
+            let (text, action) = AllocatorUI.predatesPool(store.allocatorInstall)
             VStack(alignment: .leading, spacing: 6) {
-                note(AllocatorUI.predatesPoolNote, tint: .orange)
-                RestartDaemonButton()
+                note(text, tint: .orange)
+                switch action {
+                case .restart: RestartDaemonButton()
+                case .start: StartDaemonButton()
+                case nil: EmptyView()
+                }
             }
         }
     }
@@ -705,8 +709,30 @@ enum AllocatorUI {
 
     static var ready: Bool { DeviceAllocator.packageAvailable && DeviceAllocator.nodeAvailable }
 
+    enum DaemonAction { case start, restart }
+
+    /// What the REMOTE POOL card says, and offers, over a snapshot with no remote pool
+    /// while a provider is set. The snapshot outlives its daemon, so only one that
+    /// answers is called running. Twin of `devicesview.predates_pool`.
+    static func predatesPool(_ s: AllocatorInstall?) -> (note: String, action: DaemonAction?) {
+        guard let s else { return (snapshotPredatesPoolNote, nil) }
+        return s.daemonRunning ? (predatesPoolNote, .restart) : (stoppedPredatesPoolNote, .start)
+    }
+
     static let predatesPoolNote = "The running allocator daemon reports no remote pool: it "
         + "predates one. Update the checkout if it has none either, then Restart daemon."
+    static let stoppedPredatesPoolNote = "The allocator daemon is not running, and the one "
+        + "that left this snapshot predates remote pools. Update the checkout if it has none "
+        + "either, then Start daemon."
+    /// A change to config.json that did not land.
+    static var saveError: String {
+        "⚠ Couldn't save that change to \(AppConfig.url.path), so it has no effect until it "
+            + "is made again."
+    }
+
+    /// Before the first `--check` says whether a daemon runs.
+    static let snapshotPredatesPoolNote = "The allocator's snapshot has no remote pool: the "
+        + "daemon that wrote it predates one."
 
     /// Twin of `devicesview.RESTART_HELP`.
     static let restartHelp = "Stop the running daemon and start this checkout's. Agents keep "
@@ -756,8 +782,18 @@ struct RestartDaemonButton: View {
     var body: some View {
         Button { Task { await store.restartAllocatorDaemon() } } label: { Text("Restart daemon") }
             .buttonStyle(.bordered).controlSize(.small)
-            .disabled(!AllocatorUI.ready)
+            .disabled(!AllocatorUI.ready || store.allocatorBusy)
             .help(AllocatorUI.restartHelp)
+    }
+}
+
+struct StartDaemonButton: View {
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        Button { Task { await store.startAllocatorDaemon() } } label: { Text("Start daemon") }
+            .buttonStyle(.bordered).controlSize(.small)
+            .disabled(!AllocatorUI.ready || store.allocatorBusy)
     }
 }
 
@@ -770,21 +806,21 @@ struct AllocatorButtons: View {
 
     var body: some View {
         let s = status
+        let busy = store.allocatorBusy
         HStack(spacing: 8) {
             Button { Task { await store.installAllocator() } } label: {
                 Text(s?.outdated ?? false ? "Update"
                      : (s?.installed ?? false) ? "Reinstall" : "Install").bold()
             }
             .buttonStyle(.borderedProminent).controlSize(.small)
-            .disabled(!AllocatorUI.ready)
+            .disabled(!AllocatorUI.ready || busy)
             if s?.installed ?? false {
                 Button { Task { await store.uninstallAllocator() } } label: { Text("Uninstall") }
                     .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(busy)
             }
             if offersDaemon, let s, s.installed, !s.daemonRunning {
-                Button { Task { await store.startAllocatorDaemon() } } label: { Text("Start daemon") }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .disabled(!AllocatorUI.ready)
+                StartDaemonButton()
             }
             if offersDaemon, let s, s.installed, s.daemonRunning {
                 RestartDaemonButton()
@@ -793,6 +829,7 @@ struct AllocatorButtons: View {
                 Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(.borderless).controlSize(.small).help("Re-check status")
+            .disabled(busy)
             Spacer(minLength: 0)
         }
     }
@@ -813,6 +850,10 @@ struct AllocatorIdleLimits: View {
             detail: "A change to either reaches the allocator within a minute.",
             value: $store.deviceIdleLeasedMinutes,
             range: AppConfig.deviceIdleLeasedRange, step: 5)
+        if store.deviceIdleSaveFailed {
+            Text(AllocatorUI.saveError).font(.system(size: 10)).foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private func row(title: String, summary: String, detail: String?,

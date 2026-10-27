@@ -272,6 +272,13 @@ class Store(QObject):
         # Live device-allocator state (pool + holders) and install status.
         self.device_state: dict | None = None
         self.allocator_install: dict | None = None
+        # An install, uninstall, start or restart of the allocator is running. The
+        # screens offer no other meanwhile, and a --check that overlaps one is dropped:
+        # mid-restart no daemon answers, which would read as one to start.
+        self.allocator_busy = False
+        # Counts those actions, so a --check can tell that one ran while it did.
+        self._allocator_actions = 0
+        self._allocator_lock = threading.Lock()
         # The Devices screen's two remote-pool calls. Here, not on the screen: a
         # sign-in runs for up to ten minutes and must outlive the screen being closed.
         self.remote_sign_in = RemoteCall()
@@ -3078,11 +3085,37 @@ class Store(QObject):
             self.devices_changed.emit()
 
     def refresh_allocator_install_async(self) -> None:
-        """Shell the installer's --check off the UI thread; signal when done."""
+        """Shell the installer's --check off the UI thread and signal when done,
+        unless an allocator action ran meanwhile."""
+        if self.allocator_busy:
+            return
+        actions = self._allocator_actions
+
         def work() -> None:
-            self.allocator_install = deviceallocator.check()
+            status = deviceallocator.check()
+            with self._allocator_lock:
+                if self.allocator_busy or actions != self._allocator_actions:
+                    return
+                self.allocator_install = status
             self.allocator_changed.emit()
         self.start_background(work)
+
+    def _allocator_action(self, work) -> None:
+        """Run one allocator action off the UI thread, unless one is running already."""
+        with self._allocator_lock:
+            if self.allocator_busy:
+                return
+            self.allocator_busy = True
+            self._allocator_actions += 1
+        self.allocator_changed.emit()
+
+        def run() -> None:
+            try:
+                work()
+            finally:
+                self.allocator_busy = False
+                self.allocator_changed.emit()
+        self.start_background(run)
 
     def _after_device_action(self) -> None:
         self.refresh_activity()
@@ -3161,11 +3194,13 @@ class Store(QObject):
             self.allocator_install = deviceallocator.with_install_status(
                 result, self.allocator_install)
             running = "true" if (result or {}).get("daemonRunning") else "false"
+            error = (result or {}).get("error")
             activity.log("panel", "allocator-install",
-                         f"Started the device-allocator daemon (ok: {running})")
+                         f"Started the device-allocator daemon (ok: {running})"
+                         + (f": {error}" if error else ""))
             self.allocator_changed.emit()
             self._after_device_action()
-        self.start_background(work)
+        self._allocator_action(work)
 
     def restart_allocator_daemon_async(self) -> None:
         """Devices → Restart daemon: replace the running daemon with this checkout's."""
@@ -3180,7 +3215,7 @@ class Store(QObject):
                          + (f": {error}" if error else ""))
             self.allocator_changed.emit()
             self._after_device_action()
-        self.start_background(work)
+        self._allocator_action(work)
 
     # MARK: activity feed + bans
 
@@ -3236,7 +3271,7 @@ class Store(QObject):
                 self.allocator_setup_done = True
             self.allocator_changed.emit()
             self.refresh_device_state()
-        self.start_background(work)
+        self._allocator_action(work)
 
     def install_allocator_async(self) -> None:
         def work() -> None:
@@ -3248,7 +3283,7 @@ class Store(QObject):
             activity.log("panel", "allocator-install", f"Installed device allocator (ok: {ok})")
             self.allocator_changed.emit()
             self._after_device_action()
-        self.start_background(work)
+        self._allocator_action(work)
 
     def uninstall_allocator_async(self) -> None:
         def work() -> None:
@@ -3261,7 +3296,7 @@ class Store(QObject):
                          f"Uninstalled device allocator (ok: {ok})")
             self.allocator_changed.emit()
             self._after_device_action()
-        self.start_background(work)
+        self._allocator_action(work)
 
     # MARK: self-update
 
