@@ -178,7 +178,7 @@ public struct CommsState: Codable, Equatable, Sendable {
     public var watermark: String?
     /// Ids already turned into pings above the watermark, newest last.
     public var seen: [String]
-    /// `auth.test`'s answer, asked once.
+    /// `auth.test`'s answer on the last tick that reached Slack.
     public var me: CommsIdentity?
     /// The failure the last tick ended on, nil after a good one: what makes an `error`
     /// event fire on the transition only.
@@ -302,7 +302,9 @@ public enum CommsWatch {
         let api = api ?? SlackAPI(token: token)
         let me: CommsIdentity
         do {
-            me = try state.me ?? api.authTest()
+            // Asked every tick rather than cached: a swapped token must not leave the
+            // previous owner's id deciding which messages are "my own".
+            me = try api.authTest()
             state.me = me
         } catch {
             return finish([], error: error.localizedDescription)

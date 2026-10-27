@@ -31,6 +31,7 @@ private func wire(ts: String, user: String = "UALICE", username: String = "alice
 /// (newest first, honouring `count` and `page`) for every query, recording each request.
 private final class StubSlack {
     var messages: [[String: Any]] = []
+    var me = slackMe
     var requests: [SlackAPI.Request] = []
     var status = 200
     var headers: [String: String] = [:]
@@ -49,7 +50,7 @@ private final class StubSlack {
         if let body { return (status, headers, body) }
         let obj: [String: Any]
         if req.url.path.hasSuffix("auth.test") {
-            obj = ["ok": true, "user_id": slackMe.userID, "team_id": slackMe.teamID, "user": slackMe.handle]
+            obj = ["ok": true, "user_id": me.userID, "team_id": me.teamID, "user": me.handle]
         } else {
             let items = URLComponents(url: req.url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             let count = Int(items.first { $0.name == "count" }?.value ?? "") ?? 50
@@ -264,9 +265,37 @@ func commsSmoke() throws {
           "the day turns at UTC midnight")
 
     try tickSmoke()
+    tokenSwapSmoke()
     try foldSmoke()
     try classifierSmoke()
     try promptSmoke()
+}
+
+/// The token swapped for a colleague's between two ticks: "my own" follows the token at
+/// once, so their own DM is skipped and the previous owner's is no longer.
+private func tokenSwapSmoke() {
+    section("comms: a swapped token")
+    let dir = scratchDir("swap")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let slack = StubSlack()
+    func run(_ now: TimeInterval) -> CommsTickResult {
+        CommsWatch.tick(token: "xoxp-test", settings: CommsSettings(), now: Date(timeIntervalSince1970: now),
+                        dir: dir, api: slack.api) { _ in
+            CommsDecision(action: .none, number: 0, summary: "", reason: "chat")
+        }
+    }
+    let t0: TimeInterval = 1_793_064_600
+    _ = run(t0)
+    slack.me = CommsIdentity(userID: "UALICE", teamID: "TOURS", handle: "alice")
+    slack.messages = [
+        wire(ts: "1793064660.000100", user: "UME", username: "operator", text: "note to alice",
+             channel: "D1", name: "UALICE", im: true),
+        wire(ts: "1793064670.000100", text: "alice's own", channel: "D1", name: "UALICE", im: true),
+    ]
+    let swapped = run(t0 + 120)
+    check(swapped.me?.userID == "UALICE" && swapped.items.map(\.message.id) == ["D1:1793064660.000100"],
+          "a swapped token's owner is who 'my own' means on the very next tick: "
+          + "\(swapped.items.map(\.message.id))")
 }
 
 private func tickSmoke() throws {
@@ -313,7 +342,7 @@ private func tickSmoke() throws {
     check(second.items.map(\.message.id) == ["D1:1793064660.000100", "C2:1793064700.000100"],
           "only the new messages addressed to me by a colleague, oldest first: "
           + "\(second.items.map(\.message.id))")
-    check(slack.authCalls == 1, "auth.test is asked once and cached")
+    check(slack.authCalls == 2, "auth.test is asked on every tick")
     check(slack.queries == ["is:dm after:2026-10-26", "<@UME> after:2026-10-26",
                             "\"argent\" after:2026-10-26"],
           "one query each for DMs, mentions and every keyword, from the day before: \(slack.queries)")
@@ -332,6 +361,7 @@ private func tickSmoke() throws {
 
     let third = run(t0 + 180)
     check(third.items.isEmpty, "the same matches next tick are already seen: \(third.items.map(\.message.id))")
+
 
     // A message posted before the last tick that the search index only surfaces now.
     slack.messages.append(dmWire("1793064650.000100", "late to the index"))
