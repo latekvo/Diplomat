@@ -3622,7 +3622,10 @@ class MeshNode:
             self._flush_state()
             return self._saved_reply("trusted.json", "banned.json")
         if t == "untrust":
-            self.remove_trusted(str(msg.get("fingerprint", "")).strip())
+            fp = str(msg.get("fingerprint", "")).strip()
+            if not fp:
+                return {"t": "error", "reason": "untrust needs a fingerprint"}
+            self.remove_trusted(fp)
             self._flush_state()
             return self._saved_reply("trusted.json")
         if t == "ban":
