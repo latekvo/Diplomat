@@ -274,3 +274,40 @@ def test_comms_tick_reports_a_failure_as_its_answer(tmp_path, slack):
     assert [(e["kind"], e["id"], e["detail"]) for e in events] == [
         ("error", "", "no Slack token is configured")]
     assert _Slack.seen == []
+
+
+def test_the_dry_run_through_the_entry_point_consumes_no_ping(tmp_path, slack):
+    """``DIPLOMAT_COMMS_POLL=1 python -m diplomat_app``, twice, against the real core,
+    a stub Slack and a stub claude: both runs triage the same new message, because
+    neither moves the live watermark nor writes to the live log."""
+    linux = Path(__file__).resolve().parents[1]
+    home = tmp_path / "home"
+    live = home / ".diplomat" / "comms"
+    live.mkdir(parents=True)
+    secs = int(datetime.now(timezone.utc).timestamp()) - 100
+    state = json.dumps({"watermark": f"{secs}.000000", "seen": []})
+    (live / "state.json").write_text(state)
+    _Slack.messages = [
+        {"ts": f"{secs + 5}.000100", "user": "UALICE", "username": "alice", "team": "TOURS",
+         "text": "can you review PR 12?", "permalink": "https://ours.slack.com/p1",
+         "type": "im", "channel": {"id": "D1", "name": "UALICE", "is_im": True}}]
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    env = {k: v for k, v in os.environ.items() if k != "DIPLOMAT_COMMS_DIR"}
+    env.update(HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"), TMPDIR=str(scratch),
+               PATH="/usr/bin:/bin", QT_QPA_PLATFORM="offscreen", DIPLOMAT_COMMS_POLL="1",
+               DIPLOMAT_SLACK_API=slack, DIPLOMAT_SLACK_TOKEN="xoxp-test",
+               DIPLOMAT_CLAUDE=str(_stub_claude(tmp_path)),
+               DIPLOMAT_CORE=str(core.assets_dir()),
+               PYTHONPATH=os.pathsep.join([str(linux), str(linux.parents[1] / "diplomat-runtime"),
+                                           str(linux.parents[1] / "szpontnet-core")]))
+    for _ in range(2):
+        run = subprocess.run([sys.executable, "-m", "diplomat_app"], cwd=str(linux), env=env,
+                             capture_output=True, text=True, timeout=120)
+        assert run.returncode == 0, run.stdout + run.stderr
+        assert "1 new ping\n" in run.stdout
+        assert "can you review PR 12?" in run.stdout
+        assert '"kind": "review", "number": 12' in run.stdout
+    assert (live / "state.json").read_text() == state
+    assert sorted(p.name for p in live.iterdir()) == ["state.json"]
+    assert list(scratch.iterdir()) == []

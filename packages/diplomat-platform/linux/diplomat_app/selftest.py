@@ -15,6 +15,11 @@ None of these need a display; they only touch QtCore (QSettings) + gh.
 
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
 from diplomat_runtime import review, runner, usagescan
 from diplomat_runtime.models import API, Filters, Fmt
 from diplomat_runtime.prtarget import PRTarget
@@ -200,12 +205,31 @@ def run_comms_poll() -> int:
     """``DIPLOMAT_COMMS_POLL=1``: one real Slack tick, classifier included, printing
     each new ping with its triage and the effect it would have. Nothing is queued.
 
-    The tick is the real one, so it moves the watermark and logs its pings in
-    ``$DIPLOMAT_COMMS_DIR`` (default ``~/.diplomat/comms``): a running applet sharing
-    that directory will not see these pings again."""
-    import json
-
+    Unless ``DIPLOMAT_COMMS_DIR`` names a directory, the tick runs against a scratch
+    copy of the watermark, removed afterwards (``Dump.commsPoll``): the live applet's
+    next tick still sees these messages as new, and the real log gets no lines."""
     from diplomat_runtime import comms
+
+    if os.environ.get("DIPLOMAT_COMMS_DIR"):
+        return _comms_poll(comms)
+    real = comms.comms_dir()
+    scratch = Path(tempfile.mkdtemp(prefix="diplomat-commspoll-"))
+    state = real / "state.json"
+    if state.is_file():
+        shutil.copyfile(state, scratch / "state.json")
+        print(f"(on a scratch copy of {state}; the real one is left as it is)")
+    else:
+        print(f"(no {state} yet: this run only finds where now is, and keeps nothing)")
+    os.environ["DIPLOMAT_COMMS_DIR"] = str(scratch)
+    try:
+        return _comms_poll(comms)
+    finally:
+        del os.environ["DIPLOMAT_COMMS_DIR"]
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _comms_poll(comms) -> int:
+    import json
 
     store = Store()
     store.fetch_me()

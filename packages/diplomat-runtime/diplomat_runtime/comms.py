@@ -2,23 +2,25 @@
 
 Everything Comms decides — the tick (search, filter, triage, log), the fold of its log
 into the screen's rows, and the plan a triaged ping turns into — is ``DiplomatCore``,
-reached through the ``diplomat-core`` CLI (``comms-tick``, ``comms-feed``,
-``comms-effect``) the way :mod:`promptcore` reaches the prompt builders. What lives
-here is what the CLI cannot do for this process: reading the Slack token from where the
-operator keeps it, handing it to the child alone, and appending the front-end's own
-lines (``action``, ``started``, ``finished``) to the log the CLI folds.
+reached through the ``diplomat-core`` CLI (``comms-tick``, ``comms-auth``,
+``comms-feed``, ``comms-effect``) the way :mod:`promptcore` reaches the prompt
+builders. What lives here is what the CLI cannot do for this process: reading the Slack
+token from where the operator keeps it, handing it to the children that ask Slack, and
+appending the front-end's own lines (``action``, ``started``, ``finished``) to the log
+the CLI folds.
 
 Stdlib-only, like the rest of the runtime.
 """
 
 from __future__ import annotations
 
+import fcntl
 import json
+import math
 import os
+import re
 import stat
 import subprocess
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,7 +30,8 @@ from . import appconfig, core, promptcore
 #: itself never enters the shared config file, which is world-readable and mesh-copied.
 DEFAULT_TOKEN_FILE = "~/.diplomat/slack-token"
 #: Overrides the file (tests, the headless poll), and is how the token reaches the
-#: ``comms-tick`` child: in that child's environment and nowhere else.
+#: ``comms-tick`` and ``comms-auth`` children: in their environment, which the core
+#: strips it from before it starts any process of its own.
 TOKEN_ENV = "DIPLOMAT_SLACK_TOKEN"
 
 
@@ -59,10 +62,15 @@ def tunables() -> dict:
         return {}
 
 
+#: The longest period ``DIPLOMAT_COMMS_SECS`` can set: a day, well inside the int32
+#: milliseconds of a ``QTimer`` interval.
+MAX_POLL_SECS = 86400.0
+
+
 def poll_secs() -> float:
     """The tick period: ``DIPLOMAT_COMMS_SECS``, else ``pollSecs``, floored at
     ``minPollSecs`` — two searches plus one per keyword a tick, against Slack's Tier 2
-    budget of about twenty calls a minute."""
+    budget of about twenty calls a minute — and capped at :data:`MAX_POLL_SECS`."""
     t = tunables()
     default = float(t.get("pollSecs", 60))
     floor = float(t.get("minPollSecs", 20))
@@ -70,14 +78,40 @@ def poll_secs() -> float:
         secs = float(os.environ.get("DIPLOMAT_COMMS_SECS") or default)
     except ValueError:
         secs = default
-    return max(floor, secs)
+    if not math.isfinite(secs):
+        secs = default
+    return min(MAX_POLL_SECS, max(floor, secs))
 
 
-def tick_timeout() -> float:
-    """How long one ``comms-tick`` may take: a classifier call per message it triages,
-    each bounded by the core, plus a minute for the searches."""
+#: The core's own bounds that comms.json does not hold: the grace ``SlackAPI`` waits
+#: past a request's ``httpTimeoutSecs``, and ``LoginShell.timeout`` for finding
+#: ``claude``. Plus a margin for starting the process and writing the log and state.
+_HTTP_GRACE_SECS = 5
+_LOGIN_SHELL_SECS = 10
+_MARGIN_SECS = 30
+
+
+def _http_call_secs() -> float:
+    return float(tunables().get("httpTimeoutSecs", 15)) + _HTTP_GRACE_SECS
+
+
+def keyword_count(settings: dict) -> int:
+    """How many keyword searches a tick runs: ``keywordsRaw`` split as
+    ``CommsSettings.keywordList`` splits it, on commas and new lines."""
+    parts = re.split(r"[,\r\n]", str(settings.get("keywordsRaw") or ""))
+    return len({p.strip() for p in parts if p.strip()})
+
+
+def tick_timeout(keywords: int = 0) -> float:
+    """How long one ``comms-tick`` may take: the sum of the bounds the child holds
+    itself to — ``auth.test``, every page of every query (two plus one per keyword), a
+    login-shell lookup of ``claude`` and a classifier call per message it triages — so
+    it is never killed inside them, which would lose the messages it has already
+    marked seen."""
     t = tunables()
-    return float(t.get("maxPerTick", 8)) * float(t.get("classifierTimeoutSecs", 60)) + 60
+    calls = 1 + (2 + keywords) * int(t.get("maxSearchPages", 3))
+    triage = float(t.get("maxPerTick", 8)) * float(t.get("classifierTimeoutSecs", 60))
+    return calls * _http_call_secs() + _LOGIN_SHELL_SECS + triage + _MARGIN_SECS
 
 
 # MARK: - the token
@@ -151,7 +185,7 @@ def tick(settings: dict, token: str) -> dict:
     the same as Slack refusing the token."""
     try:
         out = _core(["comms-tick"], stdin=settings, env={TOKEN_ENV: token},
-                    timeout=tick_timeout())
+                    timeout=tick_timeout(keyword_count(settings)))
         result = json.loads(out)
     except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
         return {"me": None, "items": [], "error": str(exc)}
@@ -199,9 +233,10 @@ def append_event(kind: str, message_id: str, *, outcome: str | None = None,
                  when: datetime | None = None) -> bool:
     """Append one ``CommsEvent`` line (``action`` / ``started`` / ``finished``).
 
-    ``O_APPEND``, so a line the tick writes at the same moment is never overwritten,
-    and the keys the Swift encoder writes, absent ones left out. The core rotates the
-    file on its own appends, which come with every ping these lines are about."""
+    Under the exclusive ``flock`` on ``events.lock`` that every append and rotation
+    of the log holds, so the core's rotation (read, rewrite, rename) cannot drop it;
+    with the keys the Swift encoder writes, absent ones left out. The log holds
+    private DMs: the directory is created 0700 and the file 0600."""
     event: dict = {"at": iso(when), "id": message_id, "kind": kind}
     if label is not None:
         event["label"] = label
@@ -211,12 +246,17 @@ def append_event(kind: str, message_id: str, *, outcome: str | None = None,
         event["queueKey"] = queue_key
     line = (json.dumps(event, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
     try:
-        comms_dir().mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(events_path()), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        comms_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
+        lock = os.open(str(comms_dir() / "events.lock"), os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            os.write(fd, line)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            fd = os.open(str(events_path()), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.write(fd, line)
+            finally:
+                os.close(fd)
         finally:
-            os.close(fd)
+            os.close(lock)
     except OSError:
         return False
     return True
@@ -225,51 +265,27 @@ def append_event(kind: str, message_id: str, *, outcome: str | None = None,
 # MARK: - the Settings "Test" button
 
 
-def _slack_base() -> str:
-    base = os.environ.get("DIPLOMAT_SLACK_API") or "https://slack.com/api/"
-    return base if base.endswith("/") else base + "/"
-
-
-def _describe(code: str) -> str:
-    """``SlackError.errorDescription``'s wording, so the Test button and the error
-    banner say the same thing about the same token."""
-    if code == "missing_scope":
-        return ("Slack: missing_scope. The token needs the user scopes search:read "
-                "and users:read.")
-    if code in ("invalid_auth", "not_authed", "token_revoked", "token_expired",
-                "account_inactive"):
-        return f"Slack rejected the token ({code})"
-    if code == "ratelimited":
-        return "Slack rate-limited the watcher"
-    return f"Slack: {code}"
-
-
-def auth_test(token: str, timeout: float | None = None) -> tuple[dict | None, str]:
-    """Who ``token`` is, by Slack's ``auth.test``: ``({userID, teamID, handle}, "")``
-    or ``(None, why not)``. The CLI has no auth-only command — ``comms-tick`` would
-    search and triage — so the Test button asks Slack itself."""
+def auth_test(token: str) -> tuple[dict | None, str]:
+    """Who ``token`` is: ``({userID, teamID, handle, team}, "")`` or ``(None, why
+    not)``. Asked through ``diplomat-core comms-auth``, Slack's ``auth.test`` over the
+    transport the tick uses, so a token that passes here is one the tick can poll with
+    and a refusal reads as the tick's error would. Never raises."""
     if not token:
         return None, "no Slack token is configured"
-    req = urllib.request.Request(_slack_base() + "auth.test",
-                                 headers={"Authorization": f"Bearer {token}"})
-    wait = timeout if timeout is not None else float(tunables().get("httpTimeoutSecs", 15))
     try:
-        with urllib.request.urlopen(req, timeout=wait) as resp:  # noqa: S310 — https or the test stub
-            body = json.loads(resp.read())
-    except urllib.error.HTTPError as exc:
-        if exc.code == 429:
-            return None, "Slack rate-limited the watcher"
-        return None, f"Slack answered HTTP {exc.code}"
-    except (urllib.error.URLError, OSError) as exc:
-        reason = getattr(exc, "reason", exc)
-        return None, f"Slack could not be reached: {reason}"
+        out = _core(["comms-auth"], env={TOKEN_ENV: token},
+                    timeout=_http_call_secs() + _MARGIN_SECS)
+    except (RuntimeError, promptcore.CoreBinaryMissing) as exc:
+        return None, str(exc)
+    try:
+        answer = json.loads(out)
     except ValueError:
-        return None, "Slack answered something that is not its JSON"
-    if not isinstance(body, dict):
-        return None, "Slack answered something that is not its JSON"
-    if body.get("ok") is not True:
-        return None, _describe(str(body.get("error") or "unknown_error"))
-    user, team = body.get("user_id"), body.get("team_id")
-    if not isinstance(user, str) or not isinstance(team, str):
-        return None, "Slack answered something that is not its JSON"
-    return {"userID": user, "teamID": team, "handle": str(body.get("user") or "")}, ""
+        answer = None
+    if not isinstance(answer, dict):
+        return None, "diplomat-core comms-auth answered something that is not an answer"
+    if answer.get("ok") is not True:
+        return None, str(answer.get("error") or "Slack did not say who the token is")
+    return {"userID": str(answer.get("userId") or ""),
+            "teamID": str(answer.get("teamId") or ""),
+            "handle": str(answer.get("user") or ""),
+            "team": str(answer.get("team") or "")}, ""

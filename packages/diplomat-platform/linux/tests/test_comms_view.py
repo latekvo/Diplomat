@@ -80,7 +80,8 @@ def test_no_token_shows_how_to_make_one(store, monkeypatch):
     assert not view.empty.isHidden()
     assert view.body.isHidden()
     texts = " ".join(_texts(view.empty))
-    assert "search:read users:read" in texts
+    assert "User Token Scopes  search:read. Install it" in texts
+    assert "users:read" not in texts
     assert view.empty_cmd.text() == \
         "(umask 077; read -rs t; printf '%s\\n' \"$t\" > '/nonexistent/slack token')"
     assert "/nonexistent/slack token" in view.empty_path.text()
@@ -140,6 +141,72 @@ def test_pings_jobs_and_what_is_new(store, monkeypatch, tmp_path):
                       "Job 5": "NOT QUEUED"}
     reports = {_texts(j)[0]: _buttons(j) for j in jobs}
     assert reports == {"Job 3": [], "Job 2": ["Report"], "Job 1": [], "Job 5": []}
+
+
+def test_text_from_slack_or_the_triage_is_never_read_as_markup(store, monkeypatch):
+    """A message can steer the triage's summary, and so the investigation's label,
+    into HTML; every label showing Slack's or the model's words draws it as typed."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel
+
+    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-1")
+    markup = '<h1 style="font-size:60px">URGENT</h1>'
+    item = _item(1, "2026-10-27T10:10:00Z", queue_key="investigate:1")
+    item["message"].update(userName=f"<b>{markup}</b>", channelName=markup, isDM=False,
+                           text=markup, keyword=markup, reasons=["keyword"])
+    item["decision"]["summary"] = markup
+    item.update(outcome=markup, label=markup)
+    store.comms_items = [item]
+    store.comms_enabled = True
+    store.comms_identity = {"handle": markup, "teamID": markup}
+    store.comms_error = markup
+    view = CommsView(store)
+    shown = [w for w in view.findChildren(QLabel) if markup in w.text()]
+    # sender, channel, keyword chip, text, summary, outcome, job label, status, banner
+    assert len(shown) == 9
+    assert [w.text() for w in shown if w.textFormat() != Qt.TextFormat.PlainText] == []
+
+
+def test_the_settings_card_draws_slacks_words_as_typed(app, store, monkeypatch):
+    from PySide6.QtCore import Qt
+
+    from diplomat_app.settingsview import SettingsView
+
+    markup = "<b>bold</b>"
+    store.comms_enabled = True
+    store.comms_error = markup
+    view = SettingsView(store)
+    try:
+        assert view._comms_row.summary() == markup
+        assert view._comms_row._summary.textFormat() == Qt.TextFormat.PlainText
+        assert view._comms_pill.textFormat() == Qt.TextFormat.PlainText
+        view._on_comms_tested({"handle": markup, "team": "Ours"}, "")
+        assert view._comms_test_status.text() == f"✓ @{markup} in Ours"
+        assert view._comms_test_status.textFormat() == Qt.TextFormat.PlainText
+    finally:
+        view.deleteLater()
+
+
+def test_the_test_button_comes_back_whatever_the_ask_raises(app, store, monkeypatch):
+    import http.client
+
+    from diplomat_app.settingsview import SettingsView
+
+    def broken(token):
+        raise http.client.IncompleteRead(b"12345678", 92)
+
+    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-1")
+    monkeypatch.setattr(comms, "auth_test", broken)
+    view = SettingsView(store)
+    try:
+        view._test_comms_token()
+        assert not view._comms_test.isEnabled()
+        assert store.wait_for_background() == []
+        app.processEvents()
+        assert view._comms_test.isEnabled()
+        assert view._comms_test_status.text().startswith("✗ IncompleteRead(8 bytes read")
+    finally:
+        view.deleteLater()
 
 
 def test_opening_the_screen_marks_everything_seen_but_still_draws_it_new(store,
