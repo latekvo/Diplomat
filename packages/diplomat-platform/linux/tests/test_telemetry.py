@@ -188,6 +188,23 @@ def test_a_ledger_that_takes_no_writes_still_records_each_event_once(ledger):
     assert events.count("queued") == 3 and events.count("cleared") == 2, events
 
 
+def test_a_ledger_that_never_takes_writes_holds_only_the_newest_events(
+        ledger, monkeypatch):
+    """What a full disk is holding is capped, oldest dropped first: a disk that never
+    recovers must not take the applet's memory with it."""
+    monkeypatch.setattr(telemetry, "_MAX_UNWRITTEN", 3)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(ledger.parent, 0o500)
+    try:
+        for key in "abcde":
+            telemetry.append({"at": 1.0, "ev": "cleared", "key": key})
+    finally:
+        os.chmod(ledger.parent, 0o700)
+    telemetry.append({"at": 2.0, "ev": "cleared", "key": "f"})
+    keys = [json.loads(line)["key"] for line in ledger.read_text().splitlines()]
+    assert keys == ["d", "e", "f"], keys
+
+
 def test_work_that_stops_being_owed_before_anyone_took_it_is_cleared(ledger):
     telemetry.observe_owed("review", "review", {"review:h/o/r#1@aa": 1})
     telemetry.observe_owed("review", "review", {})     # the reviewer resolved it

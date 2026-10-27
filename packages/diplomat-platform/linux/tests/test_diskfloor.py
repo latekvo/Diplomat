@@ -27,7 +27,8 @@ def test_the_override_is_in_mib_and_zero_turns_it_off():
     assert diskfloor.floor({diskfloor.ENV_OVERRIDE: "0"}) == 0
 
 
-@pytest.mark.parametrize("junk", ["", "-1", "+64", " 64", "5GiB", "1.5"])
+# "５" and "٥" are digits to Python's int() and not to Swift's ASCII check.
+@pytest.mark.parametrize("junk", ["", "-1", "+64", " 64", "5GiB", "1.5", "５", "٥"])
 def test_an_override_that_is_not_a_whole_mib_count_falls_back(junk):
     assert diskfloor.floor({diskfloor.ENV_OVERRIDE: junk}) == 5 * _GIB
 

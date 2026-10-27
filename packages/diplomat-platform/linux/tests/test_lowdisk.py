@@ -6,7 +6,8 @@ the agents' repo root and the self-updater's checkout on a real volume
 (``scripts/full-volume.sh``: a tmpfs here, an APFS image on macOS), fill it to
 ENOSPC or set the floor above what it holds, and drive the real dispatch gate, the
 real mesh host and the real ``selfupdate.run_scheduled`` against it. The spawner,
-the build and the tray launch are the only stand-ins.
+the build and the tray launch are the only stand-ins, except in the tests of which
+volume counts, where the free-space reading is.
 
 The volume needs root or passwordless sudo on Linux; without it these skip, unless
 ``DIPLOMAT_FULL_VOLUME_REQUIRED=1`` (CI), when the mount fails them instead.
@@ -110,6 +111,28 @@ def test_auto_work_holds_on_a_full_disk_and_resumes_once_it_drains(
     assert len(calls) == 3
 
 
+def _diplomat_dir_low(monkeypatch, tmp_path) -> str:
+    """Room in the repo, none left in ``~/.diplomat``, where the tool caches go."""
+    repo, tools = tmp_path / "repo", str(Path.home() / ".diplomat")
+    repo.mkdir()
+    monkeypatch.setenv("DIPLOMAT_REPO", str(repo))
+    _floor_mib(monkeypatch, 64)
+    monkeypatch.setattr(diskfloor, "free",
+                        lambda p: 1 << 20 if p == tools else 1 << 40)
+    return tools
+
+
+def test_auto_work_holds_when_only_the_tool_caches_are_out_of_room(
+        store, monkeypatch, tmp_path):
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    calls = _spawn_recorder(monkeypatch)
+    tools = _diplomat_dir_low(monkeypatch, tmp_path)
+    assert store.dispatch_agent(_job(1), autofix.SOURCE_AUTO) == _LOW_DISK
+    assert calls == []
+    (line,) = _lines("low-disk")
+    assert tools in line.detail, line.detail
+
+
 # MARK: - Work a mesh peer routes here
 
 
@@ -132,6 +155,18 @@ def test_a_mesh_peers_job_is_declined_on_a_full_disk(monkeypatch, volume):
 
     volume.drain()
     assert DiplomatHost().at_job_capacity([]) is False
+
+
+def test_a_mesh_peers_job_is_declined_when_only_the_tool_caches_are_out_of_room(
+        monkeypatch, tmp_path):
+    from diplomat_runtime.szponthost import DiplomatHost
+
+    monkeypatch.setattr("diplomat_runtime.szponthost._ps_dump", lambda: "")
+    monkeypatch.setattr("diplomat_runtime.tmuxwatch.pane_tails_for_ttys", lambda ttys: {})
+    tools = _diplomat_dir_low(monkeypatch, tmp_path)
+    assert DiplomatHost().at_job_capacity([]) is True
+    (line,) = _lines("mesh-low-disk")
+    assert tools in line.detail, line.detail
 
 
 # MARK: - The scheduled self-update
