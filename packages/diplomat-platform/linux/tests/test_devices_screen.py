@@ -643,6 +643,8 @@ def test_an_allocator_that_is_not_installed_is_offered_no_start_or_restart_by_th
         screen, running):
     """As the ALLOCATOR card offers neither: a start after an uninstall would run a
     daemon for an allocator the operator removed."""
+    from diplomat_app import devicesview
+
     view = screen("devices-screen")
     store = view.store
     store.device_remote_provider = "~/pool/provider.mjs"
@@ -650,7 +652,7 @@ def test_an_allocator_that_is_not_installed_is_offered_no_start_or_restart_by_th
                                "daemonRunning": running}
     store.allocator_changed.emit()
     assert not {"Start daemon", "Restart daemon"} & set(_buttons(view))
-    assert any("not installed" in t for t in _texts(view))
+    assert devicesview.UNINSTALLED_PREDATES_POOL_NOTE in _texts(view)
 
 
 def _installer(monkeypatch, gates: dict):
@@ -766,6 +768,23 @@ def test_idle_limits_set_by_hand_show_on_the_screens_next_poll_and_in_settings(
     assert sliders()[1] == [12, 120]
     panel.deleteLater()
     view.deleteLater()
+
+
+def test_idle_limits_set_by_hand_show_as_the_screen_opens(app, monkeypatch):
+    from diplomat_app.panel import Panel
+    from diplomat_app.store import Store
+
+    monkeypatch.delenv("DIPLOMAT_RENDER", raising=False)
+    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
+    panel = Panel(Store())
+    view = panel.devices_view
+    assert [s.value() for s, _row in view._idle] == [5, 30]
+    appconfig.set_int(appconfig.DEVICE_IDLE_LEASED_MINUTES, 90)
+    panel._set_screen("devices")
+    assert [s.value() for s, _row in view._idle] == [5, 90]
+    view.closed()
+    panel.deleteLater()
 
 
 def test_a_rows_actions_are_only_what_the_daemon_does_for_it(app):

@@ -716,7 +716,7 @@ enum AllocatorUI {
     /// answers is called running. A start or restart only for an installed allocator, as
     /// `AllocatorButtons` offers them. Twin of `devicesview.predates_pool`.
     static func predatesPool(_ s: AllocatorInstall?) -> (note: String, action: DaemonAction?) {
-        guard let s else { return (snapshotPredatesPoolNote, nil) }
+        guard let s, s != .unknown else { return (snapshotPredatesPoolNote, nil) }
         guard s.installed else { return (uninstalledPredatesPoolNote, nil) }
         return s.daemonRunning ? (predatesPoolNote, .restart) : (stoppedPredatesPoolNote, .start)
     }
@@ -735,7 +735,7 @@ enum AllocatorUI {
             + "is made again."
     }
 
-    /// Before the first `--check` says whether a daemon runs.
+    /// While no `--check` has read the install.
     static let snapshotPredatesPoolNote = "The allocator's snapshot has no remote pool: the "
         + "daemon that wrote it predates one."
 

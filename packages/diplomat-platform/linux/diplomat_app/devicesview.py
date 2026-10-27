@@ -128,7 +128,7 @@ STOPPED_PREDATES_POOL_NOTE = ("The allocator daemon is not running, and the one 
 UNINSTALLED_PREDATES_POOL_NOTE = ("The allocator is not installed, and the daemon that left "
                                   "this snapshot predates remote pools. Update the checkout "
                                   "if it has none either, then Install.")
-#: Before the first ``--check`` says whether a daemon runs.
+#: While no ``--check`` has read the install.
 SNAPSHOT_PREDATES_POOL_NOTE = ("The allocator's snapshot has no remote pool: the daemon "
                                "that wrote it predates one.")
 
@@ -646,6 +646,7 @@ class DevicesView(QWidget):
     def opened(self) -> None:
         self.rebuild()
         if self.live:
+            self.store.reload_device_config()
             self.store.refresh_allocator_install_async()
             self._install_timer.start()
             self._clock_timer.start()

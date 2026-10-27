@@ -309,15 +309,13 @@ function uninjectClaudeMd() {
 
 // The pid a daemon.json names, while that process is still the daemon that wrote it.
 // A daemon that dies without its exit handler (kill -9, a crash, a power loss) leaves
-// the file behind, and its pid can later belong to any process of the user's. The file
-// carries the daemon's procIdentity; one from a daemon that predates that field is
-// matched instead by its command (a daemon.js) and its start, no later than the file.
+// the file behind, and its pid can later belong to any process of the user's. The
+// process must run a daemon.js, and match the file's procIdentity (boot-relative on
+// Linux, so it can recur after a reboot); a file from a daemon that predates that field
+// is matched instead by a start no later than the file.
 function discoveredDaemonPid(disc) {
   const pid = disc?.pid;
   if (!Number.isInteger(pid) || pid <= 0 || !pidAlive(pid)) return null;
-  if (disc.identity) return procIdentity(pid) === disc.identity ? pid : null;
-  const wrote = Date.parse(disc.startedAt);
-  if (Number.isNaN(wrote)) return null;
   let out;
   try {
     out = execFileSync('ps', ['-o', 'lstart=,command=', '-p', String(pid)],
@@ -325,10 +323,12 @@ function discoveredDaemonPid(disc) {
   } catch { return null; }
   // "Tue Oct 27 22:05:29 2026  node /x/src/daemon.js"
   const words = out.trim().split(/\s+/);
+  if (!words.slice(5).some((w) => path.basename(w) === 'daemon.js')) return null;
+  if (disc.identity) return procIdentity(pid) === disc.identity ? pid : null;
+  const wrote = Date.parse(disc.startedAt);
   const started = Date.parse(words.slice(0, 5).join(' '));
   // lstart has whole seconds; startedAt is written once the daemon listens.
-  if (Number.isNaN(started) || started > wrote + 1000) return null;
-  return words.slice(5).some((w) => path.basename(w) === 'daemon.js') ? pid : null;
+  return Number.isNaN(wrote) || Number.isNaN(started) || started > wrote + 1000 ? null : pid;
 }
 
 /// This BASE_DIR's daemon.json pid while it is a live daemon; a stale file is removed.

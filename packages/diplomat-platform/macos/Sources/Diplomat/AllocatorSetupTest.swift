@@ -396,11 +396,15 @@ enum AllocatorSetupTest {
                 && !AllocatorUI.predatesPool(nil).note.contains("running"))
         for running in [false, true] {
             var uninstalled = AllocatorInstall()
+            uninstalled.reportsInstalled = true
             uninstalled.daemonRunning = running
             let got = AllocatorUI.predatesPool(uninstalled)
             check("an allocator that is not installed is offered neither (daemon running: \(running))",
-                  got.action == nil && got.note.contains("not installed"), "got \(got)")
+                  got == (AllocatorUI.uninstalledPredatesPoolNote, nil), "got \(got)")
         }
+        check("an install state the installer could not report claims nothing",
+              AllocatorUI.predatesPool(.unknown) == (AllocatorUI.snapshotPredatesPoolNote, nil),
+              "got \(AllocatorUI.predatesPool(.unknown))")
 
         // A render seeds a real Store, which read the operator's own config.json.
         for mode in ["devices-screen", "devices-screen-off", "devices-screen-remote", "devices-screen-remote-away"] {

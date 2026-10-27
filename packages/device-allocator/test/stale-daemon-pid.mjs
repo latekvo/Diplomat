@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_JS = path.join(__dirname, '..', 'src', 'install.js');
 const DAEMON_JS = path.join(__dirname, '..', 'src', 'daemon.js');
+const { procIdentity } = await import('../src/state.js');
 
 // /tmp, not os.tmpdir(): macOS's per-user tmpdir pushes the socket past the length limit.
 const BASE = fs.mkdtempSync('/tmp/dae.');
@@ -96,6 +97,13 @@ try {
   const uninstalled = run('--uninstall');
   ok('--uninstall leaves a process that is not a daemon alone', await survived(sleeper));
   ok('…and drops the daemon.json naming it', !fs.existsSync(DISCOVERY) && uninstalled.daemonRunning === false);
+
+  // Its own identity, as a Linux boot-relative starttime can recur after a reboot.
+  const forged = victim('sleep', ['300']);
+  await sleep(300);
+  staleDiscovery(forged.pid, new Date(), procIdentity(forged.pid));
+  run('--uninstall');
+  ok('--uninstall leaves a non-daemon whose identity daemon.json records', await survived(forged));
 
   // A process that looks like a daemon, but started after the daemon.json was written.
   const lookalike = victim(process.execPath, ['-e', 'setInterval(() => {}, 1e9)', DAEMON_JS]);
