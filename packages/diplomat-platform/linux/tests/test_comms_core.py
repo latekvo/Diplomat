@@ -24,7 +24,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from diplomat_runtime import autofix, core  # noqa: E402
+from diplomat_runtime import autofix, comms, core  # noqa: E402
 
 CORE_BIN = os.environ.get("DIPLOMAT_CORE_BIN")
 pytestmark = pytest.mark.skipif(
@@ -171,12 +171,17 @@ class _Slack(BaseHTTPRequestHandler):
 
     messages: list = []
     seen: list = []
+    #: What ``auth.test`` answers instead of the operator, when set.
+    auth_error: str | None = None
 
     def do_GET(self):  # noqa: N802 - the http.server hook
         url = urlparse(self.path)
         _Slack.seen.append((url.path, parse_qs(url.query), self.headers.get("Authorization")))
-        if url.path.endswith("/auth.test"):
-            body = {"ok": True, "user_id": "UME", "team_id": "TOURS", "user": "operator"}
+        if url.path.endswith("/auth.test") and _Slack.auth_error:
+            body = {"ok": False, "error": _Slack.auth_error}
+        elif url.path.endswith("/auth.test"):
+            body = {"ok": True, "user_id": "UME", "team_id": "TOURS", "user": "operator",
+                    "team": "Ours"}
         elif url.path.endswith("/search.messages"):
             matches = sorted(_Slack.messages, key=lambda m: m["ts"], reverse=True)
             body = {"ok": True, "messages": {"matches": matches, "paging": {"pages": 1}}}
@@ -195,7 +200,7 @@ class _Slack(BaseHTTPRequestHandler):
 
 @pytest.fixture
 def slack():
-    _Slack.messages, _Slack.seen = [], []
+    _Slack.messages, _Slack.seen, _Slack.auth_error = [], [], None
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Slack)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -227,7 +232,7 @@ def test_comms_tick_runs_end_to_end_through_the_binary(tmp_path, slack):
     assert first.returncode == 0, first.stderr
     assert json.loads(first.stdout) == {
         "me": {"userID": "UME", "teamID": "TOURS", "handle": "operator"},
-        "items": [], "error": None}
+        "items": [], "error": None, "notices": []}
     assert [p for p, _, _ in _Slack.seen] == ["/api/auth.test"]
     watermark = json.loads((_comms_dir() / "state.json").read_text())["watermark"]
 
@@ -267,7 +272,7 @@ def test_comms_tick_reports_a_failure_as_its_answer(tmp_path, slack):
     out = _core("comms-tick", stdin={}, env={"DIPLOMAT_SLACK_API": slack,
                                              "DIPLOMAT_SLACK_TOKEN": ""})
     assert out.returncode == 0, out.stderr
-    assert json.loads(out.stdout) == {"me": None, "items": [],
+    assert json.loads(out.stdout) == {"me": None, "items": [], "notices": [],
                                       "error": "no Slack token is configured"}
     events = [json.loads(line) for line in
               (_comms_dir() / "events.jsonl").read_text().splitlines()]
@@ -276,20 +281,39 @@ def test_comms_tick_reports_a_failure_as_its_answer(tmp_path, slack):
     assert _Slack.seen == []
 
 
+def test_the_settings_test_button_says_what_the_core_says(slack, monkeypatch):
+    """``comms.auth_test`` through the real ``comms-auth``: who the token is, or the
+    tick's own words for why not."""
+    monkeypatch.setenv("DIPLOMAT_SLACK_API", slack)
+    assert comms.auth_test("xoxp-test") == (
+        {"userID": "UME", "teamID": "TOURS", "handle": "operator", "team": "Ours"}, "")
+    assert _Slack.seen[-1][2] == "Bearer xoxp-test"
+    for error, why in [
+        ("missing_scope", "Slack: missing_scope. The token needs the user scope search:read."),
+        ("invalid_auth", "Slack rejected the token (invalid_auth)"),
+    ]:
+        _Slack.auth_error = error
+        assert comms.auth_test("xoxp-test") == (None, why)
+
+
 def test_the_dry_run_through_the_entry_point_consumes_no_ping(tmp_path, slack):
     """``DIPLOMAT_COMMS_POLL=1 python -m diplomat_app``, twice, against the real core,
-    a stub Slack and a stub claude: both runs triage the same new message, because
-    neither moves the live watermark nor writes to the live log."""
+    a stub Slack and a stub claude: both runs triage the last hour of Slack — the
+    message from before it left out, and the live watermark, which is past them all,
+    not consulted — and neither writes to the live dir."""
     linux = Path(__file__).resolve().parents[1]
     home = tmp_path / "home"
     live = home / ".diplomat" / "comms"
     live.mkdir(parents=True)
-    secs = int(datetime.now(timezone.utc).timestamp()) - 100
-    state = json.dumps({"watermark": f"{secs}.000000", "seen": []})
+    now = int(datetime.now(timezone.utc).timestamp())
+    state = json.dumps({"watermark": f"{now - 10}.000000", "seen": []})
     (live / "state.json").write_text(state)
     _Slack.messages = [
-        {"ts": f"{secs + 5}.000100", "user": "UALICE", "username": "alice", "team": "TOURS",
+        {"ts": f"{now - 95}.000100", "user": "UALICE", "username": "alice", "team": "TOURS",
          "text": "can you review PR 12?", "permalink": "https://ours.slack.com/p1",
+         "type": "im", "channel": {"id": "D1", "name": "UALICE", "is_im": True}},
+        {"ts": f"{now - 7200}.000100", "user": "UALICE", "username": "alice", "team": "TOURS",
+         "text": "from two hours ago", "permalink": "https://ours.slack.com/p0",
          "type": "im", "channel": {"id": "D1", "name": "UALICE", "is_im": True}}]
     scratch = tmp_path / "tmp"
     scratch.mkdir()

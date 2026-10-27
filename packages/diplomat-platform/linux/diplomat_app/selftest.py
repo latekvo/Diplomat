@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from diplomat_runtime import review, runner, usagescan
@@ -201,25 +202,31 @@ def _run_issue_prompt(m: str) -> int:
     return _print_prompt_dump(f"IssueConfig: {label} · depth={depth}", cfg.build_prompt())
 
 
+#: How far back a dry run into a scratch dir looks (``Dump.commsPollLookback``).
+COMMS_POLL_LOOKBACK_SECS = 3600
+
+
 def run_comms_poll() -> int:
     """``DIPLOMAT_COMMS_POLL=1``: one real Slack tick, classifier included, printing
     each new ping with its triage and the effect it would have. Nothing is queued.
 
-    Unless ``DIPLOMAT_COMMS_DIR`` names a directory, the tick runs against a scratch
-    copy of the watermark, removed afterwards (``Dump.commsPoll``): the live applet's
-    next tick still sees these messages as new, and the real log gets no lines."""
+    Unless ``DIPLOMAT_COMMS_DIR`` names a directory to tick, it ticks a scratch one
+    whose watermark is :data:`COMMS_POLL_LOOKBACK_SECS` ago with nothing seen, removed
+    afterwards (``Dump.commsPoll``): it triages what reached the operator in that time
+    whether or not Comms is on, and the live applet's own directory is untouched.
+    1 when there is no token or the tick failed."""
+    import json
+
     from diplomat_runtime import comms
 
     if os.environ.get("DIPLOMAT_COMMS_DIR"):
         return _comms_poll(comms)
-    real = comms.comms_dir()
     scratch = Path(tempfile.mkdtemp(prefix="diplomat-commspoll-"))
-    state = real / "state.json"
-    if state.is_file():
-        shutil.copyfile(state, scratch / "state.json")
-        print(f"(on a scratch copy of {state}; the real one is left as it is)")
-    else:
-        print(f"(no {state} yet: this run only finds where now is, and keeps nothing)")
+    since = int(time.time()) - COMMS_POLL_LOOKBACK_SECS
+    fd = os.open(scratch / "state.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"watermark": f"{since}.000000", "seen": []}, f)
+    print(f"(scratch: the last {COMMS_POLL_LOOKBACK_SECS // 60} min of Slack)")
     os.environ["DIPLOMAT_COMMS_DIR"] = str(scratch)
     try:
         return _comms_poll(comms)

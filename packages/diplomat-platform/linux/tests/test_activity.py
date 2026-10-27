@@ -48,6 +48,7 @@ def test_category_of_matches_swift_taxonomy() -> None:
         "comms-investigate": "comms",
         "comms-error": "comms",
         "comms-recovered": "comms",
+        "comms-notice": "comms",
         # everything else falls through to system, so a row never vanishes
         "kill-device": "system",
         "repair-done": "system",
@@ -81,7 +82,8 @@ def test_glyph_falls_back_to_category_glyph() -> None:
     # Comms rows: a glyph per verb, tinted with the category's blue.
     assert [activity.glyph_for(v) for v in (
         "comms-ping", "comms-review", "comms-fix", "comms-bump", "comms-investigate",
-        "comms-error", "comms-recovered")] == ["✉", "☑", "⊙", "↑", "⌕", "△", "✓"]
+        "comms-error", "comms-recovered", "comms-notice")] == [
+            "✉", "☑", "⊙", "↑", "⌕", "△", "✓", "△"]
     assert activity.color_for("comms-investigate") == "#007AFF"
 
 

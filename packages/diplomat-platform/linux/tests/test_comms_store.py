@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from test_autofix import _spawn_recorder, store  # noqa: F401 — fixture
+from test_comms_core import _stub_claude, slack  # noqa: F401 — fixture
 
 from diplomat_app import bans, issues
 from diplomat_app.store import Store, app_settings
@@ -100,9 +101,10 @@ def comms_store(store, monkeypatch):  # noqa: F811 — the shared Store fixture
     return store
 
 
-def _tick(store, monkeypatch, *pings, error=None) -> dict:
-    """One poll whose ``comms-tick`` answers ``pings`` (``(message, decision)`` pairs),
-    applied as the Qt thread applies it. Returns what the tick was handed."""
+def _tick(store, monkeypatch, *pings, error=None, notices=(), between=None) -> dict:
+    """One poll whose ``comms-tick`` answers ``pings`` (``(message, decision)`` pairs)
+    and ``notices``, applied as the Qt thread applies it, with ``between`` run after
+    the worker's half and before the Qt thread's. Returns what the tick was handed."""
     handed: dict = {}
 
     def fake_tick(settings, token):
@@ -115,10 +117,13 @@ def _tick(store, monkeypatch, *pings, error=None) -> dict:
                     f.write(json.dumps({"at": comms.iso(), "kind": kind, "id": m["id"],
                                         **extra}) + "\n")
         return {"me": ME, "items": [{"message": m, "decision": d} for m, d in pings],
-                "error": error}
+                "error": error, "notices": list(notices)}
 
     monkeypatch.setattr(comms, "tick", fake_tick)
-    store._apply_comms_tick(store._comms_poll_once())
+    plan = store._comms_poll_once()
+    if between is not None:
+        between()
+    store._apply_comms_tick(plan)
     return handed
 
 
@@ -196,6 +201,33 @@ def test_the_token_reaches_the_tick_child_alone(monkeypatch):
     comms.tick({}, "xoxp-handed")
     comms._core(["comms-feed"])
     assert seen == [("comms-tick", "xoxp-handed"), ("comms-feed", None)]
+
+
+def test_a_ticks_notices_are_handed_on_and_default_to_none(fake_core):
+    tick = {"me": None, "items": [], "error": None}
+    fake_core({**tick, "notices": ["Comms caught up past 24 h", 7]})
+    assert comms.tick({}, "xoxp")["notices"] == ["Comms caught up past 24 h"]
+    for body in (tick, {**tick, "notices": None}, {**tick, "notices": "one"}):
+        fake_core(body)
+        assert comms.tick({}, "xoxp")["notices"] == []
+    for body, code in (("not json", 0), ('{"items": 1}', 0), ("", 3)):
+        fake_core(body, code)
+        assert comms.tick({}, "xoxp")["notices"] == []
+
+
+def test_each_notice_of_a_tick_is_one_line_of_the_activity_feed(comms_store, monkeypatch):
+    refreshed = []
+    monkeypatch.setattr(comms_store, "refresh_activity", lambda: refreshed.append(1))
+    notices = ["Comms was away 30 h: messages from before 2026-10-26 09:00 were not triaged",
+               "A search for argent had more than 3 pages; older matches went unread"]
+    _tick(comms_store, monkeypatch, notices=notices)
+    assert [(e["source"], e["action"], e["detail"]) for e in _feed_lines()] == [
+        ("auto", "comms-notice", n) for n in notices]
+    assert refreshed, "the feed is re-read"
+    assert comms_store.comms_error is None, "a notice is not an error"
+    assert _events() == []
+    _tick(comms_store, monkeypatch)
+    assert len(_feed_lines()) == 2
 
 
 # MARK: - the token file
@@ -451,15 +483,15 @@ def test_a_comms_run_records_when_it_started_and_finished(comms_store, monkeypat
 
     running = [autofix.RunningAgent(12, started["label"], "review", True)]
     monkeypatch.setattr(Store, "running_tasks", property(lambda s: running))
-    comms_store._note_comms_finished()
+    comms_store._note_comms_runs()
     assert _events()[-1]["kind"] == "started", "still running"
 
     running.clear()
-    comms_store._note_comms_finished()
+    comms_store._note_comms_runs()
     assert [e["kind"] for e in _events()][-2:] == ["started", "finished"]
     comms_store.refresh_comms_feed()
     assert comms_store.comms_items[0]["finishedAt"]
-    comms_store._note_comms_finished()
+    comms_store._note_comms_runs()
     assert [e["kind"] for e in _events()].count("finished") == 1
 
 
@@ -471,10 +503,10 @@ def test_a_run_back_in_the_queue_is_not_finished(comms_store, monkeypatch):
         id="review:12", job=autofix.AgentJob(kind="review", audit_action="review",
                                              label="Review · #12 · deep", prompt="p"),
         attempt=1)]
-    comms_store._note_comms_finished()
+    comms_store._note_comms_runs()
     assert _events() == []
     comms_store.queued_tasks = []
-    comms_store._note_comms_finished()
+    comms_store._note_comms_runs()
     assert [e["kind"] for e in _events()] == ["finished"]
 
 
@@ -645,7 +677,7 @@ def test_every_ping_that_asked_for_the_work_sees_it_start_and_finish(comms_store
     assert _kinds_by_id() == {i: ["action", "started"] for i in ids}
 
     monkeypatch.setattr(Store, "running_tasks", property(lambda s: []))
-    comms_store._note_comms_finished()
+    comms_store._note_comms_runs()
     assert _kinds_by_id() == {i: ["action", "started", "finished"] for i in ids}
     assert [bool(i.get("finishedAt")) for i in comms_store.comms_items] == [True, True]
 
@@ -737,13 +769,195 @@ def test_a_run_that_ends_while_comms_is_off_is_still_finished(comms_store, monke
     assert _kinds_by_id()[m["id"]].count("finished") == 1
 
 
+# MARK: - work that is already running, or queued by a monitor
+
+
+DISPATCHED = 1761500000.0
+
+
+def _rows(monkeypatch, rows: list) -> list:
+    monkeypatch.setattr(Store, "running_tasks", property(lambda s: list(rows)))
+    return rows
+
+
+def _review_req(number: int, author: str = "bob") -> autofix.QueuedTask:
+    """The review-request monitor's queued find on PR ``number``."""
+    return autofix.QueuedTask(
+        id=f"review-req:{number}", attempt=1,
+        job=autofix.AgentJob(kind="review", audit_action="review-req",
+                             label=f"Review-req · #{number} (@{author}) +verdict",
+                             prompt="p", pr_url=f"https://github.com/o/r/pull/{number}",
+                             pr_number=number, author_login=author,
+                             counter="review_requests"))
+
+
+@needs_core
+def test_a_review_an_agent_is_already_on_is_not_asked_for_again(comms_store, monkeypatch):
+    row = autofix.RunningAgent(12, "Auto · Review-req · #12 (@bob) +verdict", "review", True,
+                               started_at=DISPATCHED)
+    rows = _rows(monkeypatch, [row])
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+
+    assert comms_store.queued_tasks == [] and comms_store.requested_work == []
+    action, started = _events()
+    assert (action["outcome"], action["queueKey"], action["label"]) == (
+        "already running", "review:12", row.label)
+    assert (started["kind"], started["id"], started["label"], started["at"]) == (
+        "started", m["id"], row.label,
+        comms.iso(datetime.fromtimestamp(DISPATCHED, timezone.utc)))
+    assert ("comms-review", f"{row.label} — already running; asked by kacper in DM") in \
+        [(e["action"], e["detail"]) for e in _feed_lines()]
+
+    comms_store._note_comms_runs()
+    assert _kinds_by_id()[m["id"]] == ["action", "started"], "still running"
+    rows.clear()
+    comms_store._note_comms_runs()
+    assert _kinds_by_id()[m["id"]] == ["action", "started", "finished"]
+
+
+@needs_core
+@pytest.mark.parametrize("label, running", [
+    ("Issues · #9005 · deep", True),
+    ("Issues · #9005 · Deep · retry 2", True),
+    ("Issues · #900501 · deep", False),
+    ("Issues · #19005 · deep", False),
+])
+def test_a_fix_already_running_is_known_by_its_issues_label(comms_store, monkeypatch,
+                                                          label, running):
+    comms_store.issues = [_issue(9005)]
+    _rows(monkeypatch, [autofix.RunningAgent(0, label, "issues", True,
+                                             started_at=DISPATCHED)])
+    _tick(comms_store, monkeypatch, _ask(1, "fix_issue", 9005))
+    outcome = next(e for e in _events() if e["kind"] == "action")["outcome"]
+    if running:
+        assert outcome == "already running"
+        assert comms_store.queued_tasks == []
+    else:
+        assert outcome == "fix of issue #9005 queued, at the front of its band"
+        assert [t.id for t in comms_store.queued_tasks] == ["issues:9005"]
+
+
+@needs_core
+def test_a_review_the_monitor_has_queued_is_not_asked_for_again(comms_store, monkeypatch):
+    _spawn_recorder(monkeypatch)
+    rows = _rows(monkeypatch, [])
+    twin = _review_req(12)
+    comms_store.queued_tasks = [_review_req(40, "carol"), twin]
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+
+    assert [t.id for t in comms_store.queued_tasks] == ["review-req:12", "review-req:40"]
+    assert comms_store.requested_work == []
+    [action] = _events()
+    assert (action["outcome"], action["queueKey"], action["label"]) == (
+        "already queued, at the front of its band", "review-req:12", twin.job.label)
+
+    # The monitor dispatches its own find: its row, not the queue, says it started,
+    # under the label the row wears.
+    monkeypatch.setattr(comms_store, "dispatch_agent", lambda *a, **k: "spawned")
+    assert comms_store._run_queued_task(twin, forced=True) == "spawned"
+    assert _kinds_by_id()[m["id"]] == ["action"]
+    comms_store.queued_tasks = [t for t in comms_store.queued_tasks if t.id != twin.id]
+    row = autofix.RunningAgent(12, "Auto · " + twin.job.label, "review", True,
+                               started_at=DISPATCHED)
+    rows.append(row)
+    comms_store._note_comms_runs()
+    started = _events()[-1]
+    assert (started["kind"], started["label"], started["at"]) == (
+        "started", row.label, comms.iso(datetime.fromtimestamp(DISPATCHED, timezone.utc)))
+    comms_store._note_comms_runs()
+    assert _kinds_by_id()[m["id"]] == ["action", "started"], "still running"
+    rows.clear()
+    comms_store._note_comms_runs()
+    assert _kinds_by_id()[m["id"]] == ["action", "started", "finished"]
+
+
+@pytest.mark.parametrize("key, waiting", [("review-req:12", True), ("review:12", False)])
+def test_only_a_monitors_find_that_left_the_queue_starts_from_the_rows(comms_store,
+                                                                       monkeypatch, key,
+                                                                       waiting):
+    """A find still queued has not started, whoever is on its PR; an ask starts at its
+    own dispatch (`_note_comms_started`), never from somebody else's agent."""
+    _rows(monkeypatch, [autofix.RunningAgent(12, "Review · #12 · deep", "review", True)])
+    comms_store.comms_items = [{"message": {"id": "D1:1.1"}, "queueKey": key,
+                                "label": "Review-req · #12 (@bob)", "at": "x"}]
+    comms_store.queued_tasks = [_review_req(12)] if waiting else []
+    comms_store._note_comms_runs()
+    assert _events() == []
+
+
+def test_a_settle_with_nothing_to_start_or_finish_reads_no_rows(comms_store, monkeypatch):
+    """Every settle runs this; the rows are a fresh read of every agent's evidence."""
+    monkeypatch.setattr(Store, "running_tasks",
+                        property(lambda s: pytest.fail("read the agent rows")))
+    comms_store.comms_items = [
+        {"message": {"id": "D1:1.1"}, "queueKey": "review:12", "label": "Review · #12 · deep",
+         "at": "x"},
+        {"message": {"id": "D1:1.2"}, "queueKey": "review-req:40", "label": "Review-req · #40",
+         "at": "x"},
+        {"message": {"id": "D1:1.3"}, "queueKey": "review:13", "label": "Review · #13 · deep",
+         "at": "x", "startedAt": "x", "finishedAt": "x"}]
+    comms_store.queued_tasks = [_review_req(40)]
+    comms_store._note_comms_runs()
+    assert _events() == []
+
+
+@needs_core
+def test_a_tick_landing_after_comms_was_switched_off_acts_on_nothing(comms_store,
+                                                                     monkeypatch):
+    shown = []
+    comms_store.comms_pinged.connect(lambda t, b: shown.append(t))
+    comms_store.comms_notify = True
+    m, d = _ask(1, "review", 12)
+
+    def switch_off():
+        comms_store.comms_enabled = False
+
+    _tick(comms_store, monkeypatch, (m, d), between=switch_off)
+    assert comms_store.queued_tasks == [] and comms_store.requested_work == []
+    [action] = _events()
+    assert action == {"at": action["at"], "id": m["id"], "kind": "action",
+                      "outcome": "Comms was switched off, so ping only"}
+    assert [e["action"] for e in _feed_lines()] == ["comms-ping"]
+    assert shown == []
+
+
+@needs_core
+def test_a_catch_up_reaches_the_activity_feed_as_a_notice(
+        tmp_path, slack, comms_store, monkeypatch):  # noqa: F811 — the stub Slack
+    """The Store's own tick through the real binary: a watermark past ``catchUpHours``
+    is moved up, and the operator reads why in the activity feed."""
+    monkeypatch.setenv("DIPLOMAT_SLACK_API", slack)
+    monkeypatch.setenv("DIPLOMAT_CLAUDE", str(_stub_claude(tmp_path)))
+
+    def tick() -> list[dict]:
+        comms_store._apply_comms_tick(comms_store._comms_poll_once())
+        lines = activity.audit_path().read_text().splitlines() \
+            if activity.audit_path().exists() else []
+        return [e for e in map(json.loads, lines) if e["action"] == "comms-notice"]
+
+    assert tick() == [], "the first tick only finds where now is"
+    state = comms.comms_dir() / "state.json"
+    away = json.loads(state.read_text())
+    away["watermark"] = f"{int(datetime.now(timezone.utc).timestamp()) - 30 * 3600}.000000"
+    state.write_text(json.dumps(away))
+
+    [notice] = tick()
+    assert notice["source"] == "auto"
+    assert notice["detail"].startswith("Comms had read Slack only up to ")
+    assert "more than 24 hours ago" in notice["detail"]
+    assert comms_store.comms_error is None
+    assert tick() == [notice], "a caught-up watermark says so once"
+
+
 # MARK: - the dry run
 
 
-def test_the_dry_run_leaves_the_live_watermark_and_log_alone(tmp_path, monkeypatch):
-    """``DIPLOMAT_COMMS_POLL=1`` ticks a scratch copy of ``state.json``: the real one
-    and the real log are as they were, so the live applet's next tick still sees the
-    messages as new, and the copy is gone afterwards."""
+def test_the_dry_run_ticks_the_last_hour_in_a_scratch_dir(tmp_path, monkeypatch):
+    """``DIPLOMAT_COMMS_POLL=1`` ticks a fresh scratch dir whose watermark is an hour
+    back with nothing seen, as the gh login, whatever the live dir holds; the live dir
+    is left as it was and the scratch one is gone afterwards."""
     from diplomat_app import selftest
 
     home = tmp_path / "home"
@@ -751,30 +965,40 @@ def test_the_dry_run_leaves_the_live_watermark_and_log_alone(tmp_path, monkeypat
     monkeypatch.delenv("DIPLOMAT_COMMS_DIR")
     real = home / ".diplomat" / "comms"
     real.mkdir(parents=True)
-    state = json.dumps({"watermark": "1761580000.000000", "seen": []})
+    state = json.dumps({"watermark": "1761580000.000000", "seen": ["D1:1761579999.000100"]})
     (real / "state.json").write_text(state)
     monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-test")
-    monkeypatch.setattr(Store, "fetch_me", lambda self: None)
+    monkeypatch.setattr(Store, "fetch_me", lambda self: setattr(self, "me", "octocat"))
     scratch = tmp_path / "tmp"
     scratch.mkdir()
     monkeypatch.setattr("tempfile.tempdir", str(scratch))
     ticked = []
+    error = None
 
     def fake_tick(settings, token):
         d = comms.comms_dir()
-        ticked.append((d, (d / "state.json").read_text()))
+        ticked.append((d, json.loads((d / "state.json").read_text()), settings["login"],
+                       stat.S_IMODE(os.stat(d / "state.json").st_mode), time_now()))
         # What the core's tick does to the directory it is pointed at.
         (d / "state.json").write_text(json.dumps({"watermark": "1761589999.000000"}))
         comms.append_event("action", "D1:1761580001.000100")
-        return {"me": ME, "items": [], "error": None}
+        return {"me": ME, "items": [], "error": error, "notices": []}
+
+    def time_now() -> int:
+        return int(datetime.now(timezone.utc).timestamp())
 
     monkeypatch.setattr(comms, "tick", fake_tick)
     assert selftest.run_comms_poll() == 0
-    assert selftest.run_comms_poll() == 0
+    error = "Slack rejected the token (invalid_auth)"
+    assert selftest.run_comms_poll() == 1
 
-    [(d1, s1), (d2, s2)] = ticked
-    assert d1 != real and d2 != real
-    assert s1 == s2 == state, "each run starts from the live watermark"
+    assert len(ticked) == 2
+    for d, started, login, mode, now in ticked:
+        assert d != real and d.parent == scratch
+        secs = int(started["watermark"].split(".")[0])
+        assert now - 3600 - 5 <= secs <= now - 3600
+        assert started == {"watermark": f"{secs}.000000", "seen": []}
+        assert (login, mode) == ("octocat", 0o600)
     assert (real / "state.json").read_text() == state
     assert sorted(p.name for p in real.iterdir()) == ["state.json"]
     assert list(scratch.iterdir()) == []

@@ -106,8 +106,8 @@ def tick_timeout(keywords: int = 0) -> float:
     """How long one ``comms-tick`` may take: the sum of the bounds the child holds
     itself to — ``auth.test``, every page of every query (two plus one per keyword), a
     login-shell lookup of ``claude`` and a classifier call per message it triages — so
-    it is never killed inside them, which would lose the messages it has already
-    marked seen."""
+    it is never killed inside them. A killed tick's triaged messages wait for the next
+    tick to hand them over."""
     t = tunables()
     calls = 1 + (2 + keywords) * int(t.get("maxSearchPages", 3))
     triage = float(t.get("maxPerTick", 8)) * float(t.get("classifierTimeoutSecs", 60))
@@ -179,7 +179,10 @@ def _core(args: list[str], *, stdin: object = None, env: dict | None = None,
 
 
 def tick(settings: dict, token: str) -> dict:
-    """One watcher tick: ``{"me", "items": [{"message", "decision"}], "error"}``.
+    """One watcher tick: ``{"me", "items": [{"message", "decision"}], "error",
+    "notices"}``, ``notices`` being what the tick has to tell the operator that is not
+    an error (a catch-up past ``catchUpHours``, a query cut short by
+    ``maxSearchPages``).
 
     Never raises: a CLI that cannot be run or answers nonsense is the tick's ``error``,
     the same as Slack refusing the token."""
@@ -188,10 +191,13 @@ def tick(settings: dict, token: str) -> dict:
                     timeout=tick_timeout(keyword_count(settings)))
         result = json.loads(out)
     except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
-        return {"me": None, "items": [], "error": str(exc)}
+        return {"me": None, "items": [], "error": str(exc), "notices": []}
     if not isinstance(result, dict) or not isinstance(result.get("items"), list):
-        return {"me": None, "items": [], "error": "diplomat-core comms-tick answered "
-                                                  "something that is not a tick"}
+        return {"me": None, "items": [], "notices": [],
+                "error": "diplomat-core comms-tick answered something that is not a tick"}
+    notices = result.get("notices")
+    result["notices"] = ([n for n in notices if isinstance(n, str)]
+                         if isinstance(notices, list) else [])
     return result
 
 
