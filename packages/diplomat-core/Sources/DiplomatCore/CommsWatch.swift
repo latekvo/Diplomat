@@ -31,7 +31,8 @@ public enum CommsClassifier {
     }
 
     /// The stdin block: the message and what is known about it, quoted between the fence
-    /// lines, with any copy of the fence marker inside it defanged.
+    /// lines. The quoting holds the fence; `defang` only removes the marker spellings it
+    /// knows.
     public static func input(for message: CommsMessage, settings: CommsSettings) -> String {
         guard let c = (try? CoreAssets.comms())?.classifier else { return "" }
         let reasons = message.reasons.map { r -> String in

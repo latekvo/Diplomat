@@ -655,21 +655,26 @@ def test_a_fix_of_a_pull_requests_number_queues_nothing(comms_store, monkeypatch
 
 @needs_core
 def test_a_gh_that_could_not_ask_is_not_read_as_no_such_number(comms_store, monkeypatch):
-    """A PR opened since the last fetch, asked about while gh is down or logged out:
-    GitHub never answered, so the ping must not say the PR does not exist."""
+    """A PR opened since the last fetch, asked about while gh is down, logged out or
+    cannot see the repo: GitHub never answered, so the ping must not say the PR does
+    not exist."""
     unauthed = ("gh exited 1: HTTP 401: Bad credentials (https://api.github.com/graphql)\n"
                 "Try authenticating with:  gh auth login -h github.com")
+    no_repo = ("gh exited 1: GraphQL: Could not resolve to a Repository with the name "
+               "'o/r'. (repository)")
 
     def down(args, timeout=60.0):
-        raise gh.GHError("gh timed out after 30s" if args[2] == "600" else unauthed)
+        raise gh.GHError({"600": "gh timed out after 30s", "602": no_repo}.get(args[2], unauthed))
 
     monkeypatch.setattr("diplomat_runtime.gh.run", down)
-    _tick(comms_store, monkeypatch, _ask(1, "review", 600), _ask(2, "fix_issue", 601))
+    _tick(comms_store, monkeypatch, _ask(1, "review", 600), _ask(2, "fix_issue", 601),
+          _ask(3, "review", 602))
     assert comms_store.requested_work == [] and comms_store.queued_tasks == []
     assert [e["outcome"] for e in _events() if e["kind"] == "action"] == [
         "couldn't ask GitHub about PR #600 (gh timed out after 30s)",
         "couldn't ask GitHub about issue #601 "
-        f"({Store.comms_snippet(unauthed, 120)})"]
+        f"({Store.comms_snippet(unauthed, 120)})",
+        f"couldn't ask GitHub about PR #602 ({Store.comms_snippet(no_repo, 120)})"]
     assert "Bad credentials" in Store.comms_snippet(unauthed, 120)
 
 

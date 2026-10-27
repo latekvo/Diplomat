@@ -3286,8 +3286,9 @@ class Store(QObject):
                                      str(number), "--repo", f"{cfg['owner']}/{cfg['repo']}",
                                      "--json", "number,url,author,state"], timeout=30))
         except Exception as exc:  # noqa: BLE001 — gh's own failures are all GHError
-            # How `gh pr view` and `gh issue view` both say GitHub has no such number.
-            if "Could not resolve to" in str(exc):
+            # How `gh pr view` and `gh issue view` both say GitHub has no such number;
+            # "Could not resolve to a Repository" shares the prefix, not the meaning.
+            if "Could not resolve to" in str(exc) and "with the number of" in str(exc):
                 return None
             return {"error": self.comms_snippet(str(exc), 120)}
         if not isinstance(obj, dict):

@@ -79,6 +79,8 @@ enum CommsTest {
             90081: .process(code: 1, stderr: "HTTP 401: Bad credentials "
                             + "(https://api.github.com/graphql)\nTry authenticating with:  "
                             + "gh auth login -h github.com"),
+            90082: .process(code: 1, stderr: "GraphQL: Could not resolve to a Repository "
+                            + "with the name 'o/r'. (repository)"),
         ]
         // gh as it behaves: `pr view` of an issue's number fails, and `issue view` answers
         // any number, a PR's included. A number GitHub does not know fails the way gh
@@ -274,16 +276,22 @@ enum CommsTest {
         let unaskedSnapshot = ids()
         let askTimedOut = item(.review, 90080)
         let askUnauthed = item(.fixIssue, 90081)
-        await apply([askTimedOut, askUnauthed])
+        let askNoRepo = item(.review, 90082)
+        await apply([askTimedOut, askUnauthed, askNoRepo])
         check("a gh that could not ask GitHub queues nothing",
-              lookups == [90080, 90081] && ids() == unaskedSnapshot
-                && [askTimedOut, askUnauthed].allSatisfy { folded($0)?.queueKey == nil })
+              lookups == [90080, 90081, 90082] && ids() == unaskedSnapshot
+                && [askTimedOut, askUnauthed, askNoRepo].allSatisfy {
+                    folded($0)?.queueKey == nil })
         check("…and says it could not ask, not that there is no such PR or issue",
               outcome(askTimedOut) == "couldn't ask GitHub about PR #90080 "
                 + "(gh timed out after 30s), so nothing was queued"
                 && outcome(askUnauthed).hasPrefix("couldn't ask GitHub about issue #90081 "
                                                   + "(gh exited 1: HTTP 401: Bad credentials")
                 && outcome(askUnauthed).hasSuffix("), so nothing was queued"))
+        check("…including a repo gh cannot see",
+              outcome(askNoRepo) == "couldn't ask GitHub about PR #90082 (gh exited 1: "
+                + "GraphQL: Could not resolve to a Repository with the name 'o/r'. "
+                + "(repository)), so nothing was queued")
 
         // MARK: switched off
         store.commsActRequests = false

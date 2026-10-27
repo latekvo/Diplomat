@@ -420,11 +420,12 @@ extension Store {
         case unasked(String)
     }
 
-    /// Whether gh failed because GitHub knows no such number - how `gh pr view` and
-    /// `gh issue view` both say it - rather than because it could not be asked.
+    /// Whether gh failed because GitHub knows no such number, as `gh pr view` and
+    /// `gh issue view` both word it. "Could not resolve to a Repository" shares the
+    /// prefix but means the repo itself could not be seen.
     static func ghSaysNotFound(_ error: Error) -> Bool {
         guard case GHError.process(_, let stderr) = error else { return false }
-        return stderr.contains("Could not resolve to")
+        return stderr.contains("Could not resolve to") && stderr.contains("with the number of")
     }
 
     nonisolated static func snippet(_ text: String, max: Int = 80) -> String {

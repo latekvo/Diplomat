@@ -596,11 +596,11 @@ public enum CommsText {
         text.split(whereSeparator: \.isNewline).joined(separator: " ")
     }
 
-    /// `text` with every copy of the fence marker replaced, so a message cannot close
-    /// its own fence early and have what follows read as the prompt's own words. A copy
-    /// is the marker's letters in order with anything but letters and digits between
-    /// them (whitespace of any kind, punctuation, zero-width or combining characters),
-    /// in any case, and in fullwidth, accented or Cyrillic/Greek look-alike letters.
+    /// `text` with copies of the fence marker replaced: a best-effort second layer, since
+    /// the quoting in `fillFenced` is what keeps a message inside its fence. It catches
+    /// the marker's letters in order with only non-alphanumerics between them, in any
+    /// case, fullwidth, accented, or in the Cyrillic/Greek look-alikes `lookalikes`
+    /// lists; other look-alikes pass.
     public static func defang(_ text: String) -> String {
         let scalars = Array(text.unicodeScalars)
         // The letters and digits of `text`, folded, each with the scalar it came from.

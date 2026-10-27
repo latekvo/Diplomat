@@ -129,7 +129,9 @@ To check a token and see what triage would do with the last hour of Slack (its o
 messages, as one poll would), without queueing anything or touching the files above:
 `DIPLOMAT_COMMS_POLL=1 ./Diplomat.app/Contents/MacOS/Diplomat` (Linux: `DIPLOMAT_COMMS_POLL=1
 ./diplomat`). It exits non-zero when the poll fails. With `DIPLOMAT_COMMS_DIR` set it polls that
-directory instead, and moves its watermark like a real poll.
+directory instead: it moves its watermark like a real poll and appends the ping and triage lines
+to its `events.jsonl`, but acts on none of them, so pointed at the live directory it uses up those
+messages without queueing their asks.
 
 ## Limits
 
