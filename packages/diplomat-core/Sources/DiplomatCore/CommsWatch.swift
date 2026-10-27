@@ -13,7 +13,8 @@ import Foundation
 /// project's CLAUDE.md is read either.
 ///
 /// The prompt is split along the trust line: the instructions (`prompt`) are the
-/// argument, and everything taken from the message (`input`) arrives on stdin, fenced.
+/// argument, and everything taken from the message (`input`) arrives on stdin, fenced
+/// and quoted.
 public enum CommsClassifier {
     /// What a decision's reason starts with when no answer came back at all — no
     /// `claude`, a timeout, a crash, an error result. `CommsWatch.tick` reports those as
@@ -29,8 +30,8 @@ public enum CommsClassifier {
         ])
     }
 
-    /// The stdin block: the message and what is known about it, between the fence lines,
-    /// with any copy of the fence marker inside it defanged.
+    /// The stdin block: the message and what is known about it, quoted between the fence
+    /// lines, with any copy of the fence marker inside it defanged.
     public static func input(for message: CommsMessage, settings: CommsSettings) -> String {
         guard let c = (try? CoreAssets.comms())?.classifier else { return "" }
         let reasons = message.reasons.map { r -> String in
@@ -40,7 +41,7 @@ public enum CommsClassifier {
             case .keyword: return "keyword \"\(message.keyword ?? "")\""
             }
         }.joined(separator: ", ")
-        return CommsText.fill(c.input, [
+        return CommsText.fillFenced(c.input, [
             "login": settings.login.isEmpty ? "the operator" : settings.login,
             "sender": CommsText.defang(message.sender),
             "channel": CommsText.defang(message.place),
@@ -138,26 +139,30 @@ public enum CommsClassifier {
     /// are files: a pipe the child fills blocks it, and corelibs only sees an exit once
     /// every holder of the launch socketpair has gone, so the wait is on a semaphore the
     /// termination handler signals rather than `waitUntilExit`.
+    ///
+    /// Those files hold the Slack token (curl's config) and DM text, and off macOS the
+    /// temp dir is usually the shared /tmp, so they go in a fresh 0700 directory, each
+    /// one 0600 from the moment it exists.
     static func execute(_ exe: String, _ args: [String], input: Data,
                         timeout: TimeInterval) -> Outcome {
         let fm = FileManager.default
-        let base = fm.temporaryDirectory.appendingPathComponent("diplomat-comms-\(UUID().uuidString)")
-        let inURL = base.appendingPathExtension("in")
-        let outURL = base.appendingPathExtension("out")
-        let errURL = base.appendingPathExtension("err")
-        guard fm.createFile(atPath: inURL.path, contents: input, attributes: [.posixPermissions: 0o600]),
-              fm.createFile(atPath: outURL.path, contents: nil),
-              fm.createFile(atPath: errURL.path, contents: nil),
-              let stdin = FileHandle(forReadingAtPath: inURL.path),
-              let stdout = FileHandle(forWritingAtPath: outURL.path),
-              let stderr = FileHandle(forWritingAtPath: errURL.path) else {
+        var template = Array(fm.temporaryDirectory
+            .appendingPathComponent("diplomat-comms-XXXXXX").path.utf8CString)
+        let made = template.withUnsafeMutableBufferPointer { buf in
+            buf.baseAddress.flatMap { mkdtemp($0) }.map { String(cString: $0) }
+        }
+        guard let dir = made else { return .failedToStart("could not stage its stdin") }
+        defer { try? fm.removeItem(atPath: dir) }
+        let inPath = dir + "/in", outPath = dir + "/out", errPath = dir + "/err"
+        guard let stdin = privateFile(inPath, input),
+              let stdout = privateFile(outPath, Data()),
+              let stderr = privateFile(errPath, Data()) else {
             return .failedToStart("could not stage its stdin")
         }
         defer {
             try? stdin.close()
             try? stdout.close()
             try? stderr.close()
-            for url in [inURL, outURL, errURL] { try? fm.removeItem(at: url) }
         }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: exe)
@@ -178,8 +183,22 @@ public enum CommsClassifier {
             return .timedOut
         }
         return .exited(proc.terminationStatus,
-                       (try? Data(contentsOf: outURL)) ?? Data(),
-                       (try? Data(contentsOf: errURL)) ?? Data())
+                       (try? Data(contentsOf: URL(fileURLWithPath: outPath))) ?? Data(),
+                       (try? Data(contentsOf: URL(fileURLWithPath: errPath))) ?? Data())
+    }
+
+    /// A new file at `path`, 0600 from its creation, holding `contents`, open at its start.
+    private static func privateFile(_ path: String, _ contents: Data) -> FileHandle? {
+        let fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: contents)
+            try handle.seek(toOffset: 0)
+        } catch {
+            return nil
+        }
+        return handle
     }
 }
 
@@ -198,7 +217,8 @@ public struct CommsState: Codable, Equatable, Sendable {
     /// succeeds: a tick with nothing to triage still ends on it.
     public var classifierError: String?
     /// Messages taken for triage and not yet handed to a front-end: the tick that took
-    /// them did not return. The next tick hands them over first.
+    /// them did not return, or its result did not reach the front-end. The next tick
+    /// hands them over first.
     public var undelivered: [CommsTickResult.Item]
     /// Per query whose matches did not fit in `maxSearchPages`, the oldest match's ts
     /// already reported, so one shortfall logs one `error` event.
@@ -329,6 +349,9 @@ public enum CommsWatch {
     /// its `decision` (`CommsDecision.checked` against the message). It is saved as
     /// taken before its triage runs, so a tick that never returns hands it over on the
     /// next one, as triaged or as an interrupted `none`, and never triages it twice.
+    /// `deliver` is given the result before anything is logged or let go: a front-end in
+    /// another process (`diplomat-core comms-tick`) answers false when the result could
+    /// not reach it, and the messages wait for the next tick the same way.
     ///
     /// The watermark trails `now` by `indexLagSecs`, because Slack's search index can
     /// return a message well after it was posted; `seen` is what keeps a message inside
@@ -341,10 +364,11 @@ public enum CommsWatch {
     /// `error` event is logged only on the tick that goes from working to failing.
     public static func tick(token: String, settings: CommsSettings, now: Date = Date(),
                             dir: URL = CommsLog.dir, api: SlackAPI? = nil,
+                            deliver: (CommsTickResult) -> Bool = { _ in true },
                             classify: (CommsMessage) -> CommsDecision) -> CommsTickResult {
         var state = CommsState.load(in: dir)
 
-        /// Log and hand over what was triaged, and save the state with how this tick
+        /// Hand over and log what was triaged, and save the state with how this tick
         /// ended, logging an `error` on the transition.
         var notices: [String] = []
         func notice(_ text: String) {
@@ -352,21 +376,24 @@ public enum CommsWatch {
             notices.append(text)
         }
         func finish(error: String?) -> CommsTickResult {
-            let items = state.undelivered
-            for item in items {
-                CommsLog.append(CommsEvent(kind: .ping, id: item.message.id, message: item.message),
-                                in: dir)
-                CommsLog.append(CommsEvent(kind: .decision, id: item.message.id,
-                                           decision: item.decision), in: dir)
-            }
             let error = error ?? state.classifierError
+            let result = CommsTickResult(me: state.me, items: state.undelivered, error: error,
+                                         notices: notices)
+            if deliver(result) {
+                for item in result.items {
+                    CommsLog.append(CommsEvent(kind: .ping, id: item.message.id, message: item.message),
+                                    in: dir)
+                    CommsLog.append(CommsEvent(kind: .decision, id: item.message.id,
+                                               decision: item.decision), in: dir)
+                }
+                state.undelivered = []
+            }
             if let error, state.error == nil {
                 CommsLog.append(CommsEvent(kind: .error, id: "", detail: error), in: dir)
             }
             state.error = error
-            state.undelivered = []
             state.save(in: dir)
-            return CommsTickResult(me: state.me, items: items, error: error, notices: notices)
+            return result
         }
 
         guard let assets = try? CoreAssets.comms() else {
