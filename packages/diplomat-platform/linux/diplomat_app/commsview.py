@@ -44,7 +44,7 @@ from .widgets import GlyphLabel, muted, tint_bg
 TINT = "#007AFF"
 _RED, _GREEN, _ORANGE, _GREY = "#FF3B30", "#34C759", "#FF9500", glyphs.MUTED
 
-SCOPES = "search:read users:read"
+SCOPES = "search:read"
 
 
 def token_command() -> str:
@@ -87,8 +87,16 @@ def _clear(layout) -> None:
             _clear(item.layout())
 
 
+def _plain(text: str) -> QLabel:
+    """A label that never reads its text as markup: what these show comes from Slack,
+    from a model's triage of a Slack message, or from the work that triage named."""
+    label = QLabel(text)
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    return label
+
+
 def _chip(text: str, tint: str) -> QLabel:
-    chip = QLabel(text)
+    chip = _plain(text)
     chip.setStyleSheet(
         f"color: {tint}; background-color: {tint_bg(tint, 0.15)}; border-radius: 5px;"
         " padding: 1px 5px; font-size: 8px; font-weight: 700;"
@@ -150,10 +158,10 @@ class PingRow(QFrame):
 
         head = QHBoxLayout()
         head.setSpacing(6)
-        who = QLabel(Store.comms_sender(message))
+        who = _plain(Store.comms_sender(message))
         who.setStyleSheet("font-weight: 700; font-size: 11px;")
         head.addWidget(who)
-        where = QLabel(Store.comms_place(message))
+        where = _plain(Store.comms_place(message))
         where.setStyleSheet(muted(10))
         head.addWidget(where)
         for chip in reason_chips(message):
@@ -166,9 +174,8 @@ class PingRow(QFrame):
         head.addWidget(clock)
         col.addLayout(head)
 
-        text = QLabel(str(message.get("text", "")))
+        text = _plain(str(message.get("text", "")))
         text.setWordWrap(True)
-        text.setTextFormat(Qt.TextFormat.PlainText)
         text.setStyleSheet("font-size: 10px;")
         # Three lines, as the macOS row clamps it: a pasted stack trace must not push
         # every other ping off the screen.
@@ -185,7 +192,7 @@ class PingRow(QFrame):
             if decision.get("number"):
                 word += f" #{decision['number']}"
             foot.addWidget(_chip(word.upper(), _GREY if action == "none" else _GREEN))
-            summary = QLabel(str(decision.get("summary") or decision.get("reason") or ""))
+            summary = _plain(str(decision.get("summary") or decision.get("reason") or ""))
             summary.setStyleSheet(muted(9))
             summary.setWordWrap(True)
             foot.addWidget(summary, 1)
@@ -204,7 +211,7 @@ class PingRow(QFrame):
         col.addLayout(foot)
 
         if item.get("outcome"):
-            outcome = QLabel(f"→ {item['outcome']}")
+            outcome = _plain(f"→ {item['outcome']}")
             outcome.setWordWrap(True)
             outcome.setStyleSheet(muted(9))
             col.addWidget(outcome)
@@ -227,7 +234,7 @@ class JobRow(QFrame):
 
         head = QHBoxLayout()
         head.setSpacing(6)
-        label = QLabel(str(item.get("label") or item.get("queueKey") or ""))
+        label = _plain(str(item.get("label") or item.get("queueKey") or ""))
         label.setWordWrap(True)
         label.setStyleSheet("font-size: 10px; font-weight: 600;")
         head.addWidget(label, 1)
@@ -274,12 +281,12 @@ class CommsView(QWidget):
         col.setSpacing(8)
         col.addLayout(self._build_header())
 
-        self.status = QLabel("")
+        self.status = _plain("")
         self.status.setStyleSheet(muted(10))
         self.status.setWordWrap(True)
         col.addWidget(self.status)
 
-        self.error_banner = QLabel("")
+        self.error_banner = _plain("")
         self.error_banner.setWordWrap(True)
         self.error_banner.setStyleSheet(
             f"background-color: {tint_bg(_RED, 0.85)}; color: white; border-radius: 6px;"

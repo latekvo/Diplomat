@@ -56,6 +56,9 @@ from . import (
     szpont,
 )
 
+#: The verb the review-request monitor dispatches and queues under.
+REVIEW_REQ_ACTION = "review-req"
+
 
 def app_settings() -> QSettings:
     """This front-end's own preference store, the Linux analogue of UserDefaults.
@@ -410,10 +413,10 @@ class Store(QObject):
         self.comms_error: str | None = None
         self.comms_identity: dict | None = None
         self.comms_last_poll: datetime | None = None
-        # Queue key -> ping id for the asks Comms queued whose agent has not started
-        # yet: what turns a queued dispatch into that ping's `started` line. Replaced,
-        # never mutated: the drain reads it from the poll worker.
-        self._comms_owned: dict[str, str] = {}
+        # Queue key -> the ids of every ping that asked for that work and has not seen
+        # it start: what turns a queued dispatch into those pings' `started` lines.
+        # Replaced, never mutated: the drain reads it from the poll worker.
+        self._comms_owned: dict[str, frozenset[str]] = {}
         self._comms_lock = threading.Lock()
         self._comms_ticked.connect(self._apply_comms_tick)
 
@@ -1645,7 +1648,7 @@ class Store(QObject):
             tag = f" ~soft-approve ({why})" if soft else f" -verdict ({why})"
         job = autofix.AgentJob(
             kind="review",
-            audit_action="review-req",
+            audit_action=REVIEW_REQ_ACTION,
             label=f"Review-req · #{r.number} (@{r.author}){tag}",
             prompt=review.ReviewConfig(
                 depth="max",
@@ -2406,7 +2409,6 @@ class Store(QObject):
             self._end_starting(entry.id)
         if verdict in ("spawned", autofix.VERDICT_STAND_DOWN):
             self._record_queued_attempt(entry)
-        if verdict == "spawned":
             self._note_comms_started(entry)
         self._settle_requested(entry, verdict)
         return verdict
@@ -2542,6 +2544,7 @@ class Store(QObject):
         self._persist_run_changes(t)
         self._retire_finished(t)
         self._note_silent_probes()
+        self._note_comms_runs()
         return t
 
     def _note_silent_probes(self) -> None:
@@ -3202,10 +3205,11 @@ class Store(QObject):
         except (RuntimeError, promptcore.CoreBinaryMissing, ValueError):
             return
         self.comms_items = items
-        self._comms_owned = {
-            str(i["queueKey"]): str(i["message"]["id"]) for i in items
-            if i.get("queueKey") and not i.get("startedAt")
-        }
+        owned: dict[str, set[str]] = {}
+        for i in items:
+            if i.get("queueKey") and not i.get("startedAt"):
+                owned.setdefault(str(i["queueKey"]), set()).add(str(i["message"]["id"]))
+        self._comms_owned = {k: frozenset(v) for k, v in owned.items()}
 
     def run_comms_poll_async(self) -> None:
         """Kick one Slack tick on a worker thread, unless Comms is off or a tick is
@@ -3230,9 +3234,8 @@ class Store(QObject):
 
     def _comms_poll_once(self) -> dict:
         """The slow half of a tick, off the Qt thread: Slack and the triage (the CLI),
-        each ping's plan, the GitHub read a fix's plan needs, and the `finished` lines
-        for runs that have ended. Changes nothing in the queue."""
-        self._note_comms_finished()
+        each ping's plan, and the GitHub read a review's or a fix's plan needs.
+        Changes nothing in the queue."""
         at = datetime.now().astimezone()
         token, why = comms.read_token()
         if not token:
@@ -3248,17 +3251,22 @@ class Store(QObject):
             except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
                 effect = {"kind": "none", "error": str(exc)}
             entry = {"message": message, "decision": decision, "effect": effect}
-            if effect.get("kind") == "fix_issue":
-                entry["issue"] = self._comms_find_issue(int(effect.get("number") or 0))
+            if effect.get("kind") in ("review", "fix_issue"):
+                entry["target"] = self._comms_lookup(effect["kind"],
+                                                     int(effect.get("number") or 0))
             items.append(entry)
         return {"at": at, "error": result.get("error"), "me": result.get("me"),
-                "items": items}
+                "items": items, "notices": result["notices"]}
 
-    def _comms_find_issue(self, number: int) -> dict | None:
-        """Issue ``number`` as ``{number, url, author, state}``, or ``None`` when GitHub
-        does not know it. ``issues`` is what the panel fetched, which may be a filtered
-        list, so a miss there is asked of GitHub before it is believed."""
-        hit = next((i for i in self.issues if i.number == number), None)
+    def _comms_lookup(self, kind: str, number: int) -> dict | None:
+        """The PR (``kind`` ``review``) or issue (``fix_issue``) ``number`` as
+        ``{number, url, author, state}``, open or not, or ``None`` when GitHub does not
+        know it. The panel's own last fetch first, which lists open work only, then
+        ``gh`` for what it does not hold: a PR opened since the last refresh or past
+        the newest hundred, an issue a filtered list left out, one already closed.
+        ``gh issue view`` answers a PR's number too, with its ``/pull/`` url."""
+        listed = self.prs if kind == "review" else self.issues
+        hit = next((i for i in listed if i.number == number), None)
         if hit is not None:
             return {"number": hit.number, "url": hit.url, "author": hit.author,
                     "state": "OPEN"}
@@ -3266,10 +3274,10 @@ class Store(QObject):
 
         cfg = core.config()
         try:
-            obj = json.loads(gh.run(["issue", "view", str(number), "--repo",
-                                     f"{cfg['owner']}/{cfg['repo']}",
+            obj = json.loads(gh.run(["pr" if kind == "review" else "issue", "view",
+                                     str(number), "--repo", f"{cfg['owner']}/{cfg['repo']}",
                                      "--json", "number,url,author,state"], timeout=30))
-        except Exception:  # noqa: BLE001 — missing, a PR's number, or gh down: no issue
+        except Exception:  # noqa: BLE001 — no such number, or gh down: nothing to act on
             return None
         if not isinstance(obj, dict):
             return None
@@ -3283,14 +3291,18 @@ class Store(QObject):
         if plan.get("me"):
             self.comms_identity = plan["me"]
         self._settle_comms_error(plan.get("error"))
+        notices = plan.get("notices") or []
+        for notice in notices:
+            activity.log("auto", "comms-notice", notice)
         items = plan.get("items") or []
         for entry in items:
             self.apply_comms_item(entry)
         self.refresh_comms_feed()
-        if items:
+        if items or notices:
             self.refresh_activity()
-            if self.comms_notify:
-                self.comms_pinged.emit(*self._comms_notification(items))
+            if self.comms_notify and self.comms_enabled:
+                for entry in items:
+                    self.comms_pinged.emit(*self._comms_notification(entry["message"]))
         self.comms_changed.emit()
 
     def _settle_comms_error(self, error: str | None) -> None:
@@ -3319,35 +3331,39 @@ class Store(QObject):
         """``CommsMessage.sender``: the handle, or the user id when Slack gave none."""
         return str(message.get("userName") or message.get("userID") or "")
 
-    def _comms_notification(self, items: list[dict]) -> tuple[str, str]:
-        if len(items) == 1:
-            m = items[0]["message"]
-            return (f"{self.comms_place(m)} from {self.comms_sender(m)}",
-                    self.comms_snippet(m.get("text", ""), 160))
-        senders = ", ".join(dict.fromkeys(self.comms_sender(e["message"]) for e in items))
-        return f"{len(items)} new Slack pings", f"From {senders}"
+    def _comms_notification(self, message: dict) -> tuple[str, str]:
+        """One ping's notification, worded as ``CommsNotifier.post`` words it."""
+        return (f"Slack · {self.comms_place(message)} from {self.comms_sender(message)}",
+                self.comms_snippet(message.get("text", ""), 160))
 
     def apply_comms_item(self, entry: dict) -> str:
         """Act on one triaged ping and return the outcome its `action` line records.
 
         ``entry`` is ``{message, decision, effect}`` (the effect as ``comms-effect``
-        planned it), plus for a fix the ``issue`` GitHub answered. Every ping ends in
-        exactly one `action` line, a `comms-ping` line in the activity feed, and one
-        more there for any effect other than none."""
+        planned it), plus for a review or a fix the ``target`` :meth:`_comms_lookup`
+        answered. Every ping ends in exactly one `action` line, a `comms-ping` line in
+        the activity feed, and one more there for any effect other than none.
+
+        A tick that lands after Watch Slack was switched off acts on nothing: the core
+        has already logged its pings, so each still gets its line."""
         message, effect = entry["message"], entry.get("effect") or {"kind": "none"}
         msg_id = str(message.get("id", ""))
         where, sender = self.comms_place(message), self.comms_sender(message)
         activity.log("auto", "comms-ping",
                      f"{where} from {sender}: {self.comms_snippet(message.get('text', ''))}")
+        if not self.comms_enabled:
+            outcome = "Comms was switched off, so ping only"
+            comms.append_event("action", msg_id, outcome=outcome)
+            return outcome
         kind = effect.get("kind")
         number = int(effect.get("number") or 0)
         verb, work, front = None, None, True
         if kind == "review":
             verb = "comms-review"
-            outcome, work = self._comms_review(number)
+            outcome, work = self._comms_review(number, entry.get("target"))
         elif kind == "fix_issue":
             verb = "comms-fix"
-            outcome, work = self._comms_fix(number, entry.get("issue"))
+            outcome, work = self._comms_fix(number, entry.get("target"))
         elif kind == "investigate":
             verb, front = "comms-investigate", False
             cfg = effect["config"]
@@ -3360,20 +3376,38 @@ class Store(QObject):
             outcome = self._comms_bump(number)
         else:
             outcome = self._comms_none_outcome(entry)
+        key = label = running = None
         if work is not None:
-            # `outcome` names the work here; the ask decides what is said about it.
-            try:
-                fresh = self.request_one(work, front=front)
-            except Exception as exc:  # noqa: BLE001 — a missing/wedged core binary
-                outcome, work = f"{outcome} could not be queued: {exc}", None
+            # Work already running, or waiting under a monitor's key, is not asked for
+            # twice: the ping takes that work's key and label, so its started and
+            # finished follow the agent that does it.
+            suffix = ", at the front of its band" if front else ""
+            running = self._comms_row_doing(work.key, self.running_tasks)
+            twins = self._comms_twin_keys(work.key)
+            twin = None if running else next(
+                (t for t in self.queued_tasks + self.starting_tasks if t.id in twins), None)
+            if running is not None:
+                outcome, key, label = "already running", work.key, running.label
+            elif twin is not None:
+                if front:
+                    self._move_to_band_front(twin.id)
+                outcome, key, label = "already queued" + suffix, twin.id, twin.job.label
             else:
-                outcome += (" queued" if fresh else " was already queued") + (
-                    ", at the front of its band" if front else "")
-        key = work.key if work is not None else None
-        label = work.label if work is not None else None
-        if key is not None:
-            self._comms_owned = {**self._comms_owned, key: msg_id}
+                # `outcome` names the work here; the ask decides what is said about it.
+                try:
+                    fresh = self.request_one(work, front=front)
+                except Exception as exc:  # noqa: BLE001 — a missing/wedged core binary
+                    outcome = f"{outcome} could not be queued: {exc}"
+                else:
+                    outcome += (" queued" if fresh else " was already queued") + suffix
+                    key, label = work.key, work.label
+        if key is not None and running is None:
+            owners = self._comms_owned.get(key, frozenset()) | {msg_id}
+            self._comms_owned = {**self._comms_owned, key: owners}
         comms.append_event("action", msg_id, outcome=outcome, queue_key=key, label=label)
+        if running is not None:
+            comms.append_event("started", msg_id, label=running.label,
+                               when=self._comms_dispatched(running))
         if verb is not None:
             activity.log("auto", verb, f"{label + ' — ' if label else ''}{outcome}; "
                                        f"asked by {sender} in {where}")
@@ -3393,23 +3427,27 @@ class Store(QObject):
     def _comms_banned(self, login: str) -> bool:
         return bool(login) and bans.is_banned(login, bans.read())
 
-    def _comms_review(self, number: int) -> tuple[str, autofix.RequestedWork | None]:
+    def _comms_review(self, number: int,
+                      found: dict | None) -> tuple[str, autofix.RequestedWork | None]:
         """``("review of #N", the ask)`` — the review the Review wizard's single-PR
-        default would run — or ``(why there is none, None)``. N must be one of the
-        open PRs the panel fetched."""
-        pr = next((p for p in self.prs if p.number == number), None)
-        if pr is None:
-            return f"#{number} is not an open PR of this repo", None
-        if self._comms_banned(pr.author):
-            return f"PR #{number} is by @{pr.author}, who is banned; not queued", None
+        default would run — or ``(why there is none, None)``. ``found`` is PR N as
+        :meth:`_comms_lookup` answered it, which must be open."""
+        if found is None:
+            return f"#{number} is not a PR of this repo", None
+        state = str(found.get("state", ""))
+        if state.upper() != "OPEN":
+            return f"PR #{number} is {state.lower()}", None
+        author = str(found.get("author", ""))
+        if self._comms_banned(author):
+            return f"PR #{number} is by @{author}, who is banned; not queued", None
         me = self.effective_me
-        mine = bool(me) and pr.author.lower() == me.lower()
+        mine = bool(me) and author.lower() == me.lower()
         cfg = review.ReviewConfig(
             target=PRTarget.SPECIFIC, specific_pr=str(number), me=me,
             specific_author=(review.SpecificAuthor.MINE if mine
                              else review.SpecificAuthor.THEIRS))
         return f"review of #{number}", autofix.RequestedWork(
-            number=number, url=pr.url, author="" if mine else pr.author,
+            number=number, url=str(found.get("url", "")), author="" if mine else author,
             config=cfg.prompt_payload())
 
     def _comms_fix(self, number: int,
@@ -3421,6 +3459,8 @@ class Store(QObject):
         that one is the operator naming an issue, this one somebody on Slack."""
         if found is None:
             return f"#{number} is not an issue of this repo", None
+        if "/issues/" not in str(found.get("url", "")):
+            return f"#{number} is a pull request, not an issue", None
         if str(found.get("state", "")).upper() != "OPEN":
             return f"issue #{number} is {str(found.get('state', '')).lower()}", None
         author = str(found.get("author", ""))
@@ -3460,26 +3500,98 @@ class Store(QObject):
         if first != key:
             self.move_queued_task(key, first)
 
+    @staticmethod
+    def _comms_key_parts(key: str) -> tuple[str, int] | None:
+        verb, _, number = key.partition(":")
+        return (verb, int(number)) if number.isdigit() else None
+
+    @staticmethod
+    def _comms_twin_keys(key: str) -> list[str]:
+        """The keys a monitor queues the same work under as the ask ``key``: a review
+        requested of me on GitHub is the review a Slack message asks for."""
+        parts = Store._comms_key_parts(key)
+        if parts is None or parts[0] != autofix.QUEUE_REVIEW_ACTION:
+            return []
+        return [autofix.queue_key(REVIEW_REQ_ACTION, parts[1])]
+
+    @staticmethod
+    def _comms_row_doing(key: str, rows: list[autofix.RunningAgent]
+                         ) -> autofix.RunningAgent | None:
+        """The agent row doing the work ``key`` names (``commsRow``): any review agent
+        on that PR (the dispatch gate treats every agent on a PR as that PR's), or a
+        fix of that issue, which is about no PR and is known by the label every issue
+        fix wears (:attr:`autofix.RequestedWork.label`, the Fix-issues wizard)."""
+        parts = Store._comms_key_parts(key)
+        if parts is None:
+            return None
+        verb, n = parts
+        if verb in (autofix.QUEUE_REVIEW_ACTION, REVIEW_REQ_ACTION):
+            return next((a for a in rows if a.pr_number == n
+                         and a.kind == autofix.QUEUE_REVIEW_ACTION), None)
+        if verb == autofix.QUEUE_ISSUES_ACTION:
+            return next((a for a in rows if a.kind == autofix.QUEUE_ISSUES_ACTION
+                         and f"Issues · #{n} · " in a.label), None)
+        return None
+
+    @staticmethod
+    def _comms_dispatched(row: autofix.RunningAgent) -> datetime | None:
+        return datetime.fromtimestamp(row.started_at).astimezone() if row.started_at else None
+
     def _note_comms_started(self, entry: autofix.QueuedTask) -> None:
-        """A queued task spawned; if Comms asked for it, that ping's run has started."""
-        owned = self._comms_owned
-        msg_id = owned.get(entry.id)
-        if msg_id is None:
+        """A queued ask was dispatched; every ping that asked for it records
+        `started` (``commsSettled``), however many asked. A monitor's own find is
+        started from the agent rows instead (:meth:`_note_comms_runs`), under the
+        label its row wears.
+
+        Under the settle lock: a settle whose tick was taken before this run was
+        registered must not then read these `started` lines, or it would find the run
+        in no row and write it `finished` at once."""
+        if not entry.job.requested:
             return
-        self._comms_owned = {k: v for k, v in owned.items() if k != entry.id}
-        comms.append_event("started", msg_id, label=entry.job.label)
+        owned = self._comms_owned
+        owners = owned.get(entry.id)
+        if not owners:
+            return
+        with self._settle_lock:
+            self._comms_owned = {k: v for k, v in owned.items() if k != entry.id}
+            for msg_id in sorted(owners):
+                comms.append_event("started", msg_id, label=entry.job.label)
+            self.refresh_comms_feed()
         self.comms_changed.emit()
 
-    def _note_comms_finished(self) -> None:
-        """Write `finished` for every started Comms run whose agent is no longer among
-        the rows and whose ask is not waiting again. Once: the feed carries
-        `finishedAt` from then on, and this reads the feed."""
-        open_runs = [i for i in self.comms_items
-                     if i.get("startedAt") and not i.get("finishedAt") and i.get("queueKey")]
-        if not open_runs:
-            return
+    def _note_comms_runs(self) -> None:
+        """What the agent rows say about the work Comms' pings point at
+        (``noteCommsRuns``). Run on every settle of the agents, Comms on or off.
+
+        A ping that took a monitor's queued work records `started` once an agent row
+        is doing it: a monitor dispatches its own finds, which
+        :meth:`_note_comms_started` does not hear.
+
+        A started run whose agent is no longer among the rows, and whose ask is not
+        waiting again, records `finished`. Once: the feed is re-read after writing,
+        and carries `finishedAt` from then on."""
         waiting = {t.id for t in self.queued_tasks} | {t.id for t in self.starting_tasks}
-        running = [a.label for a in self.running_tasks]
+
+        def monitors_find_out_of_the_queue(key: str) -> bool:
+            parts = self._comms_key_parts(key)
+            return (key not in waiting and parts is not None
+                    and parts[0] not in autofix.QUEUE_REQUESTED_ACTIONS)
+
+        live = [i for i in self.comms_items if i.get("queueKey") and not i.get("finishedAt")]
+        to_start = [i for i in live if not i.get("startedAt")
+                    and monitors_find_out_of_the_queue(str(i["queueKey"]))]
+        open_runs = [i for i in live if i.get("startedAt")]
+        if not to_start and not open_runs:
+            return
+        rows = self.running_tasks
+        running = [a.label for a in rows]
+        wrote = False
+        for item in to_start:
+            row = self._comms_row_doing(str(item["queueKey"]), rows)
+            if row is not None:
+                comms.append_event("started", str(item["message"]["id"]), label=row.label,
+                                   when=self._comms_dispatched(row))
+                wrote = True
         for item in open_runs:
             label = str(item.get("label") or "")
             if item["queueKey"] in waiting:
@@ -3487,6 +3599,10 @@ class Store(QObject):
             if any(r == label or r.startswith(label + " · retry") for r in running):
                 continue
             comms.append_event("finished", str(item["message"]["id"]), label=label)
+            wrote = True
+        if wrote:
+            self.refresh_comms_feed()
+            self.comms_changed.emit()
 
     # MARK: device allocator
 

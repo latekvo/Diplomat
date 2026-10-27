@@ -996,6 +996,7 @@ class Pill(QLabel):
 
     def __init__(self, text: str = "", tint: str = "#8E8E93") -> None:
         super().__init__()
+        self.setTextFormat(Qt.TextFormat.PlainText)
         self.set_state(text, tint)
 
     def set_state(self, text: str, tint: str = "#8E8E93") -> None:
@@ -1304,6 +1305,8 @@ class SettingRow(QWidget):
         # currently resolves to (which handle is in force, where `cd` will land),
         # and a consequence reads wrong above its cause.
         self._summary = QLabel(summary or "")
+        # Live state can be text from outside: the Comms row shows Slack's error.
+        self._summary.setTextFormat(Qt.TextFormat.PlainText)
         self._summary.setWordWrap(True)
         self._summary.setStyleSheet(muted(10))
         self._summary.setVisible(bool(summary))

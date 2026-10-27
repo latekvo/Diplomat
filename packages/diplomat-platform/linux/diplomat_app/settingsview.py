@@ -931,7 +931,7 @@ class SettingsView(QWidget):
             "pushes, opens PRs or issues, comments, or posts to Slack.")
         self._sw_comms_notify = self._comms_switch(
             inner, "Notify on new pings", st.comms_notify, "comms_notify",
-            "A tray notification per poll that found pings.")
+            "A tray notification per new ping.")
         body.addWidget(nest)
 
         self._comms_model = text_row(
@@ -955,13 +955,14 @@ class SettingsView(QWidget):
         holder.setLayout(token_row)
         self._comms_token_row = self._track(SettingRow(
             "Slack token file", holder, stacked=True,
-            detail="A user token (xoxp-) with the scopes search:read and users:read, "
-                   "alone in a file only you can read. Only this path is saved, never "
-                   "the token. DIPLOMAT_SLACK_TOKEN in the environment wins over it.",
+            detail="A user token (xoxp-) with the scope search:read, alone in a file "
+                   "only you can read. Only this path is saved, never the token. "
+                   "DIPLOMAT_SLACK_TOKEN in the environment wins over it.",
         ))
         body.addWidget(self._comms_token_row)
         # Its own line rather than the row's summary, which every poll rewrites.
         self._comms_test_status = QLabel("")
+        self._comms_test_status.setTextFormat(Qt.TextFormat.PlainText)
         self._comms_test_status.setWordWrap(True)
         self._comms_test_status.hide()
         body.addWidget(self._comms_test_status)
@@ -995,14 +996,23 @@ class SettingsView(QWidget):
             return
         self._comms_test.setEnabled(False)
         self._set_comms_test_status("Asking Slack…", _GREY)
-        self.store.start_background(
-            lambda: self._comms_tested.emit(*comms.auth_test(token)), name="comms-test")
+
+        def ask() -> None:
+            # Whatever happens, an answer: it is what re-enables the button.
+            try:
+                answer = comms.auth_test(token)
+            except Exception as exc:  # noqa: BLE001
+                answer = (None, str(exc) or type(exc).__name__)
+            self._comms_tested.emit(*answer)
+
+        self.store.start_background(ask, name="comms-test")
 
     def _on_comms_tested(self, me: object, error: str) -> None:
         self._comms_test.setEnabled(True)
         if isinstance(me, dict):
             self._set_comms_test_status(
-                f"✓ @{me.get('handle', '')} in {me.get('teamID', '')}", _GREEN)
+                f"✓ @{me.get('handle', '')} in {me.get('team') or me.get('teamID', '')}",
+                _GREEN)
         else:
             self._set_comms_test_status(f"✗ {error}", _RED)
 

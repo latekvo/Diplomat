@@ -12,14 +12,18 @@ The store fixture and the spawn recorder come from ``test_autofix``.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
+import stat
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from test_autofix import _spawn_recorder, store  # noqa: F401 — fixture
+from test_comms_core import _stub_claude, slack  # noqa: F401 — fixture
 
 from diplomat_app import bans, issues
 from diplomat_app.store import Store, app_settings
@@ -59,6 +63,11 @@ def _decision(action: str, number: int = 0, summary: str = "asks something") -> 
     return {"action": action, "number": number, "summary": summary, "reason": "r"}
 
 
+def _ask(n: int, action: str, number: int) -> tuple[dict, dict]:
+    """A ping asking for ``action`` on ``#number``, in words that name the number."""
+    return _message(n, f"{action} #{number} please"), _decision(action, number)
+
+
 def _events() -> list[dict]:
     """The lines this front-end wrote: the core's own ping/decision lines left out."""
     path = comms.events_path()
@@ -72,10 +81,16 @@ def _feed_lines() -> list[dict]:
     return [json.loads(line) for line in activity.audit_path().read_text().splitlines()]
 
 
+def _no_such_number(args, timeout=60.0):
+    raise RuntimeError(f"gh exited 1: no {args[0]} #{args[2]}")
+
+
 @pytest.fixture
 def comms_store(store, monkeypatch):  # noqa: F811 — the shared Store fixture
     """The store with a panel fetch behind it — bob's PR #12, my own #13, mallory's
-    #14 — one issue, a token in the environment, and mallory banned."""
+    #14 — one issue, a token in the environment, and mallory banned. GitHub knows
+    nothing the panel did not fetch, unless a test says otherwise."""
+    monkeypatch.setattr("diplomat_runtime.gh.run", _no_such_number)
     store.has_loaded = True
     store.prs = [_pr(12, "bob"), _pr(13, "alice"), _pr(14, "mallory")]
     store.issues = [_issue(7)]
@@ -86,9 +101,10 @@ def comms_store(store, monkeypatch):  # noqa: F811 — the shared Store fixture
     return store
 
 
-def _tick(store, monkeypatch, *pings, error=None) -> dict:
-    """One poll whose ``comms-tick`` answers ``pings`` (``(message, decision)`` pairs),
-    applied as the Qt thread applies it. Returns what the tick was handed."""
+def _tick(store, monkeypatch, *pings, error=None, notices=(), between=None) -> dict:
+    """One poll whose ``comms-tick`` answers ``pings`` (``(message, decision)`` pairs)
+    and ``notices``, applied as the Qt thread applies it, with ``between`` run after
+    the worker's half and before the Qt thread's. Returns what the tick was handed."""
     handed: dict = {}
 
     def fake_tick(settings, token):
@@ -101,10 +117,13 @@ def _tick(store, monkeypatch, *pings, error=None) -> dict:
                     f.write(json.dumps({"at": comms.iso(), "kind": kind, "id": m["id"],
                                         **extra}) + "\n")
         return {"me": ME, "items": [{"message": m, "decision": d} for m, d in pings],
-                "error": error}
+                "error": error, "notices": list(notices)}
 
     monkeypatch.setattr(comms, "tick", fake_tick)
-    store._apply_comms_tick(store._comms_poll_once())
+    plan = store._comms_poll_once()
+    if between is not None:
+        between()
+    store._apply_comms_tick(plan)
     return handed
 
 
@@ -184,6 +203,33 @@ def test_the_token_reaches_the_tick_child_alone(monkeypatch):
     assert seen == [("comms-tick", "xoxp-handed"), ("comms-feed", None)]
 
 
+def test_a_ticks_notices_are_handed_on_and_default_to_none(fake_core):
+    tick = {"me": None, "items": [], "error": None}
+    fake_core({**tick, "notices": ["Comms caught up past 24 h", 7]})
+    assert comms.tick({}, "xoxp")["notices"] == ["Comms caught up past 24 h"]
+    for body in (tick, {**tick, "notices": None}, {**tick, "notices": "one"}):
+        fake_core(body)
+        assert comms.tick({}, "xoxp")["notices"] == []
+    for body, code in (("not json", 0), ('{"items": 1}', 0), ("", 3)):
+        fake_core(body, code)
+        assert comms.tick({}, "xoxp")["notices"] == []
+
+
+def test_each_notice_of_a_tick_is_one_line_of_the_activity_feed(comms_store, monkeypatch):
+    refreshed = []
+    monkeypatch.setattr(comms_store, "refresh_activity", lambda: refreshed.append(1))
+    notices = ["Comms was away 30 h: messages from before 2026-10-26 09:00 were not triaged",
+               "A search for argent had more than 3 pages; older matches went unread"]
+    _tick(comms_store, monkeypatch, notices=notices)
+    assert [(e["source"], e["action"], e["detail"]) for e in _feed_lines()] == [
+        ("auto", "comms-notice", n) for n in notices]
+    assert refreshed, "the feed is re-read"
+    assert comms_store.comms_error is None, "a notice is not an error"
+    assert _events() == []
+    _tick(comms_store, monkeypatch)
+    assert len(_feed_lines()) == 2
+
+
 # MARK: - the token file
 
 
@@ -259,7 +305,7 @@ def test_a_review_ask_is_queued_at_the_front_of_band_1(comms_store, monkeypatch)
 
 @needs_core
 def test_a_review_of_my_own_pr_is_the_mine_disposition(comms_store, monkeypatch):
-    _tick(comms_store, monkeypatch, (_message(1), _decision("review", 13)))
+    _tick(comms_store, monkeypatch, _ask(1, "review", 13))
     ask = comms_store.requested_work[0]
     assert (ask.key, ask.author, ask.config["specificAuthor"]) == ("review:13", "", "mine")
 
@@ -267,7 +313,7 @@ def test_a_review_of_my_own_pr_is_the_mine_disposition(comms_store, monkeypatch)
 @needs_core
 def test_an_ask_already_queued_keeps_its_ask_and_moves_up(comms_store, monkeypatch):
     _sweep_review(comms_store, 1, 13)
-    _tick(comms_store, monkeypatch, (_message(1), _decision("review", 13)))
+    _tick(comms_store, monkeypatch, _ask(1, "review", 13))
     assert [t.id for t in comms_store.queued_tasks][:1] == ["review:13"]
     assert [r.key for r in comms_store.requested_work].count("review:13") == 1
     assert _events()[-1]["outcome"] == \
@@ -301,8 +347,8 @@ def test_a_fix_for_an_issue_the_panel_did_not_fetch_is_asked_of_github(comms_sto
                            "url": f"https://github.com/o/r/issues/{args[2]}"}).encode()
 
     monkeypatch.setattr("diplomat_runtime.gh.run", gh)
-    _tick(comms_store, monkeypatch, (_message(1), _decision("fix_issue", 8)),
-          (_message(2), _decision("fix_issue", 9)), (_message(3), _decision("fix_issue", 10)))
+    _tick(comms_store, monkeypatch, _ask(1, "fix_issue", 8), _ask(2, "fix_issue", 9),
+          _ask(3, "fix_issue", 10))
 
     assert [a[:3] for a in asked] == [["issue", "view", "8"], ["issue", "view", "9"],
                                       ["issue", "view", "10"]]
@@ -326,7 +372,7 @@ def test_a_bump_moves_everything_queued_for_that_number(comms_store, monkeypatch
     before = list(comms_store.requested_work)
 
     _tick(comms_store, monkeypatch, (_message(1, "any news on #2?"), _decision("bump", 2)),
-          (_message(2), _decision("bump", 99)))
+          _ask(2, "bump", 99))
 
     assert [t.id for t in comms_store.queued_tasks] == [
         "review:2", "review:13", "review:1", "issues:2", "issues:31"]
@@ -374,7 +420,7 @@ def test_each_switch_turns_its_kind_into_a_ping_alone(comms_store, monkeypatch, 
     asks = list(comms_store.requested_work)
     setattr(comms_store, toggle, False)
 
-    _tick(comms_store, monkeypatch, (_message(1), _decision(action, number)))
+    _tick(comms_store, monkeypatch, _ask(1, action, number))
 
     assert [t.id for t in comms_store.queued_tasks] == order
     assert comms_store.requested_work == asks
@@ -387,10 +433,10 @@ def test_each_switch_turns_its_kind_into_a_ping_alone(comms_store, monkeypatch, 
 
 @needs_core
 def test_a_pr_that_is_not_open_queues_nothing(comms_store, monkeypatch):
-    _tick(comms_store, monkeypatch, (_message(1), _decision("review", 99)))
+    _tick(comms_store, monkeypatch, _ask(1, "review", 99))
     assert comms_store.requested_work == []
     assert comms_store.queued_tasks == []
-    assert _events()[-1]["outcome"] == "#99 is not an open PR of this repo"
+    assert _events()[-1]["outcome"] == "#99 is not a PR of this repo"
     assert [e["action"] for e in _feed_lines()] == ["comms-ping", "comms-review"]
 
 
@@ -398,8 +444,7 @@ def test_a_pr_that_is_not_open_queues_nothing(comms_store, monkeypatch):
 def test_a_banned_author_is_never_queued(comms_store, monkeypatch):
     comms_store.issues = [_issue(7, author="Mallory")]
     _spawn_recorder(monkeypatch)
-    _tick(comms_store, monkeypatch, (_message(1), _decision("review", 14)),
-          (_message(2), _decision("fix_issue", 7)))
+    _tick(comms_store, monkeypatch, _ask(1, "review", 14), _ask(2, "fix_issue", 7))
     assert comms_store.requested_work == []
     assert comms_store.queued_tasks == []
     outcomes = [e["outcome"] for e in _events() if e["kind"] == "action"]
@@ -421,8 +466,8 @@ def test_a_ping_the_triage_left_alone_is_recorded_as_such(comms_store, monkeypat
 @needs_core
 def test_a_comms_run_records_when_it_started_and_finished(comms_store, monkeypatch):
     _spawn_recorder(monkeypatch)
-    m = _message(1)
-    _tick(comms_store, monkeypatch, (m, _decision("review", 12)))
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
     _sweep_review(comms_store, 1)
     entry = next(t for t in comms_store.queued_tasks if t.id == "review:1")
     assert comms_store._run_queued_task(entry, forced=True) == "spawned"
@@ -438,15 +483,15 @@ def test_a_comms_run_records_when_it_started_and_finished(comms_store, monkeypat
 
     running = [autofix.RunningAgent(12, started["label"], "review", True)]
     monkeypatch.setattr(Store, "running_tasks", property(lambda s: running))
-    comms_store._note_comms_finished()
+    comms_store._note_comms_runs()
     assert _events()[-1]["kind"] == "started", "still running"
 
     running.clear()
-    comms_store._note_comms_finished()
+    comms_store._note_comms_runs()
     assert [e["kind"] for e in _events()][-2:] == ["started", "finished"]
     comms_store.refresh_comms_feed()
     assert comms_store.comms_items[0]["finishedAt"]
-    comms_store._note_comms_finished()
+    comms_store._note_comms_runs()
     assert [e["kind"] for e in _events()].count("finished") == 1
 
 
@@ -458,10 +503,10 @@ def test_a_run_back_in_the_queue_is_not_finished(comms_store, monkeypatch):
         id="review:12", job=autofix.AgentJob(kind="review", audit_action="review",
                                              label="Review · #12 · deep", prompt="p"),
         attempt=1)]
-    comms_store._note_comms_finished()
+    comms_store._note_comms_runs()
     assert _events() == []
     comms_store.queued_tasks = []
-    comms_store._note_comms_finished()
+    comms_store._note_comms_runs()
     assert [e["kind"] for e in _events()] == ["finished"]
 
 
@@ -527,9 +572,14 @@ def test_new_pings_notify_only_while_notify_is_on(comms_store, monkeypatch):
     comms_store.comms_pinged.connect(lambda t, b: shown.append((t, b)))
     _tick(comms_store, monkeypatch, (_message(1, "can you review #12?"), _decision("none")))
     _tick(comms_store, monkeypatch)
+    # One notification per ping, as CommsNotifier.post does, however many a tick found.
+    _tick(comms_store, monkeypatch, (_message(3, "any news?", user="ola"), _decision("none")),
+          (_message(4, "@me look\nat this", dm=False), _decision("none")))
     comms_store.comms_notify = False
     _tick(comms_store, monkeypatch, (_message(2), _decision("none")))
-    assert shown == [("DM from kacper", "can you review #12?")]
+    assert shown == [("Slack · DM from kacper", "can you review #12?"),
+                     ("Slack · DM from ola", "any news?"),
+                     ("Slack · #general from kacper", "@me look at this")]
 
 
 def test_the_poll_does_nothing_while_comms_is_off(comms_store, monkeypatch):
@@ -538,54 +588,562 @@ def test_the_poll_does_nothing_while_comms_is_off(comms_store, monkeypatch):
     comms_store.run_comms_poll_async()
 
 
+# MARK: - what GitHub is asked when the panel's fetch does not hold the number
+
+
+def _github(answers: dict, asked: list):
+    """A ``gh`` that knows ``answers``: ``(verb, number) -> (state, url, author)``."""
+
+    def run(args, timeout=60.0):
+        asked.append(args)
+        hit = answers.get((args[0], int(args[2])))
+        if hit is None:
+            raise RuntimeError(f"gh exited 1: no {args[0]} #{args[2]}")
+        state, url, author = hit
+        return json.dumps({"number": int(args[2]), "state": state, "url": url,
+                           "author": {"login": author}}).encode()
+
+    return run
+
+
+@needs_core
+def test_a_review_of_a_pr_the_panel_did_not_fetch_is_asked_of_github(comms_store,
+                                                                     monkeypatch):
+    asked: list = []
+    pull = "https://github.com/o/r/pull/{}".format
+    monkeypatch.setattr("diplomat_runtime.gh.run", _github({
+        ("pr", 500): ("OPEN", pull(500), "dana"),
+        ("pr", 501): ("MERGED", pull(501), "dana"),
+        ("pr", 503): ("OPEN", pull(503), "Mallory"),
+    }, asked))
+    _tick(comms_store, monkeypatch, _ask(1, "review", 500), _ask(2, "review", 501),
+          _ask(3, "review", 502), _ask(4, "review", 503), _ask(5, "review", 12))
+
+    # #12 is in the panel's fetch, so only the other four are asked about.
+    assert [a[:3] for a in asked] == [["pr", "view", "500"], ["pr", "view", "501"],
+                                      ["pr", "view", "502"], ["pr", "view", "503"]]
+    assert asked[0][3:] == ["--repo", "software-mansion/argent", "--json",
+                            "number,url,author,state"]
+    assert [r.key for r in comms_store.requested_work] == ["review:500", "review:12"]
+    ask = comms_store.requested_work[0]
+    assert (ask.author, ask.url, ask.config["specificAuthor"]) == ("dana", pull(500), "theirs")
+    outcomes = [e["outcome"] for e in _events() if e["kind"] == "action"]
+    assert outcomes == ["review of #500 queued, at the front of its band",
+                        "PR #501 is merged",
+                        "#502 is not a PR of this repo",
+                        "PR #503 is by @Mallory, who is banned; not queued",
+                        "review of #12 queued, at the front of its band"]
+
+
+@needs_core
+def test_a_fix_of_a_pull_requests_number_queues_nothing(comms_store, monkeypatch):
+    """``gh issue view`` answers a PR's number with the PR, state OPEN: the url is
+    what says it is not an issue."""
+    asked: list = []
+    monkeypatch.setattr("diplomat_runtime.gh.run", _github({
+        ("issue", 42): ("OPEN", "https://github.com/o/r/pull/42", "dana"),
+    }, asked))
+    _tick(comms_store, monkeypatch, _ask(1, "fix_issue", 42))
+    assert [a[:3] for a in asked] == [["issue", "view", "42"]]
+    assert comms_store.requested_work == []
+    assert comms_store.queued_tasks == []
+    assert _events()[-1]["outcome"] == "#42 is a pull request, not an issue"
+
+
+# MARK: - started / finished, beyond the one ping and the tick
+
+
+def _kinds_by_id() -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for e in _events():
+        out.setdefault(e["id"], []).append(e["kind"])
+    return out
+
+
+@needs_core
+def test_every_ping_that_asked_for_the_work_sees_it_start_and_finish(comms_store,
+                                                                    monkeypatch):
+    _spawn_recorder(monkeypatch)
+    first, second = _ask(1, "review", 12), _ask(2, "review", 12)
+    _tick(comms_store, monkeypatch, first)
+    _tick(comms_store, monkeypatch, second)
+    assert [e["outcome"] for e in _events()] == [
+        "review of #12 queued, at the front of its band",
+        "review of #12 was already queued, at the front of its band"]
+
+    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    assert comms_store._run_queued_task(entry, forced=True) == "spawned"
+    ids = (first[0]["id"], second[0]["id"])
+    assert _kinds_by_id() == {i: ["action", "started"] for i in ids}
+
+    monkeypatch.setattr(Store, "running_tasks", property(lambda s: []))
+    comms_store._note_comms_runs()
+    assert _kinds_by_id() == {i: ["action", "started", "finished"] for i in ids}
+    assert [bool(i.get("finishedAt")) for i in comms_store.comms_items] == [True, True]
+
+
+@needs_core
+def test_a_start_waits_out_a_settle_already_under_way(comms_store, monkeypatch):
+    """A settle that took its tick before the spawn registered must not read the
+    `started` line, or it finds the run in no row and finishes it on the spot."""
+    _spawn_recorder(monkeypatch)
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    comms_store._settle_lock.acquire()
+    done = threading.Event()
+    worker = threading.Thread(target=lambda: (comms_store._note_comms_started(entry),
+                                              done.set()))
+    try:
+        worker.start()
+        assert not done.wait(0.5), "wrote `started` in the middle of a settle"
+        assert _kinds_by_id()[m["id"]] == ["action"]
+    finally:
+        comms_store._settle_lock.release()
+    assert done.wait(10)
+    worker.join()
+    assert _kinds_by_id()[m["id"]] == ["action", "started"]
+
+
+@needs_core
+def test_work_a_peer_already_runs_has_started_too(comms_store, monkeypatch):
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+    monkeypatch.setattr(comms_store, "dispatch_agent",
+                        lambda *a, **k: autofix.VERDICT_STAND_DOWN)
+    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    assert comms_store._run_queued_task(entry, forced=True) == autofix.VERDICT_STAND_DOWN
+    assert _kinds_by_id() == {m["id"]: ["action", "started"]}
+
+
+@needs_core
+def test_every_asker_is_owned_before_the_feed_is_read_back(comms_store, monkeypatch):
+    """Until the folded log is read back the asks this applet just made are known
+    only from making them — and a log the core cannot fold leaves it that way."""
+    _spawn_recorder(monkeypatch)
+
+    def unreadable(limit=200):
+        raise RuntimeError("diplomat-core comms-feed failed: no")
+
+    monkeypatch.setattr(comms, "feed", unreadable)
+    first, second = _ask(1, "review", 12), _ask(2, "review", 12)
+    _tick(comms_store, monkeypatch, first, second)
+    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    assert comms_store._run_queued_task(entry, forced=True) == "spawned"
+    assert _kinds_by_id() == {first[0]["id"]: ["action", "started"],
+                              second[0]["id"]: ["action", "started"]}
+
+
+@needs_core
+def test_the_jobs_column_moves_on_at_the_spawn_not_at_the_next_tick(comms_store,
+                                                                    monkeypatch):
+    _spawn_recorder(monkeypatch)
+    _tick(comms_store, monkeypatch, _ask(1, "review", 12))
+    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    fired = []
+    comms_store.comms_changed.connect(lambda: fired.append(1))
+    assert comms_store._run_queued_task(entry, forced=True) == "spawned"
+    assert fired
+    [item] = comms_store.comms_items
+    assert item["startedAt"]
+
+
+@needs_core
+def test_a_run_that_ends_while_comms_is_off_is_still_finished(comms_store, monkeypatch):
+    """The agents' settle notices the end, whatever Watch Slack is set to: nothing
+    else would while Comms is off."""
+    _spawn_recorder(monkeypatch, finish=True)
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+    comms_store.comms_enabled = False
+    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    assert comms_store._run_queued_task(entry, forced=True) == "spawned"
+    assert _kinds_by_id()[m["id"]] == ["action", "started"]
+
+    # The agent wrote its done sentinel; the next settle retires it.
+    comms_store.refresh_auto_task_count()
+    assert _kinds_by_id()[m["id"]] == ["action", "started", "finished"]
+    [item] = comms_store.comms_items
+    assert item["finishedAt"]
+    comms_store.refresh_auto_task_count()
+    assert _kinds_by_id()[m["id"]].count("finished") == 1
+
+
+# MARK: - work that is already running, or queued by a monitor
+
+
+DISPATCHED = 1761500000.0
+
+
+def _rows(monkeypatch, rows: list) -> list:
+    monkeypatch.setattr(Store, "running_tasks", property(lambda s: list(rows)))
+    return rows
+
+
+def _review_req(number: int, author: str = "bob") -> autofix.QueuedTask:
+    """The review-request monitor's queued find on PR ``number``."""
+    return autofix.QueuedTask(
+        id=f"review-req:{number}", attempt=1,
+        job=autofix.AgentJob(kind="review", audit_action="review-req",
+                             label=f"Review-req · #{number} (@{author}) +verdict",
+                             prompt="p", pr_url=f"https://github.com/o/r/pull/{number}",
+                             pr_number=number, author_login=author,
+                             counter="review_requests"))
+
+
+@needs_core
+def test_a_review_an_agent_is_already_on_is_not_asked_for_again(comms_store, monkeypatch):
+    row = autofix.RunningAgent(12, "Auto · Review-req · #12 (@bob) +verdict", "review", True,
+                               started_at=DISPATCHED)
+    rows = _rows(monkeypatch, [row])
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+
+    assert comms_store.queued_tasks == [] and comms_store.requested_work == []
+    action, started = _events()
+    assert (action["outcome"], action["queueKey"], action["label"]) == (
+        "already running", "review:12", row.label)
+    assert (started["kind"], started["id"], started["label"], started["at"]) == (
+        "started", m["id"], row.label,
+        comms.iso(datetime.fromtimestamp(DISPATCHED, timezone.utc)))
+    assert ("comms-review", f"{row.label} — already running; asked by kacper in DM") in \
+        [(e["action"], e["detail"]) for e in _feed_lines()]
+
+    comms_store._note_comms_runs()
+    assert _kinds_by_id()[m["id"]] == ["action", "started"], "still running"
+    rows.clear()
+    comms_store._note_comms_runs()
+    assert _kinds_by_id()[m["id"]] == ["action", "started", "finished"]
+
+
+@needs_core
+@pytest.mark.parametrize("label, running", [
+    ("Issues · #9005 · deep", True),
+    ("Issues · #9005 · Deep · retry 2", True),
+    ("Issues · #900501 · deep", False),
+    ("Issues · #19005 · deep", False),
+])
+def test_a_fix_already_running_is_known_by_its_issues_label(comms_store, monkeypatch,
+                                                          label, running):
+    comms_store.issues = [_issue(9005)]
+    _rows(monkeypatch, [autofix.RunningAgent(0, label, "issues", True,
+                                             started_at=DISPATCHED)])
+    _tick(comms_store, monkeypatch, _ask(1, "fix_issue", 9005))
+    outcome = next(e for e in _events() if e["kind"] == "action")["outcome"]
+    if running:
+        assert outcome == "already running"
+        assert comms_store.queued_tasks == []
+    else:
+        assert outcome == "fix of issue #9005 queued, at the front of its band"
+        assert [t.id for t in comms_store.queued_tasks] == ["issues:9005"]
+
+
+@needs_core
+def test_a_review_the_monitor_has_queued_is_not_asked_for_again(comms_store, monkeypatch):
+    _spawn_recorder(monkeypatch)
+    rows = _rows(monkeypatch, [])
+    twin = _review_req(12)
+    comms_store.queued_tasks = [_review_req(40, "carol"), twin]
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+
+    assert [t.id for t in comms_store.queued_tasks] == ["review-req:12", "review-req:40"]
+    assert comms_store.requested_work == []
+    [action] = _events()
+    assert (action["outcome"], action["queueKey"], action["label"]) == (
+        "already queued, at the front of its band", "review-req:12", twin.job.label)
+
+    # The monitor dispatches its own find: its row, not the queue, says it started,
+    # under the label the row wears.
+    monkeypatch.setattr(comms_store, "dispatch_agent", lambda *a, **k: "spawned")
+    assert comms_store._run_queued_task(twin, forced=True) == "spawned"
+    assert _kinds_by_id()[m["id"]] == ["action"]
+    comms_store.queued_tasks = [t for t in comms_store.queued_tasks if t.id != twin.id]
+    row = autofix.RunningAgent(12, "Auto · " + twin.job.label, "review", True,
+                               started_at=DISPATCHED)
+    rows.append(row)
+    comms_store._note_comms_runs()
+    started = _events()[-1]
+    assert (started["kind"], started["label"], started["at"]) == (
+        "started", row.label, comms.iso(datetime.fromtimestamp(DISPATCHED, timezone.utc)))
+    comms_store._note_comms_runs()
+    assert _kinds_by_id()[m["id"]] == ["action", "started"], "still running"
+    rows.clear()
+    comms_store._note_comms_runs()
+    assert _kinds_by_id()[m["id"]] == ["action", "started", "finished"]
+
+
+@pytest.mark.parametrize("key, waiting", [("review-req:12", True), ("review:12", False)])
+def test_only_a_monitors_find_that_left_the_queue_starts_from_the_rows(comms_store,
+                                                                       monkeypatch, key,
+                                                                       waiting):
+    """A find still queued has not started, whoever is on its PR; an ask starts at its
+    own dispatch (`_note_comms_started`), never from somebody else's agent."""
+    _rows(monkeypatch, [autofix.RunningAgent(12, "Review · #12 · deep", "review", True)])
+    comms_store.comms_items = [{"message": {"id": "D1:1.1"}, "queueKey": key,
+                                "label": "Review-req · #12 (@bob)", "at": "x"}]
+    comms_store.queued_tasks = [_review_req(12)] if waiting else []
+    comms_store._note_comms_runs()
+    assert _events() == []
+
+
+def test_a_settle_with_nothing_to_start_or_finish_reads_no_rows(comms_store, monkeypatch):
+    """Every settle runs this; the rows are a fresh read of every agent's evidence."""
+    monkeypatch.setattr(Store, "running_tasks",
+                        property(lambda s: pytest.fail("read the agent rows")))
+    comms_store.comms_items = [
+        {"message": {"id": "D1:1.1"}, "queueKey": "review:12", "label": "Review · #12 · deep",
+         "at": "x"},
+        {"message": {"id": "D1:1.2"}, "queueKey": "review-req:40", "label": "Review-req · #40",
+         "at": "x"},
+        {"message": {"id": "D1:1.3"}, "queueKey": "review:13", "label": "Review · #13 · deep",
+         "at": "x", "startedAt": "x", "finishedAt": "x"}]
+    comms_store.queued_tasks = [_review_req(40)]
+    comms_store._note_comms_runs()
+    assert _events() == []
+
+
+@needs_core
+def test_a_tick_landing_after_comms_was_switched_off_acts_on_nothing(comms_store,
+                                                                     monkeypatch):
+    shown = []
+    comms_store.comms_pinged.connect(lambda t, b: shown.append(t))
+    comms_store.comms_notify = True
+    m, d = _ask(1, "review", 12)
+
+    def switch_off():
+        comms_store.comms_enabled = False
+
+    _tick(comms_store, monkeypatch, (m, d), between=switch_off)
+    assert comms_store.queued_tasks == [] and comms_store.requested_work == []
+    [action] = _events()
+    assert action == {"at": action["at"], "id": m["id"], "kind": "action",
+                      "outcome": "Comms was switched off, so ping only"}
+    assert [e["action"] for e in _feed_lines()] == ["comms-ping"]
+    assert shown == []
+
+
+@needs_core
+def test_a_catch_up_reaches_the_activity_feed_as_a_notice(
+        tmp_path, slack, comms_store, monkeypatch):  # noqa: F811 — the stub Slack
+    """The Store's own tick through the real binary: a watermark past ``catchUpHours``
+    is moved up, and the operator reads why in the activity feed."""
+    monkeypatch.setenv("DIPLOMAT_SLACK_API", slack)
+    monkeypatch.setenv("DIPLOMAT_CLAUDE", str(_stub_claude(tmp_path)))
+
+    def tick() -> list[dict]:
+        comms_store._apply_comms_tick(comms_store._comms_poll_once())
+        lines = activity.audit_path().read_text().splitlines() \
+            if activity.audit_path().exists() else []
+        return [e for e in map(json.loads, lines) if e["action"] == "comms-notice"]
+
+    assert tick() == [], "the first tick only finds where now is"
+    state = comms.comms_dir() / "state.json"
+    away = json.loads(state.read_text())
+    away["watermark"] = f"{int(datetime.now(timezone.utc).timestamp()) - 30 * 3600}.000000"
+    state.write_text(json.dumps(away))
+
+    [notice] = tick()
+    assert notice["source"] == "auto"
+    assert notice["detail"].startswith("Comms had read Slack only up to ")
+    assert "more than 24 hours ago" in notice["detail"]
+    assert comms_store.comms_error is None
+    assert tick() == [notice], "a caught-up watermark says so once"
+
+
+# MARK: - the dry run
+
+
+def test_the_dry_run_ticks_the_last_hour_in_a_scratch_dir(tmp_path, monkeypatch):
+    """``DIPLOMAT_COMMS_POLL=1`` ticks a fresh scratch dir whose watermark is an hour
+    back with nothing seen, as the gh login, whatever the live dir holds; the live dir
+    is left as it was and the scratch one is gone afterwards."""
+    from diplomat_app import selftest
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("DIPLOMAT_COMMS_DIR")
+    real = home / ".diplomat" / "comms"
+    real.mkdir(parents=True)
+    state = json.dumps({"watermark": "1761580000.000000", "seen": ["D1:1761579999.000100"]})
+    (real / "state.json").write_text(state)
+    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-test")
+    monkeypatch.setattr(Store, "fetch_me", lambda self: setattr(self, "me", "octocat"))
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setattr("tempfile.tempdir", str(scratch))
+    ticked = []
+    error = None
+
+    def fake_tick(settings, token):
+        d = comms.comms_dir()
+        ticked.append((d, json.loads((d / "state.json").read_text()), settings["login"],
+                       stat.S_IMODE(os.stat(d / "state.json").st_mode), time_now()))
+        # What the core's tick does to the directory it is pointed at.
+        (d / "state.json").write_text(json.dumps({"watermark": "1761589999.000000"}))
+        comms.append_event("action", "D1:1761580001.000100")
+        return {"me": ME, "items": [], "error": error, "notices": []}
+
+    def time_now() -> int:
+        return int(datetime.now(timezone.utc).timestamp())
+
+    monkeypatch.setattr(comms, "tick", fake_tick)
+    assert selftest.run_comms_poll() == 0
+    error = "Slack rejected the token (invalid_auth)"
+    assert selftest.run_comms_poll() == 1
+
+    assert len(ticked) == 2
+    for d, started, login, mode, now in ticked:
+        assert d != real and d.parent == scratch
+        secs = int(started["watermark"].split(".")[0])
+        assert now - 3600 - 5 <= secs <= now - 3600
+        assert started == {"watermark": f"{secs}.000000", "seen": []}
+        assert (login, mode) == ("octocat", 0o600)
+    assert (real / "state.json").read_text() == state
+    assert sorted(p.name for p in real.iterdir()) == ["state.json"]
+    assert list(scratch.iterdir()) == []
+    assert "DIPLOMAT_COMMS_DIR" not in os.environ
+
+
+def test_a_dry_run_into_a_named_dir_ticks_that_dir(monkeypatch):
+    from diplomat_app import selftest
+
+    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-test")
+    monkeypatch.setattr(Store, "fetch_me", lambda self: None)
+    ticked = []
+    monkeypatch.setattr(comms, "tick", lambda s, t: ticked.append(comms.comms_dir()) or {
+        "me": None, "items": [], "error": None})
+    assert selftest.run_comms_poll() == 0
+    assert ticked == [Path(os.environ["DIPLOMAT_COMMS_DIR"])]
+
+
 # MARK: - the Settings Test button's auth.test
 
 
 @pytest.fixture
-def slack_auth(monkeypatch):
-    import threading
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+def fake_core(tmp_path, monkeypatch):
+    """A ``diplomat-core`` that answers ``comms-auth`` with what the test puts in
+    ``answer`` (and exits with ``status``), recording its argv, the token in its
+    environment and its stdin."""
+    record = tmp_path / "core-record"
+    answer = tmp_path / "core-answer"
+    status = tmp_path / "core-status"
+    status.write_text("0")
+    script = tmp_path / "diplomat-core"
+    script.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" \"$DIPLOMAT_SLACK_TOKEN\" > {record}\n"
+        f"cat >> {record}\n"
+        f"cat {answer}\n"
+        "echo 'it went wrong' >&2\n"
+        f"exit $(cat {status})\n")
+    script.chmod(0o755)
+    monkeypatch.setenv("DIPLOMAT_CORE_BIN", str(script))
 
-    answers: list = []
+    def answering(body, code: int = 0):
+        answer.write_text(body if isinstance(body, str) else json.dumps(body))
+        status.write_text(str(code))
 
-    class H(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
-            status, body = answers.pop(0)
-            answers.append(("auth", self.path, self.headers.get("Authorization")))
-            data = json.dumps(body).encode()
-            self.send_response(status)
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-
-        def log_message(self, *a):
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), H)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    monkeypatch.setenv("DIPLOMAT_SLACK_API", f"http://127.0.0.1:{server.server_address[1]}/api")
-    yield answers
-    server.shutdown()
-    server.server_close()
+    answering.record = record
+    return answering
 
 
-def test_auth_test_names_the_token_or_says_why_not(slack_auth):
-    slack_auth.append((200, {"ok": True, "user_id": "UME", "team_id": "T1", "user": "ignacy"}))
-    assert comms.auth_test("xoxp-1") == ({"userID": "UME", "teamID": "T1", "handle": "ignacy"}, "")
-    assert slack_auth.pop() == ("auth", "/api/auth.test", "Bearer xoxp-1")
+def test_auth_test_asks_the_core_and_says_what_it_said(fake_core):
+    fake_core({"ok": True, "user": "ignacy", "userId": "UME", "team": "Ours",
+               "teamId": "T1"})
+    assert comms.auth_test("xoxp-1") == (
+        {"userID": "UME", "teamID": "T1", "handle": "ignacy", "team": "Ours"}, "")
+    # The subcommand, the token in the child's environment alone, and no stdin.
+    assert fake_core.record.read_text() == "comms-auth\nxoxp-1\n"
+
     cases = [
-        ((200, {"ok": False, "error": "invalid_auth"}), "Slack rejected the token (invalid_auth)"),
-        ((200, {"ok": False, "error": "missing_scope"}),
-         "Slack: missing_scope. The token needs the user scopes search:read and users:read."),
-        ((429, {}), "Slack rate-limited the watcher"),
-        ((500, {}), "Slack answered HTTP 500"),
-        ((200, ["not", "an", "object"]), "Slack answered something that is not its JSON"),
+        ({"ok": False, "error": "Slack rejected the token (invalid_auth)"},
+         0, "Slack rejected the token (invalid_auth)"),
+        ({"ok": False}, 0, "Slack did not say who the token is"),
+        ('["ok"]', 0, "diplomat-core comms-auth answered something that is not an answer"),
+        ("not json", 0, "diplomat-core comms-auth answered something that is not an answer"),
+        ("", 3, "diplomat-core comms-auth failed: it went wrong"),
     ]
-    for answer, why in cases:
-        slack_auth.append(answer)
+    for body, code, why in cases:
+        fake_core(body, code)
         assert comms.auth_test("xoxp-1") == (None, why)
-        slack_auth.pop()
     assert comms.auth_test("") == (None, "no Slack token is configured")
+
+
+def test_auth_test_without_a_core_says_so(monkeypatch):
+    def missing():
+        raise comms.promptcore.CoreBinaryMissing("diplomat-core not found")
+
+    monkeypatch.setattr("diplomat_runtime.promptcore.core_bin", missing)
+    assert comms.auth_test("xoxp-1") == (None, "diplomat-core not found")
+
+
+# MARK: - timings
+
+
+def test_the_tick_is_given_every_bound_the_child_holds_itself_to(monkeypatch):
+    """Killed inside its own bounds, the child loses the messages it already marked
+    seen, so the front-end's limit is the sum of them, keywords included."""
+    t = comms.tunables()
+    http = t["httpTimeoutSecs"] + 5
+    for keywords in (0, 3):
+        searches = (1 + (2 + keywords) * t["maxSearchPages"]) * http
+        triage = t["maxPerTick"] * t["classifierTimeoutSecs"]
+        assert comms.tick_timeout(keywords) >= searches + 10 + triage
+    seen = []
+
+    class Done:
+        returncode, stdout, stderr = 0, '{"me": null, "items": [], "error": null}', ""
+
+    def fake_run(argv, **kw):
+        seen.append(kw["timeout"])
+        return Done()
+
+    monkeypatch.setattr("diplomat_runtime.promptcore.core_bin", lambda: "/bin/core")
+    monkeypatch.setattr("subprocess.run", fake_run)
+    comms.tick({"keywordsRaw": "argent, release train\nargent\n, "}, "xoxp")
+    assert seen == [comms.tick_timeout(2)]
+
+
+@pytest.mark.parametrize("raw", ["inf", "1e12", "-inf", "nan"])
+def test_an_extreme_period_is_held_to_one_a_timer_can_take(monkeypatch, raw):
+    monkeypatch.setenv("DIPLOMAT_COMMS_SECS", raw)
+    secs = comms.poll_secs()
+    assert comms.tunables()["minPollSecs"] <= secs <= comms.MAX_POLL_SECS
+    # What app.py hands QTimer.setInterval, an int32 of milliseconds.
+    assert int(secs * 1000) < 2 ** 31
+
+
+# MARK: - the log's file
+
+
+def test_the_log_is_private_to_the_operator():
+    assert comms.append_event("action", "D1:1.0", outcome="no action")
+    mode = lambda p: stat.S_IMODE(os.stat(p).st_mode)  # noqa: E731
+    assert mode(comms.comms_dir()) == 0o700
+    assert mode(comms.events_path()) == 0o600
+    assert mode(comms.comms_dir() / "events.lock") == 0o600
+
+
+def test_an_append_waits_for_the_log_lock():
+    """The lock every writer of the log takes, so the core's rotation — read, rewrite,
+    rename — cannot land between this line's open and its write."""
+    comms.comms_dir().mkdir(parents=True)
+    held = os.open(str(comms.comms_dir() / "events.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    done = threading.Event()
+    worker = threading.Thread(target=lambda: (comms.append_event("action", "D1:1.0"),
+                                              done.set()))
+    worker.start()
+    try:
+        assert not done.wait(0.5), "appended while another writer held the lock"
+        assert not comms.events_path().exists()
+    finally:
+        fcntl.flock(held, fcntl.LOCK_UN)
+        os.close(held)
+    assert done.wait(5)
+    worker.join()
+    assert [e["id"] for e in _events()] == ["D1:1.0"]
 
 
 def test_the_report_dir_follows_the_comms_dir():
