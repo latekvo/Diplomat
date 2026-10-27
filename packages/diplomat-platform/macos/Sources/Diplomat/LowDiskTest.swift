@@ -8,9 +8,10 @@ import DiplomatCore
 /// Free space is the real probe's; only the floor is set, relative to the volume.
 ///
 /// It never spawns: a booked agent holds the only bay, so a dispatch the disk lets
-/// through stops at the cap. Feed, book, config and process table are scratch or
-/// pinned as in `QueueTest`; the updater's build and launch are fixtures, its fetch
-/// and merge real git.
+/// through stops at the cap, and what goes past the cap does so with the book on the
+/// full volume, which refuses the run before any terminal opens. Feed, book, config,
+/// transcripts and process table are scratch or pinned as in `QueueTest`; the
+/// updater's build and launch are fixtures, its fetch and merge real git.
 ///
 ///   DIPLOMAT_LOWDISK_TEST=1 swift run Diplomat
 ///
@@ -50,6 +51,7 @@ enum LowDiskTest {
         setenv("DIPLOMAT_AGENTS_DIR", scratch.appendingPathComponent("agents").path, 1)
         setenv("DIPLOMAT_CONFIG", scratch.appendingPathComponent("config.json").path, 1)
         setenv("DIPLOMAT_QUOTA_PROBE", "0", 1)
+        setenv("DIPLOMAT_CLAUDE_DIR", scratch.appendingPathComponent("claude").path, 1)
         AgentProbes.pinDump(.present(""))
         defer { AgentProbes.pinDump(nil) }
 
@@ -72,6 +74,7 @@ enum LowDiskTest {
         store.reviewRequestsEnabled = true
         store.reviewAllowlistRaw = ""
         store.autoTaskLimit = 1
+        store.queueAutoRun = true
         func holdTheBay() {
             AgentRegistry.forget(Set(AgentRegistry.load().map(\.runID)))
             let now = Date().timeIntervalSince1970
@@ -125,6 +128,16 @@ enum LowDiskTest {
         check("held, not dropped: the jobs are queued",
               store.queuedTasks.map(\.id) == ["review-req:3", "review-req:4", "review-req:5"],
               "\(store.queuedTasks.map(\.id))")
+        // With the bay free, only the disk stands between the drain and a spawn: guarded,
+        // so a volume that somehow reads above its floor fails here instead of opening one.
+        AgentRegistry.forget(Set(AgentRegistry.load().map(\.runID)))
+        let drainHeld = Store.agentDisk()?.low == true
+        check("the drain meets the full volume with a bay free",
+              drainHeld && AgentRegistry.load().isEmpty)
+        if drainHeld { await store.drainQueuedTasks(snaps: [], closed: []) }
+        check("the drain stops at the first task the disk holds, leaving the rest unasked",
+              store.queuedTasks.map(\.id) == ["review-req:4", "review-req:5"],
+              "\(store.queuedTasks.map(\.id))")
 
         check("drain: full-volume.sh frees the volume", volume("drain") == 0)
         check("with room again the disk lets the job through to the cap",
@@ -149,20 +162,77 @@ enum LowDiskTest {
               AgentRegistry.createRun(booked, prompt: "p") != nil
                   && AgentRegistry.load().map(\.prNumber) == [10],
               "\(AgentRegistry.load().map(\.prNumber))")
+        // One whose agent has gone, for a tick to retire: a pid the pinned process table
+        // does not hold, past the spawn grace, with a ledger entry its retirement prices.
+        let ended = AgentState.RunRecord(
+            runID: AgentRegistry.newRunID(now: Date().timeIntervalSince1970),
+            dispatchedAt: Date().timeIntervalSince1970 - 600, prNumber: 12, kind: "review",
+            label: "Auto · Review · #12", ledgerKey: "lowdisk-12", pid: 4242)
+        check("…and one whose agent has ended", AgentRegistry.createRun(ended, prompt: "p") != nil)
         check("fill for the run book", volume("fill") == 0)
         let refused = record(11)
-        check("on a full volume the run is refused", AgentRegistry.createRun(refused, prompt: "p") == nil)
-        check("…the book holds only the run before it", AgentRegistry.load().map(\.prNumber) == [10],
+        let bookRefuses = AgentRegistry.createRun(refused, prompt: "p") == nil
+        check("on a full volume the run is refused", bookRefuses)
+        check("…the book holds only the runs before it",
+              AgentRegistry.load().map(\.prNumber) == [10, 12],
               "\(AgentRegistry.load().map(\.prNumber))")
         check("…and no run directory is left",
               !fm.fileExists(atPath: AgentRegistry.runDir(refused.runID).path))
-        check("a run the book cannot drop is not forgotten", !AgentRegistry.forget([booked.runID]))
-        check("…it stays booked", AgentRegistry.load().map(\.runID) == [booked.runID])
+        check("a run the book cannot drop is not forgotten",
+              AgentRegistry.forget([booked.runID]) == .failed)
+        check("…it stays booked", AgentRegistry.load().map(\.runID).contains(booked.runID))
         check("…with the prompt that prices it",
               fm.fileExists(atPath: AgentRegistry.promptPath(booked.runID).path))
+
+        func said(_ action: String) -> Int {
+            AuditLog.read().filter { $0.action == action && $0.detail.hasPrefix(ended.label) }.count
+        }
+        func priced() -> Int {
+            ((try? String(contentsOf: TelemetryLog.url, encoding: .utf8)) ?? "")
+                .split(separator: "\n")
+                .filter { $0.contains(#""ev":"done""#) && $0.contains(ended.ledgerKey) }.count
+        }
+        func whole() -> Bool {
+            AgentRegistry.load().contains { $0.runID == ended.runID }
+                && fm.fileExists(atPath: AgentRegistry.promptPath(ended.runID).path)
+        }
+        func bookLines(_ action: String) -> Int {
+            AuditLog.read().filter { $0.action == action && $0.detail.contains("run book") }.count
+        }
+        _ = await store.settleAgents()
+        _ = await store.settleAgents()
+        check("a tick that cannot retire an ended run leaves it whole", whole())
+        check("…logging, auditing and pricing nothing for it, however many ticks",
+              said("retire") + said("spawn-failed") == 0 && priced() == 0,
+              "retire \(said("retire")), spawn-failed \(said("spawn-failed")), priced \(priced())")
+        check("…and the feed says once that the book is not saving", bookLines("warn") == 1,
+              "\(bookLines("warn"))")
+        store.forgetRun(ended.runID)
+        // A ✕ that went through would price the run from a task of its own.
+        for _ in 0..<20 where priced() == 0 { try? await Task.sleep(nanoseconds: 100_000_000) }
+        _ = await store.settleAgents()
+        check("a ✕ the book cannot take leaves the run whole and prices nothing",
+              whole() && priced() == 0, "priced \(priced())")
+
+        // "Execute now" goes past the floor to the spawn, which the full book refuses
+        // before a terminal opens.
+        _ = await store.dispatchAgent(job(13), source: .auto)
+        store.commitQueue()
+        check("a job the disk holds is queued", store.queuedTasks.contains { $0.id == "review-req:13" })
+        store.error = nil
+        if bookRefuses { await store.executeQueuedTask("review-req:13") }
+        check("execute now goes past the disk floor",
+              store.error?.contains("failed to spawn") == true, store.error ?? "no error")
+
         check("drain for the run book", volume("drain") == 0)
-        check("with room it is forgotten", AgentRegistry.forget([booked.runID])
-                  && AgentRegistry.load().isEmpty)
+        check("with room it is forgotten", AgentRegistry.forget([booked.runID]) == .written
+                  && AgentRegistry.load().map(\.runID) == [ended.runID])
+        _ = await store.settleAgents()
+        check("with room the ended run is retired once, and priced once",
+              said("retire") == 1 && priced() == 1 && AgentRegistry.load().isEmpty,
+              "retire \(said("retire")), priced \(priced()), book \(AgentRegistry.load().count)")
+        check("…and the feed says once that the book saves again",
+              bookLines("poll-recovered") == 1, "\(bookLines("poll-recovered"))")
         setenv("DIPLOMAT_AGENTS_DIR", scratch.appendingPathComponent("agents").path, 1)
 
         // MARK: the 06:00 updater

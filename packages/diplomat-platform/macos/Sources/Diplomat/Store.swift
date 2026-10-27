@@ -933,7 +933,7 @@ final class Store: ObservableObject {
             guard let minted = OpenCodeCLI.stageSession(
                 promptFile: AgentRegistry.promptPath(record.runID),
                 directory: AgentSpawner.repoPath, model: AppConfig.agentModel) else {
-                AgentRegistry.forget([record.runID])
+                bookWritten(AgentRegistry.forget([record.runID]))
                 throw AgentSpawner.SpawnError.write("could not stage the OpenCode session")
             }
             AgentRegistry.bindSession(record.runID, minted)
@@ -961,14 +961,14 @@ final class Store: ObservableObject {
             // tick instead of from whichever one adopts its pid.
             var seeded = record
             seeded.tty = result.tty
-            Store.persistRunChanges([seeded])
+            bookWritten(Store.persistRunChanges([seeded]))
             AuditLog.log(source, auditAction ?? kind,
                          label + (plan.tokenItem.isEmpty ? "" : AgentSpawner.tokenAuditNote))
             return result.terminal
         } catch {
             // Nothing is running, so the record would be a bay held for an agent that
             // never started — and, being a record, one nothing can ever retire.
-            AgentRegistry.forget([record.runID])
+            bookWritten(AgentRegistry.forget([record.runID]))
             throw error
         }
     }
@@ -1029,10 +1029,10 @@ final class Store: ObservableObject {
                 placement: onThisMachine ? .meshHere : .meshPeer,
                 node: node, workKey: job.workKey, ledgerKey: job.ledgerKey),
             prompt: job.prompt) else {
-            bookWritten(false)
+            bookWritten(.failed)
             return
         }
-        bookWritten(true)
+        bookWritten(.written)
         if onThisMachine {
             AgentRegistry.stageRunner(record.runID, AppConfig.agentRunner.rawValue)
         }
@@ -1117,7 +1117,7 @@ final class Store: ObservableObject {
         let settle = Task {
             let pass = await agentTick()
             if Headless.active, let gate = Store.settleGate { await gate() }
-            Store.persistRunChanges(pass.tick.records)
+            bookWritten(Store.persistRunChanges(pass.tick.records))
             publish(pass)
             await retireFinished(pass)
             noteSilentProbes()
@@ -1159,10 +1159,11 @@ final class Store: ObservableObject {
     /// the whole reason one is kept rather than re-derived from the process table every
     /// tick. Only a synthesized one: a tracked record missing from the book was retired
     /// while this tick resolved, and writing it back would raise the dead.
-    private static func persistRunChanges(_ learned: [AgentState.RunRecord]) {
+    private static func persistRunChanges(
+        _ learned: [AgentState.RunRecord]) -> AgentRegistry.BookWrite {
         let fresh = Dictionary(learned.map { ($0.runID, $0) },
                                uniquingKeysWith: { _, last in last })
-        AgentRegistry.update { book in
+        return AgentRegistry.update { book in
             var out = book.map { r -> AgentState.RunRecord in
                 guard let f = fresh[r.runID] else { return r }
                 var merged = r
@@ -1351,14 +1352,14 @@ final class Store: ObservableObject {
             AuditLog.log("auto", "kill-device", "closed \(who)'s window — \(why)")
         }
         if !refused.isEmpty {
-            AgentRegistry.update { book in
+            bookWritten(AgentRegistry.update { book in
                 book.map { r -> AgentState.RunRecord in
                     guard refused.contains(r.runID) else { return r }
                     var stamped = r
                     stamped.reapRefusedAt = t.now
                     return stamped
                 }
-            }
+            })
         }
         return refused
     }
@@ -2009,23 +2010,26 @@ final class Store: ObservableObject {
     }
 
     /// Whether the run book refused its last write (a full disk): one feed line when it
-    /// stops saving, one when it saves again. No retry needed, since each tick re-derives
-    /// its writes from the book. Python twin: `Store._write_book`.
+    /// stops saving, one when a write lands again. Every write to the book reports here.
+    /// No retry needed, since each tick re-derives its writes from the book. Python twin:
+    /// `Store._write_book`.
     private var bookUnsaved = false
 
+    /// Whether the write landed. Only `.written` ends a spell of `.failed`: `.unchanged`
+    /// touched no disk.
     @discardableResult
-    private func bookWritten(_ ok: Bool) -> Bool {
-        if !ok, !bookUnsaved {
+    private func bookWritten(_ w: AgentRegistry.BookWrite) -> Bool {
+        if w == .failed, !bookUnsaved {
             bookUnsaved = true
             AuditLog.log("auto", "warn",
                          "Can't write the agent run book — runs are not booked or retired until it saves")
             refreshAudit()
-        } else if ok, bookUnsaved {
+        } else if w == .written, bookUnsaved {
             bookUnsaved = false
             AuditLog.log("auto", "poll-recovered", "Agent run book saving again")
             refreshAudit()
         }
-        return ok
+        return w != .failed
     }
 
     /// Note that automatic work is being held for want of budget — once per episode,

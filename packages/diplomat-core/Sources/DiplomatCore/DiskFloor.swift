@@ -33,16 +33,17 @@ public enum DiskFloor {
     public static let envOverride = "DIPLOMAT_MIN_FREE_DISK_MIB"
 
     /// The floor in bytes, or nil when neither the override nor the asset names one.
-    public static func floor(env: [String: String] = ProcessInfo.processInfo.environment)
+    /// `asset` is `minFreeDiskGiB` as `assets/config.json` gives it.
+    public static func floor(env: [String: String] = ProcessInfo.processInfo.environment,
+                             asset: Double? = (try? CoreAssets.config())?.minFreeDiskGiB)
         -> Int64? {
         if let raw = env[envOverride], !raw.isEmpty, raw.allSatisfy({ $0.isASCII && $0.isNumber }) {
             // Digits only, as Python's `isdigit` reads it; past Int64 means no disk passes.
             let mib = min(Int64(raw) ?? .max, Int64.max >> 20)
             return mib << 20
         }
-        guard let gib = (try? CoreAssets.config())?.minFreeDiskGiB, gib.isFinite, gib >= 0
-        else { return nil }
-        return Int64(gib * Double(1 << 30))
+        guard let gib = asset, gib.isFinite, gib >= 0 else { return nil }
+        return Int64(exactly: (gib * Double(1 << 30)).rounded(.down)) ?? .max
     }
 
     /// Bytes free on the volume holding `path`, asked of its nearest existing ancestor:

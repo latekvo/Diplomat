@@ -84,6 +84,23 @@ check(DiskFloor.describe(.init(path: "/v", free: 3 << 20, floor: 5 << 30))
 check(DiskFloor.Reading(path: "/v", free: 5 << 30, floor: 5 << 30).low == false
       && DiskFloor.Reading(path: "/v", free: (5 << 30) - 1, floor: 5 << 30).low,
       "exactly the floor is enough, a byte under is not")
+check(DiskFloor.floor(env: [:], asset: 2.5) == 5 << 29, "the asset is in GiB")
+check(DiskFloor.floor(env: [:], asset: 1e10) == .max,
+      "an asset floor past what Int64 holds is one no disk passes, not a trap")
+for junk in [-1, .nan, .infinity] as [Double] {
+    check(DiskFloor.floor(env: [:], asset: junk) == nil, "an asset floor of \(junk) is none")
+}
+// The floor rides in config.json beside the repo coordinates, and a bad one must not
+// take them down with it: `diskfloor.floor` ignores it, and `config()` still answers.
+for value in ["\"5\"", "true", "null", "[5]"] {
+    let raw = #"{"owner": "o", "repo": "r", "minFreeDiskGiB": "# + value + "}"
+    let cfg = try? JSONDecoder().decode(CoreAssets.Config.self, from: Data(raw.utf8))
+    check(cfg?.owner == "o" && cfg?.repo == "r" && cfg?.minFreeDiskGiB == nil,
+          "a minFreeDiskGiB of \(value) drops only the floor, got \(String(describing: cfg))")
+}
+check((try? JSONDecoder().decode(CoreAssets.Config.self,
+                                 from: Data(#"{"owner": "o", "repo": "r"}"#.utf8)))
+          .map { $0.minFreeDiskGiB == nil } == true, "no minFreeDiskGiB is no floor")
 
 section("filters on synthetic fixture")
 let now = Date()
@@ -2148,6 +2165,25 @@ do {
           "a run registered during an update is in the book it leaves")
     AgentRegistry.forget(["upd-b", "upd-c"])
     print("run book sidecar assertions passed")
+}
+
+section("a run the book refuses")
+// A book that takes no write while the run's own directory does: the order a disk
+// fills in, since the book is rewritten whole and the prompt is one small file.
+do {
+    let book = FileManager.default.temporaryDirectory
+        .appendingPathComponent("diplomat-smoke-refused-\(UUID().uuidString)", isDirectory: true)
+    setenv("DIPLOMAT_AGENTS_DIR", book.path, 1)
+    defer { try? FileManager.default.removeItem(at: book) }
+    try? FileManager.default.createDirectory(at: AgentRegistry.runsPath(),
+                                             withIntermediateDirectories: true)
+    let now = Date().timeIntervalSince1970
+    let id = AgentRegistry.newRunID(now: now)
+    check(AgentRegistry.createRun(AgentState.RunRecord(runID: id, dispatchedAt: now),
+                                  prompt: "p") == nil,
+          "a run the book cannot record is refused")
+    check(!FileManager.default.fileExists(atPath: AgentRegistry.runDir(id).path),
+          "…and leaves no run directory behind")
 }
 
 section("a hand-edited run book and ledger")

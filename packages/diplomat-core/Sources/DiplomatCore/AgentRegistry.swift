@@ -163,6 +163,9 @@ public enum AgentRegistry {
         return write(records)
     }
 
+    /// What one write to the book did. `unchanged` says nothing about the disk.
+    public enum BookWrite: Equatable { case written, unchanged, failed }
+
     /// Replace the book with `transform` of what is on disk, read-modify-write under
     /// the lock.
     ///
@@ -172,12 +175,13 @@ public enum AgentRegistry {
     /// cap spent twice. Unchanged books are not rewritten.
     @discardableResult
     public static func update(
-        _ transform: ([AgentState.RunRecord]) -> [AgentState.RunRecord]) -> Bool {
+        _ transform: ([AgentState.RunRecord]) -> [AgentState.RunRecord]) -> BookWrite {
         lock.lock()
         defer { lock.unlock() }
         let before = loadUnlocked()
         let after = transform(before)
-        return after == before ? true : write(after)
+        if after == before { return .unchanged }
+        return write(after) ? .written : .failed
     }
 
     /// Append one run, read-modify-write under the lock. False when it could not be saved.
@@ -371,15 +375,16 @@ public enum AgentRegistry {
     /// Called with what the resolver found retirable — positive evidence the agent
     /// ended — never on a timer.
     ///
-    /// False when the book can't be written, with every directory still in place: the
-    /// runs are still booked, and their directories hold what prices them. Python twin:
-    /// `agentregistry.forget`.
+    /// `.failed` when the book can't be written, with every directory still in place:
+    /// the runs are still booked, and their directories hold what prices them. Python
+    /// twin: `agentregistry.forget`.
     @discardableResult
-    public static func forget(_ runIDs: Set<String>) -> Bool {
-        guard !runIDs.isEmpty else { return true }
-        guard update({ $0.filter { !runIDs.contains($0.runID) } }) else { return false }
+    public static func forget(_ runIDs: Set<String>) -> BookWrite {
+        guard !runIDs.isEmpty else { return .unchanged }
+        let wrote = update { $0.filter { !runIDs.contains($0.runID) } }
+        guard wrote != .failed else { return .failed }
         for id in runIDs { try? FileManager.default.removeItem(at: runDir(id)) }
-        return true
+        return wrote
     }
 
     // MARK: - Encoding
