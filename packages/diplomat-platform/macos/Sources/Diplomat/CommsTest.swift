@@ -13,8 +13,9 @@ import DiplomatCore
 /// `gh pr view` / `gh issue view` print about each PR and issue is `Store.commsGHOverride`.
 ///
 /// Spawns nothing: nothing in `applyComms` dispatches, and the queue it fills is drained
-/// only by the poll a headless Store never starts. The feed, Comms' own log, the run book
-/// and the shared config are pointed at scratch directories first.
+/// only by the poll a headless Store never starts. The one command it runs is a spawn's
+/// shell command, under `/bin/sh` with a stand-in `claude`. The feed, Comms' own log, the
+/// run book and the shared config are pointed at scratch directories first.
 enum CommsTest {
     @discardableResult
     @MainActor
@@ -64,20 +65,37 @@ enum CommsTest {
                                author: "hal", isOpen: true, state: "OPEN"),
             90071: CommsTarget(number: 90071, url: "https://github.com/o/r/pull/90071",
                                author: "hal", isOpen: true, state: "OPEN"),
+            90043: CommsTarget(number: 90043, url: "https://github.com/o/r/pull/90043",
+                               author: "dave", isOpen: true, state: "OPEN"),
+            90044: CommsTarget(number: 90044, url: "https://github.com/o/r/pull/90044",
+                               author: "dave", isOpen: true, state: "OPEN"),
         ]
         var lookups: [Int] = []
         // Run while a lookup is suspended, as a dispatch elsewhere on the main actor would.
         var duringLookup: [Int: () -> Void] = [:]
+        // A gh that could not ask GitHub about these numbers at all.
+        let ghDown: [Int: GHError] = [
+            90080: .timeout(seconds: 30),
+            90081: .process(code: 1, stderr: "HTTP 401: Bad credentials "
+                            + "(https://api.github.com/graphql)\nTry authenticating with:  "
+                            + "gh auth login -h github.com"),
+        ]
         // gh as it behaves: `pr view` of an issue's number fails, and `issue view` answers
-        // any number, a PR's included.
+        // any number, a PR's included. A number GitHub does not know fails the way gh
+        // says so.
         Store.commsGHOverride = { args in
-            guard args.count > 2, let n = Int(args[2]) else { return nil }
+            guard args.count > 2, let n = Int(args[2]) else {
+                throw GHError.process(code: 1, stderr: "unexpected arguments \(args)")
+            }
             lookups.append(n)
             duringLookup.removeValue(forKey: n)?()
+            if let down = ghDown[n] { throw down }
             guard let t = targets[n], args[0] == "issue" || t.url.contains("/pull/") else {
-                return nil
+                let what = args[0] == "issue" ? "an issue or pull request" : "a PullRequest"
+                throw GHError.process(code: 1, stderr: "GraphQL: Could not resolve to \(what) "
+                                      + "with the number of \(n). (repository.pullRequest)")
             }
-            return try? JSONSerialization.data(withJSONObject: [
+            return try JSONSerialization.data(withJSONObject: [
                 "number": n, "url": t.url, "author": ["login": t.author], "state": t.state,
             ] as [String: Any])
         }
@@ -251,6 +269,22 @@ enum CommsTest {
                                                           askBannedIssue].allSatisfy {
             folded($0)?.queueKey == nil })
 
+        // MARK: a gh that could not ask
+        lookups = []
+        let unaskedSnapshot = ids()
+        let askTimedOut = item(.review, 90080)
+        let askUnauthed = item(.fixIssue, 90081)
+        await apply([askTimedOut, askUnauthed])
+        check("a gh that could not ask GitHub queues nothing",
+              lookups == [90080, 90081] && ids() == unaskedSnapshot
+                && [askTimedOut, askUnauthed].allSatisfy { folded($0)?.queueKey == nil })
+        check("…and says it could not ask, not that there is no such PR or issue",
+              outcome(askTimedOut) == "couldn't ask GitHub about PR #90080 "
+                + "(gh timed out after 30s), so nothing was queued"
+                && outcome(askUnauthed).hasPrefix("couldn't ask GitHub about issue #90081 "
+                                                  + "(gh exited 1: HTTP 401: Bad credentials")
+                && outcome(askUnauthed).hasSuffix("), so nothing was queued"))
+
         // MARK: switched off
         store.commsActRequests = false
         store.commsActBumps = false
@@ -362,6 +396,9 @@ enum CommsTest {
         let reply = monitorFind("review-reply", 90042, "Review · #90042")
         let requested = monitorFind("review-req", 90040, "Review-req · #90040 (@dave)")
         store.queuedTasks = [reply, requested] + store.queuedTasks
+        // The operator's own switches, which say whether the monitor's finds may run.
+        store.reviewRequestsEnabled = true
+        store.queueAutoRun = true
         let askTwin = item(.review, 90040)
         await apply([askTwin])
         check("a review the monitor has queued as requested of me is not queued again",
@@ -372,6 +409,24 @@ enum CommsTest {
                 && folded(askTwin)?.label == requested.job.label
                 && outcome(askTwin) == "already queued, at the front of its band")
         check("…and moves it to the front of its band", band(0).first == "review-req:90040")
+
+        // Switched off, the monitor still queues its finds but starts none of them.
+        store.reviewRequestsEnabled = false
+        let held = monitorFind("review-req", 90043, "Review-req · #90043 (@dave)")
+        store.queuedTasks = [held] + store.queuedTasks
+        let askHeld = item(.review, 90043)
+        await apply([askHeld])
+        check("a review the switched-off monitor holds is asked for in its own right",
+              ids().contains("review:90043")
+                && store.requestedWork.contains { $0.key == "review:90043" }
+                && folded(askHeld)?.queueKey == "review:90043"
+                && outcome(askHeld) == "queued, at the front of its band")
+        let drainable = store.drainableTasks.map(\.id)
+        check("…which the drain starts, where it holds the monitor's",
+              drainable.contains("review:90043") && !drainable.contains("review-req:90043"))
+        store.reviewRequestsEnabled = true
+        store.queuedTasks.removeAll { ["review-req:90043", "review:90043"].contains($0.id) }
+        store.requestedWork.removeAll { $0.key == "review:90043" }
 
         // The monitor dispatches its own finds, not through the asks' settle.
         store.queuedTasks.removeAll { $0.id == "review-req:90040" }
@@ -402,6 +457,37 @@ enum CommsTest {
         store.publishForSelfTest(Store.AgentPass(tick: tick, windows: [:], attached: .present([])))
         check("…and each its finish once that row is gone",
               [askTwin, askRunning, askFixRunning].allSatisfy { folded($0)?.finishedAt != nil })
+
+        // MARK: a run that never started
+        // The spawn waits for the run's pid file, and the 8-second poll publishes its
+        // row, `.starting`, meanwhile: long enough for a ping to take that start.
+        let failing = monitorFind("review-req", 90044, "Review-req · #90044 (@dave)")
+        store.queuedTasks = [failing] + store.queuedTasks
+        let askFailing = item(.review, 90044)
+        await apply([askFailing])
+        store.queuedTasks.removeAll { $0.id == "review-req:90044" }
+        let startingRow = Store.AgentRow(
+            record: run("r6", 90044, "review", "Auto · Review-req · #90044 (@dave)").record,
+            state: .starting, reason: "dispatched 3s ago, no pid yet", window: nil)
+        store.pinAgentRows([startingRow])
+        store.noteCommsRuns()
+        check("a ping takes the start of a run still starting",
+              folded(askFailing)?.startedAt != nil
+                && folded(askFailing)?.label == startingRow.record.label)
+        let neverRan = "Ghostty opened a window but never ran the command (no pid file after 20s)"
+        store.commsSpawnFailed(label: startingRow.record.label, why: neverRan)
+        store.publishForSelfTest(Store.AgentPass(tick: tick, windows: [:], attached: .present([])))
+        store.publishForSelfTest(Store.AgentPass(tick: tick, windows: [:], attached: .present([])))
+        check("a run whose spawn failed is not finished once its row is gone",
+              folded(askFailing)?.finishedAt == nil
+                && CommsLog.read().filter { $0.kind == .finished && $0.id == askFailing.message.id }
+                    .isEmpty)
+        check("…its ping says it never ran, and why",
+              outcome(askFailing) == "\(Store.commsNeverStartedOutcome) (\(neverRan))"
+                && folded(askFailing).map(Store.commsNeverStarted) == true)
+        store.commsSpawnFailed(label: startingRow.record.label, why: neverRan)
+        check("…once", CommsLog.read().filter {
+            $0.kind == .action && $0.id == askFailing.message.id }.count == 2)
 
         // MARK: an issue gate that a PR's number does not pass
         lookups = []
@@ -450,6 +536,40 @@ enum CommsTest {
         check("the Settings pill reads the last error, cut to fit",
               SettingsView.commsErrorPill("invalid_auth") == "invalid_auth"
                 && SettingsView.commsErrorPill(longError) == Store.snippet(longError, max: 48))
+
+        // MARK: the agent's environment
+        // The spawn command run for real, with a stand-in `claude`: the terminal it is
+        // typed into, or the tmux server under it, may carry the token in its
+        // environment (`launchctl setenv`, a server started from such a shell).
+        let spawnDir = scratch.appendingPathComponent("spawn")
+        let spawnBin = spawnDir.appendingPathComponent("bin")
+        try? FileManager.default.createDirectory(at: spawnBin, withIntermediateDirectories: true)
+        let seenSlack = spawnDir.appendingPathComponent("slack")
+        let agentRan = spawnDir.appendingPathComponent("ran")
+        let fakeClaude = spawnBin.appendingPathComponent("claude")
+        try? ("#!/bin/sh\nprintenv \(CommsToken.envVar) > '\(seenSlack.path)'\n"
+              + ": > '\(agentRan.path)'\n")
+            .write(to: fakeClaude, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                               ofItemAtPath: fakeClaude.path)
+        let plan = AgentSpawner.SpawnPlan(
+            promptFile: spawnDir.appendingPathComponent("prompt.txt"),
+            donePath: spawnDir.appendingPathComponent("done").path,
+            pidPath: spawnDir.appendingPathComponent("pid").path, runner: .claude, port: 0)
+        let sh = Process()
+        sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+        sh.arguments = ["-c", AgentSpawner.shellCommand(plan)]
+        sh.environment = ["PATH": "\(spawnBin.path):/usr/bin:/bin", "SHELL": "/bin/sh",
+                          "HOME": spawnDir.path, "ENV": "",
+                          CommsToken.envVar: "xoxp-the-operators-own"]
+        sh.standardInput = FileHandle.nullDevice
+        sh.standardOutput = Pipe()
+        sh.standardError = Pipe()
+        try? sh.run()
+        sh.waitUntilExit()
+        check("an agent never holds the Slack token its terminal was started with",
+              FileManager.default.fileExists(atPath: agentRan.path)
+                && (try? String(contentsOf: seenSlack, encoding: .utf8)) == "")
 
         // MARK: refreshing from the log
         let events = CommsLog.eventsURL()

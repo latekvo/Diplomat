@@ -34,6 +34,15 @@ DEFAULT_TOKEN_FILE = "~/.diplomat/slack-token"
 #: strips it from before it starts any process of its own.
 TOKEN_ENV = "DIPLOMAT_SLACK_TOKEN"
 
+#: The outcome a ping records once the run it took for its own turns out never to have
+#: started (``Store.commsNeverStartedOutcome`` on macOS): there is no run to finish.
+NEVER_STARTED = "its agent never started, so nothing ran"
+
+
+def never_started(item: dict) -> bool:
+    """Whether a folded ping's run never started (:data:`NEVER_STARTED`)."""
+    return str(item.get("outcome") or "").startswith(NEVER_STARTED)
+
 
 def comms_dir() -> Path:
     """``$DIPLOMAT_COMMS_DIR``, else ``~/.diplomat/comms`` — ``CommsLog.dir``'s twin,

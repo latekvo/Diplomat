@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from diplomat_runtime import appconfig, review, runner, szponthost
+from diplomat_runtime import appconfig, comms, review, runner, szponthost
 
 DUMMY = "github_pat_DUMMY0123456789abcdefNOTREAL"
 
@@ -108,7 +108,7 @@ def test_no_configured_token_leaves_the_spawn_exactly_as_it_was(monkeypatch):
     assert review.token_export("linux") == ""
     assert review.token_export("darwin") == ""
     assert review.shell_command("/tmp/p.txt", done_path="/tmp/d") == (
-        "cd /repo 2>/dev/null; claude \"$(cat /tmp/p.txt)\"; "
+        "cd /repo 2>/dev/null; unset DIPLOMAT_SLACK_TOKEN; claude \"$(cat /tmp/p.txt)\"; "
         "{ printf %s $? > /tmp/d; } 2>/dev/null || :; exec \"$SHELL\" -i"
     )
 
@@ -150,7 +150,7 @@ def test_the_whole_spawn_runs_behind_the_gate(tmp_path, monkeypatch, token_file)
     cmd, _ = _spawn(tmp_path, monkeypatch, "/bin/zsh")
     gate = _token_export("linux")
     assert cmd == (
-        f"cd {tmp_path} 2>/dev/null; {gate} && {{ /bin/zsh -i -c "
+        f"cd {tmp_path} 2>/dev/null; unset DIPLOMAT_SLACK_TOKEN; {gate} && {{ /bin/zsh -i -c "
         f"{shlex.quote('printf %s $$ > ' + str(tmp_path / 'pid') + '; printenv GH_TOKEN > out')}"
         f"; {{ printf %s $? > {tmp_path / 'done'}; }} 2>/dev/null || :; }}; "
         'exec "$SHELL" -i'
@@ -181,6 +181,28 @@ def test_the_agent_gets_the_token(shell, pid, tmp_path, monkeypatch, token_file)
     assert (tmp_path / "git-ok").exists()
     assert (tmp_path / "pid").exists() == pid
     assert (tmp_path / "done").read_text() == "0"
+
+
+@pytest.mark.parametrize("pid", [True, False], ids=["local", "mesh"])
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_the_agent_never_holds_the_slack_token(shell, pid, tmp_path, monkeypatch,
+                                               token_file):
+    """The override the Settings card advertises is an environment variable, which the
+    terminal - and a tmux server it starts - inherits from the applet. An agent reading
+    an untrusted Slack message must not have the token that reads the operator's DMs."""
+    agent = f"printenv {comms.TOKEN_ENV} > slack; printenv GH_TOKEN > out"
+    _, cmd = _spawn(tmp_path, monkeypatch, shell, agent=agent, pid=pid)
+    env = {**_clean_env(tmp_path), comms.TOKEN_ENV: "xoxp-the-operators-own"}
+    subprocess.run([shell, "-c", cmd], cwd=tmp_path, env=env, capture_output=True,
+                   timeout=30)
+    assert (tmp_path / "out").read_text().strip() == DUMMY, "the agent ran"
+    assert (tmp_path / "slack").read_text() == ""
+
+
+def test_the_launcher_never_hands_on_the_slack_token(monkeypatch):
+    """So a tmux server the spawn starts does not keep it for every later pane."""
+    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-the-operators-own")
+    assert comms.TOKEN_ENV not in review.spawn_env()
 
 
 @pytest.mark.parametrize("pid", [True, False], ids=["local", "mesh"])

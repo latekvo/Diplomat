@@ -27,7 +27,7 @@ from test_comms_core import _stub_claude, slack  # noqa: F401 — fixture
 
 from diplomat_app import bans, issues
 from diplomat_app.store import Store, app_settings
-from diplomat_runtime import activity, appconfig, autofix, comms, review
+from diplomat_runtime import activity, appconfig, autofix, comms, gh, review
 from diplomat_runtime.models import OpenIssue, OpenPR
 
 pytest.importorskip("PySide6")
@@ -82,7 +82,10 @@ def _feed_lines() -> list[dict]:
 
 
 def _no_such_number(args, timeout=60.0):
-    raise RuntimeError(f"gh exited 1: no {args[0]} #{args[2]}")
+    """How gh 2.x fails a `pr view` or `issue view` of a number GitHub does not know."""
+    what = "a PullRequest" if args[0] == "pr" else "an issue or pull request"
+    raise gh.GHError(f"gh exited 1: GraphQL: Could not resolve to {what} with the number "
+                     f"of {args[2]}. (repository.{'pullRequest' if args[0] == 'pr' else 'issue'})")
 
 
 @pytest.fixture
@@ -342,7 +345,7 @@ def test_a_fix_for_an_issue_the_panel_did_not_fetch_is_asked_of_github(comms_sto
         asked.append(args)
         state = {"8": "OPEN", "9": "CLOSED"}.get(args[2])
         if state is None:
-            raise RuntimeError("gh exited 1: no issue")
+            _no_such_number(args)
         return json.dumps({"number": int(args[2]), "state": state, "author": {"login": "dana"},
                            "url": f"https://github.com/o/r/issues/{args[2]}"}).encode()
 
@@ -598,7 +601,7 @@ def _github(answers: dict, asked: list):
         asked.append(args)
         hit = answers.get((args[0], int(args[2])))
         if hit is None:
-            raise RuntimeError(f"gh exited 1: no {args[0]} #{args[2]}")
+            _no_such_number(args)
         state, url, author = hit
         return json.dumps({"number": int(args[2]), "state": state, "url": url,
                            "author": {"login": author}}).encode()
@@ -648,6 +651,98 @@ def test_a_fix_of_a_pull_requests_number_queues_nothing(comms_store, monkeypatch
     assert comms_store.requested_work == []
     assert comms_store.queued_tasks == []
     assert _events()[-1]["outcome"] == "#42 is a pull request, not an issue"
+
+
+@needs_core
+def test_a_gh_that_could_not_ask_is_not_read_as_no_such_number(comms_store, monkeypatch):
+    """A PR opened since the last fetch, asked about while gh is down or logged out:
+    GitHub never answered, so the ping must not say the PR does not exist."""
+    unauthed = ("gh exited 1: HTTP 401: Bad credentials (https://api.github.com/graphql)\n"
+                "Try authenticating with:  gh auth login -h github.com")
+
+    def down(args, timeout=60.0):
+        raise gh.GHError("gh timed out after 30s" if args[2] == "600" else unauthed)
+
+    monkeypatch.setattr("diplomat_runtime.gh.run", down)
+    _tick(comms_store, monkeypatch, _ask(1, "review", 600), _ask(2, "fix_issue", 601))
+    assert comms_store.requested_work == [] and comms_store.queued_tasks == []
+    assert [e["outcome"] for e in _events() if e["kind"] == "action"] == [
+        "couldn't ask GitHub about PR #600 (gh timed out after 30s)",
+        "couldn't ask GitHub about issue #601 "
+        f"({Store.comms_snippet(unauthed, 120)})"]
+    assert "Bad credentials" in Store.comms_snippet(unauthed, 120)
+
+
+# MARK: - the folded log, read from more than one thread
+
+
+@needs_core
+def test_a_feed_read_before_a_pings_line_never_lands_after_it(comms_store, monkeypatch):
+    """The agents' settle re-reads the log on a worker thread. A read taken before a
+    ping's `action` line that assigned its fold after the Qt thread's own refresh
+    would leave the ping owning nothing, and its review's dispatch would record no
+    start for it."""
+    _spawn_recorder(monkeypatch)
+    real_feed = comms.feed
+    read_early, go = threading.Event(), threading.Event()
+
+    def feed(limit=200):
+        items = real_feed(limit)
+        if threading.current_thread().name == "settle":
+            read_early.set()
+            go.wait(5)
+        return items
+
+    monkeypatch.setattr(comms, "feed", feed)
+    settle = threading.Thread(target=comms_store.refresh_comms_feed, name="settle")
+    settle.start()
+    assert read_early.wait(5)
+    m, d = _ask(1, "review", 12)
+    ticked = threading.Thread(target=lambda: _tick(comms_store, monkeypatch, (m, d)))
+    ticked.start()
+    ticked.join(1)          # the tick is held behind the read, or it ran ahead of it
+    go.set()
+    settle.join(10)
+    ticked.join(10)
+    assert not settle.is_alive() and not ticked.is_alive()
+
+    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    assert comms_store._run_queued_task(entry, forced=True) == "spawned"
+    assert _kinds_by_id()[m["id"]] == ["action", "started"]
+
+
+@needs_core
+def test_a_dispatch_while_the_ask_is_being_taken_still_records_its_start(comms_store,
+                                                                         monkeypatch):
+    """The drain runs on the poll worker, and can reach an ask the moment it is
+    queued - before the ping that asked for it has been made its owner."""
+    _spawn_recorder(monkeypatch)
+    queued, go = threading.Event(), threading.Event()
+    real_request_one = Store.request_one
+
+    def request_one(self, work, *, front=False):
+        fresh = real_request_one(self, work, front=front)
+        queued.set()
+        go.wait(5)
+        return fresh
+
+    monkeypatch.setattr(Store, "request_one", request_one)
+    m, d = _ask(1, "review", 12)
+    ticked = threading.Thread(target=lambda: _tick(comms_store, monkeypatch, (m, d)))
+    ticked.start()
+    assert queued.wait(10)
+    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    verdicts: list = []
+    drain = threading.Thread(
+        target=lambda: verdicts.append(comms_store._run_queued_task(entry, forced=True)))
+    drain.start()
+    drain.join(1)           # its start waits for the ping's line, or it ran ahead of it
+    go.set()
+    drain.join(10)
+    ticked.join(10)
+    assert not drain.is_alive() and not ticked.is_alive()
+    assert verdicts == ["spawned"]
+    assert _kinds_by_id()[m["id"]] == ["action", "started"]
 
 
 # MARK: - started / finished, beyond the one ping and the tick
@@ -871,6 +966,58 @@ def test_a_review_the_monitor_has_queued_is_not_asked_for_again(comms_store, mon
     rows.clear()
     comms_store._note_comms_runs()
     assert _kinds_by_id()[m["id"]] == ["action", "started", "finished"]
+
+
+@needs_core
+def test_a_review_the_switched_off_monitor_holds_is_asked_for_in_its_own_right(
+        comms_store, monkeypatch):
+    """A switched-off monitor still queues its finds and starts none of them; a ping
+    that took one would wait with it for an "execute now" nobody knows to press."""
+    _rows(monkeypatch, [])
+    comms_store.review_requests_enabled = False
+    comms_store.queue_auto_run = True
+    comms_store.queued_tasks = [_review_req(12)]
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+
+    assert [r.key for r in comms_store.requested_work] == ["review:12"]
+    [action] = _events()
+    assert (action["outcome"], action["queueKey"]) == (
+        "review of #12 queued, at the front of its band", "review:12")
+    assert [t.id for t in comms_store.drainable_tasks] == ["review:12"]
+
+
+@needs_core
+def test_a_run_whose_terminal_never_ran_it_is_not_done(comms_store, monkeypatch):
+    """This spawn does not wait for the pid file (it is the GUI thread's), so a
+    `spawned` dispatch is not yet a start: the tick finds the command never ran, past
+    the grace, and resolves the run FAILED. That is no work done."""
+    from dataclasses import replace
+
+    from diplomat_app import commsview
+    from diplomat_runtime import agentregistry
+    from diplomat_runtime import agentstate as A
+
+    _spawn_recorder(monkeypatch)
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    assert comms_store._run_queued_task(entry, forced=True) == "spawned"
+    assert _kinds_by_id()[m["id"]] == ["action", "started"]
+
+    agentregistry.update(lambda book: [
+        replace(r, dispatched_at=r.dispatched_at - (A.SPAWN_GRACE + 5)) for r in book])
+    comms_store._settle_agents()
+    comms_store._settle_agents()
+
+    assert agentregistry.load() == [], "the tick did resolve it FAILED"
+    assert _kinds_by_id()[m["id"]] == ["action", "started", "action"]
+    [item] = comms_store.comms_items
+    assert re.fullmatch(re.escape(comms.NEVER_STARTED) + r" \(its terminal never ran the "
+                        r"command \(no pid file \d+s after dispatch\)\)", item["outcome"])
+    assert not item.get("finishedAt")
+    assert commsview.job_status(item, set()) == "not queued"
+    assert commsview.job_status(item, {"review:12"}) == "queued"
 
 
 @pytest.mark.parametrize("key, waiting", [("review-req:12", True), ("review:12", False)])

@@ -362,7 +362,8 @@ enum SpawnScriptTest {
             promptFile: URL(fileURLWithPath: "/tmp/p.txt"), donePath: "/tmp/d",
             pidPath: "/tmp/pid", runner: .claude, port: 0))
         check("a spawn with no item is the command it always was",
-              !plain.contains("GH_TOKEN") && plain.contains("2>/dev/null; \"$SHELL\" -i -c "))
+              !plain.contains("GH_TOKEN")
+                && plain.contains("2>/dev/null; unset DIPLOMAT_SLACK_TOKEN; \"$SHELL\" -i -c "))
         let named = AgentSpawner.appleScript(
             for: .iterm, shellCommand: AgentSpawner.shellCommand(AgentSpawner.SpawnPlan(
                 promptFile: URL(fileURLWithPath: "/tmp/p.txt"), donePath: "/tmp/d",

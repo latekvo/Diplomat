@@ -187,6 +187,40 @@ def test_the_settings_card_draws_slacks_words_as_typed(app, store, monkeypatch):
         view.deleteLater()
 
 
+def test_the_watch_slack_pill_reads_the_last_error_cut_to_fit(app, store):
+    from diplomat_app.settingsview import SettingsView
+
+    long_error = "Slack rejected the token (invalid_auth): sign in again and store a new one"
+    store.comms_enabled = True
+    store.comms_error = "invalid_auth"
+    view = SettingsView(store)
+    try:
+        assert view._comms_pill.text() == "invalid_auth"
+        store.comms_error = long_error
+        view._refresh_comms_ui()
+        assert view._comms_pill.text() == long_error[:47] + "…"
+        assert len(view._comms_pill.text()) == 48
+    finally:
+        view.deleteLater()
+
+
+def test_an_activity_line_is_drawn_as_typed(app):
+    """The feed quotes what triage and Slack wrote: an investigate label carries the
+    model's summary and the sender's display name."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel
+
+    from diplomat_app.widgets import ActivityRow
+
+    detail = "Investigate · Slack · bob · <h1 style='color:red'>URGENT rot — queued"
+    source = "<b>auto</b>"
+    row = ActivityRow(glyph="x", detail=detail, source=source, source_color="#888",
+                      clock=None)
+    shown = {w.text(): w.textFormat() for w in row.findChildren(QLabel)
+             if w.text() in (detail, source)}
+    assert shown == {detail: Qt.TextFormat.PlainText, source: Qt.TextFormat.PlainText}
+
+
 def test_the_test_button_comes_back_whatever_the_ask_raises(app, store, monkeypatch):
     import http.client
 

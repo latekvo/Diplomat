@@ -3253,6 +3253,7 @@ final class Store: ObservableObject {
             AuditLog.log(source.rawValue, "spawn-failed",
                          "\(job.label) failed to spawn: \(msg)")
             refreshAudit()
+            commsSpawnFailed(label: rowLabel, why: msg)
             return .failed(msg)
         }
     }
