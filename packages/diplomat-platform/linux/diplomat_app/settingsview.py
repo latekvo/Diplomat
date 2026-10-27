@@ -34,6 +34,7 @@ from diplomat_runtime import (
     apiwatch,
     appconfig,
     autofix,
+    comms,
     core,
     review,
     runner,
@@ -77,6 +78,8 @@ def _style_swatch(btn: QPushButton, hex_color: str) -> None:
 
 class SettingsView(QWidget):
     done = Signal()
+    # The Comms "Test" worker's answer: (identity dict or None, error text).
+    _comms_tested = Signal(object, str)
 
     def __init__(self, store: Store) -> None:
         super().__init__()
@@ -121,6 +124,7 @@ class SettingsView(QWidget):
         right.addWidget(self._tools_card())
         right.addWidget(self._terminal_card())
         right.addWidget(self._apiwatch_card())
+        right.addWidget(self._comms_card())
         right.addWidget(self._allocator_card())
         right.addWidget(self._mesh_card())
         right.addWidget(self._update_card())
@@ -136,6 +140,8 @@ class SettingsView(QWidget):
         store.update_changed.connect(self._refresh_update_ui)
         store.autofix_changed.connect(self._refresh_autofix_ui)
         store.apiwatch_changed.connect(self._refresh_apiwatch_ui)
+        store.comms_changed.connect(self._refresh_comms_ui)
+        self._comms_tested.connect(self._on_comms_tested)
         self._refresh_allocator_ui()
         self._refresh_mesh_ui()
         self._refresh_update_ui()
@@ -861,6 +867,171 @@ class SettingsView(QWidget):
             self._apiwatch_pill.set_state(
                 f"{count} continued" if count else "no scan yet", _ORANGE
             )
+
+    # MARK: Comms, the Slack watcher
+
+    def _comms_card(self) -> QWidget:
+        card, body, self._comms_pill = settings_card(glyphs.G_COMMS, "COMMS", _BLUE)
+        st = self.store
+
+        self._sw_comms = SwitchToggle(_BLUE)
+        self._sw_comms.setChecked(st.comms_enabled)
+        self._sw_comms.toggled.connect(self._on_comms_toggled)
+        self._comms_row = self._track(SettingRow(
+            "Watch Slack", self._sw_comms,
+            summary="DMs, @-mentions and keywords become pings; asks become queued work.",
+            detail="Every minute, searches your Slack for new DMs to you, @-mentions of "
+                   "you and your keywords. Each one is a ping (the ✉ screen, the "
+                   "activity feed, a notification), and is triaged by one model call "
+                   "with no tools and no MCP servers, which only answers what it asks "
+                   "for. A review or issue fix of this repo, a nudge to hurry one, or a "
+                   "reported problem to investigate is then queued like any other ask: "
+                   "the ban list, the task cap and the spending budget all still "
+                   "apply. Your own messages, bots and people from other workspaces "
+                   "are never pings.",
+        ))
+        body.addWidget(self._comms_row)
+
+        def text_row(title: str, value: str, placeholder: str, setter, detail: str):
+            field = QLineEdit(value)
+            field.setPlaceholderText(placeholder)
+            field.setClearButtonEnabled(True)
+            field.textChanged.connect(setter)
+            body.addWidget(self._track(SettingRow(title, field, stacked=True,
+                                                  detail=detail)))
+            return field
+
+        self._comms_keywords = text_row(
+            "Keywords", st.comms_keywords_raw, "none",
+            lambda t: setattr(self.store, "comms_keywords_raw", t),
+            "Commas or new lines between them, so one can be a phrase. Matched as a "
+            "whole word, ignoring case. A DM or an @-mention needs none.")
+        self._comms_allow = text_row(
+            "Only these senders", st.comms_sender_allowlist_raw, "anyone in your workspace",
+            lambda t: setattr(self.store, "comms_sender_allowlist_raw", t),
+            "Slack user ids or handles, commas or spaces between them; a leading @ is "
+            "fine. Blank = any member of your workspace.")
+
+        nest, inner = nested_settings(_BLUE)
+        self._sw_comms_requests = self._comms_switch(
+            inner, "Queue asked-for reviews and fixes", st.comms_act_requests,
+            "comms_act_requests",
+            "“Can you review #12?” queues that review at the front of the requested "
+            "reviews, as the Review wizard would run it; an issue fix likewise. Only an "
+            "open PR or issue of this repo.")
+        self._sw_comms_bumps = self._comms_switch(
+            inner, "Bump queued work", st.comms_act_bumps, "comms_act_bumps",
+            "“Any news on #12?” moves whatever is already queued for #12 to the front "
+            "of its band. Starts nothing new.")
+        self._sw_comms_investigate = self._comms_switch(
+            inner, "Investigate reported problems", st.comms_act_investigations,
+            "comms_act_investigations",
+            "A reported bug with no PR or issue number queues an agent that reproduces "
+            "and researches it and writes a report, which the ✉ screen opens. It never "
+            "pushes, opens PRs or issues, comments, or posts to Slack.")
+        self._sw_comms_notify = self._comms_switch(
+            inner, "Notify on new pings", st.comms_notify, "comms_notify",
+            "A tray notification per poll that found pings.")
+        body.addWidget(nest)
+
+        self._comms_model = text_row(
+            "Triage model", st.comms_model, "haiku",
+            lambda t: setattr(self.store, "comms_model", t),
+            "The model each ping is triaged with. Cheap is right: the answer is one "
+            "word and a number.")
+
+        token_row = QHBoxLayout()
+        token_row.setSpacing(6)
+        self._comms_token = QLineEdit(st.slack_token_file)
+        self._comms_token.setPlaceholderText(comms.DEFAULT_TOKEN_FILE)
+        self._comms_token.setClearButtonEnabled(True)
+        self._comms_token.textChanged.connect(self._on_comms_token_changed)
+        token_row.addWidget(self._comms_token, 1)
+        self._comms_test = QPushButton("Test")
+        self._comms_test.setToolTip("Ask Slack who this token is (auth.test)")
+        self._comms_test.clicked.connect(self._test_comms_token)
+        token_row.addWidget(self._comms_test)
+        holder = QWidget()
+        holder.setLayout(token_row)
+        self._comms_token_row = self._track(SettingRow(
+            "Slack token file", holder, stacked=True,
+            detail="A user token (xoxp-) with the scopes search:read and users:read, "
+                   "alone in a file only you can read. Only this path is saved, never "
+                   "the token. DIPLOMAT_SLACK_TOKEN in the environment wins over it.",
+        ))
+        body.addWidget(self._comms_token_row)
+        # Its own line rather than the row's summary, which every poll rewrites.
+        self._comms_test_status = QLabel("")
+        self._comms_test_status.setWordWrap(True)
+        self._comms_test_status.hide()
+        body.addWidget(self._comms_test_status)
+        self._refresh_comms_ui()
+        return card
+
+    def _comms_switch(self, layout, title: str, on: bool, attr: str,
+                      detail: str) -> SwitchToggle:
+        sw = SwitchToggle(_BLUE)
+        sw.setChecked(on)
+        sw.toggled.connect(lambda v: setattr(self.store, attr, v))
+        layout.addWidget(self._track(SettingRow(title, sw, detail=detail)))
+        return sw
+
+    def _on_comms_toggled(self, on: bool) -> None:
+        self.store.comms_enabled = on
+        self.store.comms_changed.emit()
+        if on:
+            self.store.run_comms_poll_async()
+
+    def _on_comms_token_changed(self, text: str) -> None:
+        self._save(lambda: setattr(self.store, "slack_token_file", text))
+        # A result about the previous path says nothing about this one.
+        self._comms_test_status.hide()
+        self._refresh_comms_ui()
+
+    def _test_comms_token(self) -> None:
+        token, why = comms.read_token()
+        if not token:
+            self._on_comms_tested(None, why)
+            return
+        self._comms_test.setEnabled(False)
+        self._set_comms_test_status("Asking Slack…", _GREY)
+        self.store.start_background(
+            lambda: self._comms_tested.emit(*comms.auth_test(token)), name="comms-test")
+
+    def _on_comms_tested(self, me: object, error: str) -> None:
+        self._comms_test.setEnabled(True)
+        if isinstance(me, dict):
+            self._set_comms_test_status(
+                f"✓ @{me.get('handle', '')} in {me.get('teamID', '')}", _GREEN)
+        else:
+            self._set_comms_test_status(f"✗ {error}", _RED)
+
+    def _set_comms_test_status(self, text: str, color: str) -> None:
+        self._comms_test_status.setText(text)
+        self._comms_test_status.setStyleSheet(f"color: {color}; font-size: 10px;")
+        self._comms_test_status.show()
+
+    def _refresh_comms_ui(self) -> None:
+        st = self.store
+        if not st.comms_enabled:
+            self._comms_pill.set_state("off", _GREY)
+        elif st.comms_error:
+            self._comms_pill.set_state("error", _RED)
+        elif not st.comms_configured:
+            self._comms_pill.set_state("no token", _ORANGE)
+        else:
+            handle = (st.comms_identity or {}).get("handle")
+            self._comms_pill.set_state(f"watching @{handle}" if handle else "watching",
+                                       _GREEN)
+        if st.comms_enabled and st.comms_error:
+            self._comms_row.set_summary(st.comms_error, color=_RED)
+        else:
+            self._comms_row.set_summary(
+                "DMs, @-mentions and keywords become pings; asks become queued work.")
+        self._comms_token_row.set_summary(
+            f"Read from ${comms.TOKEN_ENV}, which wins over the file"
+            if os.environ.get(comms.TOKEN_ENV, "").strip()
+            else f"Read from {comms.token_file()}")
 
     # MARK: tool colour & visibility
 

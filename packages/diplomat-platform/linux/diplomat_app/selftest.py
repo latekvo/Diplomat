@@ -7,6 +7,8 @@ Mirrors the macOS ``Dump`` enum so the two front-ends can be cross-checked:
     DIPLOMAT_PRINT_PROMPT=... assemble + print a wizard's prompt: mine|user|single for
                               Review, conflicts[-user|-single], audit[-issues|-prs|-all],
                               issues[-single][-features]
+    DIPLOMAT_COMMS_POLL=1     one real Slack tick: each new ping, its triage and the
+                              effect it would have (nothing is queued)
 
 None of these need a display; they only touch QtCore (QSettings) + gh.
 """
@@ -192,3 +194,52 @@ def _run_issue_prompt(m: str) -> int:
     label = "issue #421, named by hand" if named else "issue #421, out of a sweep"
     depth = depth_by_id(cfg.depth)["title"]
     return _print_prompt_dump(f"IssueConfig: {label} · depth={depth}", cfg.build_prompt())
+
+
+def run_comms_poll() -> int:
+    """``DIPLOMAT_COMMS_POLL=1``: one real Slack tick, classifier included, printing
+    each new ping with its triage and the effect it would have. Nothing is queued.
+
+    The tick is the real one, so it moves the watermark and logs its pings in
+    ``$DIPLOMAT_COMMS_DIR`` (default ``~/.diplomat/comms``): a running applet sharing
+    that directory will not see these pings again."""
+    import json
+
+    from diplomat_runtime import comms
+
+    store = Store()
+    store.fetch_me()
+    token, why = comms.read_token()
+    if not token:
+        print(f"COMMS: {why}")
+        return 1
+    settings = store.comms_settings_payload()
+    print(f"== comms tick · dir {comms.comms_dir()} · model {settings['model']} ==")
+    result = comms.tick(settings, token)
+    me = result.get("me") or {}
+    if me:
+        print(f"as @{me.get('handle', '')} ({me.get('userID', '')} in {me.get('teamID', '')})")
+    items = result.get("items") or []
+    print(f"{len(items)} new ping{'' if len(items) == 1 else 's'}")
+    for it in items:
+        m, d = it["message"], it["decision"]
+        print(f"\n- {m['id']}  {Store.comms_place(m)} from {Store.comms_sender(m)}"
+              f" [{', '.join(m.get('reasons') or [])}]")
+        print(f"  text:     {Store.comms_snippet(m.get('text', ''), 200)}")
+        number = f" #{d['number']}" if d.get("number") else ""
+        print(f"  decision: {d.get('action')}{number} — {d.get('summary', '')}")
+        print(f"  reason:   {d.get('reason', '')}")
+        try:
+            effect = comms.effect(d, m, store.comms_toggles(), settings)
+        except Exception as exc:  # noqa: BLE001 — say what the core said and go on
+            print(f"  effect:   (could not plan: {exc})")
+            continue
+        if effect.get("kind") == "investigate":
+            cfg = effect["config"]
+            print(f"  effect:   would queue {cfg.get('label')!r}, report {cfg.get('reportPath')}")
+        else:
+            print(f"  effect:   {json.dumps(effect)} (not applied)")
+    if result.get("error"):
+        print(f"\nerror: {result['error']}")
+        return 1
+    return 0
