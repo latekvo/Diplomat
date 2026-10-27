@@ -3,6 +3,7 @@
 //   devices.json   [{key, platform, name, version, apiVersion, format, free}] the pool lends
 //   mode           'ok' | 'throw' | 'slow' (leases after FAKE_POOL_SLOW_MS) | 'attach-fails'
 //                  | 'slow-attach' (attaches after FAKE_POOL_SLOW_MS)
+//                  | 'slow-attach-strict' (the same, but fails if released meanwhile)
 //   end-<lease id> written by a test to end that lease; its content is the reason
 //   events.log     what the provider did, one line each: "lease <key>", "release <key>", ...
 // An attached device is a local TCP port that echoes, standing in for an adb transport.
@@ -15,6 +16,7 @@ const DIR = process.env.FAKE_POOL_DIR;
 const read = (f, dflt) => { try { return fs.readFileSync(path.join(DIR, f), 'utf8'); } catch { return dflt; } };
 const event = (line) => fs.appendFileSync(path.join(DIR, 'events.log'), `${line}\n`);
 const servers = new Map(); // lease id -> server
+const released = new Set(); // lease ids
 
 export default function create(ctx) {
   let n = 0;
@@ -38,7 +40,8 @@ export default function create(ctx) {
     async attach(lease, onEnd, port) {
       const mode = read('mode', 'ok').trim();
       if (mode === 'attach-fails') throw new Error('tunnel refused');
-      if (mode === 'slow-attach') await new Promise((r) => setTimeout(r, Number(process.env.FAKE_POOL_SLOW_MS)));
+      if (mode.startsWith('slow-attach')) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_POOL_SLOW_MS)));
+      if (mode === 'slow-attach-strict' && released.has(lease.id)) throw new Error('released while attaching');
       const server = net.createServer((s) => { s.on('error', () => {}); s.pipe(s); });
       await new Promise((resolve, reject) => {
         server.once('error', (e) => (port ? server.listen(0, '127.0.0.1', resolve) : reject(e)));
@@ -57,6 +60,7 @@ export default function create(ctx) {
       return `127.0.0.1:${server.address().port}`;
     },
     async release(lease) {
+      released.add(lease.id);
       servers.get(lease.id)?.close();
       servers.delete(lease.id);
       const devices = JSON.parse(read('devices.json', '[]'));

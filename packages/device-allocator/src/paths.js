@@ -88,3 +88,5 @@ export const STOPPING_GRACE_MS = Number(process.env.DA_STOPPING_GRACE_MS) || 60 
 // The longest a request waits on the remote device pool (src/remote.js) before falling
 // back to a local device. It covers a provider's browser sign-in, so it is generous.
 export const REMOTE_ACQUIRE_BUDGET_MS = Number(process.env.DA_REMOTE_ACQUIRE_BUDGET_MS) || 11 * 60 * 1000;
+// The longest attaching a leased device may take before it is given back.
+export const REMOTE_ATTACH_BUDGET_MS = Number(process.env.DA_REMOTE_ATTACH_BUDGET_MS) || 3 * 60 * 1000;

@@ -201,7 +201,25 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   assert.equal(killed.statusCode, 409, 'an agent is never told it holds a device that was freed under it');
   assert.deepEqual(box.events().slice(-3), ['release pool:P16', 'attach pool:P16', 'release pool:P16']);
   pass('a device killed while attaching is reported as released, and what the attach opened is closed');
+
+  box.mode('slow-attach-strict');
+  const strict = d.call('POST', '/request', { ownerPid: ME, platform: 'android' }).catch((e) => e);
+  await until('the attach to start', async () => (await stateOf(d)).devices.some((x) => x.key === 'pool:P16' && x.status === 'booting'));
+  await d.call('POST', '/kill', { key: 'pool:P16' });
+  assert.equal((await strict).statusCode, 409, 'not a fallback to a local device');
+  pass('a provider that refuses to attach a released lease still gets the agent a 409');
   await d.stop();
+
+  const short = startDaemon(box, { DA_REMOTE_ATTACH_BUDGET_MS: '500', FAKE_POOL_SLOW_MS: '1500' });
+  await healthy(short);
+  box.mode('slow-attach');
+  const n = box.events().length;
+  const stuck = await short.call('POST', '/request', { ownerPid: ME, platform: 'android' });
+  assert.equal(stuck.source, 'local');
+  assert.equal(stuck.remoteSkipped, 'Pixel (pool) was leased but could not be attached: not attached within 1 s');
+  await until('the late attach to be released', () => box.events().slice(n).join() === 'lease pool:P16,release pool:P16,attach pool:P16,release pool:P16');
+  pass('an attach past its budget is a fallback, and what it opens late is released');
+  await short.stop();
 }
 
 // 3. No provider, or one that will not load.
@@ -297,21 +315,28 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   await d.call('POST', '/release', { ownerPid: ME });
 
   const keep = await d.call('POST', '/request', { ownerPid: ME, platform: 'android', version: '16' });
+  const keep2 = await d.call('POST', '/request', { ownerPid: ME, platform: 'android' });
+  assert.equal(keep2.key, 'pool:P11');
   await d.stop('SIGKILL');
   d = startDaemon(box);
   await healthy(d);
-  await until('the device to be reattached', () => echoes(keep.deviceId));
-  assert.equal(box.events().at(-1), `attach pool:P16 port ${keep.deviceId.split(':')[1]}`);
-  pass('a restarted daemon reattaches a live lease on the same port');
+  await until('both devices to be reattached', async () => await echoes(keep.deviceId) && await echoes(keep2.deviceId));
+  assert.deepEqual(box.events().slice(-2).sort(),
+    [`attach pool:P11 port ${keep2.deviceId.split(':')[1]}`, `attach pool:P16 port ${keep.deviceId.split(':')[1]}`]);
+  pass('a restarted daemon reattaches every live lease on the same port');
 
   await d.stop();
-  assert.equal(box.events().at(-1), 'release pool:P16');
-  pass('stopping the daemon returns its leases');
+  assert.deepEqual(box.events().slice(-2).sort(), ['release pool:P11', 'release pool:P16']);
+  const stopped = box.events().length;
+  d = startDaemon(box);
+  await healthy(d);
+  assert.deepEqual((await stateOf(d)).devices.filter((x) => x.source === 'remote'), []);
+  assert.deepEqual(box.leases(), []);
+  assert.deepEqual(box.events().slice(stopped), [], 'nothing reattached');
+  pass('stopping the daemon returns its leases, and the next one does not restore them');
 
   // An owner that died while no daemon was running: the lease goes back at startup.
   const gone = spawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)']);
-  d = startDaemon(box);
-  await healthy(d);
   await d.call('POST', '/request', { ownerPid: gone.pid, platform: 'android', version: '16' });
   await d.stop('SIGKILL');
   gone.kill('SIGKILL');

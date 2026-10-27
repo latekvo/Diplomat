@@ -129,7 +129,9 @@ export function connect(url, headers, { timeoutMs = 10000 } = {}) {
     const key = crypto.randomBytes(16).toString('base64');
     const req = (u.protocol === 'https:' ? https : http).request({
       hostname: u.hostname, port: u.port || undefined, path: `${u.pathname}${u.search}`,
-      method: 'GET', timeout: timeoutMs,
+      // Its own connection: a pooled one the server already closed after a refusal would
+      // turn the next handshake's status into an ECONNRESET.
+      method: 'GET', timeout: timeoutMs, agent: false,
       headers: {
         Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13',
         'Sec-WebSocket-Key': key, ...headers,
@@ -150,7 +152,7 @@ export function connect(url, headers, { timeoutMs = 10000 } = {}) {
       res.on('data', (c) => (raw += c));
       res.on('end', () => {
         let body = {};
-        try { body = JSON.parse(raw); } catch {}
+        try { body = JSON.parse(raw) ?? {}; } catch {}
         reject(Object.assign(new Error(body.error || `HTTP ${res.statusCode}`), { status: res.statusCode, body }));
       });
     });

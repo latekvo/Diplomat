@@ -69,11 +69,12 @@ and a lease that lands after it is handed straight back. A remote device:
 * stays out of the local quota, which guards this machine, not the pool;
 * goes back to its pool on every path a local device would be shut down — free, reap,
   idle, kill, change, daemon stop — and on `report-device-broken` instead of being
-  quarantined, since the pool resets what it gets back;
+  quarantined, since the pool resets what it gets back, always through the provider that
+  lent it, even after `deviceRemoteProvider` has changed;
 * drops out of the table, with an audit line, when the pool ends the lease under its
   holder;
-* is reattached on the same port by a daemon restarted over it, so the agent's serial
-  keeps working.
+* is reattached on the same port when the daemon dies without stopping (a crash, a
+  SIGKILL) and comes back, so the agent's serial keeps working.
 
 `state.json` carries `remote: {provider, state, ...}` and a `source` on every device;
 `POST /remote/sign-in` and `POST /remote/devices` back the panel. Tests use

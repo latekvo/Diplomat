@@ -17,7 +17,7 @@ const server = http.createServer((req, res) => {
 let onSocket;
 server.on('upgrade', (req, socket) => {
   if (req.headers.authorization !== 'Bearer good') {
-    const body = JSON.stringify({ error: 'no such lease' });
+    const body = req.headers.authorization === 'Bearer null' ? 'null' : JSON.stringify({ error: 'no such lease' });
     socket.end(`HTTP/1.1 410 Gone\r\ncontent-length: ${body.length}\r\n\r\n${body}`);
     return;
   }
@@ -94,6 +94,8 @@ function serve() {
 await assert.rejects(connect(url, { authorization: 'Bearer stale' }),
   (e) => e.status === 410 && e.body.error === 'no such lease' && e.message === 'no such lease' && !e.network);
 pass('a refused handshake keeps its status and body');
+await assert.rejects(connect(url, { authorization: 'Bearer null' }), (e) => e.status === 410 && e.message === 'HTTP 410');
+pass('a refused handshake whose body is JSON null is still a plain rejection');
 
 const closedPort = await new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
 await assert.rejects(connect(`http://127.0.0.1:${closedPort}/ws`, {}), (e) => e.network === true && e.message === 'ECONNREFUSED');

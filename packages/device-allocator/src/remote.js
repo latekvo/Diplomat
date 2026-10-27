@@ -24,7 +24,7 @@
 
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { ADB_BIN, BASE_DIR, REMOTE_ACQUIRE_BUDGET_MS } from './paths.js';
+import { ADB_BIN, BASE_DIR, REMOTE_ACQUIRE_BUDGET_MS, REMOTE_ATTACH_BUDGET_MS } from './paths.js';
 import { atomicWrite, readConfig } from './state.js';
 import { run, matchesRequirements, androidApi } from './devices.js';
 import { log } from './log.js';
@@ -99,8 +99,19 @@ export async function acquire(req, exclude) {
   return { applies: true, reason: `${p.name} did not answer within ${Math.round(REMOTE_ACQUIRE_BUDGET_MS / 1000)} s` };
 }
 
+// Bounded like acquire: past the budget it fails, and an attach that finishes later is
+// released again, since the caller's release may have come before it opened anything.
 export async function attach(path, lease, onEnd, port = 0) {
-  return (await provider(path)).attach(lease, onEnd, port);
+  const p = await provider(path);
+  const work = Promise.resolve().then(() => p.attach(lease, onEnd, port));
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      work.then(() => p.release(lease), () => {});
+      reject(new Error(`not attached within ${Math.round(REMOTE_ATTACH_BUDGET_MS / 1000)} s`));
+    }, REMOTE_ATTACH_BUDGET_MS);
+  });
+  try { return await Promise.race([work, late]); } finally { clearTimeout(timer); }
 }
 
 export async function release(path, lease) {

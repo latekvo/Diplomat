@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { callDaemon, daemonHealth } from './ipc.js';
-import { LOG_PATH, BASE_DIR, REMOTE_ACQUIRE_BUDGET_MS } from './paths.js';
+import { LOG_PATH, BASE_DIR, REMOTE_ACQUIRE_BUDGET_MS, REMOTE_ATTACH_BUDGET_MS } from './paths.js';
 import { PLATFORMS as DEVICE_PLATFORMS, FORMATS } from './devices.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -342,8 +342,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     // timeout mid-boot would orphan the allocation until the reaper/idle sweep).
     // Worst case iOS: simctl boot 120s + bootstatus 180s = 300s, after up to 60s
     // waiting out a device the daemon is shutting down — and before it, up to the wait on
-    // the remote device pool.
-    const BOOT = { timeout: REMOTE_ACQUIRE_BUDGET_MS + 420000 };
+    // the remote device pool and the attach of what it lent.
+    const BOOT = { timeout: REMOTE_ACQUIRE_BUDGET_MS + REMOTE_ATTACH_BUDGET_MS + 420000 };
     let r;
     if (name === 'request-device') {
       r = await callDaemon('POST', '/request',

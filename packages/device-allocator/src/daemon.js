@@ -144,7 +144,7 @@ function reserve(chosen, p, req) {
     handle: chosen.handle, udid: chosen.udid, avd: chosen.avd, serial: chosen.serial,
     ownerPid: p.ownerPid || null,
     agentName: p.agentName || `pid:${p.ownerPid}`, requirements: req,
-    status: 'booting', bootedByUs: !wasBooted,
+    status: 'booting', bootedByUs: !wasBooted || !!chosen.lease, // a lease is always ours to give back
     allocatedAt: Date.now(), lastMotionAt: Date.now(), motionHash: null,
     ...(chosen.lease ? { source: 'remote', remote: chosen.lease, remoteProvider: chosen.provider } : {}),
   };
@@ -189,6 +189,7 @@ async function requestRemote(p, req, exclude) {
   } catch (e) {
     log('remote: attach failed', alloc.key, String(e));
     remote.release(alloc.remoteProvider, alloc.remote);
+    if (allocations.get(alloc.key) !== alloc) throw httpError(409, `device ${alloc.name} was released during boot`);
     await withLock(async () => {
       if (allocations.get(alloc.key) === alloc) { allocations.delete(alloc.key); publish(); }
     });
@@ -1137,6 +1138,9 @@ async function start() {
   const bye = async () => {
     const leased = [...allocations.values()].filter((a) => a.source === 'remote');
     await Promise.race([Promise.all(leased.map((a) => remote.release(a.remoteProvider, a.remote))), delay(3000)]);
+    // Given back, so the next daemon must not restore them as held.
+    for (const a of leased) allocations.delete(a.key);
+    if (leased.length) try { writeLeases([...allocations.values()]); } catch (e) { log('bye: leases write failed', String(e)); }
     shutdownBootedSync();
     try { fs.unlinkSync(SOCKET_PATH); } catch {}
     try { fs.unlinkSync(DISCOVERY_PATH); } catch {}
