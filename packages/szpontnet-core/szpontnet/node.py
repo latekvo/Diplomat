@@ -2779,10 +2779,7 @@ class MeshNode:
         # than useless — the dispatcher reads a decline as "this node can't", fails
         # the slot over, and lands a SECOND agent on the work elsewhere. Only once
         # the job is genuinely new does how busy the machine is decide it.
-        if at_job_capacity(list(self._agents)):
-            log("mesh-at-capacity",
-                f"Mesh: declined {job.duty} from "
-                f"{self._node_name(job.requested_by)} — this machine is at capacity")
+        if self._at_capacity(job, job.requested_by):
             return "declined", "at job capacity", False
         done_path = self._agent_done_path(wk) if wk else None
         try:
@@ -2921,6 +2918,16 @@ class MeshNode:
         d.mkdir(parents=True, exist_ok=True)
         return d / (f"in-{token}.json" if incoming else f"out-{token}.json")
 
+    def _at_capacity(self, job: Job, requester_id: str) -> bool:
+        """Whether the host says this machine is too busy for ``job``
+        ([Host.at_job_capacity]); a yes is logged, and the caller declines."""
+        if not at_job_capacity(list(self._agents)):
+            return False
+        log("mesh-at-capacity",
+            f"Mesh: declined {job.duty} from "
+            f"{self._node_name(requester_id)} — this machine is at capacity")
+        return True
+
     def _run_confined(self, job: Job, requester_id: str) -> tuple[str, str, bool]:
         """Run a foreign request under zero trust: launch the confinement runner on
         the (untrusted) prompt, book usage, and start watching for its result file to
@@ -2952,6 +2959,10 @@ class MeshNode:
         if (job.id not in self._confined_running
                 and len(self._confined_running) >= _MAX_FOREIGN):
             return "failed", "confined-execution capacity reached", False
+        # The sandbox runs on this machine, so the machine's own ceiling holds for it
+        # as for a personal job — asked after the dedup above, for the same reason.
+        if self._at_capacity(job, requester_id):
+            return "declined", "at job capacity", False
         try:
             result_path = self._result_path(job.id)
             spawnjob.spawn_confined(job.prompt, str(result_path))
