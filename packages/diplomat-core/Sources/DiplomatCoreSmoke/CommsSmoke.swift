@@ -788,8 +788,10 @@ private func catchUpSmoke() {
     check(notes.count == 1 && notes[0].detail?.contains("more than 24 hours ago") == true
           && notes[0].detail?.contains("were not triaged") == true,
           "…and one error event names what was skipped: \(notes.map(\.detail))")
-    _ = run(now + 60, in: dir)
-    check(CommsLog.read(in: dir).filter { $0.kind == .error }.count == 1, "…once")
+    check(r.notices == notes.compactMap(\.detail), "…which the tick hands on as a notice: \(r.notices)")
+    let again = run(now + 60, in: dir)
+    check(CommsLog.read(in: dir).filter { $0.kind == .error }.count == 1 && again.notices.isEmpty,
+          "…once")
 
     let near = scratchDir("catchup-near")
     defer { try? FileManager.default.removeItem(at: near) }
@@ -830,6 +832,7 @@ private func truncationSmoke() {
           && gaps[0].detail?.contains("more DMs than one poll reads") == true
           && gaps[0].detail?.contains("were not triaged") == true,
           "a query cut short by maxSearchPages logs an error event for the rest: \(gaps.map(\.detail))")
+    check(first.notices == gaps.compactMap(\.detail), "…and hands it on as a notice: \(first.notices)")
     check(first.items.map(\.message.text) == (1...8).map { "<@UME> m\($0)" },
           "…and the tick goes on, oldest first: \(first.items.map(\.message.text))")
     _ = run(w + 3_660)

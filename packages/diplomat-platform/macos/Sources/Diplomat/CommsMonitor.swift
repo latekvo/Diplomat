@@ -216,6 +216,8 @@ extension Store {
     func applyComms(_ result: CommsTickResult) async {
         if let me = result.me, me != commsIdentity { commsIdentity = me }
         noteCommsHealth(result.error)
+        for notice in result.notices { AuditLog.log("auto", "comms-notice", notice) }
+        if !result.notices.isEmpty { refreshAudit() }
         let toggles = commsToggles
         let settings = commsSettings
         let reports = CommsLog.reportsDir()

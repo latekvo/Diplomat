@@ -272,14 +272,26 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
     public var me: CommsIdentity?
     public var items: [Item]
     public var error: String?
+    /// What this tick could not read (a catch-up past the horizon, a query paged out): the
+    /// tick still succeeded, so these go to the activity feed rather than the error.
+    public var notices: [String]
 
-    public init(me: CommsIdentity?, items: [Item], error: String?) {
+    public init(me: CommsIdentity?, items: [Item], error: String?, notices: [String] = []) {
         self.me = me
         self.items = items
         self.error = error
+        self.notices = notices
     }
 
-    private enum CodingKeys: String, CodingKey { case me, items, error }
+    private enum CodingKeys: String, CodingKey { case me, items, error, notices }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        me = try c.decodeIfPresent(CommsIdentity.self, forKey: .me)
+        items = try c.decode([Item].self, forKey: .items)
+        error = try c.decodeIfPresent(String.self, forKey: .error)
+        notices = try c.decodeIfPresent([String].self, forKey: .notices) ?? []
+    }
 
     /// `me` and `error` are written as `null` when absent, so a reader can tell a
     /// clean tick from a truncated answer.
@@ -288,6 +300,7 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
         try c.encode(me, forKey: .me)
         try c.encode(items, forKey: .items)
         try c.encode(error, forKey: .error)
+        try c.encode(notices, forKey: .notices)
     }
 }
 
@@ -333,6 +346,11 @@ public enum CommsWatch {
 
         /// Log and hand over what was triaged, and save the state with how this tick
         /// ended, logging an `error` on the transition.
+        var notices: [String] = []
+        func notice(_ text: String) {
+            CommsLog.append(CommsEvent(kind: .error, id: "", detail: text), in: dir)
+            notices.append(text)
+        }
         func finish(error: String?) -> CommsTickResult {
             let items = state.undelivered
             for item in items {
@@ -348,7 +366,7 @@ public enum CommsWatch {
             state.error = error
             state.undelivered = []
             state.save(in: dir)
-            return CommsTickResult(me: state.me, items: items, error: error)
+            return CommsTickResult(me: state.me, items: items, error: error, notices: notices)
         }
 
         guard let assets = try? CoreAssets.comms() else {
@@ -371,10 +389,9 @@ public enum CommsWatch {
         }
         let lagged = CommsTS.number(now) - assets.indexLagSecs * 1_000_000
         if watermark < CommsTS.number(now) - assets.catchUpHours * 3_600 * 1_000_000 {
-            CommsLog.append(CommsEvent(kind: .error, id: "", detail:
-                "Comms had read Slack only up to \(iso(watermark)), more than "
+            notice("Comms had read Slack only up to \(iso(watermark)), more than "
                 + "\(assets.catchUpHours) hours ago; messages before \(iso(lagged)) "
-                + "were not triaged"), in: dir)
+                + "were not triaged")
             watermark = max(watermark, lagged)
             state.watermark = CommsTS.string(watermark)
             state.gaps = [:]
@@ -404,10 +421,9 @@ public enum CommsWatch {
         }
         for (label, oldest) in gaps.sorted(by: { $0.key < $1.key })
         where state.gaps[label] != CommsTS.string(oldest) {
-            CommsLog.append(CommsEvent(kind: .error, id: "", detail:
-                "Slack holds more \(label) than one poll reads "
+            notice("Slack holds more \(label) than one poll reads "
                 + "(\(assets.maxSearchPages) pages of \(assets.searchCount)); those from "
-                + "\(iso(watermark)) to \(iso(oldest)) were not triaged"), in: dir)
+                + "\(iso(watermark)) to \(iso(oldest)) were not triaged")
         }
         state.gaps = gaps.mapValues(CommsTS.string)
 

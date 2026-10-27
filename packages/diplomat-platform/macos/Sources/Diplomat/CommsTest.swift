@@ -116,14 +116,15 @@ enum CommsTest {
                                                              summary: summary, reason: "r"))
         }
         // What `CommsWatch.tick` writes before it returns: each ping, then its triage.
-        func apply(_ items: [CommsTickResult.Item], error: String? = nil) async {
+        func apply(_ items: [CommsTickResult.Item], error: String? = nil,
+                   notices: [String] = []) async {
             for it in items {
                 CommsLog.append(CommsEvent(kind: .ping, id: it.message.id, message: it.message))
                 CommsLog.append(CommsEvent(kind: .decision, id: it.message.id, decision: it.decision))
             }
             await store.applyComms(CommsTickResult(
                 me: CommsIdentity(userID: "U0ME", teamID: "T0", handle: "latekvo"),
-                items: items, error: error))
+                items: items, error: error, notices: notices))
         }
         func ids() -> [String] { store.queuedTasks.map(\.id) }
         func band(_ b: Int) -> [String] { ids().filter { AgentTaskQueue.band($0) == b } }
@@ -293,6 +294,10 @@ enum CommsTest {
         await apply([])
         check("…and its recovery once", store.commsError == nil
                 && feed("comms-recovered").count == 1)
+        await apply([], notices: ["messages before 09:00 were not triaged"])
+        check("a tick's notice is an activity line, not an error",
+              store.commsError == nil && feed("comms-notice").map(\.detail)
+                == ["messages before 09:00 were not triaged"])
 
         // MARK: started / finished
         guard let entry = store.queuedTasks.first(where: { $0.id == "review:90010" }) else {

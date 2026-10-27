@@ -42,7 +42,8 @@
     "comms-bump": "comms",
     "comms-investigate": "comms",
     "comms-error": "comms",
-    "comms-recovered": "comms"
+    "comms-recovered": "comms",
+    "comms-notice": "comms"
   },
   "fallback": "system"
 }

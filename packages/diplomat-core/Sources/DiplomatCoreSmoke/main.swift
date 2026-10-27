@@ -3137,7 +3137,7 @@ check(AuditCategory.of(action: "mesh-spawn") == .mesh)
 check(AuditCategory.of(action: "mesh-stop") == .mesh, "stopping a node left running is a Mesh row")
 // Comms (the Slack watcher) rows, its own chip placed after Mesh.
 for verb in ["comms-ping", "comms-review", "comms-fix", "comms-bump", "comms-investigate",
-             "comms-error", "comms-recovered"] {
+             "comms-error", "comms-recovered", "comms-notice"] {
     check(AuditCategory.of(action: verb) == .comms, "\(verb) is a Comms row")
 }
 check(AuditCategory.displayOrder.firstIndex(of: .comms) == AuditCategory.displayOrder.firstIndex(of: .mesh)! + 1

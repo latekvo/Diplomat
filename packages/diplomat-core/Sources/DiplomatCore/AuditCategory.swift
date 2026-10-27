@@ -99,7 +99,7 @@ public enum AuditCategory: String, CaseIterable, Sendable {
              "mesh-dispatch", "mesh-dispatch-failed", "mesh-spawn", "mesh-stop":
             return .mesh
         case "comms-ping", "comms-review", "comms-fix", "comms-bump", "comms-investigate",
-             "comms-error", "comms-recovered":
+             "comms-error", "comms-recovered", "comms-notice":
             return .comms
         default:
             return .system
