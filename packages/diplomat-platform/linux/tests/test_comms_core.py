@@ -101,8 +101,8 @@ def test_an_investigation_round_trips_into_the_queue_and_its_prompt():
     out = _core("build-prompt", stdin=work.config)
     assert out.returncode == 0, out.stderr
     prompt = out.stdout
-    assert "BEGIN UNTRUSTED SLACK MESSAGE\nTriage summary: login page crashes\nText:\n" \
-           "the login screen crashes on Android 14\nEND UNTRUSTED SLACK MESSAGE" in prompt
+    assert "BEGIN UNTRUSTED SLACK MESSAGE\n| Triage summary: login page crashes\n| Text:\n" \
+           "| the login screen crashes on Android 14\nEND UNTRUSTED SLACK MESSAGE" in prompt
     assert "you make no GitHub writes of any kind" in prompt
     assert "Never post, reply or react in Slack" in prompt
     assert f"Write the report to {config['reportPath']}" in prompt
@@ -257,7 +257,7 @@ def test_comms_tick_runs_end_to_end_through_the_binary(tmp_path, slack):
     assert [q.split(" after:")[0] for q in queries] == ["is:dm", "<@UME>", '"argent"']
     assert all(auth == "Bearer xoxp-test" for _, _, auth in _Slack.seen)
     stdin = (tmp_path / "stdin.txt").read_text()
-    assert stdin.startswith("BEGIN UNTRUSTED SLACK MESSAGE\nFrom: alice\nWhere: DM\n")
+    assert stdin.startswith("BEGIN UNTRUSTED SLACK MESSAGE\n| From: alice\n| Where: DM\n")
     assert "can you review PR 12?" in stdin
 
     feed = json.loads(_core("comms-feed").stdout)

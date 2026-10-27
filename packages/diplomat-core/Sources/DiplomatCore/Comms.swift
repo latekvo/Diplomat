@@ -536,13 +536,15 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
 
     public func buildPrompt() -> String {
         guard let b = (try? CoreAssets.comms())?.investigate else { return "" }
+        // The sender and channel are named outside the fence, so they keep to one line.
         let values = [
             "owner": owner, "repo": repo, "permalink": permalink, "reportPath": reportPath,
-            "sender": CommsText.defang(sender), "channel": CommsText.defang(channel),
+            "sender": CommsText.oneLine(CommsText.defang(sender)),
+            "channel": CommsText.oneLine(CommsText.defang(channel)),
             "summary": CommsText.defang(summary), "text": CommsText.defang(text),
         ]
         return [b.intro, b.message, b.work, b.rules, b.report]
-            .map { CommsText.fill($0, values) }
+            .map { CommsText.fillFenced($0, values) }
             .joined(separator: "\n\n")
     }
 }
@@ -551,6 +553,48 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
 public enum CommsText {
     /// The words both prompts fence a message between (`BEGIN …` / `END …`).
     public static let fenceMarker = "UNTRUSTED SLACK MESSAGE"
+
+    /// What every line inside a fence starts with, so no line of a message can be one of
+    /// the fence lines, however it is spelled.
+    public static let quoteMarker = "|"
+
+    /// `template` filled as `fill` fills it, with every line between a `BEGIN` and an
+    /// `END` fence line quoted: prefixed with `quoteMarker` and a space (an empty line
+    /// with the marker alone). Any line break in a value starts a quoted line.
+    public static func fillFenced(_ template: String, _ values: [String: String]) -> String {
+        let begin = "BEGIN " + fenceMarker, end = "END " + fenceMarker
+        var out: [String] = []
+        var inside: [Substring]?
+        for line in template.split(separator: "\n", omittingEmptySubsequences: false) {
+            if var body = inside {
+                if line == end {
+                    out.append(quote(fill(body.joined(separator: "\n"), values)))
+                    out.append(String(line))
+                    inside = nil
+                } else {
+                    body.append(line)
+                    inside = body
+                }
+            } else {
+                out.append(fill(String(line), values))
+                if line == begin { inside = [] }
+            }
+        }
+        if let body = inside { out.append(quote(fill(body.joined(separator: "\n"), values))) }
+        return out.joined(separator: "\n")
+    }
+
+    private static func quote(_ text: String) -> String {
+        text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+            .map { $0.isEmpty ? quoteMarker : quoteMarker + " " + $0 }
+            .joined(separator: "\n")
+    }
+
+    /// `text` on one line: each run of line breaks becomes a space, for a value set
+    /// outside a fence.
+    public static func oneLine(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline).joined(separator: " ")
+    }
 
     /// `text` with every copy of the fence marker replaced, so a message cannot close
     /// its own fence early and have what follows read as the prompt's own words. A copy

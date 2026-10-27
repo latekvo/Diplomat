@@ -6,8 +6,11 @@ import Foundation
 ///
 ///   comms-tick    stdin = CommsSettings JSON; env DIPLOMAT_SLACK_TOKEN. One tick with the
 ///                 real classifier; stdout = {"me": {...}|null, "items": [{"message",
-///                 "decision"}], "error": "..."|null}. Exits 0 when `error` is set: a
-///                 failed tick is an answer, not a crash.
+///                 "decision"}], "error": "..."|null, "notices": ["..."]}, `notices` being
+///                 what went unread that is not an error (a catch-up past catchUpHours, a
+///                 query cut short by maxSearchPages). Exits 0 when `error` is set: a
+///                 failed tick is an answer, not a crash. Exits 1 when stdout cannot be
+///                 written (its reader gone), leaving the items for the next tick.
 ///   comms-auth    no stdin; env DIPLOMAT_SLACK_TOKEN. auth.test through the tick's own
 ///                 transport; stdout = {"ok": true, "user", "userId", "team", "teamId"} or
 ///                 {"ok": false, "error": "<the tick's wording>"}. Exits 0 either way.
@@ -20,10 +23,26 @@ import Foundation
 enum CommsCommand {
     static func tick(_ input: Data) {
         let settings = decode(CommsSettings.self, input, "CommsSettings")
-        let result = CommsWatch.tick(token: token, settings: settings) {
+        var failure: Error?
+        _ = CommsWatch.tick(token: token, settings: settings, deliver: { result in
+            do {
+                guard var data = try? CommsLog.encoder.encode(result) else {
+                    die("could not encode the answer", 1)
+                }
+                data.append(UInt8(ascii: "\n"))
+                // Only now, past the tick's last child (which would inherit it): a gone
+                // reader is then an error, not a signal killing the tick before it saves.
+                signal(SIGPIPE, SIG_IGN)
+                try FileHandle.standardOutput.write(contentsOf: data)
+                return true
+            } catch {
+                failure = error
+                return false
+            }
+        }) {
             CommsClassifier.run($0, settings: settings)
         }
-        emitJSON(result)
+        if let failure { die("could not write the output: \(failure.localizedDescription)", 1) }
     }
 
     static func auth() {
