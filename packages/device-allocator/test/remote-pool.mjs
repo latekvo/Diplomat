@@ -43,6 +43,7 @@ function sandbox({ remote = REMOTE, mode = 'ok', config = {} } = {}) {
     // Renamed into place: the provider polls for this file and must never read it half-written.
     end: (leaseId, why) => { fs.writeFileSync(pool('end.tmp'), why); fs.renameSync(pool('end.tmp'), pool(`end-${leaseId}`)); },
     leases: () => JSON.parse(fs.readFileSync(path.join(dir, 'leases.json'), 'utf8')).leases,
+    unconfirmed: () => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'remote-releases.json'), 'utf8')).releases.map((x) => x.lease.key); } catch { return []; } },
   };
 }
 
@@ -73,9 +74,11 @@ function startDaemon(box, extraEnv = {}, provider = PROVIDER) {
     req.end();
   });
   const stop = async (signal = 'SIGTERM') => {
-    const gone = new Promise((r) => { child.once('exit', r); setTimeout(r, 5000); });
+    if (child.exitCode != null) return;
+    const gone = new Promise((r) => child.once('exit', () => r(true)));
     child.kill(signal);
-    await gone;
+    // A stop gives its releases 3 s, and a loaded machine needs headroom past that.
+    assert.ok(await Promise.race([gone, delay(20000).then(() => false)]), 'the daemon did not exit');
   };
   return { call, stop };
 }
@@ -155,7 +158,8 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
 // 2. Every way of not getting one falls back to a local device, with the reason.
 {
   const box = sandbox({ remote: REMOTE.map((x) => ({ ...x, free: false })) });
-  const d = startDaemon(box, { DA_REMOTE_ACQUIRE_BUDGET_MS: '500', FAKE_POOL_SLOW_MS: '3000' });
+  // The slow provider outlasts the budget by far more than any load stretches the rest.
+  const d = startDaemon(box, { DA_REMOTE_ACQUIRE_BUDGET_MS: '500', FAKE_POOL_SLOW_MS: '12000' });
   await healthy(d);
   const none = await d.call('POST', '/request', { ownerPid: ME, platform: 'android' });
   assert.equal(none.source, 'local');
@@ -177,10 +181,10 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   const t0 = Date.now();
   const slow = await d.call('POST', '/request', { ownerPid: ME, platform: 'android' });
   const waited = Date.now() - t0;
-  assert.ok(waited < 2500, `the agent waits the budget, not the provider (waited ${waited} ms)`);
+  assert.ok(waited < 9000, `the agent waits the budget, not the provider (waited ${waited} ms)`);
   assert.equal(slow.source, 'local');
   assert.equal(slow.remoteSkipped, 'Test Pool did not answer within 1 s');
-  await until('the late lease to go back', () => box.events().join() === 'lease pool:P16,release pool:P16');
+  await until('the late lease to go back', () => box.events().join() === 'lease pool:P16,release pool:P16', 20000);
   pass('a provider past the budget is a fallback, and the lease it lands late is handed back');
   await d.call('POST', '/release', { ownerPid: ME });
 
@@ -263,6 +267,25 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   assert.equal((await stateOf(d)).devices.some((x) => x.key === 'pool:P11'), false);
   assert.match(auditOf(), /"remote-lease-ended","detail":"POCO \(pool\) taken from pid:\d+: lease expired"/);
   pass('change-device does not restore a lease the pool ended while it looked for a replacement');
+  await d.stop();
+}
+
+// 2c. A release the pool does not confirm is retried until it does.
+{
+  const box = sandbox();
+  const d = startDaemon(box, { DA_REMOTE_RELEASE_RETRY_MS: '300' });
+  await healthy(d);
+  const r = await d.call('POST', '/request', { ownerPid: ME, platform: 'android', version: '16' });
+  assert.equal(r.key, 'pool:P16');
+  box.mode('release-fails');
+  await d.call('POST', '/release', { ownerPid: ME });
+  await until('the failed release to be recorded', () => box.unconfirmed().join() === 'pool:P16');
+  assert.equal((await stateOf(d)).devices.some((x) => x.key === 'pool:P16'), false);
+  await until('a retry', () => box.events().filter((e) => e === 'release-failed pool:P16').length >= 2);
+  box.mode('ok');
+  await until('the retry to land', () => box.events().at(-1) === 'release pool:P16');
+  await until('the record to clear', () => box.unconfirmed().length === 0);
+  pass('a release the pool does not confirm is recorded and retried until it lands');
   await d.stop();
 }
 
@@ -379,7 +402,8 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   assert.deepEqual(box.events().slice(stopped), [], 'nothing reattached');
   pass('stopping the daemon returns its leases, and the next one does not restore them');
 
-  // A release slower than the stop allows is finished by the next daemon.
+  // A release slower than the stop allows is finished by a later daemon, however many
+  // stop before it lands.
   await d.stop();
   d = startDaemon(box, { FAKE_POOL_SLOW_MS: '5000' });
   await healthy(d);
@@ -388,13 +412,20 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   box.mode('slow-release');
   const before = box.events().length;
   await d.stop();
-  assert.equal(box.leases().find((l) => l.key === 'pool:P16')?.releasePending, true);
+  assert.equal(box.leases().some((l) => l.key === 'pool:P16'), false, 'not restored as held');
+  assert.deepEqual(box.unconfirmed(), ['pool:P16']);
+  d = startDaemon(box, { FAKE_POOL_SLOW_MS: '5000' });
+  await healthy(d);
+  await delay(1000);
+  await d.stop();
+  assert.deepEqual(box.unconfirmed(), ['pool:P16'], 'a second stop mid-retry keeps it on record');
   box.mode('ok');
   d = startDaemon(box);
   await healthy(d);
-  await until('the next daemon to finish the release', () => box.events().slice(before).join() === 'release pool:P16');
+  await until('a later daemon to finish the release', () => box.events().slice(before).join() === 'release pool:P16');
+  await until('the record to clear', () => box.unconfirmed().length === 0);
   assert.equal((await stateOf(d)).devices.some((x) => x.key === 'pool:P16'), false);
-  pass('a lease whose release outlasts the stop is given back by the next daemon');
+  pass('a lease whose release outlasts the stop is given back by a later daemon');
 
   // An owner that died while no daemon was running: the lease goes back at startup.
   const gone = spawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)']);

@@ -71,7 +71,9 @@ and a lease that lands after it is handed straight back. A remote device:
 * goes back to its pool on every path a local device would be shut down — free, reap,
   idle, kill, change, daemon stop — and on `report-device-broken` instead of being
   quarantined, since the pool resets what it gets back, always through the provider that
-  lent it, even after `deviceRemoteProvider` has changed;
+  lent it, even after `deviceRemoteProvider` has changed. A release the pool does not
+  confirm (offline, or cut short by a daemon stop) is kept in `remote-releases.json` and
+  retried every minute, by this daemon and the next, for up to a day;
 * drops out of the table, with an audit line, when the pool ends the lease under its
   holder;
 * is reattached when the daemon dies without stopping (a crash, a SIGKILL) and comes

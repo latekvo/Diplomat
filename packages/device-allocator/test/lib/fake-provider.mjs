@@ -4,7 +4,7 @@
 //   mode           'ok' | 'throw' | 'slow' (leases after FAKE_POOL_SLOW_MS) | 'attach-fails'
 //                  | 'slow-attach' (attaches after FAKE_POOL_SLOW_MS, reporting an end that came meanwhile)
 //                  | 'slow-attach-strict' (the same, but fails if released or ended meanwhile)
-//                  | 'slow-release' (releases after FAKE_POOL_SLOW_MS)
+//                  | 'slow-release' (releases after FAKE_POOL_SLOW_MS) | 'release-fails'
 //   end-<lease id> written by a test to end that lease; its content is the reason
 //   events.log     what the provider did, one line each: "lease <key>", "release <key>", ...
 // An attached device is a local TCP port that echoes, standing in for an adb transport.
@@ -66,7 +66,9 @@ export default function create(ctx) {
     },
     async release(lease) {
       released.add(lease.id);
-      if (read('mode', 'ok').trim() === 'slow-release') await new Promise((r) => setTimeout(r, Number(process.env.FAKE_POOL_SLOW_MS)));
+      const mode = read('mode', 'ok').trim();
+      if (mode === 'slow-release') await new Promise((r) => setTimeout(r, Number(process.env.FAKE_POOL_SLOW_MS)));
+      if (mode === 'release-fails') { event(`release-failed ${lease.key}`); throw new Error('pool unreachable'); }
       servers.get(lease.id)?.close();
       servers.delete(lease.id);
       const devices = JSON.parse(read('devices.json', '[]'));

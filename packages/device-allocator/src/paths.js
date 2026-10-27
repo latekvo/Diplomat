@@ -16,6 +16,7 @@ export const SOCKET_PATH = path.join(BASE_DIR, 'daemon.sock');
 export const DISCOVERY_PATH = path.join(BASE_DIR, 'daemon.json'); // {pid, startedAt, socket}
 export const STATE_PATH = path.join(BASE_DIR, 'state.json'); // public snapshot the applet reads
 export const LEASES_PATH = path.join(BASE_DIR, 'leases.json'); // full allocation records, for restart rehydration
+export const REMOTE_RELEASES_PATH = path.join(BASE_DIR, 'remote-releases.json'); // leases given back but not confirmed
 export const LOG_PATH = path.join(BASE_DIR, 'daemon.log');
 export const REPAIRS_DIR = path.join(BASE_DIR, 'repairs');
 
@@ -88,5 +89,7 @@ export const STOPPING_GRACE_MS = Number(process.env.DA_STOPPING_GRACE_MS) || 60 
 // The longest a request waits on the remote device pool (src/remote.js) before falling
 // back to a local device. It covers a provider's browser sign-in, so it is generous.
 export const REMOTE_ACQUIRE_BUDGET_MS = Number(process.env.DA_REMOTE_ACQUIRE_BUDGET_MS) || 11 * 60 * 1000;
+// How often a remote lease whose release failed is tried again.
+export const REMOTE_RELEASE_RETRY_MS = Number(process.env.DA_REMOTE_RELEASE_RETRY_MS) || 60 * 1000;
 // The longest attaching a leased device may take before it is given back.
 export const REMOTE_ATTACH_BUDGET_MS = Number(process.env.DA_REMOTE_ATTACH_BUDGET_MS) || 3 * 60 * 1000;

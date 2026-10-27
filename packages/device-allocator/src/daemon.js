@@ -39,7 +39,7 @@ import { promisify } from 'node:util';
 // reserved for exit-time teardown (shutdownBootedSync), where blocking is fine.
 const pexecFile = promisify(execFile);
 import {
-  SOCKET_PATH, DISCOVERY_PATH, STATE_PATH, LEASES_PATH, REPAIRS_DIR,
+  SOCKET_PATH, DISCOVERY_PATH, STATE_PATH, LEASES_PATH, REMOTE_RELEASES_PATH, REPAIRS_DIR,
   LEASED_IDLE_DEFAULT_MIN, FREE_IDLE_DEFAULT_MIN, STOPPING_GRACE_MS,
   REAP_INTERVAL_MS, IDLE_INTERVAL_MS, POOL_INTERVAL_MS, ALLOC_GRACE_MS,
   QUOTA, AWAIT_TIMEOUT_MS, REPAIR_TTL_MS, BAN_DIR, BANNED_PATH, INJECTIONS_DIR, AUDIT_PATH,
@@ -198,9 +198,14 @@ async function requestRemote(p, req, exclude) {
   }
   // Freed or killed while attaching: given back then, but the attach that finished
   // since may have opened what that release had nothing to close yet.
-  if (allocations.get(alloc.key) !== alloc) {
+  if (alloc.ended || allocations.get(alloc.key) !== alloc) {
     remote.release(alloc.remoteProvider, alloc.remote);
-    if (alloc.ended) return { applies: true, reason: `${alloc.name} was leased, but its pool ended the lease while attaching: ${alloc.ended}` };
+    if (alloc.ended) {
+      await withLock(async () => {
+        if (allocations.get(alloc.key) === alloc) { allocations.delete(alloc.key); publish(); }
+      });
+      return { applies: true, reason: `${alloc.name} was leased, but its pool ended the lease while attaching: ${alloc.ended}` };
+    }
     throw httpError(409, `device ${alloc.name} was released during boot`);
   }
   alloc.status = 'ready';
@@ -217,6 +222,7 @@ function remoteLeaseEnded(alloc, why) {
     if (allocations.get(alloc.key) !== alloc) return;
     allocations.delete(alloc.key);
     publish();
+    alloc.endAudited = true;
     appendAudit('daemon', 'remote-lease-ended', `${alloc.name} taken from ${alloc.agentName}: ${why}`);
   });
 }
@@ -386,7 +392,7 @@ async function handleChange(p) {
   // and better than stranding the agent with nothing.
   const restoreOld = () => withLock(async () => {
     if (old?.ended) {
-      appendAudit('daemon', 'remote-lease-ended', `${old.name} taken from ${old.agentName}: ${old.ended}`);
+      if (!old.endAudited) appendAudit('daemon', 'remote-lease-ended', `${old.name} taken from ${old.agentName}: ${old.ended}`);
       return false;
     }
     if (old && !allocations.has(old.key)) { allocations.set(old.key, old); publish(); return true; }
@@ -779,7 +785,7 @@ function rehydrateLeases() {
   let restored = 0;
   for (const a of readLeases()) {
     if (!a || !a.key || allocations.has(a.key)) continue;
-    const keep = !a.releasePending && (a.status === 'repairing' || (a.ownerPid && pidAlive(a.ownerPid)));
+    const keep = a.status === 'repairing' || (a.ownerPid && pidAlive(a.ownerPid));
     if (!keep) {
       if (a.source === 'remote') remote.release(a.remoteProvider, a.remote); // else it sits leased until it expires
       continue;
@@ -1048,6 +1054,7 @@ function onListening() {
   refreshPool();
   remote.watch(publish);
   remote.load();
+  remote.startRetrying();
   setInterval(reapDeadOwners, REAP_INTERVAL_MS);
   setInterval(refreshPool, POOL_INTERVAL_MS);
   setInterval(idleSweep, IDLE_INTERVAL_MS);
@@ -1138,17 +1145,16 @@ async function start() {
   ensureDirs();
   // If a healthy daemon is already serving, never start a second one.
   if (await socketHealthy()) { log('another daemon is already live; exiting'); process.exit(0); }
-  for (const f of [DISCOVERY_PATH, STATE_PATH, LEASES_PATH, BANNED_PATH]) sweepDeadTmp(f);
+  for (const f of [DISCOVERY_PATH, STATE_PATH, LEASES_PATH, BANNED_PATH, REMOTE_RELEASES_PATH]) sweepDeadTmp(f);
   rehydrateLeases();
   // NB: no pre-listen unlink — see the error handler above.
   server.listen(SOCKET_PATH, onListening);
   const bye = async () => {
     const leased = [...allocations.values()].filter((a) => a.source === 'remote');
-    await Promise.race([Promise.all(leased.map((a) => remote.release(a.remoteProvider, a.remote)
-      .then(() => allocations.delete(a.key)))), delay(3000)]);
-    // The next daemon must not restore a given-back lease as held; one still being given
-    // back stays on record for it to finish.
-    for (const a of leased) a.releasePending = true;
+    await Promise.race([Promise.all(leased.map((a) => remote.release(a.remoteProvider, a.remote))), delay(3000)]);
+    remote.recordInFlight();
+    // Given back, or left for the next daemon to give back: never restored as held.
+    for (const a of leased) allocations.delete(a.key);
     if (leased.length) try { writeLeases([...allocations.values()]); } catch (e) { log('bye: leases write failed', String(e)); }
     shutdownBootedSync();
     try { fs.unlinkSync(SOCKET_PATH); } catch {}
