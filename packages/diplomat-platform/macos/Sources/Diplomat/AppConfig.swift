@@ -16,6 +16,8 @@ import DiplomatCore
 /// One more sits with them without needing to: how long a run may go on before the
 /// resolver calls it over, which belongs beside the cap it hands bays back to and is
 /// read by the Linux `DIPLOMAT_AGENTS` dump, a front-end-free path with no store of its own.
+/// So does the Keychain item Comms reads its Slack token from, beside the agent token's
+/// and under the same rule: the locator is written here, never the token.
 /// And three are for the device-allocator daemon, a Node process: the terminal spawns
 /// resolve to, published rather than set here, for it to open its repair agents in,
 /// and the two idle limits it shuts devices down and takes them back by.
@@ -50,6 +52,11 @@ enum AppConfig {
     /// name — never the token. See `AgentSpawner.tokenExport`. Same key in
     /// `appconfig.py`, which a mesh node on a Mac spawns by.
     static let agentTokenKeychainItemKey = "agentTokenKeychainItem"
+    /// The login-Keychain item Comms reads its Slack user token from, by service name —
+    /// never the token, since this file is world-readable and a mesh copies it. The
+    /// Linux twin is `slackTokenFile`, a 0600 file's path.
+    static let slackTokenKeychainItemKey = "slackTokenKeychainItem"
+    static let slackTokenKeychainDefault = "diplomat-slack"
     /// The terminal this app's spawns resolve to, published for the device-allocator
     /// daemon to open its repair agents in (`device-allocator/src/terminal.js`).
     /// Written, never read here: the choice itself stays in UserDefaults.
@@ -74,6 +81,13 @@ enum AppConfig {
     /// whatever `gh auth login` stored.
     static var agentTokenKeychainItem: String {
         string(agentTokenKeychainItemKey).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The Keychain item the Slack token is read from: the configured one, or
+    /// `slackTokenKeychainDefault`.
+    static var slackTokenKeychainItem: String {
+        let item = string(slackTokenKeychainItemKey).trimmingCharacters(in: .whitespacesAndNewlines)
+        return item.isEmpty ? slackTokenKeychainDefault : item
     }
 
     /// Overridable so a self-test can point at a scratch file instead of the real one —

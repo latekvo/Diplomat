@@ -73,6 +73,19 @@ jobs:
               swift run Diplomat
             test -s "$RUNNER_TEMP/$mode.png"
           done
+      # The Comms screen, for the same reason: over a synthetic log written through the
+      # real CommsLog into a scratch DIPLOMAT_COMMS_DIR it sets itself (every decision
+      # kind, a job in each state, a failing poll), inside the whole panel (the header
+      # button and the screen swap), the main panel under the unread badge, and with
+      # no token, which draws the setup steps instead.
+      - name: Headless comms render
+        working-directory: packages/diplomat-platform/macos
+        run: |
+          for mode in comms comms-panel comms-badge comms-empty; do
+            DIPLOMAT_RENDER=$mode DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/$mode.png" \
+              swift run Diplomat
+            test -s "$RUNNER_TEMP/$mode.png"
+          done
       # The shared-helper self-tests that a runner can host. All pure logic, and none
       # of them touches the runner's real state: OSA_TEST runs bare AppleScript
       # expressions (no `tell application`, so no Automation permission),
@@ -96,7 +109,9 @@ jobs:
       # lays out itself plus an idle copy of the binary, and ends every one of them; it
       # terminates nothing else. REPOPATHS_TEST lays its checkouts out in a scratch dir.
       # LOWDISK_TEST mounts and fills a small disk image of its own and keeps its feed,
-      # run book and config scratch, as QUEUE_TEST does.
+      # run book and config scratch, as QUEUE_TEST does. COMMS_TEST hands composed
+      # Slack ticks to the real effect application with GitHub stood in for, and keeps
+      # its feed, Comms log, run book and config scratch; nothing it queues is drained.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
       # and not by oversight: both drive real throwaway terminal windows and need a
@@ -142,6 +157,7 @@ jobs:
           DIPLOMAT_REPOPATHS_TEST=1 swift run Diplomat
           DIPLOMAT_RELAUNCH_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
+          DIPLOMAT_COMMS_TEST=1 swift run Diplomat
           DIPLOMAT_SWEEP_TEST=1 swift run Diplomat
           DIPLOMAT_QUOTA_TEST=1 swift run Diplomat
           DIPLOMAT_APIWATCH_TEST=1 swift run Diplomat

@@ -388,6 +388,91 @@ final class Store: ObservableObject {
         }
     }
 
+    // MARK: Comms (the Slack watcher) settings — same key strings as the Linux store
+
+    /// Whether Comms watches Slack. Off by default: it reads the operator's messages
+    /// and spends a `claude` call on each one addressed to them, which nobody should
+    /// find happening unasked. Kicks a poll on enable, which is also when notification
+    /// permission is first asked for.
+    @Published var commsEnabled: Bool {
+        didSet {
+            persist(commsEnabled, forKey: Keys.commsEnabled)
+            guard commsEnabled, !oldValue, !Headless.active else { return }
+            if commsNotify { CommsNotifier.authorize() }
+            Task { await runCommsPollOnce() }
+        }
+    }
+    /// Keywords that make a message a ping, as typed: comma- or newline-separated
+    /// (`CommsSettings.keywordList` splits them), so one may be a phrase.
+    @Published var commsKeywordsRaw: String {
+        didSet { persist(commsKeywordsRaw, forKey: Keys.commsKeywordsRaw) }
+    }
+    /// Slack user ids or handles a ping may come from; blank admits any member of the
+    /// operator's workspace (`CommsSettings.allowlist`).
+    @Published var commsSenderAllowlistRaw: String {
+        didSet { persist(commsSenderAllowlistRaw, forKey: Keys.commsSenderAllowlistRaw) }
+    }
+    /// The three per-kind switches (`CommsToggles`). Off turns that kind of ask into a
+    /// ping alone.
+    @Published var commsActRequests: Bool {
+        didSet { persist(commsActRequests, forKey: Keys.commsActRequests) }
+    }
+    @Published var commsActBumps: Bool {
+        didSet { persist(commsActBumps, forKey: Keys.commsActBumps) }
+    }
+    @Published var commsActInvestigations: Bool {
+        didSet { persist(commsActInvestigations, forKey: Keys.commsActInvestigations) }
+    }
+    /// Whether a new ping raises a macOS notification.
+    @Published var commsNotify: Bool {
+        didSet {
+            persist(commsNotify, forKey: Keys.commsNotify)
+            if commsNotify && !oldValue && commsEnabled { CommsNotifier.authorize() }
+        }
+    }
+    /// The triage model; blank means `comms.json`'s default.
+    @Published var commsModel: String {
+        didSet { persist(commsModel, forKey: Keys.commsModel) }
+    }
+    /// When the operator last looked at the Comms screen. Pings after it are unread.
+    @Published var commsSeenAt: Date {
+        didSet { persist(commsSeenAt, forKey: Keys.commsSeenAt) }
+    }
+    /// The Keychain item the Slack token is read from, as typed; blank is the default
+    /// (`AppConfig.slackTokenKeychainItem`). In the shared config file rather than
+    /// UserDefaults to sit beside `agentTokenKeychainItem`, the Linux twin's
+    /// `slackTokenFile` and the same never-the-token rule.
+    @Published var slackTokenKeychainItem: String {
+        didSet {
+            guard !Headless.active else { return }
+            AppConfig.set(AppConfig.slackTokenKeychainItemKey,
+                          slackTokenKeychainItem.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    // MARK: Comms state the screen draws
+
+    /// `CommsLog.fold` of the events log, newest ping first.
+    @Published var commsItems: [CommsItem] = []
+    /// Why the last poll failed — a missing token, Slack refusing it, a missing scope,
+    /// no `claude` — or nil after a good one.
+    @Published var commsError: String?
+    /// Who the token belongs to, once a tick or the Settings test has asked.
+    @Published var commsIdentity: CommsIdentity?
+    @Published var commsLastPoll: Date?
+    /// Whether the last look for the token found none: what decides the screen's setup
+    /// instructions over an error banner.
+    @Published var commsTokenMissing = false
+    /// The Settings "Test" answer: who the token is, or why it is not anyone.
+    @Published var commsTestResult: String?
+    @Published var commsTesting = false
+
+    /// The poll loop, its overlap guard and its wake hook (`CommsMonitor.swift`).
+    /// Not private only because the code that drives them lives in that file.
+    var commsMonitorTask: Task<Void, Never>?
+    var commsPollInFlight = false
+    var commsWakeObserver: NSObjectProtocol?
+
     /// Every dispatched agent run the panel draws, in reading order: the sessions this
     /// machine spawned, the work it handed to a mesh node, and any live agent nobody
     /// dispatched at all.
@@ -508,6 +593,15 @@ final class Store: ObservableObject {
         static let allocatorSetupDone = "allocatorSetupDone"
         static let queuedTaskOrder = "queuedTaskOrder"
         static let queueAutoRun = "queueAutoRun"
+        static let commsEnabled = "commsEnabled"
+        static let commsKeywordsRaw = "commsKeywordsRaw"
+        static let commsSenderAllowlistRaw = "commsSenderAllowlistRaw"
+        static let commsActRequests = "commsActRequests"
+        static let commsActBumps = "commsActBumps"
+        static let commsActInvestigations = "commsActInvestigations"
+        static let commsNotify = "commsNotify"
+        static let commsModel = "commsModel"
+        static let commsSeenAt = "commsSeenAt"
         /// The name this list has always been stored under. Kept when it widened
         /// from reviews alone to every sweep, so the asks a Review-PRs sweep left
         /// standing outlive the upgrade that widened it (`RequestedWork` decodes a
@@ -657,6 +751,18 @@ final class Store: ObservableObject {
         meshAckedDevices = Set(defaults.stringArray(forKey: Keys.meshAckedDevices) ?? [])
         meshTrustReminderSuppressed = defaults.bool(forKey: Keys.meshTrustReminderSuppressed)
         settingsExplain = defaults.bool(forKey: Keys.settingsExplain)
+        commsEnabled = defaults.object(forKey: Keys.commsEnabled) as? Bool ?? false
+        commsKeywordsRaw = defaults.string(forKey: Keys.commsKeywordsRaw) ?? ""
+        commsSenderAllowlistRaw = defaults.string(forKey: Keys.commsSenderAllowlistRaw) ?? ""
+        commsActRequests = defaults.object(forKey: Keys.commsActRequests) as? Bool ?? true
+        commsActBumps = defaults.object(forKey: Keys.commsActBumps) as? Bool ?? true
+        commsActInvestigations = defaults.object(forKey: Keys.commsActInvestigations) as? Bool ?? true
+        commsNotify = defaults.object(forKey: Keys.commsNotify) as? Bool ?? true
+        commsModel = defaults.string(forKey: Keys.commsModel) ?? ""
+        // Absent, every ping already logged reads as seen: an upgrade must not open on a
+        // badge for history the operator was never told was being kept.
+        commsSeenAt = defaults.object(forKey: Keys.commsSeenAt) as? Date ?? Date()
+        slackTokenKeychainItem = AppConfig.string(AppConfig.slackTokenKeychainItemKey)
         queuedTaskOrder = defaults.stringArray(forKey: Keys.queuedTaskOrder) ?? []
         requestedWork = Store.loadRequestedWork()
         if hiddenTools.contains(selected.rawValue),
@@ -672,6 +778,14 @@ final class Store: ObservableObject {
             startProcessPoll()
             startAutofixMonitor()
             startApiErrorWatcher()
+            // Written once, so the next launch does not move "seen" up to its own start.
+            if defaults.object(forKey: Keys.commsSeenAt) == nil {
+                persist(commsSeenAt, forKey: Keys.commsSeenAt)
+            }
+            // Live only: a self-test that published a tick against the operator's own
+            // log would write `finished` lines into it (`noteCommsRunsEnded`).
+            refreshComms()
+            startCommsMonitor()
             startMeshPoll()
             refreshBanList()
             refreshAudit()
@@ -1144,6 +1258,7 @@ final class Store: ObservableObject {
         if autoTasksMeasured != pass.tick.capLoad.count {
             autoTasksMeasured = pass.tick.capLoad.count
         }
+        noteCommsRunsEnded()
     }
 
     /// Write back the three things a tick learns about a run: the pid its shell has since
@@ -2239,15 +2354,18 @@ final class Store: ObservableObject {
     // has room — behind the monitors' finds, ahead of the conflict fixes
     // (`AgentTaskQueue.band`).
 
-    /// The config behind one ask, and so which of the two sweeps asked for it.
+    /// The config behind one ask: a review or an issue fix (one item of a wizard's sweep,
+    /// or one a Slack message asked for), or a Comms investigation.
     ///
     /// Everything downstream reads an ask through `action` / `noun` / `depth` /
     /// `buildPrompt`, so the queue, the panel and the drain never branch on which kind
     /// it is — the one place that does is `requestedTask`, where a PR is dedup-able
-    /// work and an issue is not.
+    /// work and an issue or an investigation is not.
     enum RequestedConfig: Equatable {
         case review(ReviewConfig)
         case issues(IssueConfig)
+        /// An investigation a Comms triage asked for (`InvestigateConfig`).
+        case investigate(InvestigateConfig)
 
         /// The queue verb this ask waits under, which is also its `AgentJob.kind`,
         /// its mesh duty and the verb its dispatch writes to the activity feed.
@@ -2255,6 +2373,7 @@ final class Store: ObservableObject {
             switch self {
             case .review: return AgentTaskQueue.reviewAction
             case .issues: return AgentTaskQueue.issuesAction
+            case .investigate: return AgentTaskQueue.investigateAction
             }
         }
 
@@ -2263,6 +2382,7 @@ final class Store: ObservableObject {
             switch self {
             case .review: return "Review"
             case .issues: return "Issues"
+            case .investigate: return "Investigate"
             }
         }
 
@@ -2270,6 +2390,7 @@ final class Store: ObservableObject {
             switch self {
             case .review(let cfg): return cfg.depth
             case .issues(let cfg): return cfg.depth
+            case .investigate: return "slack"
             }
         }
 
@@ -2277,12 +2398,14 @@ final class Store: ObservableObject {
             switch self {
             case .review(let cfg): return cfg.buildPrompt()
             case .issues(let cfg): return cfg.buildPrompt()
+            case .investigate(let cfg): return cfg.buildPrompt()
             }
         }
     }
 
-    /// One PR a Review-PRs sweep asked to have reviewed, or one issue a Fix-issues
-    /// sweep asked to have fixed, waiting for a free slot.
+    /// One PR a Review-PRs sweep asked to have reviewed, one issue a Fix-issues sweep
+    /// asked to have fixed, or one investigation a Slack message asked for, waiting for
+    /// a free slot.
     ///
     /// This is the only work in the queue the applet has to REMEMBER. Everything else
     /// there is a monitor's find, re-derived from GitHub on every poll — but a PR
@@ -2292,8 +2415,9 @@ final class Store: ObservableObject {
     /// from it when the task is offered, exactly as the wizard would have assembled it
     /// at the moment of the click.
     struct RequestedWork: Codable, Equatable {
-        /// The PR number, or the issue number — two numbering spaces, told apart by
-        /// the verb in `key` and nowhere else.
+        /// The PR number, the issue number, or an investigation's Slack ts as a number
+        /// (`CommsTS`) — three numbering spaces, told apart by the verb in `key` and
+        /// nowhere else.
         let number: Int
         let url: String
         /// Whose PR / issue — the pipeline's ban dimension. Empty where the sweep
@@ -2310,7 +2434,13 @@ final class Store: ObservableObject {
         /// The row this task wears in the panel and the activity feed. Carries the
         /// depth because that is the choice a sweep is worth re-reading later: the
         /// same PR queued from a `max` sweep and from a `quick` one are different jobs.
-        var label: String { "\(config.noun) · #\(number) · \(config.depth)" }
+        ///
+        /// An investigation is the exception: its number is a Slack ts, sixteen digits
+        /// that say nothing, so it wears who asked and what about instead.
+        var label: String {
+            if case .investigate(let cfg) = config { return cfg.label }
+            return "\(config.noun) · #\(number) · \(config.depth)"
+        }
 
         private enum CodingKeys: String, CodingKey { case number, url, author, action, config }
 
@@ -2331,6 +2461,8 @@ final class Store: ObservableObject {
             let action = try c.decodeIfPresent(String.self, forKey: .action)
             if action == AgentTaskQueue.issuesAction {
                 config = .issues(try c.decode(IssueConfig.self, forKey: .config))
+            } else if action == AgentTaskQueue.investigateAction {
+                config = .investigate(try c.decode(InvestigateConfig.self, forKey: .config))
             } else {
                 config = .review(try c.decode(ReviewConfig.self, forKey: .config))
             }
@@ -2345,6 +2477,7 @@ final class Store: ObservableObject {
             switch config {
             case .review(let cfg): try c.encode(cfg, forKey: .config)
             case .issues(let cfg): try c.encode(cfg, forKey: .config)
+            case .investigate(let cfg): try c.encode(cfg, forKey: .config)
             }
         }
     }
@@ -2364,8 +2497,14 @@ final class Store: ObservableObject {
     }
 
     private static func loadRequestedWork() -> [RequestedWork] {
-        guard let data = UserDefaults.standard.data(forKey: Keys.requestedWork),
-              let rows = try? JSONDecoder().decode([StoredAsk].self, from: data)
+        decodeRequestedWork(UserDefaults.standard.data(forKey: Keys.requestedWork))
+    }
+
+    /// The stored list as a launch reads it back. Separate from the defaults read so the
+    /// Comms self-test can take an ask through the same decode a restart does, in a mode
+    /// where nothing is written to the defaults it would be read from.
+    static func decodeRequestedWork(_ data: Data?) -> [RequestedWork] {
+        guard let data, let rows = try? JSONDecoder().decode([StoredAsk].self, from: data)
         else { return [] }
         return rows.compactMap(\.work)
     }
@@ -2427,6 +2566,13 @@ final class Store: ObservableObject {
         requestedWork += fresh
         publishRequested(fresh)
         return (fresh.count, asks.count - fresh.count)
+    }
+
+    /// Queue one ask the way a sweep queues each of its items; false when it was
+    /// already queued, which leaves the ask that is there. Comms' way in.
+    @discardableResult
+    func requestOne(_ ask: RequestedWork) -> Bool {
+        request([ask]).queued == 1
     }
 
     /// One stored ask as the queued task it stands for.
@@ -2491,6 +2637,7 @@ final class Store: ObservableObject {
     /// next poll, which is exactly what staying in the list means.
     private func settleRequested(_ entry: QueuedAgentTask, _ outcome: DispatchOutcome) {
         guard entry.job.requested else { return }
+        commsSettled(entry, outcome)
         switch outcome {
         case .spawned, .standDown, .banned: forgetRequested(entry.id)
         // `.notAllowed` is listed only because the switch is exhaustive: an ask can
@@ -2701,6 +2848,16 @@ final class Store: ObservableObject {
         let ordered = AgentTaskQueue.reorder(current.map(\.id), moving: id, onto: target)
         queuedTaskOrder = ordered
         queuedTasks = ordered.compactMap { key in current.first { $0.id == key } }
+    }
+
+    /// Move a queued task to the front of its band: a drag onto the first row there.
+    /// A task not in the queue, or already first, is left where it is.
+    func moveQueuedTaskToFront(_ id: String) {
+        let band = AgentTaskQueue.band(id)
+        guard queuedTasks.contains(where: { $0.id == id }),
+              let first = queuedTasks.first(where: { AgentTaskQueue.band($0.id) == band }),
+              first.id != id else { return }
+        moveQueuedTask(id, onto: first.id)
     }
 
     /// The app the user is currently working in, so a background (auto-fix) spawn can

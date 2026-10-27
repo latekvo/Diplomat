@@ -282,22 +282,23 @@ private struct ContentHeightKey: PreferenceKey {
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
-    /// Which of the four screens the body shows: Actions ("main"), Mesh, Telemetry
-    /// or Settings.
+    /// Which of the five screens the body shows: Actions ("main"), Comms, Mesh,
+    /// Telemetry or Settings.
     @State private var screen: PanelScreen
 
-    /// The panel's four interchangeable body screens.
-    enum PanelScreen { case main, mesh, telemetry, settings }
+    /// The panel's five interchangeable body screens.
+    enum PanelScreen { case main, comms, mesh, telemetry, settings }
 
-    /// `showSettings` / `showTelemetry` seed the initial screen — used by the headless
-    /// render to snapshot those screens in context. Defaults to the main view.
+    /// `showSettings` / `showTelemetry` / `showComms` seed the initial screen — used by
+    /// the headless render to snapshot those screens in context. Defaults to the main view.
     /// `seedPendingUnban` seeds the inline un-ban confirmation for a login (render only).
     /// `seedMutedAudit` pre-mutes Activity filter categories so the filtered feed can be
     /// snapshotted (render only).
-    init(showSettings: Bool = false, showTelemetry: Bool = false,
+    init(showSettings: Bool = false, showTelemetry: Bool = false, showComms: Bool = false,
          seedPendingUnban: String? = nil, seedMutedAudit: Set<AuditCategory> = []) {
-        _screen = State(initialValue: showSettings ? .settings
-                                    : (showTelemetry ? .telemetry : .main))
+        let seeded: PanelScreen = showSettings ? .settings
+            : (showTelemetry ? .telemetry : (showComms ? .comms : .main))
+        _screen = State(initialValue: seeded)
         _pendingUnban = State(initialValue: seedPendingUnban)
         _mutedAuditCategories = State(initialValue: seedMutedAudit)
     }
@@ -334,6 +335,9 @@ struct ContentView: View {
             case .settings:
                 // Settings uses the same two-column layout as the main panel below.
                 SettingsView(isPresented: presenting(.settings))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            case .comms:
+                CommsView(isPresented: presenting(.comms))
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .mesh:
                 MeshView(isPresented: presenting(.mesh))
@@ -392,6 +396,7 @@ struct ContentView: View {
             Button { Task { await store.refresh() } } label: {
                 Image(systemName: "arrow.clockwise")
             }.buttonStyle(.borderless).help("Refresh")
+            commsButton
             Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .mesh ? .main : .mesh } } label: {
                 Image(systemName: screen == .mesh ? "hexagon.fill" : "hexagon")
                     .foregroundStyle(screen == .mesh ? Color.accentColor : .primary)
@@ -408,6 +413,30 @@ struct ContentView: View {
                 Image(systemName: "power")
             }.buttonStyle(.borderless).help("Quit")
         }
+    }
+
+    /// The Comms screen's button, badged with the pings since it was last opened.
+    private var commsButton: some View {
+        let open = screen == .comms
+        let unread = store.commsUnread
+        let badge: String = unread > 99 ? "99+" : String(unread)
+        let help: String = unread == 0 ? "Comms"
+            : (unread == 1 ? "Comms: 1 new Slack ping" : "Comms: \(unread) new Slack pings")
+        let symbol = open ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right"
+        return Button { withAnimation(.easeInOut(duration: 0.15)) { screen = open ? .main : .comms } } label: {
+            Image(systemName: symbol)
+                .foregroundStyle(open ? Color.accentColor : .primary)
+                .overlay(alignment: .topTrailing) {
+                    if unread > 0 {
+                        Text(badge).font(.system(size: 8, weight: .bold).monospacedDigit())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 3).padding(.vertical, 0.5)
+                            .background(Capsule().fill(Color.red))
+                            .offset(x: 7, y: -5)
+                    }
+                }
+        }
+        .buttonStyle(.borderless).help(help)
     }
 
     // MARK: auto-fix monitor status pill

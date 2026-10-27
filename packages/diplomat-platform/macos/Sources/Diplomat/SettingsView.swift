@@ -3,9 +3,9 @@ import AppKit
 import DiplomatCore
 
 /// The settings screen — swapped in for the main panel body when the header gear
-/// is tapped. Eleven cards over two columns: identity, the agent runner and its repo
-/// root, what the monitors are allowed to do on their own, and the environment the
-/// spawns land in. Everything persists through the Store (UserDefaults, or the
+/// is tapped. Twelve cards over two columns: identity, the agent runner and its repo
+/// root, what the monitors are allowed to do on their own, the Slack watcher, and the
+/// environment the spawns land in. Everything persists through the Store (UserDefaults, or the
 /// shared `~/.diplomat/config.json` for the knobs another process also reads).
 ///
 /// Each row states what it does in a line; the paragraph behind that line is drawn
@@ -28,6 +28,7 @@ struct SettingsView: View {
                     repoSection
                     autofixSection
                     limitsSection
+                    commsSection
                 }
                 .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
 
@@ -658,6 +659,129 @@ struct SettingsView: View {
         runs only: the banners it matches are Claude Code's. An OpenCode or Hermes agent \
         that hits an error reads as idle instead, frees its task-cap slot, and is \
         dispatched again by whichever monitor owed the work.
+        """
+
+    // MARK: Comms (the Slack watcher)
+
+    private var commsSection: some View {
+        let pill = commsPill
+        return SettingsCard(symbol: "bubble.left.and.bubble.right.fill", title: "COMMS (SLACK)",
+                            tint: .blue, pill: pill) {
+            SettingRow(title: "Watch Slack",
+                       summary: "DMs, @-mentions and keywords become pings; an ask in one is queued.",
+                       detail: SettingsView.commsDetail) {
+                switchControl("Watch Slack", $store.commsEnabled)
+            }
+            NestedSettings(tint: .blue) {
+                SettingRow(title: "Keywords",
+                           summary: "Commas or new lines between them; one may be a phrase.",
+                           stacked: true) {
+                    commsField("none", $store.commsKeywordsRaw, symbol: "text.magnifyingglass")
+                }
+                SettingRow(title: "Senders", summary: commsSendersSummary, stacked: true) {
+                    commsField("anyone in my workspace", $store.commsSenderAllowlistRaw,
+                               symbol: "person.2.fill")
+                }
+                commsActionsBlock
+                SettingRow(title: "Notify on new pings") {
+                    switchControl("Notify on new pings", $store.commsNotify)
+                }
+                SettingRow(title: "Triage model",
+                           summary: "Blank = \(SettingsView.commsDefaultModel).",
+                           stacked: true) {
+                    commsField(SettingsView.commsDefaultModel, $store.commsModel, symbol: "cpu")
+                }
+                SettingRow(title: "Token Keychain item", summary: store.commsTestResult,
+                           detail: SettingsView.commsTokenDetail, stacked: true) {
+                    commsTokenRow
+                }
+            }
+        }
+    }
+
+    private static let commsDefaultModel = (try? CoreAssets.comms())?.model ?? "haiku"
+
+    private var commsSendersSummary: String {
+        let n = CommsSettings.allowlist(store.commsSenderAllowlistRaw).count
+        guard n > 0 else { return "Slack handles or user IDs (U…), commas between them." }
+        return n == 1 ? "1 sender; everyone else is ignored."
+            : "\(n) senders; everyone else is ignored."
+    }
+
+    /// What a triaged ask may turn into. Off, that kind of ask is a ping and nothing more.
+    private var commsActionsBlock: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("ACT ON ASKS FOR…")
+                .font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary).kerning(0.5)
+            HStack(spacing: 5) {
+                ToggleChip(label: "reviews & fixes", isOn: $store.commsActRequests, tint: .blue,
+                           help: "Queue a review of an open PR, or a fix of an open issue, at the front of its band")
+                ToggleChip(label: "bumps", isOn: $store.commsActBumps, tint: .blue,
+                           help: "Move what is already queued for that number to the front of its band")
+                ToggleChip(label: "investigations", isOn: $store.commsActInvestigations, tint: .blue,
+                           help: "Queue an agent that reproduces a reported problem and writes a report")
+            }
+        }
+    }
+
+    private var commsTokenRow: some View {
+        HStack(spacing: 6) {
+            commsField(AppConfig.slackTokenKeychainDefault, $store.slackTokenKeychainItem,
+                       symbol: "key.fill")
+            Button {
+                Task { await store.testSlackToken() }
+            } label: {
+                if store.commsTesting {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Text("Test")
+                }
+            }
+            .controlSize(.small)
+            .disabled(store.commsTesting)
+            .help("Ask Slack who this token is (auth.test)")
+        }
+    }
+
+    private func commsField(_ placeholder: String, _ text: Binding<String>,
+                            symbol: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol).font(.caption).foregroundStyle(.secondary)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(.callout)
+        }
+        .padding(7)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
+    }
+
+    private var commsPill: StatusPill {
+        if !store.commsEnabled {
+            return StatusPill(text: "off", tint: .secondary, symbol: "bolt.slash.fill")
+        }
+        if store.commsError != nil {
+            return StatusPill(text: "error", tint: .orange, symbol: "exclamationmark.triangle.fill")
+        }
+        return StatusPill(text: "watching", tint: .green, symbol: "bolt.fill")
+    }
+
+    private static let commsDetail = """
+        Polls Slack's search with your user token: messages in your DMs, messages that \
+        @-mention you, and messages carrying a keyword, skipping your own, bots' and \
+        other workspaces'. Each new one is a ping on the Comms screen, and is triaged \
+        by one claude call that has no tools, no MCP servers and no settings, so a \
+        message cannot make it do anything but answer. An ask for a review of an open \
+        PR or a fix of an open issue is queued at the front of its band; a bump moves \
+        what is already queued; a reported problem queues an investigation agent that \
+        writes a report and never pushes, comments or posts. Everything still waits for \
+        a bay and answers to the ban list and the spending budget.
+        """
+
+    private static let commsTokenDetail = """
+        The login-Keychain item the token is read from on each poll; only its name is \
+        kept in ~/.diplomat/config.json. Store the token with \
+        `security add-generic-password -a "$USER" -s diplomat-slack -w` (it prompts for \
+        it). The token needs the user scopes search:read and users:read.
         """
 
     // MARK: Tool visibility

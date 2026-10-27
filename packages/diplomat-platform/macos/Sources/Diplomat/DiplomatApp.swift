@@ -161,6 +161,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // running in and no others, and that a wrapped agent's window is still one of
         // them. Every session and process is a literal — no terminal is read and nothing
         // is typed. Exit code = pass/fail.
+        // Comms dry-run: one real tick (Slack and the real triage) against a copy of the
+        // watermark, printing each ping and what it WOULD do. Queues nothing.
+        if env["DIPLOMAT_COMMS_POLL"] == "1" {
+            Task { @MainActor in let ok = await Dump.commsPoll(); exit(ok ? 0 : 1) }
+        }
+        // Comms self-test: composed ticks through the real effect application, into a
+        // queue nothing drains. No Slack, no claude, no gh. Exit code = pass/fail.
+        if env["DIPLOMAT_COMMS_TEST"] == "1" {
+            Task { @MainActor in let ok = await CommsTest.run(); exit(ok ? 0 : 1) }
+        }
         if env["DIPLOMAT_APIWATCH_TEST"] == "1" {
             Task { @MainActor in let ok = await ApiWatchTest.run(); exit(ok ? 0 : 1) }
         }
