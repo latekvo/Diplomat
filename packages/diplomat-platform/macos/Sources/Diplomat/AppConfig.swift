@@ -16,9 +16,10 @@ import DiplomatCore
 /// One more sits with them without needing to: how long a run may go on before the
 /// resolver calls it over, which belongs beside the cap it hands bays back to and is
 /// read by the Linux `DIPLOMAT_AGENTS` dump, a front-end-free path with no store of its own.
-/// And three are for the device-allocator daemon, a Node process: the terminal spawns
+/// And four are for the device-allocator daemon, a Node process: the terminal spawns
 /// resolve to, published rather than set here, for it to open its repair agents in,
-/// and the two idle limits it shuts devices down and takes them back by.
+/// the two idle limits it shuts devices down and takes them back by, and the module
+/// its remote device pool is lent through.
 ///
 /// So those knobs live in the shared `~/.diplomat` tree, alongside the ban list and
 /// the mesh snapshot both front-ends already exchange there. Every reader re-reads on
@@ -61,6 +62,10 @@ enum AppConfig {
     /// Minutes a device an agent holds may go the same way before the daemon takes it
     /// back, after which it counts as free; 0 = never. Same key on the Linux side.
     static let deviceIdleLeasedMinutesKey = "deviceIdleLeasedMinutes"
+    /// Path to the module that lends the device-allocator daemon devices from a remote
+    /// device pool (`~` allowed); absent = no remote pool. Re-read by the daemon on
+    /// every request.
+    static let deviceRemoteProviderKey = "deviceRemoteProvider"
 
     /// The runner every spawn on this machine uses, resolved here rather than at each
     /// call site because there are two, in different processes: this app's spawner and

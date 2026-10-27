@@ -885,7 +885,17 @@ enum Dump {
                 + "· \(st.allocatedCount) in use · \(st.freeCount) free")
             for d in st.devices {
                 print("  [\(d.platform)] \(d.name ?? d.key) v\(d.version ?? "?") "
-                    + "status=\(d.status) owner=\(d.owner?.agentName ?? "—") handle=\(d.handle ?? "—")")
+                    + "status=\(d.status) owner=\(d.owner?.agentName ?? "—") handle=\(d.handle ?? "—") "
+                    + "source=\(d.source ?? "local")")
+            }
+            if let r = st.remote {
+                let extras = r.extras.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+                print("remote: provider=\(r.provider ?? "—") state=\(r.state) "
+                    + "reason=\(r.reason ?? "—") retryAt=\(r.retryAt.map { "\($0)" } ?? "—") \(extras)")
+                // The Devices screen's listing call, which never prompts a sign-in.
+                if r.state != "off" { print("remote devices: \(DeviceAllocator.remoteDevices())") }
+            } else {
+                print("remote: (none in the snapshot — this daemon has no remote pool)")
             }
         } else {
             print("state: (no state.json yet — daemon hasn't run)")

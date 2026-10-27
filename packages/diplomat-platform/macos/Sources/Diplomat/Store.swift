@@ -276,6 +276,25 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The remote device pool's provider module (Devices → REMOTE POOL), stored raw;
+    /// empty removes the key, which turns the remote pool off.
+    @Published var deviceRemoteProvider: String {
+        didSet {
+            guard !Headless.active else { return }
+            AppConfig.set(AppConfig.deviceRemoteProviderKey,
+                          deviceRemoteProvider.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    /// The Devices screen's two remote-pool calls. In the Store, not the screen: a
+    /// sign-in runs for up to ten minutes and must outlive the screen being closed.
+    enum RemoteCall: Equatable {
+        case idle, running
+        case answered(RemoteReply, at: Date)
+    }
+    @Published var remoteSignIn: RemoteCall = .idle
+    @Published var remoteListing: RemoteCall = .idle
+
     /// Latest state from the auto-fix monitor's own poll (nil until the first). Drives
     /// the top-of-panel status pill; freshness (`isLive`) decides active vs. offline.
     @Published var autofixStatus: AutofixStatus?
@@ -635,6 +654,7 @@ final class Store: ObservableObject {
         autoBudgetReserveUsd = AppConfig.autoBudgetReserveUsd
         deviceIdleFreeMinutes = AppConfig.deviceIdleFreeMinutes
         deviceIdleLeasedMinutes = AppConfig.deviceIdleLeasedMinutes
+        deviceRemoteProvider = AppConfig.string(AppConfig.deviceRemoteProviderKey)
         // Default ON (absent key ⇒ true): the pill only lights up on a live heartbeat,
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
@@ -702,7 +722,50 @@ final class Store: ObservableObject {
         // Log AFTER the call, with the real outcome — the audit feed must not
         // assert a kill that actually failed.
         AuditLog.log("panel", "kill-device", ok ? "Killed device \(key)" : "Kill FAILED for device \(key)")
+        refreshAudit()
         await refreshDeviceState()
+    }
+
+    /// Take a device back from the agent holding it (Devices → Free).
+    func releaseDevice(_ dev: DeviceAllocation) async {
+        guard let pid = dev.owner?.ownerPid else { return }
+        let key = dev.key
+        let ok = await Task.detached(priority: .userInitiated) {
+            DeviceAllocator.releaseDevice(key: key, ownerPid: pid)
+        }.value
+        let who = dev.owner?.agentName ?? "pid \(pid)"
+        AuditLog.log("panel", "release-device",
+                     ok ? "Freed \(dev.name ?? key) from \(who)" : "Free FAILED for \(dev.name ?? key)")
+        refreshAudit()
+        await refreshDeviceState()
+    }
+
+    /// End a device's quarantine (Devices → Repaired). The daemon logs the success
+    /// itself; only a refusal is this app's to report.
+    func markDeviceRepaired(_ key: String) async {
+        let ok = await Task.detached(priority: .userInitiated) {
+            DeviceAllocator.markRepaired(key: key)
+        }.value
+        if !ok { AuditLog.log("panel", "warn", "Mark-repaired FAILED for device \(key)") }
+        refreshAudit()
+        await refreshDeviceState()
+    }
+
+    /// Ask the remote pool to sign in again. One at a time; the poll and every other
+    /// daemon call go on while it waits.
+    func remoteSignInNow() async {
+        guard remoteSignIn != .running else { return }
+        remoteSignIn = .running
+        let reply = await Task.detached(priority: .userInitiated) { DeviceAllocator.remoteSignIn() }.value
+        remoteSignIn = .answered(reply, at: Date())
+        await refreshDeviceState()
+    }
+
+    func listRemotePool() async {
+        guard remoteListing != .running else { return }
+        remoteListing = .running
+        let reply = await Task.detached(priority: .userInitiated) { DeviceAllocator.remoteDevices() }.value
+        remoteListing = .answered(reply, at: Date())
     }
 
     /// Whether the allocator's setup has been settled on this machine — installed, or
@@ -779,6 +842,15 @@ final class Store: ObservableObject {
         // not put it back on the next start.
         allocatorSetupDone = true
         AuditLog.log("panel", "allocator-uninstall", "Uninstalled device allocator")
+        refreshAudit()
+        await refreshDeviceState()
+    }
+
+    func startAllocatorDaemon() async {
+        let result = await Task.detached(priority: .userInitiated) { DeviceAllocator.startDaemon() }.value
+        allocatorInstall = result
+        AuditLog.log("panel", "allocator-install",
+                     "Started the device-allocator daemon (ok: \(result.daemonRunning))")
         refreshAudit()
         await refreshDeviceState()
     }
