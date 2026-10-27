@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
 /// One `search.messages` match, as Slack returns it. Every field is optional on the
 /// wire; a missing one decodes as empty.
@@ -195,19 +192,31 @@ public enum SlackError: LocalizedError, Equatable {
 /// Synchronous: a tick runs off the main thread on both front-ends, and the CLI is a
 /// one-shot.
 public struct SlackAPI {
+    /// One GET, in a shape both transports can carry. Not `URLRequest`: on Linux that
+    /// type lives in FoundationNetworking, whose libcurl link would make the whole
+    /// `diplomat-core` binary - every prompt the applet builds - refuse to load on a
+    /// machine without `libcurl.so.4`.
+    public struct Request: Equatable, Sendable {
+        public var url: URL
+        public var headers: [String: String]
+        public var timeout: TimeInterval
+
+        public func value(forHTTPHeaderField name: String) -> String? { headers[name] }
+    }
+
     /// One HTTP exchange: the status, the headers (names lowercased) and the body.
-    public typealias Transport = (URLRequest) throws -> (status: Int, headers: [String: String], body: Data)
+    public typealias Transport = (Request) throws -> (status: Int, headers: [String: String], body: Data)
 
     public let token: String
     public let base: URL
     private let transport: Transport
 
     /// `base` defaults to `$DIPLOMAT_SLACK_API`, else `https://slack.com/api/`;
-    /// `transport` to a URLSession exchange. Tests replace either.
+    /// `transport` to `live`. Tests replace either.
     public init(token: String, base: URL? = nil, transport: Transport? = nil) {
         self.token = token
         self.base = base ?? Self.defaultBase()
-        self.transport = transport ?? Self.urlSession
+        self.transport = transport ?? Self.live
     }
 
     public static func defaultBase() -> URL {
@@ -259,9 +268,8 @@ public struct SlackAPI {
             components.percentEncodedQuery = encoded?.replacingOccurrences(of: "+", with: "%2B")
         }
         guard let url = components.url else { throw SlackError.badResponse }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = Self.timeout
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let request = Request(url: url, headers: ["Authorization": "Bearer \(token)"],
+                              timeout: Self.timeout)
         let (status, headers, body) = try transport(request)
         if status == 429 {
             throw SlackError.rateLimited(retryAfter: headers["retry-after"].flatMap { Int($0) })
@@ -282,17 +290,26 @@ public struct SlackAPI {
 
     static var timeout: TimeInterval { (try? CoreAssets.comms())?.httpTimeoutSecs ?? 15 }
 
+#if canImport(FoundationNetworking)
+    /// The live exchange off Darwin, where URLSession would need FoundationNetworking.
+    public static func live(_ request: Request) throws -> (status: Int, headers: [String: String], body: Data) {
+        try curl(request)
+    }
+#else
     /// The live exchange. The wait is bounded past the request's own timeout, so a
     /// session that never calls back cannot hold the tick.
-    public static func urlSession(_ request: URLRequest) throws -> (status: Int, headers: [String: String], body: Data) {
+    public static func live(_ request: Request) throws -> (status: Int, headers: [String: String], body: Data) {
+        var urlRequest = URLRequest(url: request.url)
+        urlRequest.timeoutInterval = request.timeout
+        for (k, v) in request.headers { urlRequest.setValue(v, forHTTPHeaderField: k) }
         let box = Exchange()
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+        let task = URLSession.shared.dataTask(with: urlRequest) { data, response, error in
             box.finish(data: data, response: response as? HTTPURLResponse, error: error)
         }
         task.resume()
-        guard box.done.wait(timeout: .now() + request.timeoutInterval + 5) == .success else {
+        guard box.done.wait(timeout: .now() + request.timeout + 5) == .success else {
             task.cancel()
-            throw SlackError.transport("timed out after \(Int(request.timeoutInterval))s")
+            throw SlackError.transport("timed out after \(Int(request.timeout))s")
         }
         let (data, response, error) = box.result
         if let error { throw SlackError.transport(error.localizedDescription) }
@@ -321,5 +338,59 @@ public struct SlackAPI {
             defer { lock.unlock() }
             return value
         }
+    }
+#endif
+
+    /// One exchange through `curl`, so only Comms depends on it. The token travels in a
+    /// config read from stdin, never in argv where `ps` would show it.
+    public static func curl(_ request: Request) throws -> (status: Int, headers: [String: String], body: Data) {
+        guard let curl = ["/usr/bin/curl", "/bin/curl"].first(where: {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }) ?? LoginShell.onPath("curl") else {
+            throw SlackError.transport("curl is not installed")
+        }
+        func quoted(_ s: String) -> String {
+            "\"" + s.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        }
+        var config = "url = \(quoted(request.url.absoluteString))\n"
+        for (k, v) in request.headers { config += "header = \(quoted("\(k): \(v)"))\n" }
+        let args = ["-sS", "--max-time", String(Int(request.timeout)), "-K", "-",
+                    "-D", "-", "-o", "-"]
+        switch CommsClassifier.execute(curl, args, input: Data(config.utf8),
+                                       timeout: request.timeout + 5) {
+        case .failedToStart(let why):
+            throw SlackError.transport(why)
+        case .timedOut:
+            throw SlackError.transport("timed out after \(Int(request.timeout))s")
+        case .exited(let code, _, let err) where code != 0:
+            let why = String(decoding: err, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw SlackError.transport(why.isEmpty ? "curl exited \(code)" : why)
+        case .exited(_, let out, _):
+            return try parse(curlOutput: out)
+        }
+    }
+
+    /// `curl -D - -o -` output: the header blocks (one per response, redirects and
+    /// `100 Continue` included), then the body. The last block is the answer.
+    public static func parse(curlOutput out: Data) throws -> (status: Int, headers: [String: String], body: Data) {
+        let crlf = Data("\r\n\r\n".utf8)
+        var rest = out[...]
+        var status = 0
+        var headers: [String: String] = [:]
+        while rest.starts(with: Data("HTTP/".utf8)), let end = rest.range(of: crlf) {
+            let lines = String(decoding: rest[rest.startIndex..<end.lowerBound], as: UTF8.self)
+                .components(separatedBy: "\r\n")
+            status = lines.first.flatMap { Int($0.split(separator: " ").dropFirst().first ?? "") } ?? 0
+            headers = [:]
+            for line in lines.dropFirst() {
+                guard let colon = line.firstIndex(of: ":") else { continue }
+                headers[line[..<colon].lowercased()] = line[line.index(after: colon)...]
+                    .trimmingCharacters(in: .whitespaces)
+            }
+            rest = rest[end.upperBound...]
+        }
+        guard status > 0 else { throw SlackError.badResponse }
+        return (status, headers, Data(rest))
     }
 }

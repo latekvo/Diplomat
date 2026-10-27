@@ -1,8 +1,5 @@
 import Foundation
 import DiplomatCore
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
 // Comms, the Slack watcher: who becomes a ping, what a triage answer may be, what each
 // answer makes a front-end do, the tick's watermark against a stub Slack, the screen's
@@ -34,27 +31,27 @@ private func wire(ts: String, user: String = "UALICE", username: String = "alice
 /// (newest first, honouring `count` and `page`) for every query, recording each request.
 private final class StubSlack {
     var messages: [[String: Any]] = []
-    var requests: [URLRequest] = []
+    var requests: [SlackAPI.Request] = []
     var status = 200
     var headers: [String: String] = [:]
     var body: Data?
 
     var queries: [String] {
         requests.compactMap { r in
-            URLComponents(url: r.url!, resolvingAgainstBaseURL: false)?
+            URLComponents(url: r.url, resolvingAgainstBaseURL: false)?
                 .queryItems?.first { $0.name == "query" }?.value
         }
     }
-    var authCalls: Int { requests.filter { $0.url!.path.hasSuffix("auth.test") }.count }
+    var authCalls: Int { requests.filter { $0.url.path.hasSuffix("auth.test") }.count }
 
-    func handle(_ req: URLRequest) throws -> (status: Int, headers: [String: String], body: Data) {
+    func handle(_ req: SlackAPI.Request) throws -> (status: Int, headers: [String: String], body: Data) {
         requests.append(req)
         if let body { return (status, headers, body) }
         let obj: [String: Any]
-        if req.url!.path.hasSuffix("auth.test") {
+        if req.url.path.hasSuffix("auth.test") {
             obj = ["ok": true, "user_id": slackMe.userID, "team_id": slackMe.teamID, "user": slackMe.handle]
         } else {
-            let items = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let items = URLComponents(url: req.url, resolvingAgainstBaseURL: false)?.queryItems ?? []
             let count = Int(items.first { $0.name == "count" }?.value ?? "") ?? 50
             let page = Int(items.first { $0.name == "page" }?.value ?? "") ?? 1
             let sorted = messages.sorted {
@@ -431,10 +428,19 @@ private func tickSmoke() throws {
     // The query encoding: `+` would be a space to a form decoder.
     let enc = StubSlack()
     _ = try? enc.api.search(query: "\"c++\" <@UME> after:2026-10-26")
-    let q = enc.requests.first?.url?.absoluteString ?? ""
+    let q = enc.requests.first?.url.absoluteString ?? ""
     check(q.contains("%2B%2B") && !q.contains("++") && q.contains("sort=timestamp")
           && q.contains("sort_dir=desc") && q.contains("count=50"),
           "search.messages is asked newest first, with + escaped: \(q)")
+
+    section("comms: curl's answer, read back")
+    let body = #"{"ok":true}"#
+    let raw = "HTTP/1.1 100 Continue\r\n\r\nHTTP/2 429\r\nRetry-After: 30\r\nContent-Type: application/json\r\n\r\n" + body
+    let parsed = try? SlackAPI.parse(curlOutput: Data(raw.utf8))
+    check(parsed?.status == 429, "the last header block is the answer, not the 100 Continue")
+    check(parsed?.headers["retry-after"] == "30", "header names are lowercased for the 429 path")
+    check(parsed.map { String(decoding: $0.body, as: UTF8.self) } == body, "the body is everything after the headers")
+    check((try? SlackAPI.parse(curlOutput: Data(body.utf8))) == nil, "output with no status line is not an answer")
 }
 
 private func foldSmoke() throws {
