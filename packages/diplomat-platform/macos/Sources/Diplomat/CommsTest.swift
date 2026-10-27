@@ -555,20 +555,30 @@ enum CommsTest {
             promptFile: spawnDir.appendingPathComponent("prompt.txt"),
             donePath: spawnDir.appendingPathComponent("done").path,
             pidPath: spawnDir.appendingPathComponent("pid").path, runner: .claude, port: 0)
-        let sh = Process()
-        sh.executableURL = URL(fileURLWithPath: "/bin/sh")
-        sh.arguments = ["-c", AgentSpawner.shellCommand(plan)]
-        sh.environment = ["PATH": "\(spawnBin.path):/usr/bin:/bin", "SHELL": "/bin/sh",
-                          "HOME": spawnDir.path, "ENV": "",
-                          CommsToken.envVar: "xoxp-the-operators-own"]
-        sh.standardInput = FileHandle.nullDevice
-        sh.standardOutput = Pipe()
-        sh.standardError = Pipe()
-        try? sh.run()
-        sh.waitUntilExit()
-        check("an agent never holds the Slack token its terminal was started with",
-              FileManager.default.fileExists(atPath: agentRan.path)
-                && (try? String(contentsOf: seenSlack, encoding: .utf8)) == "")
+        // Or the operator's rc exports it, which every interactive shell sources again.
+        for rc in [".zshrc", ".bashrc"] {
+            try? "export \(CommsToken.envVar)=xoxp-from-rc\n"
+                .write(to: spawnDir.appendingPathComponent(rc), atomically: true, encoding: .utf8)
+        }
+        for shell in ["/bin/sh", "/bin/zsh", "/bin/bash"] {
+            try? FileManager.default.removeItem(at: agentRan)
+            try? FileManager.default.removeItem(at: seenSlack)
+            let sh = Process()
+            sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+            sh.arguments = ["-c", AgentSpawner.shellCommand(plan)]
+            sh.environment = ["PATH": "\(spawnBin.path):/usr/bin:/bin", "SHELL": shell,
+                              "HOME": spawnDir.path, "ENV": "",
+                              CommsToken.envVar: "xoxp-the-operators-own"]
+            sh.standardInput = FileHandle.nullDevice
+            sh.standardOutput = Pipe()
+            sh.standardError = Pipe()
+            try? sh.run()
+            sh.waitUntilExit()
+            let seen = (try? String(contentsOf: seenSlack, encoding: .utf8)) ?? "nil"
+            check("an agent never holds the Slack token, from its terminal or the rc "
+                  + "(SHELL=\(shell); seen \(seen.debugDescription))",
+                  FileManager.default.fileExists(atPath: agentRan.path) && seen == "")
+        }
 
         // MARK: refreshing from the log
         let events = CommsLog.eventsURL()

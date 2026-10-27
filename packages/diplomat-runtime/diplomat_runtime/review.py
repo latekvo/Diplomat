@@ -492,9 +492,9 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     exiting, so between them one covers the run that ends and the other the run that
     goes back to its prompt.
 
-    The Slack token (:data:`comms.TOKEN_ENV`) is unset right after the ``cd``: an agent
-    reading untrusted Slack text must never hold it, whatever environment its terminal
-    or tmux server has.
+    The Slack token (:data:`comms.TOKEN_ENV`) is unset right after the ``cd``, and again
+    inside the inner shell, whose rc may export it: an agent reading untrusted Slack text
+    must never hold it, whatever environment its terminal or tmux server has.
 
     When the operator configured an agent token, everything after that ``unset`` runs
     behind :func:`token_export`, whose export the agent inherits.
@@ -506,8 +506,9 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     if pid_path is None and not opencode_session:
         body = f"{agent_cmd}; {done}"
     else:
-        inner = (agent_cmd if pid_path is None
-                 else f'printf %s $$ > {shlex.quote(pid_path)}; {agent_cmd}')
+        inner = f"unset {comms.TOKEN_ENV}; {agent_cmd}"
+        if pid_path is not None:
+            inner = f"printf %s $$ > {shlex.quote(pid_path)}; {inner}"
         body = f"{shlex.quote(user_shell())} -i -c {shlex.quote(inner)}; {done}"
     token = token_export()
     if token:
