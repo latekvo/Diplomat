@@ -2,16 +2,24 @@
 
 Mirrors ``diplomat-platform/macos/Sources/Diplomat/DeviceAllocator.swift``: the applet is a *viewer*
 of the daemon's public ``~/.diplomat/device-allocator/state.json`` (the device pool
-+ who holds what) and a *driver* of the Node installer (``device-allocator/src/
-install.js``) for the Settings install controls. It never allocates devices itself.
++ who holds what), a *client* of its unix socket for the actions the Devices screen
+takes on a device or on the remote device pool, and a *driver* of the Node installer
+(``device-allocator/src/install.js``) for the install controls. It never allocates
+devices itself.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
+import math
 import os
+import re
 import shutil
+import socket
 import subprocess
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -51,8 +59,21 @@ def deps_installed() -> bool:
     )
 
 
+def base_dir() -> Path:
+    """The daemon's directory. ``DA_BASE_DIR`` relocates it, as it does for the daemon
+    (``src/paths.js``), so this applet can be pointed at a scratch daemon."""
+    env = os.environ.get("DA_BASE_DIR")
+    if env:
+        return Path(env).expanduser()
+    return _home() / ".diplomat" / "device-allocator"
+
+
 def state_path() -> Path:
-    return _home() / ".diplomat" / "device-allocator" / "state.json"
+    return base_dir() / "state.json"
+
+
+def socket_path() -> Path:
+    return base_dir() / "daemon.sock"
 
 
 def package_available() -> bool:
@@ -131,12 +152,339 @@ def ensure_deps() -> bool:
 
 
 def read_state() -> dict | None:
-    """Decode the daemon's public snapshot. None if it has never run."""
+    """The daemon's public snapshot, decoded by :func:`decode_state`. None if it has
+    never run, or the file is not a snapshot."""
     try:
         with open(state_path(), "r") as f:
-            return json.load(f)
+            raw = json.load(f)
     except Exception:  # noqa: BLE001 — absent/partial file is a normal state
         return None
+    return decode_state(raw)
+
+
+# MARK: snapshot decoding (mirrors DeviceState / RemoteStatus in Swift)
+
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _is_int(v) -> bool:
+    if isinstance(v, float):
+        return math.isfinite(v) and v == int(v)
+    return _is_number(v)
+
+
+_ROW_STRINGS = ("key", "platform", "status")
+_ROW_OPTIONAL_STRINGS = ("name", "version", "apiVersion", "handle", "brokenReason",
+                         "repairLog", "format", "source")
+
+
+def _row_readable(row) -> bool:
+    """Whether one ``devices[]`` entry has the shape the screen reads: the three
+    required strings, and every optional field absent, null or of its type."""
+    if not isinstance(row, dict):
+        return False
+    if not all(isinstance(row.get(k), str) for k in _ROW_STRINGS):
+        return False
+    for k in _ROW_OPTIONAL_STRINGS:
+        if row.get(k) is not None and not isinstance(row[k], str):
+            return False
+    for k in ("allocatedAt", "idleMs"):
+        if row.get(k) is not None and not _is_number(row[k]):
+            return False
+    owner = row.get("owner")
+    if owner is None:
+        return True
+    if not isinstance(owner, dict):
+        return False
+    if owner.get("agentName") is not None and not isinstance(owner["agentName"], str):
+        return False
+    return owner.get("ownerPid") is None or _is_int(owner["ownerPid"])
+
+
+def decode_state(raw) -> dict | None:
+    """The snapshot as the applet reads it: ``devices`` (the daemon's rows),
+    ``daemonPid``, and ``remote`` (a :class:`RemoteStatus`, or None when the snapshot
+    has none, as from a daemon without a remote pool).
+
+    A row this build cannot read drops that row alone, and an unreadable ``remote``
+    or ``daemonPid`` never costs the device list. ``updatedAt`` is left out: it
+    changes on every publish and would defeat the Store's publish-on-change guard.
+    """
+    if not isinstance(raw, dict) or not isinstance(raw.get("devices"), list):
+        return None
+    pid = raw.get("daemonPid")
+    return {
+        "devices": [row for row in raw["devices"] if _row_readable(row)],
+        "daemonPid": int(pid) if _is_number(pid) and math.isfinite(pid) else None,
+        "remote": RemoteStatus.from_json(raw.get("remote")),
+    }
+
+
+def json_text(v) -> str:
+    """Any JSON value as one line: how a key this applet does not know is shown."""
+    if isinstance(v, str):
+        return v
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if _is_number(v):
+        if math.isfinite(v) and v == round(v) and abs(v) < 1e15:
+            return str(int(v))
+        return repr(float(v))
+    if v is None:
+        return "—"
+    if isinstance(v, list):
+        return ", ".join(json_text(x) for x in v)
+    if isinstance(v, dict):
+        return ", ".join(f"{k}: {json_text(v[k])}" for k in sorted(v))
+    return str(v)
+
+
+def _string(v) -> str | None:
+    """A non-empty string, and nothing else."""
+    return v if isinstance(v, str) and v else None
+
+
+_ISO_INSTANT = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})")
+
+
+def parse_instant(v) -> float | None:
+    """Epoch seconds from an ISO-8601 instant, with or without milliseconds
+    (``Date.toISOString`` writes them), or from epoch milliseconds."""
+    if isinstance(v, str):
+        if not _ISO_INSTANT.fullmatch(v):
+            return None
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    if _is_number(v) and math.isfinite(v) and v > 0:
+        return v / 1000
+    return None
+
+
+@dataclass(frozen=True)
+class RemoteStatus:
+    """The remote device pool's status as the daemon publishes it (``remote`` in the
+    snapshot): the provider's name, a ``state``, and whatever else the provider adds.
+    The known extras are read leniently; every other key is kept, in key order, as a
+    ``(key, text)`` pair to be shown as it stands."""
+
+    #: ``off``, ``loading``, ``error``, ``on``, ``signed-out``, ``signing-in``,
+    #: ``sign-in-unanswered``, or ``unknown`` when the snapshot names none.
+    state: str
+    provider: str | None = None
+    reason: str | None = None
+    url: str | None = None
+    login_url: str | None = None
+    #: With ``sign-in-unanswered``: when sign-in prompts resume, in epoch seconds.
+    retry_at: float | None = None
+    extras: tuple[tuple[str, str], ...] = ()
+
+    @classmethod
+    def from_json(cls, v) -> RemoteStatus | None:
+        """None for an absent or ``null`` value. Any other value that is not an object
+        is a status that cannot be read, shown as such rather than as an absent pool."""
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            return cls(state="unknown", extras=(("remote", json_text(v)),))
+        known = {"provider", "state", "reason", "url", "loginUrl"}
+        retry_at = parse_instant(v["retryAt"]) if "retryAt" in v else None
+        # An unparseable retryAt is still shown, as what it says.
+        if retry_at is not None:
+            known.add("retryAt")
+        reason = v.get("reason")
+        return cls(
+            state=_string(v.get("state")) or "unknown",
+            provider=_string(v.get("provider")),
+            reason=None if reason is None else json_text(reason),
+            url=_string(v.get("url")),
+            login_url=_string(v.get("loginUrl")),
+            retry_at=retry_at,
+            extras=tuple((k, json_text(v[k])) for k in sorted(v) if k not in known),
+        )
+
+
+# MARK: daemon IPC (its unix socket)
+
+@dataclass(frozen=True)
+class DaemonReply:
+    """One daemon answer: its HTTP status, and its body when that is JSON."""
+
+    status: int
+    json: object = None
+
+    @property
+    def ok(self) -> bool:
+        return 200 <= self.status < 300
+
+    def get(self, key: str):
+        return self.json.get(key) if isinstance(self.json, dict) else None
+
+
+@dataclass(frozen=True)
+class RemotePoolDevice:
+    """One device the remote pool lists (``POST /remote/devices``)."""
+
+    id: str
+    platform: str | None = None
+    name: str | None = None
+    version: str | None = None
+    api_version: str | None = None
+    format: str | None = None
+    state: str | None = None
+
+
+@dataclass(frozen=True)
+class RemoteReply:
+    """What the daemon answered a remote-pool call with: signed in (``ok``), a pool
+    listing (``devices``), or why neither (``reason``)."""
+
+    ok: bool = False
+    devices: tuple[RemotePoolDevice, ...] | None = None
+    reason: str | None = None
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, path: str, timeout: float) -> None:
+        super().__init__("localhost", timeout=timeout)
+        self._path = path
+
+    def connect(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        try:
+            sock.connect(self._path)
+        except BaseException:
+            sock.close()
+            raise
+        self.sock = sock
+
+
+def call(endpoint: str, body: dict | None = None, *,
+         timeout_secs: float) -> DaemonReply | None:
+    """POST a JSON body to one of the daemon's endpoints over its unix socket, and
+    return its answer whatever the HTTP status: None only when there was no answer
+    (no socket, a body that won't encode, the connection refused, or the daemon
+    silent for ``timeout_secs``).
+
+    Blocking; call it off the GUI thread. Each call is its own connection, so a long
+    one (a sign-in) holds up no other."""
+    path = socket_path()
+    if not path.exists():
+        return None
+    try:
+        payload = json.dumps(body or {})
+    except (TypeError, ValueError):
+        return None
+    conn = _UnixHTTPConnection(str(path), timeout_secs)
+    try:
+        conn.request("POST", f"/{endpoint}", body=payload,
+                     headers={"content-type": "application/json"})
+        resp = conn.getresponse()
+        raw = resp.read()
+        status = resp.status
+    except (OSError, http.client.HTTPException):
+        return None
+    finally:
+        conn.close()
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        parsed = None
+    return DaemonReply(status, parsed)
+
+
+def post(endpoint: str, body: dict, *, timeout_secs: float) -> bool:
+    """Whether the daemon answered 2xx. A 4xx/5xx is a refusal, never a success: a
+    device that left the pool between the poll snapshot and the click answers 404,
+    and the activity feed must not assert an action that never happened."""
+    reply = call(endpoint, body, timeout_secs=timeout_secs)
+    return reply is not None and reply.ok
+
+
+def kill_device(key: str) -> bool:
+    """Free a device and shut it down (``/kill``), or hand a remote lease back to its
+    pool. Generous timeout: the daemon shuts a real simulator/emulator down inline."""
+    return post("kill", {"key": key}, timeout_secs=25)
+
+
+def release_device(key: str, owner_pid: int) -> bool:
+    """Take a device back from the agent holding it (``/release`` on its behalf). The
+    daemon shuts down a device it booted itself, and returns a remote lease."""
+    reply = call("release", {"ownerPid": owner_pid, "deviceId": key}, timeout_secs=25)
+    if reply is None or not reply.ok:
+        return False
+    # 200 with nothing released: the agent had already let it go.
+    released = reply.get("released")
+    return _is_number(released) and released >= 1
+
+
+def mark_repaired(key: str) -> bool:
+    """End a device's quarantine (``/repaired``), putting it back in the pool."""
+    return post("repaired", {"key": key}, timeout_secs=10)
+
+
+#: The daemon answers a sign-in only once the browser sign-in finishes or gives up,
+#: which takes up to ten minutes.
+SIGN_IN_TIMEOUT_SECS = 11 * 60 + 30
+#: A listing is a network call on the daemon's side.
+LISTING_TIMEOUT_SECS = 90
+
+
+def remote_sign_in() -> RemoteReply:
+    """Re-prompt the remote pool's sign-in (``/remote/sign-in``)."""
+    return sign_in_reply(call("remote/sign-in", timeout_secs=SIGN_IN_TIMEOUT_SECS))
+
+
+def remote_devices() -> RemoteReply:
+    """What the remote pool lists now (``/remote/devices``). Never prompts a sign-in."""
+    return devices_reply(call("remote/devices", timeout_secs=LISTING_TIMEOUT_SECS))
+
+
+def _refusal(reply: DaemonReply | None) -> str | None:
+    """The reason a reply carries when it is not the answer asked for, or None."""
+    if reply is None:
+        return "the allocator daemon did not answer"
+    error = _string(reply.get("error"))
+    if reply.status == 404 and error and error.startswith("unknown route"):
+        return "this allocator has no remote device pool — update it"
+    if not reply.ok:
+        return (error or _string(reply.get("reason"))
+                or f"the allocator answered HTTP {reply.status}")
+    return None
+
+
+def sign_in_reply(reply: DaemonReply | None) -> RemoteReply:
+    why = _refusal(reply)
+    if why:
+        return RemoteReply(reason=why)
+    if reply.get("ok") is True:
+        return RemoteReply(ok=True)
+    return RemoteReply(reason=_string(reply.get("reason")) or "the sign-in did not complete")
+
+
+def devices_reply(reply: DaemonReply | None) -> RemoteReply:
+    why = _refusal(reply)
+    if why:
+        return RemoteReply(reason=why)
+    rows = reply.get("devices")
+    if not isinstance(rows, list):
+        return RemoteReply(reason=_string(reply.get("reason")) or "the pool sent no device list")
+
+    def text(row: dict, k: str) -> str | None:
+        v = row.get(k)
+        return None if v is None else (json_text(v) or None)
+
+    return RemoteReply(devices=tuple(
+        RemotePoolDevice(id=text(row, "key") or f"#{i}", platform=text(row, "platform"),
+                         name=text(row, "name"), version=text(row, "version"),
+                         api_version=text(row, "apiVersion"), format=text(row, "format"),
+                         state=text(row, "state"))
+        for i, row in enumerate(rows) if isinstance(row, dict)
+    ))
 
 
 def _run_installer(arg: str) -> dict | None:
@@ -194,6 +542,11 @@ def uninstall() -> dict | None:
     return _run_installer("--uninstall")
 
 
+def start_daemon() -> dict | None:
+    """Start the daemon if none answers; reports the install status with it."""
+    return _run_installer("--start-daemon")
+
+
 # MARK: device-entry interpretation (mirrors DeviceAllocation in Swift)
 
 def is_allocated(dev: dict) -> bool:
@@ -208,3 +561,50 @@ def allocated_count(state: dict) -> int:
 def free_count(state: dict) -> int:
     devices = state.get("devices", [])
     return len(devices) - allocated_count(state)
+
+
+def is_remote(dev: dict) -> bool:
+    """A device leased from the remote pool. A daemon without one writes no
+    ``source``, and every one of its rows is local."""
+    return dev.get("source") == "remote"
+
+
+#: Per-platform tint, as ``DeviceAllocation.platformTint`` on macOS.
+PLATFORM_TINT = {"ios": "#0A84FF", "apple-tv": "#0A84FF", "android": "#34C759",
+                 "android-tv": "#34C759", "vega": "#FF9500"}
+GREY = "#8E8E93"
+
+
+def status_badge(dev: dict) -> tuple[str, str]:
+    """The word and tint of the status capsule a device row ends on."""
+    status = dev.get("status", "free")
+    if status == "ready":
+        return ("in use", "#34C759") if is_allocated(dev) else ("free", GREY)
+    if status == "booting":
+        return ("attaching" if is_remote(dev) else "booting", "#FF9500")
+    if status == "repairing":
+        return ("repairing", "#AF52DE")
+    if status == "error":
+        return ("error", "#FF3B30")
+    return ("free", GREY)
+
+
+def idle_minutes(dev: dict) -> int | None:
+    """Whole minutes idle (None under a minute). The daemon floors idleMs to minutes."""
+    ms = dev.get("idleMs")
+    if not _is_number(ms) or not math.isfinite(ms) or ms < 60_000:
+        return None
+    return int(ms // 60_000)
+
+
+def idle_color(minutes: int, limit: int) -> str | None:
+    """The tint idle time takes as it nears ``limit``, the leased idle limit in
+    minutes past which the daemon takes the device back (0 = never); None for the
+    ordinary muted text."""
+    if limit <= 0:
+        return None
+    if minutes >= limit - 1:
+        return "#FF3B30"
+    if minutes >= limit * 2 // 3:
+        return "#FF9500"
+    return None

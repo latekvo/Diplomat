@@ -24,11 +24,13 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QUrl
 
+import html
 import time
 
 from diplomat_runtime import activity, agentstate, autofix, core
 from diplomat_runtime.models import Fmt
-from . import glyphs, szpont
+from . import deviceallocator, glyphs, szpont
+from .devicesview import DevicesView
 from .settingsview import SettingsView
 from .store import Store, tool_by_id
 from .widgets import (
@@ -91,6 +93,44 @@ def _icon_button(glyph: str, tooltip: str) -> QToolButton:
         "QToolButton:hover { color: palette(highlight); }"
     )
     return btn
+
+
+class _BadgedButton(QToolButton):
+    """A header icon button with a count on its corner: the Devices button, whose
+    badge counts the devices in use."""
+
+    def __init__(self, glyph: str) -> None:
+        super().__init__()
+        self.setText(glyph)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._badge = QLabel(self)
+        self._badge.setStyleSheet(
+            "color: white; background-color: #34C759; border-radius: 5px;"
+            " font-size: 8px; font-weight: 800; padding: 0px 3px;")
+        self._badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.set_state(open_=False, in_use=0)
+
+    def set_state(self, *, open_: bool, in_use: int) -> None:
+        color = "palette(highlight)" if open_ else "palette(text)"
+        self.setStyleSheet(
+            f"QToolButton {{ border: none; font-size: 14px; padding: 2px 9px 2px 4px;"
+            f" color: {color}; }}"
+            "QToolButton:hover { color: palette(highlight); }")
+        self.setToolTip(f"Devices · {in_use} in use" if in_use else "Devices")
+        self._badge.setText(str(in_use))
+        self._badge.setVisible(in_use > 0)
+        self._badge.adjustSize()
+        self._place_badge()
+
+    def badge_text(self) -> str:
+        return self._badge.text() if self._badge.isVisibleTo(self) else ""
+
+    def _place_badge(self) -> None:
+        self._badge.move(max(0, self.width() - self._badge.width()), 0)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._place_badge()
 
 
 def _queued_label(task: autofix.QueuedTask) -> str:
@@ -159,34 +199,25 @@ def _running_detail(agent: autofix.RunningAgent) -> str:
     return " · ".join(parts)
 
 
-def _device_badge(dev: dict, allocated: bool) -> tuple[str, str]:
-    status = dev.get("status", "free")
-    if status == "ready":
-        return ("in use", "#34C759") if allocated else ("free", "gray")
-    if status == "booting":
-        return ("booting", "#FF9500")
-    if status == "repairing":
-        return ("repairing", "#AF52DE")
-    if status == "error":
-        return ("error", "#FF3B30")
-    return ("free", "gray")
-
-
-def _device_detail(dev: dict, allocated: bool) -> str:
+def _device_detail(dev: dict, allocated: bool, idle_limit: int) -> str:
+    """The line under a device's name, as rich text: its idle time is coloured toward
+    ``idle_limit``, the leased idle limit."""
     if dev.get("status") == "repairing":
         reason = dev.get("brokenReason")
-        return f"repair: {reason}" if reason else "repair dispatched"
+        return html.escape(f"repair: {reason}" if reason else "repair dispatched")
     owner = dev.get("owner") or {}
     if allocated and owner.get("agentName"):
-        parts = [owner["agentName"]]
+        parts = [html.escape(owner["agentName"])]
         started = dev.get("allocatedAt")
         if started:
             parts.append(f"held {Fmt.duration(time.time() - started / 1000)}")
-        idle = dev.get("idleMs")
-        if idle and idle > 60000:
-            parts.append(f"idle {int(idle / 60000)}m")
+        minutes = deviceallocator.idle_minutes(dev)
+        if minutes is not None:
+            color = deviceallocator.idle_color(minutes, idle_limit)
+            parts.append(f"idle {minutes}m" if color is None
+                         else f'<span style="color: {color};">idle {minutes}m</span>')
         return " · ".join(parts)
-    return dev.get("handle") or "available"
+    return html.escape(dev.get("handle") or "available")
 
 
 class Panel(QWidget):
@@ -239,6 +270,16 @@ class Panel(QWidget):
         self.main_page = QWidget()
         self._build_main_page()
         self._screens["main"] = self.body.addWidget(self.main_page)
+
+        # Page: devices (the allocator's pool, its daemon and its remote pool).
+        self.devices_view = DevicesView(store)
+        self.devices_view.done.connect(lambda: self._set_screen("main"))
+        devices_scroll = QScrollArea()
+        devices_scroll.setWidgetResizable(True)
+        devices_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        devices_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        devices_scroll.setWidget(self.devices_view)
+        self._screens["devices"] = self.body.addWidget(devices_scroll)
 
         # Page: telemetry (what the monitors cost and what they still owe). Sits
         # between Mesh and Settings, matching the header button order.
@@ -362,6 +403,10 @@ class Panel(QWidget):
         refresh = _icon_button("⟲", "Refresh")
         refresh.clicked.connect(self.refresh_requested.emit)
         row.addWidget(refresh)
+
+        self.devices_btn = _BadgedButton(glyphs.G_DEVICES)
+        self.devices_btn.clicked.connect(self._toggle_devices)
+        row.addWidget(self.devices_btn)
 
         # No add-on, no ⬡ button: the screen behind it does not exist, and a
         # control that opens nothing is worse than an absent one.
@@ -614,22 +659,19 @@ class Panel(QWidget):
     def _rebuild_devices(self) -> None:
         _clear_layout(self.devices_col)
         state = self.store.device_state
+        self.devices_btn.set_state(open_=self._screen == "devices",
+                                   in_use=deviceallocator.allocated_count(state or {}))
         devices = (state or {}).get("devices", [])
         if not devices:
             self.devices_host.setVisible(False)
             return
         self.devices_host.setVisible(True)
+        self._idle_limit = self.store.device_idle_leased_minutes
 
-        from . import deviceallocator
-
-        head = QHBoxLayout()
-        head.setSpacing(6)
-        head.addWidget(GlyphLabel(glyphs.G_DEVICES, 14, "#9aa0a6", font_px=12))
-        title = QLabel("Devices")
-        title.setStyleSheet(muted(10, bold=True))
-        head.addWidget(title)
-        head.addStretch(1)
-        self.devices_col.addLayout(head)
+        head = SectionHeader(glyph=glyphs.G_DEVICES, title="Devices", chevron="›")
+        head.setToolTip("Open the Devices screen")
+        head.clicked.connect(self._toggle_devices)
+        self.devices_col.addWidget(head)
 
         # Within a section: by platform, then name.
         def sort_key(d: dict):
@@ -843,15 +885,12 @@ class Panel(QWidget):
                 self.devices_col.addWidget(self._device_row(dev))
 
     def _device_row(self, dev: dict) -> QWidget:
-        from . import deviceallocator
-
         allocated = deviceallocator.is_allocated(dev)
         platform = dev.get("platform", "")
         glyph = glyphs.PLATFORM_GLYPH.get(platform, glyphs.G_PHONE)
-        tint = {"ios": "#0A84FF", "apple-tv": "#0A84FF", "android": "#34C759",
-                "android-tv": "#34C759", "vega": "#FF9500"}.get(platform, "#8E8E93")
+        tint = deviceallocator.PLATFORM_TINT.get(platform, deviceallocator.GREY)
         status = dev.get("status", "free")
-        badge_text, badge_color = _device_badge(dev, allocated)
+        badge_text, badge_color = deviceallocator.status_badge(dev)
 
         row = QWidget()
         rl = QHBoxLayout(row)
@@ -875,10 +914,15 @@ class Panel(QWidget):
             fmt = QLabel(str(dev["format"]))
             fmt.setStyleSheet(muted(9))
             name_row.addWidget(fmt)
+        if deviceallocator.is_remote(dev):
+            remote = QLabel("remote")
+            remote.setStyleSheet("color: #5E5CE6; font-size: 8px; font-weight: 700;")
+            name_row.addWidget(remote)
         name_row.addStretch(1)
         text.addLayout(name_row)
 
-        detail = QLabel(_device_detail(dev, allocated))
+        detail = QLabel(_device_detail(dev, allocated, self._idle_limit))
+        detail.setTextFormat(Qt.TextFormat.RichText)
         detail.setStyleSheet(
             f"font-size: 9px; color: {'#AF52DE' if status == 'repairing' else (tint if allocated else 'palette(mid)')};"
         )
@@ -910,10 +954,17 @@ class Panel(QWidget):
         self._update_results()
 
     def _set_screen(self, name: str) -> None:
-        """Flip the body to one of the screens: Actions ("main"), Telemetry,
+        """Flip the body to one of the screens: Actions ("main"), Devices, Telemetry,
         Settings, or — when the mesh add-on is installed — Mesh management."""
         self._screen = name
         self.body.setCurrentIndex(self._screens[name])
+        self.devices_btn.set_state(
+            open_=name == "devices",
+            in_use=deviceallocator.allocated_count(self.store.device_state or {}))
+        if name == "devices":
+            self.devices_view.opened()
+        else:
+            self.devices_view.closed()
         if name == "mesh" and self.store.mesh_enabled:
             # Fresh topology the moment the screen opens (the 2s poll follows).
             self.store.refresh_mesh_state()
@@ -927,6 +978,9 @@ class Panel(QWidget):
 
     def _toggle_settings(self) -> None:
         self._set_screen("main" if self._screen == "settings" else "settings")
+
+    def _toggle_devices(self) -> None:
+        self._set_screen("main" if self._screen == "devices" else "devices")
 
     def _toggle_mesh(self) -> None:
         self._set_screen("main" if self._screen == "mesh" else "mesh")
@@ -1109,7 +1163,14 @@ class Panel(QWidget):
         # Likewise the free bays: an agent that finished while the panel was hidden
         # must not leave its slot drawn as taken until the next tick.
         self.store.refresh_auto_task_count_async()
+        if self._screen == "devices":
+            self.devices_view.opened()
         super().showEvent(event)
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        # The Devices screen polls the installer only while it is on screen.
+        self.devices_view.closed()
+        super().hideEvent(event)
 
     # MARK: window behaviour
 

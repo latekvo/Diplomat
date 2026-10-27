@@ -7,7 +7,7 @@ a real display by grabbing the widget's own pixels:
         QT_QPA_PLATFORM=offscreen python -m diplomat_app
 
 what ∈ {panel, lookup, wizard, issues, conflicts, audit, settings[-explain],
-devices, mesh, telemetry}.
+devices, devices-screen[-remote[-away]|-off], mesh, telemetry}.
 With DIPLOMAT_RENDER_LIVE=1 it fetches real data first; otherwise it uses a small
 synthetic fixture.
 """
@@ -94,6 +94,84 @@ def _device_fixture(store: Store) -> None:
              "version": "15", "handle": None, "status": "free", "owner": None},
         ],
     }
+
+
+def _devices_screen_fixture(store: Store, mode: str) -> None:
+    """``devices-screen[-remote[-away]|-off]``, the Devices screen in each state that
+    builds a different tree. Plain: a daemon with no remote pool, as on a checkout
+    without one. ``-remote``: a provider mid-sign-in with two remote leases (one still
+    attaching) and a pool listing. ``-remote-away``: the sign-in went unanswered, plus
+    a key this applet does not know. ``-off``: the allocator installed but its daemon
+    not running, and no snapshot. Mirrors ``Render.seedDevicesScreen`` on macOS."""
+    from diplomat_runtime import activity
+    from . import deviceallocator as da
+    from .store import RemoteCall
+
+    _device_fixture(store)
+    off = mode.endswith("off")
+    store.allocator_install = {
+        "installed": True, "version": "0.1.0", "mcpRegistered": True,
+        "skillInstalled": True, "ruleInstalled": True, "claudeMdInjected": True,
+        "daemonRunning": not off,
+    }
+    store.audit_entries = [
+        activity.AuditEntry("2026-07-03T09:14:00Z", "panel", "release-device",
+                            "Freed iPad Pro from checkout flow"),
+        activity.AuditEntry("2026-07-03T09:02:00Z", "daemon", "repair-done",
+                            "Pixel_8_API_35 repaired — returned to the pool"),
+        # Left off the screen: the agent reaper, not a device.
+        activity.AuditEntry("2026-07-03T08:12:00Z", "auto", "kill-device",
+                            "closed #431's window — finished"),
+    ] + store.audit_entries
+    if off:
+        store.device_state = None
+        return
+    local = da.decode_state(store.device_state)
+    if "remote" not in mode:
+        store.device_state = {**local, "daemonPid": 51734}
+        return
+    away = "away" in mode
+    now = time.time()
+    leases = [
+        {"key": "lab-pool:galaxy-s24-07", "platform": "android", "name": "Galaxy S24",
+         "version": "14", "apiVersion": "34", "handle": "127.0.0.1:41207",
+         "status": "ready", "owner": {"agentName": "payments e2e", "ownerPid": 4512},
+         "allocatedAt": now * 1000 - 26 * 60_000, "idleMs": 300_000, "format": "phone",
+         "source": "remote"},
+        {"key": "lab-pool:pixel-9-pro-02", "platform": "android", "name": "Pixel 9 Pro",
+         "version": "15", "apiVersion": "35", "handle": None, "status": "booting",
+         "owner": {"agentName": "onboarding flow", "ownerPid": 4633},
+         "allocatedAt": now * 1000 - 40_000, "format": "phone", "source": "remote"},
+    ]
+    status = (
+        da.RemoteStatus(state="sign-in-unanswered", provider="lab-pool",
+                        url="https://lab-pool.example/devices", retry_at=now + 47 * 60,
+                        extras=(("queue", "3"), ("region", "eu-west")))
+        if away else
+        da.RemoteStatus(state="signing-in", provider="lab-pool",
+                        url="https://lab-pool.example/devices",
+                        login_url="https://lab-pool.example/login?session=7f3a"))
+    store.device_state = {"devices": local["devices"] + leases, "daemonPid": 51734,
+                          "remote": status}
+    store.device_remote_provider = "~/.diplomat/remote/lab-pool.mjs"
+    store.audit_entries.insert(0, activity.AuditEntry(
+        "2026-07-03T09:20:00Z", "daemon", "remote-lease-ended",
+        "Galaxy S23 taken from smoke test: the pool reclaimed it"))
+    if away:
+        store.remote_sign_in = RemoteCall(
+            reply=da.RemoteReply(reason="nobody finished the sign-in in the browser"), at=now)
+        store.remote_listing = RemoteCall(
+            reply=da.RemoteReply(reason="lab-pool is not signed in"), at=now)
+    else:
+        store.remote_sign_in = RemoteCall(running=True)
+        store.remote_listing = RemoteCall(reply=da.RemoteReply(devices=(
+            da.RemotePoolDevice("lab-pool:galaxy-s24-07", "android", "Galaxy S24", "14",
+                                "34", "phone", "leased"),
+            da.RemotePoolDevice("lab-pool:pixel-9-pro-02", "android", "Pixel 9 Pro", "15",
+                                "35", "phone", "leased"),
+            da.RemotePoolDevice("lab-pool:tab-s9-01", "android", "Galaxy Tab S9", "14",
+                                "34", "tablet", "available"),
+        )), at=now)
 
 
 def _left_pane_fixture(store: Store) -> None:
@@ -475,6 +553,11 @@ def run(what: str, out: str) -> int:
         _telemetry_scratch()
         _telemetry_ledger_fixture()
 
+    # The screens shell `--check` as they are built, whose answer would overwrite the
+    # seeded install status.
+    if what.startswith("devices-screen"):
+        store.refresh_allocator_install_async = lambda: None
+
     panel = Panel(store)
     if what == "lookup":
         panel.search.setText("389")
@@ -489,6 +572,11 @@ def run(what: str, out: str) -> int:
         panel._open_action("audit")
     elif what.startswith("settings"):
         panel._toggle_settings()
+    elif what.startswith("devices-screen"):
+        _devices_screen_fixture(store, what)
+        store.devices_changed.emit()
+        store.activity_changed.emit()
+        panel._toggle_devices()
     elif what == "devices":
         _device_fixture(store)
         panel._rebuild_devices()

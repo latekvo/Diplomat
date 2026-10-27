@@ -45,6 +45,11 @@ G_MESH = "⬡"     # mesh screen header / "run on mesh" toggle (matches the mesh
 G_TELEMETRY = "◫" # telemetry screen header (the per-figure glyphs live in
                   # assets/telemetry.json, like the tool and category ones)
 
+# --- Devices screen glyphs -------------------------------------------------
+G_RECENT = "◴"     # the allocator's recent events
+G_ALLOCATOR = "▥"  # the allocator itself: daemon, install, idle limits
+G_REMOTE = "⇄"     # the remote device pool
+
 # --- Settings card glyphs --------------------------------------------------
 # One per block of the Settings screen. Plain text symbols, like the rest of this
 # file: the obvious pictograms for these (⚡ gauge ⚠ ⬇) all carry an emoji

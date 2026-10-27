@@ -367,12 +367,13 @@ class SectionHeader(ClickableFrame):
     """A collapsible left-pane section header: glyph + TITLE + count + caption + chevron.
 
     Emits ``clicked`` (via ClickableFrame) so the panel can toggle the section body;
-    call :meth:`set_expanded` to flip the chevron.
+    call :meth:`set_expanded` to flip the chevron. A fixed ``chevron`` is for a header
+    that opens something rather than folding.
     """
 
     def __init__(self, *, glyph: str, title: str, count: int | None = None,
                  caption: str | None = None, expanded: bool = True,
-                 glyph_color: str = glyphs.MUTED) -> None:
+                 glyph_color: str = glyphs.MUTED, chevron: str | None = None) -> None:
         super().__init__()
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         row = QHBoxLayout(self)
@@ -393,7 +394,7 @@ class SectionHeader(ClickableFrame):
             cap.setStyleSheet(muted(9))
             row.addWidget(cap)
         row.addStretch(1)
-        self._chev = QLabel("▾" if expanded else "▸")
+        self._chev = QLabel(chevron or ("▾" if expanded else "▸"))
         self._chev.setStyleSheet(muted(10))
         row.addWidget(self._chev)
 

@@ -50,6 +50,7 @@ from . import (
     bans,
     conflicts,
     deviceallocator,
+    headless,
     issues,
     probes,
     szpont,
@@ -202,6 +203,16 @@ def stop_stray_node(exit_wait: float = 10.0) -> tuple[str, int, int, str]:
     return ("stopped", pid, port, "")
 
 
+@dataclass(frozen=True)
+class RemoteCall:
+    """One of the Devices screen's remote-pool calls: idle, running, or what it was
+    last answered (``reply``) and when (``at``, epoch seconds)."""
+
+    running: bool = False
+    reply: deviceallocator.RemoteReply | None = None
+    at: float | None = None
+
+
 # MARK: - Store
 
 
@@ -214,6 +225,8 @@ class Store(QObject):
     # data refresh) and when its install status is re-checked.
     devices_changed = Signal()
     allocator_changed = Signal()
+    # Emitted when one of the Devices screen's two remote-pool calls starts or answers.
+    remote_changed = Signal()
     # Emitted when the activity feed (audit.jsonl) or ban list snapshot changes.
     activity_changed = Signal()
     # Emitted when the mesh topology snapshot (state.json) meaningfully changes.
@@ -259,6 +272,12 @@ class Store(QObject):
         # Live device-allocator state (pool + holders) and install status.
         self.device_state: dict | None = None
         self.allocator_install: dict | None = None
+        # The Devices screen's two remote-pool calls. Here, not on the screen: a
+        # sign-in runs for up to ten minutes and must outlive the screen being closed.
+        self.remote_sign_in = RemoteCall()
+        self.remote_listing = RemoteCall()
+        # The provider path a headless run was given, which it must not persist.
+        self._remote_provider_unsaved: str | None = None
 
         # Live telemetry read from the shared ~/.diplomat files (activity feed + bans).
         self.audit_entries: list = []
@@ -668,6 +687,24 @@ class Store(QObject):
                 int(value), appconfig.MAX_DEVICE_IDLE_LEASED_MINUTES
             ),
         )
+
+    @property
+    def device_remote_provider(self) -> str:
+        """The remote device pool's provider module (Devices → REMOTE POOL), in the
+        shared config because the allocator daemon reads it; empty = no remote pool."""
+        if self._remote_provider_unsaved is not None:
+            return self._remote_provider_unsaved
+        return appconfig.get(appconfig.DEVICE_REMOTE_PROVIDER)
+
+    @device_remote_provider.setter
+    def device_remote_provider(self, value: str) -> None:
+        """Stored trimmed; empty removes the key, which turns the remote pool off. Kept
+        in memory alone in a headless run, which must not persist anything."""
+        value = value.strip()
+        if headless.active(os.environ):
+            self._remote_provider_unsaved = value
+            return
+        appconfig.set_value(appconfig.DEVICE_REMOTE_PROVIDER, value)
 
     @property
     def queued_task_order(self) -> list[str]:
@@ -3031,14 +3068,12 @@ class Store(QObject):
     def refresh_device_state(self) -> None:
         """Re-read the daemon's public state file (cheap) and signal on change.
 
-        Compares only the `devices` list, not the whole snapshot: the daemon stamps
-        a fresh `updatedAt` every poll, which would otherwise force a needless
-        rebuild of the device rows every 8s.
+        The decoded snapshot leaves out the `updatedAt` the daemon stamps on every
+        publish, which would otherwise force a needless rebuild of the device rows
+        every 8s.
         """
         new = deviceallocator.read_state()
-        new_devices = (new or {}).get("devices")
-        old_devices = (self.device_state or {}).get("devices")
-        if new_devices != old_devices:
+        if new != self.device_state:
             self.device_state = new
             self.devices_changed.emit()
 
@@ -3047,6 +3082,87 @@ class Store(QObject):
         def work() -> None:
             self.allocator_install = deviceallocator.check()
             self.allocator_changed.emit()
+        self.start_background(work)
+
+    def _after_device_action(self) -> None:
+        self.refresh_activity()
+        self.refresh_device_state()
+
+    def kill_device_async(self, key: str) -> None:
+        """Free a device and shut it down, or return a remote lease (Devices → Kill /
+        Return). Logged after the call, with the real outcome: the activity feed must
+        not assert a kill that failed."""
+        def work() -> None:
+            ok = deviceallocator.kill_device(key)
+            activity.log("panel", "kill-device",
+                         f"Killed device {key}" if ok else f"Kill FAILED for device {key}")
+            self._after_device_action()
+        self.start_background(work)
+
+    def release_device_async(self, dev: dict) -> None:
+        """Take a device back from the agent holding it (Devices → Free)."""
+        owner = dev.get("owner") or {}
+        pid = owner.get("ownerPid")
+        if pid is None:
+            return
+        key = dev.get("key", "")
+        name = dev.get("name") or key
+        who = owner.get("agentName") or f"pid {pid}"
+
+        def work() -> None:
+            ok = deviceallocator.release_device(key, int(pid))
+            activity.log("panel", "release-device",
+                         f"Freed {name} from {who}" if ok else f"Free FAILED for {name}")
+            self._after_device_action()
+        self.start_background(work)
+
+    def mark_device_repaired_async(self, key: str) -> None:
+        """End a device's quarantine (Devices → Repaired). The daemon logs the
+        success itself; only a refusal is this applet's to report."""
+        def work() -> None:
+            if not deviceallocator.mark_repaired(key):
+                activity.log("panel", "warn", f"Mark-repaired FAILED for device {key}")
+            self._after_device_action()
+        self.start_background(work)
+
+    def remote_sign_in_async(self) -> None:
+        """Ask the remote pool to sign in again. One at a time, off the GUI thread:
+        the daemon answers only once the browser sign-in is over, and the poll and
+        every other daemon call go on meanwhile."""
+        if self.remote_sign_in.running:
+            return
+        self.remote_sign_in = RemoteCall(running=True)
+        self.remote_changed.emit()
+
+        def work() -> None:
+            reply = deviceallocator.remote_sign_in()
+            self.remote_sign_in = RemoteCall(reply=reply, at=time.time())
+            self.remote_changed.emit()
+            self.refresh_device_state()
+        self.start_background(work, name="remote-sign-in")
+
+    def list_remote_pool_async(self) -> None:
+        """What the remote pool lends now (Devices → List pool devices)."""
+        if self.remote_listing.running:
+            return
+        self.remote_listing = RemoteCall(running=True)
+        self.remote_changed.emit()
+
+        def work() -> None:
+            reply = deviceallocator.remote_devices()
+            self.remote_listing = RemoteCall(reply=reply, at=time.time())
+            self.remote_changed.emit()
+        self.start_background(work, name="remote-listing")
+
+    def start_allocator_daemon_async(self) -> None:
+        def work() -> None:
+            result = deviceallocator.start_daemon()
+            self.allocator_install = result
+            running = "true" if (result or {}).get("daemonRunning") else "false"
+            activity.log("panel", "allocator-install",
+                         f"Started the device-allocator daemon (ok: {running})")
+            self.allocator_changed.emit()
+            self._after_device_action()
         self.start_background(work)
 
     # MARK: activity feed + bans

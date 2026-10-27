@@ -92,6 +92,8 @@ _ACTION_GLYPH: dict[str, str] = {
     "quota-stall": "⧗",
     "merge": "✓",
     "kill-device": "✕",
+    "release-device": "↶",
+    "remote-lease-ended": "⇥",
     "unban": "○",
     "ban": "⊘",
     "repair-done": "⚒",
