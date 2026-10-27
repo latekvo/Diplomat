@@ -236,10 +236,45 @@ def test_each_half_of_a_new_identity_refuses_a_disk_that_cannot_keep_it(
 def test_an_identity_already_on_disk_loads_on_a_full_one(full_volume, monkeypatch):
     """What a restart needs is a read: a disk with no room for a refreshed tier still
     starts the node it already knows."""
-    from szpontnet import identity
+    from szpontnet import hardware, identity
 
     state = full_volume.path / "mesh"
-    _seed(state)
+    state.mkdir(parents=True)
+    seeded = {"id": "f" * 32, "name": "full-disk", "tier": 3, "tokens": "ok",
+              "strengthAuto": True, "dutiesEnabled": {}}
+    (state / "node.json").write_text(json.dumps(seeded))
     monkeypatch.setenv("SZPONTNET_DIR", str(state))
+    monkeypatch.setattr(hardware, "detect_tier", lambda: 1)
     full_volume.fill()
-    assert identity.load().id == "f" * 32
+    node = identity.load()
+    assert (node.id, node.tier) == ("f" * 32, 1)
+    assert _read(state / "node.json") == seeded, "the disk took a write"
+
+
+def test_a_foreign_job_with_nowhere_to_stage_fails_rather_than_raising(
+        tmp_path, monkeypatch):
+    """Both ends stage a confined job's artifact under ``results/``; where that
+    directory can't be made, the job fails (and the slot fails over) instead of the
+    error escaping into the link that carried the request or the result."""
+    import errno
+
+    from szpontnet import protocol, spawnjob
+    from szpontnet.node import MeshNode
+
+    monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
+    monkeypatch.setenv("SZPONTNET_LOOPBACK", "1")
+    node = MeshNode()
+
+    def no_room(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(node, "_result_path", no_room)
+    monkeypatch.setattr(spawnjob, "spawn_confined",
+                        lambda *_: pytest.fail("the sandbox started"))
+    monkeypatch.setattr(spawnjob, "run_result_handler",
+                        lambda *_: pytest.fail("the handler ran"))
+    job = protocol.Job(id="j1", duty="review", prompt="p", requested_by="peer",
+                       requested_at=1.0)
+    assert node._run_confined(job, "peer") == (
+        "failed", "[Errno 28] No space left on device", False)
+    node._act_on_result("j1", "peer", "review", {"ok": True, "output": "x"})
