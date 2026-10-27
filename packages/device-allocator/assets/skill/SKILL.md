@@ -21,8 +21,11 @@ Never pick, boot, create, or squat a device you were not allocated.
 - **`request-device`** — ask for a device. Give `platform` (`ios`, `android`,
   `apple-tv`, `android-tv`, `vega`) and optionally `format` (`phone`/`tablet`, iOS/Android
   only). Set `version` **only when a specific OS version is genuinely required** —
-  otherwise omit it. Returns a UDID (Apple) or adb serial (Android). Two special
-  responses:
+  otherwise omit it. Returns a UDID (Apple) or adb serial (Android). When a remote
+  device pool is configured it is tried first: you may get a **real device** on a
+  `127.0.0.1:<port>` adb serial (`source: "remote"`). It is shared hardware — never sign
+  it into an account, set a passcode or change its Settings. Pass `source: "local"` when
+  you need a simulator/emulator specifically. Two special responses:
   - **exhausted** — the concurrency quota is reached and other agents hold every slot.
     Call `await-device`, then request again. Do **not** create your own device to bypass it.
   - **needs-create** — no matching device exists (there is no fixed pool). Create one to

@@ -520,7 +520,8 @@ enum DeviceAllocator {
     static func startDaemon() -> AllocatorInstall { runInstaller("--start-daemon") }
     /// Stop the running daemon and start this checkout's, the one way to replace a daemon
     /// started from older code: `--install` and `--start-daemon` keep any daemon that
-    /// answers. Leases survive; the old daemon shuts down the devices it booted.
+    /// answers. Local leases survive; the old daemon shuts down the devices it booted and
+    /// gives remote ones back to their pool.
     static func restartDaemon() -> AllocatorInstall { runInstaller("--restart-daemon") }
 
     private static func runInstaller(_ arg: String) -> AllocatorInstall {

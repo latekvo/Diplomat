@@ -124,8 +124,8 @@ PREDATES_POOL_NOTE = ("The running allocator daemon reports no remote pool: it p
 
 #: Twin of ``AllocatorUI.restartHelp`` in DevicesScreen.swift.
 RESTART_HELP = ("Stop the running daemon and start this checkout's. Agents keep their "
-                "leases; a simulator or emulator the allocator booted is shut down as the "
-                "old daemon exits.")
+                "local leases; a simulator or emulator the allocator booted is shut down as "
+                "the old daemon exits, and a remote device goes back to its pool.")
 
 
 def restart_button(store: Store) -> QPushButton:

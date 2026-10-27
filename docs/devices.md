@@ -28,14 +28,15 @@ idle limits, shared with Settings.
 
 **Restart daemon**, while one runs, stops it and starts this checkout's. A daemon never exits by
 itself, and **Reinstall** / **Update** leave a running one alone, so after updating the checkout
-this is how new daemon code takes over. Agents keep their leases (the new daemon reloads them),
-but a simulator or emulator the allocator booted is shut down as the old daemon exits.
+this is how new daemon code takes over. Agents keep their local leases (the new daemon reloads
+them), but a simulator or emulator the allocator booted is shut down as the old daemon exits, and
+a remote device goes back to its pool.
 
 ## Remote pool
 
 Real devices somewhere else, lent to this machine's agents before its own simulators and
 emulators are booted. Diplomat knows nothing about any particular pool: a **provider module** you
-point it at does the talking (see the [allocator's README](../packages/device-allocator/README.md)).
+point it at does the talking (see the [allocator's README](../packages/device-allocator/README.md#a-remote-device-pool)).
 A daemon from before remote pools reports none: the card then says so and offers **Restart
 daemon**, after updating the checkout if it has no remote pool either.
 

@@ -710,8 +710,8 @@ enum AllocatorUI {
 
     /// Twin of `devicesview.RESTART_HELP`.
     static let restartHelp = "Stop the running daemon and start this checkout's. Agents keep "
-        + "their leases; a simulator or emulator the allocator booted is shut down as the old "
-        + "daemon exits."
+        + "their local leases; a simulator or emulator the allocator booted is shut down as the "
+        + "old daemon exits, and a remote device goes back to its pool."
 
     static var summary: String {
         if !DeviceAllocator.packageAvailable {
