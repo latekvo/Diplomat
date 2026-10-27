@@ -2,8 +2,9 @@
 // FAKE_POOL_DIR:
 //   devices.json   [{key, platform, name, version, apiVersion, format, free}] the pool lends
 //   mode           'ok' | 'throw' | 'slow' (leases after FAKE_POOL_SLOW_MS) | 'attach-fails'
-//                  | 'slow-attach' (attaches after FAKE_POOL_SLOW_MS)
-//                  | 'slow-attach-strict' (the same, but fails if released meanwhile)
+//                  | 'slow-attach' (attaches after FAKE_POOL_SLOW_MS, reporting an end that came meanwhile)
+//                  | 'slow-attach-strict' (the same, but fails if released or ended meanwhile)
+//                  | 'slow-release' (releases after FAKE_POOL_SLOW_MS)
 //   end-<lease id> written by a test to end that lease; its content is the reason
 //   events.log     what the provider did, one line each: "lease <key>", "release <key>", ...
 // An attached device is a local TCP port that echoes, standing in for an adb transport.
@@ -42,6 +43,8 @@ export default function create(ctx) {
       if (mode === 'attach-fails') throw new Error('tunnel refused');
       if (mode.startsWith('slow-attach')) await new Promise((r) => setTimeout(r, Number(process.env.FAKE_POOL_SLOW_MS)));
       if (mode === 'slow-attach-strict' && released.has(lease.id)) throw new Error('released while attaching');
+      const endedEarly = mode === 'slow-attach-strict' ? read(`end-${lease.id}`, null) : null;
+      if (endedEarly != null) { onEnd(endedEarly); throw new Error('lease ended'); }
       const server = net.createServer((s) => { s.on('error', () => {}); s.pipe(s); });
       await new Promise((resolve, reject) => {
         server.once('error', (e) => (port ? server.listen(0, '127.0.0.1', resolve) : reject(e)));
@@ -49,6 +52,8 @@ export default function create(ctx) {
       });
       servers.set(lease.id, server);
       event(`attach ${lease.key}${port ? ` port ${port}` : ''}`);
+      const endedMeanwhile = mode === 'slow-attach' ? read(`end-${lease.id}`, null) : null;
+      if (endedMeanwhile != null) onEnd(endedMeanwhile);
       const poll = setInterval(() => {
         const why = read(`end-${lease.id}`, null);
         if (why == null || !servers.has(lease.id)) { if (!servers.has(lease.id)) clearInterval(poll); return; }
@@ -61,6 +66,7 @@ export default function create(ctx) {
     },
     async release(lease) {
       released.add(lease.id);
+      if (read('mode', 'ok').trim() === 'slow-release') await new Promise((r) => setTimeout(r, Number(process.env.FAKE_POOL_SLOW_MS)));
       servers.get(lease.id)?.close();
       servers.delete(lease.id);
       const devices = JSON.parse(read('devices.json', '[]'));

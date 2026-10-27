@@ -222,6 +222,50 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   await short.stop();
 }
 
+// 2b. Leases ending while the daemon has their record in hand.
+{
+  const box = sandbox();
+  // The slow acquire outlasts its budget by seconds, so the pool's end lands inside it.
+  const d = startDaemon(box, { DA_REMOTE_ACQUIRE_BUDGET_MS: '4000', FAKE_POOL_SLOW_MS: '6000' });
+  await healthy(d);
+  const auditOf = () => { try { return fs.readFileSync(path.join(box.dir, 'ban', 'audit.jsonl'), 'utf8'); } catch { return ''; } };
+
+  box.mode('slow-attach-strict');
+  const attaching = d.call('POST', '/request', { ownerPid: ME, platform: 'android' });
+  await until('the attach to start', async () => (await stateOf(d)).devices.some((x) => x.key === 'pool:P16' && x.status === 'booting'));
+  box.end(box.leases().find((l) => l.key === 'pool:P16').remote.id, 'the host went away');
+  const fell = await attaching;
+  assert.equal(fell.source, 'local');
+  assert.equal(fell.remoteSkipped, 'Pixel (pool) was leased, but its pool ended the lease while attaching: the host went away');
+  pass('a lease the pool ends while attaching is a fallback with that reason, not a 409');
+  await d.call('POST', '/release', { ownerPid: ME });
+
+  // The same, from a provider whose attach still finishes.
+  box.mode('slow-attach');
+  const finishing = d.call('POST', '/request', { ownerPid: ME, platform: 'android' });
+  await until('the attach to start', async () => (await stateOf(d)).devices.some((x) => x.key === 'pool:P16' && x.status === 'booting'));
+  box.end(box.leases().find((l) => l.key === 'pool:P16').remote.id, 'the host went away');
+  assert.equal((await finishing).remoteSkipped, 'Pixel (pool) was leased, but its pool ended the lease while attaching: the host went away');
+  pass('so is one whose attach finishes after the pool ended it');
+  await d.call('POST', '/release', { ownerPid: ME });
+
+  box.mode('ok');
+  const held = await d.call('POST', '/request', { ownerPid: ME, platform: 'android', version: '11' });
+  assert.equal(held.key, 'pool:P11');
+  box.mode('slow');
+  const changing = d.call('POST', '/change', { ownerPid: ME, deviceId: held.deviceId, source: 'remote' });
+  const p11 = box.leases().find((l) => l.key === 'pool:P11').remote.id;
+  await until('the change to take the old device out of the table', async () => !(await stateOf(d)).devices.some((x) => x.key === 'pool:P11'));
+  box.end(p11, 'lease expired');
+  const changed = await changing;
+  assert.deepEqual([changed.outcome, changed.reason], ['remote-unavailable', 'Test Pool did not answer within 4 s']);
+  assert.equal(changed.keptDevice, undefined, 'an ended lease is not kept');
+  assert.equal((await stateOf(d)).devices.some((x) => x.key === 'pool:P11'), false);
+  assert.match(auditOf(), /"remote-lease-ended","detail":"POCO \(pool\) taken from pid:\d+: lease expired"/);
+  pass('change-device does not restore a lease the pool ended while it looked for a replacement');
+  await d.stop();
+}
+
 // 3. No provider, or one that will not load.
 {
   const box = sandbox({ config: { deviceRemoteProvider: PROVIDER } });
@@ -334,6 +378,23 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   assert.deepEqual(box.leases(), []);
   assert.deepEqual(box.events().slice(stopped), [], 'nothing reattached');
   pass('stopping the daemon returns its leases, and the next one does not restore them');
+
+  // A release slower than the stop allows is finished by the next daemon.
+  await d.stop();
+  d = startDaemon(box, { FAKE_POOL_SLOW_MS: '5000' });
+  await healthy(d);
+  const slowRel = await d.call('POST', '/request', { ownerPid: ME, platform: 'android', version: '16' });
+  assert.equal(slowRel.key, 'pool:P16');
+  box.mode('slow-release');
+  const before = box.events().length;
+  await d.stop();
+  assert.equal(box.leases().find((l) => l.key === 'pool:P16')?.releasePending, true);
+  box.mode('ok');
+  d = startDaemon(box);
+  await healthy(d);
+  await until('the next daemon to finish the release', () => box.events().slice(before).join() === 'release pool:P16');
+  assert.equal((await stateOf(d)).devices.some((x) => x.key === 'pool:P16'), false);
+  pass('a lease whose release outlasts the stop is given back by the next daemon');
 
   // An owner that died while no daemon was running: the lease goes back at startup.
   const gone = spawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)']);

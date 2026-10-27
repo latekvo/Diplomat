@@ -344,6 +344,10 @@ export async function motionHash(dev) {
       try { fs.unlinkSync(tmp); } catch {}
       return bmpFrameHash(buf);
     }
+    if (dev.source === 'remote' && dev.serial) {
+      const r = await run(ADB_BIN, ['-s', dev.serial, 'shell', REMOTE_FRAME_HASH], { timeout: 20000 });
+      return r.ok && /^[0-9a-f]{32}\b/.test(r.stdout) ? r.stdout.slice(0, 32) : null;
+    }
     if (isAndroidPlatform(dev.platform) && dev.serial) {
       const r = await runBuf(ADB_BIN, ['-s', dev.serial, 'exec-out', 'screencap'], { timeout: 20000 });
       if (!r.ok || !r.buf?.length) return null;
@@ -357,6 +361,16 @@ export async function motionHash(dev) {
 // on, so the top STATUS_BAND of a frame is left out of its hash. Both formats are
 // uncompressed, so rows are cut without decoding; an unexpected layout hashes whole.
 const STATUS_BAND = 0.06;
+
+// rawFrameHash computed on the device, for a device whose frames would otherwise cross a
+// remote tunnel every sweep (megabytes each): only the md5 comes back.
+const REMOTE_FRAME_HASH = [
+  'set -- $(screencap | head -c 8 | od -An -tu4)',
+  'hdr=$(( $(screencap | wc -c) - $1 * $2 * 4 ))',
+  `skip=$(( hdr + ($2 * ${STATUS_BAND * 100} + 99) / 100 * $1 * 4 ))`,
+  'case $hdr in 12|16) ;; *) skip=0 ;; esac',
+  'screencap | tail -c +$((skip + 1)) | md5sum',
+].join('; ');
 
 // `screencap` without -p: width, height, format (+ colorspace from Android 12), then
 // 4-byte pixels, rows top-down.

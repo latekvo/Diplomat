@@ -189,6 +189,7 @@ async function requestRemote(p, req, exclude) {
   } catch (e) {
     log('remote: attach failed', alloc.key, String(e));
     remote.release(alloc.remoteProvider, alloc.remote);
+    if (alloc.ended) return { applies: true, reason: `${alloc.name} was leased, but its pool ended the lease while attaching: ${alloc.ended}` };
     if (allocations.get(alloc.key) !== alloc) throw httpError(409, `device ${alloc.name} was released during boot`);
     await withLock(async () => {
       if (allocations.get(alloc.key) === alloc) { allocations.delete(alloc.key); publish(); }
@@ -199,6 +200,7 @@ async function requestRemote(p, req, exclude) {
   // since may have opened what that release had nothing to close yet.
   if (allocations.get(alloc.key) !== alloc) {
     remote.release(alloc.remoteProvider, alloc.remote);
+    if (alloc.ended) return { applies: true, reason: `${alloc.name} was leased, but its pool ended the lease while attaching: ${alloc.ended}` };
     throw httpError(409, `device ${alloc.name} was released during boot`);
   }
   alloc.status = 'ready';
@@ -209,6 +211,7 @@ async function requestRemote(p, req, exclude) {
 
 // The pool ended a lease under its holder: expiry, the device or its host gone.
 function remoteLeaseEnded(alloc, why) {
+  alloc.ended = why; // read by an attach or a change-device that has the record out of the table
   remote.release(alloc.remoteProvider, alloc.remote); // a lease we only lost contact with may still be live
   withLock(async () => {
     if (allocations.get(alloc.key) !== alloc) return;
@@ -382,6 +385,10 @@ async function handleChange(p) {
   // transiently read one over (restore + the winner) — bounded, self-correcting,
   // and better than stranding the agent with nothing.
   const restoreOld = () => withLock(async () => {
+    if (old?.ended) {
+      appendAudit('daemon', 'remote-lease-ended', `${old.name} taken from ${old.agentName}: ${old.ended}`);
+      return false;
+    }
     if (old && !allocations.has(old.key)) { allocations.set(old.key, old); publish(); return true; }
     return false;
   });
@@ -772,7 +779,7 @@ function rehydrateLeases() {
   let restored = 0;
   for (const a of readLeases()) {
     if (!a || !a.key || allocations.has(a.key)) continue;
-    const keep = a.status === 'repairing' || (a.ownerPid && pidAlive(a.ownerPid));
+    const keep = !a.releasePending && (a.status === 'repairing' || (a.ownerPid && pidAlive(a.ownerPid)));
     if (!keep) {
       if (a.source === 'remote') remote.release(a.remoteProvider, a.remote); // else it sits leased until it expires
       continue;
@@ -1137,9 +1144,11 @@ async function start() {
   server.listen(SOCKET_PATH, onListening);
   const bye = async () => {
     const leased = [...allocations.values()].filter((a) => a.source === 'remote');
-    await Promise.race([Promise.all(leased.map((a) => remote.release(a.remoteProvider, a.remote))), delay(3000)]);
-    // Given back, so the next daemon must not restore them as held.
-    for (const a of leased) allocations.delete(a.key);
+    await Promise.race([Promise.all(leased.map((a) => remote.release(a.remoteProvider, a.remote)
+      .then(() => allocations.delete(a.key)))), delay(3000)]);
+    // The next daemon must not restore a given-back lease as held; one still being given
+    // back stays on record for it to finish.
+    for (const a of leased) a.releasePending = true;
     if (leased.length) try { writeLeases([...allocations.values()]); } catch (e) { log('bye: leases write failed', String(e)); }
     shutdownBootedSync();
     try { fs.unlinkSync(SOCKET_PATH); } catch {}

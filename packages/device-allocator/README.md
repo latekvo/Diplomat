@@ -62,7 +62,8 @@ lease, `attach` it to this machine (an adb serial on a local port), `release` it
 a `status` for the snapshot and, optionally, `signIn` and `devices` for the panel.
 
 A request tries the pool first and falls back to a local device, saying why in
-`remoteSkipped`; `source: 'remote' | 'local'` pins it to one side. The fallback is
+`remoteSkipped`; `source: 'remote' | 'local'` pins it to one side (a `deviceId` claim
+is always local). The fallback is
 bounded (`DA_REMOTE_ACQUIRE_BUDGET_MS`, 11 min by default, room for a browser sign-in),
 and a lease that lands after it is handed straight back. A remote device:
 
@@ -73,11 +74,13 @@ and a lease that lands after it is handed straight back. A remote device:
   lent it, even after `deviceRemoteProvider` has changed;
 * drops out of the table, with an audit line, when the pool ends the lease under its
   holder;
-* is reattached on the same port when the daemon dies without stopping (a crash, a
-  SIGKILL) and comes back, so the agent's serial keeps working.
+* is reattached when the daemon dies without stopping (a crash, a SIGKILL) and comes
+  back, on the same port while it is still free, so the agent's serial keeps working;
+* is idle-swept like a local device, with the frame hashed on the device so only the
+  hash crosses the tunnel.
 
 `state.json` carries `remote: {provider, state, ...}` and a `source` on every device;
-`POST /remote/sign-in` and `POST /remote/devices` back the panel. Tests use
+`POST /remote/sign-in` and `POST /remote/devices` let a UI drive the pool. Tests use
 [`test/lib/fake-provider.mjs`](test/lib/fake-provider.mjs), and a fake device pool
 never loads the configured provider, so no test leases a real device.
 
