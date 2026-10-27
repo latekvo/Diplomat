@@ -37,12 +37,15 @@ case "$cmd" in
     case "$(uname -s)" in
       Darwin)
         command -v hdiutil >/dev/null || unsupported "no hdiutil"
-        hdiutil create -size "$size" -fs APFS -volname dfull "$image" -ov -quiet
-        hdiutil attach "$image" -nobrowse -noautoopen -mountpoint "$dir" -quiet
+        hdiutil create -size "$size" -fs APFS -volname dfull "$image" -ov -quiet \
+          || unsupported "hdiutil could not create a disk image"
+        hdiutil attach "$image" -nobrowse -noautoopen -mountpoint "$dir" -quiet \
+          || { rm -f "$image"; unsupported "hdiutil could not attach the disk image"; }
         ;;
       Linux)
         { [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; } || unsupported "mounting a tmpfs needs root or passwordless sudo"
-        as_root mount -t tmpfs -o "size=$size,mode=0777" tmpfs "$dir"
+        # Root is no promise of CAP_SYS_ADMIN: an unprivileged container refuses the mount.
+        as_root mount -t tmpfs -o "size=$size,mode=0777" tmpfs "$dir" || unsupported "the tmpfs mount was refused"
         ;;
       *) unsupported "no full-volume backend for $(uname -s)" ;;
     esac
