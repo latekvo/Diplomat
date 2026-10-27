@@ -52,6 +52,40 @@ clean up after itself.
 | `report-device-broken` | quarantine one that won't boot; a repair is dispatched and a replacement handed over |
 | `report-prompt-injection` | ban an author from automated review, capture the evidence, and terminate the targeted agent |
 
+## A remote device pool
+
+Real devices from a device farm can come before the local simulators/emulators. The
+pool itself is a **provider module** outside this package: point Diplomat's
+`deviceRemoteProvider` setting (`~/.diplomat/config.json`) at it, and
+[`src/remote.js`](src/remote.js) loads it and documents its contract — `acquire` a
+lease, `attach` it to this machine (an adb serial on a local port), `release` it, plus
+a `status` for the snapshot and, optionally, `signIn` and `devices` for the panel.
+
+A request tries the pool first and falls back to a local device, saying why in
+`remoteSkipped`; `source: 'remote' | 'local'` pins it to one side (a `deviceId` claim
+is always local). The fallback is
+bounded (`DA_REMOTE_ACQUIRE_BUDGET_MS`, 11 min by default, room for a browser sign-in),
+and a lease that lands after it is handed straight back. A remote device:
+
+* stays out of the local quota, which guards this machine, not the pool;
+* goes back to its pool on every path a local device would be shut down — free, reap,
+  idle, kill, change, daemon stop — and on `report-device-broken` instead of being
+  quarantined, since the pool resets what it gets back, always through the provider that
+  lent it, even after `deviceRemoteProvider` has changed. A release the pool does not
+  confirm (offline, or cut short by a daemon stop) is kept in `remote-releases.json` and
+  retried every minute, by this daemon and the next, for up to a day;
+* drops out of the table, with an audit line, when the pool ends the lease under its
+  holder;
+* is reattached when the daemon dies without stopping (a crash, a SIGKILL) and comes
+  back, on the same port while it is still free, so the agent's serial keeps working;
+* is idle-swept like a local device, with the frame hashed on the device so only the
+  hash crosses the tunnel.
+
+`state.json` carries `remote: {provider, state, ...}` and a `source` on every device;
+`POST /remote/sign-in` and `POST /remote/devices` let a UI drive the pool. Tests use
+[`test/lib/fake-provider.mjs`](test/lib/fake-provider.mjs), and a fake device pool
+never loads the configured provider, so no test leases a real device.
+
 ## Making agents actually use it
 
 A tool an agent may ignore is a tool that collides with another agent, so the

@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { callDaemon, daemonHealth } from './ipc.js';
-import { LOG_PATH, BASE_DIR } from './paths.js';
+import { LOG_PATH, BASE_DIR, REMOTE_ACQUIRE_BUDGET_MS, REMOTE_ATTACH_BUDGET_MS } from './paths.js';
 import { PLATFORMS as DEVICE_PLATFORMS, FORMATS } from './devices.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -51,6 +51,12 @@ const COERCION =
 // advertised enum can't drift from what the daemon matches), plus 'any'.
 // Format (phone/tablet) applies only to ios/android; TV platforms have no format.
 const PLATFORMS = [...DEVICE_PLATFORMS, 'any'];
+const SOURCE = {
+  type: 'string', enum: ['any', 'remote', 'local'],
+  description: "Where the device comes from: 'remote' only a real device from the remote device pool, "
+    + "'local' only a simulator/emulator on this machine. Omit to get a remote device when the pool has "
+    + 'one free and a local device otherwise — pass local when you need a simulator/emulator specifically.',
+};
 
 const TOOLS = [
   {
@@ -59,8 +65,9 @@ const TOOLS = [
       'Reserve a device for your EXCLUSIVE use, booting one if needed. You MUST call this before ' +
       'booting, launching apps on, creating, or interacting with ANY simulator/emulator — never ' +
       'touch a device you were not allocated here, or you will collide with another agent (there ' +
-      'are always potentially several running). Returns a device id (UDID for Apple platforms, ' +
-      'adb serial for Android). If the pool is exhausted it tells you to call await-device; if no ' +
+      'are always potentially several running). When a remote device pool is configured it is tried ' +
+      'first, falling back to a local simulator/emulator. Returns a device id (UDID for Apple ' +
+      'platforms, adb serial for Android). If the pool is exhausted it tells you to call await-device; if no ' +
       'matching device exists it tells you to create one and call again with its id in deviceId.',
     inputSchema: {
       type: 'object',
@@ -69,6 +76,7 @@ const TOOLS = [
         format: { type: 'string', enum: FORMATS, description: 'Form factor — only for ios/android. Omit unless you specifically need a phone vs a tablet.' },
         version: { type: 'string', description: 'OPTIONAL and DISCOURAGED — only set an OS version (e.g. "18.5", or "34" API level) when a specific version is genuinely required; otherwise omit and take whatever is available.' },
         deviceId: { type: 'string', description: 'Claim a specific device by UDID/serial — use this to claim a device you just created after a needs-create response.' },
+        source: SOURCE,
         agentName: { type: 'string', description: 'Short label for you, shown in the Diplomat panel (e.g. your task or window title).' },
       },
       required: [],
@@ -93,7 +101,7 @@ const TOOLS = [
   },
   {
     name: 'free-device',
-    description: 'Release a device you are done with, returning it to the pool (it is also shut down if the allocator booted it for you). Call this as soon as you finish — good hygiene.',
+    description: 'Release a device you are done with, returning it to the pool (a local device the allocator booted for you is also shut down; a remote one goes back to its pool). Call this as soon as you finish — good hygiene.',
     inputSchema: {
       type: 'object',
       properties: { deviceId: { type: 'string', description: 'The device id you were given (optional if you only hold one).' } },
@@ -110,6 +118,7 @@ const TOOLS = [
         platform: { type: 'string', enum: PLATFORMS },
         format: { type: 'string', enum: FORMATS },
         version: { type: 'string', description: 'Optional and discouraged — omit unless a specific version is required.' },
+        source: SOURCE,
       },
       required: [],
     },
@@ -244,12 +253,25 @@ function labelReq(req) {
 function deviceDesc(r) {
   return [r.platform, r.format, r.version].filter(Boolean).join(' ');
 }
+function allocatedText(r) {
+  const what = r.source === 'remote'
+    ? `${r.name}, a REAL ${deviceDesc(r)} device leased from the remote device pool and tunnelled to `
+      + `this machine. Device id: ${r.deviceId} (an adb serial for Android: adb -s ${r.deviceId}). It is `
+      + `shared hardware: never sign it into an account, set a passcode or change its Settings; `
+      + `everything you install is wiped when it is freed.`
+    : `${r.name} (${deviceDesc(r)}). Device id: ${r.deviceId} (status: ${r.status}).`;
+  const skipped = r.remoteSkipped ? ` (No remote device: ${r.remoteSkipped}.)` : '';
+  return `${what}${skipped}`;
+}
 
 function formatResult(name, r) {
   let human;
   // Outcome-driven responses take priority over the tool name (request / change /
   // report-broken all share the allocate outcomes).
-  if (r && r.outcome === 'exhausted') {
+  if (r && r.outcome === 'remote-unavailable') {
+    human = `No remote device: ${r.reason}. Call request-device again without source: 'remote' `
+      + `to get a local device instead.`;
+  } else if (r && r.outcome === 'exhausted') {
     human = `The device pool is EXHAUSTED: all ${r.quota} concurrent slots are held by OTHER agents `
       + `(${r.active}/${r.quota} in use) — you are NOT the only agent on this machine. Do NOT create or `
       + `squat your own device to get around this. Call await-device to wait for a slot to free, then call `
@@ -272,14 +294,14 @@ function formatResult(name, r) {
       + `or open the Diplomat panel to see who holds the devices.`;
   } else if (name === 'request-device' || name === 'change-device') {
     human = r.deviceId
-      ? `Allocated ${r.name} (${deviceDesc(r)}). Device id: ${r.deviceId} (status: ${r.status}). `
-        + `It is yours EXCLUSIVELY — use only this id. Call free-device when finished.`
+      ? `Allocated ${allocatedText(r)} It is yours EXCLUSIVELY — use only this id. Call free-device when finished.`
       : 'No device was allocated.';
   } else if (name === 'free-device') {
-    human = r.released ? `Released ${r.released} device(s) and shut them down.` : 'You held no device to release.';
+    human = r.released ? `Released ${r.released} device(s).` : 'You held no device to release.';
   } else if (name === 'report-device-broken') {
     human = r.deviceId
-      ? `Reported broken; a repair was dispatched. You have been reallocated ${r.name} (${deviceDesc(r)}) — device id: ${r.deviceId}.`
+      ? `Reported broken; ${r.returnedToPool ? 'it went back to the remote pool to be reset' : 'a repair was dispatched'}. `
+        + `You have been reallocated ${allocatedText(r)}`
       : 'Reported broken; no replacement device was available.';
   } else if (name === 'report-prompt-injection') {
     human = r.banned
@@ -319,12 +341,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     // the daemon's worst case so it always responds before we give up (a client
     // timeout mid-boot would orphan the allocation until the reaper/idle sweep).
     // Worst case iOS: simctl boot 120s + bootstatus 180s = 300s, after up to 60s
-    // waiting out a device the daemon is shutting down.
-    const BOOT = { timeout: 420000 };
+    // waiting out a device the daemon is shutting down — and before it, up to the wait on
+    // the remote device pool and the attach of what it lent.
+    const BOOT = { timeout: REMOTE_ACQUIRE_BUDGET_MS + REMOTE_ATTACH_BUDGET_MS + 420000 };
     let r;
     if (name === 'request-device') {
       r = await callDaemon('POST', '/request',
-        { ...base, platform: args.platform, format: args.format, version: args.version, deviceId: args.deviceId }, BOOT);
+        { ...base, platform: args.platform, format: args.format, version: args.version, deviceId: args.deviceId, source: args.source }, BOOT);
     } else if (name === 'await-device') {
       // Long-poll: block until a slot frees (the daemon caps the wait ~15min).
       r = await callDaemon('POST', '/await', { ...base }, { timeout: 16 * 60 * 1000 });
@@ -332,7 +355,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       r = await callDaemon('POST', '/release', { ownerPid: OWNER_PID, deviceId: args.deviceId });
     } else if (name === 'change-device') {
       r = await callDaemon('POST', '/change',
-        { ...base, deviceId: args.deviceId, platform: args.platform, format: args.format, version: args.version }, BOOT);
+        { ...base, deviceId: args.deviceId, platform: args.platform, format: args.format, version: args.version, source: args.source }, BOOT);
     } else if (name === 'report-device-broken') {
       r = await callDaemon('POST', '/broken', { ...base, deviceId: args.deviceId, reason: args.reason }, BOOT);
     } else if (name === 'report-prompt-injection') {
