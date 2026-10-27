@@ -3135,7 +3135,6 @@ check(AuditCategory.of(action: "mesh-dispatch") == .mesh)
 check(AuditCategory.of(action: "mesh-dispatch-failed") == .mesh)
 check(AuditCategory.of(action: "mesh-spawn") == .mesh)
 check(AuditCategory.of(action: "mesh-stop") == .mesh, "stopping a node left running is a Mesh row")
-// Comms (the Slack watcher) rows, its own chip placed after Mesh.
 for verb in ["comms-ping", "comms-review", "comms-fix", "comms-bump", "comms-investigate",
              "comms-error", "comms-recovered", "comms-notice"] {
     check(AuditCategory.of(action: verb) == .comms, "\(verb) is a Comms row")
@@ -3144,7 +3143,7 @@ check(AuditCategory.displayOrder.firstIndex(of: .comms) == AuditCategory.display
       && AuditCategory.comms.title == "Comms"
       && AuditCategory.comms.symbol == "bubble.left.and.bubble.right.fill",
       "the Comms chip sits after Mesh")
-// The JSON twin the Linux applet reads agrees with the Swift enum, category for category.
+// audit-categories.json is the Linux applet's twin of this enum.
 do {
     let url = try CoreAssets.assetsDir().appendingPathComponent("audit-categories.json")
     let obj = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
@@ -3206,7 +3205,6 @@ let goldenModes: [(String, String)] = [
                                      commentOnIssue: false).forIssue(421).buildPrompt()),
     ("issues-features-max", IssueConfig(depth: "max", me: goldenMe,
                                         includeFeatures: true).forIssue(421).buildPrompt()),
-    // Comms: the investigate agent's prompt, and the triage call's instructions.
     ("investigate", commsGoldenInvestigate.buildPrompt()),
     ("comms-classifier", CommsClassifier.prompt(settings: CommsSettings(
         owner: "software-mansion", repo: "argent", login: goldenMe))),

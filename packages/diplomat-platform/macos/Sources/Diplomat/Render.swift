@@ -227,13 +227,9 @@ enum Render {
                 TelemetryView(isPresented: .constant(true))
             }
         case let s where s.hasPrefix("comms"):
-            // The Comms screen over a synthetic events log: unread and read pings, every
-            // decision kind, a queued, a running and a finished job (one with its report
-            // written), a refused ask, and a failing poll. "comms-panel" draws it inside
-            // the whole panel, proving the header button and the screen swap, and
-            // "comms-badge" the main panel under that button's unread badge, which the
-            // open screen clears; "comms-empty" is a machine with no token, which draws
-            // the setup steps.
+            // "comms-panel" draws the screen inside the whole panel (header button, screen
+            // swap); "comms-badge" the main panel under the unread badge, which the open
+            // screen clears; "comms-empty" a machine with no token (the setup steps).
             let _ = seedComms(store, empty: s.contains("empty"))
             if s.contains("panel") {
                 ContentView(showComms: true)
@@ -447,10 +443,9 @@ enum Render {
         return true
     }
 
-    /// A synthetic Comms log, written through the real `CommsLog.append` into a scratch
-    /// `DIPLOMAT_COMMS_DIR` and folded by the real `refreshComms`: the screen draws the
-    /// fold, so seeding `commsItems` directly would test nothing the operator sees.
-    /// `CommsLog.dir` is read per call, so setting the variable here is enough.
+    /// Written through the real `CommsLog.append` into a scratch `DIPLOMAT_COMMS_DIR`
+    /// (`CommsLog.dir` reads it per call) and folded by the real `refreshComms`: seeding
+    /// `commsItems` directly would skip the fold the screen draws.
     @MainActor
     @discardableResult
     private static func seedComms(_ store: Store, empty: Bool) -> Bool {

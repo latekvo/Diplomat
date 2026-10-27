@@ -433,9 +433,8 @@ enum AgentSpawner {
     /// fires on EXIT, though, and finishing a turn is not exiting — which is what the
     /// hooks in `plan.settingsPath` answer.
     ///
-    /// The Slack token (`CommsToken.envVar`) is unset right after the `cd`: a terminal
-    /// or tmux server started from an environment holding it would otherwise hand it to
-    /// an agent that reads untrusted Slack text.
+    /// The Slack token (`CommsToken.envVar`) is unset: a terminal or tmux server started
+    /// with it in its environment would hand it to an agent reading untrusted Slack text.
     ///
     /// With a `plan.tokenItem`, everything after that `unset` runs behind `tokenExport`,
     /// whose export the agent inherits.

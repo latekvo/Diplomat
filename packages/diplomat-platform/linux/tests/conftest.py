@@ -325,12 +325,10 @@ def isolated_app_config(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolated_comms_dir(tmp_path, monkeypatch):
-    """Redirect Comms' own directory (``~/.diplomat/comms``) to a per-test temp dir. It
-    holds the Slack watcher's watermark and its log, which ``diplomat-core comms-*``
-    reads and writes, so a test against the real one would move the operator's
-    watermark past messages nobody triaged. ``DIPLOMAT_COMMS_DIR`` reaches the child
-    ``diplomat-core`` too, and ``DIPLOMAT_SLACK_TOKEN`` is dropped so no test can reach
-    the operator's Slack by accident."""
+    """Redirect ``~/.diplomat/comms`` to a per-test temp dir: the real one holds the
+    watermark, which a test would move past messages nobody triaged. The variable reaches
+    the child ``diplomat-core`` too; ``DIPLOMAT_SLACK_TOKEN`` is dropped so no test reaches
+    the operator's Slack."""
     monkeypatch.setenv("DIPLOMAT_COMMS_DIR", str(tmp_path / "comms"))
     monkeypatch.delenv("DIPLOMAT_SLACK_TOKEN", raising=False)
     yield

@@ -1,10 +1,7 @@
 import Foundation
 import DiplomatCore
 
-// Comms, the Slack watcher: who becomes a ping, what a triage answer may be, what each
-// answer makes a front-end do, the tick's watermark against a stub Slack, the screen's
-// fold, the log's rotation, the sandboxed classifier against a stub `claude`, and the
-// prompts' security sentences. No call here reaches Slack or a real `claude`.
+// Comms, the Slack watcher. No call here reaches Slack or a real `claude`.
 
 private let slackMe = CommsIdentity(userID: "UME", teamID: "TOURS", handle: "operator")
 
@@ -27,8 +24,6 @@ private func wire(ts: String, user: String = "UALICE", username: String = "alice
     return m
 }
 
-/// A Slack that answers `auth.test` and pages `search.messages` out of `messages`
-/// (newest first, honouring `count` and `page`) for every query, recording each request.
 private final class StubSlack {
     var messages: [[String: Any]] = []
     var me = slackMe
@@ -36,7 +31,6 @@ private final class StubSlack {
     var status = 200
     var headers: [String: String] = [:]
     var body: Data?
-    /// Which messages a query matches; nil answers every query with all of them.
     var select: ((_ query: String, _ message: [String: Any]) -> Bool)?
 
     var queries: [String] {
@@ -305,8 +299,7 @@ func commsSmoke() throws {
     undeliveredSmoke()
 }
 
-/// Every line inside a fence is quoted, so a marker spelled past `defang` still cannot
-/// close it, whatever line break comes before it.
+/// A marker spelled past `defang` still cannot close the fence.
 private func quoteSmoke() {
     section("comms: every line inside the fence is quoted")
     let begin = "BEGIN UNTRUSTED SLACK MESSAGE", end = "END UNTRUSTED SLACK MESSAGE"
@@ -354,7 +347,6 @@ private func lsLines(_ url: URL) -> [String] {
     ((try? String(contentsOf: url, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
 }
 
-/// What the classifier and curl read and write sits in a private directory of its own.
 private func stagingSmoke() throws {
     section("comms: a child's stdin and stdout are the operator's alone")
     let saved = umask(0o022)
@@ -362,7 +354,7 @@ private func stagingSmoke() throws {
     let dir = scratchDir("staging")
     defer { try? FileManager.default.removeItem(at: dir) }
     let listing = dir.appendingPathComponent("ls"), stub = dir.appendingPathComponent("stub")
-    // The directory behind its own stdin, as the child sees it while it runs.
+    // Lists the directory behind the child's stdin while it runs.
     try """
     #!/bin/sh
     if [ -e /proc/self/fd/0 ]; then in=$(readlink /proc/self/fd/0)
@@ -388,7 +380,6 @@ private func stagingSmoke() throws {
     check(!ls.isEmpty && !FileManager.default.fileExists(atPath: ls[0]), "…removed once it is done")
 }
 
-/// A result that never reached its front-end: its messages wait for the next tick.
 private func undeliveredSmoke() {
     section("comms: a result nobody received")
     let dir = scratchDir("undelivered")
@@ -420,8 +411,7 @@ private func undeliveredSmoke() {
           "…logged once, and handed over once")
 }
 
-/// The token swapped for a colleague's between two ticks: "my own" follows the token at
-/// once, so their own DM is skipped and the previous owner's is no longer.
+/// After a swap the new owner's DM is skipped and the previous owner's no longer is.
 private func tokenSwapSmoke() {
     section("comms: a swapped token")
     let dir = scratchDir("swap")
@@ -501,7 +491,6 @@ private func tickSmoke() throws {
     check(events.map(\.kind) == [.ping, .decision, .ping, .decision]
           && events[0].message?.text == "can you review PR 12?" && events[1].decision?.reason == "chat",
           "each ping is logged before its decision: \(events.map(\.kind))")
-    // Nothing waits beyond what was taken, so the watermark trails now by the index lag.
     check(CommsState.load(in: dir).watermark
           == CommsTS.string(CommsTS.number(Date(timeIntervalSince1970: t0))),
           "the watermark never moves back, and trails now by indexLagSecs")
@@ -512,7 +501,6 @@ private func tickSmoke() throws {
     check(third.items.isEmpty, "the same matches next tick are already seen: \(third.items.map(\.message.id))")
 
 
-    // A message posted before the last tick that the search index only surfaces now.
     slack.messages.append(dmWire("1793064650.000100", "late to the index"))
     let late = run(t0 + 240)
     check(late.items.map(\.message.id) == ["D1:1793064650.000100"],
@@ -521,7 +509,6 @@ private func tickSmoke() throws {
           == ["D1:1793064660.000100", "C2:1793064700.000100", "D1:1793064650.000100"],
           "every id above the watermark stays seen, in the order it was triaged")
 
-    // More waiting than one tick may take: the rest wait, none lost and none doubled.
     for i in 0..<5 { slack.messages.append(dmWire("17930648\(10 + i).000100", "burst \(i)")) }
     let capped = CommsSettings(keywords: ["argent"], maxPerTick: 2)
     let b1 = run(t0 + 1_000, capped)
@@ -545,7 +532,6 @@ private func tickSmoke() throws {
           == CommsTS.string(CommsTS.number(Date(timeIntervalSince1970: t0 + 1_180 - TimeInterval(lag)))),
           "once the backlog is drained the watermark trails now by the lag")
 
-    // Paging: a page holds searchCount matches; a burst bigger than one page is read whole.
     let pageDir = scratchDir("paging")
     defer { try? FileManager.default.removeItem(at: pageDir) }
     let paged = StubSlack()
@@ -563,7 +549,6 @@ private func tickSmoke() throws {
           "two pages of one query are read, the second because the first was full and still "
           + "above the watermark: \(pr.items.count) items, \(paged.queries.count) searches")
 
-    // Failures: the watermark stays, the error is the answer, logged once per transition.
     let wmBefore = CommsState.load(in: dir).watermark
     let eventsBefore = CommsLog.read(in: dir).count
     slack.status = 429
@@ -599,7 +584,6 @@ private func tickSmoke() throws {
     check(CommsWatch.tick(token: "", settings: CommsSettings(), dir: dir, api: slack.api) { _ in .none("") }
           .error == "no Slack token is configured", "no token, no tick")
 
-    // A classifier that cannot run is the tick's error too; its pings are still logged.
     slack.messages.append(dmWire("17930660\(10).000100", "after the outage"))
     let broken = run(t0 + 2_000, answer: .none(CommsClassifier.failurePrefix + "the claude CLI was not found"))
     check(broken.items.count == 1 && broken.error?.hasPrefix(CommsClassifier.failurePrefix) == true,
@@ -616,7 +600,7 @@ private func tickSmoke() throws {
     check(healed.items.count == 1 && healed.error == nil && CommsState.load(in: dir).error == nil,
           "a triage that succeeds clears it: \(String(describing: healed.error))")
 
-    // The query encoding: `+` would be a space to a form decoder.
+    // A `+` would be a space to a form decoder.
     let enc = StubSlack()
     _ = try? enc.api.search(query: "\"c++\" <@UME> after:2026-10-26")
     let q = enc.requests.first?.url.absoluteString ?? ""
@@ -784,8 +768,6 @@ private func classifierSmoke() throws {
     unsetenv("DIPLOMAT_CLAUDE")
 
     section("comms: locating claude past an alias")
-    // A stub shell answers with an rc banner, an alias description and the path; only the
-    // path is an executable file.
     let fakeShell = dir.appendingPathComponent("fakeshell")
     try "#!/bin/sh\necho 'welcome!'\necho \"claude: aliased to claude --dangerously-skip-permissions\"\necho \(stub.path)\n"
         .write(to: fakeShell, atomically: true, encoding: .utf8)
@@ -795,7 +777,6 @@ private func classifierSmoke() throws {
     check(LoginShell.arguments(shell: "/bin/zsh", probe: LoginShell.locateProbe("claude"))
           == ["-l", "-c", "'/bin/zsh' -i -c 'whence -p '\\''claude'\\'' 2>/dev/null || type -P '\\''claude'\\'' 2>/dev/null'"],
           "the probe asks for the file, not the alias: \(LoginShell.arguments(shell: "/bin/zsh", probe: LoginShell.locateProbe("claude")))")
-    // The real shells, with the operator's alias in their rc: each must name the file.
     let bin = dir.appendingPathComponent("bin", isDirectory: true)
     try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
     try FileManager.default.copyItem(at: stub, to: bin.appendingPathComponent("claude"))
@@ -866,7 +847,6 @@ private func promptSmoke() throws {
           "fill is one pass: a value is never re-scanned, unknown names stay")
 }
 
-/// A DM from alice at `ts`.
 private func dmAt(_ ts: String, _ text: String) -> [String: Any] {
     wire(ts: ts, text: text, channel: "D1", name: "UALICE", im: true)
 }
@@ -876,7 +856,6 @@ private func fileMode(_ url: URL) -> mode_t {
     return stat(url.path, &st) == 0 ? st.st_mode & 0o777 : 0o7777
 }
 
-/// A watermark older than `catchUpHours`: Comms was switched off, or the machine away.
 private func catchUpSmoke() {
     section("comms: catching up after a long gap")
     let dir = scratchDir("catchup")
@@ -925,7 +904,6 @@ private func catchUpSmoke() {
           "a watermark inside catchUpHours is caught up from, unannounced: \(asked)")
 }
 
-/// A query with more matches above the watermark than `maxSearchPages` pages hold.
 private func truncationSmoke() {
     section("comms: more matches than one poll pages through")
     let dir = scratchDir("truncated")
@@ -964,7 +942,6 @@ private func truncationSmoke() {
           "what was read is triaged, from the oldest match read")
 }
 
-/// A guessed number never acts: it must be in the message.
 private func numberSmoke() {
     section("comms: the number comes from the message")
     let dir = scratchDir("number")
@@ -993,7 +970,6 @@ private func numberSmoke() {
     check(logged.count == named.count, "…and the log records the checked decision")
 }
 
-/// The process dies inside a tick: what it triaged is handed over by the next one.
 private func handOverSmoke() throws {
     section("comms: a tick that never returns")
     let fm = FileManager.default
@@ -1202,7 +1178,7 @@ private func defangSmoke() {
     }
 }
 
-/// The investigation the golden prompt and the semantic checks are built from.
+/// Shared by the golden prompt and the semantic checks.
 let commsGoldenInvestigate = InvestigateConfig(
     number: 1508284197000015, messageID: "C1:1508284197.000015", sender: "alice",
     channel: "#general", permalink: "https://example.slack.com/archives/C1/p1508284197000015",

@@ -93,8 +93,7 @@ public enum OpenCodeCLI {
         }
     }
 
-    /// The shell pair `LoginShell.arguments` describes, running a probe that prints the
-    /// path, then `$XDG_STATE_HOME` on a marked line after a newline, so it stands alone
+    /// `$XDG_STATE_HOME` goes on a marked line after a newline, so it stands alone
     /// whatever the rc printed.
     public static func resolverArguments(shell: String) -> [String] {
         let probe = "command -v opencode; printf '\\n\(stateMarker)%s\\n' \"$XDG_STATE_HOME\""

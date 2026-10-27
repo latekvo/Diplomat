@@ -40,7 +40,6 @@ def test_category_of_matches_swift_taxonomy() -> None:
         "mesh-dispatch-failed": "mesh",
         "mesh-spawn": "mesh",
         "mesh-stop": "mesh",
-        # Comms, the Slack watcher, has its own chip
         "comms-ping": "comms",
         "comms-review": "comms",
         "comms-fix": "comms",
@@ -79,7 +78,6 @@ def test_glyph_falls_back_to_category_glyph() -> None:
     # a verb with no per-action glyph uses its category's mono glyph, never blank
     assert activity.glyph_for("quota-resume")  # category "quota" -> ⧗
     assert activity.glyph_for("ban") == "⊘"  # monochrome, never colour-emoji
-    # Comms rows: a glyph per verb, tinted with the category's blue.
     assert [activity.glyph_for(v) for v in (
         "comms-ping", "comms-review", "comms-fix", "comms-bump", "comms-investigate",
         "comms-error", "comms-recovered", "comms-notice")] == [

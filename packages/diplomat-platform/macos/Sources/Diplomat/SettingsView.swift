@@ -3,10 +3,10 @@ import AppKit
 import DiplomatCore
 
 /// The settings screen — swapped in for the main panel body when the header gear
-/// is tapped. Twelve cards over two columns: identity, the agent runner and its repo
-/// root, what the monitors are allowed to do on their own, the Slack watcher, and the
-/// environment the spawns land in. Everything persists through the Store (UserDefaults, or the
-/// shared `~/.diplomat/config.json` for the knobs another process also reads).
+/// is tapped. Cards over two columns: identity, the agent runner and its repo root,
+/// what the monitors are allowed to do on their own, the Slack watcher, and the
+/// environment the spawns land in. Everything persists through the Store (UserDefaults,
+/// or the shared `~/.diplomat/config.json` for the knobs another process also reads).
 ///
 /// Each row states what it does in a line; the paragraph behind that line is drawn
 /// only while the header's *Explain* switch is on. The screen was previously all
@@ -708,7 +708,6 @@ struct SettingsView: View {
             : "\(n) senders; everyone else is ignored."
     }
 
-    /// What a triaged ask may turn into. Off, that kind of ask is a ping and nothing more.
     private var commsActionsBlock: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text("ACT ON ASKS FOR…")
@@ -766,7 +765,6 @@ struct SettingsView: View {
         return StatusPill(text: "watching", tint: .green, symbol: "bolt.fill")
     }
 
-    /// The pill's text while polls fail: the last error, cut to fit the card's header.
     static func commsErrorPill(_ error: String) -> String { Store.snippet(error, max: 48) }
 
     private static let commsDetail = """

@@ -2,23 +2,17 @@ import SwiftUI
 import AppKit
 import DiplomatCore
 
-/// The Comms screen — what Diplomat saw in Slack and what it did about it.
+/// The Comms screen: what Diplomat saw in Slack and what it did about it.
 ///
-/// One of the panel's screens (Actions · Comms · Mesh · Telemetry · Settings), swapped in
-/// for the main body by the header's speech bubbles. It draws `store.commsItems`, the one
-/// fold of Comms' own log (`CommsLog.fold`) that the Linux twin draws too: the pings on
-/// the left, newest first, and on the right every one of them that put work in the queue,
-/// with where that work has got to. Opening it marks every ping seen.
-///
-/// Read-only apart from links out: the switches are in Settings, and the queued work is
-/// arranged, run or cancelled from the Agent-tasks list like any other ask.
+/// Draws `store.commsItems`, the same `CommsLog.fold` the Linux twin draws. Read-only
+/// apart from links out: the switches are in Settings, and the queued work is managed
+/// from the Agent-tasks list like any other ask.
 struct CommsView: View {
     @EnvironmentObject var store: Store
     @Binding var isPresented: Bool
 
-    /// The "seen" mark as it stood when the screen opened. Opening moves the Store's
-    /// mark to now, and the highlight is against this one, so what was new on arrival
-    /// stays drawn as new for the rest of the visit.
+    /// The seen mark as of opening, which moves the Store's to now: highlighting against
+    /// this keeps what was new on arrival drawn as new for the visit.
     @State private var openedSeenAt: Date?
 
     private static let maxPings = 40
@@ -49,12 +43,9 @@ struct CommsView: View {
             if openedSeenAt == nil { openedSeenAt = store.commsSeenAt }
             store.markCommsSeen()
         }
-        // A ping that lands while the screen is up has been seen too.
         .onChange(of: store.commsItems) { _ in store.markCommsSeen() }
     }
 
-    /// The setup instructions stand in for the lists while there is no token, or while
-    /// Comms is off and has never recorded anything.
     private var showSetup: Bool {
         store.commsTokenMissing || (!store.commsEnabled && store.commsItems.isEmpty)
     }
@@ -191,9 +182,7 @@ struct CommsView: View {
         }
     }
 
-    /// Where the work a ping queued has got to. `started`/`finished` are what the log
-    /// recorded; between them, and before them, the queue and the agent rows are asked,
-    /// since a queued ask has no line in the log until it spawns.
+    /// The log has no line for a queued ask until it spawns, so the queue is asked too.
     private func jobStatus(_ item: CommsItem) -> JobRow.Status {
         if item.finishedAt != nil { return .done }
         let key = item.queueKey ?? ""
@@ -219,8 +208,6 @@ struct CommsView: View {
     }
 }
 
-/// One ping: who, where, why it reached the operator, what they said, what triage made
-/// of it and what was done.
 private struct PingRow: View {
     let item: CommsItem
     let unread: Bool
@@ -271,8 +258,6 @@ private struct PingRow: View {
         .cardChrome(fill: unread ? Color.blue.opacity(0.13) : Color.gray.opacity(0.07))
     }
 
-    /// The text with Slack's mention markup for the operator, `<@U…>`, read as their
-    /// handle.
     private var readableText: String {
         guard let me, !me.userID.isEmpty else { return item.message.text }
         return item.message.text.replacingOccurrences(of: "<@\(me.userID)>", with: "@\(me.handle)")
@@ -309,15 +294,13 @@ private struct PingRow: View {
         }
     }
 
-    /// The triage's summary, else its reason: the summary says what was asked, and a
-    /// `none` usually has only the reason it is one.
+    /// A `none` usually has only a reason.
     private var decisionText: String {
         guard let d = item.decision else { return "" }
         return d.summary.isEmpty ? d.reason : d.summary
     }
 }
 
-/// One piece of work a ping queued, and how far it has got.
 private struct JobRow: View {
     enum Status {
         case queued, running, done, notQueued
@@ -375,8 +358,7 @@ private struct JobRow: View {
         return parts.joined(separator: " · ")
     }
 
-    /// An investigation's report, once its agent has written it: `<reports>/<ts number>.md`,
-    /// the path `InvestigateConfig` handed the agent.
+    /// Must match the report path `InvestigateConfig` hands the agent.
     private var reportURL: URL? {
         guard item.queueKey?.hasPrefix(AgentTaskQueue.investigateAction + ":") == true,
               let n = CommsTS.number(item.message.ts) else { return nil }

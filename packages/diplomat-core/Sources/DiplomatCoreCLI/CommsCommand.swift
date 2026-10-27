@@ -1,16 +1,14 @@
 import DiplomatCore
 import Foundation
 
-/// The Comms subcommands — the Linux front-end's whole reach into the Slack watcher, so
-/// the tick, the screen's projection and the plan are each one implementation.
+/// The Linux front-end's whole reach into the Slack watcher, so each piece has one
+/// implementation.
 ///
 ///   comms-tick    stdin = CommsSettings JSON; env DIPLOMAT_SLACK_TOKEN. One tick with the
 ///                 real classifier; stdout = {"me": {...}|null, "items": [{"message",
-///                 "decision"}], "error": "..."|null, "notices": ["..."]}, `notices` being
-///                 what went unread that is not an error (a catch-up past catchUpHours, a
-///                 query cut short by maxSearchPages). Exits 0 when `error` is set: a
-///                 failed tick is an answer, not a crash. Exits 1 when stdout cannot be
-///                 written (its reader gone), leaving the items for the next tick.
+///                 "decision"}], "error": "..."|null, "notices": ["..."]}. Exits 0 when
+///                 `error` is set (a failed tick is an answer), 1 when stdout cannot be
+///                 written, leaving the items for the next tick.
 ///   comms-auth    no stdin; env DIPLOMAT_SLACK_TOKEN. auth.test through the tick's own
 ///                 transport; stdout = {"ok": true, "user", "userId", "team", "teamId"} or
 ///                 {"ok": false, "error": "<the tick's wording>"}. Exits 0 either way.
@@ -30,8 +28,8 @@ enum CommsCommand {
                     die("could not encode the answer", 1)
                 }
                 data.append(UInt8(ascii: "\n"))
-                // Only now, past the tick's last child (which would inherit it): a gone
-                // reader is then an error, not a signal killing the tick before it saves.
+                // Only past the tick's last child, which would inherit it: a gone reader
+                // is then an error, not a signal killing the tick before it saves.
                 signal(SIGPIPE, SIG_IGN)
                 try FileHandle.standardOutput.write(contentsOf: data)
                 return true
@@ -100,8 +98,6 @@ enum CommsCommand {
         decode(InvestigateConfig.self, input, "InvestigateConfig").buildPrompt()
     }
 
-    /// The classifier's instructions (the argument `claude -p` is given) for a
-    /// CommsSettings payload.
     static func classifierPrompt(_ input: Data) -> String {
         CommsClassifier.prompt(settings: decode(CommsSettings.self, input, "CommsSettings"))
     }

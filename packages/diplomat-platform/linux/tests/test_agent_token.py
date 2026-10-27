@@ -187,9 +187,8 @@ def test_the_agent_gets_the_token(shell, pid, tmp_path, monkeypatch, token_file)
 @pytest.mark.parametrize("shell", _SHELLS)
 def test_the_agent_never_holds_the_slack_token(shell, pid, tmp_path, monkeypatch,
                                                token_file):
-    """The override the Settings card advertises is an environment variable, which the
-    terminal - and a tmux server it starts - inherits from the applet. An agent reading
-    an untrusted Slack message must not have the token that reads the operator's DMs."""
+    """The token's env-var override is inherited from the applet by the terminal and any
+    tmux server it starts; an agent reading untrusted Slack must not hold it."""
     agent = f"printenv {comms.TOKEN_ENV} > slack; printenv GH_TOKEN > out"
     _, cmd = _spawn(tmp_path, monkeypatch, shell, agent=agent, pid=pid)
     env = {**_clean_env(tmp_path), comms.TOKEN_ENV: "xoxp-the-operators-own"}

@@ -31,9 +31,8 @@ GOLDEN_DIR = Path(__file__).resolve().parents[3] / "diplomat-core" / "assets" / 
 
 
 class _CorePayload(dict):
-    """A ``build-prompt`` payload with no Python config class in front of it: the Comms
-    prompts are handed to ``diplomat-core`` as the JSON its own CLI writes
-    (``comms-effect``) or a CommsSettings object."""
+    """A ``build-prompt`` payload with no Python config class: Comms hands ``diplomat-core``
+    the JSON ``comms-effect`` wrote, or a CommsSettings object."""
 
     def build_prompt(self) -> str:
         return promptcore.build_prompt(dict(self))
@@ -76,8 +75,7 @@ GOLDEN_MODES: dict[str, object] = {
     "issues-features-max": lambda: IssueConfig(
         depth="max", me=ME, include_features=True
     ).for_issue(421),
-    # Comms: the investigate agent's prompt (main.swift's commsGoldenInvestigate), and
-    # the triage call's instructions.
+    # Comms: main.swift's commsGoldenInvestigate, and the triage call's instructions.
     "investigate": lambda: _CorePayload(
         kind="investigate", number=1508284197000015, messageID="C1:1508284197.000015",
         sender="alice", channel="#general",

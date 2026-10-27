@@ -1,7 +1,7 @@
 import Foundation
 
-/// One `search.messages` match, as Slack returns it. Every field is optional on the
-/// wire; a missing one decodes as empty.
+/// One `search.messages` match. Every field is optional on the wire; a missing one
+/// decodes as empty.
 public struct SlackMatch: Decodable, Equatable, Sendable {
     public struct Channel: Decodable, Equatable, Sendable {
         public var id: String
@@ -39,7 +39,7 @@ public struct SlackMatch: Decodable, Equatable, Sendable {
     public var username: String
     /// The workspace the message belongs to.
     public var team: String
-    /// The sender's own workspace, which Slack sets on a message in a shared channel.
+    /// The sender's own workspace, set on a message in a shared channel.
     public var userTeam: String
     public var permalink: String
     public var channel: Channel
@@ -79,7 +79,6 @@ public struct SlackMatch: Decodable, Equatable, Sendable {
                   type: s(.type), botID: s(.botID), subtype: s(.subtype))
     }
 
-    /// `<channelID>:<ts>`, the id every Comms event about this message carries.
     public var id: String { "\(channel.id):\(ts)" }
 
     public var isDM: Bool {
@@ -89,10 +88,8 @@ public struct SlackMatch: Decodable, Equatable, Sendable {
 
 /// Which matches become pings, and why. Pure.
 public enum CommsMatch {
-    /// Why `match` concerns the operator: a DM, a mention of their user id, a keyword
-    /// standing as a whole word (case-insensitive). Read off the match itself rather than
-    /// off the query that returned it, so one message found by two queries is one ping
-    /// with both reasons.
+    /// Read off the match, not the query that found it, so a message two queries find is
+    /// one ping with both reasons.
     public static func reasons(for match: SlackMatch, me: CommsIdentity,
                                keywords: [String]) -> (reasons: [CommsReason], keyword: String?) {
         var out: [CommsReason] = []
@@ -106,11 +103,8 @@ public enum CommsMatch {
         return (out, keyword)
     }
 
-    /// Whether a message may become a ping at all. Refused: the operator's own messages,
-    /// a bot's (a `bot_id`, the `bot_message` subtype, or no user), anyone whose
-    /// workspace is not the operator's (Slack Connect — either team field naming another
-    /// workspace), and, when `allowlist` is not empty, anyone it does not name by user id
-    /// or handle.
+    /// Refuses the operator's own messages, bots, Slack Connect senders (either team field
+    /// naming another workspace) and, with a non-empty `allowlist`, anyone it does not name.
     public static func admit(_ match: SlackMatch, me: CommsIdentity, allowlist: [String]) -> Bool {
         if match.user.isEmpty || match.user == me.userID { return false }
         if !match.botID.isEmpty || match.subtype == "bot_message" { return false }
@@ -124,8 +118,6 @@ public enum CommsMatch {
         }
     }
 
-    /// The ping `match` is, or nil when it is not one: refused by `admit`, carrying no
-    /// reason, or with no ts to order it by.
     public static func message(from match: SlackMatch, me: CommsIdentity,
                                settings: CommsSettings) -> CommsMessage? {
         guard CommsTS.number(match.ts) != nil, !match.channel.id.isEmpty,
@@ -140,7 +132,7 @@ public enum CommsMatch {
                             reasons: reasons, keyword: keyword)
     }
 
-    /// `word` in `text` with no letter or digit either side of it.
+    /// Case-insensitive, with no letter or digit either side of `word`.
     static func containsWord(_ text: String, _ word: String) -> Bool {
         let w = word.trimmingCharacters(in: .whitespaces)
         guard !w.isEmpty else { return false }
@@ -156,14 +148,13 @@ public enum CommsMatch {
     }
 }
 
-/// What a Slack call can fail with. The descriptions are what the Comms screen's error
-/// banner shows.
+/// The descriptions are what the Comms screen's error banner shows.
 public enum SlackError: LocalizedError, Equatable {
     case transport(String)
     case http(Int)
     /// `ok: false`, with Slack's error code.
     case api(String)
-    /// HTTP 429 or `ratelimited`; the tick is skipped, and the next one asks again.
+    /// HTTP 429 or `ratelimited`; the tick is skipped and the next one asks again.
     case rateLimited(retryAfter: Int?)
     case badResponse
 
@@ -188,14 +179,12 @@ public enum SlackError: LocalizedError, Equatable {
     }
 }
 
-/// The two documented Web API methods Comms reads, with a user token (`xoxp-`).
-/// Synchronous: a tick runs off the main thread on both front-ends, and the CLI is a
-/// one-shot.
+/// The two Web API methods Comms reads, with a user token (`xoxp-`). Synchronous: a tick
+/// runs off the main thread on both front-ends, and the CLI is a one-shot.
 public struct SlackAPI {
-    /// One GET, in a shape both transports can carry. Not `URLRequest`: on Linux that
-    /// type lives in FoundationNetworking, whose libcurl link would make the whole
-    /// `diplomat-core` binary - every prompt the applet builds - refuse to load on a
-    /// machine without `libcurl.so.4`.
+    /// Not `URLRequest`: on Linux that lives in FoundationNetworking, whose libcurl link
+    /// would stop the whole `diplomat-core` binary (every prompt the applet builds) loading
+    /// on a machine without `libcurl.so.4`.
     public struct Request: Equatable, Sendable {
         public var url: URL
         public var headers: [String: String]
@@ -204,15 +193,13 @@ public struct SlackAPI {
         public func value(forHTTPHeaderField name: String) -> String? { headers[name] }
     }
 
-    /// One HTTP exchange: the status, the headers (names lowercased) and the body.
+    /// Header names lowercased.
     public typealias Transport = (Request) throws -> (status: Int, headers: [String: String], body: Data)
 
     public let token: String
     public let base: URL
     private let transport: Transport
 
-    /// `base` defaults to `$DIPLOMAT_SLACK_API`, else `https://slack.com/api/`;
-    /// `transport` to `live`. Tests replace either.
     public init(token: String, base: URL? = nil, transport: Transport? = nil) {
         self.token = token
         self.base = base ?? Self.defaultBase()
@@ -227,10 +214,9 @@ public struct SlackAPI {
         return URL(string: "https://slack.com/api/")!
     }
 
-    /// `auth.test`: who the token is.
     public func authTest() throws -> CommsIdentity { try auth().me }
 
-    /// `auth.test`, with the workspace's name as well.
+    /// `team` is the workspace's name.
     public func auth() throws -> (me: CommsIdentity, team: String) {
         let obj = try call("auth.test", [])
         guard let user = obj["user_id"] as? String, let team = obj["team_id"] as? String else {
@@ -240,7 +226,6 @@ public struct SlackAPI {
                 obj["team"] as? String ?? "")
     }
 
-    /// One page of `search.messages`, newest first.
     public func search(query: String, page: Int = 1,
                        count: Int = 50) throws -> (matches: [SlackMatch], pages: Int) {
         let obj = try call("search.messages", [
@@ -295,13 +280,13 @@ public struct SlackAPI {
     static var timeout: TimeInterval { (try? CoreAssets.comms())?.httpTimeoutSecs ?? 15 }
 
 #if canImport(FoundationNetworking)
-    /// The live exchange off Darwin, where URLSession would need FoundationNetworking.
+    /// Off Darwin, URLSession would need FoundationNetworking.
     public static func live(_ request: Request) throws -> (status: Int, headers: [String: String], body: Data) {
         try curl(request)
     }
 #else
-    /// The live exchange. The wait is bounded past the request's own timeout, so a
-    /// session that never calls back cannot hold the tick.
+    /// The wait is bounded past the request's own timeout, so a session that never calls
+    /// back cannot hold the tick.
     public static func live(_ request: Request) throws -> (status: Int, headers: [String: String], body: Data) {
         var urlRequest = URLRequest(url: request.url)
         urlRequest.timeoutInterval = request.timeout
@@ -345,10 +330,9 @@ public struct SlackAPI {
     }
 #endif
 
-    /// One exchange through `curl`, so only Comms depends on it. The token travels in a
-    /// config read from stdin, never in argv where `ps` would show it, and `-q` comes
-    /// first so no `~/.curlrc` (a `verbose` that would print it, a `write-out` that
-    /// would corrupt the answer) is read.
+    /// Through `curl`, so only Comms depends on it. The token goes in a config on stdin,
+    /// never argv where `ps` shows it; `-q` comes first so no `~/.curlrc` is read (a
+    /// `verbose` would print the token, a `write-out` corrupt the answer).
     public static func curl(_ request: Request) throws -> (status: Int, headers: [String: String], body: Data) {
         guard let curl = ["/usr/bin/curl", "/bin/curl"].first(where: {
             FileManager.default.isExecutableFile(atPath: $0)
@@ -377,8 +361,8 @@ public struct SlackAPI {
         }
     }
 
-    /// `curl -D - -o -` output: the header blocks (one per response, redirects and
-    /// `100 Continue` included), then the body. The last block is the answer.
+    /// `curl -D - -o -` prints one header block per response (redirects and
+    /// `100 Continue` included), then the body; the last block is the answer.
     public static func parse(curlOutput out: Data) throws -> (status: Int, headers: [String: String], body: Data) {
         let crlf = Data("\r\n\r\n".utf8)
         var rest = out[...]

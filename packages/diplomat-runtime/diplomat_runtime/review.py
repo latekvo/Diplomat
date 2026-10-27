@@ -492,9 +492,9 @@ def shell_command(prompt_file: str, done_path: str | None = None,
     exiting, so between them one covers the run that ends and the other the run that
     goes back to its prompt.
 
-    The Slack token (:data:`comms.TOKEN_ENV`) is unset right after the ``cd``, so an
-    agent reading untrusted Slack text never holds it, whatever terminal or tmux
-    server environment the command starts in.
+    The Slack token (:data:`comms.TOKEN_ENV`) is unset right after the ``cd``: an agent
+    reading untrusted Slack text must never hold it, whatever environment its terminal
+    or tmux server has.
 
     When the operator configured an agent token, everything after that ``unset`` runs
     behind :func:`token_export`, whose export the agent inherits.
@@ -692,8 +692,7 @@ def spawn_env() -> dict:
     already-running server, with the server's environment. Anything the agent itself
     must see belongs in the command (:func:`runner.agent_command`), not here.
 
-    The Slack token is dropped too, so a server this launch starts never holds it;
-    the agent's own shell unsets it whatever its server holds (:func:`shell_command`).
+    The Slack token is dropped too, so a tmux server this launch starts never holds it.
     """
     return {k: v for k, v in os.environ.items()
             if k not in ("TMUX", "TMUX_PANE", comms.TOKEN_ENV)}

@@ -1,9 +1,8 @@
-"""The Comms screen and its ✉ header button, built offscreen in each state it has:
-no token, a token and nothing yet, pings and jobs, a failing tick — and the three
-``DIPLOMAT_RENDER`` modes drawn through the real entry point.
+"""The Comms screen and its ✉ header button, built offscreen in each state, and the
+three ``DIPLOMAT_RENDER`` modes through the real entry point.
 
-The rows are drawn from ``Store.comms_items``, which in the app is the real
-``comms-feed`` fold; the store tests pin that fold, so here the items are literals.
+``Store.comms_items`` is the ``comms-feed`` fold, which the store tests pin, so here the
+items are literals.
 """
 
 from __future__ import annotations

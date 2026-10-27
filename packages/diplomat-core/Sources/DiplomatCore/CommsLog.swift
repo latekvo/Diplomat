@@ -11,9 +11,8 @@ import Foundation
 /// - `error`    + `detail`                          — the tick, on going from a good tick to a failing
 ///                                                    one, and for messages it skipped unread
 ///
-/// A front-end that writes its own lines (the Linux one, from Python) writes this
-/// shape: one JSON object per line, appended to a 0600 file while holding
-/// `CommsLog.lockURL`.
+/// The Linux front-end's Python appender writes the same shape: one JSON object per line,
+/// appended to a 0600 file while holding `CommsLog.lockURL`.
 public struct CommsEvent: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case ping, decision, action, started, finished, error
@@ -44,7 +43,7 @@ public struct CommsEvent: Codable, Equatable, Sendable {
     }
 }
 
-/// One row of the Comms screen: a ping and everything that has happened about it since.
+/// One Comms-screen row: a ping and everything since.
 public struct CommsItem: Codable, Equatable, Sendable {
     public var message: CommsMessage
     public var decision: CommsDecision?
@@ -62,10 +61,8 @@ public struct CommsItem: Codable, Equatable, Sendable {
     }
 }
 
-/// Comms' own directory: `$DIPLOMAT_COMMS_DIR`, else `~/.diplomat/comms/`. It holds
-/// `state.json` (the tick's watermark, `CommsWatch`), `events.jsonl` (this log),
-/// `events.lock` and `reports/` (the investigations' reports), all private to the
-/// operator: the directories 0700, the files 0600.
+/// `dir` holds `state.json` (`CommsWatch`'s watermark), `events.jsonl` (this log),
+/// `events.lock` and `reports/` (investigation reports): directories 0700, files 0600.
 public enum CommsLog {
     public static var dir: URL {
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_COMMS_DIR"], !env.isEmpty {
@@ -83,18 +80,17 @@ public enum CommsLog {
         dir.appendingPathComponent("reports", isDirectory: true)
     }
 
-    /// The lock every writer of `events.jsonl` holds (`flock`, exclusive) around an
-    /// append or a rotation, the Linux front-end's Python appender included: a line
-    /// appended while a rotation reads and renames would land in the replaced file.
+    /// Every writer of `events.jsonl`, the Linux Python appender included, holds this
+    /// (`flock`, exclusive) around an append or a rotation: a line appended mid-rotation
+    /// would land in the replaced file.
     public static func lockURL(in dir: URL = dir) -> URL {
         dir.appendingPathComponent("events.lock")
     }
 
     static var maxBytes: Int { (try? CoreAssets.comms())?.maxLogBytes ?? 2 << 20 }
 
-    /// `dir` and its `reports/`, created if missing and made 0700 either way: the log
-    /// holds the full text of the operator's DMs, and their home may be readable by
-    /// other local users.
+    /// Made 0700 even if they already exist: the log holds the operator's DMs in full,
+    /// and their home may be readable by other local users.
     public static func prepare(_ dir: URL = dir) {
         let fm = FileManager.default
         for d in [dir, reportsDir(in: dir)] {
@@ -104,9 +100,8 @@ public enum CommsLog {
         }
     }
 
-    /// Append one event, under the log's lock. `O_APPEND`, so a line from another
-    /// writer is never overwritten; `write(2)`, so a full disk costs the line rather
-    /// than aborting the process.
+    /// `O_APPEND`, so another writer's line is never overwritten; `write(2)`, so a full
+    /// disk costs the line instead of aborting the process.
     public static func append(_ event: CommsEvent, in dir: URL = dir) {
         guard var line = try? encoder.encode(event) else { return }
         line.append(UInt8(ascii: "\n"))
@@ -124,8 +119,7 @@ public enum CommsLog {
         _ = line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
     }
 
-    /// `data` written to `url` whole or not at all, readable by its owner alone: a 0600
-    /// temp file beside it, renamed over it.
+    /// Whole or not at all, owner-only: a 0600 temp file renamed over `url`.
     static func writePrivate(_ data: Data, to url: URL) {
         let tmp = url.path + ".tmp-\(getpid())-\(UUID().uuidString)"
         let fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0o600)
@@ -138,7 +132,7 @@ public enum CommsLog {
         }
     }
 
-    /// Every event that decodes, oldest first. A torn or foreign line costs that line.
+    /// Oldest first; a torn or foreign line costs only that line.
     public static func read(in dir: URL = dir) -> [CommsEvent] {
         guard let data = try? Data(contentsOf: eventsURL(in: dir)) else { return [] }
         let d = decoder
@@ -147,10 +141,9 @@ public enum CommsLog {
         }
     }
 
-    /// The Comms screen's rows, newest ping first: THE one projection of the log both
-    /// front-ends draw (Linux through `diplomat-core comms-feed`). An event about an id
-    /// with no ping before it is dropped — there is no message to draw it on — and a
-    /// later `action` overwrites an earlier one, the last word being the one that stands.
+    /// The Comms screen's rows, newest ping first: the one projection both front-ends
+    /// draw (Linux via `diplomat-core comms-feed`). An event with no ping before it is
+    /// dropped, having no message to draw on; a later `action` overwrites an earlier one.
     public static func fold(_ events: [CommsEvent]) -> [CommsItem] {
         var items: [String: (index: Int, item: CommsItem)] = [:]
         for (i, e) in events.enumerated() {
@@ -177,8 +170,8 @@ public enum CommsLog {
             .map(\.item)
     }
 
-    /// Past `maxLogBytes`, keep the newest half — cut at a line boundary, so the file
-    /// still starts with a whole event. Called with the log's lock held.
+    /// Past `maxLogBytes`, keep the newest half, cut at a line boundary. Caller holds the
+    /// log's lock.
     private static func rotateIfLarge(_ url: URL) {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? Int, size > maxBytes,
@@ -190,8 +183,8 @@ public enum CommsLog {
 
     // MARK: - JSON
 
-    /// ISO 8601 out, and in with or without fractional seconds and with any offset, so
-    /// the line Python's `datetime.isoformat()` writes reads back.
+    /// `decoder` takes optional fractional seconds and any offset, so Python's
+    /// `datetime.isoformat()` lines read back.
     public static var encoder: JSONEncoder {
         let e = JSONEncoder()
         e.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]

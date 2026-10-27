@@ -1,11 +1,8 @@
-"""Comms, the Slack watcher, as the Linux front-end reaches it: through the built
-``diplomat-core`` CLI (``comms-tick``, ``comms-feed``, ``comms-effect``, ``build-prompt``
-kind ``investigate``), never by reimplementing the core.
+"""Comms through the built ``diplomat-core`` CLI, never a reimplementation of the core.
 
-The tick is driven end to end — the real binary against a stub Slack on a loopback port
-(``DIPLOMAT_SLACK_API``) and a stub ``claude`` (``DIPLOMAT_CLAUDE``) that answers the way
-``claude -p --output-format json`` does — so the HTTP layer, the classifier's process
-handling and the JSON on stdout are all the shipping code paths.
+The tick runs end to end: the real binary against a stub Slack on loopback
+(``DIPLOMAT_SLACK_API``) and a stub ``claude`` (``DIPLOMAT_CLAUDE``) answering like
+``claude -p --output-format json``.
 """
 
 from __future__ import annotations
@@ -70,12 +67,12 @@ def test_comms_effect_is_the_plan_python_acts_on():
     assert _effect("fix_issue", 7) == {"kind": "fix_issue", "number": 7}
     assert _effect("bump", 3) == {"kind": "bump", "number": 3}
     assert _effect("none") == {"kind": "none"}
-    # The toggles: each gates its own kind, and a missing one reads as on.
+    # Each toggle gates its own kind; a missing one reads as on.
     assert _effect("review", 12, {"requests": False}) == {"kind": "none"}
     assert _effect("bump", 3, {"requests": False}) == {"kind": "bump", "number": 3}
     assert _effect("bump", 3, {"bumps": False}) == {"kind": "none"}
     assert _effect("investigate", 0, {"investigations": False}) == {"kind": "none"}
-    # A decision is validated wherever it is decoded: no positive number, no action.
+    # No positive integer number, no action.
     for bad in (None, 0, -4, 12.5, "12", True):
         assert _effect("review", bad) == {"kind": "none"}, bad
     assert _effect("merge", 5) == {"kind": "none"}
@@ -90,14 +87,14 @@ def test_an_investigation_round_trips_into_the_queue_and_its_prompt():
     assert config["label"] == "Investigate · Slack · alice · login page crashes"
     assert (config["sender"], config["channel"]) == ("alice", "#general")
 
-    # The config is stored as it stands, as the queue's ask...
+    # The one config, unchanged, is both the queue's ask...
     work = autofix.RequestedWork(number=config["number"], url=MESSAGE["permalink"],
                                  author="", config=config)
     assert work.key == "investigate:1508284197000015"
     assert autofix.queue_band(work.key) == 3
     assert work.label == config["label"]
 
-    # ...and is the build-prompt payload as it stands.
+    # ...and the build-prompt payload.
     out = _core("build-prompt", stdin=work.config)
     assert out.returncode == 0, out.stderr
     prompt = out.stdout
@@ -194,7 +191,7 @@ class _Slack(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def log_message(self, *args):  # quiet
+    def log_message(self, *args):
         pass
 
 
@@ -297,10 +294,9 @@ def test_the_settings_test_button_says_what_the_core_says(slack, monkeypatch):
 
 
 def test_the_dry_run_through_the_entry_point_consumes_no_ping(tmp_path, slack):
-    """``DIPLOMAT_COMMS_POLL=1 python -m diplomat_app``, twice, against the real core,
-    a stub Slack and a stub claude: both runs triage the last hour of Slack — the
-    message from before it left out, and the live watermark, which is past them all,
-    not consulted — and neither writes to the live dir."""
+    """``DIPLOMAT_COMMS_POLL=1 python -m diplomat_app``, twice: each run triages the last
+    hour of Slack (not the older message) without consulting the live watermark, which
+    is past them all, and writes nothing to the live dir."""
     linux = Path(__file__).resolve().parents[1]
     home = tmp_path / "home"
     live = home / ".diplomat" / "comms"

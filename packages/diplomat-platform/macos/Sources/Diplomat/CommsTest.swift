@@ -1,21 +1,14 @@
 import Foundation
 import DiplomatCore
 
-/// Headless self-test for what the app does with a Comms tick, driven by
-/// `DIPLOMAT_COMMS_TEST=1`.
+/// `DIPLOMAT_COMMS_TEST=1`: the app's half of a Comms tick (the core's is pinned in
+/// `DiplomatCoreSmoke`): each effect's queue work, where it lands, what the log, feed and
+/// screen are told, and the `started`/`finished` lines it earns. Composed ticks go
+/// straight to `applyComms`, so no Slack, `claude` or `gh` (`Store.commsGHOverride`).
 ///
-/// Which messages are pings and what an answer asks for are the core's, and pinned in
-/// `DiplomatCoreSmoke`. What this covers is the half only the app has: each effect turned
-/// into queue work (or deliberately not), where in the queue it lands, what the log, the
-/// feed and the screen are told, and the `started`/`finished` lines a queued ask earns.
-/// The tick is composed here and handed to `applyComms`, the same function a live poll
-/// hands Slack's answer to, so no Slack call, no `claude` and no `gh` is made: what
-/// `gh pr view` / `gh issue view` print about each PR and issue is `Store.commsGHOverride`.
-///
-/// Spawns nothing: nothing in `applyComms` dispatches, and the queue it fills is drained
-/// only by the poll a headless Store never starts. The one command it runs is a spawn's
-/// shell command, under `/bin/sh` with a stand-in `claude`. The feed, Comms' own log, the
-/// run book and the shared config are pointed at scratch directories first.
+/// Spawns nothing: the queue is drained only by the poll a headless Store never starts.
+/// The one command it runs is a spawn's shell command, under `/bin/sh` with a stand-in
+/// `claude`. The feed, Comms' log, the run book and the shared config point at scratch.
 enum CommsTest {
     @discardableResult
     @MainActor
@@ -38,8 +31,8 @@ enum CommsTest {
         AgentProbes.pinDump(.present(""))
         defer { AgentProbes.pinDump(nil) }
 
-        // GitHub, as far as this test is concerned. Numbers far above the real repo's,
-        // so no saved arrangement of the operator's names any of them.
+        // Numbers far above the real repo's, so no saved queue order of the operator's
+        // names any of them.
         let targets: [Int: CommsTarget] = [
             90010: CommsTarget(number: 90010, url: "https://github.com/o/r/pull/90010",
                                author: "alice", isOpen: true, state: "OPEN"),
@@ -82,9 +75,8 @@ enum CommsTest {
             90082: .process(code: 1, stderr: "GraphQL: Could not resolve to a Repository "
                             + "with the name 'o/r'. (repository)"),
         ]
-        // gh as it behaves: `pr view` of an issue's number fails, and `issue view` answers
-        // any number, a PR's included. A number GitHub does not know fails the way gh
-        // says so.
+        // As gh behaves: `pr view` of an issue's number fails, `issue view` answers a PR's
+        // number too, and an unknown number fails in gh's words.
         Store.commsGHOverride = { args in
             guard args.count > 2, let n = Int(args[2]) else {
                 throw GHError.process(code: 1, stderr: "unexpected arguments \(args)")
@@ -404,7 +396,7 @@ enum CommsTest {
         let reply = monitorFind("review-reply", 90042, "Review · #90042")
         let requested = monitorFind("review-req", 90040, "Review-req · #90040 (@dave)")
         store.queuedTasks = [reply, requested] + store.queuedTasks
-        // The operator's own switches, which say whether the monitor's finds may run.
+        // Pinned: these decide whether the monitor's finds may run.
         store.reviewRequestsEnabled = true
         store.queueAutoRun = true
         let askTwin = item(.review, 90040)
@@ -546,9 +538,8 @@ enum CommsTest {
                 && SettingsView.commsErrorPill(longError) == Store.snippet(longError, max: 48))
 
         // MARK: the agent's environment
-        // The spawn command run for real, with a stand-in `claude`: the terminal it is
-        // typed into, or the tmux server under it, may carry the token in its
-        // environment (`launchctl setenv`, a server started from such a shell).
+        // The terminal a spawn is typed into, or its tmux server, may carry the token
+        // (`launchctl setenv`, a server started from such a shell).
         let spawnDir = scratch.appendingPathComponent("spawn")
         let spawnBin = spawnDir.appendingPathComponent("bin")
         try? FileManager.default.createDirectory(at: spawnBin, withIntermediateDirectories: true)
@@ -648,7 +639,7 @@ enum CommsTest {
         let t = DispatchTime.now().uptimeNanoseconds
         await reading?.value
         let backgroundMs = Double(DispatchTime.now().uptimeNanoseconds - t) / 1e6
-        // By ping and outcome: the settle below may already have added its start.
+        // By ping and outcome: the settle above may already have added its start.
         check("…and folds to what reading all of it does",
               store.commsItems.map { [$0.message.id, $0.outcome ?? ""] }
                 == whole1.map { [$0.message.id, $0.outcome ?? ""] })

@@ -416,8 +416,8 @@ class ActivityRow(QFrame):
         row.setSpacing(8)
         row.addWidget(GlyphLabel(glyph, 18, glyph_color, font_px=13),
                       0, Qt.AlignmentFlag.AlignTop)
-        # Plain: a feed line quotes agent names and daemon messages, which Qt would
-        # otherwise guess to be HTML.
+        # Plain: a feed line quotes agent names and daemon messages Qt would guess to be
+        # HTML.
         d = QLabel(detail)
         d.setTextFormat(Qt.TextFormat.PlainText)
         d.setWordWrap(True)

@@ -5,16 +5,11 @@ import DiplomatCore
 
 // MARK: - Comms: the Slack watcher, on the macOS side
 //
-// The core decides everything that can be decided without this app: which messages are
-// pings, what the triage answered, and what that answer asks for (`CommsWatch.tick`,
-// `CommsPlan.effect`). What is left here is what only the app can do — find the token,
-// run the tick on a timer, turn each effect into queue work through the same requested
-// asks a wizard sweep makes, and say what it did: an `action` line in Comms' own log,
-// one line in the activity feed, a notification.
-//
-// Nothing here starts an agent. Every ask goes into the queue and waits there for a bay,
-// so the ban list, the task cap, the spending budget and the disk floor all still stand
-// between a Slack message and a terminal.
+// The core decides which messages are pings and what each answer asks for
+// (`CommsWatch.tick`, `CommsPlan.effect`); this side runs the tick on a timer and turns each
+// effect into the same requested asks a wizard sweep makes. Nothing here starts an agent:
+// every ask waits in the queue for a bay, so the ban list, task cap, spending budget and
+// disk floor all still stand between a Slack message and a terminal.
 
 /// What GitHub says about the PR or issue a message named.
 struct CommsTarget: Equatable {
@@ -22,17 +17,16 @@ struct CommsTarget: Equatable {
     let url: String
     let author: String
     let isOpen: Bool
-    /// GitHub's word for the state, for the outcome line when it is not open.
+    /// GitHub's spelling, e.g. `MERGED`.
     let state: String
 }
 
 enum CommsTargetKind { case pr, issue }
 
 extension Store {
-    /// The tick period: `DIPLOMAT_COMMS_SECS`, else `comms.json`'s `pollSecs`, never
-    /// under its `minPollSecs` — `search.messages` is Tier 2, and a tick is two searches
-    /// plus one per keyword — nor over a day, past which the loop's nanosecond sleep
-    /// would overflow. A value that is not a finite number is ignored.
+    /// `DIPLOMAT_COMMS_SECS` (ignored unless finite), else `comms.json`'s `pollSecs`. Never
+    /// under `minPollSecs` (`search.messages` is Tier 2, and a tick is two searches plus
+    /// one per keyword), nor over a day (a huge value would overflow the nanosecond sleep).
     static var commsPollInterval: TimeInterval {
         let model = try? CoreAssets.comms()
         let floor = Double(model?.minPollSecs ?? 20)
@@ -43,18 +37,13 @@ extension Store {
 
     static let commsMaxPollInterval: TimeInterval = 86_400
 
-    /// Stand in for `gh` in the Comms self-test: handed the arguments of a `gh pr view` or
-    /// `gh issue view`, answers with what gh would print, or throws what gh would.
-    /// Headless only.
+    /// The Comms self-test's stand-in for `gh pr|issue view`; consulted only headless.
     static var commsGHOverride: (@MainActor ([String]) async throws -> Data)?
 
-    /// The largest stretch of `events.jsonl` a refresh reads on the main actor. More than
-    /// that — the first read of a long log, or the one after a rotation — is read and
+    /// The most of `events.jsonl` a refresh reads on the main actor; more is read and
     /// folded off it.
     static let commsInlineReadBytes: UInt64 = 64 << 10
 
-    /// What `CommsWatch.tick` is handed: the Settings fields, and the operator's login
-    /// for the triage prompt.
     var commsSettings: CommsSettings {
         CommsSettings(keywords: CommsSettings.keywordList(commsKeywordsRaw),
                       senderAllowlist: CommsSettings.allowlist(commsSenderAllowlistRaw),
@@ -66,20 +55,16 @@ extension Store {
                      investigations: commsActInvestigations)
     }
 
-    /// Pings recorded since the operator last opened the screen: the header badge.
     var commsUnread: Int { commsItems.filter { $0.at > commsSeenAt }.count }
 
     func markCommsSeen() {
         if commsUnread > 0 { commsSeenAt = Date() }
     }
 
-    /// Bring `commsItems` up to date with `events.jsonl`.
-    ///
-    /// The log only ever grows between rotations, so a refresh reads just the lines added
-    /// since the last one, and a file whose inode, size and modification time are all
-    /// unchanged is not read at all. A long read is done off the main actor and returned;
-    /// until it lands, further refreshes return it too, and it refreshes again on landing
-    /// for whatever was written meanwhile.
+    /// Reads only what `events.jsonl` grew by (it only grows between rotations), and
+    /// nothing when inode, size and mtime are unchanged. A long read runs off the main
+    /// actor and is returned; until it lands every refresh returns it, and on landing it
+    /// refreshes again for whatever was written meanwhile.
     @discardableResult
     func refreshComms() -> Task<Void, Never>? {
         if let reading = commsLogRead { return reading }
@@ -128,8 +113,8 @@ extension Store {
         if items != commsItems { commsItems = items }
     }
 
-    /// Append one of the app's own lines, and fold it in straight away: what decides
-    /// the next line (an owner's start, a run's end) reads `commsItems`.
+    /// Folds straight away: what decides the next line (an owner's start, a run's end)
+    /// reads `commsItems`.
     func recordComms(_ events: [CommsEvent]) {
         for e in events { CommsLog.append(e) }
         refreshComms()
@@ -137,8 +122,7 @@ extension Store {
 
     // MARK: the loop
 
-    /// Started at launch and left running: a tick with Comms switched off returns at
-    /// once, which is cheaper than starting and stopping a task on every toggle.
+    /// Never stopped: a tick with Comms switched off returns at once.
     func startCommsMonitor() {
         guard commsMonitorTask == nil, !Headless.active else { return }
         commsMonitorTask = Task { [weak self] in
@@ -148,8 +132,7 @@ extension Store {
                 try? await Task.sleep(nanoseconds: ns)
             }
         }
-        // The loop's sleep stops while the Mac sleeps, so a message sent overnight would
-        // wait for the first tick after wake; asking on wake answers it straight away.
+        // The loop's sleep pauses while the Mac sleeps; polling on wake catches up at once.
         if commsWakeObserver == nil {
             commsWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
@@ -159,9 +142,8 @@ extension Store {
         }
     }
 
-    /// One tick: find the token, poll Slack and triage off the main actor, then act on
-    /// what came back. Overlap-guarded like the monitor poll, because the timer, a wake
-    /// and the enable switch can all kick one while another is still in its triage.
+    /// Overlap-guarded: the timer, a wake and the enable switch can each kick a tick while
+    /// another is still in its triage.
     func runCommsPollOnce() async {
         guard commsEnabled, !Headless.active, !commsPollInFlight else { return }
         commsPollInFlight = true
@@ -183,7 +165,6 @@ extension Store {
         await applyComms(result)
     }
 
-    /// The Settings "Test" button: `auth.test` with the token as it is stored now.
     func testSlackToken() async {
         guard !commsTesting else { return }
         commsTesting = true
@@ -206,13 +187,10 @@ extension Store {
 
     // MARK: acting on a tick
 
-    /// Everything a tick found, applied: the identity and health it reported, then each
-    /// ping's effect in the order the tick triaged them. Not private: the Comms self-test
-    /// hands it a tick result it composed, which is the whole of this file's behaviour
-    /// short of Slack and `claude`.
+    /// Not private: the Comms self-test hands it composed tick results.
     ///
-    /// A tick the operator switched Comms off during still lands its pings, which the
-    /// tick has already logged, but acts on none of them and notifies nothing.
+    /// A tick that Comms was switched off during still lands its pings (the tick has
+    /// already logged them), but acts on and notifies none.
     func applyComms(_ result: CommsTickResult) async {
         if let me = result.me, me != commsIdentity { commsIdentity = me }
         noteCommsHealth(result.error)
@@ -249,16 +227,13 @@ extension Store {
         refreshComms()
     }
 
-    /// What one effect did: the outcome the screen shows under the ping, the queue key
-    /// of the work that answers it (none for a bump, which asks for no work of its own),
-    /// and the one activity line it is written as.
     struct CommsActResult {
         var verb: String
         var outcome: String
         var queueKey: String?
         var label: String?
         var feedLine: String
-        /// The agent already doing what the ping asked for, whose start the ping records.
+        /// The agent already doing the asked-for work; the ping records its start.
         var running: AgentState.RunRecord?
     }
 
@@ -316,12 +291,9 @@ extension Store {
         }
     }
 
-    /// Queue `ask`, and with `front` move it to the front of its band — where a person
-    /// asking for it by name puts it, ahead of a sweep's fifty.
-    ///
-    /// Work that is already running, or already waiting under another key, is not asked
-    /// for twice: the ping takes that work's key and label instead, so its started and
-    /// finished follow the agent that does it.
+    /// Work already running, or already waiting under another key, is not asked for
+    /// twice: the ping takes that work's key and label, so its started and finished
+    /// follow the agent that does it.
     private func queue(_ ask: RequestedWork, verb: String, who: String,
                        front: Bool) -> CommsActResult {
         if let row = commsRow(doing: ask.key) {
@@ -334,7 +306,7 @@ extension Store {
         let suffix = front ? ", at the front of its band" : ""
         let twins = Store.commsTwinKeys(ask.key)
         // Only a find that will run: a paused monitor's waits for "execute now" or its
-        // toggle, where an ask is never paused (`isPaused`).
+        // toggle, while an ask is never paused (`isPaused`).
         if let twin = startingTasks.first(where: { twins.contains($0.id) })
             ?? queuedTasks.first(where: { twins.contains($0.id) && !isPaused($0.job.counter) }) {
             if front { moveQueuedTaskToFront(twin.id) }
@@ -350,8 +322,8 @@ extension Store {
                               feedLine: "\(ask.label) asked by \(who) — \(outcome)")
     }
 
-    /// The keys a monitor queues the same work under as the ask `key`: a review requested
-    /// of me on GitHub is the review a Slack message asks for.
+    /// Monitor keys for the same work as the ask `key`: a review requested of me on
+    /// GitHub is the review a Slack message asks for.
     private static func commsTwinKeys(_ key: String) -> [String] {
         guard let parts = commsKeyParts(key), parts.verb == AgentTaskQueue.reviewAction else {
             return []
@@ -367,9 +339,8 @@ extension Store {
         return (String(parts[0]), n)
     }
 
-    /// The agent row doing the work `key` names, if one is up: any review agent on that PR
-    /// (the dispatch gate treats every agent on a PR as that PR's), or a fix of that
-    /// issue, which is about no PR and is known by the label every issue fix wears
+    /// Any review agent on that PR (the dispatch gate treats every agent on a PR as that
+    /// PR's), or a fix of that issue, known only by the label every issue fix wears
     /// (`RequestedWork.label`, `IssueWizard`).
     private func commsRow(doing key: String) -> AgentRow? {
         guard let parts = Store.commsKeyParts(key) else { return nil }
@@ -411,18 +382,16 @@ extension Store {
         }
     }
 
-    /// What asking GitHub about a PR or an issue came to.
     enum CommsLookup {
         case found(CommsTarget)
-        /// GitHub answered that the repo has no such PR or issue.
+        /// GitHub says the repo has no such PR or issue.
         case missing
-        /// GitHub did not answer: gh failed, timed out or printed no PR or issue.
+        /// No answer: gh failed, timed out or printed no PR or issue.
         case unasked(String)
     }
 
-    /// Whether gh failed because GitHub knows no such number, as `gh pr view` and
-    /// `gh issue view` both word it. "Could not resolve to a Repository" shares the
-    /// prefix but means the repo itself could not be seen.
+    /// `gh pr|issue view`'s "no such number". "Could not resolve to a Repository" shares
+    /// the prefix but means the repo itself could not be seen.
     static func ghSaysNotFound(_ error: Error) -> Bool {
         guard case GHError.process(_, let stderr) = error else { return false }
         return stderr.contains("Could not resolve to") && stderr.contains("with the number of")
@@ -433,12 +402,11 @@ extension Store {
         return flat.count > max ? String(flat.prefix(max - 1)) + "…" : flat
     }
 
-    /// The PR or issue `n`, open or not: the panel's own last fetch first, which lists
-    /// open work only, then `gh` for what it does not hold — an issue a filtered list
-    /// left out, a PR opened since the last refresh, or one already closed.
+    /// The panel's last fetch (open work only) first, then `gh` for what it lacks: an
+    /// issue a filtered list left out, a PR opened since, a closed one.
     ///
-    /// `gh issue view` answers a PR's number with that PR, so an answer is an issue only
-    /// when its url says so; a PR's number is no issue.
+    /// `gh issue view` answers a PR's number with that PR, so only an `/issues/` url is
+    /// an issue.
     private func commsLookup(_ kind: CommsTargetKind, _ n: Int) async -> CommsLookup {
         switch kind {
         case .pr:
@@ -479,8 +447,8 @@ extension Store {
                                   state: state))
     }
 
-    /// Publish the poll's health, and log only its transitions: a failing token fails
-    /// every minute, and one line a minute would bury the feed.
+    /// Logs only transitions: a bad token fails every poll, and a line per poll would bury
+    /// the feed.
     func noteCommsHealth(_ error: String?) {
         if let error {
             if commsError == nil {
@@ -497,11 +465,11 @@ extension Store {
 
     // MARK: started / finished
 
-    /// An ask Comms queued has been dispatched: its pings record `started`. Called from
-    /// `settleRequested` for every requested ask, so it is a no-op for the rest.
+    /// Records `started` on the pings owning a dispatched ask; a no-op for asks no ping
+    /// owns.
     func commsSettled(_ entry: QueuedAgentTask, _ outcome: DispatchOutcome) {
         guard outcome.wasHandled else { return }
-        // Owners are found in the fold, so one still being read is waited for.
+        // Owners are found in the fold, so a read in flight is waited for.
         if let reading = commsLogRead {
             Task { [weak self] in
                 await reading.value
@@ -516,12 +484,10 @@ extension Store {
         })
     }
 
-    /// What the agent rows say about the work Comms' pings point at, after every publish
-    /// of them.
+    /// Run after every agent-row publish.
     ///
     /// A ping that took a monitor's queued work (`queue`) records `started` once an agent
-    /// row is doing it: a monitor dispatches its own finds, so `commsSettled`, which hears
-    /// only the asks', never sees that one start.
+    /// row is doing it: a monitor dispatches its own finds, so `commsSettled` never hears.
     ///
     /// A started run whose label no agent row wears any more, and which is not waiting to
     /// run again, has finished: its pings record `finished`, once.
@@ -546,9 +512,8 @@ extension Store {
         if !lines.isEmpty { recordComms(lines) }
     }
 
-    /// The run wearing `label` failed to spawn. An agent row may already have shown it
-    /// starting, and a ping taken that start for its own (`noteCommsRuns`, or `queue`'s
-    /// "already running"): those pings say it never ran, where the `finished` its
+    /// A ping may already have taken this failed run's row as its start (`noteCommsRuns`,
+    /// `queue`'s "already running"): it says the run never ran, or the `finished` its
     /// vanished row would earn reads as work done.
     func commsSpawnFailed(label: String, why: String) {
         if let reading = commsLogRead {
@@ -568,27 +533,25 @@ extension Store {
 
     static let commsNeverStartedOutcome = "its agent never started, so nothing ran"
 
-    /// A ping whose run failed to spawn (`commsSpawnFailed`): there is no run to finish.
+    /// Its run failed to spawn (`commsSpawnFailed`): there is none to finish.
     static func commsNeverStarted(_ item: CommsItem) -> Bool {
         item.outcome?.hasPrefix(commsNeverStartedOutcome) == true
     }
 }
 
-/// Where a read of `events.jsonl` stopped: which file it was (its inode), the offset
-/// just past its last whole line, and the file's modification time then.
+/// Where a read of `events.jsonl` stopped; `offset` is just past its last whole line.
 struct CommsLogMark: Equatable, Sendable {
     var inode: UInt64
     var offset: UInt64
     var mtime: CommsLogReader.Time
 }
 
-/// The events read so far and where reading stopped (`Store.refreshComms`).
 struct CommsLogCache {
     var events: [CommsEvent] = []
     var mark: CommsLogMark?
 }
 
-/// Reads `events.jsonl` from an offset, the way `CommsLog.read` reads all of it.
+/// `CommsLog.read`, from an offset.
 enum CommsLogReader {
     struct Time: Equatable, Sendable {
         var sec: Int
@@ -612,8 +575,7 @@ enum CommsLogReader {
               mtime: Time(sec: Int(st.st_mtimespec.tv_sec), nsec: Int(st.st_mtimespec.tv_nsec)))
     }
 
-    /// Every event that decodes from `offset` to the last newline, and the mark there. A
-    /// line still being written is left for the next read.
+    /// A last line still being written is left for the next read.
     static func read(_ url: URL, from offset: UInt64) -> (events: [CommsEvent], mark: CommsLogMark)? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
@@ -636,10 +598,9 @@ enum CommsLogReader {
     }
 }
 
-/// Where the Slack token comes from. Read on each use, never cached and never written:
-/// `DIPLOMAT_SLACK_TOKEN` (tests, a headless poll), else the login-Keychain item
-/// Settings names, read through `security` so an unsigned build raises no Keychain
-/// prompt from a background tick (`Quota`'s reasoning).
+/// Read on each use, never cached or written: `DIPLOMAT_SLACK_TOKEN` (tests, a headless
+/// poll), else the Keychain item Settings names, through `security` so an unsigned build
+/// raises no Keychain prompt from a background tick.
 enum CommsToken {
     static let timeout: TimeInterval = 10
 
@@ -677,23 +638,20 @@ enum CommsToken {
         "No Slack token in the Keychain item \"\(item)\""
     }
 
-    /// The command that stores one, for the setup instructions.
     static func addCommand(item: String) -> String {
         "security add-generic-password -a \"$USER\" -s \(item) -w"
     }
 }
 
-/// macOS notifications for new pings. Only from a real app bundle and never in a headless
-/// mode: `UNUserNotificationCenter` aborts the process when there is no bundle to
-/// attribute a notification to, which is what `swift run` is.
+/// Only from a real .app and never headless: `UNUserNotificationCenter` aborts a process
+/// with no bundle, which is what `swift run` is.
 enum CommsNotifier {
     static var available: Bool {
         !Headless.active && Bundle.main.bundleIdentifier != nil
             && Bundle.main.bundleURL.pathExtension == "app"
     }
 
-    /// Asked when Comms is first switched on with notifications wanted, not at launch:
-    /// a permission prompt for a feature nobody has enabled is noise.
+    /// Not at launch: only once Comms is on with notifications wanted.
     static func authorize() {
         guard available else { return }
         let center = UNUserNotificationCenter.current()
@@ -711,8 +669,8 @@ enum CommsNotifier {
         center.add(UNNotificationRequest(identifier: "comms-\(m.id)", content: content, trigger: nil))
     }
 
-    /// Shows a notification while the popover is open too: an accessory app is the
-    /// active one exactly then, and macOS drops an active app's notifications by default.
+    /// Shows notifications while the popover is open: an accessory app is active exactly
+    /// then, and macOS drops an active app's notifications by default.
     private final class Presenter: NSObject, UNUserNotificationCenterDelegate {
         static let shared = Presenter()
 
@@ -725,16 +683,13 @@ enum CommsNotifier {
     }
 }
 
-/// The Comms dry run, `DIPLOMAT_COMMS_POLL=1`. Kept out of `DiplomatApp.swift`, whose
-/// `env[...]` reads CI takes for the list of headless modes.
+/// Kept out of `DiplomatApp.swift`, whose `env[...]` reads CI takes for the list of
+/// headless modes.
 extension Dump {
-    /// One Comms tick for real, applied to nothing: the Settings the panel would hand it,
-    /// the token it would find, Slack's answer, the triage's answer, and the queue effect
-    /// each would have had. Unless `DIPLOMAT_COMMS_DIR` names a directory to tick, it
-    /// ticks a scratch one whose watermark is `commsPollLookback` ago with nothing seen,
-    /// so it triages what reached the operator in that time whether or not Comms is on,
-    /// and the live app's own watermark is untouched. False when there is no token or
-    /// the tick failed.
+    /// `DIPLOMAT_COMMS_POLL=1`: one real tick, printing each ping's would-be effect. Without
+    /// `DIPLOMAT_COMMS_DIR` it ticks a scratch dir whose watermark is `commsPollLookback`
+    /// ago, so it triages that window whether or not Comms is on and leaves the live
+    /// watermark alone. False when there is no token or the tick failed.
     @MainActor
     static func commsPoll() async -> Bool {
         let env = ProcessInfo.processInfo.environment

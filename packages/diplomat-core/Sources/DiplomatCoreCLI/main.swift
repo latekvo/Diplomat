@@ -19,9 +19,9 @@ import Foundation
 //
 // build-prompt: the JSON config's "kind" field ("review" | "conflicts" | "audit" |
 // "issues" | "investigate") selects the builder; remaining fields mirror the Swift
-// *Config structs (defaults applied when a field is absent). An "investigate" payload is
-// an InvestigateConfig as `comms-effect` writes it; "comms-classifier" (a CommsSettings
-// payload) prints the Comms triage instructions.
+// *Config structs (defaults applied when a field is absent), "investigate" as
+// `comms-effect` writes it. "comms-classifier" (CommsSettings fields) prints the Comms
+// triage instructions.
 //
 // tool-data: runs `ToolData.items` over a fixture of PRs/issues and prints one row
 // list per tool. The Linux front-end does NOT use this at runtime — it has its own
@@ -83,8 +83,7 @@ guard args.count >= 2,
         + "\n       diplomat-core comms-auth", 1)
 }
 
-// The subcommands that read no stdin: a caller that leaves it attached to a terminal
-// must not hang them.
+// These read no stdin, so a caller leaving it attached to a terminal must not hang them.
 if args[1] == "comms-feed" {
     CommsCommand.feed(Array(args.dropFirst(2)))
     exit(0)

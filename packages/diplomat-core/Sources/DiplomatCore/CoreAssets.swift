@@ -163,8 +163,7 @@ public enum CoreAssets {
         }
     }
 
-    /// The Comms (Slack watcher) model: its tunables, the search queries, the
-    /// classifier's instructions and answer schema, and the investigate agent's blocks.
+    /// The Comms (Slack watcher) model, `comms.json`.
     public struct CommsModel: Decodable {
         public struct Queries: Decodable {
             public let dm: String
@@ -198,8 +197,8 @@ public enum CoreAssets {
         public let queries: Queries
         public let classifier: Classifier
         public let investigate: Investigate
-        /// `classifier.schema`, serialized with sorted keys: the exact argument
-        /// `--json-schema` is handed. Not decoded, since it is free-form JSON.
+        /// `classifier.schema` serialized with sorted keys, the exact `--json-schema`
+        /// argument. Not decoded: it is free-form JSON.
         public internal(set) var schema: String = ""
 
         private enum CodingKeys: String, CodingKey {
@@ -364,7 +363,6 @@ public enum CoreAssets {
         return t
     }
 
-    /// The Comms model from `comms.json`.
     public static func comms() throws -> CommsModel {
         guard let c = _comms else { return try loadComms() }
         return c

@@ -252,7 +252,7 @@ class Panel(QWidget):
         telemetry_scroll.setWidget(self.telemetry_view)
         self._screens["telemetry"] = self.body.addWidget(telemetry_scroll)
 
-        # Page: Comms (what the Slack watcher has seen and what came of it).
+        # Page: Comms (the Slack watcher).
         self.comms_view = CommsView(store)
         self.comms_view.done.connect(lambda: self._set_screen("main"))
         comms_scroll = QScrollArea()
@@ -262,7 +262,7 @@ class Panel(QWidget):
         comms_scroll.setWidget(self.comms_view)
         self._screens["comms"] = self.body.addWidget(comms_scroll)
 
-        # Page: settings. Scrolled like the two screens above, and for the same
+        # Page: settings. Scrolled like the screens above, and for the same
         # reason: its left column is a stack of toggles each carrying the paragraph
         # that says what it does, and on a short window Qt buys the space back by
         # squeezing those paragraphs into each other rather than by hiding anything.
@@ -958,7 +958,6 @@ class Panel(QWidget):
         self._set_screen("main" if self._screen == "comms" else "comms")
 
     def _refresh_comms_button(self) -> None:
-        """The ✉ button carries the unread count, in its label and its tooltip."""
         n = self.store.comms_unread
         self.comms_btn.setText(f"{glyphs.G_COMMS} {n}" if n else glyphs.G_COMMS)
         self.comms_btn.setToolTip(f"Comms — {n} unread" if n else "Comms")

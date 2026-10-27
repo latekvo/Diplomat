@@ -2,17 +2,13 @@ import Foundation
 
 // MARK: - Comms: the Slack watcher's model
 //
-// Diplomat watches the operator's Slack for messages addressed to them — a DM, an
-// @-mention, or one of their keywords — records each as a *ping*, has one sandboxed
-// `claude` call triage it into a fixed JSON shape (`CommsClassifier`), and maps the
-// validated answer onto the queue (`CommsPlan`). This file holds the values and the
-// pure rules; the Slack reads are `SlackAPI`, the tick that drives both is `CommsWatch`.
-// Both front-ends act on what these decide; the Linux one reaches them through the
-// `diplomat-core` CLI (`comms-tick`, `comms-feed`, `comms-effect`), never by
-// reimplementing them.
+// Each Slack message addressed to the operator (DM, @-mention, keyword) is a *ping*; one
+// sandboxed `claude` call triages it (`CommsClassifier`) and `CommsPlan` maps the answer
+// onto the queue. Slack reads are `SlackAPI`, the tick is `CommsWatch`. The Linux
+// front-end reaches these rules through the `diplomat-core` CLI (`comms-tick`,
+// `comms-feed`, `comms-effect`), never by reimplementing them.
 
-/// Why a message reached the operator. A message can carry several (a DM that also
-/// names a keyword).
+/// Why a message reached the operator; a message can carry several.
 public enum CommsReason: String, Codable, CaseIterable, Sendable {
     case dm, mention, keyword
 }
@@ -30,12 +26,11 @@ public struct CommsIdentity: Codable, Equatable, Sendable {
     }
 }
 
-/// One Slack message addressed to the operator. `id` is `<channelID>:<ts>`, unique
-/// across the workspace, and is what every event about it is keyed by.
+/// `id` is `<channelID>:<ts>`: workspace-unique, and the key of every event about it.
 public struct CommsMessage: Codable, Equatable, Sendable {
     public var id: String
     public var channelID: String
-    /// The channel's name; for a DM, whatever Slack names it (the other user's id).
+    /// For a DM, whatever Slack names it (the other user's id).
     public var channelName: String
     public var isDM: Bool
     public var userID: String
@@ -45,7 +40,6 @@ public struct CommsMessage: Codable, Equatable, Sendable {
     public var ts: String
     public var permalink: String
     public var reasons: [CommsReason]
-    /// The keyword that matched, when `reasons` holds `.keyword`.
     public var keyword: String?
 
     public init(id: String, channelID: String, channelName: String, isDM: Bool,
@@ -65,20 +59,17 @@ public struct CommsMessage: Codable, Equatable, Sendable {
         self.keyword = keyword
     }
 
-    /// The sender as a person reads them: the handle, or the user id when Slack gave none.
     public var sender: String { userName.isEmpty ? userID : userName }
 
-    /// Where it was said: `DM`, or `#channel`.
     public var place: String { isDM ? "DM" : "#\(channelName)" }
 }
 
-/// What the triage may answer. The raw values are the classifier schema's enum.
+/// The raw values are the classifier schema's enum.
 public enum CommsAction: String, Codable, CaseIterable, Sendable {
     case none, bump, review
     case fixIssue = "fix_issue"
     case investigate
 
-    /// Whether the action is about one PR or issue, and so is meaningless without its number.
     public var needsNumber: Bool {
         switch self {
         case .bump, .review, .fixIssue: return true
@@ -87,20 +78,19 @@ public enum CommsAction: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// The triage's answer, valid by construction: every initializer — the memberwise one,
-/// JSON decoding, `parse` — routes through the same check, so a decision that names a
-/// PR action without a positive number cannot exist. It reads `none` instead, with the
-/// reason recorded. Whether the message holds that number is `checked(against:)`;
-/// whether it names an OPEN PR or issue of the repo is the front-end's check, made
+/// The triage's answer, valid by construction: every initializer (memberwise, decoding,
+/// `parse`) routes through one check, so a PR action without a positive number reads
+/// `none`, with the reason recorded. Whether the message holds that number is
+/// `checked(against:)`; whether it is an OPEN PR or issue is the front-end's check
 /// against GitHub before it acts.
 public struct CommsDecision: Codable, Equatable, Sendable {
     public let action: CommsAction
-    /// The PR or issue number for `review` / `fix_issue` / `bump`; 0 otherwise.
+    /// 0 unless `action.needsNumber`.
     public let number: Int
     public let summary: String
     public let reason: String
 
-    /// How much of the classifier's prose is kept. It is shown on one row.
+    /// Classifier prose is clipped to this; it is shown on one row.
     static let maxText = 240
 
     public init(action: CommsAction, number: Int, summary: String, reason: String) {
@@ -120,7 +110,6 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         }
     }
 
-    /// A `none` that says why nothing was decided.
     public static func none(_ reason: String) -> CommsDecision {
         CommsDecision(action: .none, number: 0, summary: "", reason: reason)
     }
@@ -139,9 +128,9 @@ public struct CommsDecision: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey { case action, number, summary, reason }
 
-    /// Decoded field by field, so one bad field costs the decision its action rather than
-    /// failing the whole object: an action outside the enum, or a number that is missing,
-    /// fractional, a string or a boolean, all land in `init` as something it refuses.
+    /// Field by field, so one bad field costs the decision its action instead of failing
+    /// the object: an unknown action, or a number that is missing, fractional, a string or
+    /// a boolean, lands in `init` as something it refuses.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let summary = (try? c.decode(String.self, forKey: .summary)) ?? ""
@@ -156,17 +145,16 @@ public struct CommsDecision: Codable, Equatable, Sendable {
                   summary: summary, reason: reason)
     }
 
-    /// The decision out of what `claude -p --output-format json` printed. That is a JSON
-    /// array of events whose `type: "result"` element carries the answer, or (older CLIs)
-    /// that one result object alone. `structured_output` is preferred — it is the object
-    /// the schema constrained — and `result`, the same answer as text, parsed when it is
-    /// absent. Never throws: output with no answer in it is a `none` saying so.
+    /// `claude -p --output-format json` prints a JSON array of events whose
+    /// `type: "result"` element carries the answer, or (older CLIs) that object alone.
+    /// `structured_output`, the schema-constrained object, wins over `result`, the same
+    /// answer as text.
     public static func parse(classifierOutput: Data) -> CommsDecision {
         answer(in: classifierOutput) ?? .none("the classifier's output held no answer")
     }
 
-    /// `parse`, with nil for output that holds no answer at all — which `CommsClassifier`
-    /// tells apart from a bad answer, since only the first is the classifier failing.
+    /// Nil for output with no answer at all: `CommsClassifier` counts only that, not a
+    /// bad answer, as the classifier failing.
     static func answer(in output: Data) -> CommsDecision? {
         guard let root = try? JSONSerialization.jsonObject(with: output) else { return nil }
         let result: [String: Any]?
@@ -200,8 +188,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
             ?? .none("the classifier's answer was not a JSON object")
     }
 
-    /// `text` without a Markdown code fence around it, which a model answering in prose
-    /// sometimes adds.
+    /// A model answering in prose sometimes wraps it in a Markdown code fence.
     private static func unfenced(_ text: String) -> String {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard s.hasPrefix("```") else { return s }
@@ -216,8 +203,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     }
 }
 
-/// What a front-end passes `CommsWatch.tick`: the operator's Comms settings plus the
-/// repo the triage is about.
+/// What a front-end passes `CommsWatch.tick`.
 public struct CommsSettings: Codable, Equatable, Sendable {
     public var keywords: [String]
     /// Slack user ids or handles; empty admits any member of the operator's workspace.
@@ -226,7 +212,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     public var maxPerTick: Int
     public var owner: String
     public var repo: String
-    /// The operator's GitHub login, which the classifier is told the message was sent to.
+    /// The operator's GitHub login; the classifier is told the message was sent to it.
     public var login: String
 
     public init(keywords: [String] = [], senderAllowlist: [String] = [],
@@ -244,14 +230,11 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         self.login = login
     }
 
-    /// The Settings field's keywords: comma- or newline-separated, so one keyword may be
-    /// a phrase. Blank entries and repeats drop out.
+    /// Not split on spaces: a keyword may be a phrase.
     public static func keywordList(_ raw: String) -> [String] {
         unique(raw.split(whereSeparator: { $0 == "," || $0.isNewline }))
     }
 
-    /// The Settings field's sender allowlist: comma- or whitespace-separated, a leading
-    /// `@` dropped.
     public static func allowlist(_ raw: String) -> [String] {
         unique(raw.split(whereSeparator: { $0 == "," || $0.isWhitespace }).map {
             $0.hasPrefix("@") ? $0.dropFirst() : $0
@@ -272,9 +255,8 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         case keywordsRaw, senderAllowlistRaw
     }
 
-    /// Every field optional. The two lists may come as the raw Settings strings
-    /// (`keywordsRaw`, `senderAllowlistRaw`) so a front-end hands over what the operator
-    /// typed and the splitting stays here.
+    /// Every field optional. The lists may come as the raw Settings strings (`keywordsRaw`,
+    /// `senderAllowlistRaw`), so the splitting stays here rather than in each front-end.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let keywords = try c.decodeIfPresent([String].self, forKey: .keywords)
@@ -301,8 +283,8 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     }
 }
 
-/// The operator's three per-kind switches: asked-for reviews and issue fixes, bumps,
-/// and investigations. Off turns that kind into a ping alone.
+/// Per-kind switches (`requests` covers reviews and issue fixes); off turns that kind
+/// into a ping alone.
 public struct CommsToggles: Codable, Equatable, Sendable {
     public var requests: Bool
     public var bumps: Bool
@@ -316,7 +298,7 @@ public struct CommsToggles: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey { case requests, bumps, investigations }
 
-    /// A missing switch reads as its Settings default, on.
+    /// A missing switch reads as on.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(requests: try c.decodeIfPresent(Bool.self, forKey: .requests) ?? true,
@@ -325,8 +307,8 @@ public struct CommsToggles: Codable, Equatable, Sendable {
     }
 }
 
-/// What a front-end does about one triaged ping. Everything it does still goes through
-/// its ordinary queue — the ban list, the task cap and the budget gate all apply.
+/// What a front-end does about one triaged ping, through its ordinary queue: the ban
+/// list, the task cap and the budget gate all apply.
 ///
 /// JSON: `{"kind": "none"}`, `{"kind": "review" | "fix_issue" | "bump", "number": N}`,
 /// `{"kind": "investigate", "config": InvestigateConfig}`.
@@ -334,11 +316,9 @@ public enum CommsEffect: Equatable, Sendable {
     case none
     /// Move whatever is already queued for #N to the front of its band; start nothing.
     case bump(Int)
-    /// Queue a requested review of open PR N, at the front of its band.
+    /// `review` and `fixIssue` queue at the front of their band.
     case review(Int)
-    /// Queue a requested fix of open issue N, at the front of its band.
     case fixIssue(Int)
-    /// Queue an investigation agent.
     case investigate(InvestigateConfig)
 }
 
@@ -381,7 +361,7 @@ extension CommsEffect: Codable {
     }
 }
 
-/// The one mapping from a triage answer to what a front-end does about it.
+/// The one mapping from a triage answer to an effect.
 public enum CommsPlan {
     public static func effect(for decision: CommsDecision, message: CommsMessage,
                               toggles: CommsToggles, settings: CommsSettings = CommsSettings(),
@@ -399,13 +379,11 @@ public enum CommsPlan {
     }
 }
 
-/// Slack timestamps as numbers. A `ts` is `<seconds>.<microseconds>` — six fraction
-/// digits — and unique per channel, so its digits are a number that orders messages
-/// and names an investigation in the queue's numbering space.
+/// A `ts` is `<seconds>.<microseconds>` and unique per channel, so its digits order
+/// messages and number an investigation in the queue.
 public enum CommsTS {
-    /// `"1508284197.000015"` → `1508284197000015`; nil for anything that is not two runs
-    /// of digits around one dot. A fraction shorter than six digits is read as
-    /// microseconds padded on the right, a longer one cut to six.
+    /// `"1508284197.000015"` → `1508284197000015`; nil unless two runs of digits around one
+    /// dot. A short fraction is padded on the right to six digits, a long one cut to six.
     public static func number(_ ts: String) -> Int? {
         let parts = ts.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty,
@@ -428,11 +406,10 @@ public enum CommsTS {
         Int((date.timeIntervalSince1970 * 1_000_000).rounded(.down))
     }
 
-    /// The `after:` date for a search that must reach back to `watermark`. `after:` is
-    /// day-granular and exclusive, and Slack may read its date in the operator's own
-    /// timezone, so the date is the day before the watermark's day at UTC-12, the
-    /// westernmost offset: under any offset, the local midnight that ends that date is
-    /// at or before the watermark.
+    /// The `after:` date for a search reaching back to `watermark`. `after:` is
+    /// day-granular and exclusive, and Slack may read it in the operator's timezone, so
+    /// this is the day before the watermark's day at UTC-12, the westernmost offset:
+    /// under any offset, that date's local end is at or before the watermark.
     public static func afterDay(_ watermark: Int) -> String {
         let day = (watermark / 1_000_000 - 12 * 3_600) / 86_400 - 1
         let f = DateFormatter()
@@ -443,13 +420,12 @@ public enum CommsTS {
     }
 }
 
-/// One investigation: the config a queued `investigate` ask carries, and the prompt
-/// its agent is given (`assets/comms.json` → `investigate`).
+/// A queued `investigate` ask and its agent's prompt (`assets/comms.json` → `investigate`).
 ///
 /// JSON carries `"kind": "investigate"`, so the same object is a `build-prompt` payload
 /// and the Linux queue's `RequestedWork.config` as it stands.
 public struct InvestigateConfig: Codable, Equatable, Sendable {
-    /// The message's ts as a number (`CommsTS.number`): the ask's number in the queue.
+    /// `CommsTS.number` of the message's ts: the ask's number in the queue.
     public var number: Int
     public var messageID: String
     public var sender: String
@@ -478,8 +454,6 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
         self.repo = repo
     }
 
-    /// The investigation a triaged ping asks for; its report lands in `reportDir`
-    /// as `<number>.md`.
     public init(message: CommsMessage, decision: CommsDecision, settings: CommsSettings,
                 reportDir: URL) {
         let number = CommsTS.number(message.ts) ?? 0
@@ -490,8 +464,7 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
                   owner: settings.owner, repo: settings.repo)
     }
 
-    /// `kind` and `label` are written for the reader's sake and never read back: both
-    /// follow from the rest.
+    /// `kind` and `label` are written for readers and never decoded: both follow from the rest.
     private enum CodingKeys: String, CodingKey {
         case kind, number, messageID, sender, channel, permalink, text, summary,
              reportPath, owner, repo, label
@@ -525,8 +498,7 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
         try c.encode(label, forKey: .label)
     }
 
-    /// The queue row and activity-feed label: `Investigate · Slack · <sender> · <summary>`,
-    /// the summary cut to `labelSummaryMax` characters.
+    /// The queue row and activity-feed label.
     public var label: String {
         let cap = (try? CoreAssets.comms())?.labelSummaryMax ?? 48
         let s = summary.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -536,7 +508,7 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
 
     public func buildPrompt() -> String {
         guard let b = (try? CoreAssets.comms())?.investigate else { return "" }
-        // The sender and channel are named outside the fence, so they keep to one line.
+        // Sender and channel sit outside the fence, so they must stay on one line.
         let values = [
             "owner": owner, "repo": repo, "permalink": permalink, "reportPath": reportPath,
             "sender": CommsText.oneLine(CommsText.defang(sender)),
@@ -551,16 +523,16 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
 
 /// Text handling shared by both prompts that quote a Slack message.
 public enum CommsText {
-    /// The words both prompts fence a message between (`BEGIN …` / `END …`).
+    /// Fence lines are `BEGIN <marker>` / `END <marker>`.
     public static let fenceMarker = "UNTRUSTED SLACK MESSAGE"
 
-    /// What every line inside a fence starts with, so no line of a message can be one of
-    /// the fence lines, however it is spelled.
+    /// Starts every line inside a fence, so no line of a message can be a fence line,
+    /// however it is spelled.
     public static let quoteMarker = "|"
 
-    /// `template` filled as `fill` fills it, with every line between a `BEGIN` and an
-    /// `END` fence line quoted: prefixed with `quoteMarker` and a space (an empty line
-    /// with the marker alone). Any line break in a value starts a quoted line.
+    /// `fill`, with every line between a `BEGIN` and an `END` fence line prefixed with
+    /// `quoteMarker` and a space (an empty line, the marker alone). Any line break in a
+    /// value starts a quoted line.
     public static func fillFenced(_ template: String, _ values: [String: String]) -> String {
         let begin = "BEGIN " + fenceMarker, end = "END " + fenceMarker
         var out: [String] = []
@@ -590,17 +562,15 @@ public enum CommsText {
             .joined(separator: "\n")
     }
 
-    /// `text` on one line: each run of line breaks becomes a space, for a value set
-    /// outside a fence.
+    /// For a value set outside a fence.
     public static func oneLine(_ text: String) -> String {
         text.split(whereSeparator: \.isNewline).joined(separator: " ")
     }
 
-    /// `text` with copies of the fence marker replaced: a best-effort second layer, since
-    /// the quoting in `fillFenced` is what keeps a message inside its fence. It catches
-    /// the marker's letters in order with only non-alphanumerics between them, in any
-    /// case, fullwidth, accented, or in the Cyrillic/Greek look-alikes `lookalikes`
-    /// lists; other look-alikes pass.
+    /// Replaces copies of the fence marker. Best-effort only: the quoting in `fillFenced`
+    /// is what holds the fence. Catches the marker's letters in order with only
+    /// non-alphanumerics between, in any case, fullwidth, accented, or as a `lookalikes`
+    /// letter; other look-alikes pass.
     public static func defang(_ text: String) -> String {
         let scalars = Array(text.unicodeScalars)
         // The letters and digits of `text`, folded, each with the scalar it came from.
@@ -663,9 +633,8 @@ public enum CommsText {
         return map
     }()
 
-    /// `template` with each `{name}` replaced by `values[name]`, in one pass: a value
-    /// is never scanned again, so a message that contains `{reportPath}` stays as typed
-    /// instead of being filled in. Unknown names are left as they are.
+    /// Each `{name}` replaced by `values[name]` in one pass: a value is never rescanned, so
+    /// a message containing `{reportPath}` stays as typed. Unknown names are left as is.
     public static func fill(_ template: String, _ values: [String: String]) -> String {
         var out = ""
         var rest = Substring(template)

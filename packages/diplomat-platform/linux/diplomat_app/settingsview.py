@@ -78,7 +78,7 @@ def _style_swatch(btn: QPushButton, hex_color: str) -> None:
 
 class SettingsView(QWidget):
     done = Signal()
-    # The Comms "Test" worker's answer: (identity dict or None, error text).
+    # The Comms "Test" answer: (identity dict or None, error text).
     _comms_tested = Signal(object, str)
 
     def __init__(self, store: Store) -> None:
@@ -998,7 +998,7 @@ class SettingsView(QWidget):
         self._set_comms_test_status("Asking Slack…", _GREY)
 
         def ask() -> None:
-            # Whatever happens, an answer: it is what re-enables the button.
+            # Always answer: the answer is what re-enables the button.
             try:
                 answer = comms.auth_test(token)
             except Exception as exc:  # noqa: BLE001

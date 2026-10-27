@@ -802,8 +802,7 @@ def queue_key(audit_action: str, number: int) -> str:
 # The verbs asked-for work is queued under. The first two are a sweep's — the same
 # ones the Review-PRs and Fix-issues spawns write to the activity feed, because each ask
 # is that spawn, split into one task per PR / per issue. The third is a Comms
-# investigation, asked for in Slack: numbered by the message's ts, so in a space of its
-# own, and about no PR.
+# investigation: numbered by the Slack message's ts, and about no PR.
 QUEUE_REVIEW_ACTION = "review"
 QUEUE_ISSUES_ACTION = "issues"
 QUEUE_INVESTIGATE_ACTION = "investigate"
@@ -838,9 +837,8 @@ def queue_band(key: str) -> int:
     asked for. Neither runs ahead of a monitor's find; a Review-PRs sweep of fifty
     drafts otherwise buries every review request behind it for a day.
 
-    An investigation comes after both: it is speculative — a triage's reading of a Slack
-    message, not an ask the operator made of a known PR or issue — but a person reported
-    something and is waiting on the answer, which a conflict on my own PR does not have.
+    An investigation comes after both, being a triage's reading of a Slack message, but
+    ahead of a conflict fix: a person is waiting on its answer.
 
     Resolving a conflict stays last: it is the one unit of work that another agent's
     run routinely makes unnecessary — a review-reply agent works the same branch and
@@ -881,8 +879,7 @@ def still_owed(audit_action: str, pr_number: int, conflicting: set[int],
     Only ever asked about a task whose number is a PR's. A Fix-issues ask the operator
     made is numbered in the other space entirely, and the caller stands it down rather
     than pricing issue #421 against the PRs closed this cycle. An investigation is
-    numbered by a Slack ts and is about no PR at all, so it stands here too, whatever
-    ``closed`` holds: no PR closing can answer it."""
+    numbered by a Slack ts and is about no PR, so it always stands."""
     if audit_action == QUEUE_INVESTIGATE_ACTION:
         return True
     if pr_number in closed:
@@ -918,10 +915,11 @@ def queue_order(offered: list[str], saved: list[str]) -> list[str]:
     reaches it and the mesh answers.)
 
     Requested reviews, then requested issue fixes, then investigations, then conflict
-    fixes fall to the back whatever order they were found in (:func:`queue_band`). The monitors find
-    their work mid-cycle — the conflict reconciler runs before the review-request fetch
-    even begins — so without the bands a poll's own sequence would decide, and a sweep
-    of fifty drafts offered first would hold up every review GitHub is waiting on."""
+    fixes fall to the back whatever order they were found in (:func:`queue_band`). The
+    monitors find their work mid-cycle — the conflict reconciler runs before the
+    review-request fetch even begins — so without the bands a poll's own sequence would
+    decide, and a sweep of fifty drafts offered first would hold up every review GitHub
+    is waiting on."""
     live = set(offered)
     out: list[str] = []
     seen: set[str] = set()
@@ -1055,9 +1053,8 @@ class RequestedWork:
         depth because that is the choice a sweep is worth re-reading later: the same PR
         queued from a `max` sweep and from a `quick` one are different jobs.
 
-        An investigation's label is the one ``diplomat-core comms-effect`` put in its
-        config (``InvestigateConfig.label``): its number is a Slack ts, which reads as
-        nothing on a row."""
+        An investigation's label comes from its config (``InvestigateConfig.label``):
+        its number is a Slack ts, which reads as nothing on a row."""
         if self.action == QUEUE_INVESTIGATE_ACTION:
             return str(self.config.get("label", ""))
         noun = "Issues" if self.action == QUEUE_ISSUES_ACTION else "Review"

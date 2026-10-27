@@ -439,18 +439,10 @@ def _mesh_fixture(store: Store) -> None:
 
 
 def _comms_fixture(store: Store, *, configured: bool) -> None:
-    """A synthetic Comms log so the ✉ screen can be eyeballed: four pings over the
-    last hour — a review ask that ran, an investigation whose report is written, a
-    bump that found nothing queued, and a chat message — two of them since the
-    screen was last opened.
-
-    Written as the ``events.jsonl`` lines the core and this front-end write, into a
-    scratch ``DIPLOMAT_COMMS_DIR``, and folded by the real ``diplomat-core
-    comms-feed``: the screen draws that fold, so seeding the Store instead would test
-    nothing the user will see. The token is a placeholder in the environment, or —
-    ``configured`` off — a scratch path with nothing in it, so the operator's real
-    token is never read.
-    """
+    """A synthetic Comms log, written into a scratch ``DIPLOMAT_COMMS_DIR`` and folded by
+    the real ``diplomat-core comms-feed``: the screen draws that fold, so seeding the
+    Store would test nothing the user sees. The token is a placeholder, or (``configured``
+    off) an empty scratch path, so the operator's real token is never read."""
     import json
     import tempfile
     from pathlib import Path
@@ -463,8 +455,8 @@ def _comms_fixture(store: Store, *, configured: bool) -> None:
 
     scratch = Path(tempfile.mkdtemp(prefix="diplomat-render-comms-"))
     os.environ["DIPLOMAT_COMMS_DIR"] = str(scratch / "comms")
-    # The fixture switches Comms on and moves `commsSeenAt`; neither may reach the
-    # operator's own settings, so the store is re-pointed at a scratch file first.
+    # The fixture switches Comms on and moves `commsSeenAt`, so the store is first
+    # re-pointed at scratch settings.
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(scratch))
     store._settings = app_settings()

@@ -207,14 +207,11 @@ COMMS_POLL_LOOKBACK_SECS = 3600
 
 
 def run_comms_poll() -> int:
-    """``DIPLOMAT_COMMS_POLL=1``: one real Slack tick, classifier included, printing
-    each new ping with its triage and the effect it would have. Nothing is queued.
+    """``DIPLOMAT_COMMS_POLL=1`` (twin of ``Dump.commsPoll``). Nothing is queued.
 
-    Unless ``DIPLOMAT_COMMS_DIR`` names a directory to tick, it ticks a scratch one
-    whose watermark is :data:`COMMS_POLL_LOOKBACK_SECS` ago with nothing seen, removed
-    afterwards (``Dump.commsPoll``): it triages what reached the operator in that time
-    whether or not Comms is on, and the live applet's own directory is untouched.
-    1 when there is no token or the tick failed."""
+    Unless ``DIPLOMAT_COMMS_DIR`` is set, it ticks a scratch dir whose watermark is
+    :data:`COMMS_POLL_LOOKBACK_SECS` ago, removed afterwards, so the live applet's own
+    directory is untouched. 1 when there is no token or the tick failed."""
     import json
 
     from diplomat_runtime import comms

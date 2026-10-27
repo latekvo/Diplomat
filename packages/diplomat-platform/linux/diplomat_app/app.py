@@ -140,9 +140,8 @@ class DiplomatApp:
         # First scan shortly after launch.
         QTimer.singleShot(5000, self.store.run_apiwatch_poll_async)
 
-        # Comms, the Slack watcher: one tick per period while it is switched on (the
-        # tick no-ops when it is off). The screen's rows are read once up front, so
-        # the ✉ count is right before the first tick lands.
+        # Comms: the tick no-ops while it is off. The rows load up front so the ✉ count
+        # is right before the first tick lands.
         self.comms_timer = QTimer()
         self.comms_timer.setInterval(int(comms.poll_secs() * 1000))
         self.comms_timer.timeout.connect(self.store.run_comms_poll_async)

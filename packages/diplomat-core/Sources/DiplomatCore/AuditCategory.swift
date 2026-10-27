@@ -29,7 +29,7 @@ public enum AuditCategory: String, CaseIterable, Sendable {
     case bans
     /// LAN mesh coordination: peers appearing/vanishing, duty takeovers, dispatches.
     case mesh
-    /// Comms, the Slack watcher: pings, what triage did about them, and its poll health.
+    /// The Slack watcher: pings, triage outcomes, poll health.
     case comms
     /// Everything else: device kills/repairs, allocator install, poll + spawn health.
     case system

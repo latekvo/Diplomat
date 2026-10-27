@@ -2445,7 +2445,7 @@ def test_requested_work_waits_behind_the_monitors_and_ahead_of_a_conflict_fix():
     assert (autofix.queue_band("review:2"), autofix.queue_band("issues:5"),
             autofix.queue_band("investigate:6"),
             autofix.queue_band("conflicts:1")) == (1, 2, 3, 4)
-    # An investigation is its own band: a drag into the issue band is refused.
+    # An investigation is its own band, so a drag into the issue band is refused.
     assert (autofix.queue_reorder(["issues:5", "investigate:6"], "investigate:6", "issues:5")
             == ["issues:5", "investigate:6"])
     # Review is its own band ahead of issues, so it drains first however the two were
@@ -2456,8 +2456,8 @@ def test_requested_work_waits_behind_the_monitors_and_ahead_of_a_conflict_fix():
 
 def test_still_owed_retires_only_what_this_poll_can_answer():
     """Twin of the smoke's stillOwed checks: a closed PR retires every PR verb, the two
-    fetch-backed verbs follow their fetch, and an investigation — about no PR, numbered
-    by a Slack ts — stands whatever closed, even a PR that happens to share its number."""
+    fetch-backed verbs follow their fetch, and an investigation (numbered by a Slack ts)
+    survives even a closed PR sharing its number."""
     owed = autofix.still_owed
     assert owed("conflicts", 8, {7}, {8}, set()) is False
     assert owed("conflicts", 7, {7}, set(), set()) is True
@@ -2470,8 +2470,8 @@ def test_still_owed_retires_only_what_this_poll_can_answer():
 
 
 def test_an_investigation_is_asked_for_work_with_the_label_the_core_gave_it():
-    """The Comms ask is a RequestedWork like a sweep's: cancellable, keyed by its verb,
-    and labelled by ``InvestigateConfig.label`` rather than as a review of a ts."""
+    """A Comms ask is a cancellable RequestedWork keyed by its verb and labelled by
+    ``InvestigateConfig.label``, not as a review of a ts."""
     config = {"kind": "investigate", "number": 1508284197000015,
               "label": "Investigate · Slack · alice · login page crashes"}
     work = autofix.RequestedWork(number=1508284197000015, url="https://x.slack.com/p1",

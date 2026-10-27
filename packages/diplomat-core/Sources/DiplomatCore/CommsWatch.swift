@@ -1,27 +1,21 @@
 import Foundation
 
-/// The triage call: one `claude -p` per message, sandboxed, answering a fixed schema.
+/// The triage call: one sandboxed `claude -p` per message, answering a fixed schema.
 ///
-/// The message is untrusted text written by somebody else, so the call is given
-/// nothing it could be talked into using. `--tools ""` removes the built-in tools, but
-/// on its own still loads every MCP server the operator has configured — a Slack one
-/// that can post among them — so `--strict-mcp-config` (with no config) drops those,
-/// `--disable-slash-commands` the commands, `--setting-sources ""` the settings that
-/// could add hooks or permissions back, and `--no-session-persistence` leaves no
-/// transcript. What is left answers through `StructuredOutput` and nothing else. The
-/// binary is run directly, never through an alias, and in the temp directory, so no
-/// project's CLAUDE.md is read either.
+/// The message is untrusted, so the call gets nothing it could be talked into using.
+/// `--tools ""` alone still loads the operator's MCP servers (a Slack one can post), hence
+/// `--strict-mcp-config` with no config; `--disable-slash-commands`, `--setting-sources ""`
+/// (no hooks or permissions added back) and `--no-session-persistence` close the rest. The
+/// binary runs directly (no alias) in the temp directory, so no CLAUDE.md is read.
 ///
-/// The prompt is split along the trust line: the instructions (`prompt`) are the
-/// argument, and everything taken from the message (`input`) arrives on stdin, fenced
-/// and quoted.
+/// The instructions (`prompt`) are the argument; everything from the message (`input`)
+/// arrives on stdin, fenced and quoted.
 public enum CommsClassifier {
-    /// What a decision's reason starts with when no answer came back at all — no
-    /// `claude`, a timeout, a crash, an error result. `CommsWatch.tick` reports those as
-    /// the tick's error, since every ping after them would be triaged the same way.
+    /// Starts the reason of a decision no answer came back for (no `claude`, a timeout, a
+    /// crash, an error result). `CommsWatch.tick` reports those as the tick's error, since
+    /// every later ping would fail the same way.
     public static let failurePrefix = "classifier failed: "
 
-    /// The instructions, with the repo and the operator filled in.
     public static func prompt(settings: CommsSettings) -> String {
         guard let c = (try? CoreAssets.comms())?.classifier else { return "" }
         return CommsText.fill(c.instructions, [
@@ -30,9 +24,8 @@ public enum CommsClassifier {
         ])
     }
 
-    /// The stdin block: the message and what is known about it, quoted between the fence
-    /// lines. The quoting holds the fence; `defang` only removes the marker spellings it
-    /// knows.
+    /// The stdin block, quoted between the fence lines. The quoting holds the fence;
+    /// `defang` only removes the marker spellings it knows.
     public static func input(for message: CommsMessage, settings: CommsSettings) -> String {
         guard let c = (try? CoreAssets.comms())?.classifier else { return "" }
         let reasons = message.reasons.map { r -> String in
@@ -51,10 +44,8 @@ public enum CommsClassifier {
         ])
     }
 
-    /// The `--json-schema` argument (`comms.json` → `classifier.schema`).
     public static var schema: String { (try? CoreAssets.comms())?.schema ?? "" }
 
-    /// Everything after the binary: the sandbox flags, the schema, the prompt.
     public static func arguments(settings: CommsSettings) -> [String] {
         ["-p", "--model", settings.model,
          "--tools", "",
@@ -67,13 +58,11 @@ public enum CommsClassifier {
          prompt(settings: settings)]
     }
 
-    // Only a found binary is cached, so an install made after a miss is seen.
+    // Only hits are cached, so an install made after a miss is seen.
     private static let lock = NSLock()
     private static var cached: (path: String, at: Date)?
     private static let resolveTTL: TimeInterval = 60
 
-    /// The `claude` executable: `$DIPLOMAT_CLAUDE`, else where the user's login shell
-    /// locates it (`LoginShell.locate`, past any alias), else this process's `PATH`.
     public static func binary(now: Date = Date()) -> String? {
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_CLAUDE"], !env.isEmpty {
             return env
@@ -91,9 +80,8 @@ public enum CommsClassifier {
         return found
     }
 
-    /// Triage `message`. Never throws and never hangs past `timeout` (default
-    /// `classifierTimeoutSecs`): every way it can fail is a `none` whose reason starts
-    /// with `failurePrefix`.
+    /// Never hangs past `timeout`; every failure is a `none` whose reason starts with
+    /// `failurePrefix`.
     public static func run(_ message: CommsMessage, settings: CommsSettings,
                            binary: String? = nil, timeout: TimeInterval? = nil) -> CommsDecision {
         guard let model = try? CoreAssets.comms() else {
@@ -126,24 +114,21 @@ public enum CommsClassifier {
         case exited(Int32, Data, Data)
     }
 
-    /// This process's environment without `DIPLOMAT_SLACK_TOKEN`: what every child the
-    /// watcher starts gets (`claude`, the login shell that locates it, and curl, which
-    /// is handed the token on stdin).
+    /// Every child the watcher starts (`claude`, its login-shell lookup, curl) gets this;
+    /// curl is handed the token on stdin instead.
     static var childEnvironment: [String: String] {
         var env = ProcessInfo.processInfo.environment
         env["DIPLOMAT_SLACK_TOKEN"] = nil
         return env
     }
 
-    /// Run `exe` with `input` as stdin, waiting at most `timeout`; past it the process is
-    /// stopped as `GH.run` stops one (terminate, then SIGKILL). stdin, stdout and stderr
-    /// are files: a pipe the child fills blocks it, and corelibs only sees an exit once
-    /// every holder of the launch socketpair has gone, so the wait is on a semaphore the
-    /// termination handler signals rather than `waitUntilExit`.
+    /// Run `exe` for at most `timeout`, then stop it as `GH.run` does. All three streams
+    /// are files, since a pipe the child fills blocks it; the wait is a semaphore the
+    /// termination handler signals, since corelibs' `waitUntilExit` lasts until every
+    /// holder of the launch socketpair has gone.
     ///
-    /// Those files hold the Slack token (curl's config) and DM text, and off macOS the
-    /// temp dir is usually the shared /tmp, so they go in a fresh 0700 directory, each
-    /// one 0600 from the moment it exists.
+    /// The files hold the Slack token (curl's config) and DM text, and off macOS the temp
+    /// dir is usually the shared /tmp: a fresh 0700 directory, each file 0600 from creation.
     static func execute(_ exe: String, _ args: [String], input: Data,
                         timeout: TimeInterval) -> Outcome {
         let fm = FileManager.default
@@ -188,7 +173,6 @@ public enum CommsClassifier {
                        (try? Data(contentsOf: URL(fileURLWithPath: errPath))) ?? Data())
     }
 
-    /// A new file at `path`, 0600 from its creation, holding `contents`, open at its start.
     private static func privateFile(_ path: String, _ contents: Data) -> FileHandle? {
         let fd = open(path, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return nil }
@@ -203,26 +187,22 @@ public enum CommsClassifier {
     }
 }
 
-/// What the tick remembers between runs (`state.json` in `CommsLog.dir`).
 public struct CommsState: Codable, Equatable, Sendable {
-    /// The Slack ts at or below which nothing is looked at again. Nil until the first tick.
+    /// The Slack ts at or below which nothing is looked at again; nil before the first tick.
     public var watermark: String?
     /// Ids already turned into pings above the watermark, newest last.
     public var seen: [String]
-    /// `auth.test`'s answer on the last tick that reached Slack.
     public var me: CommsIdentity?
-    /// The failure the last tick ended on, nil after a good one: what makes an `error`
-    /// event fire on the transition only.
+    /// The last tick's failure, so an `error` event fires on the transition only.
     public var error: String?
-    /// The last triage's failure (`CommsClassifier.failurePrefix`), nil once one
-    /// succeeds: a tick with nothing to triage still ends on it.
+    /// The last triage's failure, kept until one succeeds: a tick with nothing to triage
+    /// still ends on it.
     public var classifierError: String?
-    /// Messages taken for triage and not yet handed to a front-end: the tick that took
-    /// them did not return, or its result did not reach the front-end. The next tick
-    /// hands them over first.
+    /// Taken for triage but not yet handed to a front-end; the next tick hands them over
+    /// first.
     public var undelivered: [CommsTickResult.Item]
-    /// Per query whose matches did not fit in `maxSearchPages`, the oldest match's ts
-    /// already reported, so one shortfall logs one `error` event.
+    /// Per query that overflowed `maxSearchPages`, the oldest ts already reported, so one
+    /// shortfall logs one `error` event.
     public var gaps: [String: String]
 
     public init(watermark: String? = nil, seen: [String] = [], me: CommsIdentity? = nil,
@@ -257,7 +237,7 @@ public struct CommsState: Codable, Equatable, Sendable {
         dir.appendingPathComponent("state.json")
     }
 
-    /// The saved state; a missing or unreadable file reads as a first tick.
+    /// A missing or unreadable file reads as a first tick.
     public static func load(in dir: URL = CommsLog.dir) -> CommsState {
         guard let data = try? Data(contentsOf: url(in: dir)),
               let state = try? JSONDecoder().decode(CommsState.self, from: data) else {
@@ -266,8 +246,8 @@ public struct CommsState: Codable, Equatable, Sendable {
         return state
     }
 
-    /// Written whole and atomically, so a crash mid-write leaves the previous state, and
-    /// 0600, since `undelivered` holds message text.
+    /// Atomic, so a crash mid-write leaves the previous state; 0600, since `undelivered`
+    /// holds message text.
     public func save(in dir: URL = CommsLog.dir) {
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys]
@@ -277,8 +257,6 @@ public struct CommsState: Codable, Equatable, Sendable {
     }
 }
 
-/// What one tick found: who the token is, the new pings with their triage, and what
-/// went wrong (Slack, or the classifier), if anything.
 public struct CommsTickResult: Codable, Equatable, Sendable {
     public struct Item: Codable, Equatable, Sendable {
         public var message: CommsMessage
@@ -293,8 +271,8 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
     public var me: CommsIdentity?
     public var items: [Item]
     public var error: String?
-    /// What this tick could not read (a catch-up past the horizon, a query paged out): the
-    /// tick still succeeded, so these go to the activity feed rather than the error.
+    /// What this tick could not read (a catch-up past the horizon, a query paged out). Not
+    /// a failure, so these go to the activity feed, not `error`.
     public var notices: [String]
 
     public init(me: CommsIdentity?, items: [Item], error: String?, notices: [String] = []) {
@@ -314,8 +292,8 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
         notices = try c.decodeIfPresent([String].self, forKey: .notices) ?? []
     }
 
-    /// `me` and `error` are written as `null` when absent, so a reader can tell a
-    /// clean tick from a truncated answer.
+    /// An absent `me` or `error` is written as `null`, so a reader can tell a clean tick
+    /// from a truncated answer.
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(me, forKey: .me)
@@ -325,52 +303,37 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
     }
 }
 
-/// One poll of Slack: search, filter, triage, log.
 public enum CommsWatch {
-    /// The decision a message carries when the tick that took it ended inside its triage.
     static let interrupted = "the tick ended before its triage answered, so it was not triaged"
 
-    /// The error a tick, or `diplomat-core comms-auth`, answers an empty token with.
     public static let noToken = "no Slack token is configured"
 
-    /// Run one tick against the state in `dir`.
+    /// The first tick only learns who the token is and sets the watermark to `now`, so
+    /// turning Comms on triages no backlog; a watermark older than `catchUpHours` likewise
+    /// moves up to `now` less `indexLagSecs`, and one `error` event names the skipped
+    /// stretch. Otherwise the `comms.json` queries run, matches at or below the watermark
+    /// or already `seen` drop, and the oldest `maxPerTick` are triaged. A query overflowing
+    /// `maxSearchPages` is read newest first, and one `error` event names what went unread.
     ///
-    /// The first tick only learns who the token is and sets the watermark to `now`: an
-    /// operator turning Comms on is not asked to triage a backlog. Nor is one turning it
-    /// back on: a watermark more than `catchUpHours` old moves up to `now` less
-    /// `indexLagSecs`, and one `error` event names the stretch that was not triaged.
-    /// Every other tick runs the `comms.json` queries from `CommsTS.afterDay`, keeps the
-    /// matches `CommsMatch.message` turns into pings, drops those at or below the
-    /// watermark or already `seen`, and triages the oldest `maxPerTick` of the rest. A
-    /// query with more matches above the watermark than `maxSearchPages` pages hold is
-    /// read newest first as far as they go, and one `error` event names the stretch
-    /// below that went unread.
+    /// Each message is saved as taken before its triage runs, so a tick that never returns
+    /// hands it over on the next one (triaged, or as an interrupted `none`) and never
+    /// triages it twice. `deliver` sees the result before anything is logged or let go; a
+    /// front-end in another process (`comms-tick`) answers false when the result did not
+    /// reach it, and the messages wait for the next tick the same way.
     ///
-    /// A triaged message is handed over in the result and logged then, as a `ping` and
-    /// its `decision` (`CommsDecision.checked` against the message). It is saved as
-    /// taken before its triage runs, so a tick that never returns hands it over on the
-    /// next one, as triaged or as an interrupted `none`, and never triages it twice.
-    /// `deliver` is given the result before anything is logged or let go: a front-end in
-    /// another process (`diplomat-core comms-tick`) answers false when the result could
-    /// not reach it, and the messages wait for the next tick the same way.
+    /// The watermark trails `now` by `indexLagSecs` because Slack's search index can return
+    /// a message well after it was posted; `seen` stops one in that window being triaged
+    /// twice. With pings left over past `maxPerTick`, it stops short of the first one.
     ///
-    /// The watermark trails `now` by `indexLagSecs`, because Slack's search index can
-    /// return a message well after it was posted; `seen` is what keeps a message inside
-    /// that window from being triaged twice. With more pings waiting than `maxPerTick`,
-    /// it stops short of the first one left over, so the next tick picks up there.
-    ///
-    /// Slack failing (no token, a bad one, a missing scope, a rate limit) leaves the
-    /// watermark where it was and is the result's `error`. So is the last triage failing
-    /// (`CommsClassifier.failurePrefix`), on every tick until a triage succeeds. An
-    /// `error` event is logged only on the tick that goes from working to failing.
+    /// A Slack failure leaves the watermark in place and is the result's `error`; so is the
+    /// last triage's failure, until one succeeds. An `error` event is logged only on the
+    /// tick that goes from working to failing.
     public static func tick(token: String, settings: CommsSettings, now: Date = Date(),
                             dir: URL = CommsLog.dir, api: SlackAPI? = nil,
                             deliver: (CommsTickResult) -> Bool = { _ in true },
                             classify: (CommsMessage) -> CommsDecision) -> CommsTickResult {
         var state = CommsState.load(in: dir)
 
-        /// Hand over and log what was triaged, and save the state with how this tick
-        /// ended, logging an `error` on the transition.
         var notices: [String] = []
         func notice(_ text: String) {
             CommsLog.append(CommsEvent(kind: .error, id: "", detail: text), in: dir)
@@ -404,8 +367,8 @@ public enum CommsWatch {
         let api = api ?? SlackAPI(token: token)
         let me: CommsIdentity
         do {
-            // Asked every tick rather than cached: a swapped token must not leave the
-            // previous owner's id deciding which messages are "my own".
+            // Not cached: a swapped token must not leave the previous owner's id deciding
+            // which messages are "my own".
             me = try api.authTest()
             state.me = me
         } catch {
@@ -427,7 +390,6 @@ public enum CommsWatch {
         let queries = assets.queries
 
         let after = CommsTS.afterDay(watermark)
-        // Each query with the name an `error` event about it calls its matches by.
         var searches = [
             ("DMs", CommsText.fill(queries.dm, ["after": after])),
             ("mentions", CommsText.fill(queries.mention, ["after": after, "user": me.userID])),
@@ -490,10 +452,9 @@ public enum CommsWatch {
         CommsLog.isoString(Date(timeIntervalSince1970: TimeInterval(ts / 1_000_000)))
     }
 
-    /// Every match of `query`, newest first, into `found`: pages until one reaches back
-    /// to the watermark, comes back short, or is the last. Past `maxSearchPages` it
-    /// stops, and returns the oldest match read: everything below it and above the
-    /// watermark went unread.
+    /// Pages until one reaches the watermark, comes back short, or is the last. Stopped by
+    /// `maxSearchPages`, it returns the oldest ts read: below it, to the watermark, went
+    /// unread.
     private static func collect(_ query: String, above watermark: Int,
                                 into found: inout [String: SlackMatch], api: SlackAPI,
                                 assets: CoreAssets.CommsModel) throws -> Int? {

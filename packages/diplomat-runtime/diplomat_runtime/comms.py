@@ -1,13 +1,10 @@
 """Comms, the Slack watcher, as the Linux front-end reaches it.
 
-Everything Comms decides — the tick (search, filter, triage, log), the fold of its log
-into the screen's rows, and the plan a triaged ping turns into — is ``DiplomatCore``,
-reached through the ``diplomat-core`` CLI (``comms-tick``, ``comms-auth``,
-``comms-feed``, ``comms-effect``) the way :mod:`promptcore` reaches the prompt
-builders. What lives here is what the CLI cannot do for this process: reading the Slack
-token from where the operator keeps it, handing it to the children that ask Slack, and
-appending the front-end's own lines (``action``, ``started``, ``finished``) to the log
-the CLI folds.
+Everything Comms decides is ``DiplomatCore``, reached through the ``diplomat-core`` CLI
+(``comms-tick``, ``comms-auth``, ``comms-feed``, ``comms-effect``). What lives here is
+what the CLI cannot do for this process: reading the Slack token, handing it to the
+children that ask Slack, and appending the front-end's own lines (``action``,
+``started``, ``finished``) to the log the CLI folds.
 
 Stdlib-only, like the rest of the runtime.
 """
@@ -26,27 +23,25 @@ from pathlib import Path
 
 from . import appconfig, core, promptcore
 
-#: Where the Slack token is read from on Linux, by path only (``appconfig``): the token
-#: itself never enters the shared config file, which is world-readable and mesh-copied.
+#: The token is configured by path only (``appconfig``): the shared config file is
+#: world-readable and mesh-copied.
 DEFAULT_TOKEN_FILE = "~/.diplomat/slack-token"
-#: Overrides the file (tests, the headless poll), and is how the token reaches the
-#: ``comms-tick`` and ``comms-auth`` children: in their environment, which the core
-#: strips it from before it starts any process of its own.
+#: Overrides the file, and carries the token to the ``comms-tick`` and ``comms-auth``
+#: children; the core strips it before starting any process of its own.
 TOKEN_ENV = "DIPLOMAT_SLACK_TOKEN"
 
-#: The outcome a ping records once the run it took for its own turns out never to have
-#: started (``Store.commsNeverStartedOutcome`` on macOS): there is no run to finish.
+#: A ping's outcome when its run never started (``Store.commsNeverStartedOutcome`` on
+#: macOS).
 NEVER_STARTED = "its agent never started, so nothing ran"
 
 
 def never_started(item: dict) -> bool:
-    """Whether a folded ping's run never started (:data:`NEVER_STARTED`)."""
     return str(item.get("outcome") or "").startswith(NEVER_STARTED)
 
 
 def comms_dir() -> Path:
-    """``$DIPLOMAT_COMMS_DIR``, else ``~/.diplomat/comms`` — ``CommsLog.dir``'s twin,
-    so the lines written here land in the file the CLI folds."""
+    """Must match ``CommsLog.dir``: the lines written here land in the file the CLI
+    folds."""
     env = os.environ.get("DIPLOMAT_COMMS_DIR")
     return Path(env) if env else Path.home() / ".diplomat" / "comms"
 
@@ -63,23 +58,19 @@ def reports_dir() -> Path:
 
 
 def tunables() -> dict:
-    """The numbers the front-end paces itself by. The prompts, queries and schema in
-    the same file are the core's business and are not read here."""
     try:
         return core.comms()
     except core.CoreError:
         return {}
 
 
-#: The longest period ``DIPLOMAT_COMMS_SECS`` can set: a day, well inside the int32
-#: milliseconds of a ``QTimer`` interval.
+#: A day: well inside a ``QTimer`` interval's int32 milliseconds.
 MAX_POLL_SECS = 86400.0
 
 
 def poll_secs() -> float:
-    """The tick period: ``DIPLOMAT_COMMS_SECS``, else ``pollSecs``, floored at
-    ``minPollSecs`` — two searches plus one per keyword a tick, against Slack's Tier 2
-    budget of about twenty calls a minute — and capped at :data:`MAX_POLL_SECS`."""
+    """The ``minPollSecs`` floor keeps a tick's two searches plus one per keyword
+    inside Slack's Tier 2 budget of about twenty calls a minute."""
     t = tunables()
     default = float(t.get("pollSecs", 60))
     floor = float(t.get("minPollSecs", 20))
@@ -92,9 +83,8 @@ def poll_secs() -> float:
     return min(MAX_POLL_SECS, max(floor, secs))
 
 
-#: The core's own bounds that comms.json does not hold: the grace ``SlackAPI`` waits
-#: past a request's ``httpTimeoutSecs``, and ``LoginShell.timeout`` for finding
-#: ``claude``. Plus a margin for starting the process and writing the log and state.
+#: Core bounds comms.json does not hold: ``SlackAPI``'s grace past ``httpTimeoutSecs``
+#: and ``LoginShell.timeout`` for finding ``claude``; plus a margin for the rest.
 _HTTP_GRACE_SECS = 5
 _LOGIN_SHELL_SECS = 10
 _MARGIN_SECS = 30
@@ -105,18 +95,14 @@ def _http_call_secs() -> float:
 
 
 def keyword_count(settings: dict) -> int:
-    """How many keyword searches a tick runs: ``keywordsRaw`` split as
-    ``CommsSettings.keywordList`` splits it, on commas and new lines."""
+    """Split as ``CommsSettings.keywordList`` splits it."""
     parts = re.split(r"[,\r\n]", str(settings.get("keywordsRaw") or ""))
     return len({p.strip() for p in parts if p.strip()})
 
 
 def tick_timeout(keywords: int = 0) -> float:
-    """How long one ``comms-tick`` may take: the sum of the bounds the child holds
-    itself to — ``auth.test``, every page of every query (two plus one per keyword), a
-    login-shell lookup of ``claude`` and a classifier call per message it triages — so
-    it is never killed inside them. A killed tick's triaged messages wait for the next
-    tick to hand them over."""
+    """The sum of the bounds the ``comms-tick`` child holds itself to, so it is never
+    killed inside them."""
     t = tunables()
     calls = 1 + (2 + keywords) * int(t.get("maxSearchPages", 3))
     triage = float(t.get("maxPerTick", 8)) * float(t.get("classifierTimeoutSecs", 60))
@@ -127,18 +113,14 @@ def tick_timeout(keywords: int = 0) -> float:
 
 
 def token_file() -> str:
-    """The configured token path, ``~`` expanded."""
     raw = appconfig.get(appconfig.SLACK_TOKEN_FILE).strip() or DEFAULT_TOKEN_FILE
     return os.path.expanduser(raw)
 
 
 def read_token() -> tuple[str, str]:
-    """``(token, "")``, or ``("", why there is none)``.
-
-    ``DIPLOMAT_SLACK_TOKEN`` wins. Otherwise the file is read under the rules the agent
-    token's is (``review.check_token``): an absolute path, a regular file — a FIFO
-    with no writer would block this read and ``/dev/zero`` never end it — holding
-    something other than whitespace."""
+    """``(token, "")``, or ``("", why there is none)``. The file is held to
+    ``review.check_token``'s rules: absolute, a regular file (a writerless FIFO would
+    block the read, ``/dev/zero`` never end it), not blank."""
     env = os.environ.get(TOKEN_ENV, "").strip()
     if env:
         return env, ""
@@ -164,7 +146,7 @@ def read_token() -> tuple[str, str]:
 
 def _core(args: list[str], *, stdin: object = None, env: dict | None = None,
           timeout: float = 30) -> str:
-    """One ``diplomat-core`` run; stdout, or :class:`RuntimeError` saying why not."""
+    """stdout, or :class:`RuntimeError` saying why not."""
     full = dict(os.environ)
     full.setdefault("DIPLOMAT_CORE", str(core.assets_dir()))
     # The token reaches a child only when the caller hands it one.
@@ -188,13 +170,8 @@ def _core(args: list[str], *, stdin: object = None, env: dict | None = None,
 
 
 def tick(settings: dict, token: str) -> dict:
-    """One watcher tick: ``{"me", "items": [{"message", "decision"}], "error",
-    "notices"}``, ``notices`` being what the tick has to tell the operator that is not
-    an error (a catch-up past ``catchUpHours``, a query cut short by
-    ``maxSearchPages``).
-
-    Never raises: a CLI that cannot be run or answers nonsense is the tick's ``error``,
-    the same as Slack refusing the token."""
+    """``{"me", "items": [{"message", "decision"}], "error", "notices"}``. Never
+    raises: a CLI failure is the tick's ``error``."""
     try:
         out = _core(["comms-tick"], stdin=settings, env={TOKEN_ENV: token},
                     timeout=tick_timeout(keyword_count(settings)))
@@ -246,12 +223,9 @@ def parse_iso(s: str) -> datetime | None:
 def append_event(kind: str, message_id: str, *, outcome: str | None = None,
                  queue_key: str | None = None, label: str | None = None,
                  when: datetime | None = None) -> bool:
-    """Append one ``CommsEvent`` line (``action`` / ``started`` / ``finished``).
-
-    Under the exclusive ``flock`` on ``events.lock`` that every append and rotation
-    of the log holds, so the core's rotation (read, rewrite, rename) cannot drop it;
-    with the keys the Swift encoder writes, absent ones left out. The log holds
-    private DMs: the directory is created 0700 and the file 0600."""
+    """Under the ``flock`` on ``events.lock`` the core's rotation also holds, so a
+    rotation cannot drop the line. Keys as the Swift encoder writes them, absent ones
+    left out. The log holds private DMs, hence 0700 / 0600."""
     event: dict = {"at": iso(when), "id": message_id, "kind": kind}
     if label is not None:
         event["label"] = label
@@ -281,10 +255,8 @@ def append_event(kind: str, message_id: str, *, outcome: str | None = None,
 
 
 def auth_test(token: str) -> tuple[dict | None, str]:
-    """Who ``token`` is: ``({userID, teamID, handle, team}, "")`` or ``(None, why
-    not)``. Asked through ``diplomat-core comms-auth``, Slack's ``auth.test`` over the
-    transport the tick uses, so a token that passes here is one the tick can poll with
-    and a refusal reads as the tick's error would. Never raises."""
+    """``({userID, teamID, handle, team}, "")`` or ``(None, why not)``. Over the
+    tick's own transport, so a pass here means the tick can poll. Never raises."""
     if not token:
         return None, "no Slack token is configured"
     try:

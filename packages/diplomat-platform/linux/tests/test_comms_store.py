@@ -1,13 +1,9 @@
-"""Comms in the Linux Store: its settings, the Slack token, and what a triaged ping
-does to the queue.
+"""Comms in the Linux Store: settings, the Slack token, and what a triaged ping does to
+the queue.
 
-The tick itself is the core's (``test_comms_core.py`` drives it through the binary);
-here its answer is a literal, so what is under test is the front-end's half: the
-plan comes from the real ``diplomat-core comms-effect``, and the Store acts on it
-through the same ``_request`` a sweep uses, the queue bands, the ban list and the
-events log the real ``comms-feed`` folds.
-
-The store fixture and the spawn recorder come from ``test_autofix``.
+The tick is the core's (``test_comms_core.py``); here its answer is a literal. The plan
+comes from the real ``diplomat-core comms-effect``, and the Store acts on it through a
+sweep's ``_request``, the queue bands, the ban list and the log ``comms-feed`` folds.
 """
 
 from __future__ import annotations
@@ -69,7 +65,7 @@ def _ask(n: int, action: str, number: int) -> tuple[dict, dict]:
 
 
 def _events() -> list[dict]:
-    """The lines this front-end wrote: the core's own ping/decision lines left out."""
+    """This front-end's lines, without the core's ping/decision ones."""
     path = comms.events_path()
     if not path.exists():
         return []
@@ -187,8 +183,6 @@ def test_the_tick_is_handed_the_settings_and_the_token(comms_store, monkeypatch)
 
 
 def test_the_token_reaches_the_tick_child_alone(monkeypatch):
-    """The token goes into the ``comms-tick`` child's environment, and no other
-    ``diplomat-core`` run inherits it from this process."""
     seen = []
 
     class Done:
@@ -655,9 +649,8 @@ def test_a_fix_of_a_pull_requests_number_queues_nothing(comms_store, monkeypatch
 
 @needs_core
 def test_a_gh_that_could_not_ask_is_not_read_as_no_such_number(comms_store, monkeypatch):
-    """A PR opened since the last fetch, asked about while gh is down, logged out or
-    cannot see the repo: GitHub never answered, so the ping must not say the PR does
-    not exist."""
+    """gh down, logged out or blind to the repo: GitHub never answered, so the ping must
+    not say the PR does not exist."""
     unauthed = ("gh exited 1: HTTP 401: Bad credentials (https://api.github.com/graphql)\n"
                 "Try authenticating with:  gh auth login -h github.com")
     no_repo = ("gh exited 1: GraphQL: Could not resolve to a Repository with the name "
@@ -683,10 +676,9 @@ def test_a_gh_that_could_not_ask_is_not_read_as_no_such_number(comms_store, monk
 
 @needs_core
 def test_a_feed_read_before_a_pings_line_never_lands_after_it(comms_store, monkeypatch):
-    """The agents' settle re-reads the log on a worker thread. A read taken before a
-    ping's `action` line that assigned its fold after the Qt thread's own refresh
-    would leave the ping owning nothing, and its review's dispatch would record no
-    start for it."""
+    """The agents' settle re-reads the log on a worker thread: a read taken before a
+    ping's `action` line but stored after the Qt thread's own refresh would leave the
+    ping owning nothing, and its review's dispatch would record no start."""
     _spawn_recorder(monkeypatch)
     real_feed = comms.feed
     read_early, go = threading.Event(), threading.Event()
@@ -818,8 +810,8 @@ def test_work_a_peer_already_runs_has_started_too(comms_store, monkeypatch):
 
 @needs_core
 def test_every_asker_is_owned_before_the_feed_is_read_back(comms_store, monkeypatch):
-    """Until the folded log is read back the asks this applet just made are known
-    only from making them — and a log the core cannot fold leaves it that way."""
+    """Until the log is read back, this applet knows its fresh asks only from making
+    them, and a log the core cannot fold leaves it that way."""
     _spawn_recorder(monkeypatch)
 
     def unreadable(limit=200):
@@ -994,9 +986,9 @@ def test_a_review_the_switched_off_monitor_holds_is_asked_for_in_its_own_right(
 
 @needs_core
 def test_a_run_whose_terminal_never_ran_it_is_not_done(comms_store, monkeypatch):
-    """This spawn does not wait for the pid file (it is the GUI thread's), so a
-    `spawned` dispatch is not yet a start: the tick finds the command never ran, past
-    the grace, and resolves the run FAILED. That is no work done."""
+    """This spawn does not wait for the pid file (it is the GUI thread's), so `spawned`
+    is not yet a start: past the grace the tick finds the command never ran and
+    resolves the run FAILED, which is no work done."""
     from dataclasses import replace
 
     from diplomat_app import commsview
@@ -1107,9 +1099,9 @@ def test_a_catch_up_reaches_the_activity_feed_as_a_notice(
 
 
 def test_the_dry_run_ticks_the_last_hour_in_a_scratch_dir(tmp_path, monkeypatch):
-    """``DIPLOMAT_COMMS_POLL=1`` ticks a fresh scratch dir whose watermark is an hour
-    back with nothing seen, as the gh login, whatever the live dir holds; the live dir
-    is left as it was and the scratch one is gone afterwards."""
+    """``DIPLOMAT_COMMS_POLL=1`` ticks, as the gh login, a fresh scratch dir whose
+    watermark is an hour back with nothing seen, whatever the live dir holds; the live
+    dir is left as it was and the scratch one removed."""
     from diplomat_app import selftest
 
     home = tmp_path / "home"
@@ -1174,9 +1166,8 @@ def test_a_dry_run_into_a_named_dir_ticks_that_dir(monkeypatch):
 
 @pytest.fixture
 def fake_core(tmp_path, monkeypatch):
-    """A ``diplomat-core`` that answers ``comms-auth`` with what the test puts in
-    ``answer`` (and exits with ``status``), recording its argv, the token in its
-    environment and its stdin."""
+    """A ``diplomat-core`` that answers any subcommand with ``answer`` (exiting
+    ``status``), recording its argv, the token in its environment and its stdin."""
     record = tmp_path / "core-record"
     answer = tmp_path / "core-answer"
     status = tmp_path / "core-status"
@@ -1278,8 +1269,8 @@ def test_the_log_is_private_to_the_operator():
 
 
 def test_an_append_waits_for_the_log_lock():
-    """The lock every writer of the log takes, so the core's rotation — read, rewrite,
-    rename — cannot land between this line's open and its write."""
+    """Every log writer takes this lock, so the core's rotation (read, rewrite, rename)
+    cannot land between this line's open and its write."""
     comms.comms_dir().mkdir(parents=True)
     held = os.open(str(comms.comms_dir() / "events.lock"), os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(held, fcntl.LOCK_EX)

@@ -1,19 +1,9 @@
 """The Comms screen — what the Slack watcher has seen, and what came of it.
 
-One of the panel's screens (``_screens["comms"]``), opened from the ✉ header button.
-It draws the folded Comms log (``Store.comms_items``, from ``diplomat-core
-comms-feed``) as two lists:
-
-* **Pings**: every message that reached the operator, newest first — sender, where,
-  why it counted (DM / @mention / keyword), the text, what the triage decided and
-  what came of it, and a way back to it in Slack. The ones recorded since the screen
-  was last opened are highlighted.
-* **Jobs**: every ping that put work in the queue, and how far that work has got —
-  queued, running, done — with the investigation's report once it is written.
-
-With no token to watch with, the screen is instead what to create and where to put it.
-The macOS twin is ``CommsView.swift``; both draw the same fold, so they can only
-differ in how they look.
+Draws the folded Comms log (``Store.comms_items``, from ``diplomat-core comms-feed``)
+as **Pings** (every message that reached the operator, newest first) and **Jobs**
+(every ping that queued work, and how far it has got). The macOS twin
+``CommsView.swift`` draws the same fold.
 """
 
 from __future__ import annotations
@@ -40,7 +30,7 @@ from . import glyphs
 from .store import Store
 from .widgets import GlyphLabel, muted, tint_bg
 
-#: The Comms category's tint (assets/audit-categories.json → comms.colorHex).
+#: assets/audit-categories.json → comms.colorHex.
 TINT = "#007AFF"
 _RED, _GREEN, _ORANGE, _GREY = "#FF3B30", "#34C759", "#FF9500", glyphs.MUTED
 
@@ -48,9 +38,8 @@ SCOPES = "search:read"
 
 
 def token_command() -> str:
-    """What the empty state tells the operator to run to store the token where it is
-    read from: the umask creates the file 0600, and the token is read without echo,
-    so it is neither on screen nor in the shell's history."""
+    """The empty state's line for storing the token: the umask creates the file 0600,
+    and ``read -s`` keeps the token off screen and out of the shell's history."""
     path = comms.token_file()
     shown = (comms.DEFAULT_TOKEN_FILE if path == os.path.expanduser(comms.DEFAULT_TOKEN_FILE)
              else shlex.quote(path))
@@ -58,9 +47,8 @@ def token_command() -> str:
 
 
 def _card() -> tuple[QFrame, QVBoxLayout]:
-    """A grouped block on the card fill. Not ``widgets.card_host``: its unscoped
-    stylesheet paints the fill behind every label inside too, and these cards hold
-    rows with fills of their own."""
+    """Not ``widgets.card_host``: its unscoped stylesheet paints the fill behind every
+    label inside too, and these cards hold rows with fills of their own."""
     host = QFrame()
     host.setObjectName("commsCard")
     host.setStyleSheet("#commsCard { background-color: rgba(128,128,128,0.07);"
@@ -88,8 +76,7 @@ def _clear(layout) -> None:
 
 
 def _plain(text: str) -> QLabel:
-    """A label that never reads its text as markup: what these show comes from Slack,
-    from a model's triage of a Slack message, or from the work that triage named."""
+    """Never markup: the text comes from Slack, directly or through a triage of it."""
     label = QLabel(text)
     label.setTextFormat(Qt.TextFormat.PlainText)
     return label
@@ -110,7 +97,6 @@ def _clock(iso: str | None) -> str:
 
 
 def reason_chips(message: dict) -> list[str]:
-    """The ping's reasons as its chips read: ``DM``, ``@mention``, ``keyword:x``."""
     out = []
     for r in message.get("reasons") or []:
         if r == "keyword":
@@ -121,7 +107,6 @@ def reason_chips(message: dict) -> list[str]:
 
 
 def report_path(item: dict) -> Path | None:
-    """An investigation's report, once its agent has written it."""
     key = str(item.get("queueKey") or "")
     if not key.startswith("investigate:"):
         return None
@@ -130,9 +115,8 @@ def report_path(item: dict) -> Path | None:
 
 
 def job_status(item: dict, waiting: set[str]) -> str:
-    """``done`` / ``running`` / ``queued`` — or ``not queued`` for an ask that left
-    the queue without starting (cancelled, retired by its PR closing, or dispatched
-    to a terminal that never ran it)."""
+    """``not queued``: the ask left the queue without starting (cancelled, retired by
+    its PR closing, or dispatched to a terminal that never ran it)."""
     if item.get("finishedAt"):
         return "done"
     if item.get("startedAt") and not comms.never_started(item):
@@ -141,8 +125,6 @@ def job_status(item: dict, waiting: set[str]) -> str:
 
 
 class PingRow(QFrame):
-    """One ping: who, where, why, the text, the triage and its outcome."""
-
     def __init__(self, item: dict, *, unread: bool) -> None:
         super().__init__()
         self.setObjectName("pingRow")
@@ -178,8 +160,8 @@ class PingRow(QFrame):
         text = _plain(str(message.get("text", "")))
         text.setWordWrap(True)
         text.setStyleSheet("font-size: 10px;")
-        # Three lines, as the macOS row clamps it: a pasted stack trace must not push
-        # every other ping off the screen.
+        # Three lines, as on macOS: a pasted stack trace must not push every other ping
+        # off the screen.
         line = text.fontMetrics().lineSpacing()
         text.setMaximumHeight(line * 3 + 2)
         col.addWidget(text)
@@ -219,8 +201,6 @@ class PingRow(QFrame):
 
 
 class JobRow(QFrame):
-    """One piece of work a ping queued, and how far it has got."""
-
     _STATUS_TINT = {"done": _GREEN, "running": glyphs.AGENT_LIVE, "queued": _ORANGE,
                     "not queued": _GREY}
 
@@ -264,17 +244,14 @@ class JobRow(QFrame):
 
 
 class CommsView(QWidget):
-    """The Comms screen. Emits ``done`` when the user is finished, like the other
-    screens."""
-
     done = Signal()
 
     def __init__(self, store: Store) -> None:
         super().__init__()
         self.store = store
         self.setStyleSheet("CommsView { background: transparent; }")
-        #: `commsSeenAt` as it stood when the screen was opened: what decides which
-        #: rows are drawn as new, since opening the screen moves the setting itself.
+        #: `commsSeenAt` as of opening, which decides the rows drawn as new: opening
+        #: moves the setting itself.
         self._seen_before = store.comms_seen_at
 
         col = QVBoxLayout(self)
@@ -377,7 +354,6 @@ class CommsView(QWidget):
         return host
 
     def open(self) -> None:
-        """The screen is being shown: remember what was unread, then mark it read."""
         self._seen_before = self.store.comms_seen_at
         self.store.mark_comms_seen()
         self.rebuild()

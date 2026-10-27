@@ -282,15 +282,12 @@ private struct ContentHeightKey: PreferenceKey {
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
-    /// Which of the five screens the body shows: Actions ("main"), Comms, Mesh,
-    /// Telemetry or Settings.
     @State private var screen: PanelScreen
 
-    /// The panel's five interchangeable body screens.
+    /// The panel's body screens; `main` is Actions.
     enum PanelScreen { case main, comms, mesh, telemetry, settings }
 
-    /// `showSettings` / `showTelemetry` / `showComms` seed the initial screen — used by
-    /// the headless render to snapshot those screens in context. Defaults to the main view.
+    /// `showSettings` / `showTelemetry` / `showComms` seed the initial screen (render only).
     /// `seedPendingUnban` seeds the inline un-ban confirmation for a login (render only).
     /// `seedMutedAudit` pre-mutes Activity filter categories so the filtered feed can be
     /// snapshotted (render only).
@@ -415,7 +412,7 @@ struct ContentView: View {
         }
     }
 
-    /// The Comms screen's button, badged with the pings since it was last opened.
+    /// Badged with the pings since Comms was last opened.
     private var commsButton: some View {
         let open = screen == .comms
         let unread = store.commsUnread

@@ -12,9 +12,8 @@ advertises joining a mesh with "no Qt needed") and that outlives the applet, so 
 can neither read a Qt/UserDefaults store nor be handed the value in its
 environment at spawn time.
 
-Where Comms reads the operator's Slack token from sits beside the agent token's, and
-like it is only a locator: this file is world-readable and copied across the mesh, so
-the token itself never enters it.
+The Slack token's locator sits beside the agent token's and, like it, is only a
+locator: this file is world-readable and copied across the mesh.
 
 One more sits with them without needing to: how long a run may go on before the
 resolver calls it over, which belongs beside the cap it hands bays back to and is
@@ -64,8 +63,7 @@ AGENT_MODEL = "agentModel"
 #: enters this file — see :func:`review.token_export`.
 AGENT_TOKEN_KEYCHAIN_ITEM = "agentTokenKeychainItem"
 AGENT_TOKEN_FILE = "agentTokenFile"
-#: Where Comms reads the operator's Slack user token, by name only, as the agent token
-#: above: the macOS Keychain service, and on Linux a file path (``comms.read_token``).
+#: The Slack user token's locator, like the agent token's above (``comms.read_token``).
 SLACK_TOKEN_KEYCHAIN_ITEM = "slackTokenKeychainItem"
 SLACK_TOKEN_FILE = "slackTokenFile"
 #: The terminal this front-end's spawns resolve to, published for the device-allocator

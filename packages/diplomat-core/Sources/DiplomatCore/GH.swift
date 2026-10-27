@@ -110,7 +110,6 @@ public enum GH {
         return FileManager.default.isExecutableFile(atPath: path) ? path : nil
     }
 
-    /// Ask `proc` to stop, then kill it if it is still running five seconds later.
     static func stop(_ proc: Process) {
         proc.terminate()
         DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
