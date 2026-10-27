@@ -9,8 +9,8 @@ import DiplomatCore
 /// into queue work (or deliberately not), where in the queue it lands, what the log, the
 /// feed and the screen are told, and the `started`/`finished` lines a queued ask earns.
 /// The tick is composed here and handed to `applyComms`, the same function a live poll
-/// hands Slack's answer to, so no Slack call, no `claude` and no `gh` is made: GitHub's
-/// answer about each PR and issue is `Store.commsLookupOverride`.
+/// hands Slack's answer to, so no Slack call, no `claude` and no `gh` is made: what
+/// `gh pr view` / `gh issue view` print about each PR and issue is `Store.commsGHOverride`.
 ///
 /// Spawns nothing: nothing in `applyComms` dispatches, and the queue it fills is drained
 /// only by the poll a headless Store never starts. The feed, Comms' own log, the run book
@@ -52,13 +52,36 @@ enum CommsTest {
                                author: "mallory", isOpen: true, state: "OPEN"),
             90098: CommsTarget(number: 90098, url: "https://github.com/o/r/pull/90098",
                                author: "carol", isOpen: false, state: "MERGED"),
+            90040: CommsTarget(number: 90040, url: "https://github.com/o/r/pull/90040",
+                               author: "dave", isOpen: true, state: "OPEN"),
+            90041: CommsTarget(number: 90041, url: "https://github.com/o/r/pull/90041",
+                               author: "erin", isOpen: true, state: "OPEN"),
+            90050: CommsTarget(number: 90050, url: "https://github.com/o/r/issues/90050",
+                               author: "frank", isOpen: true, state: "OPEN"),
+            90060: CommsTarget(number: 90060, url: "https://github.com/o/r/pull/90060",
+                               author: "gina", isOpen: true, state: "OPEN"),
+            90070: CommsTarget(number: 90070, url: "https://github.com/o/r/pull/90070",
+                               author: "hal", isOpen: true, state: "OPEN"),
+            90071: CommsTarget(number: 90071, url: "https://github.com/o/r/pull/90071",
+                               author: "hal", isOpen: true, state: "OPEN"),
         ]
         var lookups: [Int] = []
-        Store.commsLookupOverride = { _, n in
+        // Run while a lookup is suspended, as a dispatch elsewhere on the main actor would.
+        var duringLookup: [Int: () -> Void] = [:]
+        // gh as it behaves: `pr view` of an issue's number fails, and `issue view` answers
+        // any number, a PR's included.
+        Store.commsGHOverride = { args in
+            guard args.count > 2, let n = Int(args[2]) else { return nil }
             lookups.append(n)
-            return targets[n]
+            duringLookup.removeValue(forKey: n)?()
+            guard let t = targets[n], args[0] == "issue" || t.url.contains("/pull/") else {
+                return nil
+            }
+            return try? JSONSerialization.data(withJSONObject: [
+                "number": n, "url": t.url, "author": ["login": t.author], "state": t.state,
+            ] as [String: Any])
         }
-        defer { Store.commsLookupOverride = nil }
+        defer { Store.commsGHOverride = nil }
 
         let store = Store()
         // A headless Store still READS the operator's settings and their stored asks:
@@ -66,6 +89,7 @@ enum CommsTest {
         store.requestedWork = []
         store.queuedTasks = []
         store.usernameOverride = "latekvo"
+        store.commsEnabled = true
         store.commsActRequests = true
         store.commsActBumps = true
         store.commsActInvestigations = true
@@ -287,7 +311,7 @@ enum CommsTest {
                 && starts.count == 2 && folded(askReview)?.startedAt != nil)
         check("…under the label the run wears", starts.allSatisfy { $0.label == entry.job.label })
 
-        store.noteCommsRunsEnded()
+        store.noteCommsRuns()
         check("a run still in the queue has not finished", folded(askReview)?.finishedAt == nil)
         store.queuedTasks.removeAll { $0.id == "review:90010" }
         let record = AgentState.RunRecord(runID: "r1", dispatchedAt: Date().timeIntervalSince1970,
@@ -295,7 +319,7 @@ enum CommsTest {
                                           kind: "review", label: entry.job.label,
                                           source: AgentDispatchGate.Source.auto.rawValue)
         store.pinAgentRows([Store.AgentRow(record: record, state: .running, reason: "", window: nil)])
-        store.noteCommsRunsEnded()
+        store.noteCommsRuns()
         check("a run an agent row still wears has not finished", folded(askReview)?.finishedAt == nil)
 
         let quiet = AgentState.Evidence(processes: .present([:]), sentinels: .present([]),
@@ -311,6 +335,207 @@ enum CommsTest {
         store.publishForSelfTest(Store.AgentPass(tick: tick, windows: [:], attached: .present([])))
         check("…and a later publish records nothing more",
               CommsLog.read().filter { $0.kind == .finished }.count == 2)
+
+        // MARK: the same work, asked for twice
+        let whole = floor(Date().timeIntervalSince1970)   // the log keeps whole seconds
+        func run(_ id: String, _ pr: Int?, _ kind: String, _ label: String) -> Store.AgentRow {
+            Store.AgentRow(record: AgentState.RunRecord(
+                runID: id, dispatchedAt: whole - 5, prNumber: pr,
+                prURL: pr.map { "https://github.com/o/r/pull/\($0)" } ?? "", kind: kind,
+                label: label, source: AgentDispatchGate.Source.auto.rawValue),
+                state: .running, reason: "", window: nil)
+        }
+        func monitorFind(_ verb: String, _ n: Int, _ label: String) -> Store.QueuedAgentTask {
+            Store.QueuedAgentTask(
+                id: AgentTaskQueue.key(auditAction: verb, number: n),
+                job: Store.AgentJob(kind: "review", auditAction: verb, label: label, prompt: "",
+                                    prURL: "https://github.com/o/r/pull/\(n)", prNumber: n,
+                                    authorLogin: "dave", duty: "review", workKey: "",
+                                    counter: .reviewRequests),
+                attemptNumber: 1)
+        }
+        let reply = monitorFind("review-reply", 90042, "Review · #90042")
+        let requested = monitorFind("review-req", 90040, "Review-req · #90040 (@dave)")
+        store.queuedTasks = [reply, requested] + store.queuedTasks
+        let askTwin = item(.review, 90040)
+        await apply([askTwin])
+        check("a review the monitor has queued as requested of me is not queued again",
+              !ids().contains("review:90040")
+                && !store.requestedWork.contains { $0.key == "review:90040" })
+        check("…the ping takes the monitor's key and label",
+              folded(askTwin)?.queueKey == "review-req:90040"
+                && folded(askTwin)?.label == requested.job.label
+                && outcome(askTwin) == "already queued, at the front of its band")
+        check("…and moves it to the front of its band", band(0).first == "review-req:90040")
+
+        // The monitor dispatches its own finds, not through the asks' settle.
+        store.queuedTasks.removeAll { $0.id == "review-req:90040" }
+        let monitorRun = run("r2", 90040, "review", "Auto · Review-req · #90040 (@dave)")
+        store.pinAgentRows([monitorRun])
+        store.noteCommsRuns()
+        check("…and records its start once an agent row is doing it, under that row's label",
+              folded(askTwin)?.startedAt == Date(timeIntervalSince1970: whole - 5)
+                && folded(askTwin)?.label == monitorRun.record.label)
+
+        let reviewRun = run("r3", 90041, "review", "Auto · Review-req · #90041 (@erin)")
+        let fixRun = run("r4", nil, "issues", "Issues · #90050 · deep")
+        let otherFix = run("r5", nil, "issues", "Issues · #900501 · deep")
+        store.pinAgentRows([monitorRun, reviewRun, fixRun, otherFix])
+        let askRunning = item(.review, 90041)
+        let askFixRunning = item(.fixIssue, 90050)
+        await apply([askRunning, askFixRunning])
+        check("a review of a PR an agent is already reviewing is not queued",
+              !ids().contains("review:90041") && outcome(askRunning) == "already running")
+        check("…nor a fix of an issue an agent is already fixing",
+              !ids().contains("issues:90050")
+                && !store.requestedWork.contains { $0.key == "issues:90050" }
+                && outcome(askFixRunning) == "already running")
+        check("…each recording that run's start, under the label its row wears",
+              folded(askRunning)?.startedAt == Date(timeIntervalSince1970: whole - 5)
+                && folded(askRunning)?.label == reviewRun.record.label
+                && folded(askFixRunning)?.label == fixRun.record.label)
+        store.publishForSelfTest(Store.AgentPass(tick: tick, windows: [:], attached: .present([])))
+        check("…and each its finish once that row is gone",
+              [askTwin, askRunning, askFixRunning].allSatisfy { folded($0)?.finishedAt != nil })
+
+        // MARK: an issue gate that a PR's number does not pass
+        lookups = []
+        let askPRAsIssue = item(.fixIssue, 90060)
+        await apply([askPRAsIssue])
+        check("a fix asked for by an open PR's number queues nothing",
+              lookups == [90060] && !ids().contains("issues:90060")
+                && outcome(askPRAsIssue) == "no issue #90060 in this repo, so nothing was queued")
+
+        // MARK: a dispatch while the tick is still being applied
+        let first = item(.review, 90070)
+        let second = item(.review, 90071)
+        duringLookup[90071] = {
+            guard let e = store.queuedTasks.first(where: { $0.id == "review:90070" }) else { return }
+            store.commsSettled(e, .spawned(terminal: "iterm"))
+        }
+        await apply([first, second])
+        check("an ask dispatched during a later ping's lookup records its start",
+              folded(first)?.startedAt != nil && folded(second)?.startedAt == nil)
+
+        // MARK: switched off mid-tick
+        store.commsEnabled = false
+        lookups = []
+        let beforeOff = ids()
+        let afterOff = item(.review, 90010)
+        await apply([afterOff])
+        check("a tick landing after Comms was switched off acts on nothing",
+              ids() == beforeOff && lookups.isEmpty
+                && outcome(afterOff) == "Comms was switched off, so ping only")
+        store.commsEnabled = true
+
+        // MARK: the poll period
+        let model = try? CoreAssets.comms()
+        func period(_ value: String) -> TimeInterval {
+            setenv("DIPLOMAT_COMMS_SECS", value, 1)
+            defer { unsetenv("DIPLOMAT_COMMS_SECS") }
+            return Store.commsPollInterval
+        }
+        check("DIPLOMAT_COMMS_SECS is held to a day", period("1e12") == 86_400)
+        check("…a value that is no finite number is ignored",
+              [period("inf"), period("nan")].allSatisfy { $0 == Double(model?.pollSecs ?? 60) })
+        check("…and the floor still holds", period("1") == Double(model?.minPollSecs ?? 20))
+
+        // MARK: the Settings pill
+        let longError = "Slack rejected the token (invalid_auth): sign in again and store a new one"
+        check("the Settings pill reads the last error, cut to fit",
+              SettingsView.commsErrorPill("invalid_auth") == "invalid_auth"
+                && SettingsView.commsErrorPill(longError) == Store.snippet(longError, max: 48))
+
+        // MARK: refreshing from the log
+        let events = CommsLog.eventsURL()
+        guard let mark = store.commsLog.mark,
+              let original = try? Data(contentsOf: events),
+              let at = original.range(of: Data("\"outcome\":\"queued,".utf8)) else {
+            check("the log holds a queued ask to rewrite", false)
+            print(pass ? "COMMS TEST OK" : "COMMS TEST FAILED")
+            return pass
+        }
+        // The same bytes, one word changed, written in place under the old mtime: a
+        // refresh that reads only a changed file cannot see it.
+        func rewrite(_ word: String, mtime: CommsLogReader.Time) {
+            var data = original
+            data.replaceSubrange(at, with: Data("\"outcome\":\"\(word),".utf8))
+            if let h = try? FileHandle(forWritingTo: events) {
+                h.write(data)
+                try? h.close()
+            }
+            var times = [timespec(tv_sec: mtime.sec, tv_nsec: mtime.nsec),
+                         timespec(tv_sec: mtime.sec, tv_nsec: mtime.nsec)]
+            _ = utimensat(AT_FDCWD, events.path, &times, 0)
+        }
+        rewrite("QUEUED", mtime: mark.mtime)
+        store.refreshComms()
+        check("a refresh of a log whose inode, size and mtime are unchanged reads nothing",
+              folded(askReview)?.outcome == "queued, at the front of its band")
+        rewrite("QUEUED", mtime: CommsLogReader.Time(sec: mark.mtime.sec + 1, nsec: 0))
+        store.refreshComms()
+        check("…and a new mtime on the same size is read again",
+              folded(askReview)?.outcome == "QUEUED, at the front of its band")
+
+        // A long log, near the size rotation keeps it under.
+        let big = scratch.appendingPathComponent("big")
+        let bigEvents = CommsLog.eventsURL(in: big)
+        var n = 0
+        let filler = String(repeating: "the build on the release branch fails again ", count: 5)
+        while (CommsLogReader.stamp(bigEvents)?.size ?? 0) < 1_600_000 {
+            n += 1
+            let it = item(.review, 91000 + n, summary: "Review it", text: "\(filler) #\(91000 + n)")
+            CommsLog.append(CommsEvent(kind: .ping, id: it.message.id, message: it.message), in: big)
+            CommsLog.append(CommsEvent(kind: .decision, id: it.message.id, decision: it.decision),
+                            in: big)
+            CommsLog.append(CommsEvent(kind: .action, id: it.message.id, outcome: "queued",
+                                       queueKey: "review:\(91000 + n)", label: "Review · #\(91000 + n)"),
+                            in: big)
+        }
+        let bigSize = CommsLogReader.stamp(bigEvents)?.size ?? 0
+        setenv("DIPLOMAT_COMMS_DIR", big.path, 1)
+        func timed(_ body: () -> Void) -> Double {
+            let t = DispatchTime.now().uptimeNanoseconds
+            body()
+            return Double(DispatchTime.now().uptimeNanoseconds - t) / 1e6
+        }
+        var whole1: [CommsItem] = []
+        let wholeMs = timed { whole1 = CommsLog.fold(CommsLog.read()) }
+        var reading: Task<Void, Never>?
+        let handoffMs = timed { reading = store.refreshComms() }
+        check("a long log is read off the main actor", reading != nil)
+        let lastKey = "review:\(91000 + n)"
+        let lastEntry = Store.QueuedAgentTask(
+            id: lastKey,
+            job: Store.AgentJob(kind: "review", auditAction: "review", label: "Review · #\(91000 + n)",
+                                prompt: "", prURL: nil, prNumber: nil, authorLogin: nil,
+                                duty: "review", workKey: "", counter: nil),
+            attemptNumber: 1)
+        store.commsSettled(lastEntry, .spawned(terminal: "iterm"))
+        let t = DispatchTime.now().uptimeNanoseconds
+        await reading?.value
+        let backgroundMs = Double(DispatchTime.now().uptimeNanoseconds - t) / 1e6
+        // By ping and outcome: the settle below may already have added its start.
+        check("…and folds to what reading all of it does",
+              store.commsItems.map { [$0.message.id, $0.outcome ?? ""] }
+                == whole1.map { [$0.message.id, $0.outcome ?? ""] })
+        var settled = false
+        for _ in 0..<200 where !settled {
+            settled = store.commsItems.first { $0.queueKey == lastKey }?.startedAt != nil
+            if !settled { try? await Task.sleep(nanoseconds: 10_000_000) }
+        }
+        check("…a dispatch settled while it read records its start once the read lands", settled)
+        let quietMs = timed { store.refreshComms() }
+        let extra = item(.none, 0)
+        CommsLog.append(CommsEvent(kind: .ping, id: extra.message.id, message: extra.message))
+        let tailMs = timed { reading = store.refreshComms() }
+        check("…and one with a line more reads that line on the main actor",
+              reading == nil && store.commsItems.count == whole1.count + 1)
+        print(String(format: "     refresh of a %.2f MB log (%d pings): whole read+fold %.0f ms; "
+                     + "main actor %.1f ms to hand off, %.0f ms read off it; "
+                     + "unchanged %.2f ms; one new line %.1f ms",
+                     Double(bigSize) / 1e6, n, wholeMs, handoffMs, backgroundMs, quietMs, tailMs))
+        setenv("DIPLOMAT_COMMS_DIR", scratch.appendingPathComponent("comms").path, 1)
 
         print(pass ? "COMMS TEST OK" : "COMMS TEST FAILED")
         return pass

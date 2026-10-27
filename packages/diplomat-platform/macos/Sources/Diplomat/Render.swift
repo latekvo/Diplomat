@@ -186,7 +186,7 @@ enum Render {
             let _ = seedProcessesIfNeeded("procs", store: store)
             let _ = seedDeviceState(store)
             ContentView(showSettings: true)
-        case "settings", "settings-explain":
+        case "settings", "settings-explain", "settings-comms-error":
             // Seed an outstanding review count so the "2 owed" pill renders on the
             // review-requests row. No fixed height: the two-column form sizes to its
             // natural content (a fixed frame taller than the content centers it and
@@ -196,6 +196,8 @@ enum Render {
             // only state that draws the long-form paragraph under each row — the rest
             // of this file's rows are one line each and never exercise that layout.
             let _ = seedSettings(store, explain: w.hasSuffix("explain"))
+            // `-comms-error` draws the Comms card's pill over a failing poll.
+            let _ = w.hasSuffix("comms-error") ? seedCommsError(store) : false
             SettingsView(isPresented: .constant(true))
         case let m where m.hasPrefix("mesh"):
             // The ⬡ Mesh screen over a synthetic topology (the macOS analogue of the
@@ -435,6 +437,13 @@ enum Render {
                 "duty": pair.1, "pr": 900 + n])
         }
         store.refreshTelemetry()
+        return true
+    }
+
+    @MainActor
+    private static func seedCommsError(_ store: Store) -> Bool {
+        store.commsEnabled = true          // headless-guarded: persists nothing, polls nothing
+        store.commsError = "Slack rejected the token (invalid_auth): sign in again and store a new one"
         return true
     }
 
