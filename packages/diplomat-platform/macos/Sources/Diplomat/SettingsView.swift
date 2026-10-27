@@ -759,11 +759,15 @@ struct SettingsView: View {
         if !store.commsEnabled {
             return StatusPill(text: "off", tint: .secondary, symbol: "bolt.slash.fill")
         }
-        if store.commsError != nil {
-            return StatusPill(text: "error", tint: .orange, symbol: "exclamationmark.triangle.fill")
+        if let error = store.commsError {
+            return StatusPill(text: SettingsView.commsErrorPill(error), tint: .orange,
+                              symbol: "exclamationmark.triangle.fill")
         }
         return StatusPill(text: "watching", tint: .green, symbol: "bolt.fill")
     }
+
+    /// The pill's text while polls fail: the last error, cut to fit the card's header.
+    static func commsErrorPill(_ error: String) -> String { Store.snippet(error, max: 48) }
 
     private static let commsDetail = """
         Polls Slack's search with your user token: messages in your DMs, messages that \
@@ -781,7 +785,7 @@ struct SettingsView: View {
         The login-Keychain item the token is read from on each poll; only its name is \
         kept in ~/.diplomat/config.json. Store the token with \
         `security add-generic-password -a "$USER" -s diplomat-slack -w` (it prompts for \
-        it). The token needs the user scopes search:read and users:read.
+        it). The token needs the user scope search:read.
         """
 
     // MARK: Tool visibility

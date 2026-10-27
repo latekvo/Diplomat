@@ -31,17 +31,27 @@ enum CommsTargetKind { case pr, issue }
 extension Store {
     /// The tick period: `DIPLOMAT_COMMS_SECS`, else `comms.json`'s `pollSecs`, never
     /// under its `minPollSecs` — `search.messages` is Tier 2, and a tick is two searches
-    /// plus one per keyword.
+    /// plus one per keyword — nor over a day, past which the loop's nanosecond sleep
+    /// would overflow. A value that is not a finite number is ignored.
     static var commsPollInterval: TimeInterval {
         let model = try? CoreAssets.comms()
         let floor = Double(model?.minPollSecs ?? 20)
-        let secs = ProcessInfo.processInfo.environment["DIPLOMAT_COMMS_SECS"].flatMap(Double.init)
-        return max(floor, secs ?? Double(model?.pollSecs ?? 60))
+        let secs = ProcessInfo.processInfo.environment["DIPLOMAT_COMMS_SECS"]
+            .flatMap(Double.init).flatMap { $0.isFinite ? $0 : nil }
+        return min(max(floor, secs ?? Double(model?.pollSecs ?? 60)), commsMaxPollInterval)
     }
 
-    /// Stand in for GitHub in the Comms self-test, which must answer "is #N open"
-    /// without a `gh` call. Headless only.
-    static var commsLookupOverride: (@MainActor (CommsTargetKind, Int) async -> CommsTarget?)?
+    static let commsMaxPollInterval: TimeInterval = 86_400
+
+    /// Stand in for `gh` in the Comms self-test: handed the arguments of a `gh pr view` or
+    /// `gh issue view`, answers with what gh would print, or nil for a gh that failed.
+    /// Headless only.
+    static var commsGHOverride: (@MainActor ([String]) async -> Data?)?
+
+    /// The largest stretch of `events.jsonl` a refresh reads on the main actor. More than
+    /// that — the first read of a long log, or the one after a rotation — is read and
+    /// folded off it.
+    static let commsInlineReadBytes: UInt64 = 64 << 10
 
     /// What `CommsWatch.tick` is handed: the Settings fields, and the operator's login
     /// for the triage prompt.
@@ -63,9 +73,66 @@ extension Store {
         if commsUnread > 0 { commsSeenAt = Date() }
     }
 
-    func refreshComms() {
-        let next = CommsLog.fold(CommsLog.read())
-        if next != commsItems { commsItems = next }
+    /// Bring `commsItems` up to date with `events.jsonl`.
+    ///
+    /// The log only ever grows between rotations, so a refresh reads just the lines added
+    /// since the last one, and a file whose inode, size and modification time are all
+    /// unchanged is not read at all. A long read is done off the main actor and returned;
+    /// until it lands, further refreshes return it too, and it refreshes again on landing
+    /// for whatever was written meanwhile.
+    @discardableResult
+    func refreshComms() -> Task<Void, Never>? {
+        if let reading = commsLogRead { return reading }
+        let url = CommsLog.eventsURL()
+        guard let now = CommsLogReader.stamp(url) else {
+            commsLog = CommsLogCache()
+            if !commsItems.isEmpty { commsItems = [] }
+            return nil
+        }
+        let from: UInt64
+        if let mark = commsLog.mark, mark.inode == now.inode, now.size > mark.offset {
+            from = mark.offset
+        } else if let mark = commsLog.mark, mark.inode == now.inode,
+                  now.size == mark.offset, now.mtime == mark.mtime {
+            return nil
+        } else {
+            // First read, a rotation (a new inode), or a file that shrank or was
+            // rewritten in place.
+            from = 0
+        }
+        let base = from == 0 ? [] : commsLog.events
+        if now.size - from <= Store.commsInlineReadBytes {
+            if let read = CommsLogReader.read(url, from: from) {
+                absorbCommsLog(base + read.events, CommsLog.fold(base + read.events), read.mark)
+            }
+            return nil
+        }
+        let reading = Task { [weak self] in
+            let read = await Task.detached(priority: .utility) {
+                () -> ([CommsEvent], [CommsItem], CommsLogMark)? in
+                guard let read = CommsLogReader.read(url, from: from) else { return nil }
+                let all = base + read.events
+                return (all, CommsLog.fold(all), read.mark)
+            }.value
+            guard let self else { return }
+            self.commsLogRead = nil
+            if let read { self.absorbCommsLog(read.0, read.1, read.2) }
+            self.refreshComms()
+        }
+        commsLogRead = reading
+        return reading
+    }
+
+    private func absorbCommsLog(_ events: [CommsEvent], _ items: [CommsItem], _ mark: CommsLogMark) {
+        commsLog = CommsLogCache(events: events, mark: mark)
+        if items != commsItems { commsItems = items }
+    }
+
+    /// Append one of the app's own lines, and fold it in straight away: what decides
+    /// the next line (an owner's start, a run's end) reads `commsItems`.
+    func recordComms(_ events: [CommsEvent]) {
+        for e in events { CommsLog.append(e) }
+        refreshComms()
     }
 
     // MARK: the loop
@@ -143,6 +210,9 @@ extension Store {
     /// ping's effect in the order the tick triaged them. Not private: the Comms self-test
     /// hands it a tick result it composed, which is the whole of this file's behaviour
     /// short of Slack and `claude`.
+    ///
+    /// A tick the operator switched Comms off during still lands its pings, which the
+    /// tick has already logged, but acts on none of them and notifies nothing.
     func applyComms(_ result: CommsTickResult) async {
         if let me = result.me, me != commsIdentity { commsIdentity = me }
         noteCommsHealth(result.error)
@@ -150,14 +220,28 @@ extension Store {
         let settings = commsSettings
         let reports = CommsLog.reportsDir()
         for item in result.items {
-            let effect = CommsPlan.effect(for: item.decision, message: item.message,
-                                          toggles: toggles, settings: settings,
-                                          reportDir: reports)
-            let act = await commsAct(effect, item)
-            CommsLog.append(CommsEvent(kind: .action, id: item.message.id, outcome: act.outcome,
-                                       queueKey: act.queueKey, label: act.label))
+            let act: CommsActResult
+            if commsEnabled {
+                let effect = CommsPlan.effect(for: item.decision, message: item.message,
+                                              toggles: toggles, settings: settings,
+                                              reportDir: reports)
+                act = await commsAct(effect, item)
+            } else {
+                act = CommsActResult(verb: "comms-ping",
+                                     outcome: "Comms was switched off, so ping only",
+                                     feedLine: Store.pingLine(item.message))
+            }
+            var lines = [CommsEvent(kind: .action, id: item.message.id, outcome: act.outcome,
+                                    queueKey: act.queueKey, label: act.label)]
+            if let run = act.running {
+                lines.append(CommsEvent(at: Date(timeIntervalSince1970: run.dispatchedAt),
+                                        kind: .started, id: item.message.id, label: run.label))
+            }
+            // Folded before the next item's lookup suspends: a dispatch of this ask in
+            // that gap finds its owner here (`commsSettled`).
+            recordComms(lines)
             AuditLog.log("auto", act.verb, act.feedLine)
-            if commsNotify { CommsNotifier.post(item.message) }
+            if commsNotify && commsEnabled { CommsNotifier.post(item.message) }
         }
         if !result.items.isEmpty { refreshAudit() }
         refreshComms()
@@ -172,6 +256,12 @@ extension Store {
         var queueKey: String?
         var label: String?
         var feedLine: String
+        /// The agent already doing what the ping asked for, whose start the ping records.
+        var running: AgentState.RunRecord?
+    }
+
+    private static func pingLine(_ m: CommsMessage) -> String {
+        "\(m.place) from \(m.sender): \(Store.snippet(m.text))"
     }
 
     private func commsAct(_ effect: CommsEffect, _ item: CommsTickResult.Item) async -> CommsActResult {
@@ -181,7 +271,7 @@ extension Store {
         case .none:
             let off = Store.switchedOff(item.decision.action)
             return CommsActResult(verb: "comms-ping", outcome: off ?? "ping only",
-                                  feedLine: "\(m.place) from \(m.sender): \(Store.snippet(m.text))")
+                                  feedLine: Store.pingLine(m))
         case .review(let n):
             let found = await commsLookup(.pr, n)
             guard let pr = found, pr.isOpen else {
@@ -224,14 +314,72 @@ extension Store {
 
     /// Queue `ask`, and with `front` move it to the front of its band — where a person
     /// asking for it by name puts it, ahead of a sweep's fifty.
+    ///
+    /// Work that is already running, or already waiting under another key, is not asked
+    /// for twice: the ping takes that work's key and label instead, so its started and
+    /// finished follow the agent that does it.
     private func queue(_ ask: RequestedWork, verb: String, who: String,
                        front: Bool) -> CommsActResult {
+        if let row = commsRow(doing: ask.key) {
+            let outcome = "already running"
+            return CommsActResult(verb: verb, outcome: outcome, queueKey: ask.key,
+                                  label: row.record.label,
+                                  feedLine: "\(row.record.label) asked by \(who) — \(outcome)",
+                                  running: row.record)
+        }
+        let suffix = front ? ", at the front of its band" : ""
+        if let twin = (queuedTasks + startingTasks).first(where: {
+            Store.commsTwinKeys(ask.key).contains($0.id) }) {
+            if front { moveQueuedTaskToFront(twin.id) }
+            let outcome = "already queued" + suffix
+            return CommsActResult(verb: verb, outcome: outcome, queueKey: twin.id,
+                                  label: twin.job.label,
+                                  feedLine: "\(twin.job.label) asked by \(who) — \(outcome)")
+        }
         let fresh = requestOne(ask)
         if front { moveQueuedTaskToFront(ask.key) }
-        let outcome = (fresh ? "queued" : "already queued")
-            + (front ? ", at the front of its band" : "")
+        let outcome = (fresh ? "queued" : "already queued") + suffix
         return CommsActResult(verb: verb, outcome: outcome, queueKey: ask.key, label: ask.label,
                               feedLine: "\(ask.label) asked by \(who) — \(outcome)")
+    }
+
+    /// The keys a monitor queues the same work under as the ask `key`: a review requested
+    /// of me on GitHub is the review a Slack message asks for.
+    private static func commsTwinKeys(_ key: String) -> [String] {
+        guard let parts = commsKeyParts(key), parts.verb == AgentTaskQueue.reviewAction else {
+            return []
+        }
+        return [AgentTaskQueue.key(auditAction: reviewRequestAction, number: parts.number)]
+    }
+
+    private static let reviewRequestAction = "review-req"
+
+    private static func commsKeyParts(_ key: String) -> (verb: String, number: Int)? {
+        let parts = key.split(separator: ":", maxSplits: 1)
+        guard parts.count == 2, let n = Int(parts[1]) else { return nil }
+        return (String(parts[0]), n)
+    }
+
+    /// The agent row doing the work `key` names, if one is up: any review agent on that PR
+    /// (the dispatch gate treats every agent on a PR as that PR's), or a fix of that
+    /// issue, which is about no PR and is known by the label every issue fix wears
+    /// (`RequestedWork.label`, `IssueWizard`).
+    private func commsRow(doing key: String) -> AgentRow? {
+        guard let parts = Store.commsKeyParts(key) else { return nil }
+        let n = parts.number
+        switch parts.verb {
+        case AgentTaskQueue.reviewAction, Store.reviewRequestAction:
+            return agentRows.first {
+                $0.record.prNumber == n && $0.record.kind == AgentTaskQueue.reviewAction
+            }
+        case AgentTaskQueue.issuesAction:
+            return agentRows.first {
+                $0.record.kind == AgentTaskQueue.issuesAction
+                    && $0.record.label.contains("Issues · #\(n) · ")
+            }
+        default:
+            return nil
+        }
     }
 
     private func refused(_ verb: String, _ who: String, _ why: String) -> CommsActResult {
@@ -260,8 +408,10 @@ extension Store {
     /// The PR or issue `n`, open or not: the panel's own last fetch first, which lists
     /// open work only, then `gh` for what it does not hold — an issue a filtered list
     /// left out, a PR opened since the last refresh, or one already closed.
+    ///
+    /// `gh issue view` answers a PR's number with that PR, so an answer is an issue only
+    /// when its url says so; a PR's number is no issue.
     private func commsLookup(_ kind: CommsTargetKind, _ n: Int) async -> CommsTarget? {
-        if Headless.active, let stub = Store.commsLookupOverride { return await stub(kind, n) }
         switch kind {
         case .pr:
             if let pr = prs.first(where: { $0.number == n }) {
@@ -275,13 +425,22 @@ extension Store {
         }
         let (owner, repo) = CoreAssets.repoCoordinates()
         let verb = kind == .pr ? "pr" : "issue"
-        guard let data = try? await GH.run([verb, "view", String(n), "--repo", "\(owner)/\(repo)",
-                                            "--json", "number,url,author,state"]),
+        let args = [verb, "view", String(n), "--repo", "\(owner)/\(repo)",
+                    "--json", "number,url,author,state"]
+        let answer: Data?
+        if Headless.active, let stub = Store.commsGHOverride {
+            answer = await stub(args)
+        } else {
+            answer = try? await GH.run(args)
+        }
+        guard let data = answer,
               let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let state = obj["state"] as? String else { return nil }
+        let url = obj["url"] as? String ?? ""
+        if kind == .issue, !url.contains("/issues/") { return nil }
         let author = (obj["author"] as? [String: Any])?["login"] as? String ?? ""
-        return CommsTarget(number: n, url: obj["url"] as? String ?? "", author: author,
-                           isOpen: state == "OPEN", state: state)
+        return CommsTarget(number: n, url: url, author: author, isOpen: state == "OPEN",
+                           state: state)
     }
 
     /// Publish the poll's health, and log only its transitions: a failing token fails
@@ -306,30 +465,110 @@ extension Store {
     /// `settleRequested` for every requested ask, so it is a no-op for the rest.
     func commsSettled(_ entry: QueuedAgentTask, _ outcome: DispatchOutcome) {
         guard outcome.wasHandled else { return }
+        // Owners are found in the fold, so one still being read is waited for.
+        if let reading = commsLogRead {
+            Task { [weak self] in
+                await reading.value
+                self?.commsSettled(entry, outcome)
+            }
+            return
+        }
         let owners = commsItems.filter { $0.queueKey == entry.id && $0.startedAt == nil }
         guard !owners.isEmpty else { return }
-        for item in owners {
-            CommsLog.append(CommsEvent(kind: .started, id: item.message.id, label: entry.job.label))
-        }
-        refreshComms()
+        recordComms(owners.map {
+            CommsEvent(kind: .started, id: $0.message.id, label: entry.job.label)
+        })
     }
 
-    /// A started Comms run whose label no agent row wears any more, and which is not
-    /// waiting to run again, has finished: its pings record `finished`, once. Run after
-    /// every publish of the agent rows.
-    func noteCommsRunsEnded() {
-        let open = commsItems.filter { $0.startedAt != nil && $0.finishedAt == nil }
-        guard !open.isEmpty else { return }
-        let running = Set(agentRows.map(\.record.label))
+    /// What the agent rows say about the work Comms' pings point at, after every publish
+    /// of them.
+    ///
+    /// A ping that took a monitor's queued work (`queue`) records `started` once an agent
+    /// row is doing it: a monitor dispatches its own finds, so `commsSettled`, which hears
+    /// only the asks', never sees that one start.
+    ///
+    /// A started run whose label no agent row wears any more, and which is not waiting to
+    /// run again, has finished: its pings record `finished`, once.
+    func noteCommsRuns() {
+        guard commsLogRead == nil else { return }
         let waiting = Set(queuedTasks.map(\.id) + startingTasks.map(\.id))
-        let ended = open.filter {
-            !running.contains($0.label ?? "") && !waiting.contains($0.queueKey ?? "")
+        var lines: [CommsEvent] = []
+        for item in commsItems where item.startedAt == nil && item.finishedAt == nil {
+            guard let key = item.queueKey, !waiting.contains(key),
+                  let verb = Store.commsKeyParts(key)?.verb,
+                  !AgentTaskQueue.requestedActions.contains(verb),
+                  let row = commsRow(doing: key) else { continue }
+            lines.append(CommsEvent(at: Date(timeIntervalSince1970: row.record.dispatchedAt),
+                                    kind: .started, id: item.message.id, label: row.record.label))
         }
-        guard !ended.isEmpty else { return }
-        for item in ended {
-            CommsLog.append(CommsEvent(kind: .finished, id: item.message.id, label: item.label))
+        let running = Set(agentRows.map(\.record.label))
+        for item in commsItems where item.startedAt != nil && item.finishedAt == nil
+            && !running.contains(item.label ?? "") && !waiting.contains(item.queueKey ?? "") {
+            lines.append(CommsEvent(kind: .finished, id: item.message.id, label: item.label))
         }
-        refreshComms()
+        if !lines.isEmpty { recordComms(lines) }
+    }
+}
+
+/// Where a read of `events.jsonl` stopped: which file it was (its inode), the offset
+/// just past its last whole line, and the file's modification time then.
+struct CommsLogMark: Equatable, Sendable {
+    var inode: UInt64
+    var offset: UInt64
+    var mtime: CommsLogReader.Time
+}
+
+/// The events read so far and where reading stopped (`Store.refreshComms`).
+struct CommsLogCache {
+    var events: [CommsEvent] = []
+    var mark: CommsLogMark?
+}
+
+/// Reads `events.jsonl` from an offset, the way `CommsLog.read` reads all of it.
+enum CommsLogReader {
+    struct Time: Equatable, Sendable {
+        var sec: Int
+        var nsec: Int
+    }
+
+    struct Stamp: Equatable {
+        var inode: UInt64
+        var size: UInt64
+        var mtime: Time
+    }
+
+    static func stamp(_ url: URL) -> Stamp? {
+        var st = stat()
+        guard stat(url.path, &st) == 0 else { return nil }
+        return stamp(st)
+    }
+
+    private static func stamp(_ st: stat) -> Stamp {
+        Stamp(inode: UInt64(st.st_ino), size: UInt64(max(0, st.st_size)),
+              mtime: Time(sec: Int(st.st_mtimespec.tv_sec), nsec: Int(st.st_mtimespec.tv_nsec)))
+    }
+
+    /// Every event that decodes from `offset` to the last newline, and the mark there. A
+    /// line still being written is left for the next read.
+    static func read(_ url: URL, from offset: UInt64) -> (events: [CommsEvent], mark: CommsLogMark)? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var st = stat()
+        guard fstat(handle.fileDescriptor, &st) == 0 else { return nil }
+        let at = stamp(st)
+        guard at.size >= offset else { return nil }
+        guard (try? handle.seek(toOffset: offset)) != nil,
+              let data = try? handle.read(upToCount: Int(at.size - offset)) ?? Data() else {
+            return nil
+        }
+        let end = data.lastIndex(of: UInt8(ascii: "\n")).map { data.index(after: $0) }
+            ?? data.startIndex
+        let d = CommsLog.decoder
+        let events = data[data.startIndex..<end].split(separator: UInt8(ascii: "\n")).compactMap {
+            try? d.decode(CommsEvent.self, from: Data($0))
+        }
+        let consumed = UInt64(data.distance(from: data.startIndex, to: end))
+        return (events, CommsLogMark(inode: at.inode, offset: offset + consumed, mtime: at.mtime))
     }
 }
 
@@ -425,26 +664,30 @@ enum CommsNotifier {
 extension Dump {
     /// One Comms tick for real, applied to nothing: the Settings the panel would hand it,
     /// the token it would find, Slack's answer, the triage's answer, and the queue effect
-    /// each would have had. Run against a scratch copy of the watermark unless
-    /// `DIPLOMAT_COMMS_DIR` names one, so the live app's next tick still sees these
-    /// messages as new. False when there is no token to poll with.
+    /// each would have had. Unless `DIPLOMAT_COMMS_DIR` names a directory to tick, it
+    /// ticks a scratch one whose watermark is `commsPollLookback` ago with nothing seen,
+    /// so it triages what reached the operator in that time whether or not Comms is on,
+    /// and the live app's own watermark is untouched. False when there is no token or
+    /// the tick failed.
     @MainActor
     static func commsPoll() async -> Bool {
         let env = ProcessInfo.processInfo.environment
+        var scratch: URL?
         if (env["DIPLOMAT_COMMS_DIR"] ?? "").isEmpty {
-            let real = CommsLog.dir
-            let scratch = FileManager.default.temporaryDirectory
+            let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("diplomat-commspoll-\(getpid())")
-            try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
-            try? FileManager.default.copyItem(at: CommsState.url(in: real),
-                                              to: CommsState.url(in: scratch))
-            setenv("DIPLOMAT_COMMS_DIR", scratch.path, 1)
+            let since = CommsTS.number(Date()) - Int(commsPollLookback) * 1_000_000
+            CommsState(watermark: CommsTS.string(since)).save(in: dir)
+            setenv("DIPLOMAT_COMMS_DIR", dir.path, 1)
+            scratch = dir
         }
+        defer { if let scratch { try? FileManager.default.removeItem(at: scratch) } }
         let dir = CommsLog.dir
         let item = AppConfig.slackTokenKeychainItem
         let fromEnv = !(env["DIPLOMAT_SLACK_TOKEN"] ?? "").isEmpty
         print("== comms poll (dry run) ==")
-        print("dir:   \(dir.path)")
+        print("dir:   \(dir.path)"
+              + (scratch == nil ? "" : " (scratch: the last \(Int(commsPollLookback / 60)) min)"))
         print("token: " + (fromEnv ? "DIPLOMAT_SLACK_TOKEN" : "Keychain item \"\(item)\""))
         let token = await Task.detached { CommsToken.read(item: item) }.value
         guard let token else {
@@ -452,6 +695,8 @@ extension Dump {
             return false
         }
         let store = Store()
+        // The login the live app's triage prompt names; a headless Store has not fetched it.
+        await store.fetchMe()
         let settings = store.commsSettings
         let toggles = store.commsToggles
         let model = settings.model.isEmpty ? "(default)" : settings.model
@@ -476,8 +721,10 @@ extension Dump {
             print("    would:    \(commsEffectLine(effect))")
         }
         print("\n(dry run: nothing was queued, logged to the feed, or notified)")
-        return true
+        return result.error == nil
     }
+
+    static let commsPollLookback: TimeInterval = 3600
 
     private static func commsEffectLine(_ effect: CommsEffect) -> String {
         switch effect {

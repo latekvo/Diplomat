@@ -120,8 +120,8 @@ struct CommsView: View {
         """
 
     private static let setupSteps = """
-        1. Create a Slack app for your workspace and give it the user token scopes \
-        search:read and users:read. Install it and copy the User OAuth Token.
+        1. Create a Slack app for your workspace and give it the user token scope \
+        search:read. Install it and copy the User OAuth Token.
         2. Store it in your login Keychain (it prompts for the token, so it never lands \
         in your shell history):
         """

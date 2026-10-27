@@ -454,6 +454,10 @@ final class Store: ObservableObject {
 
     /// `CommsLog.fold` of the events log, newest ping first.
     @Published var commsItems: [CommsItem] = []
+    /// What `refreshComms` has read of the log so far, and the read still running off the
+    /// main actor, if one is.
+    var commsLog = CommsLogCache()
+    var commsLogRead: Task<Void, Never>?
     /// Why the last poll failed — a missing token, Slack refusing it, a missing scope,
     /// no `claude` — or nil after a good one.
     @Published var commsError: String?
@@ -783,7 +787,7 @@ final class Store: ObservableObject {
                 persist(commsSeenAt, forKey: Keys.commsSeenAt)
             }
             // Live only: a self-test that published a tick against the operator's own
-            // log would write `finished` lines into it (`noteCommsRunsEnded`).
+            // log would write `finished` lines into it (`noteCommsRuns`).
             refreshComms()
             startCommsMonitor()
             startMeshPoll()
@@ -1258,7 +1262,7 @@ final class Store: ObservableObject {
         if autoTasksMeasured != pass.tick.capLoad.count {
             autoTasksMeasured = pass.tick.capLoad.count
         }
-        noteCommsRunsEnded()
+        noteCommsRuns()
     }
 
     /// Write back the three things a tick learns about a run: the pid its shell has since
