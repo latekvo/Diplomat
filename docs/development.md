@@ -181,6 +181,9 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   (the not-discoverable banner); mesh-reminder (trust modal)
                                                      #   telemetry (the screen over a synthetic ledger, written to a
                                                      #   scratch dir); telemetry-panel (the same inside the panel)
+                                                     #   comms (the Comms screen over a synthetic events.jsonl in a
+                                                     #   scratch dir); comms-panel; comms-badge (the main panel with
+                                                     #   unread pings); comms-empty (no token yet)
                                                      #   popover (REAL NSWindow snapshot incl. the legacy
                                                      #   scroller - pair with DIPLOMAT_POPOVER_CAP=400
                                                      #   to force the scrolling state)
@@ -207,6 +210,10 @@ DIPLOMAT_MESH_STRAY_TEST=1 ...                   # a launch with the mesh off st
 DIPLOMAT_AUTOFIX_POLL=1  ...                     # one real monitor poll: prints its dispatch decisions and
                                                      #   the exact prompts it would spawn, opens nothing
 DIPLOMAT_APIWATCH_SCAN=1 ...                     # dry-run the API-error watcher over live sessions, sends nothing
+DIPLOMAT_COMMS_POLL=1    ...                     # one real Slack poll with real triage: prints each ping and what it
+                                                     #   would queue, queues nothing (docs/comms.md)
+DIPLOMAT_COMMS_TEST=1    ...                     # self-test: what each triage answer does to the queue, the switches,
+                                                     #   the ban, started/finished. Spawns nothing, reaches no Slack
 DIPLOMAT_APIWATCH_TEST=1 ...                     # self-test: who a scan may type into (an agent's session,
                                                      #   including one a terminal only shows through tmux;
                                                      #   never a plain shell). Reads no terminal, sends nothing
@@ -374,6 +381,9 @@ packages/
         MeshBridge.swift           drives the local mesh node (spawn python3 -m szpontnet --daemon, NDJSON control)
         MeshView.swift             the ⬡ Mesh screen: node graph, tier/token/trust editors, duty table
         MeshSpawn.swift            the wizards' "⬡ Run on mesh" row + destination preview
+        CommsMonitor.swift         the Slack watcher: the poll loop, the token, applying each triage answer to the queue
+        CommsView.swift            the Comms screen: pings, the jobs they queued, the watcher's status
+        CommsTest.swift            self-test of what each triage answer does to the queue (DIPLOMAT_COMMS_TEST)
         TelemetryView.swift        the Telemetry screen: the bell curve, the rate-limit windows, the backlog and finished-work series, the token split
         TelemetryLog.swift         writes/reads ~/.diplomat/pr-monitor/telemetry.jsonl (append-only, rotated)
         UsageScan.swift            Claude Code transcript scanner: repo-vs-other tokens, per-task attribution

@@ -47,7 +47,7 @@ nudges, and daemon-side bans.
 
 The activity feed is **filterable in place**: it heads a row of per-category chips
 with counts - Reviews · Replies · Conflicts · Audit · Issues · API restart · Out of
-quota · Merges · Bans · Mesh · System - and tapping one mutes that category and drops its
+quota · Merges · Bans · Mesh · Comms · System - and tapping one mutes that category and drops its
 rows. The taxonomy (which raw action verb maps to which category, plus its icon and
 tint) is shared in [`assets/audit-categories.json`](../packages/diplomat-core/assets/audit-categories.json), with
 `packages/diplomat-core/Sources/DiplomatCore/AuditCategory.swift` as the Swift source of truth.

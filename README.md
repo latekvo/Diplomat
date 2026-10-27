@@ -17,7 +17,11 @@ Left alone, it:
   doesn't approve or request changes unless you turn that on;
 - keeps your own PRs mergeable: it resolves merge conflicts, works through review
   threads and pushes to your branch;
-- types "continue" into an agent stuck on a transient Claude API error.
+- types "continue" into an agent stuck on a transient Claude API error;
+- watches your Slack, if you give it a token: a DM, an @-mention or a keyword becomes
+  a ping on its own screen, and a request in it is acted on - a review or fix is
+  queued, queued work is bumped, and a bug report gets an agent investigating it
+  before you have read the message. See [Comms](docs/comms.md).
 
 On request, from the panel:
 
@@ -97,6 +101,7 @@ Everything below can be changed in Settings (⚙︎).
 | Give up on an automatic run after 4 h | **on** |
 | Agent runner | **Claude Code** (or OpenCode, Hermes) |
 | Mesh | **off** |
+| Comms (Slack watcher) | **off**, until you give it a token |
 
 Agents use your full `gh` login unless you give them
 [a narrower token](docs/settings.md#a-narrow-github-token-for-agents) limited to
@@ -129,6 +134,8 @@ Linux has everything except the per-row Merge button and clickable agent rows. S
   token, list definitions
 - [Telemetry](docs/telemetry.md): what each figure means and where it comes from
 - [Mesh](docs/mesh.md): multi-machine coordination, WAN transports, the trust model
+- [Comms](docs/comms.md): the Slack watcher - what it reads, how triage decides, what
+  it may do, the token
 - [Development](docs/development.md): design, headless self-tests, CI, repo layout
 
 ## Layout

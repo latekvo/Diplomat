@@ -1,7 +1,7 @@
 # Settings
 
-The header **⚙︎** button (next to ↻, the **⬡** mesh button, the Telemetry button
-and ⏻) swaps the panel to a settings screen:
+The header **⚙︎** button (next to ↻, the Comms button, the **⬡** mesh button, the
+Telemetry button and ⏻) swaps the panel to a settings screen:
 
 - **GitHub username** - override the handle used by the "My …" tools, the wizards
   and the monitors. Blank = the `gh`-authenticated user (`viewer.login`), resolved
@@ -201,6 +201,11 @@ and ⏻) swaps the panel to a settings screen:
   activity feed); it has to answer its control port with the pid and id
   `state.json` names, so nothing else is touched. The mesh itself is managed from
   the **⬡ Mesh screen**.
+- **Comms (Slack)** - the [Slack watcher](comms.md) (**default off**): the switch,
+  keywords, a sender allowlist, one switch per thing it may do (queue reviews and
+  fixes, bump queued work, investigate bug reports), notifications, the triage
+  model, where the token is read from, and **Test**. Every one is described in
+  [Comms → Settings](comms.md#settings).
 - **Update** - pull the checkout, rebuild, and relaunch in place. Shows how many
   commits the checkout is behind *and* ahead of upstream, with a ↻ re-check
   button; the button fetches and **merges** (fast-forward when strictly behind, a
@@ -213,7 +218,8 @@ and ⏻) swaps the panel to a settings screen:
 
 All of it persists across launches: in UserDefaults (`com.ignacy.diplomat`), except
 the keys a mesh node reads too - repo root, agent runner and model, the automatic-task
-cap, the 4h give-up switch and the spending budget's four knobs - and the allocator
+cap, the 4h give-up switch and the spending budget's four knobs, and where the Slack
+token is read from (never the token itself) - and the allocator
 daemon's two idle limits, which live in the shared `~/.diplomat/config.json` ([`AppConfig.swift`](../packages/diplomat-platform/macos/Sources/Diplomat/AppConfig.swift)).
 
 ## Definitions / heuristics (where it's deliberately loose)
