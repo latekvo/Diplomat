@@ -8,6 +8,7 @@
     DIPLOMAT_SELF_UPDATE=1 python -m diplomat_app       # headless 6AM update
     DIPLOMAT_WATCHDOG=1 python -m diplomat_app          # launch the tray if it died
     DIPLOMAT_AGENTS=1 python -m diplomat_app            # why each agent reads as it does
+    DIPLOMAT_COMMS_POLL=1 python -m diplomat_app        # one Slack tick, nothing applied
 """
 
 from __future__ import annotations
@@ -45,6 +46,11 @@ def main() -> int:
         from .selftest import run_dump
 
         return run_dump()
+
+    if env.get("DIPLOMAT_COMMS_POLL") == "1":
+        from .selftest import run_comms_poll
+
+        return run_comms_poll()
 
     lk = env.get("DIPLOMAT_LOOKUP")
     if lk:

@@ -1,7 +1,7 @@
 """The Telemetry screen — what the monitors cost and what they still owe.
 
-The Linux face of the ledger (:mod:`telemetry`), and one of the panel's four
-screens: Actions · Mesh · **Telemetry** · Settings. It reads
+The Linux face of the ledger (:mod:`telemetry`), and one of the panel's
+screens: Actions · Mesh · Comms · **Telemetry** · Settings. It reads
 ``~/.diplomat/pr-monitor/telemetry.jsonl``, folds it through the shared
 arithmetic, and draws nine figures:
 

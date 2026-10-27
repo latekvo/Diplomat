@@ -33,6 +33,7 @@ from diplomat_runtime import (
     appconfig,
     autobudget,
     autofix,
+    comms,
     core,
     diskfloor,
     opencodeapi,
@@ -232,6 +233,14 @@ class Store(QObject):
     # Emitted when a telemetry sample lands, so an open Telemetry screen refreshes
     # instead of waiting for the user to flip a range.
     telemetry_changed = Signal()
+    # Emitted when anything the Comms screen draws changes: its rows, the unread
+    # count, the watcher's error, identity or last poll.
+    comms_changed = Signal()
+    # A tick found new pings, while `comms_notify` is on: (title, body) for the tray's
+    # notification, which app.py shows since it owns the tray.
+    comms_pinged = Signal(str, str)
+    # A tick's worker handing its findings to the Qt thread, where the queue is changed.
+    _comms_ticked = Signal(object)
 
     # How many agent screens must be read without once showing the CLI's interrupt
     # hint before that is worth reporting. High, because a quiet machine legitimately
@@ -392,6 +401,21 @@ class Store(QObject):
         self._apiwatch_seen_tail: dict[str, str] = {}  # pane_id -> last erroring tail
         self._apiwatch_lock = threading.Lock()
         self._telemetry_sample_lock = threading.Lock()
+
+        # Comms, the Slack watcher: live-only state (the settings persist via QSettings
+        # below, the log in its own directory). `comms_items` is the folded log as
+        # `diplomat-core comms-feed` last answered it, newest ping first; replaced,
+        # never mutated, since the poll worker reads it.
+        self.comms_items: list[dict] = []
+        self.comms_error: str | None = None
+        self.comms_identity: dict | None = None
+        self.comms_last_poll: datetime | None = None
+        # Queue key -> ping id for the asks Comms queued whose agent has not started
+        # yet: what turns a queued dispatch into that ping's `started` line. Replaced,
+        # never mutated: the drain reads it from the poll worker.
+        self._comms_owned: dict[str, str] = {}
+        self._comms_lock = threading.Lock()
+        self._comms_ticked.connect(self._apply_comms_tick)
 
         # Pruned on every start — a Store outlives thousands of polls.
         self._workers: list[threading.Thread] = []
@@ -825,6 +849,103 @@ class Store(QObject):
     @api_watch_continues.setter
     def api_watch_continues(self, value: int) -> None:
         self._settings.setValue("apiWatchContinues", int(value))
+
+    # Comms, the Slack watcher (the comms* keys of Store.swift, same strings).
+
+    @property
+    def comms_enabled(self) -> bool:
+        """Whether the Slack watcher polls at all. Off by default: it needs a token
+        the operator has to create first, and it reads their messages."""
+        return self._settings.value("commsEnabled", False, bool)
+
+    @comms_enabled.setter
+    def comms_enabled(self, value: bool) -> None:
+        self._settings.setValue("commsEnabled", bool(value))
+
+    @property
+    def comms_keywords_raw(self) -> str:
+        """The keywords that make a message a ping, as typed: comma- or
+        newline-separated, split by the core (``CommsSettings.keywordList``)."""
+        return str(self._settings.value("commsKeywordsRaw", "", str) or "")
+
+    @comms_keywords_raw.setter
+    def comms_keywords_raw(self, value: str) -> None:
+        self._settings.setValue("commsKeywordsRaw", str(value))
+
+    @property
+    def comms_sender_allowlist_raw(self) -> str:
+        """Slack user ids or handles whose messages may ping, as typed; blank admits
+        any member of the operator's workspace."""
+        return str(self._settings.value("commsSenderAllowlistRaw", "", str) or "")
+
+    @comms_sender_allowlist_raw.setter
+    def comms_sender_allowlist_raw(self, value: str) -> None:
+        self._settings.setValue("commsSenderAllowlistRaw", str(value))
+
+    @property
+    def comms_act_requests(self) -> bool:
+        """Whether a ping asking for a review or an issue fix queues one."""
+        return self._settings.value("commsActRequests", True, bool)
+
+    @comms_act_requests.setter
+    def comms_act_requests(self, value: bool) -> None:
+        self._settings.setValue("commsActRequests", bool(value))
+
+    @property
+    def comms_act_bumps(self) -> bool:
+        """Whether a ping asking to hurry #N moves what is queued for it to the front."""
+        return self._settings.value("commsActBumps", True, bool)
+
+    @comms_act_bumps.setter
+    def comms_act_bumps(self, value: bool) -> None:
+        self._settings.setValue("commsActBumps", bool(value))
+
+    @property
+    def comms_act_investigations(self) -> bool:
+        """Whether a reported problem queues an investigation agent."""
+        return self._settings.value("commsActInvestigations", True, bool)
+
+    @comms_act_investigations.setter
+    def comms_act_investigations(self, value: bool) -> None:
+        self._settings.setValue("commsActInvestigations", bool(value))
+
+    @property
+    def comms_notify(self) -> bool:
+        """Whether a new ping raises a tray notification."""
+        return self._settings.value("commsNotify", True, bool)
+
+    @comms_notify.setter
+    def comms_notify(self, value: bool) -> None:
+        self._settings.setValue("commsNotify", bool(value))
+
+    @property
+    def comms_model(self) -> str:
+        """The model the triage call runs on."""
+        return str(self._settings.value("commsModel", "haiku", str) or "")
+
+    @comms_model.setter
+    def comms_model(self, value: str) -> None:
+        self._settings.setValue("commsModel", str(value))
+
+    @property
+    def comms_seen_at(self) -> str:
+        """When the operator last opened the Comms screen (ISO 8601, "" for never):
+        every ping recorded after it is unread."""
+        return str(self._settings.value("commsSeenAt", "", str) or "")
+
+    @comms_seen_at.setter
+    def comms_seen_at(self, value: str) -> None:
+        self._settings.setValue("commsSeenAt", str(value))
+
+    @property
+    def slack_token_file(self) -> str:
+        """The Slack token's file as configured, "" for the default. In the shared
+        config beside ``agentTokenFile``, as a path only (:mod:`comms`)."""
+        return appconfig.get(appconfig.SLACK_TOKEN_FILE)
+
+    @slack_token_file.setter
+    def slack_token_file(self, value: str) -> None:
+        appconfig.set_value(appconfig.SLACK_TOKEN_FILE, value.strip())
 
     # MARK: derived settings
 
@@ -2285,6 +2406,8 @@ class Store(QObject):
             self._end_starting(entry.id)
         if verdict in ("spawned", autofix.VERDICT_STAND_DOWN):
             self._record_queued_attempt(entry)
+        if verdict == "spawned":
+            self._note_comms_started(entry)
         self._settle_requested(entry, verdict)
         return verdict
 
@@ -3025,6 +3148,345 @@ class Store(QObject):
             "continues": self.api_watch_continues,
             "tmux": available,
         }
+
+    # MARK: Comms, the Slack watcher
+    #
+    # The tick, the fold of its log and the plan for each triaged ping are the core's
+    # (`diplomat-core comms-*`, through :mod:`comms`). What is here is the part only a
+    # front-end can do: acting on that plan through the queue every other ask goes
+    # through, so the ban list, the task cap and the budget gate all still apply.
+
+    def comms_settings_payload(self) -> dict:
+        """The ``CommsSettings`` JSON a tick and a plan are given: the two lists as
+        typed (the core splits them) and the repo the triage is about."""
+        cfg = core.config()
+        return {
+            "keywordsRaw": self.comms_keywords_raw,
+            "senderAllowlistRaw": self.comms_sender_allowlist_raw,
+            "model": self.comms_model,
+            "owner": cfg["owner"],
+            "repo": cfg["repo"],
+            "login": self.effective_me,
+        }
+
+    def comms_toggles(self) -> dict:
+        return {"requests": self.comms_act_requests, "bumps": self.comms_act_bumps,
+                "investigations": self.comms_act_investigations}
+
+    @property
+    def comms_configured(self) -> bool:
+        """Whether there is a token to watch with, which is what the Comms screen's
+        empty state is about."""
+        return bool(comms.read_token()[0])
+
+    @property
+    def comms_unread(self) -> int:
+        """Pings recorded after the operator last opened the Comms screen."""
+        seen = comms.parse_iso(self.comms_seen_at)
+        count = 0
+        for item in self.comms_items:
+            at = comms.parse_iso(str(item.get("at", "")))
+            if seen is None or (at is not None and at > seen):
+                count += 1
+        return count
+
+    def mark_comms_seen(self) -> None:
+        self.comms_seen_at = comms.iso()
+        self.comms_changed.emit()
+
+    def refresh_comms_feed(self) -> None:
+        """Re-read the folded log. A core that cannot answer leaves the rows as they
+        were: an unreadable log is not an empty one."""
+        try:
+            items = comms.feed()
+        except (RuntimeError, promptcore.CoreBinaryMissing, ValueError):
+            return
+        self.comms_items = items
+        self._comms_owned = {
+            str(i["queueKey"]): str(i["message"]["id"]) for i in items
+            if i.get("queueKey") and not i.get("startedAt")
+        }
+
+    def run_comms_poll_async(self) -> None:
+        """Kick one Slack tick on a worker thread, unless Comms is off or a tick is
+        still running. The queue is changed back on the Qt thread
+        (:meth:`_apply_comms_tick`)."""
+        if not self.comms_enabled:
+            return
+        if not self._comms_lock.acquire(blocking=False):
+            return
+
+        def work() -> None:
+            try:
+                plan = self._comms_poll_once()
+            except Exception as exc:  # noqa: BLE001 — a tick must never stop the timer
+                plan = {"at": datetime.now().astimezone(), "error": str(exc),
+                        "me": None, "items": []}
+            finally:
+                self._comms_lock.release()
+            self._comms_ticked.emit(plan)
+
+        self.start_background(work, name="comms-poll")
+
+    def _comms_poll_once(self) -> dict:
+        """The slow half of a tick, off the Qt thread: Slack and the triage (the CLI),
+        each ping's plan, the GitHub read a fix's plan needs, and the `finished` lines
+        for runs that have ended. Changes nothing in the queue."""
+        self._note_comms_finished()
+        at = datetime.now().astimezone()
+        token, why = comms.read_token()
+        if not token:
+            return {"at": at, "error": why, "me": None, "items": []}
+        settings = self.comms_settings_payload()
+        result = comms.tick(settings, token)
+        toggles = self.comms_toggles()
+        items = []
+        for it in result.get("items") or []:
+            message, decision = it.get("message") or {}, it.get("decision") or {}
+            try:
+                effect = comms.effect(decision, message, toggles, settings)
+            except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
+                effect = {"kind": "none", "error": str(exc)}
+            entry = {"message": message, "decision": decision, "effect": effect}
+            if effect.get("kind") == "fix_issue":
+                entry["issue"] = self._comms_find_issue(int(effect.get("number") or 0))
+            items.append(entry)
+        return {"at": at, "error": result.get("error"), "me": result.get("me"),
+                "items": items}
+
+    def _comms_find_issue(self, number: int) -> dict | None:
+        """Issue ``number`` as ``{number, url, author, state}``, or ``None`` when GitHub
+        does not know it. ``issues`` is what the panel fetched, which may be a filtered
+        list, so a miss there is asked of GitHub before it is believed."""
+        hit = next((i for i in self.issues if i.number == number), None)
+        if hit is not None:
+            return {"number": hit.number, "url": hit.url, "author": hit.author,
+                    "state": "OPEN"}
+        from diplomat_runtime import gh
+
+        cfg = core.config()
+        try:
+            obj = json.loads(gh.run(["issue", "view", str(number), "--repo",
+                                     f"{cfg['owner']}/{cfg['repo']}",
+                                     "--json", "number,url,author,state"], timeout=30))
+        except Exception:  # noqa: BLE001 — missing, a PR's number, or gh down: no issue
+            return None
+        if not isinstance(obj, dict):
+            return None
+        return {"number": number, "url": str(obj.get("url") or ""),
+                "author": str((obj.get("author") or {}).get("login") or ""),
+                "state": str(obj.get("state") or "")}
+
+    def _apply_comms_tick(self, plan: dict) -> None:
+        """The Qt-thread half of a tick: publish what it found and act on each ping."""
+        self.comms_last_poll = plan.get("at")
+        if plan.get("me"):
+            self.comms_identity = plan["me"]
+        self._settle_comms_error(plan.get("error"))
+        items = plan.get("items") or []
+        for entry in items:
+            self.apply_comms_item(entry)
+        self.refresh_comms_feed()
+        if items:
+            self.refresh_activity()
+            if self.comms_notify:
+                self.comms_pinged.emit(*self._comms_notification(items))
+        self.comms_changed.emit()
+
+    def _settle_comms_error(self, error: str | None) -> None:
+        """Publish the tick's error, audited only on the way into failing and back."""
+        before = self.comms_error
+        self.comms_error = error or None
+        if self.comms_error and not before:
+            activity.log("auto", "comms-error", self.comms_error)
+        elif before and not self.comms_error:
+            handle = (self.comms_identity or {}).get("handle", "")
+            activity.log("auto", "comms-recovered",
+                         "Slack watcher working again" + (f" as @{handle}" if handle else ""))
+
+    @staticmethod
+    def comms_snippet(text: str, limit: int = 80) -> str:
+        flat = " ".join(str(text).split())
+        return flat if len(flat) <= limit else flat[:limit - 1] + "…"
+
+    @staticmethod
+    def comms_place(message: dict) -> str:
+        """``CommsMessage.place``: ``DM``, or ``#channel``."""
+        return "DM" if message.get("isDM") else f"#{message.get('channelName', '')}"
+
+    @staticmethod
+    def comms_sender(message: dict) -> str:
+        """``CommsMessage.sender``: the handle, or the user id when Slack gave none."""
+        return str(message.get("userName") or message.get("userID") or "")
+
+    def _comms_notification(self, items: list[dict]) -> tuple[str, str]:
+        if len(items) == 1:
+            m = items[0]["message"]
+            return (f"{self.comms_place(m)} from {self.comms_sender(m)}",
+                    self.comms_snippet(m.get("text", ""), 160))
+        senders = ", ".join(dict.fromkeys(self.comms_sender(e["message"]) for e in items))
+        return f"{len(items)} new Slack pings", f"From {senders}"
+
+    def apply_comms_item(self, entry: dict) -> str:
+        """Act on one triaged ping and return the outcome its `action` line records.
+
+        ``entry`` is ``{message, decision, effect}`` (the effect as ``comms-effect``
+        planned it), plus for a fix the ``issue`` GitHub answered. Every ping ends in
+        exactly one `action` line, a `comms-ping` line in the activity feed, and one
+        more there for any effect other than none."""
+        message, effect = entry["message"], entry.get("effect") or {"kind": "none"}
+        msg_id = str(message.get("id", ""))
+        where, sender = self.comms_place(message), self.comms_sender(message)
+        activity.log("auto", "comms-ping",
+                     f"{where} from {sender}: {self.comms_snippet(message.get('text', ''))}")
+        kind = effect.get("kind")
+        number = int(effect.get("number") or 0)
+        verb, work, front = None, None, True
+        if kind == "review":
+            verb = "comms-review"
+            outcome, work = self._comms_review(number)
+        elif kind == "fix_issue":
+            verb = "comms-fix"
+            outcome, work = self._comms_fix(number, entry.get("issue"))
+        elif kind == "investigate":
+            verb, front = "comms-investigate", False
+            cfg = effect["config"]
+            outcome = "investigation"
+            work = autofix.RequestedWork(number=int(cfg["number"]),
+                                         url=str(cfg.get("permalink", "")), author="",
+                                         config=cfg)
+        elif kind == "bump":
+            verb = "comms-bump"
+            outcome = self._comms_bump(number)
+        else:
+            outcome = self._comms_none_outcome(entry)
+        if work is not None:
+            # `outcome` names the work here; the ask decides what is said about it.
+            try:
+                fresh = self.request_one(work, front=front)
+            except Exception as exc:  # noqa: BLE001 — a missing/wedged core binary
+                outcome, work = f"{outcome} could not be queued: {exc}", None
+            else:
+                outcome += (" queued" if fresh else " was already queued") + (
+                    ", at the front of its band" if front else "")
+        key = work.key if work is not None else None
+        label = work.label if work is not None else None
+        if key is not None:
+            self._comms_owned = {**self._comms_owned, key: msg_id}
+        comms.append_event("action", msg_id, outcome=outcome, queue_key=key, label=label)
+        if verb is not None:
+            activity.log("auto", verb, f"{label + ' — ' if label else ''}{outcome}; "
+                                       f"asked by {sender} in {where}")
+        return outcome
+
+    def _comms_none_outcome(self, entry: dict) -> str:
+        """What a ping that moves nothing records: why not."""
+        if (entry.get("effect") or {}).get("error"):
+            return f"not acted on: {entry['effect']['error']}"
+        action = (entry.get("decision") or {}).get("action", "none")
+        switch = {"review": "requests", "fix_issue": "requests", "bump": "bumps",
+                  "investigate": "investigations"}.get(action)
+        if switch is None:
+            return "no action"
+        return f"{action} not acted on: acting on {switch} is switched off"
+
+    def _comms_banned(self, login: str) -> bool:
+        return bool(login) and bans.is_banned(login, bans.read())
+
+    def _comms_review(self, number: int) -> tuple[str, autofix.RequestedWork | None]:
+        """``("review of #N", the ask)`` — the review the Review wizard's single-PR
+        default would run — or ``(why there is none, None)``. N must be one of the
+        open PRs the panel fetched."""
+        pr = next((p for p in self.prs if p.number == number), None)
+        if pr is None:
+            return f"#{number} is not an open PR of this repo", None
+        if self._comms_banned(pr.author):
+            return f"PR #{number} is by @{pr.author}, who is banned; not queued", None
+        me = self.effective_me
+        mine = bool(me) and pr.author.lower() == me.lower()
+        cfg = review.ReviewConfig(
+            target=PRTarget.SPECIFIC, specific_pr=str(number), me=me,
+            specific_author=(review.SpecificAuthor.MINE if mine
+                             else review.SpecificAuthor.THEIRS))
+        return f"review of #{number}", autofix.RequestedWork(
+            number=number, url=pr.url, author="" if mine else pr.author,
+            config=cfg.prompt_payload())
+
+    def _comms_fix(self, number: int,
+                   found: dict | None) -> tuple[str, autofix.RequestedWork | None]:
+        """``("fix of issue #N", the ask)`` — what the Fix-issues wizard would run for
+        that one issue — or ``(why there is none, None)``.
+
+        Carries the issue's author as the ban dimension, which a wizard fix does not:
+        that one is the operator naming an issue, this one somebody on Slack."""
+        if found is None:
+            return f"#{number} is not an issue of this repo", None
+        if str(found.get("state", "")).upper() != "OPEN":
+            return f"issue #{number} is {str(found.get('state', '')).lower()}", None
+        author = str(found.get("author", ""))
+        if self._comms_banned(author):
+            return f"issue #{number} is by @{author}, who is banned; not queued", None
+        me = self.effective_me
+        mine = bool(me) and author.lower() == me.lower()
+        cfg = issues.IssueConfig(target=issues.Target.SPECIFIC,
+                                 specific_issue=str(number), me=me)
+        return f"fix of issue #{number}", autofix.RequestedWork(
+            number=number, url=str(found.get("url", "")), author="" if mine else author,
+            config=cfg.prompt_payload())
+
+    def _comms_bump(self, number: int) -> str:
+        moved = [t.id for t in self.queued_tasks if t.id.endswith(f":{number}")]
+        for key in moved:
+            self._move_to_band_front(key)
+        if not moved:
+            return f"nothing queued for #{number}"
+        return f"moved {', '.join(moved)} to the front of its band"
+
+    def request_one(self, work: autofix.RequestedWork, *, front: bool = False) -> bool:
+        """Queue one ask the way a sweep queues each of its items and, with ``front``,
+        move it ahead of the rest of its band. Returns whether the ask is new: one
+        already waiting keeps the ask it had (:meth:`_request`)."""
+        queued, _already = self._request([work])
+        if front:
+            self._move_to_band_front(work.key)
+        return queued == 1
+
+    def _move_to_band_front(self, key: str) -> None:
+        ids = [t.id for t in self.queued_tasks]
+        if key not in ids:
+            return
+        band = autofix.queue_band(key)
+        first = next(i for i in ids if autofix.queue_band(i) == band)
+        if first != key:
+            self.move_queued_task(key, first)
+
+    def _note_comms_started(self, entry: autofix.QueuedTask) -> None:
+        """A queued task spawned; if Comms asked for it, that ping's run has started."""
+        owned = self._comms_owned
+        msg_id = owned.get(entry.id)
+        if msg_id is None:
+            return
+        self._comms_owned = {k: v for k, v in owned.items() if k != entry.id}
+        comms.append_event("started", msg_id, label=entry.job.label)
+        self.comms_changed.emit()
+
+    def _note_comms_finished(self) -> None:
+        """Write `finished` for every started Comms run whose agent is no longer among
+        the rows and whose ask is not waiting again. Once: the feed carries
+        `finishedAt` from then on, and this reads the feed."""
+        open_runs = [i for i in self.comms_items
+                     if i.get("startedAt") and not i.get("finishedAt") and i.get("queueKey")]
+        if not open_runs:
+            return
+        waiting = {t.id for t in self.queued_tasks} | {t.id for t in self.starting_tasks}
+        running = [a.label for a in self.running_tasks]
+        for item in open_runs:
+            label = str(item.get("label") or "")
+            if item["queueKey"] in waiting:
+                continue
+            if any(r == label or r.startswith(label + " · retry") for r in running):
+                continue
+            comms.append_event("finished", str(item["message"]["id"]), label=label)
 
     # MARK: device allocator
 

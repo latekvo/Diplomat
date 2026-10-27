@@ -44,6 +44,8 @@ G_MESH = "⬡"     # mesh screen header / "run on mesh" toggle (matches the mesh
                  # activity category's linuxGlyph)
 G_TELEMETRY = "◫" # telemetry screen header (the per-figure glyphs live in
                   # assets/telemetry.json, like the tool and category ones)
+G_COMMS = "✉"    # Comms screen header button (matches the comms activity
+                 # category's linuxGlyph)
 
 # --- Settings card glyphs --------------------------------------------------
 # One per block of the Settings screen. Plain text symbols, like the rest of this

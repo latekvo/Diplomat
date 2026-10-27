@@ -117,6 +117,16 @@ def telemetry() -> dict:
 
 
 @functools.lru_cache(maxsize=1)
+def comms() -> dict:
+    """Comms' tunables (poll period and floor, how many pings a tick triages, the
+    classifier's time budget). See assets/comms.json; the prompts, queries and schema
+    in it are read by the core alone, which this front-end reaches through the
+    ``diplomat-core comms-*`` commands (:mod:`comms`).
+    """
+    return _read_json("comms.json")
+
+
+@functools.lru_cache(maxsize=1)
 def audit_categories() -> dict:
     """The shared audit/activity taxonomy (categories + action→category map).
 
