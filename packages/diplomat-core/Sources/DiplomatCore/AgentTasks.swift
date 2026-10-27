@@ -115,24 +115,29 @@ public enum AgentTaskQueue {
         "\(auditAction):\(number)"
     }
 
-    /// The two verbs a sweep's work is queued under — the same ones the Review-PRs
-    /// and Fix-issues spawns write to the activity feed, because each ask is that
-    /// spawn, split into one task per PR / per issue.
+    /// The verbs asked-for work is queued under. The first two are a sweep's — the
+    /// same ones the Review-PRs and Fix-issues spawns write to the activity feed,
+    /// because each ask is that spawn, split into one task per PR / per issue. The
+    /// third is a Comms investigation (`InvestigateConfig`), asked for in Slack: numbered
+    /// by the message's ts, so in a space of its own, and about no PR.
     public static let reviewAction = "review"
     public static let issuesAction = "issues"
-    public static let requestedActions: Set<String> = [reviewAction, issuesAction]
+    public static let investigateAction = InvestigateConfig.kind
+    public static let requestedActions: Set<String> = [reviewAction, issuesAction,
+                                                       investigateAction]
 
     /// The bands whose work waits behind the rest, nearest-first — a requested review,
-    /// then a requested issue fix, then a conflict fix, which waits behind everything.
-    /// Matched off the queue key rather than the job, because the operator's saved
-    /// arrangement is a list of keys and has to be banded the same way after a
-    /// restart, with no job to consult (`order`).
-    public static let lastBands: [Set<String>] = [[reviewAction], [issuesAction], ["conflicts"]]
+    /// then a requested issue fix, then an investigation, then a conflict fix, which
+    /// waits behind everything. Matched off the queue key rather than the job, because
+    /// the operator's saved arrangement is a list of keys and has to be banded the same
+    /// way after a restart, with no job to consult (`order`).
+    public static let lastBands: [Set<String>] = [[reviewAction], [issuesAction],
+                                                  [investigateAction], ["conflicts"]]
 
     /// Which band of the queue a task waits in: 0 for the monitors' own finds, 1 for a
-    /// review the operator asked for, 2 for an issue fix they asked for, 3 for a
-    /// conflict fix. Bands outrank the operator's arrangement; within one, the
-    /// arrangement decides.
+    /// review the operator asked for, 2 for an issue fix they asked for, 3 for an
+    /// investigation somebody asked for in Slack, 4 for a conflict fix. Bands outrank
+    /// the operator's arrangement; within one, the arrangement decides.
     ///
     /// A monitor's find is first because it is answering something GitHub is already
     /// owed — a review requested of me, a thread on my PR waiting on a reply — and
@@ -143,6 +148,11 @@ public enum AgentTaskQueue {
     /// buries a review the operator also asked for. Neither runs ahead of a monitor's
     /// find; a Review-PRs sweep of fifty drafts otherwise buries every review request
     /// behind it for a day.
+    ///
+    /// An investigation comes after both: it is speculative — a triage's reading of a
+    /// Slack message, not an ask the operator made of a known PR or issue — but a person
+    /// reported something and is waiting on the answer, which a conflict on my own PR
+    /// does not have.
     ///
     /// Resolving a conflict stays last: it is the one unit of work that another
     /// agent's run routinely makes unnecessary — a review-reply agent works the same
@@ -183,11 +193,14 @@ public enum AgentTaskQueue {
     ///
     /// Only ever asked about a task whose number is a PR's. An issue fix the operator
     /// asked for is numbered in the other space entirely, and the caller stands it
-    /// down rather than pricing issue #421 against the PRs closed this cycle.
+    /// down rather than pricing issue #421 against the PRs closed this cycle. An
+    /// investigation is numbered by a Slack ts and is about no PR at all, so it stands
+    /// here too, whatever `closed` holds: no PR closing can answer it.
     public static func stillOwed(auditAction: String, prNumber: Int,
                                  conflicting: Set<Int>,
                                  owingReply: Set<Int>,
                                  closed: Set<Int>) -> Bool {
+        if auditAction == investigateAction { return true }
         if closed.contains(prNumber) { return false }
         switch auditAction {
         case "conflicts":    return conflicting.contains(prNumber)
@@ -218,8 +231,8 @@ public enum AgentTaskQueue {
     /// with anything queued is by definition one that never asked a peer. Peer-owned work leaves the queue when the drain
     /// reaches it and the mesh answers.)
     ///
-    /// Requested reviews, then requested issue fixes, then conflict fixes fall to the
-    /// back whatever order they were found in (`band`). The monitors find their work
+    /// Requested reviews, then requested issue fixes, then investigations, then conflict
+    /// fixes fall to the back whatever order they were found in (`band`). The monitors find their work
     /// mid-cycle — the conflict reconciler runs before the review-request fetch even
     /// begins — so without the bands a poll's own sequence would decide, and a sweep of
     /// fifty drafts offered first would hold up every review GitHub is waiting on.

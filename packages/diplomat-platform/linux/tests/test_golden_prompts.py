@@ -25,7 +25,18 @@ from diplomat_runtime.issuetarget import IssueTarget  # noqa: E402
 from diplomat_runtime.prtarget import PRTarget  # noqa: E402
 from diplomat_runtime.review import ReviewConfig  # noqa: E402
 
+from diplomat_runtime import promptcore  # noqa: E402
+
 GOLDEN_DIR = Path(__file__).resolve().parents[3] / "diplomat-core" / "assets" / "golden-prompts"
+
+
+class _CorePayload(dict):
+    """A ``build-prompt`` payload with no Python config class in front of it: the Comms
+    prompts are handed to ``diplomat-core`` as the JSON its own CLI writes
+    (``comms-effect``) or a CommsSettings object."""
+
+    def build_prompt(self) -> str:
+        return promptcore.build_prompt(dict(self))
 
 # The gh-authenticated viewer the goldens were generated with (see main.swift).
 ME = "testuser"
@@ -65,6 +76,18 @@ GOLDEN_MODES: dict[str, object] = {
     "issues-features-max": lambda: IssueConfig(
         depth="max", me=ME, include_features=True
     ).for_issue(421),
+    # Comms: the investigate agent's prompt (main.swift's commsGoldenInvestigate), and
+    # the triage call's instructions.
+    "investigate": lambda: _CorePayload(
+        kind="investigate", number=1508284197000015, messageID="C1:1508284197.000015",
+        sender="alice", channel="#general",
+        permalink="https://example.slack.com/archives/C1/p1508284197000015",
+        text="The login screen crashes on Android 14 when I tap Sign in.",
+        summary="login page crashes",
+        reportPath="/home/testuser/.diplomat/comms/reports/1508284197000015.md",
+        owner="software-mansion", repo="argent"),
+    "comms-classifier": lambda: _CorePayload(
+        kind="comms-classifier", owner="software-mansion", repo="argent", login=ME),
 }
 
 

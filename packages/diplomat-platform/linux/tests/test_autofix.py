@@ -2431,20 +2431,58 @@ def test_requested_work_waits_behind_the_monitors_and_ahead_of_a_conflict_fix():
     the read, where a Fix-issues sweep is our own backlog with nothing blocked on it —
     so a sweep of fifty issues never buries a review the operator also asked for."""
     order = autofix.queue_order
-    offered = ["conflicts:1", "review:2", "review-req:3", "review-reply:4", "issues:5"]
+    offered = ["conflicts:1", "investigate:6", "review:2", "review-req:3", "review-reply:4",
+               "issues:5"]
     assert order(offered, []) == ["review-req:3", "review-reply:4",
-                                  "review:2", "issues:5", "conflicts:1"]
+                                  "review:2", "issues:5", "investigate:6", "conflicts:1"]
     # The arrangement cannot lift one out of its band: a saved list that drags the issue
-    # fix ahead still drains the review before it.
-    assert order(offered, ["issues:5", "conflicts:1", "review-req:3"]) == [
-        "review-req:3", "review-reply:4", "review:2", "issues:5", "conflicts:1"
+    # fix ahead still drains the review before it, and one that drags the conflict fix
+    # ahead of the investigation still runs it last.
+    assert order(offered, ["issues:5", "conflicts:1", "investigate:6", "review-req:3"]) == [
+        "review-req:3", "review-reply:4", "review:2", "issues:5", "investigate:6",
+        "conflicts:1"
     ]
     assert (autofix.queue_band("review:2"), autofix.queue_band("issues:5"),
-            autofix.queue_band("conflicts:1")) == (1, 2, 3)
+            autofix.queue_band("investigate:6"),
+            autofix.queue_band("conflicts:1")) == (1, 2, 3, 4)
+    # An investigation is its own band: a drag into the issue band is refused.
+    assert (autofix.queue_reorder(["issues:5", "investigate:6"], "investigate:6", "issues:5")
+            == ["issues:5", "investigate:6"])
     # Review is its own band ahead of issues, so it drains first however the two were
     # arranged.
     assert (order(["review:1", "issues:2"], ["issues:2"])
             == ["review:1", "issues:2"])
+
+
+def test_still_owed_retires_only_what_this_poll_can_answer():
+    """Twin of the smoke's stillOwed checks: a closed PR retires every PR verb, the two
+    fetch-backed verbs follow their fetch, and an investigation — about no PR, numbered
+    by a Slack ts — stands whatever closed, even a PR that happens to share its number."""
+    owed = autofix.still_owed
+    assert owed("conflicts", 8, {7}, {8}, set()) is False
+    assert owed("conflicts", 7, {7}, set(), set()) is True
+    assert owed("review-reply", 8, {8}, set(), set()) is False
+    assert owed("review-req", 3, set(), set(), set()) is True
+    assert owed("review-req", 3, set(), set(), {3}) is False
+    assert owed("review", 31, set(), set(), {31}) is False
+    assert owed("conflicts", 7, {7}, set(), {7}) is False
+    assert owed("investigate", 1508284197000015, set(), set(), {1508284197000015}) is True
+
+
+def test_an_investigation_is_asked_for_work_with_the_label_the_core_gave_it():
+    """The Comms ask is a RequestedWork like a sweep's: cancellable, keyed by its verb,
+    and labelled by ``InvestigateConfig.label`` rather than as a review of a ts."""
+    config = {"kind": "investigate", "number": 1508284197000015,
+              "label": "Investigate · Slack · alice · login page crashes"}
+    work = autofix.RequestedWork(number=1508284197000015, url="https://x.slack.com/p1",
+                                 author="", config=config)
+    assert work.action == autofix.QUEUE_INVESTIGATE_ACTION == "investigate"
+    assert work.key == "investigate:1508284197000015"
+    assert work.label == "Investigate · Slack · alice · login page crashes"
+    assert autofix.QUEUE_REQUESTED_ACTIONS == {"review", "issues", "investigate"}
+    job = autofix.AgentJob(kind="investigate", audit_action="investigate", label=work.label,
+                           prompt="p")
+    assert job.requested
 
 
 def test_queue_reorder_can_reach_every_position():

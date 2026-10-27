@@ -1856,17 +1856,27 @@ check(AgentTaskQueue.reorder(["a", "b"], moving: "z", onto: "a") == ["a", "b"]
 // PARITY: diplomat-platform/linux/tests/test_autofix.py asserts the same arrangements —
 // the band is the one rule that outranks the operator's, so the two front-ends must
 // not disagree about where a conflict fix waits.
-check(AgentTaskQueue.band("conflicts:1") == 3 && AgentTaskQueue.band("review:2") == 1
-      && AgentTaskQueue.band("issues:3") == 2
+check(AgentTaskQueue.band("conflicts:1") == 4 && AgentTaskQueue.band("investigate:9") == 3
+      && AgentTaskQueue.band("review:2") == 1 && AgentTaskQueue.band("issues:3") == 2
       && AgentTaskQueue.band("review-req:4") == 0 && AgentTaskQueue.band("a") == 0,
-      "a conflict fix bands last, a requested review ahead of a requested issue fix and "
-      + "both behind the monitors' own finds, everything else — including a verbless "
-      + "key — first")
-check(AgentTaskQueue.order(offered: ["conflicts:1", "review:2", "review-req:3",
+      "a conflict fix bands last, behind an investigation, which waits behind a requested "
+      + "issue fix, which waits behind a requested review, all behind the monitors' own "
+      + "finds; everything else — including a verbless key — first")
+check(AgentTaskQueue.order(offered: ["conflicts:1", "investigate:6", "review:2", "review-req:3",
                                      "review-reply:4", "issues:5"], saved: [])
-      == ["review-req:3", "review-reply:4", "review:2", "issues:5", "conflicts:1"],
+      == ["review-req:3", "review-reply:4", "review:2", "issues:5", "investigate:6", "conflicts:1"],
       "what GitHub is owed runs before the sweeps the operator asked for, which run "
-      + "before the conflict fix another agent may make unnecessary")
+      + "before an investigation, which runs before the conflict fix another agent may "
+      + "make unnecessary")
+check(AgentTaskQueue.order(offered: ["investigate:6", "issues:5", "conflicts:1"],
+                           saved: ["conflicts:1", "investigate:6", "issues:5"])
+      == ["issues:5", "investigate:6", "conflicts:1"],
+      "an investigation's band holds against the operator's arrangement either way")
+check(AgentTaskQueue.reorder(["issues:5", "investigate:6"], moving: "investigate:6",
+                             onto: "issues:5") == ["issues:5", "investigate:6"],
+      "an investigation cannot be dragged out of its band")
+check(AgentTaskQueue.requestedActions == ["review", "issues", "investigate"],
+      "an investigation is asked-for work, cancellable like the sweeps'")
 check(AgentTaskQueue.order(offered: ["review:1", "issues:2"], saved: ["issues:2"])
       == ["review:1", "issues:2"],
       "a requested review is its own band ahead of issues, so it drains first however "
@@ -1929,6 +1939,9 @@ check(AgentTaskQueue.stillOwed(auditAction: "review", prNumber: 31,
 check(AgentTaskQueue.stillOwed(auditAction: "conflicts", prNumber: 7,
                                conflicting: [7], owingReply: [], closed: [7]) == false,
       "closed outranks a fetch that still calls the PR conflicting")
+check(AgentTaskQueue.stillOwed(auditAction: "investigate", prNumber: 1508284197000015,
+                               conflicting: [], owingReply: [], closed: [1508284197000015]),
+      "an investigation is about no PR, so no PR closing retires it, even one of its number")
 
 section("agent state: what every dispatched run resolves to")
 // PARITY: the whole scenario table lives in
@@ -3122,6 +3135,27 @@ check(AuditCategory.of(action: "mesh-dispatch") == .mesh)
 check(AuditCategory.of(action: "mesh-dispatch-failed") == .mesh)
 check(AuditCategory.of(action: "mesh-spawn") == .mesh)
 check(AuditCategory.of(action: "mesh-stop") == .mesh, "stopping a node left running is a Mesh row")
+// Comms (the Slack watcher) rows, its own chip placed after Mesh.
+for verb in ["comms-ping", "comms-review", "comms-fix", "comms-bump", "comms-investigate",
+             "comms-error", "comms-recovered"] {
+    check(AuditCategory.of(action: verb) == .comms, "\(verb) is a Comms row")
+}
+check(AuditCategory.displayOrder.firstIndex(of: .comms) == AuditCategory.displayOrder.firstIndex(of: .mesh)! + 1
+      && AuditCategory.comms.title == "Comms"
+      && AuditCategory.comms.symbol == "bubble.left.and.bubble.right.fill",
+      "the Comms chip sits after Mesh")
+// The JSON twin the Linux applet reads agrees with the Swift enum, category for category.
+do {
+    let url = try CoreAssets.assetsDir().appendingPathComponent("audit-categories.json")
+    let obj = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+    let ids = (obj?["categories"] as? [[String: Any]])?.compactMap { $0["id"] as? String } ?? []
+    check(ids == AuditCategory.displayOrder.map(\.rawValue),
+          "audit-categories.json lists the Swift categories in order: \(ids)")
+    let actions = obj?["actions"] as? [String: String] ?? [:]
+    for (verb, cat) in actions {
+        check(AuditCategory.of(action: verb).rawValue == cat, "\(verb) maps the same on both sides")
+    }
+}
 // Device / health / anything unmapped falls through to System so no row is uncategorized.
 check(AuditCategory.of(action: "kill-device") == .system)
 check(AuditCategory.of(action: "repair-done") == .system)
@@ -3132,6 +3166,9 @@ check(AuditCategory.of(action: "warn") == .system)
 check(AuditCategory.of(action: "totally-new-verb") == .system, "unknown verbs never vanish")
 check(AuditCategory.displayOrder.count == AuditCategory.allCases.count)
 print("audit category assertions passed")
+
+try commsSmoke()
+print("comms assertions passed")
 
 // ---- Golden prompts (cross-platform parity) ----
 // Every prompt mode both front-ends can assemble is compared byte-for-byte against a
@@ -3169,6 +3206,10 @@ let goldenModes: [(String, String)] = [
                                      commentOnIssue: false).forIssue(421).buildPrompt()),
     ("issues-features-max", IssueConfig(depth: "max", me: goldenMe,
                                         includeFeatures: true).forIssue(421).buildPrompt()),
+    // Comms: the investigate agent's prompt, and the triage call's instructions.
+    ("investigate", commsGoldenInvestigate.buildPrompt()),
+    ("comms-classifier", CommsClassifier.prompt(settings: CommsSettings(
+        owner: "software-mansion", repo: "argent", login: goldenMe))),
 ]
 let goldenDir = try CoreAssets.assetsDir().appendingPathComponent("golden-prompts")
 if ProcessInfo.processInfo.environment["DIPLOMAT_GOLDEN_WRITE"] == "1" {

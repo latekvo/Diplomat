@@ -29,6 +29,8 @@ public enum AuditCategory: String, CaseIterable, Sendable {
     case bans
     /// LAN mesh coordination: peers appearing/vanishing, duty takeovers, dispatches.
     case mesh
+    /// Comms, the Slack watcher: pings, what triage did about them, and its poll health.
+    case comms
     /// Everything else: device kills/repairs, allocator install, poll + spawn health.
     case system
 
@@ -45,6 +47,7 @@ public enum AuditCategory: String, CaseIterable, Sendable {
         case .merge:      return "Merges"
         case .bans:       return "Bans"
         case .mesh:       return "Mesh"
+        case .comms:      return "Comms"
         case .system:     return "System"
         }
     }
@@ -62,6 +65,7 @@ public enum AuditCategory: String, CaseIterable, Sendable {
         case .merge:      return "checkmark.seal.fill"
         case .bans:       return "hand.raised.fill"
         case .mesh:       return "point.3.connected.trianglepath.dotted"
+        case .comms:      return "bubble.left.and.bubble.right.fill"
         case .system:     return "gearshape.fill"
         }
     }
@@ -94,6 +98,9 @@ public enum AuditCategory: String, CaseIterable, Sendable {
         case "mesh-up", "mesh-peer-up", "mesh-peer-down", "mesh-takeover",
              "mesh-dispatch", "mesh-dispatch-failed", "mesh-spawn", "mesh-stop":
             return .mesh
+        case "comms-ping", "comms-review", "comms-fix", "comms-bump", "comms-investigate",
+             "comms-error", "comms-recovered":
+            return .comms
         default:
             return .system
         }

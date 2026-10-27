@@ -290,7 +290,7 @@ packages/
       golden-prompts/            canonical prompt outputs, asserted byte-for-byte by BOTH platforms' tests
     Sources/
       DiplomatCore/            ← Foundation-only Swift; loads assets/. Builds on macOS AND Linux.
-        CoreAssets.swift           resolves + decodes assets/ (config, catalog, filters, review, conflicts, audit, graphql)
+        CoreAssets.swift           resolves + decodes assets/ (config, catalog, filters, review, conflicts, audit, comms, graphql)
         GH.swift                   gh CLI shell-out (GraphQL via assets/graphql)
         Models.swift               domain models, Filters, Fmt, API
         ToolKind.swift             tool catalog enum + DisplayItem/LookupResult + pure ToolData engine
@@ -312,6 +312,12 @@ packages/
         AgentRegistry.swift        the durable run book both applets read/write (~/.diplomat/agents)
         ApiErrorMatch.swift        "is this a Claude API error?" matcher for the watcher
         AuditCategory.swift        audit action verb → activity-feed filter category (mirrors assets/audit-categories.json)
+        Comms.swift                Comms (the Slack watcher): its types, the triage answer's validation, what
+                                   each answer does, and the investigate prompt (assets/comms.json)
+        SlackAPI.swift             Slack Web API reads (auth.test, search.messages) + who becomes a ping
+        CommsWatch.swift           one watcher tick: search, watermark, the sandboxed `claude -p` classifier
+        CommsLog.swift             ~/.diplomat/comms/events.jsonl, both applets' log, folded for the screen
+        LoginShell.swift           locating a CLI through the operator's login shell, past any alias
         Mesh.swift                 mesh model: decodes assets/mesh.json + ~/.diplomat/mesh/state.json, pure placement
         Telemetry.swift            folds the telemetry ledger + every figure on the Telemetry screen: window
                                    calibration, the distribution + its confidence interval, the quota readings,
@@ -320,7 +326,8 @@ packages/
       DiplomatCoreCLI/         ← thin `build-prompt` CLI over the core (ships as the `diplomat-core` binary),
                                  so the Linux front-end shells out for Review/Issues/Conflicts/Audit prompts
                                  instead of reimplementing them; `tool-data` and `telemetry` expose the two
-                                 engines the Linux side reimplements, so the parity tests can diff them
+                                 engines the Linux side reimplements, so the parity tests can diff them;
+                                 `comms-tick`, `comms-feed` and `comms-effect` run Comms for the Linux applet
 
   diplomat-runtime/            ← the platform-neutral Python half: the twin of diplomat-core plus
                                  everything below the UI that has no Swift counterpart

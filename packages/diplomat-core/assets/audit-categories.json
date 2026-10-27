@@ -11,6 +11,7 @@
     { "id": "merge", "title": "Merges", "sfSymbol": "checkmark.seal.fill", "emoji": "✅", "linuxGlyph": "✓", "color": "green", "colorHex": "#34C759" },
     { "id": "bans", "title": "Bans", "sfSymbol": "hand.raised.fill", "emoji": "🚫", "linuxGlyph": "⊘", "color": "red", "colorHex": "#FF3B30" },
     { "id": "mesh", "title": "Mesh", "sfSymbol": "point.3.connected.trianglepath.dotted", "emoji": "🕸️", "linuxGlyph": "⬡", "color": "teal", "colorHex": "#30B0C7" },
+    { "id": "comms", "title": "Comms", "sfSymbol": "bubble.left.and.bubble.right.fill", "emoji": "💬", "linuxGlyph": "✉", "color": "blue", "colorHex": "#007AFF" },
     { "id": "system", "title": "System", "sfSymbol": "gearshape.fill", "emoji": "⚙️", "linuxGlyph": "⚙", "color": "gray", "colorHex": "#8E8E93" }
   ],
   "actions": {
@@ -34,7 +35,14 @@
     "mesh-dispatch": "mesh",
     "mesh-dispatch-failed": "mesh",
     "mesh-spawn": "mesh",
-    "mesh-stop": "mesh"
+    "mesh-stop": "mesh",
+    "comms-ping": "comms",
+    "comms-review": "comms",
+    "comms-fix": "comms",
+    "comms-bump": "comms",
+    "comms-investigate": "comms",
+    "comms-error": "comms",
+    "comms-recovered": "comms"
   },
   "fallback": "system"
 }
