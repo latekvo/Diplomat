@@ -23,9 +23,7 @@ struct CommsView: View {
         return VStack(alignment: .leading, spacing: 8) {
             header
             statusLine
-            if showSetup {
-                setupCard
-            } else if let error = store.commsError {
+            if let error = store.commsError {
                 errorBanner(error)
             }
             if !items.isEmpty {
@@ -44,10 +42,6 @@ struct CommsView: View {
             store.markCommsSeen()
         }
         .onChange(of: store.commsItems) { _ in store.markCommsSeen() }
-    }
-
-    private var showSetup: Bool {
-        store.commsTokenMissing || (!store.commsEnabled && store.commsItems.isEmpty)
     }
 
     // MARK: - Header and status
@@ -81,7 +75,7 @@ struct CommsView: View {
         let secs = Int(Store.commsPollInterval)
         var parts: [String] = []
         if let me = store.commsIdentity {
-            parts.append("Watching Slack as @\(me.handle) in workspace \(me.teamID)")
+            parts.append("Watching Slack as " + Store.commsWho(me))
         } else {
             parts.append("Watching Slack")
         }
@@ -99,56 +93,6 @@ struct CommsView: View {
             Spacer(minLength: 0)
         }
         .cardChrome(fill: Color.orange.opacity(0.14))
-    }
-
-    // MARK: - Setup
-
-    private static let setupIntro = """
-        Comms reads Slack with a user token (xoxp-…) of your own: the DMs you get, the \
-        messages that @-mention you, and the ones carrying a keyword from Settings. Each \
-        is triaged by one claude call with no tools, and an ask for a review, a fix, a \
-        bump or an investigation goes into the queue like any other.
-        """
-
-    private static let setupSteps = """
-        1. Create a Slack app for your workspace and give it the user token scope \
-        search:read. Install it and copy the User OAuth Token.
-        2. Store it in your login Keychain (it prompts for the token, so it never lands \
-        in your shell history):
-        """
-
-    private static let setupAfter = """
-        3. Switch Comms on in Settings and press Test. The token stays in the Keychain: \
-        ~/.diplomat/config.json holds only the item's name.
-        """
-
-    private var setupCard: some View {
-        let command = CommsToken.addCommand(item: AppConfig.slackTokenKeychainItem)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "key.fill").font(.system(size: 11)).foregroundStyle(.blue)
-                Text("Connect Slack").font(.system(size: 12, weight: .semibold))
-            }
-            Text(CommsView.setupIntro).font(.system(size: 11)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(CommsView.setupSteps).font(.system(size: 11))
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 6) {
-                Text(command).font(.system(size: 11, design: .monospaced))
-                    .textSelection(.enabled)
-                Spacer(minLength: 4)
-                Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(command, forType: .string)
-                }
-                .controlSize(.small)
-            }
-            .cardChrome(fill: Color.gray.opacity(0.14), padding: 6)
-            Text(CommsView.setupAfter).font(.system(size: 11))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardChrome(fill: Color.blue.opacity(0.08), padding: 10)
     }
 
     // MARK: - Pings

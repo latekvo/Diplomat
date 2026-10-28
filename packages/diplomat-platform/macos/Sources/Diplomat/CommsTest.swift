@@ -332,6 +332,30 @@ enum CommsTest {
         await apply([])
         check("…and its recovery once", store.commsError == nil
                 && feed("comms-recovered").count == 1)
+
+        // No Slack login: a real tick against a Claude Code directory holding none (which
+        // also keeps the Keychain unread) answers notSignedIn, and the screen's banner
+        // says so.
+        let overridden = ProcessInfo.processInfo.environment[SlackToken.envVar]
+        unsetenv(SlackToken.envVar)
+        setenv("DIPLOMAT_CLAUDE_DIR", scratch.appendingPathComponent("claude").path, 1)
+        let loginless = CommsWatch.tick(settings: store.commsSettings,
+                                        dir: scratch.appendingPathComponent("nologin"),
+                                        classify: { _ in CommsDecision(action: .none, number: 0,
+                                                                       summary: "", reason: "") })
+        unsetenv("DIPLOMAT_CLAUDE_DIR")
+        if let overridden { setenv(SlackToken.envVar, overridden, 1) }
+        await store.applyComms(loginless)
+        check("with no Slack login a tick's error, and the banner, is notSignedIn's text",
+              loginless.error == SlackError.notSignedIn.errorDescription && loginless.me == nil
+                && store.commsError == SlackError.notSignedIn.errorDescription)
+        await apply([])
+        check("the Comms screen names the login's workspace by name",
+              Store.commsWho(CommsIdentity(userID: "U0ME", teamID: "Software Mansion",
+                                           handle: "latekvo")) == "@latekvo in Software Mansion"
+                && Store.commsWho(CommsIdentity(userID: "U0ME", teamID: "", handle: "latekvo"))
+                == "@latekvo")
+
         await apply([], notices: ["messages before 09:00 were not triaged"])
         check("a tick's notice is an activity line, not an error",
               store.commsError == nil && feed("comms-notice").map(\.detail)
@@ -616,21 +640,21 @@ enum CommsTest {
         check("…and the floor still holds", period("1") == Double(model?.minPollSecs ?? 20))
 
         // MARK: the Settings pill
-        let longError = "Slack rejected the token (invalid_auth): sign in again and store a new one"
+        let longError = SlackError.unauthorized.errorDescription ?? ""
         check("the Settings pill reads the last error, cut to fit",
               SettingsView.commsErrorPill("invalid_auth") == "invalid_auth"
                 && SettingsView.commsErrorPill(longError) == Store.snippet(longError, max: 48))
 
         // MARK: the agent's environment
-        // The terminal a spawn is typed into, or its tmux server, may carry the token
-        // (`launchctl setenv`, a server started from such a shell).
+        // The terminal a spawn is typed into, or its tmux server, may carry the Slack login
+        // override (`launchctl setenv`, a server started from such a shell).
         let spawnDir = scratch.appendingPathComponent("spawn")
         let spawnBin = spawnDir.appendingPathComponent("bin")
         try? FileManager.default.createDirectory(at: spawnBin, withIntermediateDirectories: true)
         let seenSlack = spawnDir.appendingPathComponent("slack")
         let agentRan = spawnDir.appendingPathComponent("ran")
         let fakeClaude = spawnBin.appendingPathComponent("claude")
-        try? ("#!/bin/sh\nprintenv \(CommsToken.envVar) > '\(seenSlack.path)'\n"
+        try? ("#!/bin/sh\nprintenv \(SlackToken.envVar) > '\(seenSlack.path)'\n"
               + ": > '\(agentRan.path)'\n")
             .write(to: fakeClaude, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755],
@@ -641,7 +665,7 @@ enum CommsTest {
             pidPath: spawnDir.appendingPathComponent("pid").path, runner: .claude, port: 0)
         // Or the operator's rc exports it, which every interactive shell sources again.
         for rc in [".zshrc", ".bashrc"] {
-            try? "export \(CommsToken.envVar)=xoxp-from-rc\n"
+            try? "export \(SlackToken.envVar)=slack-login-from-rc\n"
                 .write(to: spawnDir.appendingPathComponent(rc), atomically: true, encoding: .utf8)
         }
         for shell in ["/bin/sh", "/bin/zsh", "/bin/bash"] {
@@ -652,14 +676,14 @@ enum CommsTest {
             sh.arguments = ["-c", AgentSpawner.shellCommand(plan)]
             sh.environment = ["PATH": "\(spawnBin.path):/usr/bin:/bin", "SHELL": shell,
                               "HOME": spawnDir.path, "ENV": "",
-                              CommsToken.envVar: "xoxp-the-operators-own"]
+                              SlackToken.envVar: "the-operators-slack-login"]
             sh.standardInput = FileHandle.nullDevice
             sh.standardOutput = Pipe()
             sh.standardError = Pipe()
             try? sh.run()
             sh.waitUntilExit()
             let seen = (try? String(contentsOf: seenSlack, encoding: .utf8)) ?? "nil"
-            check("an agent never holds the Slack token, from its terminal or the rc "
+            check("an agent never holds the Slack login override, from its terminal or the rc "
                   + "(SHELL=\(shell); seen \(seen.debugDescription))",
                   FileManager.default.fileExists(atPath: agentRan.path) && seen == "")
         }

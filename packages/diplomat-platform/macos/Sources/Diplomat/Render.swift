@@ -229,7 +229,7 @@ enum Render {
         case let s where s.hasPrefix("comms"):
             // "comms-panel" draws the screen inside the whole panel (header button, screen
             // swap); "comms-badge" the main panel under the unread badge, which the open
-            // screen clears; "comms-empty" a machine with no token (the setup steps).
+            // screen clears; "comms-empty" a machine whose Claude Code has no Slack login.
             let _ = seedComms(store, empty: s.contains("empty"))
             if s.contains("panel") {
                 ContentView(showComms: true)
@@ -447,7 +447,7 @@ enum Render {
     @MainActor
     private static func seedCommsError(_ store: Store) -> Bool {
         store.commsEnabled = true          // headless-guarded: persists nothing, polls nothing
-        store.commsError = "Slack rejected the token (invalid_auth): sign in again and store a new one"
+        store.commsError = SlackError.unauthorized.errorDescription
         return true
     }
 
@@ -463,14 +463,15 @@ enum Render {
         try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         setenv("DIPLOMAT_COMMS_DIR", scratch.path, 1)
         if empty {
-            store.commsEnabled = false   // headless-guarded: persists nothing, polls nothing
-            store.commsTokenMissing = true
+            store.commsEnabled = true    // headless-guarded: persists nothing, polls nothing
+            store.commsLastPoll = Date().addingTimeInterval(-20)
+            store.commsError = SlackError.notSignedIn.errorDescription
             store.refreshComms()
             return true
         }
 
         let now = Date()
-        let me = CommsIdentity(userID: "U07LATEKVO", teamID: "T01SWMANSION", handle: "latekvo")
+        let me = CommsIdentity(userID: "U07LATEKVO", teamID: "Software Mansion", handle: "latekvo")
         func message(_ minutesAgo: Double, _ sender: String, _ channel: String,
                      _ reasons: [CommsReason], _ text: String,
                      keyword: String? = nil) -> CommsMessage {

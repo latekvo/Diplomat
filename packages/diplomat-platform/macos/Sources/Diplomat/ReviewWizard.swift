@@ -433,9 +433,9 @@ enum AgentSpawner {
     /// fires on EXIT, though, and finishing a turn is not exiting — which is what the
     /// hooks in `plan.settingsPath` answer.
     ///
-    /// The Slack token (`CommsToken.envVar`) is unset in both shells: a terminal or tmux
-    /// server started with it in its environment, or an rc exporting it, would hand it to
-    /// an agent reading untrusted Slack text.
+    /// The Slack login override (`SlackToken.envVar`) is unset in both shells: a terminal
+    /// or tmux server started with it in its environment, or an rc exporting it, would
+    /// hand it to an agent reading untrusted Slack text.
     ///
     /// With a `plan.tokenItem`, everything after that `unset` runs behind `tokenExport`,
     /// whose export the agent inherits.
@@ -444,12 +444,12 @@ enum AgentSpawner {
                                              model: AppConfig.agentModel, port: plan.port,
                                              serviceSession: plan.serviceSession,
                                              settingsFile: plan.settingsPath)
-        let inner = "printf %s $$ > \(shq(plan.pidPath)); unset \(CommsToken.envVar); \(agent)"
+        let inner = "printf %s $$ > \(shq(plan.pidPath)); unset \(SlackToken.envVar); \(agent)"
         var body = "\"$SHELL\" -i -c \(shq(inner)); " + sentinel(plan.donePath)
         if let token = tokenExport(keychainItem: plan.tokenItem) {
             body = "\(token) && { \(body); }"
         }
-        return "cd \(shq(repoPath)) 2>/dev/null; unset \(CommsToken.envVar); " + body
+        return "cd \(shq(repoPath)) 2>/dev/null; unset \(SlackToken.envVar); " + body
     }
 
     /// Appended to the audit line of a run spawned behind `tokenExport`. Same text on

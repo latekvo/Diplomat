@@ -482,15 +482,6 @@ final class Store: ObservableObject {
     @Published var commsSeenAt: Date {
         didSet { persist(commsSeenAt, forKey: Keys.commsSeenAt) }
     }
-    /// As typed; blank is the default (`AppConfig.slackTokenKeychainItem`). In config.json,
-    /// not UserDefaults, beside `agentTokenKeychainItem` and the Linux `slackTokenFile`.
-    @Published var slackTokenKeychainItem: String {
-        didSet {
-            guard !Headless.active else { return }
-            AppConfig.set(AppConfig.slackTokenKeychainItemKey,
-                          slackTokenKeychainItem.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-    }
 
     // MARK: Comms state the screen draws
 
@@ -505,8 +496,6 @@ final class Store: ObservableObject {
     @Published var commsError: String?
     @Published var commsIdentity: CommsIdentity?
     @Published var commsLastPoll: Date?
-    /// Shows the screen's setup instructions instead of an error banner.
-    @Published var commsTokenMissing = false
     @Published var commsTestResult: String?
     @Published var commsTesting = false
 
@@ -805,7 +794,6 @@ final class Store: ObservableObject {
         // Absent, everything already logged reads as seen: an upgrade must not open on a
         // badge for history the operator never saw being kept.
         commsSeenAt = defaults.object(forKey: Keys.commsSeenAt) as? Date ?? Date()
-        slackTokenKeychainItem = AppConfig.string(AppConfig.slackTokenKeychainItemKey)
         queuedTaskOrder = defaults.stringArray(forKey: Keys.queuedTaskOrder) ?? []
         requestedWork = Store.loadRequestedWork()
         if hiddenTools.contains(selected.rawValue),

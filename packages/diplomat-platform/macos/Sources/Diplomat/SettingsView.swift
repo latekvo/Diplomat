@@ -692,9 +692,9 @@ struct SettingsView: View {
                            stacked: true) {
                     commsField(SettingsView.commsDefaultModel, $store.commsModel, symbol: "cpu")
                 }
-                SettingRow(title: "Token Keychain item", summary: store.commsTestResult,
-                           detail: SettingsView.commsTokenDetail, stacked: true) {
-                    commsTokenRow
+                SettingRow(title: "Slack login", summary: store.commsTestResult,
+                           detail: SettingsView.commsLoginDetail) {
+                    commsTestButton
                 }
             }
         }
@@ -724,23 +724,19 @@ struct SettingsView: View {
         }
     }
 
-    private var commsTokenRow: some View {
-        HStack(spacing: 6) {
-            commsField(AppConfig.slackTokenKeychainDefault, $store.slackTokenKeychainItem,
-                       symbol: "key.fill")
-            Button {
-                Task { await store.testSlackToken() }
-            } label: {
-                if store.commsTesting {
-                    ProgressView().controlSize(.mini)
-                } else {
-                    Text("Test")
-                }
+    private var commsTestButton: some View {
+        Button {
+            Task { await store.testSlackLogin() }
+        } label: {
+            if store.commsTesting {
+                ProgressView().controlSize(.mini)
+            } else {
+                Text("Test")
             }
-            .controlSize(.small)
-            .disabled(store.commsTesting)
-            .help("Ask Slack who this token is (auth.test)")
         }
+        .controlSize(.small)
+        .disabled(store.commsTesting)
+        .help("Ask Slack who Claude Code's Slack login is")
     }
 
     private func commsField(_ placeholder: String, _ text: Binding<String>,
@@ -769,22 +765,23 @@ struct SettingsView: View {
     static func commsErrorPill(_ error: String) -> String { Store.snippet(error, max: 48) }
 
     private static let commsDetail = """
-        Polls Slack's search with your user token: messages in your DMs, messages that \
-        @-mention you, and messages carrying a keyword, skipping your own, bots' and \
-        other workspaces'. Each new one is a ping on the Comms screen, and is triaged \
-        by one claude call that has no tools, no MCP servers and no settings, so a \
-        message cannot make it do anything but answer. An ask for a review of an open \
+        Searches Slack through Slack's MCP server, signed in as you: messages in your \
+        DMs, messages that @-mention you, and messages carrying a keyword, skipping your \
+        own, bots' and other workspaces'. Each new one is a ping on the Comms screen, \
+        and is triaged by one claude call that has no tools, no MCP servers and no \
+        settings, so a message cannot make it do anything but answer. An ask for a review of an open \
         PR or a fix of an open issue is queued at the front of its band; a bump moves \
         what is already queued; a reported problem queues an investigation agent that \
         writes a report and never pushes, comments or posts. Everything still waits for \
         a bay and answers to the ban list and the spending budget.
         """
 
-    private static let commsTokenDetail = """
-        The login-Keychain item the token is read from on each poll; only its name is \
-        kept in ~/.diplomat/config.json. Store the token with \
-        `security add-generic-password -a "$USER" -s diplomat-slack -w` (it prompts for \
-        it). The token needs the user scope search:read.
+    private static let commsLoginDetail = """
+        Comms borrows the login Claude Code holds for Slack's MCP server, read on each \
+        poll and never stored by Diplomat; no Slack app is needed. Without one, run /mcp \
+        in Claude Code and authenticate the Slack server. An expired login is refreshed \
+        through Claude Code (claude mcp list), at most once every \
+        \(((try? CoreAssets.comms())?.loginRefreshSecs ?? 600) / 60) minutes.
         """
 
     // MARK: Tool visibility
