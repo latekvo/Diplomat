@@ -78,7 +78,7 @@ GOLDEN_MODES: dict[str, object] = {
     # Comms: main.swift's commsGoldenInvestigate, and the triage call's instructions.
     "investigate": lambda: _CorePayload(
         kind="investigate", number=1508284197000015, messageID="C1:1508284197.000015",
-        sender="alice", channel="#general",
+        sender="alice", senderID="UALICE", channel="#general",
         permalink="https://example.slack.com/archives/C1/p1508284197000015",
         text="The login screen crashes on Android 14 when I tap Sign in.",
         summary="login page crashes",

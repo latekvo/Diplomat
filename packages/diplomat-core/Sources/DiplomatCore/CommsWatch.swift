@@ -308,12 +308,24 @@ public enum CommsWatch {
 
     public static let noToken = "no Slack token is configured"
 
+    /// Starts the reason of the `none` a banned sender's message gets in place of a
+    /// triage: its text never reaches a model.
+    public static let bannedPrefix = "sender banned: "
+
+    static func bannedReason(_ message: CommsMessage) -> String {
+        bannedPrefix + "\(message.sender) is on the prompt-injection ban list, so this was "
+            + "not triaged (un-ban them in the panel's Banned list)"
+    }
+
     /// The first tick only learns who the token is and sets the watermark to `now`, so
     /// turning Comms on triages no backlog; a watermark older than `catchUpHours` likewise
     /// moves up to `now` less `indexLagSecs`, and one `error` event names the skipped
     /// stretch. Otherwise the `comms.json` queries run, matches at or below the watermark
     /// or already `seen` drop, and the oldest `maxPerTick` are triaged. A query overflowing
     /// `maxSearchPages` is read newest first, and one `error` event names what went unread.
+    ///
+    /// A message from one of `settings.bannedSenders` is taken like any other but never
+    /// triaged: its decision is a `none` whose reason starts with `bannedPrefix`.
     ///
     /// Each message is saved as taken before its triage runs, so a tick that never returns
     /// hands it over on the next one (triaged, or as an interrupted `none`) and never
@@ -431,6 +443,12 @@ public enum CommsWatch {
             state.undelivered.append(CommsTickResult.Item(message: message,
                                                           decision: .none(interrupted)))
             state.save(in: dir)
+            if settings.bannedSenders.contains(message.userID) {
+                state.undelivered[state.undelivered.count - 1].decision =
+                    .none(bannedReason(message))
+                state.save(in: dir)
+                continue
+            }
             let decision = classify(message).checked(against: message)
             state.undelivered[state.undelivered.count - 1].decision = decision
             state.classifierError = decision.reason.hasPrefix(CommsClassifier.failurePrefix)
