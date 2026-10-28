@@ -193,9 +193,9 @@ and ⏻) swaps the panel to a settings screen:
   after **5** (0-60), and a device an agent holds is taken back after **30** (0-240),
   after which it counts as free. 0 turns either off. They are
   `deviceIdleFreeMinutes` and `deviceIdleLeasedMinutes` in `~/.diplomat/config.json`,
-  which the daemon re-reads every minute. A remote device pool, tried before the local
-  devices, has no control here yet: `deviceRemoteProvider` in the same file names its
-  provider module ([allocator README](../packages/device-allocator/README.md#a-remote-device-pool)).
+  which the daemon re-reads every minute. The [Devices screen](devices.md) holds the same
+  controls, the device list, and the remote device pool
+  ([allocator README](../packages/device-allocator/README.md#a-remote-device-pool)).
 - **Mesh (LAN P2P)** - opt into [Diplomat Mesh](mesh.md):
   a toggle that starts/stops the local node (off by default), with live node/peer
   status. The node outlives the app, so a launch with the toggle off stops one an

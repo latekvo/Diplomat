@@ -176,6 +176,7 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   activity[-filtered] (audit feed + its filter chips)
                                                      #   wizard[-other|-specific[-mine|-theirs]|-wrong|-banned]
                                                      #   devices[-open|-procs]|conflicts[-other|-specific|-wrong]
+                                                     #   devices-screen[-remote[-away]|-off] (the Devices screen)
                                                      #   audit[-issues|-prs|-all]
                                                      #   mesh (⬡ screen over a synthetic topology); mesh-blocked
                                                      #   (the not-discoverable banner); mesh-reminder (trust modal)
@@ -199,8 +200,10 @@ DIPLOMAT_SPAWN_FOCUS_TEST=1 ...                  # E2E that background spawns ke
 DIPLOMAT_DEVICE_DUMP=1   ...                     # device-allocator paths + daemon state, printed, plus the
                                                      #   installed version and what (if anything) has drifted
 DIPLOMAT_ALLOCATOR_TEST=1 ...                    # the launch-time allocator decision: reinstall a stale copy,
-                                                     #   leave an uninstalled one alone. Shells no installer;
-                                                     #   exit code = verdict
+                                                     #   leave an uninstalled one alone; the Devices screen's
+                                                     #   actions against a stand-in installer in a scratch
+                                                     #   dir, and its poll stopping while hidden (flashes a
+                                                     #   2pt window at the screen's edge); exit code = verdict
 DIPLOMAT_MESH_STRAY_TEST=1 ...                   # a launch with the mesh off stops the node state.json names,
                                                      #   and not a reused pid, another dir's node or identity.
                                                      #   Scratch state dirs; exit code = verdict
@@ -361,6 +364,7 @@ packages/
         BanList.swift / AuditLog.swift   ban list (the daemon's banned.json) + the unified activity feed (audit.jsonl)
         DeviceAllocator.swift      allocator daemon state reader + installer bridge
         DeviceFocus.swift          click an in-use device → focus the holding agent's terminal
+        DevicesScreen.swift        the Devices screen: devices, allocator, remote pool
         Daemon.swift               first-run login-daemon opt-in (TTY Accept [y/N])
         Render.swift               headless ImageRenderer snapshots for UI checks
         Color+Hex.swift            Color ↔ "#RRGGBB" for persisted tint overrides

@@ -324,6 +324,15 @@ def isolated_app_config(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_device_allocator(tmp_path, monkeypatch):
+    """Point the allocator's state file and socket at an empty dir: a panel built here
+    otherwise draws the operator's leased devices, and its Free/Kill buttons would ask
+    their real daemon."""
+    monkeypatch.setenv("DA_BASE_DIR", str(tmp_path / "device-allocator"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_state_dir(tmp_path, monkeypatch):
     """Redirect ``~/.local/state/diplomat`` to a per-test temp dir: quitting the applet
     writes the operator-quit mark there, which would keep the operator's real tray from

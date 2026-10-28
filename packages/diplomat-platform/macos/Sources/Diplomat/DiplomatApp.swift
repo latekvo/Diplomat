@@ -197,10 +197,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in exit(await MeshStrayTest.run() ? 0 : 1) }
         }
         // Allocator-setup self-test: proves a launch reinstalls a stale allocator and
-        // leaves a deliberately-uninstalled one alone. Pure decision logic — shells no
-        // installer, reads no ~/.claude. Exit code = pass/fail.
+        // leaves a deliberately-uninstalled one alone, and drives the Devices screen's
+        // actions through a stand-in installer in a scratch dir. Reads no ~/.claude and
+        // calls no daemon. Exit code = pass/fail.
         if env["DIPLOMAT_ALLOCATOR_TEST"] == "1" {
-            exit(AllocatorSetupTest.run() ? 0 : 1)
+            Task { @MainActor in exit(await AllocatorSetupTest.run() ? 0 : 1) }
         }
         // Checkout-location self-test: proves the bundle szpont builds and launchd starts
         // names the checkout around it, a copy kept elsewhere names the one it recorded,
@@ -885,7 +886,17 @@ enum Dump {
                 + "· \(st.allocatedCount) in use · \(st.freeCount) free")
             for d in st.devices {
                 print("  [\(d.platform)] \(d.name ?? d.key) v\(d.version ?? "?") "
-                    + "status=\(d.status) owner=\(d.owner?.agentName ?? "—") handle=\(d.handle ?? "—")")
+                    + "status=\(d.status) owner=\(d.owner?.agentName ?? "—") handle=\(d.handle ?? "—") "
+                    + "source=\(d.source ?? "local")")
+            }
+            if let r = st.remote {
+                let extras = r.extras.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+                print("remote: provider=\(r.provider ?? "—") state=\(r.state) "
+                    + "reason=\(r.reason ?? "—") retryAt=\(r.retryAt.map { "\($0)" } ?? "—") \(extras)")
+                // The Devices screen's listing call, which never prompts a sign-in.
+                if r.state != "off" { print("remote devices: \(DeviceAllocator.remoteDevices())") }
+            } else {
+                print("remote: (none in the snapshot — this daemon has no remote pool)")
             }
         } else {
             print("state: (no state.json yet — daemon hasn't run)")

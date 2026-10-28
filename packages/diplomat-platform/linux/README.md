@@ -309,6 +309,8 @@ DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
     QT_QPA_PLATFORM=offscreen python -m diplomat_app   # panel|lookup|wizard|issues|conflicts|audit|devices|mesh
                                                        #   settings[-explain] (-explain opens every row's
                                                        #   long-form paragraph, the only state that draws them)
+                                                       #   devices-screen[-remote[-away]|-off] (the Devices
+                                                       #   screen: no pool, signing in, away, daemon off)
 DIPLOMAT_REFRESH_SECS=30 ./diplomat            # faster auto-refresh, for tuning
 ```
 

@@ -367,12 +367,13 @@ class SectionHeader(ClickableFrame):
     """A collapsible left-pane section header: glyph + TITLE + count + caption + chevron.
 
     Emits ``clicked`` (via ClickableFrame) so the panel can toggle the section body;
-    call :meth:`set_expanded` to flip the chevron.
+    call :meth:`set_expanded` to flip the chevron. A fixed ``chevron`` is for a header
+    that opens something rather than folding.
     """
 
     def __init__(self, *, glyph: str, title: str, count: int | None = None,
                  caption: str | None = None, expanded: bool = True,
-                 glyph_color: str = glyphs.MUTED) -> None:
+                 glyph_color: str = glyphs.MUTED, chevron: str | None = None) -> None:
         super().__init__()
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         row = QHBoxLayout(self)
@@ -393,7 +394,7 @@ class SectionHeader(ClickableFrame):
             cap.setStyleSheet(muted(9))
             row.addWidget(cap)
         row.addStretch(1)
-        self._chev = QLabel("▾" if expanded else "▸")
+        self._chev = QLabel(chevron or ("▾" if expanded else "▸"))
         self._chev.setStyleSheet(muted(10))
         row.addWidget(self._chev)
 
@@ -416,12 +417,16 @@ class ActivityRow(QFrame):
         row.setSpacing(8)
         row.addWidget(GlyphLabel(glyph, 18, glyph_color, font_px=13),
                       0, Qt.AlignmentFlag.AlignTop)
+        # Plain: a feed line quotes agent names and daemon messages, which Qt would
+        # otherwise guess to be HTML.
         d = QLabel(detail)
+        d.setTextFormat(Qt.TextFormat.PlainText)
         d.setWordWrap(True)
         d.setStyleSheet("font-size: 10px;")
         row.addWidget(d, 1)
         if source:
             badge = QLabel(source)
+            badge.setTextFormat(Qt.TextFormat.PlainText)
             badge.setStyleSheet(
                 f"color: {source_color}; background-color: {tint_bg(source_color, 0.15)};"
                 " border-radius: 5px; padding: 1px 5px; font-size: 8px; font-weight: 700;"
@@ -996,6 +1001,8 @@ class Pill(QLabel):
 
     def __init__(self, text: str = "", tint: str = "#8E8E93") -> None:
         super().__init__()
+        # A state word can come from the daemon or a provider; never read it as HTML.
+        self.setTextFormat(Qt.TextFormat.PlainText)
         self.set_state(text, tint)
 
     def set_state(self, text: str, tint: str = "#8E8E93") -> None:
@@ -1303,7 +1310,9 @@ class SettingRow(QWidget):
         # Under the control either way: half of these lines report what the control
         # currently resolves to (which handle is in force, where `cd` will land),
         # and a consequence reads wrong above its cause.
+        # Plain, like the detail below: a summary can quote a path or a daemon's words.
         self._summary = QLabel(summary or "")
+        self._summary.setTextFormat(Qt.TextFormat.PlainText)
         self._summary.setWordWrap(True)
         self._summary.setStyleSheet(muted(10))
         self._summary.setVisible(bool(summary))
@@ -1314,6 +1323,7 @@ class SettingRow(QWidget):
         # nowhere to put one when it acquires it.
         self._explain = False
         self._detail = QLabel(detail or "")
+        self._detail.setTextFormat(Qt.TextFormat.PlainText)
         self._detail.setWordWrap(True)
         self._detail.setStyleSheet(
             muted(10) + " background-color: rgba(128,128,128,0.09);"

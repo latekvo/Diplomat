@@ -282,22 +282,22 @@ private struct ContentHeightKey: PreferenceKey {
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
-    /// Which of the four screens the body shows: Actions ("main"), Mesh, Telemetry
-    /// or Settings.
+    /// Which of the five screens the body shows: Actions ("main"), Devices, Mesh,
+    /// Telemetry or Settings.
     @State private var screen: PanelScreen
 
-    /// The panel's four interchangeable body screens.
-    enum PanelScreen { case main, mesh, telemetry, settings }
+    enum PanelScreen { case main, devices, mesh, telemetry, settings }
 
-    /// `showSettings` / `showTelemetry` seed the initial screen — used by the headless
-    /// render to snapshot those screens in context. Defaults to the main view.
+    /// `showSettings` / `showTelemetry` / `showDevices` seed the initial screen — used by
+    /// the headless render to snapshot those screens in context. Defaults to the main view.
     /// `seedPendingUnban` seeds the inline un-ban confirmation for a login (render only).
     /// `seedMutedAudit` pre-mutes Activity filter categories so the filtered feed can be
     /// snapshotted (render only).
-    init(showSettings: Bool = false, showTelemetry: Bool = false,
+    init(showSettings: Bool = false, showTelemetry: Bool = false, showDevices: Bool = false,
          seedPendingUnban: String? = nil, seedMutedAudit: Set<AuditCategory> = []) {
         _screen = State(initialValue: showSettings ? .settings
-                                    : (showTelemetry ? .telemetry : .main))
+                                    : showTelemetry ? .telemetry
+                                    : showDevices ? .devices : .main)
         _pendingUnban = State(initialValue: seedPendingUnban)
         _mutedAuditCategories = State(initialValue: seedMutedAudit)
     }
@@ -334,6 +334,9 @@ struct ContentView: View {
             case .settings:
                 // Settings uses the same two-column layout as the main panel below.
                 SettingsView(isPresented: presenting(.settings))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            case .devices:
+                DevicesScreen(isPresented: presenting(.devices))
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .mesh:
                 MeshView(isPresented: presenting(.mesh))
@@ -392,6 +395,7 @@ struct ContentView: View {
             Button { Task { await store.refresh() } } label: {
                 Image(systemName: "arrow.clockwise")
             }.buttonStyle(.borderless).help("Refresh")
+            devicesButton
             Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .mesh ? .main : .mesh } } label: {
                 Image(systemName: screen == .mesh ? "hexagon.fill" : "hexagon")
                     .foregroundStyle(screen == .mesh ? Color.accentColor : .primary)
@@ -408,6 +412,32 @@ struct ContentView: View {
                 Image(systemName: "power")
             }.buttonStyle(.borderless).help("Quit")
         }
+    }
+
+    /// Opens the Devices screen; the badge counts the devices in use.
+    private var devicesButton: some View {
+        let open = screen == .devices
+        let inUse = store.deviceState?.allocatedCount ?? 0
+        return Button { toggleDevices() } label: {
+            Image(systemName: open ? "iphone.gen3.circle.fill" : "iphone.gen3")
+                .foregroundStyle(open ? Color.accentColor : .primary)
+                .overlay(alignment: .topTrailing) {
+                    if inUse > 0 {
+                        Text("\(inUse)")
+                            .font(.system(size: 7, weight: .heavy).monospacedDigit())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 3).padding(.vertical, 0.5)
+                            .background(Capsule().fill(Color.green))
+                            .offset(x: 6, y: -4)
+                    }
+                }
+        }
+        .buttonStyle(.borderless)
+        .help(inUse > 0 ? "Devices · \(inUse) in use" : "Devices")
+    }
+
+    private func toggleDevices() {
+        withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .devices ? .main : .devices }
     }
 
     // MARK: auto-fix monitor status pill
@@ -802,7 +832,9 @@ struct ContentView: View {
             agentTaskList
             if let ds = store.deviceState, !ds.devices.isEmpty {
                 DevicesView(ds: ds, tracked: store.agentRows,
-                            onKill: { key in Task { await store.killDevice(key) } })
+                            idleLimit: store.deviceIdleLeasedMinutes,
+                            onKill: { key in Task { await store.killDevice(key) } },
+                            onOpen: toggleDevices)
             }
             if !store.auditEntries.isEmpty { auditList(store.auditEntries) }
             Spacer(minLength: 0)
@@ -1366,29 +1398,37 @@ private struct FreeSlotRow: View {
 /// The Devices section: in-use and free devices in two independently-collapsible
 /// groups. In-use is expanded by default (it's what you're watching); free starts
 /// collapsed. In-use rows track how long the device has been held and, on click,
-/// try to focus the terminal running the agent that holds it.
+/// try to focus the terminal running the agent that holds it. The header opens the
+/// Devices screen.
 struct DevicesView: View {
     let ds: DeviceState
     let tracked: [Store.AgentRow]
+    /// The leased idle limit in minutes, which a row's idle time is coloured toward.
+    var idleLimit: Int = AppConfig.deviceIdleLeasedDefault
     /// Kill a device by key (the per-row X). No-op default so the renderer can omit it.
     var onKill: (String) -> Void = { _ in }
+    var onOpen: (() -> Void)? = nil
 
     @State private var inUseExpanded: Bool
     @State private var freeExpanded: Bool
 
     /// The seed params let the headless renderer snapshot either collapse state.
-    init(ds: DeviceState, tracked: [Store.AgentRow], onKill: @escaping (String) -> Void = { _ in },
+    init(ds: DeviceState, tracked: [Store.AgentRow],
+         idleLimit: Int = AppConfig.deviceIdleLeasedDefault,
+         onKill: @escaping (String) -> Void = { _ in }, onOpen: (() -> Void)? = nil,
          seedInUseExpanded: Bool = true, seedFreeExpanded: Bool = false) {
         self.ds = ds
         self.tracked = tracked
+        self.idleLimit = idleLimit
         self.onKill = onKill
+        self.onOpen = onOpen
         _inUseExpanded = State(initialValue: seedInUseExpanded)
         _freeExpanded = State(initialValue: seedFreeExpanded)
     }
 
     /// Within a section: by platform, then name. (Cross-section busy-first ordering
     /// is gone — the split into In use / Free already conveys that.)
-    private func sorted(_ d: [DeviceAllocation]) -> [DeviceAllocation] {
+    static func sorted(_ d: [DeviceAllocation]) -> [DeviceAllocation] {
         d.sorted { a, b in
             if a.platform != b.platform { return a.platform < b.platform }
             return (a.name ?? "") < (b.name ?? "")
@@ -1396,14 +1436,24 @@ struct DevicesView: View {
     }
 
     var body: some View {
-        let inUse = sorted(ds.devices.filter { $0.isAllocated })
-        let free = sorted(ds.devices.filter { !$0.isAllocated })
+        let inUse = Self.sorted(ds.devices.filter { $0.isAllocated })
+        let free = Self.sorted(ds.devices.filter { !$0.isAllocated })
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 5) {
-                Image(systemName: "iphone").font(.system(size: 9)).foregroundStyle(.secondary)
-                Text("Devices").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
-                Spacer()
+            Button { onOpen?() } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "iphone").font(.system(size: 9)).foregroundStyle(.secondary)
+                    Text("Devices").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
+                    Spacer()
+                    if onOpen != nil {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary.opacity(0.7))
+                    }
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .disabled(onOpen == nil)
+            .help("Open the Devices screen")
             if !inUse.isEmpty {
                 section("In use", color: .green, expanded: $inUseExpanded, devices: inUse)
             }
@@ -1424,7 +1474,7 @@ struct DevicesView: View {
                           expanded: expanded, countTint: color)
             if expanded.wrappedValue {
                 ForEach(devices) { dev in
-                    DeviceRow(dev: dev, tracked: tracked, onKill: onKill)
+                    DeviceRow(dev: dev, tracked: tracked, idleLimit: idleLimit, onKill: onKill)
                 }
             }
         }
@@ -1434,6 +1484,7 @@ struct DevicesView: View {
 private struct DeviceRow: View {
     let dev: DeviceAllocation
     var tracked: [Store.AgentRow] = []
+    var idleLimit: Int = AppConfig.deviceIdleLeasedDefault
     var onKill: ((String) -> Void)? = nil
 
     /// Clickable when an owner PID exists to resolve a terminal for. The actual
@@ -1442,46 +1493,20 @@ private struct DeviceRow: View {
     /// Killable when the device is actually running (allocated or booted-but-free);
     /// a shut-down "free" device has nothing to kill.
     private var killable: Bool { onKill != nil && dev.status != "free" }
-
-    private var platformIcon: String {
-        switch dev.platform {
-        case "ios":        return "apple.logo"
-        case "apple-tv":   return "appletv"
-        case "android":    return "candybarphone"
-        case "android-tv": return "tv"
-        case "vega":       return "flame"
-        default:           return "square.dashed"
-        }
-    }
-    private var platformTint: Color {
-        switch dev.platform {
-        case "ios", "apple-tv":     return .blue
-        case "android", "android-tv": return .green
-        case "vega":                return .orange
-        default:                    return .gray
-        }
-    }
-
-    private var statusBadge: (text: String, color: Color) {
-        switch dev.status {
-        case "ready":     return dev.isAllocated ? ("in use", .green) : ("free", .secondary)
-        case "booting":   return ("booting", .orange)
-        case "repairing": return ("repairing", .purple)
-        case "error":     return ("error", .red)
-        case "running-free": return ("free", .secondary)
-        default:          return ("free", .secondary)
-        }
-    }
+    private var platformTint: Color { dev.platformTint }
 
     var body: some View {
         HStack(spacing: 8) {
-            IconBadge(symbol: platformIcon,
+            IconBadge(symbol: dev.platformIcon,
                       tint: dev.isAllocated ? platformTint : Color.gray.opacity(0.4))
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     Text(dev.name ?? dev.handle ?? dev.key).font(.caption).lineLimit(1)
                     if let v = dev.version { Text(v).font(.system(size: 9)).foregroundStyle(.secondary) }
                     if let f = dev.format { Text(f).font(.system(size: 9)).foregroundStyle(.tertiary) }
+                    if dev.isRemote {
+                        Text("remote").font(.system(size: 8, weight: .bold)).foregroundStyle(.indigo)
+                    }
                 }
                 detailLine
             }
@@ -1491,17 +1516,15 @@ private struct DeviceRow: View {
                     .font(.system(size: 9)).foregroundStyle(.secondary.opacity(0.7))
                     .help("Focus the terminal running \(dev.owner?.agentName ?? "this agent")")
             }
-            Text(statusBadge.text)
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(statusBadge.color)
-                .padding(.horizontal, 6).padding(.vertical, 2)
-                .background(Capsule().fill(statusBadge.color.opacity(0.14)))
+            DeviceStatusBadge(dev: dev)
             if killable {
                 Button { onKill?(dev.key) } label: {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 12))
                 }
                 .buttonStyle(.borderless).foregroundStyle(.red.opacity(0.7))
-                .help("Kill this device — free it and shut the simulator/emulator down.")
+                .help(dev.isRemote
+                      ? "Return this device to the remote pool — the agent loses it."
+                      : "Kill this device — free it and shut the simulator/emulator down.")
             }
         }
         .padding(6)
@@ -1533,9 +1556,9 @@ private struct DeviceRow: View {
                               "clock", .secondary)
                     }
                 }
-                // Idle time, colouring toward red as it nears the 15-min auto-reclaim.
-                if let m = idleMinutes {
-                    Text("· idle \(m)m").font(.system(size: 9)).foregroundStyle(idleColor(m))
+                if let m = dev.idleMinutes {
+                    Text("· idle \(m)m").font(.system(size: 9))
+                        .foregroundStyle(DeviceAllocation.idleColor(m, limit: idleLimit))
                 }
             }
         } else {
@@ -1543,17 +1566,6 @@ private struct DeviceRow: View {
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(.secondary).lineLimit(1)
         }
-    }
-
-    /// Whole minutes idle (nil under a minute). The daemon floors idleMs to minutes.
-    private var idleMinutes: Int? {
-        guard let ms = dev.idleMs, ms >= 60_000 else { return nil }
-        return clampedInt(ms / 60_000)
-    }
-    private func idleColor(_ minutes: Int) -> Color {
-        if minutes >= 14 { return .red }        // reclaim at 15m — imminent
-        if minutes >= 10 { return .orange }
-        return .secondary
     }
 
     private func label(_ text: String, _ symbol: String, _ color: Color) -> some View {
@@ -1567,7 +1579,7 @@ private struct DeviceRow: View {
 
 // MARK: - Activity row
 
-private struct AuditRow: View {
+struct AuditRow: View {
     let entry: AuditEntry
 
     private var sourceColor: Color {
@@ -1588,6 +1600,8 @@ private struct AuditRow: View {
         case "quota-stall":          return "hourglass"
         case "merge":                return "checkmark.seal.fill"
         case "kill-device":          return "xmark.circle.fill"
+        case "release-device":       return "arrow.uturn.backward.circle.fill"
+        case "remote-lease-ended":   return "network.slash"
         case "unban":                return "hand.raised.slash.fill"
         case "ban":                  return "hand.raised.fill"
         case "repair-done":          return "wrench.and.screwdriver"

@@ -296,6 +296,14 @@ enum Render {
                             seedFixIssues: s.contains("issues") || s.contains("all"),
                             seedOpenPRs: s.contains("prs") || s.contains("all"))
                 .frame(height: 560)
+        case let s where s.hasPrefix("devices-screen"):
+            // Inside the panel, so the header's device button is in the shot. Plain: a
+            // daemon with no remote pool. "-remote": a provider mid-sign-in with two remote
+            // leases (one still attaching) and a pool listing. "-remote-away": the sign-in
+            // went unanswered, plus a key this app does not know. "-off": installed, the
+            // daemon not running, no snapshot.
+            let _ = seedDevicesScreen(s, store: store)
+            ContentView(showDevices: true)
         case let s where s.hasPrefix("devices"):
             // Seed a synthetic device pool (and optionally sessions) so the Devices
             // section can be eyeballed: allocated iOS + booting Android (with held
@@ -738,6 +746,94 @@ enum Render {
                 version: "15", apiVersion: "35", handle: nil, status: "free",
                 owner: nil, allocatedAt: nil, idleMs: nil, brokenReason: nil, repairLog: nil, format: "phone"),
         ])
+    }
+
+    /// `DIPLOMAT_RENDER=devices-screen[-remote[-away]|-off]` — see the mode's case.
+    @MainActor
+    @discardableResult
+    static func seedDevicesScreen(_ mode: String, store: Store) -> Bool {
+        seedDeviceState(store)
+        // Store.init read the operator's own config.json: never show their provider.
+        store.setDeviceRemoteProvider("")
+        // Loaded already: the panel's first-appearance GitHub poll would put a spinner
+        // (or an error) in the snapshot's header.
+        store.hasLoaded = true
+        var install = AllocatorInstall()
+        install.mcpRegistered = true
+        install.skillInstalled = true
+        install.ruleInstalled = true
+        install.claudeMdInjected = true
+        install.installed = true
+        install.version = "0.1.0"
+        install.daemonRunning = !mode.hasSuffix("off")
+        store.allocatorInstall = install
+        store.auditEntries = [
+            AuditEntry(at: "2026-07-03T09:14:00Z", source: "panel", action: "release-device",
+                       detail: "Freed iPad Pro from checkout flow"),
+            AuditEntry(at: "2026-07-03T09:02:00Z", source: "daemon", action: "repair-done",
+                       detail: "Pixel_8_API_35 repaired — returned to the pool"),
+            // Left off the screen: the agent reaper, not a device.
+            AuditEntry(at: "2026-07-03T08:12:00Z", source: "auto", action: "kill-device",
+                       detail: "closed #431's window — finished"),
+        ] + store.auditEntries
+        if mode.hasSuffix("off") {
+            store.deviceState = nil
+            return true
+        }
+        guard mode.contains("remote"), let local = store.deviceState else {
+            store.deviceState = store.deviceState.map { DeviceState(devices: $0.devices, daemonPid: 51734) }
+            return true
+        }
+        let away = mode.contains("away")
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        let leases = [
+            DeviceAllocation(
+                key: "lab-pool:galaxy-s24-07", platform: "android", name: "Galaxy S24",
+                version: "14", apiVersion: "34", handle: "127.0.0.1:41207", status: "ready",
+                owner: DeviceOwner(agentName: "payments e2e", ownerPid: 4512),
+                allocatedAt: nowMs - 26 * 60_000, idleMs: 300_000, brokenReason: nil,
+                repairLog: nil, format: "phone", source: "remote"),
+            DeviceAllocation(
+                key: "lab-pool:pixel-9-pro-02", platform: "android", name: "Pixel 9 Pro",
+                version: "15", apiVersion: "35", handle: nil, status: "booting",
+                owner: DeviceOwner(agentName: "onboarding flow", ownerPid: 4633),
+                allocatedAt: nowMs - 40_000, idleMs: nil, brokenReason: nil,
+                repairLog: nil, format: "phone", source: "remote"),
+        ]
+        let status = away
+            ? RemoteStatus(provider: "lab-pool", state: "sign-in-unanswered",
+                           url: "https://lab-pool.example/devices",
+                           retryAt: Date().addingTimeInterval(47 * 60),
+                           extras: [RemoteStatus.Extra(key: "queue", value: "3"),
+                                    RemoteStatus.Extra(key: "region", value: "eu-west")])
+            : RemoteStatus(provider: "lab-pool", state: "signing-in",
+                           url: "https://lab-pool.example/devices",
+                           loginUrl: "https://lab-pool.example/login?session=7f3a")
+        store.deviceState = DeviceState(devices: local.devices + leases, daemonPid: 51734,
+                                        remote: status)
+        store.setDeviceRemoteProvider("~/.diplomat/remote/lab-pool.mjs")
+        store.auditEntries.insert(
+            AuditEntry(at: "2026-07-03T09:20:00Z", source: "daemon", action: "remote-lease-ended",
+                       detail: "Galaxy S23 taken from smoke test: the pool reclaimed it"), at: 0)
+        if away {
+            store.remoteSignIn = .answered(.reason("nobody finished the sign-in in the browser"),
+                                           at: Date())
+            store.remoteListing = .answered(.reason("lab-pool is not signed in"), at: Date())
+        } else {
+            store.remoteSignIn = .running
+            store.remoteListing = .answered(.devices([
+                RemotePoolDevice(id: "lab-pool:galaxy-s24-07", platform: "android",
+                                 name: "Galaxy S24", version: "14", apiVersion: "34",
+                                 format: "phone", state: "leased"),
+                RemotePoolDevice(id: "lab-pool:pixel-9-pro-02", platform: "android",
+                                 name: "Pixel 9 Pro", version: "15", apiVersion: "35",
+                                 format: "phone", state: "leased"),
+                RemotePoolDevice(id: "lab-pool:tab-s9-01", platform: "android",
+                                 name: "Galaxy Tab S9", version: "14", apiVersion: "34",
+                                 format: "tablet", state: "available"),
+            ]), at: Date())
+        }
+        return true
     }
 }
 
