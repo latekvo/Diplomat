@@ -343,6 +343,13 @@ async function phase6() {
     }
     pass('a Slack ban needs a Slack user id, not a name');
 
+    const odd = await call('POST', '/report-injection', { person: 'U0NUM', source: 'slack', pr: 42, evidence: 12345 });
+    const oddEntry = JSON.parse(fs.readFileSync(banFile, 'utf8')).banned.find((b) => b.login === odd.login);
+    assert.equal(oddEntry.pr, '42');
+    assert.equal(oddEntry.evidence, '12345');
+    await call('POST', '/unban', { login: odd.login });
+    pass('a non-string pr or evidence is stored as a string');
+
     const ubs = await call('POST', '/unban', { login: 'slack:UMAL123' });
     assert.equal(ubs.removed, 1);
     pass('/unban lifts a Slack ban by its login');

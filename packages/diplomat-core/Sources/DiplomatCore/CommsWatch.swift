@@ -449,7 +449,14 @@ public enum CommsWatch {
                 state.save(in: dir)
                 continue
             }
-            let decision = classify(message).checked(against: message)
+            var decision = classify(message).checked(against: message)
+            // The marker is the tick's alone: a reason the model wrote cannot claim it.
+            if decision.reason.hasPrefix(bannedPrefix) {
+                decision = CommsDecision(action: decision.action, number: decision.number,
+                                         summary: decision.summary,
+                                         reason: "triage: " + decision.reason,
+                                         evidence: decision.evidence)
+            }
             state.undelivered[state.undelivered.count - 1].decision = decision
             state.classifierError = decision.reason.hasPrefix(CommsClassifier.failurePrefix)
                 ? decision.reason : nil

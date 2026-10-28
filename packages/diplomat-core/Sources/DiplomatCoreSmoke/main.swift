@@ -3114,6 +3114,7 @@ print("api-error idle-confirmation assertions passed")
 // ---- Activity-feed category taxonomy (panel filter chips) ----
 section("audit category")
 check(AuditCategory.of(action: "review") == .review)
+check(AuditCategory.of(action: "comms-ban") == .bans, "a Comms ban line is a Bans line")
 check(AuditCategory.of(action: "review-req") == .review, "auto review-request groups under Reviews")
 check(AuditCategory.of(action: "review-reply") == .reply, "my-PR review responses are their own type")
 check(AuditCategory.of(action: "conflicts") == .conflicts)

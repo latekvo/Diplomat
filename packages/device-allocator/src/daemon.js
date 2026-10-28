@@ -951,7 +951,7 @@ function banLine(entry, via) {
 async function handleReportInjection(p) {
   const source = p.source === 'slack' ? 'slack' : 'github';
   let login = String(p.person || '').trim().replace(/^@/, '');
-  if (!login) { const e = new Error('person (the offending PR author login) is required'); e.statusCode = 400; throw e; }
+  if (!login) throw httpError(400, 'person (the offender: a GitHub login, or a Slack user id with source "slack") is required');
   if (source === 'slack') {
     const id = login.startsWith(SLACK_PREFIX) ? login.slice(SLACK_PREFIX.length) : login;
     if (!SLACK_USER_ID.test(id)) {
@@ -960,17 +960,20 @@ async function handleReportInjection(p) {
     login = SLACK_PREFIX + id;
   }
   const at = new Date().toISOString();
-  const ref = source === 'slack' ? null : parsePrRef(p.pr);
+  // Strings whatever a caller sent: the applets decode every field as one.
+  const where = p.pr == null || p.pr === '' ? null : String(p.pr);
+  const evidence = p.evidence == null ? '' : String(p.evidence);
+  const ref = source === 'slack' ? null : parsePrRef(where);
   const gh = source === 'slack' || process.env.DA_FAKE_DEVICES != null ? null : await resolveGh(); // tests: skip real gh/browser
   const slug = `${at.replace(/[:.]/g, '-')}-${login.replace(/[^A-Za-z0-9_-]/g, '_')}`;
   const dir = path.join(INJECTIONS_DIR, slug);
   try { fs.mkdirSync(dir, { recursive: true }); } catch {}
-  try { fs.writeFileSync(path.join(dir, 'evidence.txt'), String(p.evidence || '')); } catch {}
+  try { fs.writeFileSync(path.join(dir, 'evidence.txt'), evidence); } catch {}
   const cap = await captureEvidence(dir, ref, gh);
   const handle = source === 'slack' ? String(p.handle || '').trim().replace(/^@/, '') || null : null;
   const place = source === 'slack' ? String(p.place || '').trim() || null : null;
   const incident = {
-    login, source, handle, place, pr: p.pr || null, prRef: ref, evidence: p.evidence || '',
+    login, source, handle, place, pr: where, prRef: ref, evidence,
     reportedBy: p.agentName || null, via: p.via || 'agent',
     at, ghCaptured: cap.ghCaptured, screenshotCaptured: cap.screenshotCaptured, url: cap.url,
   };
@@ -979,7 +982,7 @@ async function handleReportInjection(p) {
   return withLock(async () => {
     const data = readBanned();
     const entry = {
-      login, reason: 'prompt injection', pr: p.pr || null, evidence: (p.evidence || '').slice(0, 800),
+      login, reason: 'prompt injection', pr: where, evidence: evidence.slice(0, 800),
       evidenceDir: dir, reportedBy: p.agentName || null, at,
       screenshot: cap.screenshotCaptured, ghCaptured: cap.ghCaptured,
       ...(source === 'slack' ? { source, handle, place } : {}),

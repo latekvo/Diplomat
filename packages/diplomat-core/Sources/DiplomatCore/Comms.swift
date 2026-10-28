@@ -100,7 +100,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     public init(action: CommsAction, number: Int, summary: String, reason: String,
                 evidence: String = "") {
         let reason = Self.clip(reason)
-        let evidence = action == .injection ? Self.clip(evidence) : ""
+        let evidence = action == .injection ? Self.unquoted(evidence) : ""
         self.summary = Self.clip(summary)
         if action.needsNumber && number <= 0 {
             self.action = .none
@@ -128,11 +128,13 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// This decision, or `none` when it names a number `message` does not contain: as
     /// `#N`, `/pull/N`, `/issues/N` or `N`, with no letter or digit either side; or when
     /// it is an `injection` whose evidence the message does not contain, ignoring case and
-    /// runs of whitespace. `CommsWatch.tick` applies it to every answer, so a guessed
-    /// number never acts and nobody is banned for words they did not write.
+    /// runs of whitespace, as sent or as the classifier read it (`CommsText.defang`).
+    /// `CommsWatch.tick` applies it to every answer, so a guessed number never acts and
+    /// nobody is banned for words they did not write.
     public func checked(against message: CommsMessage) -> CommsDecision {
-        if action == .injection, !Self.squashed(message.text).localizedCaseInsensitiveContains(
-            Self.squashed(evidence)) {
+        let needle = Self.squashed(evidence)
+        if action == .injection, ![message.text, CommsText.defang(message.text)].contains(where: {
+            Self.squashed($0).localizedCaseInsensitiveContains(needle) }) {
             return CommsDecision(action: .none, number: 0, summary: summary,
                                  reason: "answered injection quoting words the message does "
                                      + "not contain; \(reason)")
@@ -143,6 +145,20 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         return CommsDecision(action: .none, number: 0, summary: summary,
                              reason: "answered \(action.rawValue) #\(number), a number the "
                                  + "message does not contain; \(reason)")
+    }
+
+    /// Evidence copied from the classifier's stdin carries the fence's `|` on every line;
+    /// cut to `maxText` without an ellipsis, so a long quote is still the message's words.
+    private static func unquoted(_ s: String) -> String {
+        let lines = s.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map {
+            line -> Substring in
+            let t = line.drop { $0 == " " || $0 == "\t" }
+            guard t.hasPrefix(CommsText.quoteMarker) else { return line }
+            let rest = t.dropFirst(CommsText.quoteMarker.count)
+            return rest.hasPrefix(" ") ? rest.dropFirst() : rest
+        }
+        let t = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(t.prefix(maxText)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func squashed(_ s: String) -> String {

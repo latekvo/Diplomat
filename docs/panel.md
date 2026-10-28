@@ -45,7 +45,7 @@ clicking an in-use device focuses the holding agent's terminal, and the section'
 opens the [Devices screen](devices.md)); and the
 **activity** log, one unified audit feed
 (`~/.diplomat/pr-monitor/audit.jsonl`) of panel actions, monitor dispatches,
-nudges, and daemon-side bans.
+nudges, and bans.
 
 The activity feed is **filterable in place**: it heads a row of per-category chips
 with counts - Reviews · Replies · Conflicts · Audit · Issues · API restart · Out of

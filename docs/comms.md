@@ -57,7 +57,7 @@ Slack text is written by other people, so Comms treats it as data from end to en
   a message on Haiku; the model is a setting.
 - The answer is **validated** before anything acts on it: an unknown action, a review / fix / bump
   whose number does not appear in the message, or an injection whose quoted evidence does not appear in
-  it (case and runs of whitespace aside), becomes `none`. The number must name an **open** PR
+  it (case, runs of whitespace and the fence's `|` quoting aside), becomes `none`. The number must name an **open** PR
   (for a review) or an **open** issue (for a fix) of the watched repo, or nothing is queued.
 - Your own messages, bots, and people from other organisations (Slack Connect) are never pinged. A
   **sender allowlist** narrows it to the people you name.
@@ -87,7 +87,9 @@ injection:
   any other runner is told to write the finding to its report and stop.
 
 Once banned, a sender's messages are still listed as pings, marked as from a banned sender, but are
-never triaged: their text reaches no model, nothing is queued and no notification is shown. An
+never triaged: their text reaches no model, nothing is queued and no notification is shown. That holds
+from the moment of the ban, for their other messages in the same poll too, and also while Comms is
+switched off mid-poll: a ban has no switch. An
 investigation of theirs still waiting in the queue is dropped when its turn comes, and its ping says
 why. Reviews or fixes they asked for earlier stay queued: those agents read GitHub, not the message.
 
@@ -97,7 +99,7 @@ Every ban is announced:
 - a **Bans** line in the activity feed: who (Slack handle and id), where (the message's permalink),
   the quoted evidence, and whether triage or an agent caught it;
 - a row in the panel's **Banned** list with the same details and when it happened, plus an un-ban
-  button (macOS) - un-banning a Slack sender lets Comms triage their messages again;
+  button - un-banning a Slack sender lets Comms triage their messages again;
 - on the Comms screen, a strip of the banned senders, and the ping that caused the ban marked with it.
 
 ## Setting it up
