@@ -1,5 +1,5 @@
 {
-  "_comment": "Comms, the Slack watcher: the tunables, the search queries, the classifier's instructions and answer schema, and the investigate agent's prompt blocks. Read by ../Sources/DiplomatCore/Comms.swift, CommsWatch.swift and SlackAPI.swift; the Linux front-end reaches the queries, prompts, schema and Slack itself only through the diplomat-core CLI (comms-tick, comms-auth, comms-feed, comms-effect, build-prompt kind investigate), and reads this file itself (core.comms()) for nothing but its own timings: pollSecs, minPollSecs, maxPerTick, classifierTimeoutSecs, httpTimeoutSecs and maxSearchPages (the last four bound how long it lets comms-tick run).",
+  "_comment": "Comms, the Slack watcher: the tunables, the search queries, the classifier's instructions and answer schema, and the investigate agent's prompt blocks. Read by ../Sources/DiplomatCore/Comms.swift, CommsWatch.swift and SlackAPI.swift; the Linux front-end reaches the queries, prompts, schema and Slack itself only through the diplomat-core CLI (comms-tick, comms-auth, comms-feed, comms-effect, build-prompt kind investigate), and reads this file itself (core.comms()) for nothing but its own timings: pollSecs, minPollSecs, maxPerTick, classifierTimeoutSecs, httpTimeoutSecs, slackBudgetSecs and loginRefreshTimeoutSecs (the last five bound how long it lets comms-tick run).",
 
   "_pollComment": "pollSecs is the front-ends' default tick period, minPollSecs the floor DIPLOMAT_COMMS_SECS is clamped to. A tick opens one session with Slack's MCP server and costs a profile read, two searches plus one per keyword, and one profile read per new sender.",
   "pollSecs": 60,
@@ -14,8 +14,13 @@
   "catchUpHours": 24,
   "httpTimeoutSecs": 15,
 
-  "_loginComment": "Comms borrows Claude Code's own login to Slack's MCP server. One that has expired, or that Slack refuses, has Claude Code refresh it (claude mcp list), at most once per loginRefreshSecs.",
+  "_loginComment": "Comms borrows Claude Code's own login to Slack's MCP server. One that has expired, or that Slack refuses, has Claude Code refresh it (claude mcp list, given loginRefreshTimeoutSecs), at most once per loginRefreshSecs.",
   "loginRefreshSecs": 600,
+  "loginRefreshTimeoutSecs": 60,
+
+  "_budgetComment": "Past signing in, one tick's Slack calls share slackBudgetSecs, each also bounded by httpTimeoutSecs. A search page whose text forges a result heading is re-read one result per call (up to two per result), so the budget, not the page count, bounds a tick. maxProfileReads caps the sender profiles one tick reads, oldest message first; the walk stops there and the watermark with it.",
+  "slackBudgetSecs": 120,
+  "maxProfileReads": 20,
 
   "_classifierComment": "The triage call: `claude -p` with no tools, no MCP servers, no slash commands, no settings and no session, answering `schema`. `model` is the default the operator can override in Settings.",
   "model": "haiku",

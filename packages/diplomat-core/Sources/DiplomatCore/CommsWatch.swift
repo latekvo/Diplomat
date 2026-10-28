@@ -316,8 +316,8 @@ public enum CommsWatch {
     /// turning Comms on triages no backlog; a watermark older than `catchUpHours` likewise
     /// moves up to `now` less `indexLagSecs`, and one `error` event names the skipped
     /// stretch. Otherwise the `comms.json` queries run, matches at or below the watermark
-    /// or already `seen` drop, each remaining sender's profile is read, and the oldest
-    /// `maxPerTick` of those admitted are triaged. A query overflowing
+    /// or already `seen` drop, and the oldest `maxPerTick` whose senders' profiles admit them
+    /// are triaged. All Slack calls past signing in share `slackBudgetSecs`. A query overflowing
     /// `maxSearchPages` is read newest first, and one `error` event names what went unread.
     ///
     /// Each message is saved as taken before its triage runs, so a tick that never returns
@@ -386,10 +386,11 @@ public enum CommsWatch {
                 } ?? true
                 let signedIn = try SlackAPI.signIn(refresh: due ? {
                     state.loginRefreshedAt = now.timeIntervalSince1970
-                    SlackToken.refresh()
+                    SlackToken.refresh(timeout: Double(assets.loginRefreshTimeoutSecs))
                 } : nil)
                 (api, me) = (signedIn.api, signedIn.me.identity)
             }
+            api.deadline = Date().addingTimeInterval(Double(assets.slackBudgetSecs))
             state.me = me
         } catch {
             return finish(error: error.localizedDescription)
@@ -436,23 +437,33 @@ public enum CommsWatch {
         state.gaps = gaps.mapValues(CommsTS.string)
 
         let seen = Set(state.seen)
-        let fresh = found.values.filter { m in
-            CommsTS.number(m.ts).map { $0 > watermark } == true && !seen.contains(m.id)
-        }
-        var senders: [String: SlackProfile] = [:]
+        let fresh = found.values
+            .compactMap { m in CommsTS.number(m.ts).map { (n: $0, m: m) } }
+            .filter { $0.n > watermark && !seen.contains($0.m.id) }
+            .sorted { ($0.n, $0.m.id) < ($1.n, $1.m.id) }
+        // Oldest first, reading senders' profiles only until one ping past `maxPerTick` is
+        // found or `maxProfileReads` are spent; `unread` is where that walk stopped.
+        var senders: [String: SlackProfile?] = [:]
+        var pending: [(n: Int, m: CommsMessage)] = []
+        var unread: Int?
         do {
-            for user in Set(fresh.filter { !$0.isBot && $0.user != me.userID }.map(\.user))
-            where !user.isEmpty {
-                senders[user] = try api.profile(user)
+            for (n, match) in fresh where pending.count <= settings.maxPerTick {
+                let user = match.user
+                if !user.isEmpty, !match.isBot, user != me.userID, senders[user] == nil {
+                    guard senders.count < assets.maxProfileReads else {
+                        unread = n
+                        break
+                    }
+                    senders[user] = .some(try api.profile(user))
+                }
+                if let m = CommsMatch.message(from: match, sender: senders[user] ?? nil, me: me,
+                                              settings: settings) {
+                    pending.append((n, m))
+                }
             }
         } catch {
             return finish(error: error.localizedDescription)
         }
-        let pending = fresh
-            .compactMap { CommsMatch.message(from: $0, sender: senders[$0.user], me: me,
-                                             settings: settings) }
-            .compactMap { m in CommsTS.number(m.ts).map { (n: $0, m: m) } }
-            .sorted { ($0.n, $0.m.id) < ($1.n, $1.m.id) }
         let take = pending.prefix(settings.maxPerTick)
         let rest = pending.dropFirst(settings.maxPerTick)
 
@@ -468,8 +479,8 @@ public enum CommsWatch {
             state.save(in: dir)
         }
 
-        let next = rest.first.map { max(watermark, min(lagged, $0.n - 1)) }
-            ?? max(watermark, lagged)
+        let next = [rest.first?.n, unread].compactMap { $0 }.min()
+            .map { max(watermark, min(lagged, $0 - 1)) } ?? max(watermark, lagged)
         state.watermark = CommsTS.string(next)
         // An id at or below the watermark can never be offered again.
         state.seen = Array(state.seen.filter { id in

@@ -257,6 +257,8 @@ public enum SlackError: LocalizedError, Equatable {
     case api(String)
     /// HTTP 429; the tick is skipped and the next one asks again.
     case rateLimited(retryAfter: Int?)
+    /// Past `SlackAPI.deadline`.
+    case outOfTime
     case badResponse
 
     public var errorDescription: String? {
@@ -275,6 +277,8 @@ public enum SlackError: LocalizedError, Equatable {
             return "Slack: \(text)"
         case .rateLimited(let after):
             return "Slack rate-limited the watcher" + (after.map { " (retry after \($0)s)" } ?? "")
+        case .outOfTime:
+            return "Slack took longer than one poll allows"
         case .badResponse:
             return "Slack answered something that is not MCP's JSON"
         }
@@ -356,7 +360,7 @@ public enum SlackToken {
     /// Has Claude Code refresh its logins: `claude mcp list` connects to every server it
     /// knows, refreshing an expired token on the way. Bounded, and silent on failure; the
     /// next read tells.
-    public static func refresh(timeout: TimeInterval = 60) {
+    public static func refresh(timeout: TimeInterval) {
         guard let claude = CommsClassifier.binary() else { return }
         _ = CommsClassifier.execute(claude, ["mcp", "list"], input: Data(), timeout: timeout)
     }
@@ -386,6 +390,12 @@ public struct SlackAPI {
     public let base: URL
     private let transport: Transport
     private let session = Session()
+
+    /// No call starts after it, and none outlasts it.
+    public var deadline: Date? {
+        get { session.deadline }
+        nonmutating set { session.deadline = newValue }
+    }
 
     public init(token: String, base: URL? = nil, transport: Transport? = nil) {
         self.token = token
@@ -525,8 +535,14 @@ public struct SlackAPI {
                        "Accept": "application/json, text/event-stream",
                        "MCP-Protocol-Version": Self.protocolVersion]
         if let id = session.id { headers["Mcp-Session-Id"] = id }
+        var timeout = Self.timeout
+        if let deadline = session.deadline {
+            let left = deadline.timeIntervalSinceNow
+            guard left > 0 else { throw SlackError.outOfTime }
+            timeout = min(timeout, left)
+        }
         let (status, answerHeaders, data) = try transport(
-            Request(url: base, headers: headers, body: body, timeout: Self.timeout))
+            Request(url: base, headers: headers, body: body, timeout: timeout))
         if status == 401 { throw SlackError.unauthorized }
         if status == 429 {
             throw SlackError.rateLimited(retryAfter: answerHeaders["retry-after"].flatMap { Int($0) })
@@ -563,6 +579,7 @@ public struct SlackAPI {
         var id: String?
         var opened = false
         var nextID = 1
+        var deadline: Date?
     }
 
     static var timeout: TimeInterval { (try? CoreAssets.comms())?.httpTimeoutSecs ?? 15 }

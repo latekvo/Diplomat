@@ -48,7 +48,9 @@ enum CommsCommand {
     static func auth() {
         let answer: [String: Any]
         do {
-            let me = try SlackAPI.signIn(refresh: { SlackToken.refresh() }).me
+            let me = try SlackAPI.signIn(refresh: {
+                SlackToken.refresh(timeout: (try? CoreAssets.comms())?.loginRefreshTimeoutSecs ?? 60)
+            }).me
             answer = ["ok": true, "user": me.username, "userId": me.userID,
                       "team": me.organization, "teamId": me.workspace]
         } catch {

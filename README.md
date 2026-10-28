@@ -18,7 +18,7 @@ Left alone, it:
 - keeps your own PRs mergeable: it resolves merge conflicts, works through review
   threads and pushes to your branch;
 - types "continue" into an agent stuck on a transient Claude API error;
-- watches your Slack, if you give it a token: a DM, an @-mention or a keyword becomes
+- watches your Slack through Claude Code's Slack login: a DM, an @-mention or a keyword becomes
   a ping on its own screen, and a request in it is acted on - a review or fix is
   queued, queued work is bumped, and a bug report gets an agent investigating it
   before you have read the message. See [Comms](docs/comms.md).
@@ -102,7 +102,7 @@ Everything below can be changed in Settings (⚙︎).
 | Give up on an automatic run after 4 h | **on** |
 | Agent runner | **Claude Code** (or OpenCode, Hermes) |
 | Mesh | **off** |
-| Comms (Slack watcher) | **off**, until you give it a token |
+| Comms (Slack watcher) | **off** |
 
 Agents use your full `gh` login unless you give them
 [a narrower token](docs/settings.md#a-narrow-github-token-for-agents) limited to

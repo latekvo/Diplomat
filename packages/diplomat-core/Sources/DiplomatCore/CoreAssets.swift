@@ -214,6 +214,9 @@ public enum CoreAssets {
         public let catchUpHours: Int
         public let httpTimeoutSecs: Double
         public let loginRefreshSecs: Int
+        public let loginRefreshTimeoutSecs: Double
+        public let slackBudgetSecs: Int
+        public let maxProfileReads: Int
         public let model: String
         public let classifierTimeoutSecs: Double
         public let maxLogBytes: Int
@@ -227,7 +230,8 @@ public enum CoreAssets {
 
         private enum CodingKeys: String, CodingKey {
             case pollSecs, minPollSecs, maxPerTick, indexLagSecs, seenLimit, searchCount,
-                 maxSearchPages, catchUpHours, httpTimeoutSecs, loginRefreshSecs, model, classifierTimeoutSecs,
+                 maxSearchPages, catchUpHours, httpTimeoutSecs, loginRefreshSecs,
+                 loginRefreshTimeoutSecs, slackBudgetSecs, maxProfileReads, model, classifierTimeoutSecs,
                  maxLogBytes, labelSummaryMax, queries, classifier, investigate
         }
     }
