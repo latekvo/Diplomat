@@ -22,6 +22,8 @@ struct BannedAuthor: Codable, Equatable, Identifiable {
     var ghCaptured: Bool?
     var source: String?
     var handle: String?
+    /// A Slack ban's `#channel` or `DM`.
+    var place: String?
 
     var id: String { login }
 
@@ -191,7 +193,8 @@ enum BanList {
         let login = CommsBan.login(b.userID)
         let body: [String: Any] = [
             "person": b.userID, "source": BannedAuthor.slackSource, "handle": b.handle,
-            "pr": b.permalink, "evidence": b.evidence, "agentName": reportedBy, "via": "comms",
+            "place": b.place, "pr": b.permalink, "evidence": b.evidence, "agentName": reportedBy,
+            "via": "comms",
         ]
         if let reply = DeviceAllocator.call("report-injection", body: body, timeoutSecs: 10) {
             guard (200..<300).contains(reply.status) else {
@@ -226,7 +229,8 @@ enum BanList {
                                  evidenceDir: evidenceDir.path, reportedBy: reportedBy, at: at,
                                  firstAt: at, screenshot: false, ghCaptured: false,
                                  source: BannedAuthor.slackSource,
-                                 handle: b.handle.isEmpty ? nil : b.handle)
+                                 handle: b.handle.isEmpty ? nil : b.handle,
+                                 place: b.place.isEmpty ? nil : b.place)
         var list = read()
         if let i = list.firstIndex(where: { $0.login.lowercased() == login.lowercased() }) {
             entry.firstAt = list[i].firstAt ?? list[i].at ?? at

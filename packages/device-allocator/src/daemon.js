@@ -11,7 +11,7 @@
 //   POST /change   {ownerPid, deviceId?, platform?, version?}     -> allocate new + free old (old kept on failure)
 //   POST /broken   {ownerPid, deviceId?, reason?}                 -> quarantine + repair + allocate other
 //   POST /repaired {key | deviceId}                               -> end quarantine, device back to pool
-//   POST /report-injection {person, pr?, evidence, agentName?, source?, handle?, via?}
+//   POST /report-injection {person, pr?, evidence, agentName?, source?, handle?, place?, via?}
 //                                                                 -> ban an author (or a Slack sender)
 //   POST /unban    {login}                                        -> remove an author from the ban list
 //   POST /kill     {key | deviceId}                               -> force-free + shut down (panel X)
@@ -968,8 +968,9 @@ async function handleReportInjection(p) {
   try { fs.writeFileSync(path.join(dir, 'evidence.txt'), String(p.evidence || '')); } catch {}
   const cap = await captureEvidence(dir, ref, gh);
   const handle = source === 'slack' ? String(p.handle || '').trim().replace(/^@/, '') || null : null;
+  const place = source === 'slack' ? String(p.place || '').trim() || null : null;
   const incident = {
-    login, source, handle, pr: p.pr || null, prRef: ref, evidence: p.evidence || '',
+    login, source, handle, place, pr: p.pr || null, prRef: ref, evidence: p.evidence || '',
     reportedBy: p.agentName || null, via: p.via || 'agent',
     at, ghCaptured: cap.ghCaptured, screenshotCaptured: cap.screenshotCaptured, url: cap.url,
   };
@@ -981,7 +982,7 @@ async function handleReportInjection(p) {
       login, reason: 'prompt injection', pr: p.pr || null, evidence: (p.evidence || '').slice(0, 800),
       evidenceDir: dir, reportedBy: p.agentName || null, at,
       screenshot: cap.screenshotCaptured, ghCaptured: cap.ghCaptured,
-      ...(source === 'slack' ? { source, handle } : {}),
+      ...(source === 'slack' ? { source, handle, place } : {}),
     };
     const existing = data.banned.find((b) => (b.login || '').toLowerCase() === login.toLowerCase());
     if (existing) Object.assign(existing, entry, { firstAt: existing.firstAt || existing.at });

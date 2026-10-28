@@ -656,6 +656,7 @@ enum CommsTest {
               banEntry != nil && BanList.read().count == 2)
         check("…in the entry the daemon writes",
               banEntry?.source == "slack" && banEntry?.handle == "mallory"
+                && banEntry?.place == "#general"
                 && banEntry?.pr == hijack.message.permalink && banEntry?.evidence == evidence
                 && banEntry?.reason == "prompt injection" && banEntry?.reportedBy == "Comms triage"
                 && banEntry?.atDate != nil && banEntry?.firstAt == banEntry?.at
@@ -775,6 +776,7 @@ enum CommsTest {
             }
             check("with a daemon up, the daemon records the ban (its report.json is the mark)",
                   eveBan?.source == "slack" && eveBan?.handle == "eve"
+                    && eveBan?.place == "#general"
                     && report.map { FileManager.default.fileExists(atPath: $0) } == true)
             let eveLines = AuditLog.read(limit: 1000).filter {
                 $0.action == "ban" && $0.detail.contains("U0EVE42") }

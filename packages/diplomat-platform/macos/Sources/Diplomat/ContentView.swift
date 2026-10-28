@@ -534,7 +534,7 @@ struct ContentView: View {
                     if pendingUnban == ban.login {
                         unbanConfirmRow(ban).transition(.opacity)
                     } else {
-                        BanRow(ban: ban, place: store.commsPlace(of: ban), onUnban: {
+                        BanRow(ban: ban, place: ban.place ?? store.commsPlace(of: ban), onUnban: {
                             withAnimation(.easeInOut(duration: 0.15)) { pendingUnban = ban.login }
                         })
                     }
@@ -1672,7 +1672,7 @@ struct AuditRow: View {
 /// evidence is clipped to two lines until clicked.
 private struct BanRow: View {
     let ban: BannedAuthor
-    /// The Slack message's `#channel` or `DM`, when Comms logged it.
+    /// The Slack message's `#channel` or `DM`, when the ban or Comms' log recorded it.
     let place: String?
     let onUnban: () -> Void
 
