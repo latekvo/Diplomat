@@ -12,10 +12,16 @@ import Foundation
 //   diplomat-core telemetry         < ledger.json    # prints the Telemetry screen's figures
 //   diplomat-core agent-state       < fixture.json   # prints what every agent run resolves to
 //   diplomat-core agent-registry    < runs.json      # round-trips the run book on disk
+//   diplomat-core comms-tick        < settings.json  # one Slack watcher tick (see CommsCommand)
+//   diplomat-core comms-auth                         # who DIPLOMAT_SLACK_TOKEN is (auth.test)
+//   diplomat-core comms-feed        [--limit N]      # the Comms screen's rows
+//   diplomat-core comms-effect      < request.json   # what a triaged ping makes a front-end do
 //
 // build-prompt: the JSON config's "kind" field ("review" | "conflicts" | "audit" |
-// "issues") selects the builder; remaining fields mirror the Swift *Config structs
-// (defaults applied when a field is absent).
+// "issues" | "investigate") selects the builder; remaining fields mirror the Swift
+// *Config structs (defaults applied when a field is absent), "investigate" as
+// `comms-effect` writes it. "comms-classifier" (CommsSettings fields) prints the Comms
+// triage instructions.
 //
 // tool-data: runs `ToolData.items` over a fixture of PRs/issues and prints one row
 // list per tool. The Linux front-end does NOT use this at runtime — it has its own
@@ -69,15 +75,37 @@ func specificAuthor(_ s: String?) -> SpecificAuthor {
 
 let args = CommandLine.arguments
 guard args.count >= 2,
-      ["build-prompt", "tool-data", "telemetry", "agent-state",
-       "agent-registry"].contains(args[1]) else {
+      ["build-prompt", "tool-data", "telemetry", "agent-state", "agent-registry",
+       "comms-tick", "comms-auth", "comms-feed", "comms-effect"].contains(args[1]) else {
     die("usage: diplomat-core (build-prompt | tool-data | telemetry | agent-state"
-        + " | agent-registry)  (JSON on stdin)", 1)
+        + " | agent-registry | comms-tick | comms-effect)  (JSON on stdin)"
+        + "\n       diplomat-core comms-feed [--limit N]"
+        + "\n       diplomat-core comms-auth", 1)
+}
+
+// These read no stdin, so a caller leaving it attached to a terminal must not hang them.
+if args[1] == "comms-feed" {
+    CommsCommand.feed(Array(args.dropFirst(2)))
+    exit(0)
+}
+if args[1] == "comms-auth" {
+    CommsCommand.auth()
+    exit(0)
 }
 
 let input = FileHandle.standardInput.readDataToEndOfFile()
 guard let obj = JSONInput.parse(input) else {
     die("invalid JSON on stdin", 1)
+}
+
+if args[1] == "comms-tick" {
+    CommsCommand.tick(input)
+    exit(0)
+}
+
+if args[1] == "comms-effect" {
+    CommsCommand.effect(input)
+    exit(0)
 }
 
 if args[1] == "tool-data" {
@@ -148,8 +176,13 @@ case "issues":
         includeFeatures: flag("includeFeatures", false)
     )
     prompt = cfg.buildPrompt()
+case InvestigateConfig.kind:
+    prompt = CommsCommand.investigatePrompt(input)
+case "comms-classifier":
+    prompt = CommsCommand.classifierPrompt(input)
 default:
-    die("unknown kind \"\(kind)\" (expected review | conflicts | audit | issues)", 1)
+    die("unknown kind \"\(kind)\" (expected review | conflicts | audit | issues | investigate"
+        + " | comms-classifier)", 1)
 }
 
 emit(Data(prompt.utf8))

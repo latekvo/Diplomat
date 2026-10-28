@@ -2,9 +2,8 @@ import SwiftUI
 import DiplomatCore
 
 /// The Mesh management screen — the macOS face of Diplomat Mesh, and the SwiftUI
-/// counterpart of the Linux front-end's `meshview.py`. One of the panel's three
-/// screens (Actions · Mesh · Settings), swapped in for the main body when the header
-/// ⬡ is tapped.
+/// counterpart of the Linux front-end's `meshview.py`, swapped in for the main body
+/// when the header ⬡ is tapped.
 ///
 /// It renders the local node's public topology snapshot (`store.meshState`): a compact
 /// wire graph of self + peers, one editable card per node (machine strength in words +

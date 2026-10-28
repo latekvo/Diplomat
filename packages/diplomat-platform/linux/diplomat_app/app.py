@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
 )
 
+from diplomat_runtime import comms
+
 from . import glyphs, selfupdate
 from .panel import Panel
 from .store import Store
@@ -138,6 +140,15 @@ class DiplomatApp:
         # First scan shortly after launch.
         QTimer.singleShot(5000, self.store.run_apiwatch_poll_async)
 
+        # Comms: the tick no-ops while it is off. The rows load up front so the ✉ count
+        # is right before the first tick lands.
+        self.comms_timer = QTimer()
+        self.comms_timer.setInterval(int(comms.poll_secs() * 1000))
+        self.comms_timer.timeout.connect(self.store.run_comms_poll_async)
+        self.comms_timer.start()
+        self.store.start_background(self._load_comms, name="comms-feed")
+        QTimer.singleShot(10000, self.store.run_comms_poll_async)
+
         # Resolve identity + first fetch eagerly.
         self.store.start_background(self.store.fetch_me)
         self.trigger_refresh()
@@ -176,6 +187,7 @@ class DiplomatApp:
         menu.addAction(act_quit)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_tray_activated)
+        self.store.comms_pinged.connect(self._notify_comms)
         self.tray.show()
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
@@ -184,6 +196,13 @@ class DiplomatApp:
             QSystemTrayIcon.ActivationReason.MiddleClick,
         ):
             self.toggle_panel()
+
+    def _notify_comms(self, title: str, body: str) -> None:
+        self.tray.showMessage(title, body, QSystemTrayIcon.MessageIcon.Information, 8000)
+
+    def _load_comms(self) -> None:
+        self.store.refresh_comms_feed()
+        self.store.comms_changed.emit()
 
     # MARK: panel show/hide
 

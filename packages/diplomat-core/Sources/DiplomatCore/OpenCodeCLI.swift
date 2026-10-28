@@ -74,7 +74,8 @@ public enum OpenCodeCLI {
             return c.resolution
         }
         let asked = resolve(shell: ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh")
-        let found = Resolution(path: asked.path ?? onPath("opencode"), stateHome: asked.stateHome)
+        let found = Resolution(path: asked.path ?? LoginShell.onPath("opencode"),
+                               stateHome: asked.stateHome)
         cached = found.path == nil ? nil : (found, now)
         return found
     }
@@ -92,18 +93,11 @@ public enum OpenCodeCLI {
         }
     }
 
-    /// `<shell> -l -c` running `<shell> -i -c <probe>` — a login shell, then an interactive
-    /// one inside it, which is the pair the agent itself runs under: the terminal window's
-    /// login shell, then the interactive inner shell `AgentSpawner.shellCommand` starts.
-    /// Both halves matter. Homebrew on Apple silicon puts its `PATH` in `~/.zprofile`
-    /// alone, which only a login zsh reads, and nvm lives in `~/.bashrc`, which a login
-    /// bash skips and only an interactive one reads.
-    ///
-    /// The probe prints the path, then `$XDG_STATE_HOME` on a marked line after a newline,
-    /// so it stands alone whatever the rc printed.
+    /// `$XDG_STATE_HOME` goes on a marked line after a newline, so it stands alone
+    /// whatever the rc printed.
     public static func resolverArguments(shell: String) -> [String] {
         let probe = "command -v opencode; printf '\\n\(stateMarker)%s\\n' \"$XDG_STATE_HOME\""
-        return ["-l", "-c", "\(AgentRunner.shq(shell)) -i -c \(AgentRunner.shq(probe))"]
+        return LoginShell.arguments(shell: shell, probe: probe)
     }
 
     /// The resolver's answer out of what the shell printed. The path is the last line
@@ -235,16 +229,6 @@ public enum OpenCodeCLI {
         guard let resolved = realpath(path, nil) else { return path }
         defer { free(resolved) }
         return String(cString: resolved)
-    }
-
-    /// `name` on this process's own `PATH`.
-    private static func onPath(_ name: String) -> String? {
-        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        for dir in path.split(separator: ":") where !dir.isEmpty {
-            let candidate = "\(dir)/\(name)"
-            if FileManager.default.isExecutableFile(atPath: candidate) { return candidate }
-        }
-        return nil
     }
 
     /// Run a command and return its stdout — nil if it could not be started, overran

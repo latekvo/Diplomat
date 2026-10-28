@@ -186,7 +186,7 @@ enum Render {
             let _ = seedProcessesIfNeeded("procs", store: store)
             let _ = seedDeviceState(store)
             ContentView(showSettings: true)
-        case "settings", "settings-explain":
+        case "settings", "settings-explain", "settings-comms-error":
             // Seed an outstanding review count so the "2 owed" pill renders on the
             // review-requests row. No fixed height: the two-column form sizes to its
             // natural content (a fixed frame taller than the content centers it and
@@ -196,6 +196,8 @@ enum Render {
             // only state that draws the long-form paragraph under each row — the rest
             // of this file's rows are one line each and never exercise that layout.
             let _ = seedSettings(store, explain: w.hasSuffix("explain"))
+            // `-comms-error` draws the Comms card's pill over a failing poll.
+            let _ = w.hasSuffix("comms-error") ? seedCommsError(store) : false
             SettingsView(isPresented: .constant(true))
         case let m where m.hasPrefix("mesh"):
             // The ⬡ Mesh screen over a synthetic topology (the macOS analogue of the
@@ -223,6 +225,18 @@ enum Render {
                 ContentView(showTelemetry: true)
             } else {
                 TelemetryView(isPresented: .constant(true))
+            }
+        case let s where s.hasPrefix("comms"):
+            // "comms-panel" draws the screen inside the whole panel (header button, screen
+            // swap); "comms-badge" the main panel under the unread badge, which the open
+            // screen clears; "comms-empty" a machine with no token (the setup steps).
+            let _ = seedComms(store, empty: s.contains("empty"))
+            if s.contains("panel") {
+                ContentView(showComms: true)
+            } else if s.contains("badge") {
+                ContentView().frame(height: 580)
+            } else {
+                CommsView(isPresented: .constant(true))
             }
         case "unban-confirm":
             // Seed the ban list and open the inline "Unban @X?" confirmation on a row —
@@ -427,6 +441,148 @@ enum Render {
                 "duty": pair.1, "pr": 900 + n])
         }
         store.refreshTelemetry()
+        return true
+    }
+
+    @MainActor
+    private static func seedCommsError(_ store: Store) -> Bool {
+        store.commsEnabled = true          // headless-guarded: persists nothing, polls nothing
+        store.commsError = "Slack rejected the token (invalid_auth): sign in again and store a new one"
+        return true
+    }
+
+    /// Written through the real `CommsLog.append` into a scratch `DIPLOMAT_COMMS_DIR`
+    /// (`CommsLog.dir` reads it per call) and folded by the real `refreshComms`: seeding
+    /// `commsItems` directly would skip the fold the screen draws.
+    @MainActor
+    @discardableResult
+    private static func seedComms(_ store: Store, empty: Bool) -> Bool {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-render-comms-\(getpid())")
+        try? FileManager.default.removeItem(at: scratch)
+        try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        setenv("DIPLOMAT_COMMS_DIR", scratch.path, 1)
+        if empty {
+            store.commsEnabled = false   // headless-guarded: persists nothing, polls nothing
+            store.commsTokenMissing = true
+            store.refreshComms()
+            return true
+        }
+
+        let now = Date()
+        let me = CommsIdentity(userID: "U07LATEKVO", teamID: "T01SWMANSION", handle: "latekvo")
+        func message(_ minutesAgo: Double, _ sender: String, _ channel: String,
+                     _ reasons: [CommsReason], _ text: String,
+                     keyword: String? = nil) -> CommsMessage {
+            let at = now.addingTimeInterval(-minutesAgo * 60)
+            let ts = CommsTS.string(CommsTS.number(at))
+            let dm = channel.isEmpty
+            let cid = dm ? "D0\(sender.uppercased())" : "C0\(channel.uppercased())"
+            return CommsMessage(id: "\(cid):\(ts)", channelID: cid,
+                                channelName: dm ? "U0\(sender.uppercased())" : channel,
+                                isDM: dm, userID: "U0\(sender.uppercased())", userName: sender,
+                                teamID: me.teamID, text: text, ts: ts,
+                                permalink: "https://swmansion.slack.com/archives/\(cid)/p\(ts.replacingOccurrences(of: ".", with: ""))",
+                                reasons: reasons, keyword: keyword)
+        }
+        func log(_ m: CommsMessage, minutesAgo: Double, _ d: CommsDecision,
+                 outcome: String, key: String? = nil, label: String? = nil,
+                 started: Double? = nil, finished: Double? = nil) {
+            let at = now.addingTimeInterval(-minutesAgo * 60)
+            CommsLog.append(CommsEvent(at: at, kind: .ping, id: m.id, message: m))
+            CommsLog.append(CommsEvent(at: at, kind: .decision, id: m.id, decision: d))
+            CommsLog.append(CommsEvent(at: at, kind: .action, id: m.id, outcome: outcome,
+                                       queueKey: key, label: label))
+            if let started {
+                CommsLog.append(CommsEvent(at: now.addingTimeInterval(-started * 60),
+                                           kind: .started, id: m.id, label: label))
+            }
+            if let finished {
+                CommsLog.append(CommsEvent(at: now.addingTimeInterval(-finished * 60),
+                                           kind: .finished, id: m.id, label: label))
+            }
+        }
+        let reports = CommsLog.reportsDir()
+        let settings = CommsSettings(login: me.handle)
+
+        // Oldest first, as a tick writes them.
+        let leak = message(300, "grace", "diplomat", [.keyword],
+                           "after the mesh e2e suite finishes there are still szpontnet nodes "
+                           + "running on loopback ports, is that expected?", keyword: "szpontnet")
+        let leakAsk = CommsDecision(action: .investigate, number: 0,
+                                    summary: "Mesh e2e leaves szpontnet nodes running",
+                                    reason: "A reported leak with no PR or issue named.")
+        let leakCfg = InvestigateConfig(message: leak, decision: leakAsk, settings: settings,
+                                        reportDir: reports)
+        log(leak, minutesAgo: 300, leakAsk, outcome: "queued", key: "investigate:\(leakCfg.number)",
+            label: leakCfg.label, started: 296, finished: 251)
+        try? FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        try? "# Mesh e2e leaves nodes running\n".write(toFile: leakCfg.reportPath,
+                                                       atomically: true, encoding: .utf8)
+
+        let flaky = message(190, "dave", "argent-dev", [.keyword],
+                            "can someone fix #431? the flaky simulator test failed CI three times today",
+                            keyword: "flaky")
+        log(flaky, minutesAgo: 190,
+            CommsDecision(action: .fixIssue, number: 431, summary: "Fix the flaky simulator test",
+                          reason: "Asks for issue #431 to be fixed."),
+            outcome: "queued, at the front of its band", key: "issues:431",
+            label: "Issues · #431 · deep", started: 186, finished: 140)
+
+        let closed = message(120, "frank", "infra", [.mention],
+                             "<@\(me.userID)> please review #77 when you get a moment")
+        log(closed, minutesAgo: 120,
+            CommsDecision(action: .review, number: 77, summary: "Review PR #77",
+                          reason: "Asks for a review of PR #77."),
+            outcome: "PR #77 is merged, so nothing was queued")
+
+        let thanks = message(65, "erin", "", [.dm], "thanks for the review yesterday, all merged 🙏")
+        log(thanks, minutesAgo: 65,
+            CommsDecision(action: .none, number: 0, summary: "",
+                          reason: "A thank-you; nothing is asked."),
+            outcome: "ping only")
+
+        let bump = message(24, "carol", "", [.dm, .keyword],
+                           "bump #498 please, the diplomat release goes out tomorrow",
+                           keyword: "diplomat")
+        log(bump, minutesAgo: 24,
+            CommsDecision(action: .bump, number: 498, summary: "Prioritise PR #498",
+                          reason: "Asks to hurry #498, no new work."),
+            outcome: "moved review-req:498 to the front of its band")
+
+        let crash = message(11, "bob", "mobile", [.mention],
+                            "<@\(me.userID)> the iOS build crashes on launch since this morning, "
+                            + "stack trace in the thread. could you take a look?")
+        let crashAsk = CommsDecision(action: .investigate, number: 0,
+                                     summary: "iOS build crashes on launch",
+                                     reason: "Reports a crash and names no PR or issue.")
+        let crashCfg = InvestigateConfig(message: crash, decision: crashAsk, settings: settings,
+                                         reportDir: reports)
+        log(crash, minutesAgo: 11, crashAsk, outcome: "queued",
+            key: "investigate:\(crashCfg.number)", label: crashCfg.label, started: 9)
+
+        let review = message(3, "alice", "", [.dm],
+                             "could you review #512? it's the streaming simulator server one")
+        log(review, minutesAgo: 3,
+            CommsDecision(action: .review, number: 512, summary: "Review the streaming server PR",
+                          reason: "Asks for a review of PR #512."),
+            outcome: "queued, at the front of its band", key: "review:512",
+            label: "Review · #512 · deep")
+
+        CommsLog.append(CommsEvent(at: now.addingTimeInterval(-60), kind: .error, id: "",
+                                   detail: "Slack rate-limited the watcher (retry after 30s)"))
+
+        store.commsEnabled = true          // headless-guarded: persists nothing, polls nothing
+        store.commsIdentity = me
+        store.commsLastPoll = now.addingTimeInterval(-40)
+        store.commsError = "Slack rate-limited the watcher (retry after 30s)"
+        // The three newest are unread.
+        store.commsSeenAt = now.addingTimeInterval(-30 * 60)
+        store.queuedTasks = [
+            queuedFixture(number: 512, kind: "review", auditAction: AgentTaskQueue.reviewAction,
+                          label: "Review · #512 · deep", counter: nil),
+        ]
+        store.refreshComms()
         return true
     }
 

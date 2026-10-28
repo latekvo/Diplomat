@@ -324,6 +324,17 @@ def isolated_app_config(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_comms_dir(tmp_path, monkeypatch):
+    """Redirect ``~/.diplomat/comms`` to a per-test temp dir: the real one holds the
+    watermark, which a test would move past messages nobody triaged. The variable reaches
+    the child ``diplomat-core`` too; ``DIPLOMAT_SLACK_TOKEN`` is dropped so no test reaches
+    the operator's Slack."""
+    monkeypatch.setenv("DIPLOMAT_COMMS_DIR", str(tmp_path / "comms"))
+    monkeypatch.delenv("DIPLOMAT_SLACK_TOKEN", raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_device_allocator(tmp_path, monkeypatch):
     """Point the allocator's state file and socket at an empty dir: a panel built here
     otherwise draws the operator's leased devices, and its Free/Kill buttons would ask

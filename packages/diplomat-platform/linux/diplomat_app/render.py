@@ -7,7 +7,8 @@ a real display by grabbing the widget's own pixels:
         QT_QPA_PLATFORM=offscreen python -m diplomat_app
 
 what ∈ {panel, lookup, wizard, issues, conflicts, audit, settings[-explain],
-devices, devices-screen[-remote[-away]|-off], mesh, telemetry}.
+devices, devices-screen[-remote[-away]|-off], mesh, telemetry, comms, comms-panel,
+comms-empty}.
 With DIPLOMAT_RENDER_LIVE=1 it fetches real data first; otherwise it uses a small
 synthetic fixture.
 """
@@ -517,6 +518,110 @@ def _mesh_fixture(store: Store) -> None:
     }
 
 
+def _comms_fixture(store: Store, *, configured: bool) -> None:
+    """A synthetic Comms log, written into a scratch ``DIPLOMAT_COMMS_DIR`` and folded by
+    the real ``diplomat-core comms-feed``: the screen draws that fold, so seeding the
+    Store would test nothing the user sees. The token is a placeholder, or (``configured``
+    off) an empty scratch path, so the operator's real token is never read."""
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from diplomat_runtime import comms
+
+    from PySide6.QtCore import QSettings
+
+    from .store import app_settings
+
+    scratch = Path(tempfile.mkdtemp(prefix="diplomat-render-comms-"))
+    os.environ["DIPLOMAT_COMMS_DIR"] = str(scratch / "comms")
+    # The fixture switches Comms on and moves `commsSeenAt`, so the store is first
+    # re-pointed at scratch settings.
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(scratch))
+    store._settings = app_settings()
+    if configured:
+        os.environ[comms.TOKEN_ENV] = "xoxp-render"
+    else:
+        os.environ.pop(comms.TOKEN_ENV, None)
+        os.environ["DIPLOMAT_CONFIG"] = str(scratch / "config.json")
+        (scratch / "config.json").write_text(json.dumps(
+            {"slackTokenFile": str(scratch / "slack-token")}))
+        return
+
+    now = datetime.now(timezone.utc)
+
+    def at(mins: float) -> datetime:
+        return now - timedelta(minutes=mins)
+
+    def message(n: int, *, dm: bool, user: str, text: str, reasons: list,
+                keyword: str | None = None) -> dict:
+        ts = f"{int(at(0).timestamp()) - n * 600}.00{n:04d}"
+        channel = "D0RENDER" if dm else "C0GENERAL"
+        m = {"id": f"{channel}:{ts}", "channelID": channel,
+             "channelName": "U0" + user.upper() if dm else "argent-dev", "isDM": dm,
+             "userID": "U0" + user.upper(), "userName": user, "teamID": "T0SWM",
+             "text": text, "ts": ts, "reasons": reasons,
+             "permalink": f"https://swm.slack.com/archives/{channel}/p{ts.replace('.', '')}"}
+        if keyword:
+            m["keyword"] = keyword
+        return m
+
+    review = message(5, dm=True, user="kacper", reasons=["dm"],
+                     text="hey, could you take a look at PR 389 when you get a chance? "
+                          "it's blocking the skills release")
+    bug = message(3, dm=False, user="ola", reasons=["mention", "keyword"], keyword="argent",
+                  text="@ignacy argent's screenshot tool hangs forever on the Pixel 9 "
+                       "emulator since this morning, no error, just never returns")
+    bump = message(2, dm=False, user="t0tl", reasons=["mention"],
+                   text="@ignacy any news on #391? the crash on boot is hitting us too")
+    chat = message(1, dm=True, user="kacper", reasons=["dm"], text="thanks!! 🙏")
+    inv_number = int(bug["ts"].replace(".", ""))
+    inv_label = "Investigate · Slack · ola · screenshot tool hangs on Pixel 9 emulator"
+    events = [
+        (50, "ping", review, None),
+        (50, "decision", review, {"decision": {"action": "review", "number": 389,
+                                               "summary": "Review PR 389",
+                                               "reason": "A direct review request."}}),
+        (50, "action", review, {"outcome": "review of #389 queued, at the front of its band",
+                                "queueKey": "review:389", "label": "Review · #389 · deep"}),
+        (44, "started", review, {"label": "Review · #389 · deep"}),
+        (12, "finished", review, {"label": "Review · #389 · deep"}),
+        (30, "ping", bug, None),
+        (30, "decision", bug, {"decision": {"action": "investigate", "number": 0,
+                                            "summary": "screenshot tool hangs on Pixel 9 emulator",
+                                            "reason": "A reported hang with no PR or issue."}}),
+        (30, "action", bug, {"outcome": "investigation queued",
+                             "queueKey": f"investigate:{inv_number}", "label": inv_label}),
+        (26, "started", bug, {"label": inv_label}),
+        (20, "ping", bump, None),
+        (20, "decision", bump, {"decision": {"action": "bump", "number": 391,
+                                             "summary": "Asks for progress on #391",
+                                             "reason": "Checks on an existing issue."}}),
+        (20, "action", bump, {"outcome": "nothing queued for #391"}),
+        (8, "ping", chat, None),
+        (8, "decision", chat, {"decision": {"action": "none", "number": 0,
+                                            "summary": "Thanks", "reason": "Chat."}}),
+        (8, "action", chat, {"outcome": "no action"}),
+    ]
+    comms.comms_dir().mkdir(parents=True)
+    with open(comms.events_path(), "w", encoding="utf-8") as f:
+        for mins, kind, m, extra in events:
+            line = {"at": comms.iso(at(mins)), "kind": kind, "id": m["id"]}
+            if kind == "ping":
+                line["message"] = m
+            line.update(extra or {})
+            f.write(json.dumps(line) + "\n")
+    comms.reports_dir().mkdir(parents=True)
+    (comms.reports_dir() / f"{inv_number}.md").write_text("# Screenshot hang\n")
+
+    store.comms_enabled = True
+    store.comms_seen_at = comms.iso(at(25))
+    store.comms_identity = {"userID": "U0IGNACY", "teamID": "T0SWM", "handle": "ignacy"}
+    store.comms_last_poll = at(0.5)
+    store.refresh_comms_feed()
+
+
 def run(what: str, out: str) -> int:
     app = QApplication.instance() or QApplication([])
     store = Store()
@@ -554,6 +659,10 @@ def run(what: str, out: str) -> int:
         _telemetry_scratch()
         _telemetry_ledger_fixture()
 
+    # Also before Panel(): the header's ✉ count is read as it is built.
+    if what.startswith("comms"):
+        _comms_fixture(store, configured=what != "comms-empty")
+
     # The screens shell `--check` as they are built, overwriting the seeded status.
     if what.startswith("devices-screen"):
         store.refresh_allocator_install_async = lambda: None
@@ -587,7 +696,9 @@ def run(what: str, out: str) -> int:
         store.mesh_changed.emit()
     elif what == "telemetry":
         panel._toggle_telemetry()
-    else:  # panel
+    elif what in ("comms", "comms-empty"):
+        panel._toggle_comms()
+    else:  # panel, and comms-panel: the same, its ✉ header button showing a count
         _device_fixture(store)
         _left_pane_fixture(store)
         _queue_fixture(store)

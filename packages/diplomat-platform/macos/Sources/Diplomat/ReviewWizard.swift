@@ -390,7 +390,7 @@ enum AgentSpawner {
         return url
     }
 
-    /// `cd '<repo>' 2>/dev/null; "$SHELL" -i -c 'printf %s $$ > <pid>; <agent>'; { printf %s $? > '<done>'; } 2>/dev/null || :`
+    /// `cd '<repo>' 2>/dev/null; unset DIPLOMAT_SLACK_TOKEN; "$SHELL" -i -c 'printf %s $$ > <pid>; unset DIPLOMAT_SLACK_TOKEN; <agent>'; { printf %s $? > '<done>'; } 2>/dev/null || :`
     ///
     /// `<agent>` is `AgentRunner.agentCommand` — `claude "$(cat '<promptfile>')"` or the
     /// OpenCode spelling of the same thing. Everything around it is identical for both,
@@ -433,19 +433,23 @@ enum AgentSpawner {
     /// fires on EXIT, though, and finishing a turn is not exiting — which is what the
     /// hooks in `plan.settingsPath` answer.
     ///
-    /// With a `plan.tokenItem`, everything after the `cd` runs behind `tokenExport`,
+    /// The Slack token (`CommsToken.envVar`) is unset in both shells: a terminal or tmux
+    /// server started with it in its environment, or an rc exporting it, would hand it to
+    /// an agent reading untrusted Slack text.
+    ///
+    /// With a `plan.tokenItem`, everything after that `unset` runs behind `tokenExport`,
     /// whose export the agent inherits.
     static func shellCommand(_ plan: SpawnPlan) -> String {
         let agent = plan.runner.agentCommand(promptFile: plan.promptFile.path,
                                              model: AppConfig.agentModel, port: plan.port,
                                              serviceSession: plan.serviceSession,
                                              settingsFile: plan.settingsPath)
-        let inner = "printf %s $$ > \(shq(plan.pidPath)); \(agent)"
+        let inner = "printf %s $$ > \(shq(plan.pidPath)); unset \(CommsToken.envVar); \(agent)"
         var body = "\"$SHELL\" -i -c \(shq(inner)); " + sentinel(plan.donePath)
         if let token = tokenExport(keychainItem: plan.tokenItem) {
             body = "\(token) && { \(body); }"
         }
-        return "cd \(shq(repoPath)) 2>/dev/null; " + body
+        return "cd \(shq(repoPath)) 2>/dev/null; unset \(CommsToken.envVar); " + body
     }
 
     /// Appended to the audit line of a run spawned behind `tokenExport`. Same text on

@@ -287,7 +287,8 @@ def test_a_2x_spawn_without_a_pid_file_still_exits_its_own_shell(opencode, monke
     monkeypatch.setattr(review, "user_shell", lambda: "/bin/zsh")
     cmd = review.shell_command("/tmp/p.txt", "/tmp/done", opencode_session=SID)
     agent = runner.agent_command("/tmp/p.txt", opencode_session=SID)
-    assert f"; /bin/zsh -i -c {shlex.quote(agent)}; {{ printf %s $? > /tmp/done;" in cmd
+    assert (f"; /bin/zsh -i -c {shlex.quote('unset DIPLOMAT_SLACK_TOKEN; ' + agent)}; "
+            "{ printf %s $? > /tmp/done;") in cmd
 
 
 def test_a_2x_spawn_with_a_pid_file_records_the_pid_first(opencode, monkeypatch):
@@ -295,7 +296,7 @@ def test_a_2x_spawn_with_a_pid_file_records_the_pid_first(opencode, monkeypatch)
     cmd = review.shell_command("/tmp/p.txt", "/tmp/done", "/tmp/pid",
                                opencode_session=SID)
     agent = runner.agent_command("/tmp/p.txt", opencode_session=SID)
-    assert shlex.quote(f"printf %s $$ > /tmp/pid; {agent}") in cmd
+    assert shlex.quote(f"printf %s $$ > /tmp/pid; unset DIPLOMAT_SLACK_TOKEN; {agent}") in cmd
 
 
 # MARK: - Binding at spawn

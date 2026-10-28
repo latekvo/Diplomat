@@ -40,6 +40,14 @@ def test_category_of_matches_swift_taxonomy() -> None:
         "mesh-dispatch-failed": "mesh",
         "mesh-spawn": "mesh",
         "mesh-stop": "mesh",
+        "comms-ping": "comms",
+        "comms-review": "comms",
+        "comms-fix": "comms",
+        "comms-bump": "comms",
+        "comms-investigate": "comms",
+        "comms-error": "comms",
+        "comms-recovered": "comms",
+        "comms-notice": "comms",
         # everything else falls through to system, so a row never vanishes
         "kill-device": "system",
         "repair-done": "system",
@@ -53,13 +61,15 @@ def test_category_of_matches_swift_taxonomy() -> None:
         assert activity.category_of(action) == expected, action
 
 
-def test_taxonomy_has_eleven_categories_in_order() -> None:
+def test_taxonomy_has_twelve_categories_in_order() -> None:
     cats = activity.categories()
     ids = [c.id for c in cats]
     assert ids == [
         "review", "reply", "conflicts", "audit", "issues", "apiRestart",
-        "quota", "merge", "bans", "mesh", "system",
+        "quota", "merge", "bans", "mesh", "comms", "system",
     ]
+    comms = next(c for c in cats if c.id == "comms")
+    assert (comms.title, comms.glyph, comms.color_hex) == ("Comms", "✉", "#007AFF")
     # every category the mapping can produce is a real declared category
     assert activity.category_of("ban") in ids
 
@@ -68,6 +78,11 @@ def test_glyph_falls_back_to_category_glyph() -> None:
     # a verb with no per-action glyph uses its category's mono glyph, never blank
     assert activity.glyph_for("quota-resume")  # category "quota" -> ⧗
     assert activity.glyph_for("ban") == "⊘"  # monochrome, never colour-emoji
+    assert [activity.glyph_for(v) for v in (
+        "comms-ping", "comms-review", "comms-fix", "comms-bump", "comms-investigate",
+        "comms-error", "comms-recovered", "comms-notice")] == [
+            "✉", "☑", "⊙", "↑", "⌕", "△", "✓", "△"]
+    assert activity.color_for("comms-investigate") == "#007AFF"
 
 
 def test_read_absent_file_is_empty(tmp_path, monkeypatch) -> None:

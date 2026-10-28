@@ -169,7 +169,7 @@ def test_the_agent_is_the_last_command_of_the_inner_shell(opencode):
     is then a wrapper that outlives it."""
     cmd = review.shell_command("/tmp/p.txt", done_path="/tmp/d", pid_path="/tmp/pid")
     # The inner shell's `-c` argument, unquoted the way the outer shell will unquote it.
-    inner = shlex.split(cmd.split("2>/dev/null; ", 1)[1])[3].rstrip(";")
+    inner = shlex.split(cmd.split("2>/dev/null; ", 1)[1])[5].rstrip(";")
     assert inner.startswith("printf %s $$ > /tmp/pid; ")
     assert inner.endswith('opencode --prompt "$(cat /tmp/p.txt)"')
 
@@ -213,7 +213,7 @@ def test_a_claude_spawn_is_left_exactly_as_it_was(monkeypatch, tmp_path):
     monkeypatch.setattr(review, "repo_path", lambda: "/repo")
     monkeypatch.setattr(review, "user_shell", lambda: "/bin/zsh")
     assert review.shell_command("/tmp/p.txt", done_path="/tmp/d") == (
-        "cd /repo 2>/dev/null; claude \"$(cat /tmp/p.txt)\"; "
+        "cd /repo 2>/dev/null; unset DIPLOMAT_SLACK_TOKEN; claude \"$(cat /tmp/p.txt)\"; "
         "{ printf %s $? > /tmp/d; } 2>/dev/null || :; exec \"$SHELL\" -i"
     )
     assert runner.OPENCODE_PERMISSION_ENV not in review.spawn_env()
