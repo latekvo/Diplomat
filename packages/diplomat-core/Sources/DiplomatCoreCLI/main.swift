@@ -13,7 +13,7 @@ import Foundation
 //   diplomat-core agent-state       < fixture.json   # prints what every agent run resolves to
 //   diplomat-core agent-registry    < runs.json      # round-trips the run book on disk
 //   diplomat-core comms-tick        < settings.json  # one Slack watcher tick (see CommsCommand)
-//   diplomat-core comms-auth                         # who DIPLOMAT_SLACK_TOKEN is (auth.test)
+//   diplomat-core comms-auth                         # who Claude Code's Slack login is
 //   diplomat-core comms-feed        [--limit N]      # the Comms screen's rows
 //   diplomat-core comms-effect      < request.json   # what a triaged ping makes a front-end do
 //

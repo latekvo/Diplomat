@@ -165,10 +165,33 @@ public enum CoreAssets {
 
     /// The Comms (Slack watcher) model, `comms.json`.
     public struct CommsModel: Decodable {
+        /// The arguments of one `slack_search_public_and_private` call, before filling.
+        public struct Query: Decodable, Equatable, Sendable {
+            public var keywords: [String]
+            public var filters: String
+
+            public init(keywords: [String] = [], filters: String = "") {
+                self.keywords = keywords
+                self.filters = filters
+            }
+
+            private enum CodingKeys: String, CodingKey { case keywords, filters }
+
+            public init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                self.init(keywords: try c.decodeIfPresent([String].self, forKey: .keywords) ?? [],
+                          filters: try c.decodeIfPresent(String.self, forKey: .filters) ?? "")
+            }
+
+            public func filled(_ values: [String: String]) -> Query {
+                Query(keywords: keywords.map { CommsText.fill($0, values) },
+                      filters: CommsText.fill(filters, values))
+            }
+        }
         public struct Queries: Decodable {
-            public let dm: String
-            public let mention: String
-            public let keyword: String
+            public let dm: Query
+            public let mention: Query
+            public let keyword: Query
         }
         public struct Classifier: Decodable {
             public let instructions: String
@@ -190,6 +213,7 @@ public enum CoreAssets {
         public let maxSearchPages: Int
         public let catchUpHours: Int
         public let httpTimeoutSecs: Double
+        public let loginRefreshSecs: Int
         public let model: String
         public let classifierTimeoutSecs: Double
         public let maxLogBytes: Int
@@ -203,7 +227,7 @@ public enum CoreAssets {
 
         private enum CodingKeys: String, CodingKey {
             case pollSecs, minPollSecs, maxPerTick, indexLagSecs, seenLimit, searchCount,
-                 maxSearchPages, catchUpHours, httpTimeoutSecs, model, classifierTimeoutSecs,
+                 maxSearchPages, catchUpHours, httpTimeoutSecs, loginRefreshSecs, model, classifierTimeoutSecs,
                  maxLogBytes, labelSummaryMax, queries, classifier, investigate
         }
     }
