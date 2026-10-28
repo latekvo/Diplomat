@@ -48,7 +48,7 @@ nudges, and daemon-side bans.
 
 The activity feed is **filterable in place**: it heads a row of per-category chips
 with counts - Reviews · Replies · Conflicts · Audit · Issues · API restart · Out of
-quota · Merges · Bans · Mesh · System - and tapping one mutes that category and drops its
+quota · Merges · Bans · Mesh · Comms · System - and tapping one mutes that category and drops its
 rows. The taxonomy (which raw action verb maps to which category, plus its icon and
 tint) is shared in [`assets/audit-categories.json`](../packages/diplomat-core/assets/audit-categories.json), with
 `packages/diplomat-core/Sources/DiplomatCore/AuditCategory.swift` as the Swift source of truth.
@@ -130,7 +130,7 @@ too low to afford another agent, and releases it when a window refills or the
 balance is topped up. A
 **monitor you switched off** holds its own work indefinitely: it keeps polling and
 keeps listing what it finds (reading *queued · monitor off*), but nothing starts by
-itself - only *execute now* does. So the toggles decide who starts the work, not
+itself - only *execute now* does, or a [Comms](comms.md) ping that asked for that work. So the toggles decide who starts the work, not
 whether you get to see it, and turning both off does not stop the 3-minute GitHub
 poll. **Auto-execute queue** holds every kind at once, the reviews you asked for
 included - which is the one thing no monitor toggle speaks for.

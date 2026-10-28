@@ -7,11 +7,19 @@ Mirrors the macOS ``Dump`` enum so the two front-ends can be cross-checked:
     DIPLOMAT_PRINT_PROMPT=... assemble + print a wizard's prompt: mine|user|single for
                               Review, conflicts[-user|-single], audit[-issues|-prs|-all],
                               issues[-single][-features]
+    DIPLOMAT_COMMS_POLL=1     one real Slack tick: each new ping, its triage and the
+                              effect it would have (nothing is queued)
 
 None of these need a display; they only touch QtCore (QSettings) + gh.
 """
 
 from __future__ import annotations
+
+import os
+import shutil
+import tempfile
+import time
+from pathlib import Path
 
 from diplomat_runtime import review, runner, usagescan
 from diplomat_runtime.models import API, Filters, Fmt
@@ -192,3 +200,74 @@ def _run_issue_prompt(m: str) -> int:
     label = "issue #421, named by hand" if named else "issue #421, out of a sweep"
     depth = depth_by_id(cfg.depth)["title"]
     return _print_prompt_dump(f"IssueConfig: {label} · depth={depth}", cfg.build_prompt())
+
+
+#: How far back a dry run into a scratch dir looks (``Dump.commsPollLookback``).
+COMMS_POLL_LOOKBACK_SECS = 3600
+
+
+def run_comms_poll() -> int:
+    """``DIPLOMAT_COMMS_POLL=1`` (twin of ``Dump.commsPoll``). Nothing is queued.
+
+    Unless ``DIPLOMAT_COMMS_DIR`` is set, it ticks a scratch dir whose watermark is
+    :data:`COMMS_POLL_LOOKBACK_SECS` ago, removed afterwards, so the live applet's own
+    directory is untouched. 1 when there is no token or the tick failed."""
+    import json
+
+    from diplomat_runtime import comms
+
+    if os.environ.get("DIPLOMAT_COMMS_DIR"):
+        return _comms_poll(comms)
+    scratch = Path(tempfile.mkdtemp(prefix="diplomat-commspoll-"))
+    since = int(time.time()) - COMMS_POLL_LOOKBACK_SECS
+    fd = os.open(scratch / "state.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"watermark": f"{since}.000000", "seen": []}, f)
+    print(f"(scratch: the last {COMMS_POLL_LOOKBACK_SECS // 60} min of Slack)")
+    os.environ["DIPLOMAT_COMMS_DIR"] = str(scratch)
+    try:
+        return _comms_poll(comms)
+    finally:
+        del os.environ["DIPLOMAT_COMMS_DIR"]
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _comms_poll(comms) -> int:
+    import json
+
+    store = Store()
+    store.fetch_me()
+    token, why = comms.read_token()
+    if not token:
+        print(f"COMMS: {why}")
+        return 1
+    settings = store.comms_settings_payload()
+    print(f"== comms tick · dir {comms.comms_dir()} · model {settings['model']} ==")
+    result = comms.tick(settings, token)
+    me = result.get("me") or {}
+    if me:
+        print(f"as @{me.get('handle', '')} ({me.get('userID', '')} in {me.get('teamID', '')})")
+    items = result.get("items") or []
+    print(f"{len(items)} new ping{'' if len(items) == 1 else 's'}")
+    for it in items:
+        m, d = it["message"], it["decision"]
+        print(f"\n- {m['id']}  {Store.comms_place(m)} from {Store.comms_sender(m)}"
+              f" [{', '.join(m.get('reasons') or [])}]")
+        print(f"  text:     {Store.comms_snippet(m.get('text', ''), 200)}")
+        number = f" #{d['number']}" if d.get("number") else ""
+        print(f"  decision: {d.get('action')}{number} — {d.get('summary', '')}")
+        print(f"  reason:   {d.get('reason', '')}")
+        try:
+            effect = comms.effect(d, m, store.comms_toggles(), settings)
+        except Exception as exc:  # noqa: BLE001 — say what the core said and go on
+            print(f"  effect:   (could not plan: {exc})")
+            continue
+        if effect.get("kind") == "investigate":
+            cfg = effect["config"]
+            print(f"  effect:   would queue {cfg.get('label')!r}, report {cfg.get('reportPath')}")
+        else:
+            print(f"  effect:   {json.dumps(effect)} (not applied)")
+    if result.get("error"):
+        print(f"\nerror: {result['error']}")
+        return 1
+    return 0

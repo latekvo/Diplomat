@@ -16,6 +16,7 @@ MODES = {
     "DIPLOMAT_WATCHDOG": False,
     "DIPLOMAT_AGENTS": False,
     "DIPLOMAT_DUMP": False,
+    "DIPLOMAT_COMMS_POLL": False,
     "DIPLOMAT_LOOKUP": True,
     "DIPLOMAT_PRINT_PROMPT": True,
     "DIPLOMAT_RENDER": True,

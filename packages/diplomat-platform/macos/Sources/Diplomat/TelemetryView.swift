@@ -3,8 +3,7 @@ import DiplomatCore
 
 /// The Telemetry screen — what the monitors cost and what they still owe.
 ///
-/// The macOS face of the ledger (`TelemetryLog`), and one of the panel's four
-/// screens: Actions · Mesh · **Telemetry** · Settings. It reads
+/// The macOS face of the ledger (`TelemetryLog`). It reads
 /// `~/.diplomat/pr-monitor/telemetry.jsonl`, folds it through the shared arithmetic
 /// (`DiplomatCore.Telemetry`), and draws nine figures:
 ///

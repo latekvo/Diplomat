@@ -163,6 +163,51 @@ public enum CoreAssets {
         }
     }
 
+    /// The Comms (Slack watcher) model, `comms.json`.
+    public struct CommsModel: Decodable {
+        public struct Queries: Decodable {
+            public let dm: String
+            public let mention: String
+            public let keyword: String
+        }
+        public struct Classifier: Decodable {
+            public let instructions: String
+            public let input: String
+        }
+        public struct Investigate: Decodable {
+            public let intro: String
+            public let message: String
+            public let work: String
+            public let rules: String
+            public let report: String
+        }
+        public let pollSecs: Int
+        public let minPollSecs: Int
+        public let maxPerTick: Int
+        public let indexLagSecs: Int
+        public let seenLimit: Int
+        public let searchCount: Int
+        public let maxSearchPages: Int
+        public let catchUpHours: Int
+        public let httpTimeoutSecs: Double
+        public let model: String
+        public let classifierTimeoutSecs: Double
+        public let maxLogBytes: Int
+        public let labelSummaryMax: Int
+        public let queries: Queries
+        public let classifier: Classifier
+        public let investigate: Investigate
+        /// `classifier.schema` serialized with sorted keys, the exact `--json-schema`
+        /// argument. Not decoded: it is free-form JSON.
+        public internal(set) var schema: String = ""
+
+        private enum CodingKeys: String, CodingKey {
+            case pollSecs, minPollSecs, maxPerTick, indexLagSecs, seenLimit, searchCount,
+                 maxSearchPages, catchUpHours, httpTimeoutSecs, model, classifierTimeoutSecs,
+                 maxLogBytes, labelSummaryMax, queries, classifier, investigate
+        }
+    }
+
     // MARK: - Directory resolution
 
     /// Candidate locations for `assets/`, in priority order: an explicit override,
@@ -239,6 +284,20 @@ public enum CoreAssets {
     private static let _issues = try? loadJSON("issues.json", as: Issues.self)
     private static let _models = try? loadJSON("models.json", as: Models.self)
     private static let _telemetry = try? loadJSON("telemetry.json", as: TelemetryModel.self)
+    private static let _comms = try? loadComms()
+
+    private static func loadComms() throws -> CommsModel {
+        var model = try loadJSON("comms.json", as: CommsModel.self)
+        let url = try assetsDir().appendingPathComponent("comms.json")
+        guard let root = (try? JSONSerialization.jsonObject(with: Data(contentsOf: url)))
+                  as? [String: Any],
+              let schema = (root["classifier"] as? [String: Any])?["schema"],
+              let data = try? JSONSerialization.data(withJSONObject: schema,
+                                                     options: [.sortedKeys])
+        else { throw CoreError(message: "comms.json has no classifier.schema object") }
+        model.schema = String(decoding: data, as: UTF8.self)
+        return model
+    }
 
     public static func config() throws -> Config {
         guard let c = _config else { return try loadJSON("config.json", as: Config.self) }
@@ -302,6 +361,11 @@ public enum CoreAssets {
     public static func telemetry() throws -> TelemetryModel {
         guard let t = _telemetry else { return try loadJSON("telemetry.json", as: TelemetryModel.self) }
         return t
+    }
+
+    public static func comms() throws -> CommsModel {
+        guard let c = _comms else { return try loadComms() }
+        return c
     }
 
     public static func graphql(_ name: String) throws -> String {

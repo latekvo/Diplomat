@@ -24,6 +24,8 @@ enum Headless {
         "DIPLOMAT_AUTOFIX_POLL": false,
         "DIPLOMAT_APIWATCH_SCAN": false,
         "DIPLOMAT_APIWATCH_TEST": false,
+        "DIPLOMAT_COMMS_POLL": false,
+        "DIPLOMAT_COMMS_TEST": false,
         "DIPLOMAT_SPAWN_FOCUS_TEST": false,
         "DIPLOMAT_SPAWN_SCRIPT_TEST": false,
         "DIPLOMAT_OSA_TEST": false,

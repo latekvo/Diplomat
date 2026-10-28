@@ -282,22 +282,25 @@ private struct ContentHeightKey: PreferenceKey {
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
-    /// Which of the five screens the body shows: Actions ("main"), Devices, Mesh,
+    /// Which of the six screens the body shows: Actions ("main"), Devices, Comms, Mesh,
     /// Telemetry or Settings.
     @State private var screen: PanelScreen
 
-    enum PanelScreen { case main, devices, mesh, telemetry, settings }
+    enum PanelScreen { case main, devices, comms, mesh, telemetry, settings }
 
-    /// `showSettings` / `showTelemetry` / `showDevices` seed the initial screen — used by
-    /// the headless render to snapshot those screens in context. Defaults to the main view.
+    /// `showSettings` / `showTelemetry` / `showDevices` / `showComms` seed the initial
+    /// screen — used by the headless render to snapshot those screens in context.
+    /// Defaults to the main view.
     /// `seedPendingUnban` seeds the inline un-ban confirmation for a login (render only).
     /// `seedMutedAudit` pre-mutes Activity filter categories so the filtered feed can be
     /// snapshotted (render only).
     init(showSettings: Bool = false, showTelemetry: Bool = false, showDevices: Bool = false,
+         showComms: Bool = false,
          seedPendingUnban: String? = nil, seedMutedAudit: Set<AuditCategory> = []) {
         _screen = State(initialValue: showSettings ? .settings
                                     : showTelemetry ? .telemetry
-                                    : showDevices ? .devices : .main)
+                                    : showDevices ? .devices
+                                    : showComms ? .comms : .main)
         _pendingUnban = State(initialValue: seedPendingUnban)
         _mutedAuditCategories = State(initialValue: seedMutedAudit)
     }
@@ -334,6 +337,9 @@ struct ContentView: View {
             case .settings:
                 // Settings uses the same two-column layout as the main panel below.
                 SettingsView(isPresented: presenting(.settings))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            case .comms:
+                CommsView(isPresented: presenting(.comms))
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .devices:
                 DevicesScreen(isPresented: presenting(.devices))
@@ -396,6 +402,7 @@ struct ContentView: View {
                 Image(systemName: "arrow.clockwise")
             }.buttonStyle(.borderless).help("Refresh")
             devicesButton
+            commsButton
             Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .mesh ? .main : .mesh } } label: {
                 Image(systemName: screen == .mesh ? "hexagon.fill" : "hexagon")
                     .foregroundStyle(screen == .mesh ? Color.accentColor : .primary)
@@ -412,6 +419,30 @@ struct ContentView: View {
                 Image(systemName: "power")
             }.buttonStyle(.borderless).help("Quit")
         }
+    }
+
+    /// Badged with the pings since Comms was last opened.
+    private var commsButton: some View {
+        let open = screen == .comms
+        let unread = store.commsUnread
+        let badge: String = unread > 99 ? "99+" : String(unread)
+        let help: String = unread == 0 ? "Comms"
+            : (unread == 1 ? "Comms: 1 new Slack ping" : "Comms: \(unread) new Slack pings")
+        let symbol = open ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right"
+        return Button { withAnimation(.easeInOut(duration: 0.15)) { screen = open ? .main : .comms } } label: {
+            Image(systemName: symbol)
+                .foregroundStyle(open ? Color.accentColor : .primary)
+                .overlay(alignment: .topTrailing) {
+                    if unread > 0 {
+                        Text(badge).font(.system(size: 8, weight: .bold).monospacedDigit())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 3).padding(.vertical, 0.5)
+                            .background(Capsule().fill(Color.red))
+                            .offset(x: 7, y: -5)
+                    }
+                }
+        }
+        .buttonStyle(.borderless).help(help)
     }
 
     /// Opens the Devices screen; the badge counts the devices in use.
@@ -610,6 +641,7 @@ struct ContentView: View {
         case .merge:      return .green
         case .bans:       return .red
         case .mesh:       return .teal
+        case .comms:      return .blue
         case .system:     return .gray
         }
     }
@@ -723,7 +755,7 @@ struct ContentView: View {
             QueuedTaskRow(
                 task: task,
                 tint: agentTaskTint(task.job.kind),
-                paused: store.isPaused(task.job.counter),
+                paused: store.isHeld(task),
                 onRun: { Task { await store.executeQueuedTask(task.id) } },
                 cancellable: task.job.requested,
                 onCancel: { store.cancelRequestedWork(task.id) },

@@ -799,29 +799,34 @@ def queue_key(audit_action: str, number: int) -> str:
     return f"{audit_action}:{number}"
 
 
-# The two verbs a sweep's work is queued under — the same ones the Review-PRs and
-# Fix-issues spawns write to the activity feed, because each ask is that spawn, split
-# into one task per PR / per issue.
+# The verbs asked-for work is queued under. The first two are a sweep's — the same
+# ones the Review-PRs and Fix-issues spawns write to the activity feed, because each ask
+# is that spawn, split into one task per PR / per issue. The third is a Comms
+# investigation: numbered by the Slack message's ts, and about no PR.
 QUEUE_REVIEW_ACTION = "review"
 QUEUE_ISSUES_ACTION = "issues"
-QUEUE_REQUESTED_ACTIONS = frozenset({QUEUE_REVIEW_ACTION, QUEUE_ISSUES_ACTION})
+QUEUE_INVESTIGATE_ACTION = "investigate"
+QUEUE_REQUESTED_ACTIONS = frozenset(
+    {QUEUE_REVIEW_ACTION, QUEUE_ISSUES_ACTION, QUEUE_INVESTIGATE_ACTION})
 
 # The bands whose work waits behind the rest, nearest-first — a requested review, then
-# a requested issue fix, then a conflict fix, which waits behind everything. Matched off
-# the queue key rather than the job, because the operator's saved arrangement is a list
-# of keys and has to be banded the same way after a restart, with no job to consult
-# (`queue_order`).
+# a requested issue fix, then an investigation, then a conflict fix, which waits behind
+# everything. Matched off the queue key rather than the job, because the operator's
+# saved arrangement is a list of keys and has to be banded the same way after a
+# restart, with no job to consult (`queue_order`).
 QUEUE_LAST_BANDS = (
     frozenset({QUEUE_REVIEW_ACTION}),
     frozenset({QUEUE_ISSUES_ACTION}),
+    frozenset({QUEUE_INVESTIGATE_ACTION}),
     frozenset({"conflicts"}),
 )
 
 
 def queue_band(key: str) -> int:
     """Which band of the queue a task waits in: 0 for the monitors' own finds, 1 for a
-    review the operator asked for, 2 for an issue fix they asked for, 3 for a conflict
-    fix. Bands outrank the operator's arrangement; within one, the arrangement decides.
+    review the operator asked for, 2 for an issue fix they asked for, 3 for an
+    investigation somebody asked for in Slack, 4 for a conflict fix. Bands outrank the
+    operator's arrangement; within one, the arrangement decides.
 
     A monitor's find is first because it is answering something GitHub is already owed
     — a review requested of me, a thread on my PR waiting on a reply — and that debt is
@@ -831,6 +836,9 @@ def queue_band(key: str) -> int:
     behind the review — a sweep of fifty issues never buries a review the operator also
     asked for. Neither runs ahead of a monitor's find; a Review-PRs sweep of fifty
     drafts otherwise buries every review request behind it for a day.
+
+    An investigation comes after both, being a triage's reading of a Slack message, but
+    ahead of a conflict fix: a person is waiting on its answer.
 
     Resolving a conflict stays last: it is the one unit of work that another agent's
     run routinely makes unnecessary — a review-reply agent works the same branch and
@@ -870,7 +878,10 @@ def still_owed(audit_action: str, pr_number: int, conflicting: set[int],
 
     Only ever asked about a task whose number is a PR's. A Fix-issues ask the operator
     made is numbered in the other space entirely, and the caller stands it down rather
-    than pricing issue #421 against the PRs closed this cycle."""
+    than pricing issue #421 against the PRs closed this cycle. An investigation is
+    numbered by a Slack ts and is about no PR, so it always stands."""
+    if audit_action == QUEUE_INVESTIGATE_ACTION:
+        return True
     if pr_number in closed:
         return False
     if audit_action == "conflicts":
@@ -903,11 +914,12 @@ def queue_order(offered: list[str], saved: list[str]) -> list[str]:
     one that never asked a peer. Peer-owned work leaves the queue when the drain
     reaches it and the mesh answers.)
 
-    Requested reviews, then requested issue fixes, then conflict fixes fall to the
-    back whatever order they were found in (:func:`queue_band`). The monitors find
-    their work mid-cycle — the conflict reconciler runs before the review-request fetch
-    even begins — so without the bands a poll's own sequence would decide, and a sweep
-    of fifty drafts offered first would hold up every review GitHub is waiting on."""
+    Requested reviews, then requested issue fixes, then investigations, then conflict
+    fixes fall to the back whatever order they were found in (:func:`queue_band`). The
+    monitors find their work mid-cycle — the conflict reconciler runs before the
+    review-request fetch even begins — so without the bands a poll's own sequence would
+    decide, and a sweep of fifty drafts offered first would hold up every review GitHub
+    is waiting on."""
     live = set(offered)
     out: list[str] = []
     seen: set[str] = set()
@@ -1039,7 +1051,12 @@ class RequestedWork:
     def label(self) -> str:
         """The row this task wears in the panel and the activity feed. Carries the
         depth because that is the choice a sweep is worth re-reading later: the same PR
-        queued from a `max` sweep and from a `quick` one are different jobs."""
+        queued from a `max` sweep and from a `quick` one are different jobs.
+
+        An investigation's label comes from its config (``InvestigateConfig.label``):
+        its number is a Slack ts, which reads as nothing on a row."""
+        if self.action == QUEUE_INVESTIGATE_ACTION:
+            return str(self.config.get("label", ""))
         noun = "Issues" if self.action == QUEUE_ISSUES_ACTION else "Review"
         return f"{noun} · #{self.number} · {self.config.get('depth', '')}"
 

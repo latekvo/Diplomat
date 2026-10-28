@@ -117,6 +117,13 @@ def telemetry() -> dict:
 
 
 @functools.lru_cache(maxsize=1)
+def comms() -> dict:
+    """Comms' tunables. The prompts, queries and schema in comms.json are read by the
+    core alone (``diplomat-core comms-*``, :mod:`comms`)."""
+    return _read_json("comms.json")
+
+
+@functools.lru_cache(maxsize=1)
 def audit_categories() -> dict:
     """The shared audit/activity taxonomy (categories + action→category map).
 

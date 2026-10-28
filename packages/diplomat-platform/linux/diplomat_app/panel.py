@@ -30,6 +30,7 @@ import time
 from diplomat_runtime import activity, agentstate, autofix, core
 from diplomat_runtime.models import Fmt
 from . import deviceallocator, glyphs, szpont
+from .commsview import CommsView
 from .devicesview import DevicesView
 from .settingsview import SettingsView
 from .store import Store, tool_by_id
@@ -225,7 +226,7 @@ class Panel(QWidget):
     def __init__(self, store: Store) -> None:
         super().__init__()
         self.store = store
-        # Which screen the body shows: "main" (Actions) | "settings" | "mesh".
+        # Which screen the body shows: a key of `_screens`.
         self._screen = "main"
         self._active_action: str | None = None  # None | "review" | "issues" | "conflicts" | "audit"
         # Devices section: In use expanded, Free collapsed by default. Persisted on the
@@ -290,7 +291,17 @@ class Panel(QWidget):
         telemetry_scroll.setWidget(self.telemetry_view)
         self._screens["telemetry"] = self.body.addWidget(telemetry_scroll)
 
-        # Page: settings. Scrolled like the two screens above, and for the same
+        # Page: Comms (the Slack watcher).
+        self.comms_view = CommsView(store)
+        self.comms_view.done.connect(lambda: self._set_screen("main"))
+        comms_scroll = QScrollArea()
+        comms_scroll.setWidgetResizable(True)
+        comms_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        comms_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        comms_scroll.setWidget(self.comms_view)
+        self._screens["comms"] = self.body.addWidget(comms_scroll)
+
+        # Page: settings. Scrolled like the screens above, and for the same
         # reason: its left column is a stack of toggles each carrying the paragraph
         # that says what it does, and on a short window Qt buys the space back by
         # squeezing those paragraphs into each other rather than by hiding anything.
@@ -413,6 +424,12 @@ class Panel(QWidget):
             self.mesh_btn = _icon_button(glyphs.G_MESH, "Mesh management")
             self.mesh_btn.clicked.connect(self._toggle_mesh)
             row.addWidget(self.mesh_btn)
+
+        self.comms_btn = _icon_button(glyphs.G_COMMS, "Comms")
+        self.comms_btn.clicked.connect(self._toggle_comms)
+        row.addWidget(self.comms_btn)
+        self.store.comms_changed.connect(self._refresh_comms_button)
+        self._refresh_comms_button()
 
         self.telemetry_btn = _icon_button(glyphs.G_TELEMETRY, "Telemetry")
         self.telemetry_btn.clicked.connect(self._toggle_telemetry)
@@ -772,7 +789,7 @@ class Panel(QWidget):
                 label=_queued_label(task),
                 glyph=glyph,
                 hex_color=tint,
-                paused=self.store.is_paused(task.job.counter),
+                paused=self.store.is_held(task),
                 # Only an ask can be called off. A monitor's row stands for work
                 # GitHub is owed: dropping it would put it straight back on the next
                 # poll, so the button would do nothing anyone could see.
@@ -952,7 +969,7 @@ class Panel(QWidget):
         self._update_results()
 
     def _set_screen(self, name: str) -> None:
-        """Flip the body to one of the screens: Actions ("main"), Devices, Telemetry,
+        """Flip the body to one of the screens: Actions ("main"), Devices, Comms, Telemetry,
         Settings, or — when the mesh add-on is installed — Mesh management."""
         self._screen = name
         self.body.setCurrentIndex(self._screens[name])
@@ -972,6 +989,9 @@ class Panel(QWidget):
             # Re-fold on open. The screen is otherwise only repainted when a
             # sample lands (every 15 min), and the monitors append between those.
             self.telemetry_view.rebuild()
+        if name == "comms":
+            # Opening it is what reads the pings.
+            self.comms_view.open()
         if name == "main":
             self._rebuild_grid()
             self._update_results()
@@ -987,6 +1007,14 @@ class Panel(QWidget):
 
     def _toggle_telemetry(self) -> None:
         self._set_screen("main" if self._screen == "telemetry" else "telemetry")
+
+    def _toggle_comms(self) -> None:
+        self._set_screen("main" if self._screen == "comms" else "comms")
+
+    def _refresh_comms_button(self) -> None:
+        n = self.store.comms_unread
+        self.comms_btn.setText(f"{glyphs.G_COMMS} {n}" if n else glyphs.G_COMMS)
+        self.comms_btn.setToolTip(f"Comms — {n} unread" if n else "Comms")
 
     def _focus_search(self) -> None:
         if self._screen != "main":
