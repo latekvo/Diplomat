@@ -752,10 +752,37 @@ class FreeSlotRow(QFrame):
         row.addWidget(text, 1)
 
 
-class BanRow(QFrame):
-    """One banned author: raised-hand glyph + @login + reason."""
+def plain_tooltip(text: str) -> str:
+    """A tooltip Qt never reads as markup, line breaks kept: the text may be an
+    attacker's."""
+    import html
 
-    def __init__(self, *, login: str, reason: str | None) -> None:
+    return f"<p style='white-space:pre-wrap'>{html.escape(text)}</p>"
+
+
+def link_label(text: str, url: str | None) -> QLabel:
+    """``text``, opening ``url`` when clicked; plain text without one."""
+    import html
+
+    label = QLabel()
+    if url:
+        label.setTextFormat(Qt.TextFormat.RichText)
+        label.setText(f"<a href=\"{html.escape(url, quote=True)}\">{html.escape(text)}</a>")
+        label.setOpenExternalLinks(True)
+        label.setToolTip(plain_tooltip(url))
+    else:
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setText(text)
+    return label
+
+
+class BanRow(QFrame):
+    """One ban: who (and on which service), when, where, why, and who reported it. The
+    evidence shows three lines; its tooltip holds all of it."""
+
+    def __init__(self, ban) -> None:
+        from . import bans
+
         super().__init__()
         self.setStyleSheet(
             "BanRow { background-color: rgba(128,128,128,0.06); border-radius: 6px; }"
@@ -766,15 +793,46 @@ class BanRow(QFrame):
         row.addWidget(GlyphLabel(glyphs.G_BAN, 16, "#FF3B30", font_px=14),
                       0, Qt.AlignmentFlag.AlignTop)
         col = QVBoxLayout()
-        col.setSpacing(1)
-        t = QLabel(f"@{login}")
+        col.setSpacing(2)
+
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        t = QLabel(ban.name)
+        t.setTextFormat(Qt.TextFormat.PlainText)
         t.setStyleSheet("font-size: 10px; font-weight: 600;")
-        col.addWidget(t)
-        if reason:
-            r = QLabel(reason)
+        if ban.is_slack:
+            t.setToolTip(plain_tooltip(f"Slack user {ban.slack_id}"))
+        head.addWidget(t)
+        source = QLabel("SLACK" if ban.is_slack else "GITHUB")
+        source.setStyleSheet(
+            f"color: #FF3B30; background-color: {tint_bg('#FF3B30', 0.12)};"
+            " border-radius: 4px; padding: 0 4px; font-size: 8px; font-weight: 700;")
+        head.addWidget(source)
+        head.addStretch(1)
+        col.addLayout(head)
+
+        when = QLabel(bans.when_text(ban))
+        when.setStyleSheet(muted(9))
+        col.addWidget(when)
+
+        where = link_label(f"in {bans.place_text(ban)}", bans.place_url(ban))
+        where.setStyleSheet(muted(9))
+        col.addWidget(where)
+
+        why = ban.evidence or ban.reason
+        if why:
+            r = QLabel(f"“{' '.join(why.split())}”" if ban.evidence else why)
+            r.setTextFormat(Qt.TextFormat.PlainText)
             r.setWordWrap(True)
-            r.setStyleSheet(muted(9))
+            r.setStyleSheet("font-size: 9px;")
+            r.setMaximumHeight(r.fontMetrics().lineSpacing() * 3 + 2)
+            r.setToolTip(plain_tooltip(why))
             col.addWidget(r)
+        if ban.reported_by:
+            by = QLabel(f"reported by {ban.reported_by}")
+            by.setTextFormat(Qt.TextFormat.PlainText)
+            by.setStyleSheet(muted(8))
+            col.addWidget(by)
         row.addLayout(col, 1)
 
 

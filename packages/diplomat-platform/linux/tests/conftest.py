@@ -335,6 +335,15 @@ def isolated_comms_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_ban_list(tmp_path, monkeypatch):
+    """Redirect ``~/.diplomat/pr-monitor/banned.json`` to a per-test temp dir: the real
+    one decides what the operator's monitors skip, and Comms writes to it when no
+    daemon answers."""
+    monkeypatch.setenv("DA_BAN_DIR", str(tmp_path / "ban"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_device_allocator(tmp_path, monkeypatch):
     """Point the allocator's state file and socket at an empty dir: a panel built here
     otherwise draws the operator's leased devices, and its Free/Kill buttons would ask

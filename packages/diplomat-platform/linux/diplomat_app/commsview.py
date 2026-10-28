@@ -26,9 +26,9 @@ from PySide6.QtWidgets import (
 
 from diplomat_runtime import comms
 from diplomat_runtime.models import Fmt
-from . import glyphs
+from . import bans, glyphs
 from .store import Store
-from .widgets import GlyphLabel, muted, tint_bg
+from .widgets import GlyphLabel, muted, plain_tooltip, tint_bg
 
 #: assets/audit-categories.json → comms.colorHex.
 TINT = "#007AFF"
@@ -61,7 +61,19 @@ def _card() -> tuple[QFrame, QVBoxLayout]:
 
 _REASON_WORD = {"dm": "DM", "mention": "@mention"}
 _ACTION_WORD = {"review": "review", "fix_issue": "fix issue", "bump": "bump",
-                "investigate": "investigate", "none": "no action"}
+                "investigate": "investigate", "injection": "injection", "none": "no action"}
+
+
+def ban_mark(item: dict, banned_ids: set[str]) -> str | None:
+    """The red chip on a ping: ``BANNED SENDER`` for one whose sender is on the ban
+    list or was when it came in, ``INJECTION · BANNED`` for the one that put them there."""
+    decision = item.get("decision") or {}
+    if decision.get("action") == "injection":
+        return "INJECTION · BANNED"
+    user_id = str((item.get("message") or {}).get("userID") or "")
+    if comms.from_banned_sender(decision) or user_id in banned_ids:
+        return "BANNED SENDER"
+    return None
 
 
 def _clear(layout) -> None:
@@ -125,11 +137,11 @@ def job_status(item: dict, waiting: set[str]) -> str:
 
 
 class PingRow(QFrame):
-    def __init__(self, item: dict, *, unread: bool) -> None:
+    def __init__(self, item: dict, *, unread: bool, mark: str | None = None) -> None:
         super().__init__()
         self.setObjectName("pingRow")
         fill = tint_bg(TINT, 0.12) if unread else "rgba(128,128,128,0.05)"
-        edge = TINT if unread else "transparent"
+        edge = _RED if mark else TINT if unread else "transparent"
         self.setStyleSheet(
             f"#pingRow {{ background-color: {fill}; border-radius: 6px;"
             f" border-left: 3px solid {edge}; }}"
@@ -149,6 +161,8 @@ class PingRow(QFrame):
         head.addWidget(where)
         for chip in reason_chips(message):
             head.addWidget(_chip(chip, TINT))
+        if mark:
+            head.addWidget(_chip(f"{glyphs.G_BAN} {mark}", _RED))
         head.addStretch(1)
         if unread:
             head.addWidget(_chip("NEW", TINT))
@@ -174,7 +188,8 @@ class PingRow(QFrame):
             word = _ACTION_WORD.get(action, action)
             if decision.get("number"):
                 word += f" #{decision['number']}"
-            foot.addWidget(_chip(word.upper(), _GREY if action == "none" else _GREEN))
+            tint = {"none": _GREY, "injection": _RED}.get(action, _GREEN)
+            foot.addWidget(_chip(word.upper(), tint))
             summary = _plain(str(decision.get("summary") or decision.get("reason") or ""))
             summary.setStyleSheet(muted(9))
             summary.setWordWrap(True)
@@ -243,6 +258,44 @@ class JobRow(QFrame):
         col.addLayout(foot)
 
 
+class BannedSenderRow(QFrame):
+    """One banned Slack sender: who, when, the words that did it, and the message."""
+
+    def __init__(self, ban: bans.BannedAuthor) -> None:
+        super().__init__()
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        head.addWidget(GlyphLabel(glyphs.G_BAN, 14, _RED, font_px=12))
+        who = _plain(ban.name)
+        who.setStyleSheet("font-weight: 700; font-size: 10px;")
+        head.addWidget(who)
+        uid = _plain(str(ban.slack_id))
+        uid.setStyleSheet(muted(9, mono=True))
+        head.addWidget(uid)
+        when = _plain(bans.when_text(ban))
+        when.setStyleSheet(muted(9))
+        head.addWidget(when, 1)
+        url = bans.place_url(ban)
+        if url:
+            btn = QPushButton("Open in Slack")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet("font-size: 9px; padding: 2px 6px;")
+            btn.clicked.connect(lambda _=False, u=url: QDesktopServices.openUrl(QUrl(u)))
+            head.addWidget(btn)
+        col.addLayout(head)
+        why = ban.evidence or ban.reason or ""
+        if why:
+            quote = _plain(f"“{' '.join(why.split())}”" if ban.evidence else why)
+            quote.setWordWrap(True)
+            quote.setStyleSheet("font-size: 9px; padding-left: 20px;")
+            quote.setMaximumHeight(quote.fontMetrics().lineSpacing() * 2 + 2)
+            quote.setToolTip(plain_tooltip(why))
+            col.addWidget(quote)
+
+
 class CommsView(QWidget):
     done = Signal()
 
@@ -272,6 +325,11 @@ class CommsView(QWidget):
         )
         col.addWidget(self.error_banner)
 
+        self.bans_host, self.bans_col = _card()
+        self.bans_host.setStyleSheet(
+            f"#commsCard {{ background-color: {tint_bg(_RED, 0.07)}; border-radius: 8px; }}")
+        col.addWidget(self.bans_host)
+
         self.empty = self._build_empty()
         col.addWidget(self.empty)
 
@@ -296,6 +354,8 @@ class CommsView(QWidget):
 
         store.comms_changed.connect(self.rebuild)
         store.tasks_changed.connect(self.rebuild)
+        # The ban list is re-read with the activity feed.
+        store.activity_changed.connect(self.rebuild)
         self.rebuild()
 
     def _build_header(self) -> QHBoxLayout:
@@ -388,6 +448,21 @@ class CommsView(QWidget):
         self.body.setVisible(configured or bool(items))
         seen = comms.parse_iso(self._seen_before)
 
+        senders = sorted((b for b in self.store.banned_authors if b.is_slack),
+                         key=lambda b: b.at or "", reverse=True)
+        banned_ids = {str(b.slack_id) for b in senders}
+        _clear(self.bans_col)
+        self.bans_host.setVisible(bool(senders))
+        if senders:
+            self.bans_col.addLayout(self._section_head("BANNED SENDERS", len(senders)))
+            note = QLabel("Prompt injection: their messages are never triaged. "
+                          "Un-ban in the panel's Banned list.")
+            note.setStyleSheet(muted(9))
+            note.setWordWrap(True)
+            self.bans_col.addWidget(note)
+            for b in senders:
+                self.bans_col.addWidget(BannedSenderRow(b))
+
         _clear(self.pings_col)
         self.pings_col.addLayout(self._section_head("PINGS", len(items)))
         if not items:
@@ -398,7 +473,8 @@ class CommsView(QWidget):
         for item in items:
             at = comms.parse_iso(str(item.get("at", "")))
             unread = seen is None or (at is not None and at > seen)
-            self.pings_col.addWidget(PingRow(item, unread=unread))
+            self.pings_col.addWidget(PingRow(item, unread=unread,
+                                             mark=ban_mark(item, banned_ids)))
 
         jobs = [i for i in items if i.get("queueKey")]
         waiting = ({t.id for t in self.store.queued_tasks}

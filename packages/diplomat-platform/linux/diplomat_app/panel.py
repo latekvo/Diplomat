@@ -871,13 +871,14 @@ class Panel(QWidget):
 
         header = SectionHeader(glyph=glyphs.G_BAN, title="Banned",
                                count=len(banned), glyph_color="#FF3B30",
-                               caption="prompt injection · no auto-reviews",
+                               caption="prompt injection · never acted on",
                                expanded=self._bans_expanded)
         header.clicked.connect(self._toggle_bans)
         self.bans_col.addWidget(header)
         if self._bans_expanded:
-            for b in banned:
-                self.bans_col.addWidget(BanRow(login=b.login, reason=b.reason))
+            # Newest first: the one that just happened is the one being looked for.
+            for b in sorted(banned, key=lambda b: b.at or "", reverse=True):
+                self.bans_col.addWidget(BanRow(b))
 
     def _toggle_bans(self) -> None:
         self._bans_expanded = not self._bans_expanded

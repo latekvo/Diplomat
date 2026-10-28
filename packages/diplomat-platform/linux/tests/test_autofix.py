@@ -1245,9 +1245,10 @@ def test_panel_and_auto_dedup_against_each_other(store, monkeypatch):
 
 
 def test_banned_author_blocks_both_interfaces(store, monkeypatch):
+    from diplomat_app import bans
+
     calls = _spawn_recorder(monkeypatch)
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: ["evil"])
-    monkeypatch.setattr("diplomat_app.bans.is_banned", lambda login, b: login in b)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [bans.BannedAuthor("evil")])
     for src in (autofix.SOURCE_PANEL, autofix.SOURCE_AUTO):
         assert store.dispatch_agent(_job(author="evil"), src) == autofix.VERDICT_BANNED
     assert calls == []
@@ -1290,15 +1291,16 @@ def test_a_ban_outranks_the_allowlist(store, monkeypatch):
     an author who is BOTH banned and unlisted reads as banned. The remedy the activity
     line names has to be the one that would actually work: adding bob to the list would
     change nothing while the ban stands."""
+    from diplomat_app import bans
+
     _spawn_recorder(monkeypatch)
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: ["bob"])
-    monkeypatch.setattr("diplomat_app.bans.is_banned", lambda login, b: login in b)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [bans.BannedAuthor("bob")])
     store.review_allowlist_raw = "alice"
     assert store.dispatch_agent(
         _job(author="bob", counter="review_requests"), autofix.SOURCE_AUTO
     ) == autofix.VERDICT_BANNED
     # And a listed author who is banned is still banned, not waved through by the list.
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: ["alice"])
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [bans.BannedAuthor("alice")])
     assert store.dispatch_agent(
         _job(number=31, author="alice", counter="review_requests"), autofix.SOURCE_AUTO
     ) == autofix.VERDICT_BANNED
