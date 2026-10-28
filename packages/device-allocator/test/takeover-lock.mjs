@@ -35,7 +35,7 @@ function runDaemon(base) {
   });
   return new Promise((resolve) => {
     d.once('exit', resolve);
-    setTimeout(() => { d.kill('SIGKILL'); resolve('timeout'); }, 10000);
+    setTimeout(() => { d.kill('SIGKILL'); resolve('timeout'); }, 10000).unref();
   });
 }
 

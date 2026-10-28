@@ -193,7 +193,8 @@ class _FakeDaemon:
             daemon_threads = True
 
         self.server = Server(self.path, Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        # shutdown() waits out serve_forever's poll, half a second by default.
+        threading.Thread(target=self.server.serve_forever, args=(0.01,), daemon=True).start()
 
     def close(self):
         self.server.shutdown()

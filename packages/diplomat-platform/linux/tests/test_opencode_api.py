@@ -249,7 +249,8 @@ def server():
     """
     _Canned.routes, _Canned.seen = {"/session/status": {}}, []
     httpd = ThreadingHTTPServer((opencodeapi.HOST, 0), _Canned)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    # shutdown() waits out serve_forever's poll, half a second by default.
+    threading.Thread(target=httpd.serve_forever, args=(0.01,), daemon=True).start()
     yield httpd
     httpd.shutdown()
     httpd.server_close()

@@ -52,9 +52,9 @@ let nextId = 1;
 function rpc(method, params) {
   const id = nextId++;
   return new Promise((resolve, reject) => {
-    pending.set(id, (m) => (m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result)));
+    const timer = setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error(`timeout: ${method}`)); } }, 15000);
+    pending.set(id, (m) => { clearTimeout(timer); (m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result)); });
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-    setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error(`timeout: ${method}`)); } }, 15000);
   });
 }
 

@@ -416,7 +416,8 @@ def service():
     _Service.routes = {}
     _Service.seen = []
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Service)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    # shutdown() waits out serve_forever's poll, half a second by default.
+    threading.Thread(target=httpd.serve_forever, args=(0.01,), daemon=True).start()
     _Service.url = f"http://127.0.0.1:{httpd.server_address[1]}"
     _service_json(_Service.url)
     yield _Service

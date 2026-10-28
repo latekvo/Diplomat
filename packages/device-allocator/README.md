@@ -133,7 +133,8 @@ how many exist.
 ## Tests
 
 ```bash
-npm test
+npm test                  # files run concurrently, each one's output in one block
+DA_TEST_JOBS=1 npm test   # one at a time
 ```
 
 No real simulators or emulators: `DA_FAKE_DEVICES` points enumeration at a JSON pool,
