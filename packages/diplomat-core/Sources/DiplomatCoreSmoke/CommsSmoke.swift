@@ -230,11 +230,19 @@ func commsSmoke() throws {
           && cfg.channel == "#general" && cfg.sender == "alice" && cfg.summary == "a summary"
           && cfg.owner == "software-mansion" && cfg.repo == "argent",
           "the investigation is numbered by the ts and reports into reportDir: \(cfg)")
-    check(cfg.label == "Investigate · Slack · alice · a summary", "label: \(cfg.label)")
+    let sent = Calendar.current.dateComponents([.hour, .minute, .second],
+                                               from: Date(timeIntervalSince1970: 1508284197))
+    let clock = String(format: "%02d:%02d:%02d", sent.hour ?? -1, sent.minute ?? -1,
+                       sent.second ?? -1)
+    check(cfg.label == "Investigate · Slack · alice · a summary · \(clock)", "label: \(cfg.label)")
     var long = cfg
     long.summary = String(repeating: "x", count: 60)
-    check(long.label == "Investigate · Slack · alice · " + String(repeating: "x", count: 47) + "…",
-          "the label's summary is cut to 48 characters: \(long.label)")
+    check(long.label == "Investigate · Slack · alice · " + String(repeating: "x", count: 47)
+          + "… · \(clock)", "the label's summary is cut to 48 characters: \(long.label)")
+    var later = cfg
+    later.number += 1_000_000
+    check(later.label != cfg.label,
+          "one sender's two asks with one summary wear two labels: \(later.label)")
     let effJSON = try CommsLog.encoder.encode(CommsEffect.investigate(cfg))
     check(try JSONDecoder().decode(CommsEffect.self, from: effJSON) == .investigate(cfg),
           "an effect round-trips through its JSON")

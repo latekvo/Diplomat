@@ -39,6 +39,25 @@ def never_started(item: dict) -> bool:
     return str(item.get("outcome") or "").startswith(NEVER_STARTED)
 
 
+#: A ping's outcome once a retry of a run that never started (or of work that left the
+#: queue) starts (``Store.commsRetriedOutcome``).
+RETRIED = "started on a later attempt"
+
+#: A ping's outcome when the monitor find it took left the queue unrun and nothing here
+#: can put it back (``Store.commsLeftQueueOutcome``).
+LEFT_QUEUE = "its queued task left the queue before it ran"
+
+
+def left_queue(item: dict) -> bool:
+    return str(item.get("outcome") or "").startswith(LEFT_QUEUE)
+
+
+def unstarted(item: dict) -> bool:
+    """Twin of ``Store.commsUnstarted``: a ping whose last run never started is waiting
+    for one again."""
+    return not item.get("finishedAt") and (not item.get("startedAt") or never_started(item))
+
+
 def comms_dir() -> Path:
     """Must match ``CommsLog.dir``: the lines written here land in the file the CLI
     folds."""

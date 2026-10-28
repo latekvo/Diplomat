@@ -498,13 +498,23 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
         try c.encode(label, forKey: .label)
     }
 
-    /// The queue row and activity-feed label.
+    /// The queue row and activity-feed label. Both front-ends tell runs apart by label, so
+    /// it ends in the message's local time: one sender's two asks with the same summary
+    /// would otherwise wear one.
     public var label: String {
         let cap = (try? CoreAssets.comms())?.labelSummaryMax ?? 48
         let s = summary.trimmingCharacters(in: .whitespacesAndNewlines)
         let clipped = s.count > cap ? String(s.prefix(cap - 1)) + "…" : s
-        return "Investigate · Slack · \(sender) · \(clipped)"
+        let sent = Date(timeIntervalSince1970: TimeInterval(number) / 1_000_000)
+        return "Investigate · Slack · \(sender) · \(clipped) · \(Self.clock.string(from: sent))"
     }
+
+    private static let clock: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
 
     public func buildPrompt() -> String {
         guard let b = (try? CoreAssets.comms())?.investigate else { return "" }

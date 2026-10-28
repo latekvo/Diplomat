@@ -191,6 +191,10 @@ extension Store {
     ///
     /// A tick that Comms was switched off during still lands its pings (the tick has
     /// already logged them), but acts on and notifies none.
+    ///
+    /// A logged ping with no action is acted on first, unnotified: an earlier apply that
+    /// never finished (a quit or handover during a lookup) delivered it, and the
+    /// watermark is past it.
     func applyComms(_ result: CommsTickResult) async {
         if let me = result.me, me != commsIdentity { commsIdentity = me }
         noteCommsHealth(result.error)
@@ -199,7 +203,15 @@ extension Store {
         let toggles = commsToggles
         let settings = commsSettings
         let reports = CommsLog.reportsDir()
-        for item in result.items {
+        let fresh = Set(result.items.map(\.message.id))
+        if let reading = refreshComms() { await reading.value }
+        let stranded = commsItems.reversed().compactMap { i -> CommsTickResult.Item? in
+            guard i.outcome == nil, !fresh.contains(i.message.id), let d = i.decision else {
+                return nil
+            }
+            return CommsTickResult.Item(message: i.message, decision: d)
+        }
+        for item in stranded + result.items {
             let act: CommsActResult
             if commsEnabled {
                 let effect = CommsPlan.effect(for: item.decision, message: item.message,
@@ -221,9 +233,11 @@ extension Store {
             // that gap finds its owner here (`commsSettled`).
             recordComms(lines)
             AuditLog.log("auto", act.verb, act.feedLine)
-            if commsNotify && commsEnabled { CommsNotifier.post(item.message) }
+            if commsNotify && commsEnabled && fresh.contains(item.message.id) {
+                CommsNotifier.post(item.message)
+            }
         }
-        if !result.items.isEmpty { refreshAudit() }
+        if !result.items.isEmpty || !stranded.isEmpty { refreshAudit() }
         refreshComms()
     }
 
@@ -305,10 +319,11 @@ extension Store {
         }
         let suffix = front ? ", at the front of its band" : ""
         let twins = Store.commsTwinKeys(ask.key)
-        // Only a find that will run: a paused monitor's waits for "execute now" or its
-        // toggle, while an ask is never paused (`isPaused`).
+        // A paused monitor's find too: once a ping owns it, it drains like an ask
+        // (`isHeld`) and stays queued until it runs (`commsKeptAdopted`).
         if let twin = startingTasks.first(where: { twins.contains($0.id) })
-            ?? queuedTasks.first(where: { twins.contains($0.id) && !isPaused($0.job.counter) }) {
+            ?? queuedTasks.first(where: { twins.contains($0.id) }) {
+            commsAdopted[twin.id] = twin
             if front { moveQueuedTaskToFront(twin.id) }
             let outcome = "already queued" + suffix
             return CommsActResult(verb: verb, outcome: outcome, queueKey: twin.id,
@@ -465,8 +480,8 @@ extension Store {
 
     // MARK: started / finished
 
-    /// Records `started` on the pings owning a dispatched ask; a no-op for asks no ping
-    /// owns.
+    /// Records `started` on the pings owning a dispatched queued task; a no-op for one no
+    /// ping owns.
     func commsSettled(_ entry: QueuedAgentTask, _ outcome: DispatchOutcome) {
         guard outcome.wasHandled else { return }
         // Owners are found in the fold, so a read in flight is waited for.
@@ -477,39 +492,111 @@ extension Store {
             }
             return
         }
-        let owners = commsItems.filter { $0.queueKey == entry.id && $0.startedAt == nil }
+        let owners = commsItems.filter { $0.queueKey == entry.id && Store.commsUnstarted($0) }
         guard !owners.isEmpty else { return }
-        recordComms(owners.map {
-            CommsEvent(kind: .started, id: $0.message.id, label: entry.job.label)
-        })
+        let label = AgentDispatchGate.label(source: .auto, core: entry.job.label,
+                                            attemptNumber: entry.attemptNumber,
+                                            requested: entry.job.requested)
+        recordComms(owners.flatMap { Store.commsStart($0, label: label) })
     }
 
-    /// Run after every agent-row publish.
+    /// Run after every agent-row publish. `neverRan` is this tick's FAILED runs, label to
+    /// reason.
     ///
     /// A ping that took a monitor's queued work (`queue`) records `started` once an agent
-    /// row is doing it: a monitor dispatches its own finds, so `commsSettled` never hears.
+    /// row is doing it: a find its monitor dispatches itself never reaches `commsSettled`.
     ///
     /// A started run whose label no agent row wears any more, and which is not waiting to
-    /// run again, has finished: its pings record `finished`, once.
-    func noteCommsRuns() {
-        guard commsLogRead == nil else { return }
+    /// run again, has finished: its pings record `finished`, once. One the tick calls
+    /// FAILED never ran instead.
+    func noteCommsRuns(neverRan: [String: String] = [:]) {
+        if let reading = commsLogRead {
+            guard !neverRan.isEmpty else { return }
+            Task { [weak self] in
+                await reading.value
+                self?.noteCommsRuns(neverRan: neverRan)
+            }
+            return
+        }
         let waiting = Set(queuedTasks.map(\.id) + startingTasks.map(\.id))
         var lines: [CommsEvent] = []
-        for item in commsItems where item.startedAt == nil && item.finishedAt == nil {
+        for item in commsItems where Store.commsUnstarted(item) {
             guard let key = item.queueKey, !waiting.contains(key),
                   let verb = Store.commsKeyParts(key)?.verb,
                   !AgentTaskQueue.requestedActions.contains(verb),
                   let row = commsRow(doing: key) else { continue }
-            lines.append(CommsEvent(at: Date(timeIntervalSince1970: row.record.dispatchedAt),
-                                    kind: .started, id: item.message.id, label: row.record.label))
+            lines += Store.commsStart(item, label: row.record.label,
+                                      at: Date(timeIntervalSince1970: row.record.dispatchedAt))
         }
         let running = Set(agentRows.map(\.record.label))
         for item in commsItems where item.startedAt != nil && item.finishedAt == nil
-            && !Store.commsNeverStarted(item)
-            && !running.contains(item.label ?? "") && !waiting.contains(item.queueKey ?? "") {
-            lines.append(CommsEvent(kind: .finished, id: item.message.id, label: item.label))
+            && !Store.commsNeverStarted(item) && !waiting.contains(item.queueKey ?? "") {
+            let label = item.label ?? ""
+            if let why = neverRan[label] {
+                lines.append(CommsEvent(kind: .action, id: item.message.id,
+                                        outcome: Store.commsNeverStartedOutcome
+                                            + " (\(Store.snippet(why, max: 120)))"))
+            } else if !running.contains(label) {
+                lines.append(CommsEvent(kind: .finished, id: item.message.id, label: item.label))
+            }
         }
         if !lines.isEmpty { recordComms(lines) }
+    }
+
+    /// A ping whose last run never started is waiting for one again: what retries it
+    /// (the ask's next offer, the monitor's next find) is a new run.
+    static func commsUnstarted(_ item: CommsItem) -> Bool {
+        item.finishedAt == nil && (item.startedAt == nil || commsNeverStarted(item))
+    }
+
+    private static func commsStart(_ item: CommsItem, label: String,
+                                   at: Date = Date()) -> [CommsEvent] {
+        let start = CommsEvent(at: at, kind: .started, id: item.message.id, label: label)
+        guard commsNeverStarted(item) || commsLeftQueue(item) else { return [start] }
+        return [CommsEvent(kind: .action, id: item.message.id, outcome: commsRetriedOutcome),
+                start]
+    }
+
+    static let commsRetriedOutcome = "started on a later attempt"
+
+    /// The queue keys a ping is still waiting on.
+    var commsOwnedKeys: Set<String> {
+        Set(commsItems.filter { Store.commsUnstarted($0) && !Store.commsLeftQueue($0) }
+            .compactMap(\.queueKey))
+    }
+
+    /// The monitor finds pings adopted (`queue`) that a commit's offers left out: each
+    /// stays queued until it runs, its monitor no longer offering it (a withdrawn request,
+    /// a failed spawn it has not found again). One adopted before this launch has no task
+    /// here to put back, so its ping says it left the queue rather than read "queued"
+    /// forever.
+    func commsKeptAdopted(offered: [QueuedAgentTask]) -> [QueuedAgentTask] {
+        let owned = commsOwnedKeys
+        commsAdopted = commsAdopted.filter { owned.contains($0.key) }
+        for task in offered where commsAdopted[task.id] != nil { commsAdopted[task.id] = task }
+        let present = Set(offered.map(\.id) + startingTasks.map(\.id))
+        var kept: [QueuedAgentTask] = []
+        var lines: [CommsEvent] = []
+        for item in commsItems where Store.commsUnstarted(item) && !Store.commsLeftQueue(item) {
+            guard let key = item.queueKey, !present.contains(key),
+                  let verb = Store.commsKeyParts(key)?.verb,
+                  !AgentTaskQueue.requestedActions.contains(verb),
+                  commsRow(doing: key) == nil else { continue }
+            if let task = commsAdopted[key] {
+                if !kept.contains(where: { $0.id == key }) { kept.append(task) }
+            } else {
+                lines.append(CommsEvent(kind: .action, id: item.message.id,
+                                        outcome: Store.commsLeftQueueOutcome + " (\(key))"))
+            }
+        }
+        if !lines.isEmpty { recordComms(lines) }
+        return kept
+    }
+
+    static let commsLeftQueueOutcome = "its queued task left the queue before it ran"
+
+    static func commsLeftQueue(_ item: CommsItem) -> Bool {
+        item.outcome?.hasPrefix(commsLeftQueueOutcome) == true
     }
 
     /// A ping may already have taken this failed run's row as its start (`noteCommsRuns`,

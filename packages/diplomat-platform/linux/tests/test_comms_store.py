@@ -14,6 +14,7 @@ import os
 import re
 import stat
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -108,13 +109,7 @@ def _tick(store, monkeypatch, *pings, error=None, notices=(), between=None) -> d
 
     def fake_tick(settings, token):
         handed.update(settings=settings, token=token)
-        # The two lines the core's tick logs for each ping it hands back.
-        comms.comms_dir().mkdir(parents=True, exist_ok=True)
-        with open(comms.events_path(), "a") as f:
-            for m, d in pings:
-                for kind, extra in (("ping", {"message": m}), ("decision", {"decision": d})):
-                    f.write(json.dumps({"at": comms.iso(), "kind": kind, "id": m["id"],
-                                        **extra}) + "\n")
+        _logged(*pings)
         return {"me": ME, "items": [{"message": m, "decision": d} for m, d in pings],
                 "error": error, "notices": list(notices)}
 
@@ -124,6 +119,16 @@ def _tick(store, monkeypatch, *pings, error=None, notices=(), between=None) -> d
         between()
     store._apply_comms_tick(plan)
     return handed
+
+
+def _logged(*pings) -> None:
+    """The two lines the core's tick logs for each ping it hands back."""
+    comms.comms_dir().mkdir(parents=True, exist_ok=True)
+    with open(comms.events_path(), "a") as f:
+        for m, d in pings:
+            for kind, extra in (("ping", {"message": m}), ("decision", {"decision": d})):
+                f.write(json.dumps({"at": comms.iso(), "kind": kind, "id": m["id"],
+                                    **extra}) + "\n")
 
 
 def _sweep_review(store, *numbers):
@@ -391,7 +396,8 @@ def test_an_investigation_is_band_3_and_outlives_a_restart(comms_store, monkeypa
     assert [t.id for t in comms_store.queued_tasks] == ["review:13", "review:1", key]
     assert autofix.queue_band(key) == 3
     task = comms_store.queued_tasks[-1]
-    assert task.job.label == "Investigate · Slack · kacper · screenshot hangs"
+    sent = time.strftime("%H:%M:%S", time.localtime(float(m["ts"])))
+    assert task.job.label == f"Investigate · Slack · kacper · screenshot hangs · {sent}"
     assert (task.job.pr_url, task.job.pr_number, task.job.kind) == (None, None, "investigate")
 
     again = Store()
@@ -945,43 +951,147 @@ def test_a_review_the_monitor_has_queued_is_not_asked_for_again(comms_store, mon
     assert (action["outcome"], action["queueKey"], action["label"]) == (
         "already queued, at the front of its band", "review-req:12", twin.job.label)
 
-    # The monitor dispatches its own find: its row, not the queue, says it started,
-    # under the label the row wears.
+    # The queue's dispatch starts it, under the label its row wears.
     monkeypatch.setattr(comms_store, "dispatch_agent", lambda *a, **k: "spawned")
     assert comms_store._run_queued_task(twin, forced=True) == "spawned"
-    assert _kinds_by_id()[m["id"]] == ["action"]
-    comms_store.queued_tasks = [t for t in comms_store.queued_tasks if t.id != twin.id]
-    row = autofix.RunningAgent(12, "Auto · " + twin.job.label, "review", True,
-                               started_at=DISPATCHED)
-    rows.append(row)
-    comms_store._note_comms_runs()
     started = _events()[-1]
-    assert (started["kind"], started["label"], started["at"]) == (
-        "started", row.label, comms.iso(datetime.fromtimestamp(DISPATCHED, timezone.utc)))
+    assert (started["kind"], started["label"]) == ("started", "Auto · " + twin.job.label)
+    rows.append(autofix.RunningAgent(12, "Auto · " + twin.job.label, "review", True,
+                                     started_at=DISPATCHED))
     comms_store._note_comms_runs()
     assert _kinds_by_id()[m["id"]] == ["action", "started"], "still running"
     rows.clear()
     comms_store._note_comms_runs()
     assert _kinds_by_id()[m["id"]] == ["action", "started", "finished"]
 
+    # One its monitor dispatches itself: its row, not the queue, says it started.
+    comms_store.queued_tasks = [_review_req(13, "alice")]
+    m2, d2 = _ask(2, "review", 13)
+    _tick(comms_store, monkeypatch, (m2, d2))
+    assert _events()[-1]["queueKey"] == "review-req:13"
+    comms_store.queued_tasks = []
+    row = autofix.RunningAgent(13, "Auto · Review-req · #13 (@alice) +verdict", "review",
+                               True, started_at=DISPATCHED)
+    rows.append(row)
+    comms_store._note_comms_runs()
+    started = _events()[-1]
+    assert (started["kind"], started["id"], started["label"], started["at"]) == (
+        "started", m2["id"], row.label,
+        comms.iso(datetime.fromtimestamp(DISPATCHED, timezone.utc)))
+
 
 @needs_core
-def test_a_review_the_switched_off_monitor_holds_is_asked_for_in_its_own_right(
-        comms_store, monkeypatch):
-    """A switched-off monitor still queues its finds and starts none of them; a ping
-    that took one would wait with it for an "execute now" nobody knows to press."""
+def test_a_review_the_switched_off_monitor_holds_is_taken_and_drains(comms_store,
+                                                                     monkeypatch):
+    """A switched-off monitor still queues its finds and starts none of them. One a ping
+    took is asked-for work, which the switch never stops: asking for it a second time
+    instead would run the review twice once the monitor is back on."""
     _rows(monkeypatch, [])
     comms_store.review_requests_enabled = False
     comms_store.queue_auto_run = True
-    comms_store.queued_tasks = [_review_req(12)]
+    held = _review_req(12)
+    comms_store.queued_tasks = [held]
+    assert comms_store.is_held(held) and comms_store.drainable_tasks == []
     m, d = _ask(1, "review", 12)
     _tick(comms_store, monkeypatch, (m, d))
 
-    assert [r.key for r in comms_store.requested_work] == ["review:12"]
+    assert comms_store.requested_work == []
     [action] = _events()
     assert (action["outcome"], action["queueKey"]) == (
-        "review of #12 queued, at the front of its band", "review:12")
-    assert [t.id for t in comms_store.drainable_tasks] == ["review:12"]
+        "already queued, at the front of its band", "review-req:12")
+    assert not comms_store.is_held(held)
+    assert [t.id for t in comms_store.drainable_tasks] == ["review-req:12"]
+
+
+@needs_core
+def test_a_find_a_ping_took_stays_queued_until_it_runs(comms_store, monkeypatch):
+    """A commit whose monitor no longer offers the find (the request was withdrawn, or
+    its dispatch failed and the monitor has not found it again) keeps it; one this
+    launch has no task for leaves, and its ping says so instead of reading "queued"."""
+    _rows(monkeypatch, [])
+    comms_store.queued_tasks = [_review_req(12)]
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+    comms_store._staged_queue = []
+    comms_store.commit_queue()
+    assert [t.id for t in comms_store.queued_tasks] == ["review-req:12"]
+    assert [e["kind"] for e in _events()] == ["action"]
+
+    comms_store._comms_adopted = {}  # as after a relaunch
+    comms_store.commit_queue()
+    assert comms_store.queued_tasks == []
+    assert _events()[-1]["outcome"] == f"{comms.LEFT_QUEUE} (review-req:12)"
+    assert "review-req:12" not in comms_store._comms_owned
+    comms_store.review_requests_enabled = False
+    assert comms_store.is_held(_review_req(12))
+
+
+@needs_core
+def test_a_ping_whose_run_never_started_is_started_by_its_retry(comms_store, monkeypatch):
+    """A failed spawn records no attempt, so the monitor finds the review again; the ping
+    that took the first, failed start waits for that retry instead of reading "nothing
+    ran" while it runs."""
+    rows = _rows(monkeypatch, [])
+    twin = _review_req(12)
+    comms_store.queued_tasks = [twin]
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+    label = "Auto · " + twin.job.label
+    # The 8-second poll publishes the run's row while its spawn waits for the pid file.
+    comms_store.queued_tasks = []
+    rows.append(autofix.RunningAgent(12, label, "review", True, started_at=DISPATCHED))
+    comms_store._note_comms_runs()
+    rows.clear()
+
+    def no_terminal(*a, **k):
+        raise review.SpawnError("Ghostty opened no window")
+
+    monkeypatch.setattr(comms_store, "_spawn_tracked", no_terminal)
+    assert comms_store._run_queued_task(twin, forced=True) == "failed"
+    [item] = comms_store.comms_items
+    assert item["outcome"] == f"{comms.NEVER_STARTED} (Ghostty opened no window)"
+    assert "review-req:12" in comms_store._comms_owned
+
+    retry = autofix.RunningAgent(12, label + " · retry 2", "review", True,
+                                 started_at=DISPATCHED + 60)
+    rows.append(retry)
+    comms_store._note_comms_runs()
+    [item] = comms_store.comms_items
+    assert (item["outcome"], item["label"]) == (comms.RETRIED, retry.label)
+    assert not comms.never_started(item)
+    rows.clear()
+    comms_store._note_comms_runs()
+    assert comms_store.comms_items[0].get("finishedAt")
+
+
+@needs_core
+def test_a_ping_an_apply_never_acted_on_is_acted_on_by_the_next_tick(comms_store,
+                                                                     monkeypatch):
+    """What a quit during the lookups leaves: the core logged the ping and its triage
+    and let it go, and the Qt half that would have acted on it never ran. The watermark
+    is past it, so no tick hands it over again."""
+    shown = []
+    comms_store.comms_pinged.connect(lambda t, b: shown.append(t))
+    comms_store.comms_notify = True
+    m, d = _ask(1, "review", 12)
+    _logged((m, d))
+    _tick(comms_store, monkeypatch)
+    [action] = _events()
+    assert (action["id"], action["outcome"], action["queueKey"]) == (
+        m["id"], "review of #12 queued, at the front of its band", "review:12")
+    assert shown == [], "no notification for a ping hours old"
+    _tick(comms_store, monkeypatch)
+    assert len(_events()) == 1
+
+
+@needs_core
+def test_a_tick_leaves_the_pings_another_ticks_plan_still_carries(comms_store,
+                                                                  monkeypatch):
+    """Logged with no action until the Qt thread applies that plan, they are not
+    stranded: acting on them here would act twice."""
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d), between=lambda: _tick(comms_store, monkeypatch))
+    assert [(e["kind"], e["id"]) for e in _events()] == [("action", m["id"])]
 
 
 @needs_core

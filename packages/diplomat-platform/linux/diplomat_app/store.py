@@ -445,6 +445,12 @@ class Store(QObject):
         # ping's line must not land after it and drop that ping's ownership.
         self._comms_feed_lock = threading.RLock()
         self._comms_lock = threading.Lock()
+        # Ids of the pings a worker's plan carries until the Qt thread has applied it:
+        # logged with no action meanwhile, they are not stranded. Under the feed lock.
+        self._comms_in_flight: frozenset[str] = frozenset()
+        # The monitor finds a ping took as its ask, by queue key
+        # (:meth:`_comms_kept_adopted`).
+        self._comms_adopted: dict[str, autofix.QueuedTask] = {}
         self._comms_ticked.connect(self._apply_comms_tick)
 
         # Pruned on every start — a Store outlives thousands of polls.
@@ -1604,6 +1610,7 @@ class Store(QObject):
                     activity.log(source, "spawn-failed",
                                  f"{job.label} failed to spawn: {exc}")
                     self.refresh_activity()
+                    self._note_comms_spawn_failed(row_label, str(exc))
                     return "failed"
             token = (routed != "spawned" or ran_here) and bool(review.token_export())
             activity.log(source, job.audit_action,
@@ -2013,7 +2020,7 @@ class Store(QObject):
         the queue it just left. It keeps its place in the saved ARRANGEMENT, because a
         start that fails is re-offered, and dropping the key would send it to the
         back."""
-        staged = self._staged_queue
+        staged = self._staged_queue + self._comms_kept_adopted(self._staged_queue)
         by_id = {e.id: e for e in staged}
         ordered = autofix.queue_order([e.id for e in staged], self.queued_task_order)
         self.queued_task_order = ordered
@@ -2391,7 +2398,15 @@ class Store(QObject):
         over the queue itself, not over what fills it."""
         if not self.queue_auto_run:
             return []
-        return [e for e in self.queued_tasks if not self.is_paused(e.job.counter)]
+        owned = self._comms_owned
+        return [e for e in self.queued_tasks if not self.is_held(e, owned)]
+
+    def is_held(self, task: autofix.QueuedTask,
+                owned: dict[str, frozenset[str]] | None = None) -> bool:
+        """Paused, unless a Slack ping took it as its ask: then it is asked-for work,
+        which switching a monitor off never stops (:meth:`is_paused`)."""
+        return (self.is_paused(task.job.counter)
+                and task.id not in (self._comms_owned if owned is None else owned))
 
     def _begin_starting(self, entry: autofix.QueuedTask) -> None:
         """Move one task out of the queue and into the starting band, where it stays
@@ -3250,7 +3265,7 @@ class Store(QObject):
             self.comms_items = items
             owned: dict[str, set[str]] = {}
             for i in items:
-                if i.get("queueKey") and not i.get("startedAt"):
+                if i.get("queueKey") and comms.unstarted(i) and not comms.left_queue(i):
                     owned.setdefault(str(i["queueKey"]), set()).add(str(i["message"]["id"]))
             self._comms_owned = {k: frozenset(v) for k, v in owned.items()}
 
@@ -3282,20 +3297,40 @@ class Store(QObject):
         settings = self.comms_settings_payload()
         result = comms.tick(settings, token)
         toggles = self.comms_toggles()
+        fresh = list(result.get("items") or [])
         items = []
-        for it in result.get("items") or []:
+        for it in self._comms_stranded(fresh) + fresh:
             message, decision = it.get("message") or {}, it.get("decision") or {}
             try:
                 effect = comms.effect(decision, message, toggles, settings)
             except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
                 effect = {"kind": "none", "error": str(exc)}
-            entry = {"message": message, "decision": decision, "effect": effect}
+            entry = {"message": message, "decision": decision, "effect": effect,
+                     "stranded": bool(it.get("stranded"))}
             if effect.get("kind") in ("review", "fix_issue"):
                 entry["target"] = self._comms_lookup(effect["kind"],
                                                      int(effect.get("number") or 0))
             items.append(entry)
+        with self._comms_feed_lock:
+            self._comms_in_flight |= {str(e["message"].get("id", "")) for e in items}
         return {"at": at, "error": result.get("error"), "me": result.get("me"),
                 "items": items, "notices": result["notices"]}
+
+    def _comms_stranded(self, fresh: list[dict]) -> list[dict]:
+        """Twin of ``applyComms``' first pass: a logged ping with no action, oldest first.
+        An earlier tick delivered it and its apply never ran (the applet quit or handed
+        over during the lookups), and the watermark is past it."""
+        skip = {str((it.get("message") or {}).get("id", "")) for it in fresh}
+        with self._comms_feed_lock:
+            skip |= self._comms_in_flight
+        try:
+            logged = comms.feed()
+        except (RuntimeError, promptcore.CoreBinaryMissing, ValueError):
+            return []
+        return [{"message": i["message"], "decision": i["decision"], "stranded": True}
+                for i in reversed(logged)
+                if not i.get("outcome") and i.get("decision")
+                and str(i["message"].get("id", "")) not in skip]
 
     def _comms_lookup(self, kind: str, number: int) -> dict | None:
         """``{number, url, author, state}``, open or not; ``None`` when GitHub does not
@@ -3327,23 +3362,29 @@ class Store(QObject):
                 "state": str(obj.get("state") or "")}
 
     def _apply_comms_tick(self, plan: dict) -> None:
-        """The Qt-thread half of a tick: publish what it found and act on each ping."""
-        self.comms_last_poll = plan.get("at")
-        if plan.get("me"):
-            self.comms_identity = plan["me"]
-        self._settle_comms_error(plan.get("error"))
-        notices = plan.get("notices") or []
-        for notice in notices:
-            activity.log("auto", "comms-notice", notice)
+        """The Qt-thread half of a tick: publish what it found and act on each ping. A
+        stranded one (:meth:`_comms_stranded`) is not notified."""
         items = plan.get("items") or []
-        for entry in items:
-            self.apply_comms_item(entry)
-        self.refresh_comms_feed()
-        if items or notices:
-            self.refresh_activity()
-            if self.comms_notify and self.comms_enabled:
-                for entry in items:
-                    self.comms_pinged.emit(*self._comms_notification(entry["message"]))
+        try:
+            self.comms_last_poll = plan.get("at")
+            if plan.get("me"):
+                self.comms_identity = plan["me"]
+            self._settle_comms_error(plan.get("error"))
+            notices = plan.get("notices") or []
+            for notice in notices:
+                activity.log("auto", "comms-notice", notice)
+            for entry in items:
+                self.apply_comms_item(entry)
+            self.refresh_comms_feed()
+            if items or notices:
+                self.refresh_activity()
+                if self.comms_notify and self.comms_enabled:
+                    for entry in items:
+                        if not entry.get("stranded"):
+                            self.comms_pinged.emit(*self._comms_notification(entry["message"]))
+        finally:
+            with self._comms_feed_lock:
+                self._comms_in_flight -= {str(e["message"].get("id", "")) for e in items}
         self.comms_changed.emit()
 
     def _settle_comms_error(self, error: str | None) -> None:
@@ -3424,15 +3465,16 @@ class Store(QObject):
                 suffix = ", at the front of its band" if front else ""
                 running = self._comms_row_doing(work.key, self.running_tasks)
                 twins = self._comms_twin_keys(work.key)
-                # Only a find that will run: a paused monitor's waits for "execute now" or
-                # its toggle, while an ask is never paused (:meth:`is_paused`).
+                # A paused monitor's find too: once a ping owns it, it drains like an ask
+                # (:meth:`is_held`) and stays queued until it runs
+                # (:meth:`_comms_kept_adopted`).
                 twin = None if running else next(
                     (t for t in self.starting_tasks if t.id in twins),
-                    next((t for t in self.queued_tasks
-                          if t.id in twins and not self.is_paused(t.job.counter)), None))
+                    next((t for t in self.queued_tasks if t.id in twins), None))
                 if running is not None:
                     outcome, key, label = "already running", work.key, running.label
                 elif twin is not None:
+                    self._comms_adopted = {**self._comms_adopted, twin.id: twin}
                     if front:
                         self._move_to_band_front(twin.id)
                     outcome, key, label = "already queued" + suffix, twin.id, twin.job.label
@@ -3581,28 +3623,91 @@ class Store(QObject):
         return datetime.fromtimestamp(row.started_at).astimezone() if row.started_at else None
 
     def _note_comms_started(self, entry: autofix.QueuedTask) -> None:
-        """A queued ask was dispatched: every ping that asked for it records `started`
-        (``commsSettled``). A monitor's own find is started by :meth:`_note_comms_runs`.
+        """A queued task was dispatched: every ping that owns it records `started`
+        (``commsSettled``), under the label its row wears. A find its monitor dispatches
+        itself is started by :meth:`_note_comms_runs`.
 
         Under the settle lock: a settle whose tick predates this run's registration
         would otherwise read these `started` lines, find the run in no row and write
         it `finished` at once."""
-        if not entry.job.requested:
-            return
         # Asked under the feed lock, which an ask holds until its owner is in.
         with self._comms_feed_lock:
             if not self._comms_owned.get(entry.id):
                 return
+        label = autofix.dispatch_label(autofix.SOURCE_AUTO, entry.job.label, entry.attempt,
+                                       requested=entry.job.requested)
         with self._settle_lock, self._comms_feed_lock:
             owned = self._comms_owned
             owners = owned.get(entry.id)
             if not owners:
                 return
             self._comms_owned = {k: v for k, v in owned.items() if k != entry.id}
+            by_id = {str(i["message"]["id"]): i for i in self.comms_items}
             for msg_id in sorted(owners):
-                comms.append_event("started", msg_id, label=entry.job.label)
+                self._comms_start(by_id.get(msg_id, {}), msg_id, label)
             self.refresh_comms_feed()
         self.comms_changed.emit()
+
+    @staticmethod
+    def _comms_start(item: dict, msg_id: str, label: str,
+                     when: datetime | None = None) -> None:
+        """Twin of ``commsStart``: a retry's start also replaces the outcome that said
+        the last attempt never ran."""
+        if comms.never_started(item) or comms.left_queue(item):
+            comms.append_event("action", msg_id, outcome=comms.RETRIED)
+        comms.append_event("started", msg_id, label=label, when=when)
+
+    def _note_comms_spawn_failed(self, label: str, why: str) -> None:
+        """Twin of ``commsSpawnFailed``: a ping may already have taken this run's row,
+        still starting, as its start; it says the run never ran, or the `finished` its
+        vanished row would earn reads as work done."""
+        outcome = f"{comms.NEVER_STARTED} ({self.comms_snippet(why, 120)})"
+        with self._comms_feed_lock:
+            hit = [str(i["message"]["id"]) for i in self.comms_items
+                   if i.get("label") == label and i.get("startedAt")
+                   and not i.get("finishedAt") and not comms.never_started(i)]
+            for msg_id in hit:
+                comms.append_event("action", msg_id, outcome=outcome)
+            if hit:
+                self.refresh_comms_feed()
+        if hit:
+            self.comms_changed.emit()
+
+    def _comms_kept_adopted(self, offered: list[autofix.QueuedTask]
+                            ) -> list[autofix.QueuedTask]:
+        """Twin of ``commsKeptAdopted``: the monitor finds pings adopted that a commit's
+        offers left out. Each stays queued until it runs, its monitor no longer offering
+        it (a withdrawn request, a failed spawn it has not found again). One adopted
+        before this launch has no task here to put back, so its ping says it left the
+        queue rather than read "queued" forever."""
+        rows = self.running_tasks
+        present = {e.id for e in offered} | {e.id for e in self.starting_tasks}
+        kept: dict[str, autofix.QueuedTask] = {}
+        with self._comms_feed_lock:
+            owned = self._comms_owned
+            adopted = {k: v for k, v in self._comms_adopted.items() if k in owned}
+            adopted.update({e.id: e for e in offered if e.id in adopted})
+            self._comms_adopted = adopted
+            left: list[tuple[str, str]] = []
+            for item in self.comms_items:
+                key = str(item.get("queueKey") or "")
+                parts = self._comms_key_parts(key)
+                if (not key or key in present or key in kept or parts is None
+                        or parts[0] in autofix.QUEUE_REQUESTED_ACTIONS
+                        or not comms.unstarted(item) or comms.left_queue(item)
+                        or self._comms_row_doing(key, rows) is not None):
+                    continue
+                if key in adopted:
+                    kept[key] = adopted[key]
+                else:
+                    left.append((str(item["message"]["id"]), key))
+            for msg_id, key in left:
+                comms.append_event("action", msg_id, outcome=f"{comms.LEFT_QUEUE} ({key})")
+            if left:
+                self.refresh_comms_feed()
+        if left:
+            self.comms_changed.emit()
+        return list(kept.values())
 
     def _note_comms_runs(self, never_ran: dict[str, str] | None = None) -> None:
         """Twin of ``noteCommsRuns``; runs on every settle, Comms on or off.
@@ -3622,7 +3727,7 @@ class Store(QObject):
                     and parts[0] not in autofix.QUEUE_REQUESTED_ACTIONS)
 
         live = [i for i in self.comms_items if i.get("queueKey") and not i.get("finishedAt")]
-        to_start = [i for i in live if not i.get("startedAt")
+        to_start = [i for i in live if comms.unstarted(i)
                     and monitors_find_out_of_the_queue(str(i["queueKey"]))]
         open_runs = [i for i in live if i.get("startedAt") and not comms.never_started(i)]
         if not to_start and not open_runs:
@@ -3633,8 +3738,8 @@ class Store(QObject):
         for item in to_start:
             row = self._comms_row_doing(str(item["queueKey"]), rows)
             if row is not None:
-                comms.append_event("started", str(item["message"]["id"]), label=row.label,
-                                   when=self._comms_dispatched(row))
+                self._comms_start(item, str(item["message"]["id"]), row.label,
+                                  self._comms_dispatched(row))
                 wrote = True
 
         def wearing(label: str, labels) -> str | None:

@@ -499,6 +499,8 @@ final class Store: ObservableObject {
     /// `refreshComms`' read of the log so far, and its off-main-actor read in flight.
     var commsLog = CommsLogCache()
     var commsLogRead: Task<Void, Never>?
+    /// The monitor finds a ping took as its ask, by queue key (`commsKeptAdopted`).
+    var commsAdopted: [String: QueuedAgentTask] = [:]
     /// Why the last poll failed; nil after a good one.
     @Published var commsError: String?
     @Published var commsIdentity: CommsIdentity?
@@ -1384,7 +1386,8 @@ final class Store: ObservableObject {
         if autoTasksMeasured != pass.tick.capLoad.count {
             autoTasksMeasured = pass.tick.capLoad.count
         }
-        noteCommsRuns()
+        let failed = pass.tick.rows.filter { $0.1.state == .failed }.map { ($0.0.label, $0.1.reason) }
+        noteCommsRuns(neverRan: Dictionary(failed, uniquingKeysWith: { first, _ in first }))
     }
 
     /// Write back the three things a tick learns about a run: the pid its shell has since
@@ -2368,7 +2371,7 @@ final class Store: ObservableObject {
     /// poll's offers into the next one, where they would read as work still owed —
     /// so a task would never leave the queue once it entered.
     func commitQueue() {
-        let staged = stagedQueue
+        let staged = stagedQueue + commsKeptAdopted(offered: stagedQueue)
         stagedQueue = []
         let ordered = AgentTaskQueue.order(offered: staged.map(\.id), saved: queuedTaskOrder)
         queuedTaskOrder = ordered
@@ -2755,7 +2758,6 @@ final class Store: ObservableObject {
     /// next poll, which is exactly what staying in the list means.
     private func settleRequested(_ entry: QueuedAgentTask, _ outcome: DispatchOutcome) {
         guard entry.job.requested else { return }
-        commsSettled(entry, outcome)
         switch outcome {
         case .spawned, .standDown, .banned: forgetRequested(entry.id)
         // `.notAllowed` is listed only because the switch is exhaustive: an ask can
@@ -2816,7 +2818,14 @@ final class Store: ObservableObject {
     /// rule gets a test at all — driving the drain itself would end in a real spawn.
     var drainableTasks: [QueuedAgentTask] {
         guard queueAutoRun else { return [] }
-        return queuedTasks.filter { !isPaused($0.job.counter) }
+        let owned = commsOwnedKeys
+        return queuedTasks.filter { !isHeld($0, owned: owned) }
+    }
+
+    /// Paused, unless a Slack ping took it as its ask: then it is asked-for work, which
+    /// switching a monitor off never stops (`isPaused`).
+    func isHeld(_ task: QueuedAgentTask, owned: Set<String>? = nil) -> Bool {
+        isPaused(task.job.counter) && !(owned ?? commsOwnedKeys).contains(task.id)
     }
 
     /// Dispatch one queued task past the capacity check its caller already made, and
@@ -2858,6 +2867,7 @@ final class Store: ObservableObject {
                                           bypassCapacity: true, forced: forced)
         endStarting(entry.id)
         if outcome.wasHandled { recordQueuedAttempt(entry) }
+        commsSettled(entry, outcome)
         settleRequested(entry, outcome)
         return outcome
     }

@@ -62,6 +62,10 @@ enum CommsTest {
                                author: "dave", isOpen: true, state: "OPEN"),
             90044: CommsTarget(number: 90044, url: "https://github.com/o/r/pull/90044",
                                author: "dave", isOpen: true, state: "OPEN"),
+            90045: CommsTarget(number: 90045, url: "https://github.com/o/r/pull/90045",
+                               author: "dave", isOpen: true, state: "OPEN"),
+            90046: CommsTarget(number: 90046, url: "https://github.com/o/r/pull/90046",
+                               author: "dave", isOpen: true, state: "OPEN"),
         ]
         var lookups: [Int] = []
         // Run while a lookup is suspended, as a dispatch elsewhere on the main actor would.
@@ -414,19 +418,46 @@ enum CommsTest {
         store.reviewRequestsEnabled = false
         let held = monitorFind("review-req", 90043, "Review-req · #90043 (@dave)")
         store.queuedTasks = [held] + store.queuedTasks
+        check("a switched-off monitor's find is held", store.isHeld(held)
+                && !store.drainableTasks.map(\.id).contains("review-req:90043"))
         let askHeld = item(.review, 90043)
         await apply([askHeld])
-        check("a review the switched-off monitor holds is asked for in its own right",
-              ids().contains("review:90043")
-                && store.requestedWork.contains { $0.key == "review:90043" }
-                && folded(askHeld)?.queueKey == "review:90043"
-                && outcome(askHeld) == "queued, at the front of its band")
-        let drainable = store.drainableTasks.map(\.id)
-        check("…which the drain starts, where it holds the monitor's",
-              drainable.contains("review:90043") && !drainable.contains("review-req:90043"))
+        check("a review the switched-off monitor holds is taken, not asked for a second time",
+              !ids().contains("review:90043")
+                && !store.requestedWork.contains { $0.key == "review:90043" }
+                && folded(askHeld)?.queueKey == "review-req:90043"
+                && outcome(askHeld) == "already queued, at the front of its band")
+        check("…and drains though its monitor is off: the ping asked for it",
+              !store.isHeld(held) && store.drainableTasks.map(\.id).contains("review-req:90043"))
+
+        // A commit whose monitor no longer offers the find (the request was withdrawn).
+        store.offerRequestedWork()
+        store.commitQueue()
+        check("a find a ping took stays queued when its monitor stops offering it",
+              ids().contains("review-req:90043") && ids().contains("review:90010")
+                && outcome(askHeld) == "already queued, at the front of its band")
+        store.commsAdopted = [:]                // as after a relaunch
+        store.offerRequestedWork()
+        store.commitQueue()
+        check("…and with nothing to put back, the ping says it left the queue",
+              !ids().contains("review-req:90043")
+                && outcome(askHeld) == "\(Store.commsLeftQueueOutcome) (review-req:90043)"
+                && !store.commsOwnedKeys.contains("review-req:90043"))
+        store.queuedTasks = [held] + store.queuedTasks
+        check("…after which it holds the monitor's find no more", store.isHeld(held))
         store.reviewRequestsEnabled = true
-        store.queuedTasks.removeAll { ["review-req:90043", "review:90043"].contains($0.id) }
-        store.requestedWork.removeAll { $0.key == "review:90043" }
+        store.queuedTasks.removeAll { $0.id == "review-req:90043" }
+
+        // The queue's dispatch of a find a ping took starts it, under its row's label.
+        let queuedTwin = monitorFind("review-req", 90046, "Review-req · #90046 (@dave)")
+        store.queuedTasks = [queuedTwin] + store.queuedTasks
+        let askQueuedTwin = item(.review, 90046)
+        await apply([askQueuedTwin])
+        store.queuedTasks.removeAll { $0.id == "review-req:90046" }
+        store.commsSettled(queuedTwin, .spawned(terminal: "iterm"))
+        check("a find a ping took starts when the queue dispatches it, under its row's label",
+              folded(askQueuedTwin)?.startedAt != nil
+                && folded(askQueuedTwin)?.label == "Auto · Review-req · #90046 (@dave)")
 
         // The monitor dispatches its own finds, not through the asks' settle.
         store.queuedTasks.removeAll { $0.id == "review-req:90040" }
@@ -488,6 +519,59 @@ enum CommsTest {
         store.commsSpawnFailed(label: startingRow.record.label, why: neverRan)
         check("…once", CommsLog.read().filter {
             $0.kind == .action && $0.id == askFailing.message.id }.count == 2)
+        check("…and is still waiting on its find", store.commsOwnedKeys.contains("review-req:90044"))
+        // The monitor finds it again, and this time it starts.
+        let retryRow = run("r7", 90044, "review", "Auto · Review-req · #90044 (@dave) · retry 2")
+        store.pinAgentRows([retryRow])
+        store.noteCommsRuns()
+        check("a run that never started is started by its retry",
+              folded(askFailing)?.label == retryRow.record.label
+                && folded(askFailing)?.startedAt == Date(timeIntervalSince1970: whole - 5)
+                && outcome(askFailing) == Store.commsRetriedOutcome)
+        store.publishForSelfTest(Store.AgentPass(tick: tick, windows: [:], attached: .present([])))
+        check("…and finishes when that retry's row is gone", folded(askFailing)?.finishedAt != nil)
+
+        // MARK: a run the tick calls FAILED
+        let doomed = monitorFind("review-req", 90045, "Review-req · #90045 (@dave)")
+        store.queuedTasks = [doomed] + store.queuedTasks
+        let askDoomed = item(.review, 90045)
+        await apply([askDoomed])
+        store.queuedTasks.removeAll { $0.id == "review-req:90045" }
+        let doomedRun = run("r8", 90045, "review", "Auto · Review-req · #90045 (@dave)")
+        store.pinAgentRows([Store.AgentRow(record: doomedRun.record, state: .starting,
+                                           reason: "", window: nil)])
+        store.noteCommsRuns()
+        check("a ping takes the start of another run still starting",
+              folded(askDoomed)?.label == doomedRun.record.label)
+        var stale = doomedRun.record
+        stale.dispatchedAt = Date().timeIntervalSince1970 - 60
+        let failedTick = AgentState.tick(records: [stale], evidence: quiet,
+                                         now: Date().timeIntervalSince1970, limit: 4)
+        check("…which the next tick calls FAILED",
+              failedTick.rows.first?.1.state == .failed)
+        store.publishForSelfTest(Store.AgentPass(tick: failedTick, windows: [:],
+                                                 attached: .present([])))
+        store.publishForSelfTest(Store.AgentPass(tick: tick, windows: [:], attached: .present([])))
+        check("a run the tick calls FAILED is never finished",
+              folded(askDoomed)?.finishedAt == nil
+                && outcome(askDoomed).hasPrefix(Store.commsNeverStartedOutcome + " (its terminal"))
+
+        // MARK: a ping logged with no action
+        // What a quit during the lookup leaves: the tick logged the ping and its triage,
+        // let it go, and the apply that would have acted on it never finished.
+        let stranded = item(.review, 90010, summary: "review it")
+        CommsLog.append(CommsEvent(kind: .ping, id: stranded.message.id, message: stranded.message))
+        CommsLog.append(CommsEvent(kind: .decision, id: stranded.message.id,
+                                   decision: stranded.decision))
+        store.refreshComms()
+        lookups = []
+        await apply([])
+        check("the next tick acts on a ping an earlier apply never finished",
+              lookups == [90010] && folded(stranded)?.queueKey == "review:90010"
+                && outcome(stranded).hasPrefix("already queued"))
+        await apply([])
+        check("…once", CommsLog.read().filter {
+            $0.kind == .action && $0.id == stranded.message.id }.count == 1)
 
         // MARK: an issue gate that a PR's number does not pass
         lookups = []

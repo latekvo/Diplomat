@@ -789,7 +789,7 @@ class Panel(QWidget):
                 label=_queued_label(task),
                 glyph=glyph,
                 hex_color=tint,
-                paused=self.store.is_paused(task.job.counter),
+                paused=self.store.is_held(task),
                 # Only an ask can be called off. A monitor's row stands for work
                 # GitHub is owed: dropping it would put it straight back on the next
                 # poll, so the button would do nothing anyone could see.

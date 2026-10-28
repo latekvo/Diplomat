@@ -30,7 +30,8 @@ its own switch in Settings.
 Nothing Comms queues jumps the machine: the [task cap](automation.md#autonomous-monitors), the
 [spending budget](automation.md#the-spending-budget) and the ban list hold it exactly as they hold a
 monitor's work, and a queued row can be dragged or cancelled like any other. What Comms queues runs
-on this machine only; a review it hands to a monitor's find goes wherever that find was going.
+on this machine only; a review it hands to a monitor's find goes wherever that find was going, and
+that find runs even with its monitor switched off, and stays queued until it does.
 
 ## The Comms screen
 

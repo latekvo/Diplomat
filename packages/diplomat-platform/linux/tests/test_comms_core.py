@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -84,7 +85,9 @@ def test_an_investigation_round_trips_into_the_queue_and_its_prompt():
     assert effect["kind"] == config["kind"] == "investigate"
     assert config["number"] == 1508284197000015
     assert config["reportPath"] == str(_comms_dir() / "reports" / "1508284197000015.md")
-    assert config["label"] == "Investigate · Slack · alice · login page crashes"
+    # Ends in the message's local time, so two asks with one summary wear two labels.
+    sent = time.strftime("%H:%M:%S", time.localtime(1508284197))
+    assert config["label"] == f"Investigate · Slack · alice · login page crashes · {sent}"
     assert (config["sender"], config["channel"]) == ("alice", "#general")
 
     # The one config, unchanged, is both the queue's ask...

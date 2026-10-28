@@ -755,7 +755,7 @@ struct ContentView: View {
             QueuedTaskRow(
                 task: task,
                 tint: agentTaskTint(task.job.kind),
-                paused: store.isPaused(task.job.counter),
+                paused: store.isHeld(task),
                 onRun: { Task { await store.executeQueuedTask(task.id) } },
                 cancellable: task.job.requested,
                 onCancel: { store.cancelRequestedWork(task.id) },

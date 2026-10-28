@@ -130,7 +130,7 @@ too low to afford another agent, and releases it when a window refills or the
 balance is topped up. A
 **monitor you switched off** holds its own work indefinitely: it keeps polling and
 keeps listing what it finds (reading *queued · monitor off*), but nothing starts by
-itself - only *execute now* does. So the toggles decide who starts the work, not
+itself - only *execute now* does, or a [Comms](comms.md) ping that asked for that work. So the toggles decide who starts the work, not
 whether you get to see it, and turning both off does not stop the 3-minute GitHub
 poll. **Auto-execute queue** holds every kind at once, the reviews you asked for
 included - which is the one thing no monitor toggle speaks for.
