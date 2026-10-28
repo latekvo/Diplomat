@@ -275,6 +275,10 @@ class BannedSenderRow(QFrame):
         uid = _plain(str(ban.slack_id))
         uid.setStyleSheet(muted(9, mono=True))
         head.addWidget(uid)
+        if ban.place:
+            place = _plain(ban.place)
+            place.setStyleSheet(muted(9))
+            head.addWidget(place)
         when = _plain(bans.when_text(ban))
         when.setStyleSheet(muted(9))
         head.addWidget(when, 1)

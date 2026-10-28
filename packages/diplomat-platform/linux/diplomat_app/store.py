@@ -4002,7 +4002,8 @@ class Store(QObject):
     def ban_notification(b) -> tuple[str, str]:
         """``(title, body)``: who, then where and the words that got them banned."""
         who = f"Slack user {b.name}" if b.is_slack else b.name
-        where = b.pr or ("Slack" if b.is_slack else "GitHub")
+        where = (", ".join(p for p in (b.place, b.pr) if p) if b.is_slack else b.pr) or (
+            "Slack" if b.is_slack else "GitHub")
         evidence = Store.comms_snippet(b.evidence or b.reason or "", 160)
         by = f" - reported by {b.reported_by}" if b.reported_by else ""
         return (f"Banned {who} for prompt injection",

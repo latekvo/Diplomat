@@ -67,6 +67,8 @@ class BannedAuthor:
     source: str | None = None
     #: A Slack sender's display name.
     handle: str | None = None
+    #: A Slack sender's ``#channel`` or ``DM``.
+    place: str | None = None
     evidence: str | None = None
     evidence_dir: str | None = None
     reported_by: str | None = None
@@ -119,7 +121,7 @@ def read() -> list[BannedAuthor]:
 
         out.append(BannedAuthor(
             login=str(b["login"]), reason=s("reason"), pr=s("pr"), source=s("source"),
-            handle=s("handle"), evidence=s("evidence"), evidence_dir=s("evidenceDir"),
+            handle=s("handle"), place=s("place"), evidence=s("evidence"), evidence_dir=s("evidenceDir"),
             reported_by=s("reportedBy"), at=s("at"), first_at=s("firstAt")))
     return out
 
@@ -153,9 +155,10 @@ def when_text(b: BannedAuthor, now: datetime | None = None) -> str:
 
 def place_text(b: BannedAuthor) -> str:
     """Where the injection was, short: ``PR #N``, the PR reference as recorded, or the
-    Slack message (whose permalink is :func:`place_url`)."""
+    Slack message and its channel (its permalink is :func:`place_url`)."""
     if b.is_slack:
-        return "Slack message" if b.pr else "Slack"
+        noun = "Slack message" if b.pr else "Slack"
+        return f"{noun}, {b.place}" if b.place else noun
     if not b.pr:
         return "GitHub"
     m = re.search(r"/pull/(\d+)", b.pr)
@@ -199,12 +202,13 @@ def report_comms_ban(ban: dict, *, timeout_secs: float = 10) -> Reported:
 
     user_id = str(ban.get("userID") or "")
     handle = str(ban.get("handle") or "").strip().lstrip("@")
+    place = str(ban.get("place") or "").strip()
     permalink = str(ban.get("permalink") or "")
     evidence = str(ban.get("evidence") or "")
     if not _SLACK_USER_ID.match(user_id):
         return Reported(False, f"no Slack user id to ban ({user_id or 'none'})")
     reply = deviceallocator.call("report-injection", {
-        "person": user_id, "source": "slack", "handle": handle, "pr": permalink,
+        "person": user_id, "source": "slack", "handle": handle, "place": place, "pr": permalink,
         "evidence": evidence, "agentName": COMMS_REPORTER, "via": "comms",
     }, timeout_secs=timeout_secs)
     if reply is not None:
@@ -212,10 +216,12 @@ def report_comms_ban(ban: dict, *, timeout_secs: float = 10) -> Reported:
             return Reported(True)
         return Reported(True, f"the device-allocator refused it "
                               f"({reply.get('error') or reply.status})")
-    return Reported(False, _write_directly(slack_login(user_id), handle, permalink, evidence))
+    return Reported(False, _write_directly(slack_login(user_id), handle, place, permalink,
+                                           evidence))
 
 
-def _write_directly(login: str, handle: str, permalink: str, evidence: str) -> str | None:
+def _write_directly(login: str, handle: str, place: str, permalink: str,
+                    evidence: str) -> str | None:
     """The daemon's write, minus its evidence dir; returns why it failed, or None. A
     file that is present but unreadable is left for the daemon to set aside: writing
     over it would lift every ban in it."""
@@ -230,7 +236,7 @@ def _write_directly(login: str, handle: str, permalink: str, evidence: str) -> s
     entry = {"login": login, "reason": "prompt injection", "pr": permalink or None,
              "evidence": evidence[:800], "evidenceDir": None, "reportedBy": COMMS_REPORTER,
              "at": at, "screenshot": False, "ghCaptured": False,
-             "source": "slack", "handle": handle or None}
+             "source": "slack", "handle": handle or None, "place": place or None}
     existing = next((b for b in data["banned"] if isinstance(b, dict)
                      and str(b.get("login", "")).lower() == login.lower()), None)
     if existing is not None:
