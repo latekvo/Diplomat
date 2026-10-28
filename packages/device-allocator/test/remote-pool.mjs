@@ -86,7 +86,8 @@ function startDaemon(box, extraEnv = {}, provider = PROVIDER) {
     const gone = new Promise((r) => child.once('exit', () => r(true)));
     child.kill(signal);
     // A stop gives its releases 3 s, and a loaded machine needs headroom past that.
-    assert.ok(await Promise.race([gone, delay(20000).then(() => false)]), 'the daemon did not exit');
+    const late = new Promise((r) => setTimeout(r, 20000, false).unref());
+    assert.ok(await Promise.race([gone, late]), 'the daemon did not exit');
   };
   return { call, stop };
 }
@@ -115,7 +116,7 @@ function echoes(serial) {
     const s = net.connect(Number(port), host, () => s.write('ping'));
     s.on('data', (b) => { got += b; if (got.length >= 4) done(got === 'ping', `got ${JSON.stringify(got)}`); });
     s.on('error', (e) => done(false, e.code));
-    setTimeout(() => done(false, `no answer in 5 s (got ${JSON.stringify(got)})`), 5000);
+    setTimeout(() => done(false, `no answer in 5 s (got ${JSON.stringify(got)})`), 5000).unref();
   });
 }
 
@@ -167,7 +168,7 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
 {
   const box = sandbox({ remote: REMOTE.map((x) => ({ ...x, free: false })) });
   // The slow provider outlasts the budget by far more than any load stretches the rest.
-  const d = startDaemon(box, { DA_REMOTE_ACQUIRE_BUDGET_MS: '500', FAKE_POOL_SLOW_MS: '12000' });
+  const d = startDaemon(box, { DA_REMOTE_ACQUIRE_BUDGET_MS: '500', FAKE_POOL_SLOW_MS: '4000' });
   await healthy(d);
   const none = await d.call('POST', '/request', { ownerPid: ME, platform: 'android' });
   assert.equal(none.source, 'local');
@@ -189,7 +190,7 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   const t0 = Date.now();
   const slow = await d.call('POST', '/request', { ownerPid: ME, platform: 'android' });
   const waited = Date.now() - t0;
-  assert.ok(waited < 9000, `the agent waits the budget, not the provider (waited ${waited} ms)`);
+  assert.ok(waited < 3000, `the agent waits the budget, not the provider (waited ${waited} ms)`);
   assert.equal(slow.source, 'local');
   assert.equal(slow.remoteSkipped, 'Test Pool did not answer within 1 s');
   await until('the late lease to go back', () => box.events().join() === 'lease pool:P16,release pool:P16', 20000);
@@ -237,8 +238,8 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
 // 2b. Leases ending while the daemon has their record in hand.
 {
   const box = sandbox();
-  // The slow acquire outlasts its budget by seconds, so the pool's end lands inside it.
-  const d = startDaemon(box, { DA_REMOTE_ACQUIRE_BUDGET_MS: '4000', FAKE_POOL_SLOW_MS: '6000' });
+  // The slow acquire outlasts its budget, so the pool's end lands inside it.
+  const d = startDaemon(box, { DA_REMOTE_ACQUIRE_BUDGET_MS: '2000', FAKE_POOL_SLOW_MS: '3000' });
   await healthy(d);
   const auditOf = () => { try { return fs.readFileSync(path.join(box.dir, 'ban', 'audit.jsonl'), 'utf8'); } catch { return ''; } };
 
@@ -270,7 +271,7 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   await until('the change to take the old device out of the table', async () => !(await stateOf(d)).devices.some((x) => x.key === 'pool:P11'));
   box.end(p11, 'lease expired');
   const changed = await changing;
-  assert.deepEqual([changed.outcome, changed.reason], ['remote-unavailable', 'Test Pool did not answer within 4 s']);
+  assert.deepEqual([changed.outcome, changed.reason], ['remote-unavailable', 'Test Pool did not answer within 2 s']);
   assert.equal(changed.keptDevice, undefined, 'an ended lease is not kept');
   assert.equal((await stateOf(d)).devices.some((x) => x.key === 'pool:P11'), false);
   assert.match(auditOf(), /"remote-lease-ended","detail":"POCO \(pool\) taken from pid:\d+: lease expired"/);

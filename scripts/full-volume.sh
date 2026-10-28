@@ -60,9 +60,12 @@ case "$cmd" in
       for bs in 65536 4096 512 1; do
         dd if=/dev/zero bs="$bs" >> "$ballast/0" 2>/dev/null || true
       done
-      # Directory entries and metadata live in space dd cannot reach.
-      i=0
-      while [ "$i" -lt 10000 ] && mkdir "$ballast/d$pass.$i" 2>/dev/null; do i=$((i + 1)); done
+      # Directory entries and metadata live in space dd cannot reach. A tmpfs
+      # directory costs no data, so there mkdir never fails and would fork all 10000.
+      if [ "$(uname -s)" != Linux ]; then
+        i=0
+        while [ "$i" -lt 10000 ] && mkdir "$ballast/d$pass.$i" 2>/dev/null; do i=$((i + 1)); done
+      fi
       i=0
       while [ "$i" -lt 10000 ] && { printf x > "$ballast/f$pass.$i"; } 2>/dev/null; do i=$((i + 1)); done
       sync
