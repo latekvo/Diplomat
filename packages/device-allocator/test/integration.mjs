@@ -63,7 +63,7 @@ async function stop(child) {
   // Wait for the daemon to actually exit before cleaning its files: a due timer
   // tick between our unlink and the SIGTERM handler would rewrite leases.json
   // and leak this phase's leases into the next daemon's rehydration.
-  const exited = new Promise((r) => { child.once('exit', r); setTimeout(r, 2000).unref(); });
+  const exited = new Promise((r) => { const t = setTimeout(r, 2000); child.once('exit', () => { clearTimeout(t); r(); }); });
   try { child.kill('SIGTERM'); } catch {}
   await exited;
   try { fs.unlinkSync(SOCKET); } catch {}

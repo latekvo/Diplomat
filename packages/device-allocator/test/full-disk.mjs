@@ -437,6 +437,15 @@ if (mount.status === 77) {
   process.exit(0);
 }
 assert.equal(mount.status, 0, `mount failed: ${mount.stderr}`);
+// A signal skips the finally below, and the volume would stay attached.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    for (const d of daemons) d.kill('SIGKILL');
+    volume('unmount');
+    fs.rmSync(ROOT, { recursive: true, force: true });
+    process.exit(1);
+  });
+}
 try {
   await scenarioRunningDaemon();
   await scenarioStartFull();

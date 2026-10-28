@@ -97,8 +97,8 @@ def repos(tmp_path, monkeypatch):
     # Keep the E2E hermetic: SettingsView also fires the allocator check on
     # open; point it at nothing so no real Node installer runs.
     monkeypatch.setenv("DIPLOMAT_DEVICE_ALLOCATOR_DIR", str(tmp_path / "no-allocator"))
-    # The stub launchers here exit within half a second or sleep on, so a watch shorter
-    # than the real one still tells them apart.
+    # The stub launchers here exit within a second or sleep on, so a watch shorter than
+    # the real one still tells them apart.
     monkeypatch.setattr(selfupdate, "relaunch_failure",
                         functools.partial(selfupdate.relaunch_failure, window=1.5))
     yield origin, clone, marker

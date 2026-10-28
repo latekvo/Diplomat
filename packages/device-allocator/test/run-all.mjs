@@ -39,6 +39,8 @@ const queue = [...files].sort((a, b) => fs.statSync(path.join(__dirname, b)).siz
 
 const failed = [];
 let done = 0;
+const running = new Map(); // file -> { child, out }
+let stopped = false;
 function run(file) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(__dirname, file)], {
@@ -46,9 +48,11 @@ function run(file) {
       cwd: path.join(__dirname, '..'),
     });
     const out = [];
+    running.set(file, { child, out });
     child.stdout.on('data', (b) => out.push(b));
     child.stderr.on('data', (b) => out.push(b));
     child.on('close', (status, signal) => {
+      running.delete(file);
       console.log(`\n===== [${++done}/${files.length}] ${file} =====`);
       process.stdout.write(Buffer.concat(out));
       // A test killed by a signal exits with a null status — treat anything that is
@@ -58,9 +62,29 @@ function run(file) {
     });
   });
 }
+// A runner stopped from outside (a CI timeout, ^C) starts nothing more, passes the
+// signal on as a process-group signal would, and waits for each test's output: one
+// left writing into a closed pipe would die without cleaning up, and its held output
+// is all that says how far it got.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, async () => {
+    stopped = true;
+    queue.length = 0;
+    console.log(`\n===== ${sig}: stopping ${[...running.keys()].join(', ') || 'nothing'} =====`);
+    const closed = [...running.values()].map(({ child }) => new Promise((r) => child.once('close', r)));
+    for (const { child } of running.values()) child.kill(sig);
+    await Promise.race([Promise.all(closed), new Promise((r) => setTimeout(r, 10000).unref())]);
+    for (const [file, { out }] of running) {
+      console.log(`\n===== ${file} did not stop =====`);
+      process.stdout.write(Buffer.concat(out));
+    }
+    process.exit(1);
+  });
+}
 await Promise.all(Array.from({ length: Math.min(jobs, queue.length) }, async () => {
   while (queue.length > 0) await run(queue.shift());
 }));
+if (stopped) await new Promise(() => {}); // the signal handler reports and exits
 
 console.log(`\n===== ${files.length - failed.length}/${files.length} test files passed =====`);
 if (failed.length > 0) {

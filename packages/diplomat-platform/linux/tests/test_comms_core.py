@@ -202,7 +202,8 @@ class _Slack(BaseHTTPRequestHandler):
 def slack():
     _Slack.messages, _Slack.seen, _Slack.auth_error = [], [], None
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Slack)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    # shutdown() waits out serve_forever's poll, half a second by default.
+    thread = threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{server.server_address[1]}/api"
     server.shutdown()
