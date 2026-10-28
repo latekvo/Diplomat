@@ -50,7 +50,7 @@ clean up after itself.
 | `free-device` | release it |
 | `change-device` | swap platform/format/version in one step |
 | `report-device-broken` | quarantine one that won't boot; a repair is dispatched and a replacement handed over |
-| `report-prompt-injection` | ban an author from automated review, capture the evidence, and terminate the targeted agent |
+| `report-prompt-injection` | ban an author from automated review (or, with `source: "slack"`, a Slack sender from Comms), capture the evidence, and terminate the targeted agent |
 
 ## A remote device pool
 
