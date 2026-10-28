@@ -221,8 +221,7 @@ def test_a_ban_that_failed_says_so_in_the_feed(comms_store, monkeypatch, audit, 
 def test_a_banned_senders_ping_is_recorded_but_never_notified(comms_store, monkeypatch):
     pinged = []
     comms_store.comms_pinged.connect(lambda t, b: pinged.append(t))
-    reason = ("sender banned: mallory is on the prompt-injection ban list, so this was not "
-              "triaged (un-ban them in the panel's Banned list)")
+    reason = "sender banned: mallory is on the prompt-injection ban list, so this was not triaged"
     _tick(comms_store, monkeypatch, (_mallory("hi"), {**_decision("none"), "reason": reason}))
     assert pinged == []
     assert _events()[-1]["outcome"] == "not triaged: the sender is banned for prompt injection"

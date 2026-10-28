@@ -636,7 +636,7 @@ def _comms_fixture(store: Store, *, configured: bool) -> None:
         (2, "decision", again, {"decision": {
             "action": "none", "number": 0, "summary": "",
             "reason": "sender banned: mallory is on the prompt-injection ban list, so this "
-                      "was not triaged (un-ban them in the panel's Banned list)"}}),
+                      "was not triaged"}}),
         (2, "action", again, {"outcome": "not triaged: the sender is banned for prompt injection"}),
     ]
     banned_at = comms.iso(at(40)).replace("Z", ".000Z")
