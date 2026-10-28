@@ -40,7 +40,8 @@ work pauses until the window refills or you top up. A Telemetry card shows cost 
 task, rate limit left, backlog and throughput.
 
 A bundled MCP server gives each agent its own simulator or emulator, so parallel
-agents never share a device. There's also an experimental mesh, off by default, that
+agents never share a device; a [Devices screen](docs/devices.md) shows who holds what and can
+lend agents devices from a remote pool. There's also an experimental mesh, off by default, that
 splits the work between several of your machines over the LAN or across networks.
 
 ## Billing

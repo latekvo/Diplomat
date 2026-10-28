@@ -32,6 +32,12 @@ def _turns_on(name: str, value: str) -> bool:
     return bool(value) if takes_value else value == "1"
 
 
+def active(env: Mapping[str, str]) -> bool:
+    """Whether ``env`` puts this process in one of those modes, in which nothing may
+    be persisted: a render seeds a real Store with preview values."""
+    return any(_turns_on(name, value) for name, value in env.items())
+
+
 def looks_like_mode(name: str) -> bool:
     """Whether a variable is one a caller sets to ask for a one-shot run: a mode, or
     named the way modes are on either platform. No setting either app reads is named

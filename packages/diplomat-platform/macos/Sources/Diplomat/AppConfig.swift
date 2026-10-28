@@ -17,9 +17,10 @@ import DiplomatCore
 /// resolver calls it over, which belongs beside the cap it hands bays back to and is
 /// read by the Linux `DIPLOMAT_AGENTS` dump, a front-end-free path with no store of its own.
 /// So does Comms' Slack token Keychain item, under the agent token's never-the-token rule.
-/// And three are for the device-allocator daemon, a Node process: the terminal spawns
+/// And four are for the device-allocator daemon, a Node process: the terminal spawns
 /// resolve to, published rather than set here, for it to open its repair agents in,
-/// and the two idle limits it shuts devices down and takes them back by.
+/// the two idle limits it shuts devices down and takes them back by, and the module
+/// its remote device pool is lent through.
 ///
 /// So those knobs live in the shared `~/.diplomat` tree, alongside the ban list and
 /// the mesh snapshot both front-ends already exchange there. Every reader re-reads on
@@ -66,6 +67,10 @@ enum AppConfig {
     /// Minutes a device an agent holds may go the same way before the daemon takes it
     /// back, after which it counts as free; 0 = never. Same key on the Linux side.
     static let deviceIdleLeasedMinutesKey = "deviceIdleLeasedMinutes"
+    /// Path to the module that lends the device-allocator daemon devices from a remote
+    /// device pool (`~` allowed); absent = no remote pool. Re-read by the daemon on
+    /// every request.
+    static let deviceRemoteProviderKey = "deviceRemoteProvider"
 
     /// The runner every spawn on this machine uses, resolved here rather than at each
     /// call site because there are two, in different processes: this app's spawner and
@@ -122,28 +127,30 @@ enum AppConfig {
     /// node reading concurrently never sees a torn file. Keys the file already holds
     /// survive a normal write; a file that failed to parse (see `read`) is rewritten from
     /// defaults, so a *corrupt* file loses the other keys — each then falls back to its
-    /// own default, the same degradation an absent file gets. Best-effort: an unwritable
-    /// HOME must never throw into the UI.
-    static func set(_ key: String, _ value: String) {
+    /// own default, the same degradation an absent file gets. Never throws into the UI:
+    /// an unwritable HOME is the `false` it returns, which a caller may ignore.
+    @discardableResult
+    static func set(_ key: String, _ value: String) -> Bool {
         var obj = read()
         if value.isEmpty { obj.removeValue(forKey: key) } else { obj[key] = value }
-        write(obj)
+        return write(obj)
     }
 
     /// `set` for a number, which has no "empty means remove" spelling of its own.
-    static func setInt(_ key: String, _ value: Int) {
+    @discardableResult
+    static func setInt(_ key: String, _ value: Int) -> Bool {
         var obj = read()
         obj[key] = value
-        write(obj)
+        return write(obj)
     }
 
-    private static func write(_ obj: [String: Any]) {
+    private static func write(_ obj: [String: Any]) -> Bool {
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
         guard let data = try? JSONSerialization.data(withJSONObject: obj,
                                                     options: [.prettyPrinted, .sortedKeys])
-        else { return }
-        try? data.write(to: url, options: .atomic)
+        else { return false }
+        return (try? data.write(to: url, options: .atomic)) != nil
     }
 
     /// How many automatic agents this device will run at once, clamped to the range

@@ -18,10 +18,10 @@ locator: this file is world-readable and copied across the mesh.
 One more sits with them without needing to: how long a run may go on before the
 resolver calls it over, which belongs beside the cap it hands bays back to and is
 read by the ``DIPLOMAT_AGENTS`` dump, a front-end-free path with no store of its own.
-The device-allocator daemon, a Node process, reads three more: the terminal spawns
-resolve to (published rather than set here), to open its repair agents in, and the
-two idle limits after which it takes a device back from its agent or shuts down one
-no agent holds.
+The device-allocator daemon, a Node process, reads four more: the terminal spawns
+resolve to (published rather than set here), to open its repair agents in, the two
+idle limits after which it takes a device back from its agent or shuts down one no
+agent holds, and the module its remote device pool is lent through.
 
 So those knobs live in the shared ``~/.diplomat`` tree, the way the ban list,
 the activity feed and the mesh snapshot already cross process *and* front-end
@@ -76,6 +76,10 @@ DEVICE_IDLE_FREE_MINUTES = "deviceIdleFreeMinutes"
 #: Minutes a device an agent holds may show no change on its screen before the daemon
 #: takes it back, after which it counts as free; 0 never does.
 DEVICE_IDLE_LEASED_MINUTES = "deviceIdleLeasedMinutes"
+#: Path to the module that lends the device-allocator daemon devices from a remote
+#: device pool (``~`` allowed); absent = no remote pool. Re-read by the daemon on
+#: every request.
+DEVICE_REMOTE_PROVIDER = "deviceRemoteProvider"
 
 DEFAULT_DEVICE_IDLE_FREE_MINUTES = 5
 MAX_DEVICE_IDLE_FREE_MINUTES = 60

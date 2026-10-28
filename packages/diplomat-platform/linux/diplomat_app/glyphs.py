@@ -47,6 +47,11 @@ G_TELEMETRY = "◫" # telemetry screen header (the per-figure glyphs live in
 G_COMMS = "✉"    # Comms screen header button (matches the comms activity
                  # category's linuxGlyph)
 
+# --- Devices screen glyphs -------------------------------------------------
+G_RECENT = "◴"     # the allocator's recent events
+G_ALLOCATOR = "▥"  # the allocator itself: daemon, install, idle limits
+G_REMOTE = "⇄"     # the remote device pool
+
 # --- Settings card glyphs --------------------------------------------------
 # One per block of the Settings screen. Plain text symbols, like the rest of this
 # file: the obvious pictograms for these (⚡ gauge ⚠ ⬇) all carry an emoji

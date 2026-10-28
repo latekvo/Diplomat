@@ -40,7 +40,8 @@ when polling stops for 15 minutes). The rest appear only when non-empty: the
 **banned authors** list (prompt-injection bans, with the captured evidence and an
 inline un-ban); the collapsible **agent tasks** list (below); the **devices**
 pool (who holds which simulator/emulator, for how long, with a per-device kill -
-clicking an in-use device focuses the holding agent's terminal); and the
+clicking an in-use device focuses the holding agent's terminal, and the section's header
+opens the [Devices screen](devices.md)); and the
 **activity** log, one unified audit feed
 (`~/.diplomat/pr-monitor/audit.jsonl`) of panel actions, monitor dispatches,
 nudges, and daemon-side bans.

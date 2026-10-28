@@ -39,6 +39,12 @@ final class Store: ObservableObject {
     /// Whether the device-allocator MCP server + skill + rule are installed.
     /// Nil until the first `--check` completes (so the UI can show "checking…").
     @Published var allocatorInstall: AllocatorInstall?
+    /// An install, uninstall, start or restart of the allocator is running. The screens
+    /// offer no other meanwhile, and a `--check` that overlaps one is dropped: mid-restart
+    /// no daemon answers, which would read as one to start.
+    @Published private(set) var allocatorBusy = false
+    /// Counts those actions, so a `--check` can tell that one ran while it did.
+    private var allocatorActions = 0
 
     // MARK: persisted settings
 
@@ -260,8 +266,8 @@ final class Store: ObservableObject {
                                                      AppConfig.deviceIdleFreeRange,
                                                      fallback: AppConfig.deviceIdleFreeDefault)
             if clamped != deviceIdleFreeMinutes { deviceIdleFreeMinutes = clamped }
-            guard !Headless.active else { return }
-            AppConfig.setInt(AppConfig.deviceIdleFreeMinutesKey, clamped)
+            guard writesDeviceConfig, !reloadingDeviceConfig else { return }
+            deviceIdleSaveFailed = !AppConfig.setInt(AppConfig.deviceIdleFreeMinutesKey, clamped)
         }
     }
 
@@ -271,10 +277,53 @@ final class Store: ObservableObject {
                                                      AppConfig.deviceIdleLeasedRange,
                                                      fallback: AppConfig.deviceIdleLeasedDefault)
             if clamped != deviceIdleLeasedMinutes { deviceIdleLeasedMinutes = clamped }
-            guard !Headless.active else { return }
-            AppConfig.setInt(AppConfig.deviceIdleLeasedMinutesKey, clamped)
+            guard writesDeviceConfig, !reloadingDeviceConfig else { return }
+            deviceIdleSaveFailed = !AppConfig.setInt(AppConfig.deviceIdleLeasedMinutesKey, clamped)
         }
     }
+
+    /// Whether the idle limits and the provider are written to config.json. Off in a
+    /// headless run, which persists nothing; a self-test on a scratch file turns it on.
+    var writesDeviceConfig = !Headless.active
+    /// Whether the last idle-limit change failed to reach config.json.
+    @Published private(set) var deviceIdleSaveFailed = false
+    /// Set while `reloadDeviceConfig` copies the file in, which is no change to write back.
+    private var reloadingDeviceConfig = false
+
+    /// The remote device pool's provider module, in config.json because the daemon reads
+    /// it; empty = no remote pool.
+    @Published private(set) var deviceRemoteProvider: String
+
+    /// Store the provider trimmed (empty removes the key, which turns the remote pool
+    /// off) and say whether the write landed. Kept in memory alone without `writesDeviceConfig`.
+    @discardableResult
+    func setDeviceRemoteProvider(_ raw: String) -> Bool {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if writesDeviceConfig, !AppConfig.set(AppConfig.deviceRemoteProviderKey, value) { return false }
+        if value != deviceRemoteProvider { deviceRemoteProvider = value }
+        return true
+    }
+
+    /// Re-read the idle limits and the provider from config.json, which is also edited
+    /// by hand.
+    func reloadDeviceConfig() {
+        reloadingDeviceConfig = true
+        defer { reloadingDeviceConfig = false }
+        let free = AppConfig.deviceIdleFreeMinutes, leased = AppConfig.deviceIdleLeasedMinutes
+        if free != deviceIdleFreeMinutes { deviceIdleFreeMinutes = free }
+        if leased != deviceIdleLeasedMinutes { deviceIdleLeasedMinutes = leased }
+        let value = AppConfig.string(AppConfig.deviceRemoteProviderKey)
+        if value != deviceRemoteProvider { deviceRemoteProvider = value }
+    }
+
+    /// The Devices screen's two remote-pool calls. In the Store, not the screen: a
+    /// sign-in runs for up to ten minutes and must outlive the screen being closed.
+    enum RemoteCall: Equatable {
+        case idle, running
+        case answered(RemoteReply, at: Date)
+    }
+    @Published var remoteSignIn: RemoteCall = .idle
+    @Published var remoteListing: RemoteCall = .idle
 
     /// Latest state from the auto-fix monitor's own poll (nil until the first). Drives
     /// the top-of-panel status pill; freshness (`isLive`) decides active vs. offline.
@@ -720,6 +769,7 @@ final class Store: ObservableObject {
         autoBudgetReserveUsd = AppConfig.autoBudgetReserveUsd
         deviceIdleFreeMinutes = AppConfig.deviceIdleFreeMinutes
         deviceIdleLeasedMinutes = AppConfig.deviceIdleLeasedMinutes
+        deviceRemoteProvider = AppConfig.string(AppConfig.deviceRemoteProviderKey)
         // Default ON (absent key ⇒ true): the pill only lights up on a live heartbeat,
         // so defaulting on can't falsely claim "active" when no monitor is running.
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
@@ -807,7 +857,48 @@ final class Store: ObservableObject {
         // Log AFTER the call, with the real outcome — the audit feed must not
         // assert a kill that actually failed.
         AuditLog.log("panel", "kill-device", ok ? "Killed device \(key)" : "Kill FAILED for device \(key)")
+        refreshAudit()
         await refreshDeviceState()
+    }
+
+    func releaseDevice(_ dev: DeviceAllocation) async {
+        guard let pid = dev.owner?.ownerPid else { return }
+        let key = dev.key
+        let ok = await Task.detached(priority: .userInitiated) {
+            DeviceAllocator.releaseDevice(key: key, ownerPid: pid)
+        }.value
+        let who = dev.owner?.agentName ?? "pid \(pid)"
+        AuditLog.log("panel", "release-device",
+                     ok ? "Freed \(dev.name ?? key) from \(who)" : "Free FAILED for \(dev.name ?? key)")
+        refreshAudit()
+        await refreshDeviceState()
+    }
+
+    /// The daemon logs a success itself; only a refusal is this app's to report, under
+    /// the daemon's action so the Recent card shows it.
+    func markDeviceRepaired(_ key: String) async {
+        let ok = await Task.detached(priority: .userInitiated) {
+            DeviceAllocator.markRepaired(key: key)
+        }.value
+        if !ok { AuditLog.log("panel", "repair-done", "Repaired FAILED for device \(key)") }
+        refreshAudit()
+        await refreshDeviceState()
+    }
+
+    /// One at a time; the poll and other daemon calls go on while it waits.
+    func remoteSignInNow() async {
+        guard remoteSignIn != .running else { return }
+        remoteSignIn = .running
+        let reply = await Task.detached(priority: .userInitiated) { DeviceAllocator.remoteSignIn() }.value
+        remoteSignIn = .answered(reply, at: Date())
+        await refreshDeviceState()
+    }
+
+    func listRemotePool() async {
+        guard remoteListing != .running else { return }
+        remoteListing = .running
+        let reply = await Task.detached(priority: .userInitiated) { DeviceAllocator.remoteDevices() }.value
+        remoteListing = .answered(reply, at: Date())
     }
 
     /// Whether the allocator's setup has been settled on this machine — installed, or
@@ -821,9 +912,21 @@ final class Store: ObservableObject {
     }
 
     /// Shell the installer's `--check` (Node startup, ~100-300ms) off-main and
-    /// publish the result. Called at startup, when Settings opens, and post-install.
+    /// publish the result, unless an allocator action ran meanwhile.
     func refreshAllocatorInstall() async {
-        allocatorInstall = await Task.detached(priority: .utility) { DeviceAllocator.check() }.value
+        guard !allocatorBusy else { return }
+        let actions = allocatorActions
+        let status = await Task.detached(priority: .utility) { DeviceAllocator.check() }.value
+        guard !allocatorBusy, actions == allocatorActions else { return }
+        allocatorInstall = status
+    }
+
+    private func allocatorAction(_ body: () async -> Void) async {
+        guard !allocatorBusy else { return }
+        allocatorBusy = true
+        allocatorActions += 1
+        await body()
+        allocatorBusy = false
     }
 
     /// Install the device-allocator MCP on first run, and keep an existing install
@@ -842,50 +945,82 @@ final class Store: ObservableObject {
     /// wrong reinstalls something behind the user's back.
     func ensureAllocatorInstalled() async {
         guard DeviceAllocator.packageAvailable else { return }
-        let status = await Task.detached(priority: .utility) { DeviceAllocator.check() }.value
-        if !DeviceAllocator.needsInstall(status: status, setupDone: allocatorSetupDone) {
-            allocatorInstall = status
-            if status.installed { allocatorSetupDone = true }
-            return
+        await allocatorAction {
+            let status = await Task.detached(priority: .utility) { DeviceAllocator.check() }.value
+            if !DeviceAllocator.needsInstall(status: status, setupDone: allocatorSetupDone) {
+                allocatorInstall = status
+                if status.installed { allocatorSetupDone = true }
+                return
+            }
+            // A first install or a stale one — the same act either way, since `--install`
+            // rewrites every artifact and is therefore also the repair.
+            let reason = status.installed ? "update (stale: \(status.drift.joined(separator: ", ")))"
+                                          : "first-run install"
+            let result = await Task.detached(priority: .utility) { () -> AllocatorInstall in
+                DeviceAllocator.ensureDeps()
+                return DeviceAllocator.install()
+            }.value
+            allocatorInstall = result
+            if result.installed { allocatorSetupDone = true }
+            AuditLog.log("panel", "allocator-install",
+                         "Device allocator \(reason) (ok: \(result.installed))")
+            refreshAudit()
+            await refreshDeviceState()
         }
-        // A first install or a stale one — the same act either way, since `--install`
-        // rewrites every artifact and is therefore also the repair.
-        let reason = status.installed ? "update (stale: \(status.drift.joined(separator: ", ")))"
-                                      : "first-run install"
-        let result = await Task.detached(priority: .utility) { () -> AllocatorInstall in
-            DeviceAllocator.ensureDeps()
-            return DeviceAllocator.install()
-        }.value
-        allocatorInstall = result
-        if result.installed { allocatorSetupDone = true }
-        AuditLog.log("panel", "allocator-install",
-                     "Device allocator \(reason) (ok: \(result.installed))")
-        refreshAudit()
-        await refreshDeviceState()
     }
 
     func installAllocator() async {
-        allocatorInstall = await Task.detached(priority: .utility) { () -> AllocatorInstall in
-            // Deps first: the installer would otherwise register an MCP server that
-            // dies on spawn for want of its one runtime dependency.
-            DeviceAllocator.ensureDeps()
-            return DeviceAllocator.install()
-        }.value
-        allocatorSetupDone = true
-        AuditLog.log("panel", "allocator-install",
-                     "Installed device allocator (ok: \(allocatorInstall?.installed == true))")
-        refreshAudit()
-        await refreshDeviceState()
+        await allocatorAction {
+            allocatorInstall = await Task.detached(priority: .utility) { () -> AllocatorInstall in
+                // Deps first: the installer would otherwise register an MCP server that
+                // dies on spawn for want of its one runtime dependency.
+                DeviceAllocator.ensureDeps()
+                return DeviceAllocator.install()
+            }.value
+            allocatorSetupDone = true
+            AuditLog.log("panel", "allocator-install",
+                         "Installed device allocator (ok: \(allocatorInstall?.installed == true))")
+            refreshAudit()
+            await refreshDeviceState()
+        }
     }
 
     func uninstallAllocator() async {
-        allocatorInstall = await Task.detached(priority: .utility) { DeviceAllocator.uninstall() }.value
-        // An explicit uninstall is a settled choice — the launch-time install must
-        // not put it back on the next start.
-        allocatorSetupDone = true
-        AuditLog.log("panel", "allocator-uninstall", "Uninstalled device allocator")
-        refreshAudit()
-        await refreshDeviceState()
+        await allocatorAction {
+            let result = await Task.detached(priority: .utility) { DeviceAllocator.uninstall() }.value
+            allocatorInstall = result
+            // An explicit uninstall is a settled choice — the launch-time install must
+            // not put it back on the next start.
+            allocatorSetupDone = true
+            AuditLog.log("panel", "allocator-uninstall",
+                         "Uninstalled device allocator (ok: \(result.reportsInstalled && !result.installed))")
+            refreshAudit()
+            await refreshDeviceState()
+        }
+    }
+
+    func startAllocatorDaemon() async {
+        await allocatorAction {
+            let result = await Task.detached(priority: .userInitiated) { DeviceAllocator.startDaemon() }.value
+            allocatorInstall = result.installStatus(over: allocatorInstall)
+            let why = result.error.map { ": \($0)" } ?? ""
+            AuditLog.log("panel", "allocator-install",
+                         "Started the device-allocator daemon (ok: \(result.daemonRunning))\(why)")
+            refreshAudit()
+            await refreshDeviceState()
+        }
+    }
+
+    func restartAllocatorDaemon() async {
+        await allocatorAction {
+            let result = await Task.detached(priority: .userInitiated) { DeviceAllocator.restartDaemon() }.value
+            allocatorInstall = result.installStatus(over: allocatorInstall)
+            let why = result.error.map { ": \($0)" } ?? ""
+            AuditLog.log("panel", "allocator-install",
+                         "Restarted the device-allocator daemon (ok: \(result.daemonRunning && result.error == nil))\(why)")
+            refreshAudit()
+            await refreshDeviceState()
+        }
     }
 
     func fetchMe() async {

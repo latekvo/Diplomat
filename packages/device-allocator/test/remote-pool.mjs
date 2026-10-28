@@ -47,6 +47,12 @@ function sandbox({ remote = REMOTE, mode = 'ok', config = {} } = {}) {
   };
 }
 
+// Every daemon still running when this test ends, however it ends: a failed assertion
+// or a SIGTERM from a runner's timeout would otherwise leave them up for good.
+const live = new Set();
+process.on('exit', () => { for (const c of live) c.kill('SIGTERM'); });
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => process.exit(1));
+
 function startDaemon(box, extraEnv = {}, provider = PROVIDER) {
   const child = spawn(process.execPath, [DAEMON], {
     stdio: 'ignore',
@@ -59,6 +65,8 @@ function startDaemon(box, extraEnv = {}, provider = PROVIDER) {
       ...extraEnv,
     },
   });
+  live.add(child);
+  child.once('exit', () => live.delete(child));
   const call = (method, route, body) => new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
     const req = http.request({ socketPath: path.join(box.dir, 'daemon.sock'), path: route, method, timeout: 15000,

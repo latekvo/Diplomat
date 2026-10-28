@@ -3,6 +3,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { BASE_DIR, DISCOVERY_PATH, STATE_PATH, LEASES_PATH, SOCKET_PATH, CONFIG_PATH } from './paths.js';
 
 export function ensureDirs() { fs.mkdirSync(BASE_DIR, { recursive: true }); }
@@ -47,6 +48,7 @@ export function sweepDeadTmp(file) {
 export function writeDiscovery() {
   atomicWrite(DISCOVERY_PATH, {
     pid: process.pid,
+    identity: procIdentity(process.pid),
     startedAt: new Date().toISOString(),
     socket: SOCKET_PATH,
     version: 1,
@@ -85,4 +87,22 @@ export function pidAlive(pid) {
   if (!pid) return false;
   try { process.kill(pid, 0); return true; }
   catch (e) { return e.code === 'EPERM'; } // alive but not ours-to-signal
+}
+
+// One incarnation of a pid, read alike from any process and unmoved by a wall-clock step.
+// Linux: /proc starttime (ticks since boot, so unique within one boot only; Linux ps
+// derives lstart from the clock). Elsewhere: ps lstart in a fixed locale and zone. ''
+// when unreadable.
+export function procIdentity(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // comm (field 2) may hold spaces and ')': after the last ')', field 22 is index 19.
+    const tail = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+    if (tail[19]) return tail[19];
+  } catch {}
+  try {
+    return execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)],
+      { timeout: 2000, env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } }).toString().trim();
+  } catch {}
+  return '';
 }

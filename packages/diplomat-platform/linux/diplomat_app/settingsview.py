@@ -41,10 +41,10 @@ from diplomat_runtime import (
     usagescan,
 )
 from . import (
-    deviceallocator,
     glyphs,
     szpont,
 )
+from .devicesview import AllocatorControls, allocator_pill, allocator_summary, idle_limit_rows
 from .store import Store, tools
 from .widgets import (
     ChoiceChips,
@@ -1179,149 +1179,26 @@ class SettingsView(QWidget):
         card, body, self._alloc_pill = settings_card(
             glyphs.G_DEVICES, "DEVICE ALLOCATOR", _CYAN
         )
-        controls = QWidget()
-        col = QVBoxLayout(controls)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(7)
-
-        marks = QHBoxLayout()
-        marks.setSpacing(4)
-        self._alloc_marks: dict[str, Pill] = {}
-        for key, label in (("mcpRegistered", "MCP"), ("skillInstalled", "skill"),
-                           ("ruleInstalled", "rule"), ("claudeMdInjected", "CLAUDE.md")):
-            pill = Pill("")
-            self._alloc_marks[key] = pill
-            marks.addWidget(pill)
-        self._alloc_daemon = Pill("")
-        marks.addWidget(self._alloc_daemon)
-        marks.addStretch(1)
-        col.addLayout(marks)
-
-        self._alloc_drift = QLabel("")
-        self._alloc_drift.setWordWrap(True)
-        self._alloc_drift.setStyleSheet(
-            f"color: {_ORANGE}; font-size: 9px; font-family: monospace;"
-        )
-        col.addWidget(self._alloc_drift)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        self._alloc_install = QPushButton("Install")
-        self._alloc_install.setStyleSheet("font-weight: 700;")
-        self._alloc_install.setEnabled(deviceallocator.package_available())
-        self._alloc_install.clicked.connect(self.store.install_allocator_async)
-        btn_row.addWidget(self._alloc_install)
-        self._alloc_uninstall = QPushButton("Uninstall")
-        self._alloc_uninstall.setVisible(False)
-        self._alloc_uninstall.clicked.connect(self.store.uninstall_allocator_async)
-        btn_row.addWidget(self._alloc_uninstall)
-        recheck = QPushButton("⟲")
-        recheck.setFixedWidth(34)
-        recheck.setToolTip("Re-check status")
-        recheck.clicked.connect(self.store.refresh_allocator_install_async)
-        btn_row.addWidget(recheck)
-        btn_row.addStretch(1)
-        col.addLayout(btn_row)
-
+        self._alloc_controls = AllocatorControls(self.store)
         self._alloc_row = self._track(SettingRow(
-            "Reserve a simulator before using it", controls, stacked=True,
+            "Reserve a simulator before using it", self._alloc_controls, stacked=True,
             detail="Installs an MCP server, a skill and an always-on rule. Reclaims a "
                    "device when its agent dies or it sits idle past the limits below.",
         ))
-        if deviceallocator.package_available():
-            self._alloc_row.set_summary(
-                "So two agents never drive the same emulator at once."
-            )
-        else:
-            self._alloc_row.set_summary(
-                f"⚠ Package not found at {deviceallocator.package_dir()}. Set "
-                "DIPLOMAT_DEVICE_ALLOCATOR_DIR to point at it.", color=_ORANGE
-            )
+        summary, tint = allocator_summary()
+        self._alloc_row.set_summary(summary, color=tint)
         body.addWidget(self._alloc_row)
 
-        self._idle_free = self._idle_slider(
-            "Shut down a free device after", appconfig.MAX_DEVICE_IDLE_FREE_MINUTES, 1,
-            self.store.device_idle_free_minutes, self._on_idle_free_changed,
-        )
-        body.addWidget(self._track(SettingRow(
-            "Shut down a free device after", self._idle_free, stacked=True,
-            summary="A booted device no agent holds, once its screen stops changing.",
-        )))
-        self._idle_leased = self._idle_slider(
-            "Take a held device back after", appconfig.MAX_DEVICE_IDLE_LEASED_MINUTES, 5,
-            self.store.device_idle_leased_minutes, self._on_idle_leased_changed,
-        )
-        body.addWidget(self._track(SettingRow(
-            "Take a held device back after", self._idle_leased, stacked=True,
-            summary="From its agent, once its screen stops changing. It then counts "
-                    "as free.",
-            detail="A change to either reaches the allocator within a minute.",
-        )))
+        (self._idle_free, free_row), (self._idle_leased, leased_row) = idle_limit_rows(
+            self.store, self._save)
+        body.addWidget(self._track(free_row))
+        body.addWidget(self._track(leased_row))
         return card
-
-    def _idle_slider(self, label: str, maximum: int, step: int, value: int,
-                     on_changed) -> SliderSetting:
-        slider = SliderSetting(
-            label=label, minimum=0, maximum=maximum, step=step,
-            min_label="never", max_label=f"{maximum} min", tint=_CYAN,
-        )
-        slider.set_badge_text(lambda n: "never" if n == 0 else f"{n} min")
-        slider.set_value(value)
-        slider.changed.connect(on_changed)
-        return slider
-
-    def _on_idle_free_changed(self, value: int) -> None:
-        self._save(lambda: setattr(self.store, "device_idle_free_minutes", value))
-        self.store.changed.emit()
-
-    def _on_idle_leased_changed(self, value: int) -> None:
-        self._save(lambda: setattr(self.store, "device_idle_leased_minutes", value))
-        self.store.changed.emit()
 
     def _refresh_allocator_ui(self) -> None:
         s = self.store.allocator_install
-        if s is None:
-            self._alloc_pill.set_state("checking…", _GREY)
-            for pill in self._alloc_marks.values():
-                pill.set_state("")
-            self._alloc_daemon.set_state("")
-            self._alloc_drift.setVisible(False)
-            self._alloc_uninstall.setVisible(False)
-            return
-        installed = bool(s.get("installed"))
-        outdated = bool(s.get("outdated"))
-        version = s.get("version") or "?"
-
-        # "Installed" alone would be a true statement about a machine still running
-        # the copies some earlier checkout laid down, so the stale case says so and
-        # the marks name what drifted. Amber, not green: it is working, but not
-        # from here.
-        if outdated:
-            self._alloc_pill.set_state(f"out of date · v{version}", _ORANGE)
-        elif installed:
-            self._alloc_pill.set_state(f"v{version}", _GREEN)
-        else:
-            self._alloc_pill.set_state("not installed", _GREY)
-
-        for key, pill in self._alloc_marks.items():
-            pill.set_mark({"mcpRegistered": "MCP", "skillInstalled": "skill",
-                           "ruleInstalled": "rule",
-                           "claudeMdInjected": "CLAUDE.md"}[key], bool(s.get(key)))
-        if s.get("daemonRunning"):
-            self._alloc_daemon.set_state("⚡ daemon", _GREEN)
-        else:
-            self._alloc_daemon.set_state("")
-
-        drift = s.get("drift") or []
-        self._alloc_drift.setVisible(bool(outdated and drift))
-        if outdated and drift:
-            self._alloc_drift.setText(
-                "stale: " + ", ".join(str(d) for d in drift)
-            )
-        self._alloc_install.setText(
-            "Update" if outdated else "Reinstall" if installed else "Install"
-        )
-        self._alloc_uninstall.setVisible(installed)
+        self._alloc_pill.set_state(*allocator_pill(s))
+        self._alloc_controls.refresh(s)
 
     # MARK: mesh (LAN P2P duty coordination)
 

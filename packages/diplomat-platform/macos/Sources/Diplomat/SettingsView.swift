@@ -50,6 +50,7 @@ struct SettingsView: View {
             // poll on EVERY Settings open — three GraphQL searches against the shared
             // 5000 pt/hr budget (and potential agent dispatch) from a view-appear
             // hook; the monitor's own cadence + wake trigger keep the rows fresh.
+            store.reloadDeviceConfig()
             await store.refreshAllocatorInstall()
             // Cheap local git fetch/compare — off the UI thread inside the Store.
             store.refreshUpdateStatus()
@@ -873,126 +874,25 @@ struct SettingsView: View {
 
     // MARK: Device allocator (MCP server + skill + rule)
 
+    /// Built from the same pieces as the Devices screen's ALLOCATOR card, which adds
+    /// the daemon's own status and the remote device pool.
     private var allocatorSection: some View {
         let s = store.allocatorInstall
         return SettingsCard(symbol: "iphone.gen3", title: "DEVICE ALLOCATOR",
-                            tint: .cyan, pill: allocatorPill(s)) {
+                            tint: .cyan, pill: AllocatorUI.pill(s)) {
             SettingRow(title: "Reserve a simulator before using it",
-                       summary: allocatorSummary,
+                       summary: AllocatorUI.summary,
                        detail: "Installs an MCP server, a skill and an always-on rule. "
                              + "Reclaims a device when its agent dies or it sits idle "
                              + "past the limits below.",
                        stacked: true) {
                 VStack(alignment: .leading, spacing: 7) {
-                    allocatorMarks(s)
-                    allocatorButtons(s)
+                    AllocatorMarks(status: s)
+                    AllocatorButtons(status: s)
                 }
             }
-            idleLimitRow(title: "Shut down a free device after",
-                         summary: "A booted device no agent holds, once its screen stops changing.",
-                         detail: nil,
-                         value: $store.deviceIdleFreeMinutes,
-                         range: AppConfig.deviceIdleFreeRange, step: 1)
-            idleLimitRow(title: "Take a held device back after",
-                         summary: "From its agent, once its screen stops changing. It then counts as free.",
-                         detail: "A change to either reaches the allocator within a minute.",
-                         value: $store.deviceIdleLeasedMinutes,
-                         range: AppConfig.deviceIdleLeasedRange, step: 5)
+            AllocatorIdleLimits()
         }
-    }
-
-    /// One of the daemon's idle limits, in minutes, where 0 turns it off.
-    private func idleLimitRow(title: String, summary: String, detail: String?,
-                              value: Binding<Int>, range: ClosedRange<Int>,
-                              step: Int) -> some View {
-        let n = value.wrappedValue
-        let badge: String = n == 0 ? "never" : "\(n) min"
-        return SettingRow(title: title, summary: summary, detail: detail, stacked: true) {
-            SliderSetting(label: title,
-                          value: Binding(
-                              get: { Double(value.wrappedValue) },
-                              set: { value.wrappedValue = Int($0.rounded()) }
-                          ),
-                          range: Double(range.lowerBound)...Double(range.upperBound),
-                          step: Double(step),
-                          badge: badge,
-                          minLabel: "never", maxLabel: "\(range.upperBound) min",
-                          tint: .cyan)
-        }
-    }
-
-    /// "Installed" alone would be a true statement about a machine still running the
-    /// copies some earlier checkout laid down, so the stale case says so and the marks
-    /// below name what drifted. Amber for stale, not green: it is working, but not from
-    /// this checkout. Mirrors `settingsview._refresh_allocator_ui`.
-    private func allocatorPill(_ s: AllocatorInstall?) -> StatusPill {
-        guard let s else { return StatusPill(text: "checking…", tint: .secondary) }
-        let version = s.version ?? "?"
-        if s.outdated {
-            return StatusPill(text: "out of date · v\(version)", tint: .orange,
-                              symbol: "exclamationmark.triangle.fill")
-        }
-        if s.installed {
-            return StatusPill(text: "v\(version)", tint: .green, symbol: "checkmark.seal.fill")
-        }
-        return StatusPill(text: "not installed", tint: .secondary, symbol: "circle.dashed")
-    }
-
-    @ViewBuilder
-    private func allocatorMarks(_ s: AllocatorInstall?) -> some View {
-        if let s {
-            let drift = s.outdated && !s.drift.isEmpty ? s.drift.joined(separator: ", ") : ""
-            HStack(spacing: 4) {
-                MarkChip(label: "MCP", ok: s.mcpRegistered)
-                MarkChip(label: "skill", ok: s.skillInstalled)
-                MarkChip(label: "rule", ok: s.ruleInstalled)
-                MarkChip(label: "CLAUDE.md", ok: s.claudeMdInjected)
-                if s.daemonRunning {
-                    StatusPill(text: "daemon", tint: .green, symbol: "bolt.fill")
-                }
-                Spacer(minLength: 0)
-            }
-            if !drift.isEmpty {
-                Text("stale: \(drift)")
-                    .font(.system(size: 9, design: .monospaced)).foregroundStyle(.orange)
-            }
-        }
-    }
-
-    private func allocatorButtons(_ s: AllocatorInstall?) -> some View {
-        HStack(spacing: 8) {
-            Button { Task { await store.installAllocator() } } label: {
-                Text(s?.outdated ?? false ? "Update"
-                     : (s?.installed ?? false) ? "Reinstall" : "Install").bold()
-            }
-            .buttonStyle(.borderedProminent).controlSize(.small)
-            .disabled(!allocatorReady)
-            if s?.installed ?? false {
-                Button { Task { await store.uninstallAllocator() } } label: { Text("Uninstall") }
-                    .buttonStyle(.bordered).controlSize(.small)
-            }
-            Button { Task { await store.refreshAllocatorInstall() } } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .buttonStyle(.borderless).controlSize(.small).help("Re-check status")
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var allocatorReady: Bool {
-        DeviceAllocator.packageAvailable && DeviceAllocator.nodeAvailable
-    }
-
-    private var allocatorSummary: String {
-        if !DeviceAllocator.packageAvailable {
-            return "⚠ Package not found at \(DeviceAllocator.packageDir). Set "
-                + "DIPLOMAT_DEVICE_ALLOCATOR_DIR to point at it."
-        }
-        if !DeviceAllocator.nodeAvailable {
-            return "⚠ Node.js not found. Install Node (or set DIPLOMAT_NODE) — the "
-                + "allocator's MCP server and daemon need it to run."
-        }
-        return "So two agents never drive the same emulator at once."
     }
 
     // MARK: mesh (LAN P2P duty coordination)
