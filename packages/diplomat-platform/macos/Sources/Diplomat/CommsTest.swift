@@ -7,8 +7,9 @@ import DiplomatCore
 /// straight to `applyComms`, so no Slack, `claude` or `gh` (`Store.commsGHOverride`).
 ///
 /// Spawns nothing: the queue is drained only by the poll a headless Store never starts.
-/// The one command it runs is a spawn's shell command, under `/bin/sh` with a stand-in
-/// `claude`. The feed, Comms' log, the run book and the shared config point at scratch.
+/// It runs a spawn's shell command, under `/bin/sh` with a stand-in `claude`, and the
+/// allocator daemon over fake devices. The feed, Comms' log, the ban list, the daemon's
+/// directory, the run book and the shared config point at scratch.
 enum CommsTest {
     @discardableResult
     @MainActor
@@ -702,11 +703,17 @@ enum CommsTest {
               ids() == beforeBanned && lookups.isEmpty
                 && outcome(lateAsk) == Store.commsSenderBannedOutcome)
 
-        // The investigation queued before the ban reaches the dispatch gate.
+        // The investigation queued before the ban reaches the dispatch gate. Dispatched
+        // only if the gate will refuse it: one it let through would start a real agent.
         store.error = nil
-        await store.executeQueuedTask(malloryKey)
+        let skipsBefore = feed("ban-skip").count
+        let waiting = store.queuedTasks.first { $0.id == malloryKey }
+        let refusable = waiting?.job.authorLogin.map { BanList.isBanned($0, in: BanList.read()) }
+            == true
+        if refusable { await store.executeQueuedTask(malloryKey) }
         check("an ask whose sender was banned while it waited is refused at dispatch",
-              !store.requestedWork.contains { $0.key == malloryKey }
+              refusable && feed("ban-skip").count == skipsBefore + 1
+                && !store.requestedWork.contains { $0.key == malloryKey }
                 && !ids().contains(malloryKey))
         check("…its ping says it never ran, and that the sender is banned",
               outcome(malloryAsk) == "\(Store.commsLeftQueueOutcome) (the sender is banned "
