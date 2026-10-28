@@ -985,7 +985,11 @@ async function handleReportInjection(p) {
       ...(source === 'slack' ? { source, handle, place } : {}),
     };
     const existing = data.banned.find((b) => (b.login || '').toLowerCase() === login.toLowerCase());
-    if (existing) Object.assign(existing, entry, { firstAt: existing.firstAt || existing.at });
+    // A repeat report that names no handle or channel keeps the ones already recorded.
+    if (existing) {
+      Object.assign(existing, entry, { firstAt: existing.firstAt || existing.at },
+        source === 'slack' ? { handle: handle || existing.handle || null, place: place || existing.place || null } : {});
+    }
     else data.banned.push({ ...entry, firstAt: at });
     writeBanned(data, `ban on @${login}`);
     appendAudit(p.via === 'comms' ? 'auto' : 'agent', 'ban', banLine(entry, p.via));

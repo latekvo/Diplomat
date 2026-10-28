@@ -329,7 +329,11 @@ async function phase6() {
     const again = await call('POST', '/report-injection',
       { person: 'slack:UMAL123', source: 'slack', evidence: 'again' });
     assert.equal(again.total, 2);
-    pass('a Slack ban given its namespaced login dedups');
+    const rebanned = JSON.parse(fs.readFileSync(banFile, 'utf8')).banned.find((b) => b.login === 'slack:UMAL123');
+    assert.equal(rebanned.handle, 'mallory');
+    assert.equal(rebanned.place, '#general');
+    assert.equal(rebanned.firstAt, slack.firstAt);
+    pass('a Slack ban given its namespaced login dedups, keeping the handle and channel it had');
 
     for (const bad of ['mallory', '@UMAL123x', 'slack:', 'U1']) {
       let code = 0;
