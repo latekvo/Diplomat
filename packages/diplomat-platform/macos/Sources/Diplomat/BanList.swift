@@ -167,23 +167,38 @@ enum BanList {
         CommsBan.userID(fromLogin: login) == nil ? "the PR's author" : "the sender"
     }
 
-    /// Remove a ban (the UI's un-ban button). Prefers the daemon's /unban route — the
-    /// daemon serializes all ban-list writes in one process, so a concurrent injection
-    /// report can't be lost to our read-modify-write (an atomic rename prevents
-    /// corruption, but not a lost update). Falls back to a direct atomic rewrite when
-    /// no daemon is running. Returns true when the daemon handled it (it also writes
-    /// the audit entry then).
+    enum Unban: Equatable {
+        /// The daemon handled it, and wrote the activity line.
+        case daemon
+        /// No daemon could be reached: rewritten here, and the activity line is the caller's.
+        case file
+        /// No daemon could be reached, and the list holds no such login.
+        case notBanned
+        case failed(String)
+    }
+
+    /// Remove a ban (the UI's un-ban button). Through the daemon's /unban: it serializes
+    /// all ban-list writes in one process, so a concurrent injection report can't be lost
+    /// to our read-modify-write (an atomic rename prevents corruption, but not a lost
+    /// update). Rewritten here only when the request cannot reach a daemon at all; one
+    /// that refuses or does not answer in time is not written past.
     @discardableResult
-    static func unban(_ login: String) -> Bool {
-        if unbanViaDaemon(login) { return true }
-        // No-op (never rewrite the file) unless that login is actually banned - so a
+    static func unban(_ login: String, timeoutSecs: Int = 5) -> Unban {
+        switch DeviceAllocator.send("unban", body: ["login": login], timeoutSecs: timeoutSecs) {
+        case .reply(let r) where (200..<300).contains(r.status): return .daemon
+        case .reply(let r):
+            return .failed(r.json?["error"]?.string ?? "the allocator daemon answered HTTP \(r.status)")
+        case .unanswered:
+            return .failed("the allocator daemon did not answer in time; it may still lift the ban")
+        case .unreachable: break
+        }
+        // Never rewrite the file unless that login is actually banned - so a
         // stray/duplicate call can't clobber the list.
         guard case .list(var root, var entries) = readFile(),
-              entries.contains(where: { sameLogin($0, login) }) else { return false }
+              entries.contains(where: { sameLogin($0, login) }) else { return .notBanned }
         entries.removeAll { sameLogin($0, login) }
         root["banned"] = entries
-        _ = write(root)
-        return false
+        return write(root) ? .file : .failed("could not write \(fileURL.path)")
     }
 
     /// POST /unban to the device-allocator daemon (which owns the ban list). True

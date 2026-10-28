@@ -2168,14 +2168,18 @@ final class Store: ObservableObject {
     /// Remove a ban (the UI's un-ban button) and refresh. The daemon round-trip
     /// (curl over the unix socket, up to 5s against a wedged daemon) runs off-main
     /// so the popover can't freeze. When the daemon handled the unban it also wrote
-    /// the audit entry — don't double-log.
+    /// the audit entry - don't double-log.
     func unban(_ login: String) {
         Task { [weak self] in
-            let viaDaemon = await Task.detached(priority: .userInitiated) {
+            let done = await Task.detached(priority: .userInitiated) {
                 BanList.unban(login)
             }.value
             guard let self else { return }
-            if !viaDaemon { AuditLog.log("panel", "unban", "Un-banned @\(login)") }
+            switch done {
+            case .file: AuditLog.log("panel", "unban", "Un-banned @\(login)")
+            case .failed(let why): self.error = "Could not un-ban @\(login): \(why)"
+            case .daemon, .notBanned: break
+            }
             self.refreshAudit()
             self.refreshBanList()
         }

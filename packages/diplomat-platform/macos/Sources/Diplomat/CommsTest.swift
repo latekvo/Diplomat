@@ -898,6 +898,14 @@ enum CommsTest {
         if let silent = FakeDaemon(path: sock, answering: false) {
             let started = Date()
             let slow = BanList.ban(victor, reportedBy: Store.commsReporter, timeoutSecs: 1)
+            let held = Data(#"{"banned":[{"login":"zed"}]}"#.utf8)
+            try? held.write(to: BanList.fileURL)
+            let slowUnban = BanList.unban("zed", timeoutSecs: 1)
+            check("…nor is one that takes an un-ban and does not answer in time",
+                  slowUnban == .failed("the allocator daemon did not answer in time; it may "
+                                       + "still lift the ban")
+                    && (try? Data(contentsOf: BanList.fileURL)) == held)
+            try? FileManager.default.removeItem(at: BanList.fileURL)
             silent.stop()
             check("a daemon that takes the ban and does not answer in time is not written past",
                   slow == .failed("the allocator daemon did not answer in time; it may still "
@@ -974,9 +982,9 @@ enum CommsTest {
                       outcome(hit).contains("instead of slack:\(id), and would not lift it; "
                                             + "restart it")
                         && list.contains(id) && notified.count == notifiedBefore)
-                BanList.unban(id)
             }
             old.stop()
+            if !lifts { BanList.unban(id) }
         }
         try? FileManager.default.removeItem(at: fakeBase)
         setenv("DA_BASE_DIR", scratch.appendingPathComponent("allocator").path, 1)
