@@ -346,6 +346,9 @@ final class Store: ObservableObject {
     /// which notifies nothing.
     private var bansSeen: Set<String>?
 
+    /// Lowercased logins `refreshBanList` marks seen without announcing.
+    var bansUnannounced: Set<String> = []
+
     /// Recent actions (panel-triggered + automatic + agent-reported), newest first — the
     /// unified activity feed shown in the panel.
     @Published var auditEntries: [AuditEntry] = []
@@ -2145,7 +2148,10 @@ final class Store: ObservableObject {
         let next = BanList.read()
         let keys = next.map { "\($0.login.lowercased())@\($0.at ?? "")" }
         if let seen = bansSeen {
-            for (ban, key) in zip(next, keys) where !seen.contains(key) { Notifier.postBan(ban) }
+            for (ban, key) in zip(next, keys)
+            where !seen.contains(key) && !bansUnannounced.contains(ban.login.lowercased()) {
+                Notifier.postBan(ban)
+            }
         }
         bansSeen = Set(keys)
         if next != bannedAuthors { bannedAuthors = next }

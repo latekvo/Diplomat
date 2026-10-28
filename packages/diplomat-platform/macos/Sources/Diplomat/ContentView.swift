@@ -534,7 +534,7 @@ struct ContentView: View {
                     if pendingUnban == ban.login {
                         unbanConfirmRow(ban).transition(.opacity)
                     } else {
-                        BanRow(ban: ban, place: ban.place ?? store.commsPlace(of: ban), onUnban: {
+                        BanRow(ban: ban, place: store.commsPlace(of: ban), onUnban: {
                             withAnimation(.easeInOut(duration: 0.15)) { pendingUnban = ban.login }
                         })
                     }

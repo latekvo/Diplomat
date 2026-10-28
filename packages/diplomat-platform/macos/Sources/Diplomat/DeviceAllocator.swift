@@ -305,9 +305,25 @@ enum DeviceAllocator {
     /// actor; each call is its own curl, so a long one (a sign-in) holds up no other.
     static func call(_ endpoint: String, body: [String: Any] = [:],
                      timeoutSecs: Int) -> DaemonReply? {
+        if case .reply(let r) = send(endpoint, body: body, timeoutSecs: timeoutSecs) { return r }
+        return nil
+    }
+
+    enum Sent: Equatable {
+        case reply(DaemonReply)
+        /// The request never reached a daemon: no socket, nothing listening on it, or no
+        /// curl to send it with.
+        case unreachable
+        /// Sent, but no reply came (a timeout, a dropped connection): the daemon may
+        /// still act on it.
+        case unanswered
+    }
+
+    /// `call`, telling a daemon that never got the request from one that did not reply.
+    static func send(_ endpoint: String, body: [String: Any] = [:], timeoutSecs: Int) -> Sent {
         guard FileManager.default.fileExists(atPath: socketPath),
               let data = try? JSONSerialization.data(withJSONObject: body),
-              let json = String(data: data, encoding: .utf8) else { return nil }
+              let json = String(data: data, encoding: .utf8) else { return .unreachable }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
         // The status goes on a last line of its own, after the body.
@@ -318,11 +334,13 @@ enum DeviceAllocator {
         let out = Pipe()
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return nil }
+        do { try p.run() } catch { return .unreachable }
         let raw = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
-        return parseReply(raw)
+        // curl's 7 is "failed to connect": a stale socket file, or one nothing listens on.
+        if p.terminationStatus == 7 { return .unreachable }
+        guard p.terminationStatus == 0, let reply = parseReply(raw) else { return .unanswered }
+        return .reply(reply)
     }
 
     /// curl's `-w "\n%{http_code}"` output split back into the status and the body.

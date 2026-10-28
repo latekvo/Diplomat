@@ -299,7 +299,8 @@ private struct PingRow: View {
         let outcome = item.outcome ?? ""
         return fromBannedSender || outcome == Store.commsSenderBannedOutcome
             || (item.decision?.action == .injection
-                && outcome.hasPrefix(Store.commsBannedOutcomePrefix))
+                && (outcome.hasPrefix(Store.commsBannedOutcomePrefix)
+                    || outcome.hasSuffix(Store.commsAlreadyBannedSuffix)))
             || Store.commsStoppedByBan(item)
     }
 

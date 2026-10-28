@@ -9,7 +9,7 @@ import DiplomatCore
 //
 // A Slack sender's entry is keyed `slack:<user id>` (`CommsBan.login`), carries
 // `source: "slack"` and the sender's `handle`, and its `pr` is the message's permalink.
-struct BannedAuthor: Codable, Equatable, Identifiable {
+struct BannedAuthor: Decodable, Equatable, Identifiable {
     let login: String
     var reason: String?
     var pr: String?
@@ -76,6 +76,31 @@ struct BannedAuthor: Codable, Equatable, Identifiable {
     }
 }
 
+extension BannedAuthor {
+    private enum CodingKeys: String, CodingKey {
+        case login, reason, pr, evidence, evidenceDir, reportedBy, at, firstAt, screenshot
+        case ghCaptured, source, handle, place
+    }
+
+    /// Only `login` is required: a field of the wrong type (a numeric `pr`, which the
+    /// daemon once stored as given) reads as absent, and the ban still holds.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let login = try c.decode(String.self, forKey: .login)
+        guard !login.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .login, in: c,
+                                                   debugDescription: "empty login")
+        }
+        func text(_ k: CodingKeys) -> String? { (try? c.decodeIfPresent(String.self, forKey: k)) ?? nil }
+        func flag(_ k: CodingKeys) -> Bool? { (try? c.decodeIfPresent(Bool.self, forKey: k)) ?? nil }
+        self.init(login: login, reason: text(.reason), pr: text(.pr), evidence: text(.evidence),
+                  evidenceDir: text(.evidenceDir), reportedBy: text(.reportedBy), at: text(.at),
+                  firstAt: text(.firstAt), screenshot: flag(.screenshot),
+                  ghCaptured: flag(.ghCaptured), source: text(.source), handle: text(.handle),
+                  place: text(.place))
+    }
+}
+
 enum BanList {
     /// The daemon's `BAN_DIR`, relocated by `DA_BAN_DIR` as in `src/paths.js`.
     static var dir: URL {
@@ -88,10 +113,41 @@ enum BanList {
 
     static var fileURL: URL { dir.appendingPathComponent("banned.json") }
 
+    /// Entry by entry: one without a string `login` is skipped, the rest still read.
+    /// Empty when the file is absent or unreadable (`readFile`).
     static func read() -> [BannedAuthor] {
-        guard let data = try? Data(contentsOf: fileURL) else { return [] }
-        struct Wrap: Decodable { let banned: [BannedAuthor] }
-        return (try? JSONDecoder().decode(Wrap.self, from: data))?.banned ?? []
+        guard case .list(_, let entries) = readFile() else { return [] }
+        return entries.compactMap { raw in
+            guard let obj = raw as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: obj) else { return nil }
+            return try? JSONDecoder().decode(BannedAuthor.self, from: data)
+        }
+    }
+
+    enum File {
+        case absent
+        /// Present, but not a JSON object whose `banned` is an array (or absent): never
+        /// written over, since that would lift every ban in it.
+        case unreadable
+        /// The whole object, and its `banned` entries as stored, including any `read`
+        /// skips: a rewrite keeps every entry and key it does not change.
+        case list([String: Any], [Any])
+    }
+
+    static func readFile() -> File {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return .absent }
+        guard let data = try? Data(contentsOf: fileURL),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return .unreadable }
+        switch root["banned"] {
+        case nil: return .list(root, [])
+        case let entries as [Any]: return .list(root, entries)
+        default: return .unreadable
+        }
+    }
+
+    private static func sameLogin(_ raw: Any, _ login: String) -> Bool {
+        ((raw as? [String: Any])?["login"] as? String)?.lowercased() == login.lowercased()
     }
 
     /// Whether `login` is banned (case-insensitive) in the given list.
@@ -120,13 +176,13 @@ enum BanList {
     @discardableResult
     static func unban(_ login: String) -> Bool {
         if unbanViaDaemon(login) { return true }
-        var list = read()
-        let l = login.lowercased()
-        // No-op (never rewrite the file) unless that login is actually banned — so a
+        // No-op (never rewrite the file) unless that login is actually banned - so a
         // stray/duplicate call can't clobber the list.
-        guard list.contains(where: { $0.login.lowercased() == l }) else { return false }
-        list.removeAll { $0.login.lowercased() == l }
-        _ = write(list)
+        guard case .list(var root, var entries) = readFile(),
+              entries.contains(where: { sameLogin($0, login) }) else { return false }
+        entries.removeAll { sameLogin($0, login) }
+        root["banned"] = entries
+        _ = write(root)
         return false
     }
 
@@ -141,11 +197,10 @@ enum BanList {
     }
 
     @discardableResult
-    private static func write(_ list: [BannedAuthor]) -> Bool {
-        struct Wrap: Encodable { let banned: [BannedAuthor] }
-        let enc = JSONEncoder()
-        enc.outputFormatting = [.prettyPrinted]
-        guard let data = try? enc.encode(Wrap(banned: list)) else { return false }
+    private static func write(_ root: [String: Any]) -> Bool {
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        else { return false }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let tmp = fileURL.appendingPathExtension("tmp")
         do {
@@ -163,8 +218,10 @@ enum BanList {
     enum BanWrite: Equatable {
         /// The daemon recorded it and wrote its activity line.
         case daemon
-        /// No daemon answered: written here, and the activity line is the caller's.
+        /// No daemon could be reached: written here, and the activity line is the caller's.
         case file
+        /// On the list already: nothing written.
+        case already
         case failed(String)
     }
 
@@ -182,39 +239,59 @@ enum BanList {
         return "Banned \(who) for prompt injection\(place)\(quote) - flagged by Comms triage"
     }
 
-    /// Ban a Slack sender Comms caught injecting. The daemon's /report-injection
-    /// first (it serializes ban-list writes and keeps the evidence); when no daemon
-    /// answers at all, the same entry and evidence folder are written here. A daemon
-    /// that answers and refuses is not bypassed. Blocking: off the main actor.
-    static func ban(_ b: CommsBan, reportedBy: String) -> BanWrite {
+    /// Ban a Slack sender Comms caught injecting, unless already banned. The daemon's
+    /// /report-injection first (it serializes ban-list writes and keeps the evidence);
+    /// only when the request cannot reach a daemon at all are the same entry and
+    /// evidence folder written here. A daemon that refuses, or takes the request and does
+    /// not answer in time, is not bypassed: a late write of its own would duplicate
+    /// ours. Blocking: off the main actor.
+    static func ban(_ b: CommsBan, reportedBy: String, timeoutSecs: Int = 10) -> BanWrite {
         guard isSlackUserID(b.userID) else {
             return .failed("\"\(b.userID)\" is not a Slack user id")
         }
         let login = CommsBan.login(b.userID)
+        if isBanned(login, in: read()) { return .already }
         let body: [String: Any] = [
             "person": b.userID, "source": BannedAuthor.slackSource, "handle": b.handle,
             "place": b.place, "pr": b.permalink, "evidence": b.evidence, "agentName": reportedBy,
             "via": "comms",
         ]
-        if let reply = DeviceAllocator.call("report-injection", body: body, timeoutSecs: 10) {
+        switch DeviceAllocator.send("report-injection", body: body, timeoutSecs: timeoutSecs) {
+        case .reply(let reply):
             guard (200..<300).contains(reply.status) else {
                 return .failed(reply.json?["error"]?.string
                                ?? "the allocator daemon answered HTTP \(reply.status)")
             }
-            // A daemon older than Slack bans takes the id for a GitHub login.
+            // A daemon older than Slack bans takes the id for a GitHub login: that stray
+            // ban is lifted again.
             let recorded = reply.json?["login"]?.string ?? ""
             guard recorded.lowercased() == login.lowercased() else {
-                return .failed("the allocator daemon banned \"\(recorded)\" instead of \(login); "
-                               + "restart it to pick up Slack bans")
+                let lifted = recorded.isEmpty || unbanViaDaemon(recorded)
+                return .failed("the allocator daemon banned \"\(recorded)\" instead of \(login)"
+                               + (lifted ? "" : ", and would not lift it")
+                               + "; restart it to pick up Slack bans")
             }
             return .daemon
+        case .unanswered:
+            return .failed("the allocator daemon did not answer in time; it may still record "
+                           + "the ban")
+        case .unreachable:
+            if let why = banInFile(b, login: login, reportedBy: reportedBy) { return .failed(why) }
+            return .file
         }
-        return banInFile(b, login: login, reportedBy: reportedBy) ? .file
-            : .failed("could not write \(fileURL.path)")
     }
 
-    /// `handleReportInjection`'s entry, upserted the same way: a repeat keeps its `firstAt`.
-    private static func banInFile(_ b: CommsBan, login: String, reportedBy: String) -> Bool {
+    /// `handleReportInjection`'s entry, upserted the same way: a repeat keeps its
+    /// `firstAt`, and the handle and channel it had when this one names none. Returns why
+    /// nothing was written, or nil.
+    private static func banInFile(_ b: CommsBan, login: String, reportedBy: String) -> String? {
+        var root: [String: Any] = [:]
+        var entries: [Any] = []
+        switch readFile() {
+        case .absent: break
+        case .unreadable: return "\(fileURL.path) is unreadable, so it was left as it is"
+        case .list(let r, let e): (root, entries) = (r, e)
+        }
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let at = iso.string(from: Date())
@@ -224,20 +301,27 @@ enum BanList {
         try? FileManager.default.createDirectory(at: evidenceDir, withIntermediateDirectories: true)
         try? b.evidence.write(to: evidenceDir.appendingPathComponent("evidence.txt"),
                               atomically: true, encoding: .utf8)
-        var entry = BannedAuthor(login: login, reason: "prompt injection", pr: b.permalink,
-                                 evidence: String(b.evidence.prefix(800)),
-                                 evidenceDir: evidenceDir.path, reportedBy: reportedBy, at: at,
-                                 firstAt: at, screenshot: false, ghCaptured: false,
-                                 source: BannedAuthor.slackSource,
-                                 handle: b.handle.isEmpty ? nil : b.handle,
-                                 place: b.place.isEmpty ? nil : b.place)
-        var list = read()
-        if let i = list.firstIndex(where: { $0.login.lowercased() == login.lowercased() }) {
-            entry.firstAt = list[i].firstAt ?? list[i].at ?? at
-            list[i] = entry
+        var entry: [String: Any] = [
+            "login": login, "reason": "prompt injection",
+            "pr": b.permalink.isEmpty ? NSNull() : b.permalink,
+            "evidence": String(b.evidence.prefix(800)), "evidenceDir": evidenceDir.path,
+            "reportedBy": reportedBy, "at": at, "screenshot": false, "ghCaptured": false,
+            "source": BannedAuthor.slackSource,
+            "handle": b.handle.isEmpty ? NSNull() : b.handle,
+            "place": b.place.isEmpty ? NSNull() : b.place,
+        ]
+        if let i = entries.firstIndex(where: { sameLogin($0, login) }),
+           let existing = entries[i] as? [String: Any] {
+            for key in ["handle", "place"] where entry[key] is NSNull {
+                entry[key] = existing[key] ?? NSNull()
+            }
+            entry["firstAt"] = existing["firstAt"] ?? existing["at"] ?? at
+            entries[i] = existing.merging(entry) { $1 }
         } else {
-            list.append(entry)
+            entry["firstAt"] = at
+            entries.append(entry)
         }
-        return write(list)
+        root["banned"] = entries
+        return write(root) ? nil : "could not write \(fileURL.path)"
     }
 }
