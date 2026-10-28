@@ -306,6 +306,8 @@ class Store(QObject):
         # The (login, at) of every ban the last read held; None until the first read,
         # whose bans were there before this launch and are not news.
         self._bans_known: set[tuple[str, str]] | None = None
+        # Logins whose bans are never news: see :meth:`_comms_report_ban`.
+        self._bans_quiet: set[str] = set()
         self._bans_known_lock = threading.Lock()
 
         # Self-update progress for the Settings UPDATE section. None until the
@@ -1420,6 +1422,18 @@ class Store(QObject):
 
     # MARK: - the one dispatch pipeline (buttons and monitors are triggers, not paths)
 
+    @staticmethod
+    def ban_refusal(job: autofix.AgentJob) -> str:
+        """Who a dispatch refused for a ban is about, and what follows (macOS
+        ``refusedWho`` and ``banRemedy``). A monitor's find comes back on its own once the
+        ban lifts; an ask is retired (:meth:`_settle_requested`), and only a sweep re-asks
+        for one, never for a Comms investigation."""
+        if (job.author_login or "").startswith(bans.SLACK_PREFIX):
+            return "the sender is banned (the ask is dropped)"
+        remedy = ("the ask is dropped, sweep again to re-queue it"
+                  if job.requested else "un-ban to review")
+        return f"the PR's author is banned ({remedy})"
+
     def dispatch_agent(self, job: autofix.AgentJob, source: str, attempt: int = 1,
                        bypass_capacity: bool = False,
                        forced: bool = False) -> str:
@@ -1544,19 +1558,7 @@ class Store(QObject):
                 self._stage_queued(job, attempt)
                 return verdict
             if verdict == autofix.VERDICT_BANNED:
-                # A monitor's find comes back on its own once the ban lifts, so "un-ban
-                # to review" is a whole instruction for one. An ask does not: this
-                # verdict is one of the three that retire it (:meth:`_settle_requested`),
-                # so the sweep has to be told the review is gone rather than waiting.
-                remedy = ("the ask is dropped, sweep again to re-queue it"
-                          if job.requested else "un-ban to review")
-                who = "author"
-                if (job.author_login or "").startswith(bans.SLACK_PREFIX):
-                    # A Comms investigation: no sweep re-asks for it.
-                    who, remedy = "sender", "the ask is dropped"
-                activity.log(
-                    source, "ban-skip", f"{job.label} - {who} is banned ({remedy})"
-                )
+                activity.log(source, "ban-skip", f"{job.label} - {self.ban_refusal(job)}")
                 self.refresh_activity()
                 return verdict
             if verdict == autofix.VERDICT_NOT_ALLOWED:
@@ -2551,9 +2553,7 @@ class Store(QObject):
         elif verdict == autofix.VERDICT_STAND_DOWN:
             self.error = f"{label}: a mesh peer's agent already owns this work."
         elif verdict == autofix.VERDICT_BANNED:
-            remedy = ("the ask is dropped, sweep again to re-queue it"
-                      if entry.job.requested else "un-ban to review")
-            self.error = f"{label}: the PR's author is banned ({remedy})."
+            self.error = f"{label}: {self.ban_refusal(entry.job)}."
         elif verdict == autofix.VERDICT_NOT_ALLOWED:
             self.error = (f"{label}: the PR's author is not on the auto-review list "
                           "(add them, or review it from the wizard).")
@@ -3231,6 +3231,19 @@ class Store(QObject):
     # is acted on through the queue every other ask goes through, so the ban list, the
     # task cap and the budget gate all still apply.
 
+    #: Starts the outcome of a ping whose sender it got banned.
+    COMMS_BANNED_OUTCOME_PREFIX = "banned "
+    #: A ping from a sender banned before or during its apply.
+    COMMS_SENDER_BANNED_OUTCOME = "the sender is banned for prompt injection, so nothing was done"
+    COMMS_BAN_REFUSAL = "is banned for prompt injection"
+
+    @classmethod
+    def comms_stopped_by_ban(cls, item: dict) -> bool:
+        """Its queued task left the queue because the dispatch gate found a ban
+        (:meth:`_note_comms_banned`)."""
+        return comms.left_queue(item) and str(item.get("outcome") or "").endswith(
+            cls.COMMS_BAN_REFUSAL + ")")
+
     def comms_settings_payload(self) -> dict:
         """The ``CommsSettings`` JSON a tick and a plan are given."""
         cfg = core.config()
@@ -3378,7 +3391,11 @@ class Store(QObject):
 
     def _apply_comms_tick(self, plan: dict) -> None:
         """The Qt-thread half of a tick: publish what it found and act on each ping. A
-        stranded one (:meth:`_comms_stranded`) is not notified."""
+        stranded one (:meth:`_comms_stranded`) is not notified.
+
+        A sender on the list now, or banned by an earlier ping of this apply, has
+        nothing else acted on, and no ping of theirs is notified: the ban's own
+        notification says it."""
         items = plan.get("items") or []
         try:
             self.comms_last_poll = plan.get("at")
@@ -3388,8 +3405,14 @@ class Store(QObject):
             notices = plan.get("notices") or []
             for notice in notices:
                 activity.log("auto", "comms-notice", notice)
+            banned_now = set(bans.slack_ids(bans.read()))
             for entry in items:
+                entry["sender_banned"] = (
+                    str(entry["message"].get("userID") or "") in banned_now)
                 self.apply_comms_item(entry)
+                reported = entry.get("reported") or {}
+                if (entry.get("effect") or {}).get("kind") == "ban" and not reported.get("error"):
+                    banned_now.add(str(entry["effect"]["ban"].get("userID") or ""))
             self.refresh_comms_feed()
             if items or notices:
                 self.refresh_activity()
@@ -3433,6 +3456,7 @@ class Store(QObject):
         """A banned sender's message is not news, and a ban announces itself
         (:attr:`ban_noticed`)."""
         return (not entry.get("stranded")
+                and not entry.get("sender_banned")
                 and not comms.from_banned_sender(entry.get("decision"))
                 and (entry.get("effect") or {}).get("kind") != "ban")
 
@@ -3445,15 +3469,19 @@ class Store(QObject):
         """Act on one triaged ping; returns the outcome its `action` line records.
 
         ``entry`` is ``{message, decision, effect}``, plus ``target``
-        (:meth:`_comms_lookup`) for a review or a fix. Every ping ends in exactly one
+        (:meth:`_comms_lookup`) for a review or a fix, and ``sender_banned`` for a sender
+        on the ban list (:meth:`_apply_comms_tick`). Every ping ends in exactly one
         `action` line, even from a tick landing after Comms was switched off: the core
         has already logged its pings."""
         message, effect = entry["message"], entry.get("effect") or {"kind": "none"}
         msg_id = str(message.get("id", ""))
         where, sender = self.comms_place(message), self.comms_sender(message)
-        activity.log("auto", "comms-ping",
-                     f"{where} from {sender}: {self.comms_snippet(message.get('text', ''))}")
         kind = effect.get("kind")
+        refused = (self.comms_enabled and entry.get("sender_banned")
+                   and kind not in ("none", "ban"))
+        line = f"{where} from {sender}: {self.comms_snippet(message.get('text', ''))}"
+        activity.log("auto", "comms-ping",
+                     line + (f" ({self.COMMS_SENDER_BANNED_OUTCOME})" if refused else ""))
         if kind == "ban":
             # Reported in the tick's worker half, so it stands whatever the switch says.
             outcome = self._comms_ban_outcome(effect["ban"], entry["reported"])
@@ -3463,6 +3491,9 @@ class Store(QObject):
             outcome = "Comms was switched off, so ping only"
             comms.append_event("action", msg_id, outcome=outcome)
             return outcome
+        if refused:
+            comms.append_event("action", msg_id, outcome=self.COMMS_SENDER_BANNED_OUTCOME)
+            return self.COMMS_SENDER_BANNED_OUTCOME
         number = int(effect.get("number") or 0)
         verb, work, front = None, None, True
         if kind == "review":
@@ -3543,14 +3574,27 @@ class Store(QObject):
             return "no action"
         return f"{action} not acted on: acting on {switch} is switched off"
 
-    @staticmethod
-    def _comms_report_ban(ban: dict) -> dict:
+    def _comms_report_ban(self, ban: dict) -> dict:
         """Put a sender the triage caught on the ban list: ``{"daemon": bool, "error":
         why not | None}``, or ``{"already": True}`` for one already there (a stranded
-        ping whose ban stands, or a second message in one tick)."""
-        if bans.is_banned(bans.slack_login(str(ban.get("userID") or "")), bans.read()):
+        ping whose ban stands, or a second message in one tick).
+
+        A daemon older than Slack bans lists the bare user id, which the report lifts
+        again; no read of the list, during the report or after, announces that entry."""
+        user_id = str(ban.get("userID") or "")
+        if bans.is_banned(bans.slack_login(user_id), bans.read()):
             return {"already": True}
-        done = bans.report_comms_ban(ban)
+        bare = user_id.lower()
+        with self._bans_known_lock:
+            self._bans_quiet.add(bare)
+        try:
+            done = bans.report_comms_ban(ban)
+        finally:
+            left = {(b.login.lower(), b.at or "") for b in bans.read() if b.login.lower() == bare}
+            with self._bans_known_lock:
+                self._bans_quiet.discard(bare)
+                if self._bans_known is not None:
+                    self._bans_known |= left
         return {"daemon": done.by_daemon, "error": done.error}
 
     def _comms_ban_outcome(self, ban: dict, reported: dict) -> str:
@@ -3561,9 +3605,9 @@ class Store(QObject):
             return f"{who} is already banned for prompt injection"
         if reported.get("error"):
             why = f"could not ban {who} for prompt injection: {reported['error']}"
-            activity.log("auto", "comms-error", f"Comms {why} ({ban.get('permalink', '')})")
+            activity.log("auto", "comms-ban", f"Comms {why} ({ban.get('permalink', '')})")
             return why
-        return (f"banned {who} for prompt injection: "
+        return (f"{self.COMMS_BANNED_OUTCOME_PREFIX}{who} for prompt injection: "
                 f"\"{self.comms_snippet(ban.get('evidence', ''), 120)}\"")
 
     def _comms_banned(self, login: str) -> bool:
@@ -3707,8 +3751,8 @@ class Store(QObject):
     def _note_comms_banned(self, entry: autofix.QueuedTask) -> None:
         """An ask the dispatch refused for a ban is retired with it
         (:meth:`_settle_requested`): each ping that owned it says so, and why."""
-        who = ("sender" if (entry.job.author_login or "").startswith(bans.SLACK_PREFIX)
-               else "author")
+        who = ("the sender" if (entry.job.author_login or "").startswith(bans.SLACK_PREFIX)
+               else "the PR's author")
         with self._comms_feed_lock:
             owners = self._comms_owned.get(entry.id)
             if not owners:
@@ -3716,7 +3760,7 @@ class Store(QObject):
             self._comms_owned = {k: v for k, v in self._comms_owned.items() if k != entry.id}
             for msg_id in sorted(owners):
                 comms.append_event("action", msg_id, outcome=(
-                    f"{comms.LEFT_QUEUE}: not run, the {who} is banned for prompt injection"))
+                    f"{comms.LEFT_QUEUE} ({who} {self.COMMS_BAN_REFUSAL})"))
             self.refresh_comms_feed()
         self.comms_changed.emit()
 
@@ -3986,16 +4030,27 @@ class Store(QObject):
             self.banned_authors = new_bans
             self.activity_changed.emit()
 
+    def unban_async(self, login: str) -> None:
+        """The panel's un-ban, off the GUI thread: the daemon may take seconds."""
+        def work() -> None:
+            done = bans.unban(login)
+            if done.error:
+                self.error = f"Could not un-ban @{login}: {done.error}"
+                self.changed.emit()
+            self.refresh_activity()
+        self.start_background(work, name="unban")
+
     def _notice_new_bans(self, banned: list) -> None:
         """Announce each ban the last read did not hold, a re-ban included. Workers
         read too (a dispatch's ban-skip), hence the lock."""
         keys = {(b.login.lower(), b.at or ""): b for b in banned}
         with self._bans_known_lock:
             known, self._bans_known = self._bans_known, set(keys)
+            quiet = set(self._bans_quiet)
         if known is None:
             return
         for key, b in keys.items():
-            if key not in known:
+            if key not in known and key[0] not in quiet:
                 self.ban_noticed.emit(*self.ban_notification(b))
 
     @staticmethod

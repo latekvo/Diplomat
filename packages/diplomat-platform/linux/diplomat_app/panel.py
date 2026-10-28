@@ -48,6 +48,7 @@ from .widgets import (
     SectionHeader,
     StartingTaskRow,
     ToolCard,
+    UnbanConfirmRow,
     CARD_FILL_ALERT,
     card_host,
     hline,
@@ -236,6 +237,8 @@ class Panel(QWidget):
         # Left-pane monitoring sections (all expanded by default).
         self._activity_expanded = True
         self._bans_expanded = True
+        # The login whose un-ban awaits its confirmation.
+        self._pending_unban: str | None = None
         self._tasks_expanded = True
 
         self.setWindowFlags(
@@ -483,7 +486,7 @@ class Panel(QWidget):
         self.activity_host.setVisible(False)
         col.addWidget(self.activity_host)
 
-        # Banned authors (prompt-injection blocklist; read-only here).
+        # Banned authors and Slack senders (prompt injection), each with an un-ban.
         self.bans_host, self.bans_col = card_host(fill=CARD_FILL_ALERT, spacing=4)
         self.bans_host.setVisible(False)
         col.addWidget(self.bans_host)
@@ -864,6 +867,9 @@ class Panel(QWidget):
     def _rebuild_bans(self) -> None:
         _clear_layout(self.bans_col)
         banned = self.store.banned_authors
+        # A confirmation must not outlive its ban (lifted elsewhere, the list rewritten).
+        if not any(b.login == self._pending_unban for b in banned):
+            self._pending_unban = None
         if not banned:
             self.bans_host.setVisible(False)
             return
@@ -871,17 +877,34 @@ class Panel(QWidget):
 
         header = SectionHeader(glyph=glyphs.G_BAN, title="Banned",
                                count=len(banned), glyph_color="#FF3B30",
-                               caption="prompt injection · never acted on",
+                               caption="prompt injection · no auto-reviews, no Slack triage",
                                expanded=self._bans_expanded)
         header.clicked.connect(self._toggle_bans)
         self.bans_col.addWidget(header)
         if self._bans_expanded:
             # Newest first: the one that just happened is the one being looked for.
             for b in sorted(banned, key=lambda b: b.at or "", reverse=True):
-                self.bans_col.addWidget(BanRow(b))
+                if b.login == self._pending_unban:
+                    confirm = UnbanConfirmRow(b)
+                    confirm.cancelled.connect(lambda: self._ask_unban(None))
+                    confirm.confirmed.connect(lambda login=b.login: self._unban(login))
+                    self.bans_col.addWidget(confirm)
+                else:
+                    row = BanRow(b)
+                    row.unban_requested.connect(lambda login=b.login: self._ask_unban(login))
+                    self.bans_col.addWidget(row)
 
     def _toggle_bans(self) -> None:
         self._bans_expanded = not self._bans_expanded
+        self._rebuild_bans()
+
+    def _ask_unban(self, login: str | None) -> None:
+        self._pending_unban = login
+        self._rebuild_bans()
+
+    def _unban(self, login: str) -> None:
+        self._pending_unban = None
+        self.store.unban_async(login)
         self._rebuild_bans()
 
     def _device_section(self, title: str, color: str, expanded: bool,

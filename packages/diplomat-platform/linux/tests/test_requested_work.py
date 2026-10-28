@@ -524,6 +524,11 @@ def test_a_banned_author_retires_the_ask(swept_store, monkeypatch):
 
     assert verdict == autofix.VERDICT_BANNED
     assert swept_store.requested_work == []
+    from diplomat_runtime import activity
+
+    (skip,) = [e.detail for e in activity.read() if e.action == "ban-skip"]
+    assert skip.endswith(
+        " - the PR's author is banned (the ask is dropped, sweep again to re-queue it)")
 
 
 def test_an_ask_whose_pr_landed_is_dropped_and_forgotten(swept_store, monkeypatch):

@@ -9,14 +9,16 @@ one, so :func:`bans.report_comms_ban` meets "no daemon" by default.
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 from test_autofix import _spawn_recorder, store  # noqa: F401 — fixture
 from test_comms_core import _Slack, _stub_claude, slack  # noqa: F401 — fixture
 from test_comms_store import (  # noqa: F401 — fixture
-    _decision, _events, _feed_lines, _tick, comms_store, needs_core)
+    _decision, _events, _feed_lines, _logged, _message, _tick, comms_store, needs_core)
 
 from diplomat_app import bans, deviceallocator
 from diplomat_app.store import Store
@@ -62,16 +64,32 @@ def audit(monkeypatch):
 
 @pytest.fixture
 def daemon(monkeypatch):
-    """A daemon that answers ``status`` and records what it was asked."""
+    """A daemon that answers as ``handleReportInjection`` and ``handleUnban`` do, or as
+    ``answer[endpoint]`` says (a reply, :data:`deviceallocator.NO_REPLY`, or a callable
+    of the body returning one), and records what it was asked."""
     asked: list = []
-    answer = {"status": 200, "json": {"banned": True}}
+    answer: dict = {}
 
-    def call(endpoint, body=None, *, timeout_secs):
+    def exchange(endpoint, body=None, *, timeout_secs):
         asked.append((endpoint, body))
-        return deviceallocator.DaemonReply(answer["status"], answer["json"])
+        if endpoint in answer:
+            a = answer[endpoint]
+            return a(body) if callable(a) else a
+        if endpoint == "report-injection":
+            return deviceallocator.DaemonReply(200, {
+                "banned": True, "login": bans.slack_login(body["person"]), "total": 1})
+        if endpoint == "unban":
+            return deviceallocator.DaemonReply(200, {"removed": 1, "total": 0})
+        return deviceallocator.DaemonReply(404, {"error": f"unknown route /{endpoint}"})
 
-    monkeypatch.setattr(deviceallocator, "call", call)
+    monkeypatch.setattr(deviceallocator, "exchange", exchange)
     return asked, answer
+
+
+#: What a daemon older than Slack bans answers: the id taken for a GitHub login.
+OLD_DAEMON = deviceallocator.DaemonReply(200, {"banned": True, "login": "UMAL123", "total": 1})
+STRAY = ('the allocator daemon banned "UMAL123" instead of slack:UMAL123; '
+         "restart it to pick up Slack bans")
 
 
 # MARK: - the list
@@ -155,10 +173,166 @@ def test_a_daemon_that_answers_records_the_ban_and_its_line(audit, daemon):
         "evidence": EVIDENCE, "agentName": "Comms triage", "via": "comms"})]
     assert audit == [] and not bans.banned_path().exists()
 
-    answer.update(status=507, json={"error": "ban on @slack:UMAL123 not recorded: ENOSPC"})
+    answer["report-injection"] = deviceallocator.DaemonReply(
+        507, {"error": "ban on @slack:UMAL123 not recorded: ENOSPC"})
     assert bans.report_comms_ban(BAN) == bans.Reported(
         True, "the device-allocator refused it (ban on @slack:UMAL123 not recorded: ENOSPC)")
     assert audit == [] and not bans.banned_path().exists()
+
+
+def test_a_daemon_older_than_slack_bans_is_a_failure_and_its_entry_is_lifted(audit, daemon):
+    asked, answer = daemon
+    answer["report-injection"] = OLD_DAEMON
+    assert bans.report_comms_ban(BAN) == bans.Reported(True, STRAY)
+    assert [a for a in asked if a[0] == "unban"] == [("unban", {"login": "UMAL123"})]
+    assert audit == [] and not bans.banned_path().exists()
+
+    # An undo that fails says where the stray entry is lifted by hand.
+    answer["unban"] = deviceallocator.NO_REPLY
+    assert bans.report_comms_ban(BAN).error == STRAY + '; un-ban "UMAL123" in the panel'
+    # A reply naming nobody has nothing to undo.
+    asked.clear()
+    answer["report-injection"] = deviceallocator.DaemonReply(200, {"banned": True})
+    assert bans.report_comms_ban(BAN).error == (
+        'the allocator daemon banned "" instead of slack:UMAL123; '
+        "restart it to pick up Slack bans")
+    assert [e for e, _ in asked] == ["report-injection"]
+
+
+def test_a_daemon_that_never_answers_is_not_written_around(audit, daemon):
+    """It may record the ban yet: a second entry written here would be its twin."""
+    daemon[1]["report-injection"] = deviceallocator.NO_REPLY
+    assert bans.report_comms_ban(BAN) == bans.Reported(
+        False, "the allocator daemon did not answer in time; it may still record the ban")
+    assert audit == [] and not bans.banned_path().exists()
+
+
+# MARK: - the daemon's socket, for real
+
+
+@pytest.fixture
+def short_base(monkeypatch):
+    """A ``DA_BASE_DIR`` short enough for a unix socket path on macOS (104 bytes)."""
+    import shutil
+    import tempfile
+
+    base = tempfile.mkdtemp(prefix="da-", dir="/tmp")
+    monkeypatch.setenv("DA_BASE_DIR", base)
+    yield deviceallocator.socket_path()
+    shutil.rmtree(base, ignore_errors=True)
+
+
+def test_a_socket_nobody_answers_on_is_no_reply_and_a_stale_one_unreachable(short_base,
+                                                                             audit):
+    import socket
+
+    assert deviceallocator.exchange("unban", {}, timeout_secs=1) == deviceallocator.UNREACHABLE
+    # Accepted, never answered: a wedged daemon.
+    wedged = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    wedged.bind(str(short_base))
+    wedged.listen(1)
+    try:
+        started = time.monotonic()
+        assert bans.report_comms_ban(BAN, timeout_secs=0.5) == bans.Reported(
+            False, "the allocator daemon did not answer in time; it may still record the ban")
+        assert time.monotonic() - started < 5
+        assert not bans.banned_path().exists() and audit == []
+        assert deviceallocator.call("unban", {}, timeout_secs=0.5) is None
+    finally:
+        wedged.close()
+    # The file a dead daemon left: nothing accepts on it.
+    assert short_base.exists()
+    assert deviceallocator.exchange("unban", {}, timeout_secs=1) == deviceallocator.UNREACHABLE
+    assert bans.report_comms_ban(BAN) == bans.Reported(False, None)
+    assert [b["login"] for b in _file()["banned"]] == ["slack:UMAL123"]
+
+
+DAEMON_JS = (Path(__file__).resolve().parents[3] / "device-allocator" / "src" / "daemon.js")
+
+
+@pytest.fixture
+def real_daemon(short_base, tmp_path):
+    """The allocator daemon from this tree, on fake devices, its every file in tmp."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("no node")
+    (tmp_path / "fake.json").write_text("[]")
+    env = {**os.environ, "DA_FAKE_DEVICES": str(tmp_path / "fake.json"), "DA_NO_SPAWN": "1",
+           "DIPLOMAT_CONFIG": str(tmp_path / "config.json")}
+    child = subprocess.Popen([node, str(DAEMON_JS)], env=env, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(100):
+            if deviceallocator.call("health", timeout_secs=1) is not None:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("the daemon never answered")
+        yield
+    finally:
+        child.terminate()
+        child.wait(5)
+
+
+def _daemon_feed() -> list[tuple[str, str, str]]:
+    path = bans.ban_dir() / "audit.jsonl"
+    lines = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+    return [(e["source"], e["action"], e["detail"]) for e in lines]
+
+
+def test_the_real_daemon_bans_and_unbans_a_slack_sender(real_daemon, audit):
+    assert bans.report_comms_ban(BAN) == bans.Reported(True, None)
+    (entry,) = _file()["banned"]
+    assert (entry["login"], entry["source"], entry["handle"], entry["place"]) == (
+        "slack:UMAL123", "slack", "mallory", "#general")
+    assert _daemon_feed() == [("auto", "ban", LINE)]
+
+    assert bans.unban("slack:UMAL123") == bans.Reported(True, None)
+    assert _file()["banned"] == []
+    assert _daemon_feed()[1:] == [("panel", "unban", "Un-banned @slack:UMAL123")]
+    assert audit == [], "the daemon wrote both lines"
+
+
+# MARK: - the panel lifting a ban
+
+
+def test_an_unban_goes_through_the_daemon(audit, daemon):
+    asked, answer = daemon
+    _seed({"login": "slack:UMAL123"})
+    before = bans.banned_path().read_text()
+    assert bans.unban("slack:UMAL123") == bans.Reported(True, None)
+    assert asked == [("unban", {"login": "slack:UMAL123"})]
+    assert bans.banned_path().read_text() == before and audit == []
+
+    answer["unban"] = deviceallocator.DaemonReply(507, {"error": "unban of @x not recorded"})
+    assert bans.unban("slack:UMAL123") == bans.Reported(
+        True, "the device-allocator refused it (unban of @x not recorded)")
+    answer["unban"] = deviceallocator.NO_REPLY
+    assert bans.unban("slack:UMAL123") == bans.Reported(
+        False, "the allocator daemon did not answer in time; it may still lift the ban")
+    assert bans.banned_path().read_text() == before and audit == []
+
+
+def test_an_unban_with_no_daemon_is_written_here_with_the_daemons_line(audit):
+    _seed({"login": "bob", "at": "2026-10-01T00:00:00.000Z"}, {"login": "slack:UMAL123"})
+    assert bans.unban("SLACK:umal123") == bans.Reported(False, None)
+    assert _file()["banned"] == [{"login": "bob", "at": "2026-10-01T00:00:00.000Z"}]
+    assert audit == [("panel", "unban", "Un-banned @SLACK:umal123")]
+
+    # Nobody of that name: the file is not rewritten, and nothing is said.
+    stamp = bans.banned_path().stat().st_mtime_ns
+    time.sleep(0.01)
+    assert bans.unban("carol") == bans.Reported(False, None)
+    assert bans.banned_path().stat().st_mtime_ns == stamp and len(audit) == 1
+
+    bans.banned_path().write_text('{"banned": [{"login": "bob"}')
+    done = bans.unban("bob")
+    assert not done.by_daemon and "is unreadable" in done.error
+    assert bans.banned_path().read_text() == '{"banned": [{"login": "bob"}'
+    assert len(audit) == 1
 
 
 # MARK: - what a tick does
@@ -210,12 +384,97 @@ def test_a_ban_the_daemon_made_has_only_the_daemons_line(comms_store, monkeypatc
 @needs_core
 def test_a_ban_that_failed_says_so_in_the_feed(comms_store, monkeypatch, audit, daemon):
     monkeypatch.setattr(bans, "read", _REAL_READ)
-    daemon[1].update(status=400, json={"error": "nope"})
+    daemon[1]["report-injection"] = deviceallocator.DaemonReply(400, {"error": "nope"})
     _tick(comms_store, monkeypatch, (_mallory(), {**_decision("injection"),
                                                   "evidence": EVIDENCE}))
     why = "could not ban @mallory for prompt injection: the device-allocator refused it (nope)"
     assert _events()[-1]["outcome"] == why
-    assert audit[-1] == ("auto", "comms-error", f"Comms {why} ({PERMALINK})")
+    assert audit[-1] == ("auto", "comms-ban", f"Comms {why} ({PERMALINK})")
+
+
+@needs_core
+@pytest.mark.parametrize("read_mid_report", [True, False])
+def test_an_old_daemons_stray_entry_is_never_announced(comms_store, monkeypatch, audit,
+                                                       daemon, read_mid_report):
+    """The old daemon lists the bare id, and the undo fails: neither a read that lands
+    while the report is in flight nor any after it calls that entry a ban."""
+    monkeypatch.setattr(bans, "read", _REAL_READ)
+    shown = []
+    comms_store.ban_noticed.connect(lambda t, b: shown.append(t))
+    comms_store.refresh_activity()
+    stray = {"login": "UMAL123", "reason": "prompt injection", "at": "2026-10-28T12:00:00.000Z"}
+
+    def old_daemon(body):
+        _seed(stray)
+        if read_mid_report:
+            comms_store.refresh_activity()  # the panel's timer
+        return OLD_DAEMON
+
+    daemon[1].update({"report-injection": old_daemon, "unban": deviceallocator.NO_REPLY})
+    _tick(comms_store, monkeypatch, (_mallory(), {**_decision("injection"),
+                                                  "evidence": EVIDENCE}))
+    why = (f"could not ban @mallory for prompt injection: {STRAY}; "
+           'un-ban "UMAL123" in the panel')
+    assert _events()[-1]["outcome"] == why
+    assert audit[-1] == ("auto", "comms-ban", f"Comms {why} ({PERMALINK})")
+    comms_store.refresh_activity()
+    assert [b.login for b in comms_store.banned_authors] == ["UMAL123"]
+    assert shown == []
+    # A ban that is news still is.
+    _seed(stray, {"login": "bob", "at": "2026-10-28T13:00:00.000Z"})
+    comms_store.refresh_activity()
+    assert shown == ["Banned @bob for prompt injection"]
+
+
+# MARK: - a banned sender's other asks
+
+
+def _asks(store) -> list[str]:
+    return sorted(r.key for r in store.requested_work)
+
+
+@needs_core
+def test_an_injection_stops_the_senders_next_ask_in_the_same_tick(comms_store, monkeypatch,
+                                                                   audit, daemon):
+    """The daemon's ban is not on the list this apply read, only in the apply itself."""
+    pinged = []
+    comms_store.comms_pinged.connect(lambda t, b: pinged.append(t))
+    review = (_mallory("review #12 please", n=2), _decision("review", 12))
+    _tick(comms_store, monkeypatch,
+          (_mallory(), {**_decision("injection"), "evidence": EVIDENCE}), review,
+          (_message(3, "bump #12"), _decision("bump", 12)))
+    outcomes = [e["outcome"] for e in _events() if e["kind"] == "action"]
+    assert outcomes[0].startswith("banned @mallory for prompt injection")
+    assert outcomes[1] == Store.COMMS_SENDER_BANNED_OUTCOME
+    assert _asks(comms_store) == [] and comms_store.queued_tasks == []
+    assert ("auto", "comms-ping", "#general from mallory: review #12 please "
+            f"({Store.COMMS_SENDER_BANNED_OUTCOME})") in audit
+    assert "comms-review" not in [a for _, a, _ in audit]
+    assert pinged == ["Slack · DM from kacper"], "only the sender nobody banned"
+
+
+@needs_core
+def test_a_stranded_ask_from_a_sender_banned_since_does_nothing(comms_store, monkeypatch):
+    monkeypatch.setattr(bans, "read", _REAL_READ)
+    _logged((_mallory("review #12 please"), _decision("review", 12)))
+    _seed({"login": "slack:UMAL123", "source": "slack"})
+    _tick(comms_store, monkeypatch)
+    assert [e["outcome"] for e in _events()] == [Store.COMMS_SENDER_BANNED_OUTCOME]
+    assert _asks(comms_store) == []
+
+
+@needs_core
+def test_a_ban_recorded_between_tick_and_apply_stops_the_ask(comms_store, monkeypatch):
+    monkeypatch.setattr(bans, "read", _REAL_READ)
+    pinged = []
+    comms_store.comms_pinged.connect(lambda t, b: pinged.append(t))
+    _tick(comms_store, monkeypatch, (_mallory("review #12 please"), _decision("review", 12)),
+          (_message(2, "review #13 please"), _decision("review", 13)),
+          between=lambda: _seed({"login": "slack:UMAL123", "source": "slack"}))
+    assert [e["outcome"] for e in _events()] == [Store.COMMS_SENDER_BANNED_OUTCOME,
+                                                 "review of #13 queued, at the front of its band"]
+    assert _asks(comms_store) == ["review:13"]
+    assert pinged == ["Slack · DM from kacper"]
 
 
 def test_a_banned_senders_ping_is_recorded_but_never_notified(comms_store, monkeypatch):
@@ -280,9 +539,13 @@ def test_an_investigations_sender_is_its_ban_dimension(comms_store, monkeypatch)
     assert sent == []
     assert key not in {r.key for r in comms_store.requested_work}
     assert _feed_lines()[-1]["action"] == "ban-skip"
-    assert _feed_lines()[-1]["detail"] == f"{entry.job.label} - sender is banned (the ask is dropped)"
+    assert _feed_lines()[-1]["detail"] == (
+        f"{entry.job.label} - the sender is banned (the ask is dropped)")
     assert _events()[-1]["outcome"] == (
-        f"{comms.LEFT_QUEUE}: not run, the sender is banned for prompt injection")
+        f"{comms.LEFT_QUEUE} (the sender is banned for prompt injection)")
+    # Pressed instead, the panel says the same.
+    comms_store._execute_queued_task(entry)
+    assert comms_store.error == f"{entry.job.label}: the sender is banned (the ask is dropped)."
     comms_store.refresh_comms_feed()
     assert comms.left_queue(comms_store.comms_items[0])
     assert key not in comms_store._comms_owned
@@ -380,7 +643,7 @@ def test_the_panels_ban_row_says_who_when_where_and_why(quiet_store):
         bob = _labels(rows[1])
         assert bob[1:3] == ["@bob", "GITHUB"]
         assert '<a href="https://github.com/o/r/pull/9">in PR #9</a>' in bob
-        assert "prompt injection · never acted on" in _labels(panel.bans_host)
+        assert "prompt injection · no auto-reviews, no Slack triage" in _labels(panel.bans_host)
     finally:
         panel.deleteLater()
 
@@ -392,15 +655,24 @@ def test_the_comms_screen_lists_banned_senders_and_marks_their_pings(quiet_store
     monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-1")
     quiet_store.comms_enabled = True
     quiet_store.banned_authors = [_slack_ban(), bans.BannedAuthor("bob")]
-    base = {"at": "2026-10-28T10:00:00Z", "outcome": "o"}
+    def ping(n, user, action, outcome, reason="r"):
+        return {"at": "2026-10-28T10:00:00Z", "outcome": outcome,
+                "message": {"id": f"D1:{n}.0", "userID": user, "userName": user.lower()},
+                "decision": {"action": action, "summary": "s", "reason": reason}}
+
+    injection = ping(7, "UMAL123", "injection", 'banned @mallory for prompt injection: "e"')
     quiet_store.comms_items = [
-        {**base, "message": {"id": "D1:3.0", "userID": "UMAL123", "userName": "mallory"},
-         "decision": {"action": "none", "summary": "",
-                      "reason": comms.BANNED_PREFIX + "mallory is on the list"}},
-        {**base, "message": {"id": "D1:2.0", "userID": "UMAL123", "userName": "mallory"},
-         "decision": {"action": "injection", "summary": "s", "reason": "r", "evidence": "e"}},
-        {**base, "message": {"id": "D1:1.0", "userID": "UOK", "userName": "kacper"},
-         "decision": {"action": "none", "summary": "s", "reason": "r"}},
+        ping(8, "UMAL123", "none", "not triaged: the sender is banned for prompt injection",
+             comms.BANNED_PREFIX + "mallory is on the list"),
+        injection,
+        {**injection, "outcome": "could not ban @mallory for prompt injection: nope"},
+        ping(5, "UMAL123", "review", Store.COMMS_SENDER_BANNED_OUTCOME),
+        ping(4, "UMAL123", "investigate",
+             f"{comms.LEFT_QUEUE} (the sender is banned for prompt injection)"),
+        ping(3, "UOK", "review",
+             f"{comms.LEFT_QUEUE} (the PR's author is banned for prompt injection)"),
+        ping(2, "UOK", "review", f"{comms.LEFT_QUEUE} (review-req:12)"),
+        ping(1, "UMAL123", "none", "no action"),  # before mallory was banned
     ]
     view = CommsView(quiet_store)
     assert not view.bans_host.isHidden()
@@ -411,8 +683,64 @@ def test_the_comms_screen_lists_banned_senders_and_marks_their_pings(quiet_store
     assert bans.when_text(quiet_store.banned_authors[0]) in strip
     rows = [w for w in view.findChildren(PingRow) if w.parent() is not None]
     marks = [[t for t in _labels(r) if "BANNED" in t] for r in rows]
-    assert marks == [["⊘ BANNED SENDER"], ["⊘ INJECTION · BANNED"], []]
+    assert marks == [["⊘ BANNED SENDER"], ["⊘ INJECTION · BANNED"], [], ["⊘ BANNED SENDER"],
+                     ["⊘ BANNED"], ["⊘ BANNED"], [], []]
 
     quiet_store.banned_authors = []
     quiet_store.activity_changed.emit()
     assert view.bans_host.isHidden()
+
+
+def test_the_panel_unbans_after_a_confirmation(quiet_store, audit, daemon):
+    from PySide6.QtWidgets import QApplication, QPushButton
+
+    from diplomat_app.panel import Panel
+    from diplomat_app.widgets import BanRow, UnbanConfirmRow
+
+    asked, answer = daemon
+    answer["unban"] = deviceallocator.UNREACHABLE
+    _seed({"login": "slack:UMAL123", "source": "slack", "handle": "mallory",
+           "at": "2026-10-28T12:00:00.000Z"},
+          {"login": "bob", "at": "2026-10-01T00:00:00.000Z"})
+    quiet_store.refresh_activity()
+    panel = Panel(quiet_store)
+
+    def rows():
+        QApplication.processEvents()
+        return panel.bans_host.findChildren(BanRow), panel.bans_host.findChildren(UnbanConfirmRow)
+
+    def press(confirm, text):
+        next(b for b in confirm.findChildren(QPushButton) if b.text() == text).click()
+
+    try:
+        panel._rebuild_bans()
+        (_, bob), _ = rows()
+        bob.unban.click()
+        (left,), (confirm,) = rows()
+        assert _labels(confirm) == ["Unban @bob?", "Their PRs will receive automated reviews again."]
+        assert _labels(left)[1] == "@mallory"
+        press(confirm, "Cancel")
+        assert [len(r) for r in rows()] == [2, 0]
+        assert asked == []
+
+        rows()[0][0].unban.click()
+        (confirm,) = rows()[1]
+        assert _labels(confirm) == ["Unban Slack user @mallory?",
+                                    "Comms will triage their Slack messages again."]
+        press(confirm, "Unban")
+        assert quiet_store.wait_for_background() == []
+        assert asked == [("unban", {"login": "slack:UMAL123"})]
+        assert [b["login"] for b in _file()["banned"]] == ["bob"]
+        assert audit == [("panel", "unban", "Un-banned @slack:UMAL123")]
+        (only,), confirms = rows()
+        assert _labels(only)[1] == "@bob" and confirms == []
+
+        # A daemon that never answers lifts nothing here, and the panel says so.
+        answer["unban"] = deviceallocator.NO_REPLY
+        quiet_store.unban_async("bob")
+        assert quiet_store.wait_for_background() == []
+        assert quiet_store.error == ("Could not un-ban @bob: the allocator daemon did not "
+                                     "answer in time; it may still lift the ban")
+        assert [b["login"] for b in _file()["banned"]] == ["bob"] and len(audit) == 1
+    finally:
+        panel.deleteLater()

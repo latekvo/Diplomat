@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSlider,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -778,7 +779,10 @@ def link_label(text: str, url: str | None) -> QLabel:
 
 class BanRow(QFrame):
     """One ban: who (and on which service), when, where, why, and who reported it. The
-    evidence shows three lines; its tooltip holds all of it."""
+    evidence shows three lines; its tooltip holds all of it. Its ✕ asks for the un-ban,
+    which :class:`UnbanConfirmRow` confirms."""
+
+    unban_requested = Signal()
 
     def __init__(self, ban) -> None:
         from . import bans
@@ -809,6 +813,15 @@ class BanRow(QFrame):
             " border-radius: 4px; padding: 0 4px; font-size: 8px; font-weight: 700;")
         head.addWidget(source)
         head.addStretch(1)
+        self.unban = QToolButton()
+        self.unban.setText("✕")
+        self.unban.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.unban.setToolTip(f"Un-ban {ban.name}")
+        self.unban.setStyleSheet(
+            f"QToolButton {{ color: {glyphs.MUTED}; background: transparent; border: none;"
+            " font-size: 10px; } QToolButton:hover { color: #FF3B30; }")
+        self.unban.clicked.connect(self.unban_requested.emit)
+        head.addWidget(self.unban)
         col.addLayout(head)
 
         when = QLabel(bans.when_text(ban))
@@ -834,6 +847,45 @@ class BanRow(QFrame):
             by.setStyleSheet(muted(8))
             col.addWidget(by)
         row.addLayout(col, 1)
+
+
+class UnbanConfirmRow(QFrame):
+    """``Unban @x?`` in place of a ban row whose ✕ was clicked, saying what lifting it
+    does."""
+
+    confirmed = Signal()
+    cancelled = Signal()
+
+    def __init__(self, ban) -> None:
+        super().__init__()
+        self.setStyleSheet(
+            f"UnbanConfirmRow {{ background-color: {tint_bg('#FF9500', 0.12)};"
+            " border-radius: 6px; }")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(6, 6, 6, 6)
+        row.setSpacing(8)
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        title = QLabel(f"Unban Slack user {ban.name}?" if ban.is_slack else f"Unban {ban.name}?")
+        title.setTextFormat(Qt.TextFormat.PlainText)
+        title.setStyleSheet("font-size: 10px; font-weight: 700;")
+        col.addWidget(title)
+        effect = QLabel("Comms will triage their Slack messages again." if ban.is_slack
+                        else "Their PRs will receive automated reviews again.")
+        effect.setStyleSheet(muted(9))
+        col.addWidget(effect)
+        row.addLayout(col, 1)
+        for text, signal, tint in (("Cancel", self.cancelled, glyphs.MUTED),
+                                   ("Unban", self.confirmed, "#FF3B30")):
+            btn = QPushButton(text)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(
+                f"QPushButton {{ color: {tint}; background-color: {tint_bg(tint, 0.16)};"
+                " border: none; border-radius: 8px; padding: 2px 9px;"
+                " font-size: 9px; font-weight: 700; }"
+                f"QPushButton:hover {{ background-color: {tint_bg(tint, 0.30)}; }}")
+            btn.clicked.connect(signal.emit)
+            row.addWidget(btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
 
 def hline() -> QFrame:

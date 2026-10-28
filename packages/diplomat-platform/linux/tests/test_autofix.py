@@ -1252,6 +1252,13 @@ def test_banned_author_blocks_both_interfaces(store, monkeypatch):
     for src in (autofix.SOURCE_PANEL, autofix.SOURCE_AUTO):
         assert store.dispatch_agent(_job(author="evil"), src) == autofix.VERDICT_BANNED
     assert calls == []
+    # A monitor's find, too: it comes back once the ban lifts.
+    store.dispatch_agent(_job(author="evil", action="review-req"), autofix.SOURCE_AUTO)
+    from diplomat_runtime import activity
+
+    asked = "Review · #9 - the PR's author is banned (the ask is dropped, sweep again to re-queue it)"
+    assert [e.detail for e in activity.read() if e.action == "ban-skip"] == [
+        "Review · #9 - the PR's author is banned (un-ban to review)", asked, asked]
 
 
 def test_allowlist_holds_a_review_monitor_find_whoever_asks(store, monkeypatch):

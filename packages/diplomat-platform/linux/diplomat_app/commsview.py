@@ -64,15 +64,19 @@ _ACTION_WORD = {"review": "review", "fix_issue": "fix issue", "bump": "bump",
                 "investigate": "investigate", "injection": "injection", "none": "no action"}
 
 
-def ban_mark(item: dict, banned_ids: set[str]) -> str | None:
-    """The red chip on a ping: ``BANNED SENDER`` for one whose sender is on the ban
-    list or was when it came in, ``INJECTION · BANNED`` for the one that put them there."""
+def ban_mark(item: dict) -> str | None:
+    """The red chip on a ping: ``INJECTION · BANNED`` for the one that got its sender
+    banned, ``BANNED SENDER`` for one a banned sender sent, and ``BANNED`` for an ask
+    whose run a ban stopped."""
     decision = item.get("decision") or {}
-    if decision.get("action") == "injection":
+    outcome = str(item.get("outcome") or "")
+    if (decision.get("action") == "injection"
+            and outcome.startswith(Store.COMMS_BANNED_OUTCOME_PREFIX)):
         return "INJECTION · BANNED"
-    user_id = str((item.get("message") or {}).get("userID") or "")
-    if comms.from_banned_sender(decision) or user_id in banned_ids:
+    if comms.from_banned_sender(decision) or outcome == Store.COMMS_SENDER_BANNED_OUTCOME:
         return "BANNED SENDER"
+    if Store.comms_stopped_by_ban(item):
+        return "BANNED"
     return None
 
 
@@ -454,7 +458,6 @@ class CommsView(QWidget):
 
         senders = sorted((b for b in self.store.banned_authors if b.is_slack),
                          key=lambda b: b.at or "", reverse=True)
-        banned_ids = {str(b.slack_id) for b in senders}
         _clear(self.bans_col)
         self.bans_host.setVisible(bool(senders))
         if senders:
@@ -478,7 +481,7 @@ class CommsView(QWidget):
             at = comms.parse_iso(str(item.get("at", "")))
             unread = seen is None or (at is not None and at > seen)
             self.pings_col.addWidget(PingRow(item, unread=unread,
-                                             mark=ban_mark(item, banned_ids)))
+                                             mark=ban_mark(item)))
 
         jobs = [i for i in items if i.get("queueKey")]
         waiting = ({t.id for t in self.store.queued_tasks}

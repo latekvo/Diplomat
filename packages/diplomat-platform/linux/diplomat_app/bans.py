@@ -6,8 +6,9 @@ panel reads it, surfacing who is blocked from automated work. One list holds two
 namespaces: a GitHub login, and a Slack sender as ``slack:<user id>`` (core's
 ``CommsBan``), which no GitHub login can collide with since none holds a colon.
 
-The one write here is Comms banning a Slack sender (:func:`report_comms_ban`), through
-the daemon like every other ban, and directly only when no daemon answers.
+The writes here, Comms banning a Slack sender (:func:`report_comms_ban`) and the panel
+lifting a ban (:func:`unban`), go through the daemon like every other ban-list write, and
+straight to the file only when no daemon is reachable.
 """
 
 from __future__ import annotations
@@ -173,10 +174,21 @@ def place_url(b: BannedAuthor) -> str | None:
 
 
 class Reported(NamedTuple):
-    #: The daemon recorded it, and wrote the feed line.
+    """A ban or an un-ban, as it went."""
+
+    #: A daemon answered; it logs the feed line of every change it makes.
     by_daemon: bool
-    #: Why nothing was recorded; None once it was.
+    #: Why the change was not made; None once it was.
     error: str | None = None
+
+
+#: A daemon that took the request and never answered may still act on it, so nothing is
+#: written here as well: this write and the daemon's late one would make two.
+_NO_REPLY = "the allocator daemon did not answer in time; it may still {}"
+
+
+def _refused(reply) -> str:
+    return f"the device-allocator refused it ({reply.get('error') or reply.status})"
 
 
 def ban_line(entry: dict) -> str:
@@ -195,9 +207,13 @@ def report_comms_ban(ban: dict, *, timeout_secs: float = 10) -> Reported:
     evidence, reason}``). Blocking, so off the GUI thread.
 
     Through the daemon's ``/report-injection``, which serializes every ban-list write
-    and logs the ``ban`` line itself. A daemon that does not answer is not a reason to
-    leave the sender free: the entry is then written here, in the daemon's shape, with
-    the line it would have logged. A daemon that answers and refuses is final."""
+    and logs the ``ban`` line itself. An unreachable daemon is not a reason to leave the
+    sender free: the entry is then written here, in the daemon's shape, with the line it
+    would have logged. A daemon that refuses, or takes the request and never answers,
+    is final.
+
+    A daemon older than Slack bans records the bare id, as a GitHub login: that entry is
+    lifted again, and the sender is not banned."""
     from . import deviceallocator
 
     user_id = str(ban.get("userID") or "")
@@ -207,17 +223,27 @@ def report_comms_ban(ban: dict, *, timeout_secs: float = 10) -> Reported:
     evidence = str(ban.get("evidence") or "")
     if not _SLACK_USER_ID.match(user_id):
         return Reported(False, f"no Slack user id to ban ({user_id or 'none'})")
-    reply = deviceallocator.call("report-injection", {
+    login = slack_login(user_id)
+    reply = deviceallocator.exchange("report-injection", {
         "person": user_id, "source": "slack", "handle": handle, "place": place, "pr": permalink,
         "evidence": evidence, "agentName": COMMS_REPORTER, "via": "comms",
     }, timeout_secs=timeout_secs)
-    if reply is not None:
-        if reply.ok:
-            return Reported(True)
-        return Reported(True, f"the device-allocator refused it "
-                              f"({reply.get('error') or reply.status})")
-    return Reported(False, _write_directly(slack_login(user_id), handle, place, permalink,
-                                           evidence))
+    if reply == deviceallocator.UNREACHABLE:
+        return Reported(False, _write_directly(login, handle, place, permalink, evidence))
+    if not isinstance(reply, deviceallocator.DaemonReply):
+        return Reported(False, _NO_REPLY.format("record the ban"))
+    if not reply.ok:
+        return Reported(True, _refused(reply))
+    recorded = str(reply.get("login") or "")
+    if recorded.lower() == login.lower():
+        return Reported(True)
+    why = (f'the allocator daemon banned "{recorded}" instead of {login}; '
+           "restart it to pick up Slack bans")
+    if recorded:
+        undo = deviceallocator.exchange("unban", {"login": recorded}, timeout_secs=timeout_secs)
+        if not (isinstance(undo, deviceallocator.DaemonReply) and undo.ok):
+            why += f'; un-ban "{recorded}" in the panel'
+    return Reported(True, why)
 
 
 def _write_directly(login: str, handle: str, place: str, permalink: str,
@@ -249,4 +275,46 @@ def _write_directly(login: str, handle: str, place: str, permalink: str,
     except OSError as exc:
         return f"ban on {login} not recorded: {exc.strerror or exc}"
     activity.log("auto", "ban", ban_line(entry))
+    return None
+
+
+# MARK: - the panel lifting a ban
+
+
+def unban(login: str, *, timeout_secs: float = 5) -> Reported:
+    """Take ``login`` off the list. Blocking, so off the GUI thread.
+
+    Through the daemon's ``/unban``, which logs the ``unban`` line when it removed
+    something; directly, with that line, only when no daemon is reachable."""
+    from . import deviceallocator
+
+    reply = deviceallocator.exchange("unban", {"login": login}, timeout_secs=timeout_secs)
+    if reply == deviceallocator.UNREACHABLE:
+        return Reported(False, _unban_directly(login))
+    if not isinstance(reply, deviceallocator.DaemonReply):
+        return Reported(False, _NO_REPLY.format("lift the ban"))
+    return Reported(True, None if reply.ok else _refused(reply))
+
+
+def _unban_directly(login: str) -> str | None:
+    """The daemon's ``handleUnban``; returns why it failed, or None. A list that does
+    not hold ``login`` is left unwritten."""
+    path = banned_path()
+    data = atomicjson.read_object(path)
+    if data is None:
+        return f"{path} is unreadable, so it was left as it is" if path.exists() else None
+    listed = data.get("banned")
+    if not isinstance(listed, list):
+        return None
+    low = login.lower()
+    kept = [b for b in listed
+            if not (isinstance(b, dict) and str(b.get("login", "")).lower() == low)]
+    if len(kept) == len(listed):
+        return None
+    data["banned"] = kept
+    try:
+        atomicjson.write_atomic(path, data)
+    except OSError as exc:
+        return f"un-ban of {login} not recorded: {exc.strerror or exc}"
+    activity.log("panel", "unban", f"Un-banned @{login}")
     return None
