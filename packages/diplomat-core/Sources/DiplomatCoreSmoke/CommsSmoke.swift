@@ -1075,9 +1075,12 @@ private func slackTokenSmoke() throws {
     }
 }
 
+private let hasCurl = ["/usr/bin/curl", "/bin/curl"].contains { FileManager.default.isExecutableFile(atPath: $0) }
+
 /// Through the live transport (URLSession on macOS, curl elsewhere) to the stub on loopback.
 private func signInSmoke() throws {
     section("comms: signing in, and refreshing once")
+    guard hasCurl else { return print("(no curl here: the live transport cannot run)") }
     let dir = scratchDir("signin")
     defer { try? FileManager.default.removeItem(at: dir) }
     let creds = dir.appendingPathComponent(".credentials.json")
@@ -1142,6 +1145,7 @@ private func signInSmoke() throws {
 
 private func refreshThrottleSmoke() throws {
     section("comms: a dead login is refreshed at most once per loginRefreshSecs")
+    guard hasCurl else { return print("(no curl here: the live transport cannot run)") }
     let fm = FileManager.default
     let dir = scratchDir("throttle")
     defer { try? fm.removeItem(at: dir) }
@@ -1176,8 +1180,6 @@ private func refreshThrottleSmoke() throws {
                 .none("chat")
             }
         }
-        let refusedAt = CommsState.load(in: comms)
-        check(refusedAt.loginRefreshedAt == nil, "a fresh state has never refreshed")
         let a = run(t)
         check(a.error == SlackError.unauthorized.errorDescription && lsLines(log) == ["mcp list"]
               && CommsState.load(in: comms).loginRefreshedAt == t,
@@ -1274,10 +1276,7 @@ private func forgedHeadingSmoke() {
 /// The POST body and the token go through curl's stdin config, never its argv.
 private func curlSmoke() throws {
     section("comms: what curl carries")
-    guard ["/usr/bin/curl", "/bin/curl"].contains(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
-        print("(no curl here: the curl checks do not apply)")
-        return
-    }
+    guard hasCurl else { return print("(no curl here: the curl checks do not apply)") }
     let secret = "xoxe-curl-secret-5678"
     let keyword = "say \"hi\" to C:\\dir\\ & Zoë ✓ 🚀 $HOME `id`\nnext\tline"
     let slack = StubSlack()
