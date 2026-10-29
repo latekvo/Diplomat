@@ -1020,7 +1020,7 @@ class SettingsView(QWidget):
         self._comms_login_row.set_summary(
             f"${comms.TOKEN_ENV}, which wins over Claude Code's login"
             if os.environ.get(comms.TOKEN_ENV)
-            else "Claude Code's own, for Slack's MCP server")
+            else "Claude Code's own login to Slack's MCP server")
 
     # MARK: tool colour & visibility
 

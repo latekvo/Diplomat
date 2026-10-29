@@ -559,7 +559,8 @@ def _comms_fixture(store: Store, *, signed_in: bool) -> None:
         channel = "D0RENDER" if dm else "C0GENERAL"
         m = {"id": f"{channel}:{ts}", "channelID": channel,
              "channelName": "U0" + user.upper() if dm else "argent-dev", "isDM": dm,
-             "userID": "U0" + user.upper(), "userName": user, "teamID": "T0SWM",
+             "userID": "U0" + user.upper(), "userName": user,
+             "teamID": "Software Mansion",
              "text": text, "ts": ts, "reasons": reasons,
              "permalink": f"https://swm.slack.com/archives/{channel}/p{ts.replace('.', '')}"}
         if keyword:
@@ -616,7 +617,8 @@ def _comms_fixture(store: Store, *, signed_in: bool) -> None:
 
     store.comms_enabled = True
     store.comms_seen_at = comms.iso(at(25))
-    store.comms_identity = {"userID": "U0IGNACY", "teamID": "T0SWM", "handle": "ignacy"}
+    store.comms_identity = {"userID": "U0IGNACY", "teamID": "Software Mansion",
+                            "handle": "ignacy"}
     store.comms_last_poll = at(0.5)
     store.refresh_comms_feed()
 

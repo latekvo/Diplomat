@@ -1,4 +1,4 @@
-"""Comms in the Linux Store: settings, the Slack token, and what a triaged ping does to
+"""Comms in the Linux Store: settings, the tick it runs, and what a triaged ping does to
 the queue.
 
 The tick is the core's (``test_comms_core.py``); here its answer is a literal. The plan
@@ -24,7 +24,7 @@ from test_comms_core import _stub_claude, slack  # noqa: F401 — fixture
 
 from diplomat_app import bans, issues
 from diplomat_app.store import Store, app_settings
-from diplomat_runtime import activity, appconfig, autofix, comms, gh, review
+from diplomat_runtime import activity, autofix, comms, gh, review
 from diplomat_runtime.models import OpenIssue, OpenPR
 
 pytest.importorskip("PySide6")
@@ -88,15 +88,14 @@ def _no_such_number(args, timeout=60.0):
 @pytest.fixture
 def comms_store(store, monkeypatch):  # noqa: F811 — the shared Store fixture
     """The store with a panel fetch behind it — bob's PR #12, my own #13, mallory's
-    #14 — one issue, a token in the environment, and mallory banned. GitHub knows
-    nothing the panel did not fetch, unless a test says otherwise."""
+    #14 — one issue, and mallory banned. GitHub knows nothing the panel did not fetch,
+    unless a test says otherwise."""
     monkeypatch.setattr("diplomat_runtime.gh.run", _no_such_number)
     store.has_loaded = True
     store.prs = [_pr(12, "bob"), _pr(13, "alice"), _pr(14, "mallory")]
     store.issues = [_issue(7)]
     monkeypatch.setattr("diplomat_app.bans.read",
                         lambda: [bans.BannedAuthor("mallory", "prompt injection")])
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-test")
     store.comms_enabled = True
     return store
 
@@ -107,8 +106,8 @@ def _tick(store, monkeypatch, *pings, error=None, notices=(), between=None) -> d
     the worker's half and before the Qt thread's. Returns what the tick was handed."""
     handed: dict = {}
 
-    def fake_tick(settings, token):
-        handed.update(settings=settings, token=token)
+    def fake_tick(settings):
+        handed.update(settings=settings)
         _logged(*pings)
         return {"me": ME, "items": [{"message": m, "decision": d} for m, d in pings],
                 "error": error, "notices": list(notices)}
@@ -156,7 +155,6 @@ def test_every_setting_round_trips_under_the_contract_key():
     st.comms_notify = False
     st.comms_model = "sonnet"
     st.comms_seen_at = "2026-10-27T10:00:00Z"
-    st.slack_token_file = " /run/me/slack "
     raw = app_settings()
     assert {k: raw.value(k) for k in (
         "commsEnabled", "commsKeywordsRaw", "commsSenderAllowlistRaw", "commsActRequests",
@@ -166,19 +164,16 @@ def test_every_setting_round_trips_under_the_contract_key():
         "commsSenderAllowlistRaw": "@kacper U2", "commsActRequests": False,
         "commsActBumps": False, "commsActInvestigations": False, "commsNotify": False,
         "commsModel": "sonnet", "commsSeenAt": "2026-10-27T10:00:00Z"}
-    # The token's path is in the shared config, the token itself nowhere.
-    assert appconfig.read()["slackTokenFile"] == "/run/me/slack"
     again = Store()
-    assert (again.comms_enabled, again.comms_model, again.comms_act_bumps,
-            again.slack_token_file) == (True, "sonnet", False, "/run/me/slack")
+    assert (again.comms_enabled, again.comms_model, again.comms_act_bumps) == (
+        True, "sonnet", False)
 
 
-def test_the_tick_is_handed_the_settings_and_the_token(comms_store, monkeypatch):
+def test_the_tick_is_handed_the_settings(comms_store, monkeypatch):
     comms_store.comms_keywords_raw = "argent"
     comms_store.comms_sender_allowlist_raw = "kacper"
     comms_store.comms_model = "sonnet"
     handed = _tick(comms_store, monkeypatch)
-    assert handed["token"] == "xoxp-test"
     assert handed["settings"]["keywordsRaw"] == "argent"
     assert handed["settings"]["senderAllowlistRaw"] == "kacper"
     assert handed["settings"]["model"] == "sonnet"
@@ -187,34 +182,16 @@ def test_the_tick_is_handed_the_settings_and_the_token(comms_store, monkeypatch)
     assert comms_store.comms_last_poll is not None
 
 
-def test_the_token_reaches_the_tick_child_alone(monkeypatch):
-    seen = []
-
-    class Done:
-        returncode, stdout, stderr = 0, '{"me": null, "items": [], "error": null}', ""
-
-    def fake_run(argv, **kw):
-        seen.append((argv[1], kw["env"].get(comms.TOKEN_ENV)))
-        return Done()
-
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-from-env")
-    monkeypatch.setattr("diplomat_runtime.promptcore.core_bin", lambda: "/bin/core")
-    monkeypatch.setattr("subprocess.run", fake_run)
-    comms.tick({}, "xoxp-handed")
-    comms._core(["comms-feed"])
-    assert seen == [("comms-tick", "xoxp-handed"), ("comms-feed", None)]
-
-
 def test_a_ticks_notices_are_handed_on_and_default_to_none(fake_core):
     tick = {"me": None, "items": [], "error": None}
     fake_core({**tick, "notices": ["Comms caught up past 24 h", 7]})
-    assert comms.tick({}, "xoxp")["notices"] == ["Comms caught up past 24 h"]
+    assert comms.tick({})["notices"] == ["Comms caught up past 24 h"]
     for body in (tick, {**tick, "notices": None}, {**tick, "notices": "one"}):
         fake_core(body)
-        assert comms.tick({}, "xoxp")["notices"] == []
+        assert comms.tick({})["notices"] == []
     for body, code in (("not json", 0), ('{"items": 1}', 0), ("", 3)):
         fake_core(body, code)
-        assert comms.tick({}, "xoxp")["notices"] == []
+        assert comms.tick({})["notices"] == []
 
 
 def test_each_notice_of_a_tick_is_one_line_of_the_activity_feed(comms_store, monkeypatch):
@@ -232,44 +209,17 @@ def test_each_notice_of_a_tick_is_one_line_of_the_activity_feed(comms_store, mon
     assert len(_feed_lines()) == 2
 
 
-# MARK: - the token file
+# MARK: - signed out
 
 
-def test_the_token_file_is_read_like_the_agent_token(tmp_path, monkeypatch):
-    path = tmp_path / "slack-token"
-
-    def use(p):
-        appconfig.set_value(appconfig.SLACK_TOKEN_FILE, str(p))
-
-    use(path)
-    assert comms.read_token() == ("", f"no Slack token at {path}")
-    path.write_text("  \n\0 ")
-    assert comms.read_token() == ("", f"{path} is empty")
-    path.write_text("xoxp-1-2-3\n")
-    assert comms.read_token() == ("xoxp-1-2-3", "")
-    use(tmp_path)
-    assert comms.read_token() == ("", f"{tmp_path} is not a regular file")
-    fifo = tmp_path / "fifo"
-    os.mkfifo(fifo)
-    use(fifo)
-    assert comms.read_token() == ("", f"{fifo} is not a regular file")
-    use("relative/token")
-    assert comms.read_token() == ("", "slackTokenFile is not an absolute path: relative/token")
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-env")
-    assert comms.read_token() == ("xoxp-env", "")
-
-
-def test_the_default_token_file_is_under_the_home(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    assert comms.token_file() == str(tmp_path / ".diplomat" / "slack-token")
-
-
-def test_no_token_is_the_ticks_error_and_runs_nothing(comms_store, monkeypatch):
-    monkeypatch.delenv(comms.TOKEN_ENV)
-    appconfig.set_value(appconfig.SLACK_TOKEN_FILE, "/nonexistent/slack-token")
-    monkeypatch.setattr(comms, "tick", lambda *a: pytest.fail("ran the tick"))
+def test_a_tick_that_cannot_sign_in_is_an_error_and_no_one(comms_store, monkeypatch):
+    why = ("Claude Code is not signed in to Slack: in Claude Code, run /mcp and "
+           "authenticate the Slack server")
+    monkeypatch.setattr(comms, "tick", lambda settings: {
+        "me": None, "items": [], "error": why, "notices": []})
     comms_store._apply_comms_tick(comms_store._comms_poll_once())
-    assert comms_store.comms_error == "no Slack token at /nonexistent/slack-token"
+    assert comms_store.comms_error == why
+    assert comms_store.comms_identity is None
 
 
 # MARK: - what a triaged ping does
@@ -559,13 +509,14 @@ def test_unread_counts_the_pings_after_the_screen_was_last_opened(comms_store):
 
 
 def test_an_error_is_audited_once_on_the_way_in_and_once_out(comms_store, monkeypatch):
+    limited = "Slack rate-limited the watcher (retry after 30s)"
     for _ in range(2):
-        _tick(comms_store, monkeypatch, error="Slack rejected the token (invalid_auth)")
-    assert comms_store.comms_error == "Slack rejected the token (invalid_auth)"
+        _tick(comms_store, monkeypatch, error=limited)
+    assert comms_store.comms_error == limited
     _tick(comms_store, monkeypatch)
     assert comms_store.comms_error is None
     assert [(e["action"], e["detail"]) for e in _feed_lines()] == [
-        ("comms-error", "Slack rejected the token (invalid_auth)"),
+        ("comms-error", limited),
         ("comms-recovered", "Slack watcher working again as @operator")]
 
 
@@ -1182,7 +1133,6 @@ def test_a_catch_up_reaches_the_activity_feed_as_a_notice(
         tmp_path, slack, comms_store, monkeypatch):  # noqa: F811 — the stub Slack
     """The Store's own tick through the real binary: a watermark past ``catchUpHours``
     is moved up, and the operator reads why in the activity feed."""
-    monkeypatch.setenv("DIPLOMAT_SLACK_API", slack)
     monkeypatch.setenv("DIPLOMAT_CLAUDE", str(_stub_claude(tmp_path)))
 
     def tick() -> list[dict]:
@@ -1221,7 +1171,6 @@ def test_the_dry_run_ticks_the_last_hour_in_a_scratch_dir(tmp_path, monkeypatch)
     real.mkdir(parents=True)
     state = json.dumps({"watermark": "1761580000.000000", "seen": ["D1:1761579999.000100"]})
     (real / "state.json").write_text(state)
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-test")
     monkeypatch.setattr(Store, "fetch_me", lambda self: setattr(self, "me", "octocat"))
     scratch = tmp_path / "tmp"
     scratch.mkdir()
@@ -1229,7 +1178,7 @@ def test_the_dry_run_ticks_the_last_hour_in_a_scratch_dir(tmp_path, monkeypatch)
     ticked = []
     error = None
 
-    def fake_tick(settings, token):
+    def fake_tick(settings):
         d = comms.comms_dir()
         ticked.append((d, json.loads((d / "state.json").read_text()), settings["login"],
                        stat.S_IMODE(os.stat(d / "state.json").st_mode), time_now()))
@@ -1243,7 +1192,7 @@ def test_the_dry_run_ticks_the_last_hour_in_a_scratch_dir(tmp_path, monkeypatch)
 
     monkeypatch.setattr(comms, "tick", fake_tick)
     assert selftest.run_comms_poll() == 0
-    error = "Slack rejected the token (invalid_auth)"
+    error = "Slack rate-limited the watcher"
     assert selftest.run_comms_poll() == 1
 
     assert len(ticked) == 2
@@ -1262,22 +1211,21 @@ def test_the_dry_run_ticks_the_last_hour_in_a_scratch_dir(tmp_path, monkeypatch)
 def test_a_dry_run_into_a_named_dir_ticks_that_dir(monkeypatch):
     from diplomat_app import selftest
 
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-test")
     monkeypatch.setattr(Store, "fetch_me", lambda self: None)
     ticked = []
-    monkeypatch.setattr(comms, "tick", lambda s, t: ticked.append(comms.comms_dir()) or {
+    monkeypatch.setattr(comms, "tick", lambda s: ticked.append(comms.comms_dir()) or {
         "me": None, "items": [], "error": None})
     assert selftest.run_comms_poll() == 0
     assert ticked == [Path(os.environ["DIPLOMAT_COMMS_DIR"])]
 
 
-# MARK: - the Settings Test button's auth.test
+# MARK: - the Settings Test button
 
 
 @pytest.fixture
 def fake_core(tmp_path, monkeypatch):
     """A ``diplomat-core`` that answers any subcommand with ``answer`` (exiting
-    ``status``), recording its argv, the token in its environment and its stdin."""
+    ``status``), recording its argv and its stdin."""
     record = tmp_path / "core-record"
     answer = tmp_path / "core-answer"
     status = tmp_path / "core-status"
@@ -1285,7 +1233,7 @@ def fake_core(tmp_path, monkeypatch):
     script = tmp_path / "diplomat-core"
     script.write_text(
         "#!/bin/sh\n"
-        f"printf '%s\\n' \"$*\" \"$DIPLOMAT_SLACK_TOKEN\" > {record}\n"
+        f"printf '%s\\n' \"$*\" > {record}\n"
         f"cat >> {record}\n"
         f"cat {answer}\n"
         "echo 'it went wrong' >&2\n"
@@ -1301,34 +1249,34 @@ def fake_core(tmp_path, monkeypatch):
     return answering
 
 
-def test_auth_test_asks_the_core_and_says_what_it_said(fake_core):
-    fake_core({"ok": True, "user": "ignacy", "userId": "UME", "team": "Ours",
-               "teamId": "T1"})
-    assert comms.auth_test("xoxp-1") == (
-        {"userID": "UME", "teamID": "T1", "handle": "ignacy", "team": "Ours"}, "")
-    # The subcommand, the token in the child's environment alone, and no stdin.
-    assert fake_core.record.read_text() == "comms-auth\nxoxp-1\n"
+def test_auth_asks_the_core_and_says_what_it_said(fake_core):
+    fake_core({"ok": True, "user": "ignacy", "userId": "UME", "team": "Ours Inc",
+               "teamId": "Ours"})
+    assert comms.auth() == (
+        {"userID": "UME", "teamID": "Ours", "handle": "ignacy", "team": "Ours Inc"}, "")
+    # The subcommand, and no stdin.
+    assert fake_core.record.read_text() == "comms-auth\n"
 
+    refused = ("Slack refused Claude Code's Slack login: in Claude Code, run /mcp and "
+               "authenticate the Slack server again")
     cases = [
-        ({"ok": False, "error": "Slack rejected the token (invalid_auth)"},
-         0, "Slack rejected the token (invalid_auth)"),
-        ({"ok": False}, 0, "Slack did not say who the token is"),
+        ({"ok": False, "error": refused}, 0, refused),
+        ({"ok": False}, 0, "Slack did not say who the login is"),
         ('["ok"]', 0, "diplomat-core comms-auth answered something that is not an answer"),
         ("not json", 0, "diplomat-core comms-auth answered something that is not an answer"),
         ("", 3, "diplomat-core comms-auth failed: it went wrong"),
     ]
     for body, code, why in cases:
         fake_core(body, code)
-        assert comms.auth_test("xoxp-1") == (None, why)
-    assert comms.auth_test("") == (None, "no Slack token is configured")
+        assert comms.auth() == (None, why)
 
 
-def test_auth_test_without_a_core_says_so(monkeypatch):
+def test_auth_without_a_core_says_so(monkeypatch):
     def missing():
         raise comms.promptcore.CoreBinaryMissing("diplomat-core not found")
 
     monkeypatch.setattr("diplomat_runtime.promptcore.core_bin", missing)
-    assert comms.auth_test("xoxp-1") == (None, "diplomat-core not found")
+    assert comms.auth() == (None, "diplomat-core not found")
 
 
 # MARK: - timings
@@ -1336,26 +1284,31 @@ def test_auth_test_without_a_core_says_so(monkeypatch):
 
 def test_the_tick_is_given_every_bound_the_child_holds_itself_to(monkeypatch):
     """Killed inside its own bounds, the child loses the messages it already marked
-    seen, so the front-end's limit is the sum of them, keywords included."""
+    seen, so the front-end's limit is the sum of them: two sign-ins of three calls with a
+    login refresh between, the deadline every later Slack call shares, the triage, each
+    lookup of ``claude``, and a margin. Keywords add nothing: the deadline covers every
+    search."""
     t = comms.tunables()
-    http = t["httpTimeoutSecs"] + 5
-    for keywords in (0, 3):
-        searches = (1 + (2 + keywords) * t["maxSearchPages"]) * http
-        triage = t["maxPerTick"] * t["classifierTimeoutSecs"]
-        assert comms.tick_timeout(keywords) >= searches + 10 + triage
+    call = t["httpTimeoutSecs"] + 5
+    sign_in = 6 * call + 10 + t["loginRefreshTimeoutSecs"]
+    deadline = t["slackBudgetSecs"] + 5
+    triage = 10 + t["maxPerTick"] * t["classifierTimeoutSecs"]
+    assert comms.tick_timeout() == sign_in + deadline + triage + 30
     seen = []
 
     class Done:
         returncode, stdout, stderr = 0, '{"me": null, "items": [], "error": null}', ""
 
     def fake_run(argv, **kw):
-        seen.append(kw["timeout"])
+        seen.append((argv[1], kw["timeout"]))
         return Done()
 
     monkeypatch.setattr("diplomat_runtime.promptcore.core_bin", lambda: "/bin/core")
     monkeypatch.setattr("subprocess.run", fake_run)
-    comms.tick({"keywordsRaw": "argent, release train\nargent\n, "}, "xoxp")
-    assert seen == [comms.tick_timeout(2)]
+    comms.tick({"keywordsRaw": "argent, release train"})
+    comms.auth()
+    assert seen == [("comms-tick", comms.tick_timeout()),
+                    ("comms-auth", sign_in + 30)]
 
 
 @pytest.mark.parametrize("raw", ["inf", "1e12", "-inf", "nan"])
