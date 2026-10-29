@@ -1,10 +1,10 @@
 """Comms, the Slack watcher, as the Linux front-end reaches it.
 
 Everything Comms decides is ``DiplomatCore``, reached through the ``diplomat-core`` CLI
-(``comms-tick``, ``comms-auth``, ``comms-feed``, ``comms-effect``). What lives here is
-what the CLI cannot do for this process: reading the Slack token, handing it to the
-children that ask Slack, and appending the front-end's own lines (``action``,
-``started``, ``finished``) to the log the CLI folds.
+(``comms-tick``, ``comms-auth``, ``comms-feed``, ``comms-effect``), which reaches Slack
+under Claude Code's own Slack login. What lives here is what the CLI cannot do for this
+process: appending the front-end's own lines (``action``, ``started``, ``finished``) to
+the log the CLI folds.
 
 Stdlib-only, like the rest of the runtime.
 """
@@ -15,19 +15,15 @@ import fcntl
 import json
 import math
 import os
-import re
-import stat
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import appconfig, core, promptcore
+from . import core, promptcore
 
-#: The token is configured by path only (``appconfig``): the shared config file is
-#: world-readable and mesh-copied.
-DEFAULT_TOKEN_FILE = "~/.diplomat/slack-token"
-#: Overrides the file, and carries the token to the ``comms-tick`` and ``comms-auth``
-#: children; the core strips it before starting any process of its own.
+#: A Slack token that overrides Claude Code's login in the core (``SlackToken``). Every
+#: agent spawn unsets it (:func:`review.spawn_env`), and the core strips it from the
+#: processes it starts.
 TOKEN_ENV = "DIPLOMAT_SLACK_TOKEN"
 
 #: A ping's outcome when its run never started (``Store.commsNeverStartedOutcome`` on
@@ -88,8 +84,8 @@ MAX_POLL_SECS = 86400.0
 
 
 def poll_secs() -> float:
-    """The ``minPollSecs`` floor keeps a tick's two searches plus one per keyword
-    inside Slack's Tier 2 budget of about twenty calls a minute."""
+    """``DIPLOMAT_COMMS_SECS``, else ``pollSecs``; held between ``minPollSecs`` and a
+    day."""
     t = tunables()
     default = float(t.get("pollSecs", 60))
     floor = float(t.get("minPollSecs", 20))
@@ -102,75 +98,40 @@ def poll_secs() -> float:
     return min(MAX_POLL_SECS, max(floor, secs))
 
 
-#: Core bounds comms.json does not hold: ``SlackAPI``'s grace past ``httpTimeoutSecs``
+#: Core bounds comms.json does not hold: ``SlackAPI``'s grace past a request's timeout
 #: and ``LoginShell.timeout`` for finding ``claude``; plus a margin for the rest.
 _HTTP_GRACE_SECS = 5
 _LOGIN_SHELL_SECS = 10
 _MARGIN_SECS = 30
 
 
-def _http_call_secs() -> float:
-    return float(tunables().get("httpTimeoutSecs", 15)) + _HTTP_GRACE_SECS
+def _sign_in_secs(t: dict) -> float:
+    """``SlackAPI.signIn``: two tries, each opening a session (``initialize``,
+    ``notifications/initialized``) and reading the operator's profile, around one login
+    refresh (finding ``claude``, then ``claude mcp list``)."""
+    call = float(t.get("httpTimeoutSecs", 15)) + _HTTP_GRACE_SECS
+    return (2 * 3 * call + _LOGIN_SHELL_SECS
+            + float(t.get("loginRefreshTimeoutSecs", 60)))
 
 
-def keyword_count(settings: dict) -> int:
-    """Split as ``CommsSettings.keywordList`` splits it."""
-    parts = re.split(r"[,\r\n]", str(settings.get("keywordsRaw") or ""))
-    return len({p.strip() for p in parts if p.strip()})
-
-
-def tick_timeout(keywords: int = 0) -> float:
+def tick_timeout() -> float:
     """The sum of the bounds the ``comms-tick`` child holds itself to, so it is never
-    killed inside them."""
+    killed inside them: signing in, the deadline every later Slack call shares, and the
+    triage."""
     t = tunables()
-    calls = 1 + (2 + keywords) * int(t.get("maxSearchPages", 3))
-    triage = float(t.get("maxPerTick", 8)) * float(t.get("classifierTimeoutSecs", 60))
-    return calls * _http_call_secs() + _LOGIN_SHELL_SECS + triage + _MARGIN_SECS
-
-
-# MARK: - the token
-
-
-def token_file() -> str:
-    raw = appconfig.get(appconfig.SLACK_TOKEN_FILE).strip() or DEFAULT_TOKEN_FILE
-    return os.path.expanduser(raw)
-
-
-def read_token() -> tuple[str, str]:
-    """``(token, "")``, or ``("", why there is none)``. The file is held to
-    ``review.check_token``'s rules: absolute, a regular file (a writerless FIFO would
-    block the read, ``/dev/zero`` never end it), not blank."""
-    env = os.environ.get(TOKEN_ENV, "").strip()
-    if env:
-        return env, ""
-    path = token_file()
-    if not os.path.isabs(path):
-        return "", f"slackTokenFile is not an absolute path: {path}"
-    try:
-        if not stat.S_ISREG(os.stat(path).st_mode):
-            return "", f"{path} is not a regular file"
-        with open(path, "rb") as f:
-            words = f.read(64 * 1024).replace(b"\0", b"").split()
-    except FileNotFoundError:
-        return "", f"no Slack token at {path}"
-    except OSError as exc:
-        return "", f"cannot read {path}: {exc.strerror or exc}"
-    if not words:
-        return "", f"{path} is empty"
-    return words[0].decode("utf-8", "replace"), ""
+    slack = float(t.get("slackBudgetSecs", 120)) + _HTTP_GRACE_SECS
+    triage = (_LOGIN_SHELL_SECS
+              + float(t.get("maxPerTick", 8)) * float(t.get("classifierTimeoutSecs", 60)))
+    return _sign_in_secs(t) + slack + triage + _MARGIN_SECS
 
 
 # MARK: - the CLI
 
 
-def _core(args: list[str], *, stdin: object = None, env: dict | None = None,
-          timeout: float = 30) -> str:
+def _core(args: list[str], *, stdin: object = None, timeout: float = 30) -> str:
     """stdout, or :class:`RuntimeError` saying why not."""
     full = dict(os.environ)
     full.setdefault("DIPLOMAT_CORE", str(core.assets_dir()))
-    # The token reaches a child only when the caller hands it one.
-    full.pop(TOKEN_ENV, None)
-    full.update(env or {})
     try:
         proc = subprocess.run(  # noqa: S603 — argv is a literal list
             [promptcore.core_bin(), *args],
@@ -188,12 +149,11 @@ def _core(args: list[str], *, stdin: object = None, env: dict | None = None,
     return proc.stdout
 
 
-def tick(settings: dict, token: str) -> dict:
+def tick(settings: dict) -> dict:
     """``{"me", "items": [{"message", "decision"}], "error", "notices"}``. Never
     raises: a CLI failure is the tick's ``error``."""
     try:
-        out = _core(["comms-tick"], stdin=settings, env={TOKEN_ENV: token},
-                    timeout=tick_timeout(keyword_count(settings)))
+        out = _core(["comms-tick"], stdin=settings, timeout=tick_timeout())
         result = json.loads(out)
     except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
         return {"me": None, "items": [], "error": str(exc), "notices": []}
@@ -273,14 +233,13 @@ def append_event(kind: str, message_id: str, *, outcome: str | None = None,
 # MARK: - the Settings "Test" button
 
 
-def auth_test(token: str) -> tuple[dict | None, str]:
-    """``({userID, teamID, handle, team}, "")`` or ``(None, why not)``. Over the
-    tick's own transport, so a pass here means the tick can poll. Never raises."""
-    if not token:
-        return None, "no Slack token is configured"
+def auth() -> tuple[dict | None, str]:
+    """``({userID, teamID, handle, team}, "")``, who Claude Code's Slack login is, or
+    ``(None, why not)``. Over the tick's own transport and sign-in, so a pass here means
+    the tick can poll. ``team`` is the workspace's name, ``teamID`` the key a sender's
+    workspace is matched on. Never raises."""
     try:
-        out = _core(["comms-auth"], env={TOKEN_ENV: token},
-                    timeout=_http_call_secs() + _MARGIN_SECS)
+        out = _core(["comms-auth"], timeout=_sign_in_secs(tunables()) + _MARGIN_SECS)
     except (RuntimeError, promptcore.CoreBinaryMissing) as exc:
         return None, str(exc)
     try:
@@ -290,7 +249,7 @@ def auth_test(token: str) -> tuple[dict | None, str]:
     if not isinstance(answer, dict):
         return None, "diplomat-core comms-auth answered something that is not an answer"
     if answer.get("ok") is not True:
-        return None, str(answer.get("error") or "Slack did not say who the token is")
+        return None, str(answer.get("error") or "Slack did not say who the login is")
     return {"userID": str(answer.get("userId") or ""),
             "teamID": str(answer.get("teamId") or ""),
             "handle": str(answer.get("user") or ""),

@@ -940,26 +940,17 @@ class SettingsView(QWidget):
             "The model each ping is triaged with. Cheap is right: the answer is one "
             "word and a number.")
 
-        token_row = QHBoxLayout()
-        token_row.setSpacing(6)
-        self._comms_token = QLineEdit(st.slack_token_file)
-        self._comms_token.setPlaceholderText(comms.DEFAULT_TOKEN_FILE)
-        self._comms_token.setClearButtonEnabled(True)
-        self._comms_token.textChanged.connect(self._on_comms_token_changed)
-        token_row.addWidget(self._comms_token, 1)
         self._comms_test = QPushButton("Test")
-        self._comms_test.setToolTip("Ask Slack who this token is (auth.test)")
-        self._comms_test.clicked.connect(self._test_comms_token)
-        token_row.addWidget(self._comms_test)
-        holder = QWidget()
-        holder.setLayout(token_row)
-        self._comms_token_row = self._track(SettingRow(
-            "Slack token file", holder, stacked=True,
-            detail="A user token (xoxp-) with the scope search:read, alone in a file "
-                   "only you can read. Only this path is saved, never the token. "
+        self._comms_test.setToolTip("Ask Slack who Claude Code's Slack login is")
+        self._comms_test.clicked.connect(self._test_comms_login)
+        self._comms_login_row = self._track(SettingRow(
+            "Slack login", self._comms_test,
+            detail="Comms borrows the login Claude Code already holds for Slack's MCP "
+                   "server, so there is no Slack app or token to set up here. To sign "
+                   "in, run /mcp in Claude Code and authenticate the Slack server. "
                    "DIPLOMAT_SLACK_TOKEN in the environment wins over it.",
         ))
-        body.addWidget(self._comms_token_row)
+        body.addWidget(self._comms_login_row)
         # Its own line rather than the row's summary, which every poll rewrites.
         self._comms_test_status = QLabel("")
         self._comms_test_status.setTextFormat(Qt.TextFormat.PlainText)
@@ -983,24 +974,14 @@ class SettingsView(QWidget):
         if on:
             self.store.run_comms_poll_async()
 
-    def _on_comms_token_changed(self, text: str) -> None:
-        self._save(lambda: setattr(self.store, "slack_token_file", text))
-        # A result about the previous path says nothing about this one.
-        self._comms_test_status.hide()
-        self._refresh_comms_ui()
-
-    def _test_comms_token(self) -> None:
-        token, why = comms.read_token()
-        if not token:
-            self._on_comms_tested(None, why)
-            return
+    def _test_comms_login(self) -> None:
         self._comms_test.setEnabled(False)
         self._set_comms_test_status("Asking Slack…", _GREY)
 
         def ask() -> None:
             # Always answer: the answer is what re-enables the button.
             try:
-                answer = comms.auth_test(token)
+                answer = comms.auth()
             except Exception as exc:  # noqa: BLE001
                 answer = (None, str(exc) or type(exc).__name__)
             self._comms_tested.emit(*answer)
@@ -1027,8 +1008,6 @@ class SettingsView(QWidget):
             self._comms_pill.set_state("off", _GREY)
         elif st.comms_error:
             self._comms_pill.set_state(st.comms_snippet(st.comms_error, 48), _RED)
-        elif not st.comms_configured:
-            self._comms_pill.set_state("no token", _ORANGE)
         else:
             handle = (st.comms_identity or {}).get("handle")
             self._comms_pill.set_state(f"watching @{handle}" if handle else "watching",
@@ -1038,10 +1017,10 @@ class SettingsView(QWidget):
         else:
             self._comms_row.set_summary(
                 "DMs, @-mentions and keywords become pings; asks become queued work.")
-        self._comms_token_row.set_summary(
-            f"Read from ${comms.TOKEN_ENV}, which wins over the file"
-            if os.environ.get(comms.TOKEN_ENV, "").strip()
-            else f"Read from {comms.token_file()}")
+        self._comms_login_row.set_summary(
+            f"${comms.TOKEN_ENV}, which wins over Claude Code's login"
+            if os.environ.get(comms.TOKEN_ENV)
+            else "Claude Code's own, for Slack's MCP server")
 
     # MARK: tool colour & visibility
 
