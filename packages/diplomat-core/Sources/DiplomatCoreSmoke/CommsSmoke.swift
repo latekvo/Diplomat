@@ -1300,6 +1300,18 @@ private func curlSmoke() throws {
     check(running.contains { $0.contains("curl") && $0.contains("-K") }
           && !running.contains { $0.contains(secret) || $0.contains("Zoë") },
           "…while no command line on the machine shows it or the body")
+
+    guard let stalled = Loopback({ _, _ in
+        Thread.sleep(forTimeInterval: 4)
+        return (200, [:], Data())
+    }) else { return check(false, "a loopback socket opens") }
+    let late = SlackAPI(token: secret, base: stalled.url, transport: SlackAPI.curl)
+    late.deadline = Date().addingTimeInterval(0.4)
+    let started = Date()
+    let answer = Result { try late.auth() }
+    let waited = Date().timeIntervalSince(started)
+    check(waited < 2 && (try? answer.get()) == nil,
+          "curl gives up at a sub-second deadline instead of waiting on Slack (\(waited)s)")
 }
 
 private func foldSmoke() throws {

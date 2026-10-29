@@ -653,8 +653,9 @@ public struct SlackAPI {
         var config = "url = \(quoted(request.url.absoluteString))\n"
         for (k, v) in request.headers { config += "header = \(quoted("\(k): \(v)"))\n" }
         config += "data-binary = \(quoted(String(decoding: request.body, as: UTF8.self)))\n"
-        let args = ["-q", "-sS", "--max-time", String(Int(request.timeout)), "-K", "-",
-                    "-D", "-", "-o", "-"]
+        // Fractional: a whole number truncates a sub-second remainder to 0, curl's "no limit".
+        let maxTime = String(format: "%.3f", max(request.timeout, 0.001))
+        let args = ["-q", "-sS", "--max-time", maxTime, "-K", "-", "-D", "-", "-o", "-"]
         switch CommsClassifier.execute(curl, args, input: Data(config.utf8),
                                        timeout: request.timeout + 5) {
         case .failedToStart(let why):
