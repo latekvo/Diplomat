@@ -201,6 +201,7 @@ public enum CoreAssets {
             public let intro: String
             public let message: String
             public let work: String
+            public let injection: String
             public let rules: String
             public let report: String
         }

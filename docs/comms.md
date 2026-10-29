@@ -10,7 +10,7 @@ Every minute Comms asks Slack for messages that reached you since it last looked
 **ping** - a row on the Comms screen (the speech-bubble button in the panel header, which carries
 an unread count), a line in the activity feed under its own **Comms** chip, and a system notification.
 
-Then it **triages** the message - one short, sandboxed model call that answers one of five words -
+Then it **triages** the message - one short, sandboxed model call that answers one of six words -
 and acts on the answer through the same queue every other task goes through:
 
 | Triage | What Diplomat does |
@@ -20,12 +20,13 @@ and acts on the answer through the same queue every other task goes through:
 | **bump** #N | moves whatever is already queued for #N to the front of its band; starts nothing new |
 | **investigate** | queues an **Investigate** agent that reproduces and researches the report and writes a markdown report |
 | **none** | the ping, and nothing else |
+| **injection** | [bans the sender](#bans): the message tries to hijack an agent instead of asking you for something |
 
 So a "can you look at #412 when you get a chance?" lands #412's review ahead of every review you
 asked for - behind only what the monitors owe GitHub - and a "the installer dies on Node 22 for me"
 has an agent reproducing it before you have read it. Work that is already queued or running for
 that PR or issue is moved up or followed instead of started twice. Each of the three acting rows has
-its own switch in Settings.
+its own switch in Settings; a ban has none, as no other place an injection is caught has one.
 
 Nothing Comms queues jumps the machine: the [task cap](automation.md#autonomous-monitors), the
 [spending budget](automation.md#the-spending-budget) and the ban list hold it exactly as they hold a
@@ -54,8 +55,9 @@ Slack text is written by other people, so Comms treats it as data from end to en
   load every MCP server you have configured, Slack's included - that is why the other flags are there.
   It runs the `claude` binary itself, never your shell alias. It costs about $0.001 and three seconds
   a message on Haiku; the model is a setting.
-- The answer is **validated** before anything acts on it: an unknown action, or a review / fix / bump
-  whose number does not appear in the message, becomes `none`. The number must name an **open** PR
+- The answer is **validated** before anything acts on it: an unknown action, a review / fix / bump
+  whose number does not appear in the message, or an injection whose quoted evidence does not appear in
+  it (case, runs of whitespace and the fence's `|` quoting aside), becomes `none`. The number must name an **open** PR
   (for a review) or an **open** issue (for a fix) of the watched repo, or nothing is queued.
 - Your own messages, bots, and people from other organisations (Slack Connect) are never pinged:
   each sender's Slack profile must name your organisation (or, in a workspace without one, share
@@ -72,6 +74,37 @@ Slack text is written by other people, so Comms treats it as data from end to en
 The agent itself still runs with your runner's usual permissions, as every Diplomat agent does. The
 fence and the rules are what stand between a crafted message and that agent; if that is more trust
 than your workspace earns, switch **investigations** off or set the sender allowlist.
+
+## Bans
+
+Comms is covered by the same prompt-injection ban list as the review monitors
+(`~/.diplomat/pr-monitor/banned.json`, kept by the device-allocator daemon). A Slack sender is
+listed as `slack:<their Slack user id>`, so a Slack ban never blocks a GitHub login, nor the other
+way round. A sender is banned when either of the two places their text reaches a model catches an
+injection:
+
+- **Triage** answers `injection`, quoting the injected words. Comms bans the sender (*flagged by
+  Comms triage*); nothing the message asked for is queued.
+- **An Investigate agent** decides the message it was handed is an injection and calls the allocator's
+  `report-prompt-injection` with `source: "slack"` and the sender's id, exactly as a review agent
+  reports a PR's author. The allocator terminates that agent. Only a Claude Code agent has that tool;
+  any other runner is told to write the finding to its report and stop.
+
+Once banned, a sender's messages are still listed as pings, marked as from a banned sender, but are
+never triaged: their text reaches no model, nothing is queued and no notification is shown. That holds
+from the moment of the ban, for their other messages in the same poll too, and also while Comms is
+switched off mid-poll: a ban has no switch. An
+investigation of theirs still waiting in the queue is dropped when its turn comes, and its ping says
+why. Reviews or fixes they asked for earlier stay queued: those agents read GitHub, not the message.
+
+Every ban is announced:
+
+- a **system notification** naming who was banned, where and why (for a review author's ban too);
+- a **Bans** line in the activity feed: who (Slack handle and id), where (the message's permalink),
+  the quoted evidence, and whether triage or an agent caught it;
+- a row in the panel's **Banned** list with the same details and when it happened, plus an un-ban
+  button - un-banning a Slack sender lets Comms triage their messages again;
+- on the Comms screen, a strip of the banned senders, and the ping that caused the ban marked with it.
 
 ## Setting it up
 

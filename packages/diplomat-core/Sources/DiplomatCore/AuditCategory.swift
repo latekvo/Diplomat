@@ -93,7 +93,7 @@ public enum AuditCategory: String, CaseIterable, Sendable {
             return .quota
         case "merge", "merge-failed":
             return .merge
-        case "ban", "unban":
+        case "ban", "unban", "comms-ban":
             return .bans
         case "mesh-up", "mesh-peer-up", "mesh-peer-down", "mesh-takeover",
              "mesh-dispatch", "mesh-dispatch-failed", "mesh-spawn", "mesh-stop":

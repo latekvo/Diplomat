@@ -11,6 +11,8 @@
 //   POST /change   {ownerPid, deviceId?, platform?, version?}     -> allocate new + free old (old kept on failure)
 //   POST /broken   {ownerPid, deviceId?, reason?}                 -> quarantine + repair + allocate other
 //   POST /repaired {key | deviceId}                               -> end quarantine, device back to pool
+//   POST /report-injection {person, pr?, evidence, agentName?, source?, handle?, place?, via?}
+//                                                                 -> ban an author (or a Slack sender)
 //   POST /unban    {login}                                        -> remove an author from the ban list
 //   POST /kill     {key | deviceId}                               -> force-free + shut down (panel X)
 //   POST /remote/sign-in                                          -> re-prompt the remote pool's sign-in
@@ -930,19 +932,49 @@ async function handleUnban(p) {
   });
 }
 
+// A Slack sender is banned under `slack:<user id>`: no GitHub login holds a colon, so the
+// review monitors never match one, and Comms (diplomat-core's CommsBan) asks for exactly it.
+const SLACK_PREFIX = 'slack:';
+const SLACK_USER_ID = /^[UW][A-Z0-9]{2,}$/;
+
+// Who banned whom, where, in the activity feed's words.
+function banLine(entry, via) {
+  const who = entry.source === 'slack'
+    ? `Slack user ${entry.handle ? `@${entry.handle} ` : ''}(${entry.login.slice(SLACK_PREFIX.length)})`
+    : `@${entry.login}`;
+  const where = entry.pr ? ` (${entry.pr})` : '';
+  const quote = entry.evidence ? `: "${entry.evidence.replace(/\s+/g, ' ').slice(0, 160)}"` : '';
+  const by = via === 'comms' ? ' - flagged by Comms triage' : ' - reporting agent terminated';
+  return `Banned ${who} for prompt injection${where}${quote}${by}`;
+}
+
 async function handleReportInjection(p) {
-  const login = String(p.person || '').trim().replace(/^@/, '');
-  if (!login) { const e = new Error('person (the offending PR author login) is required'); e.statusCode = 400; throw e; }
+  const source = p.source === 'slack' ? 'slack' : 'github';
+  let login = String(p.person || '').trim().replace(/^@/, '');
+  if (!login) throw httpError(400, 'person (the offender: a GitHub login, or a Slack user id with source "slack") is required');
+  if (source === 'slack') {
+    const id = login.startsWith(SLACK_PREFIX) ? login.slice(SLACK_PREFIX.length) : login;
+    if (!SLACK_USER_ID.test(id)) {
+      throw httpError(400, `person must be the sender's Slack user id (U… or W…), not "${login}"`);
+    }
+    login = SLACK_PREFIX + id;
+  }
   const at = new Date().toISOString();
-  const ref = parsePrRef(p.pr);
-  const gh = process.env.DA_FAKE_DEVICES != null ? null : await resolveGh(); // tests: skip real gh/browser
+  // Strings whatever a caller sent: the applets decode every field as one.
+  const where = p.pr == null || p.pr === '' ? null : String(p.pr);
+  const evidence = p.evidence == null ? '' : String(p.evidence);
+  const ref = source === 'slack' ? null : parsePrRef(where);
+  const gh = source === 'slack' || process.env.DA_FAKE_DEVICES != null ? null : await resolveGh(); // tests: skip real gh/browser
   const slug = `${at.replace(/[:.]/g, '-')}-${login.replace(/[^A-Za-z0-9_-]/g, '_')}`;
   const dir = path.join(INJECTIONS_DIR, slug);
   try { fs.mkdirSync(dir, { recursive: true }); } catch {}
-  try { fs.writeFileSync(path.join(dir, 'evidence.txt'), String(p.evidence || '')); } catch {}
+  try { fs.writeFileSync(path.join(dir, 'evidence.txt'), evidence); } catch {}
   const cap = await captureEvidence(dir, ref, gh);
+  const handle = source === 'slack' ? String(p.handle || '').trim().replace(/^@/, '') || null : null;
+  const place = source === 'slack' ? String(p.place || '').trim() || null : null;
   const incident = {
-    login, pr: p.pr || null, prRef: ref, evidence: p.evidence || '', reportedBy: p.agentName || null,
+    login, source, handle, place, pr: where, prRef: ref, evidence,
+    reportedBy: p.agentName || null, via: p.via || 'agent',
     at, ghCaptured: cap.ghCaptured, screenshotCaptured: cap.screenshotCaptured, url: cap.url,
   };
   try { fs.writeFileSync(path.join(dir, 'report.json'), JSON.stringify(incident, null, 2)); } catch {}
@@ -950,15 +982,20 @@ async function handleReportInjection(p) {
   return withLock(async () => {
     const data = readBanned();
     const entry = {
-      login, reason: 'prompt injection', pr: p.pr || null, evidence: (p.evidence || '').slice(0, 800),
+      login, reason: 'prompt injection', pr: where, evidence: evidence.slice(0, 800),
       evidenceDir: dir, reportedBy: p.agentName || null, at,
       screenshot: cap.screenshotCaptured, ghCaptured: cap.ghCaptured,
+      ...(source === 'slack' ? { source, handle, place } : {}),
     };
     const existing = data.banned.find((b) => (b.login || '').toLowerCase() === login.toLowerCase());
-    if (existing) Object.assign(existing, entry, { firstAt: existing.firstAt || existing.at });
+    // A repeat report that names no handle or channel keeps the ones already recorded.
+    if (existing) {
+      Object.assign(existing, entry, { firstAt: existing.firstAt || existing.at },
+        source === 'slack' ? { handle: handle || existing.handle || null, place: place || existing.place || null } : {});
+    }
     else data.banned.push({ ...entry, firstAt: at });
     writeBanned(data, `ban on @${login}`);
-    appendAudit('agent', 'ban', `Banned @${login} for prompt injection${p.pr ? ` (${p.pr})` : ''} — reporting agent terminated`);
+    appendAudit(p.via === 'comms' ? 'auto' : 'agent', 'ban', banLine(entry, p.via));
     log('prompt-injection reported; banned', login, 'pr', p.pr || '?', 'gh', cap.ghCaptured, 'shot', cap.screenshotCaptured, 'dir', dir);
     return { banned: true, login, total: data.banned.length, evidenceDir: dir,
              ghCaptured: cap.ghCaptured, screenshotCaptured: cap.screenshotCaptured, url: cap.url };

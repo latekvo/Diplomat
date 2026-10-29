@@ -136,7 +136,7 @@ Linux has everything except the per-row Merge button and clickable agent rows. S
 - [Telemetry](docs/telemetry.md): what each figure means and where it comes from
 - [Mesh](docs/mesh.md): multi-machine coordination, WAN transports, the trust model
 - [Comms](docs/comms.md): the Slack watcher - what it reads, how triage decides, what
-  it may do, the token
+  it may do, the Slack login it borrows
 - [Development](docs/development.md): design, headless self-tests, CI, repo layout
 
 ## Layout

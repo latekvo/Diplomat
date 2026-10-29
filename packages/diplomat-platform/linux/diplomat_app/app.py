@@ -188,6 +188,7 @@ class DiplomatApp:
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_tray_activated)
         self.store.comms_pinged.connect(self._notify_comms)
+        self.store.ban_noticed.connect(self._notify_ban)
         self.tray.show()
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
@@ -199,6 +200,9 @@ class DiplomatApp:
 
     def _notify_comms(self, title: str, body: str) -> None:
         self.tray.showMessage(title, body, QSystemTrayIcon.MessageIcon.Information, 8000)
+
+    def _notify_ban(self, title: str, body: str) -> None:
+        self.tray.showMessage(title, body, QSystemTrayIcon.MessageIcon.Warning, 15000)
 
     def _load_comms(self) -> None:
         self.store.refresh_comms_feed()

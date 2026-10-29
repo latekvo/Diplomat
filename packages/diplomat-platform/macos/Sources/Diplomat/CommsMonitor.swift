@@ -44,15 +44,27 @@ extension Store {
     /// folded off it.
     static let commsInlineReadBytes: UInt64 = 64 << 10
 
+    /// Its `bannedSenders` are read from the ban list on each use, so a ban recorded
+    /// since the last tick holds for the next.
     var commsSettings: CommsSettings {
         CommsSettings(keywords: CommsSettings.keywordList(commsKeywordsRaw),
                       senderAllowlist: CommsSettings.allowlist(commsSenderAllowlistRaw),
+                      bannedSenders: BanList.slackUserIDs(in: BanList.read()),
                       model: commsModel, login: effectiveMe)
     }
 
     var commsToggles: CommsToggles {
         CommsToggles(requests: commsActRequests, bumps: commsActBumps,
                      investigations: commsActInvestigations)
+    }
+
+    /// Where a Slack ban's message was (`#channel`, `DM`): the ban's own `place`, else the
+    /// logged ping with its permalink (an agent's report may name none).
+    func commsPlace(of ban: BannedAuthor) -> String? {
+        guard ban.isSlack else { return nil }
+        if let place = ban.place, !place.isEmpty { return place }
+        guard let link = ban.pr, !link.isEmpty else { return nil }
+        return commsItems.first { $0.message.permalink == link }?.message.place
     }
 
     var commsUnread: Int { commsItems.filter { $0.at > commsSeenAt }.count }
@@ -188,11 +200,14 @@ extension Store {
     /// Not private: the Comms self-test hands it composed tick results.
     ///
     /// A tick that Comms was switched off during still lands its pings (the tick has
-    /// already logged them), but acts on and notifies none.
+    /// already logged them), and acts on and notifies none but a ban, which has no switch.
     ///
     /// A logged ping with no action is acted on first, unnotified: an earlier apply that
     /// never finished (a quit or handover during a lookup) delivered it, and the
     /// watermark is past it.
+    ///
+    /// A sender banned before or during this apply has nothing else acted on, and no
+    /// ping of theirs is notified: the ban's own notification says it.
     func applyComms(_ result: CommsTickResult) async {
         if let me = result.me, me != commsIdentity { commsIdentity = me }
         noteCommsHealth(result.error)
@@ -202,6 +217,7 @@ extension Store {
         let settings = commsSettings
         let reports = CommsLog.reportsDir()
         let fresh = Set(result.items.map(\.message.id))
+        var bannedNow = Set(settings.bannedSenders)
         if let reading = refreshComms() { await reading.value }
         let stranded = commsItems.reversed().compactMap { i -> CommsTickResult.Item? in
             guard i.outcome == nil, !fresh.contains(i.message.id), let d = i.decision else {
@@ -211,15 +227,23 @@ extension Store {
         }
         for item in stranded + result.items {
             let act: CommsActResult
-            if commsEnabled {
-                let effect = CommsPlan.effect(for: item.decision, message: item.message,
-                                              toggles: toggles, settings: settings,
-                                              reportDir: reports)
+            let effect = CommsPlan.effect(for: item.decision, message: item.message,
+                                          toggles: toggles, settings: settings,
+                                          reportDir: reports)
+            let senderBanned = bannedNow.contains(item.message.userID)
+            if Store.isBan(effect) {
                 act = await commsAct(effect, item)
-            } else {
+                if act.banned { bannedNow.insert(item.message.userID) }
+            } else if !commsEnabled {
                 act = CommsActResult(verb: "comms-ping",
                                      outcome: "Comms was switched off, so ping only",
                                      feedLine: Store.pingLine(item.message))
+            } else if senderBanned, effect != .none {
+                act = CommsActResult(verb: "comms-ping", outcome: Store.commsSenderBannedOutcome,
+                                     feedLine: Store.pingLine(item.message)
+                                        + " (\(Store.commsSenderBannedOutcome))")
+            } else {
+                act = await commsAct(effect, item)
             }
             var lines = [CommsEvent(kind: .action, id: item.message.id, outcome: act.outcome,
                                     queueKey: act.queueKey, label: act.label)]
@@ -230,9 +254,11 @@ extension Store {
             // Folded before the next item's lookup suspends: a dispatch of this ask in
             // that gap finds its owner here (`commsSettled`).
             recordComms(lines)
-            AuditLog.log("auto", act.verb, act.feedLine)
-            if commsNotify && commsEnabled && fresh.contains(item.message.id) {
-                CommsNotifier.post(item.message)
+            if let line = act.feedLine { AuditLog.log("auto", act.verb, line) }
+            let quiet = senderBanned || Store.isBan(effect)
+                || item.decision.reason.hasPrefix(CommsWatch.bannedPrefix)
+            if commsNotify && commsEnabled && fresh.contains(item.message.id) && !quiet {
+                Notifier.post(item.message)
             }
         }
         if !result.items.isEmpty || !stranded.isEmpty { refreshAudit() }
@@ -244,13 +270,37 @@ extension Store {
         var outcome: String
         var queueKey: String?
         var label: String?
-        var feedLine: String
+        /// Nil when the activity line is already written: the daemon logs the bans it records.
+        var feedLine: String?
         /// The agent already doing the asked-for work; the ping records its start.
         var running: AgentState.RunRecord?
+        /// The sender is on the ban list now, by this ping's ban or an earlier one.
+        var banned = false
     }
 
     private static func pingLine(_ m: CommsMessage) -> String {
         "\(m.place) from \(m.sender): \(Store.snippet(m.text))"
+    }
+
+    nonisolated static let commsSenderBannedOutcome =
+        "the sender is banned for prompt injection, so nothing was done"
+
+    /// Starts the outcome of a ping whose sender it got banned.
+    nonisolated static let commsBannedOutcomePrefix = "banned "
+
+    /// Ends the outcome of an injection whose sender was on the ban list already.
+    nonisolated static let commsAlreadyBannedSuffix = " is already banned for prompt injection"
+
+    /// The `reportedBy` of a ban Comms records.
+    static let commsReporter = "Comms triage"
+
+    /// The feed verb of every line this app writes about a Comms ban; the daemon writes
+    /// `ban` for the ones it records.
+    static let commsBanVerb = "comms-ban"
+
+    private static func isBan(_ effect: CommsEffect) -> Bool {
+        if case .ban = effect { return true }
+        return false
     }
 
     private func commsAct(_ effect: CommsEffect, _ item: CommsTickResult.Item) async -> CommsActResult {
@@ -297,9 +347,38 @@ extension Store {
             return CommsActResult(verb: "comms-bump", outcome: outcome,
                                   feedLine: "Bump #\(n) asked by \(who) — \(outcome)")
         case .investigate(let cfg):
-            return queue(RequestedWork(number: cfg.number, url: cfg.permalink, author: "",
-                                       config: .investigate(cfg)),
+            // The sender is the ask's ban dimension: the dispatch gate drops it if they
+            // are banned while it waits.
+            return queue(RequestedWork(number: cfg.number, url: cfg.permalink,
+                                       author: cfg.banLogin, config: .investigate(cfg)),
                          verb: "comms-investigate", who: who, front: false)
+        case .ban(let b):
+            let reporter = Store.commsReporter
+            // An allocator daemon older than Slack bans records the bare user id as a GitHub
+            // login, which `ban` lifts again: that stray is never announced.
+            let stray = b.userID.lowercased()
+            bansUnannounced.insert(stray)
+            let write = await Task.detached(priority: .userInitiated) {
+                BanList.ban(b, reportedBy: reporter)
+            }.value
+            refreshBanList()
+            bansUnannounced.remove(stray)
+            let name = b.handle.isEmpty ? b.userID : "@\(b.handle)"
+            switch write {
+            case .daemon, .file:
+                let outcome = Store.commsBannedOutcomePrefix + "\(name) for prompt injection: "
+                    + "\"\(Store.snippet(b.evidence, max: 120))\""
+                return CommsActResult(verb: Store.commsBanVerb, outcome: outcome,
+                                      feedLine: write == .daemon ? nil : BanList.slackBanLine(b),
+                                      banned: true)
+            case .already:
+                return CommsActResult(verb: Store.commsBanVerb,
+                                      outcome: name + Store.commsAlreadyBannedSuffix,
+                                      banned: true)
+            case .failed(let why):
+                return refused(Store.commsBanVerb, who, "could not ban \(name) for prompt injection "
+                               + "(\(Store.snippet(why, max: 120)))")
+            }
         }
     }
 
@@ -382,7 +461,7 @@ extension Store {
         case .review, .fixIssue: return "review and fix asks are switched off, so ping only"
         case .bump:              return "bumps are switched off, so ping only"
         case .investigate:       return "investigations are switched off, so ping only"
-        case .none:              return nil
+        case .none, .injection:  return nil
         }
     }
 
@@ -480,8 +559,11 @@ extension Store {
 
     /// Records `started` on the pings owning a dispatched queued task; a no-op for one no
     /// ping owns.
+    ///
+    /// A dispatch the ban gate refused leaves the queue for good (`settleRequested`): its
+    /// pings say so, and who is banned.
     func commsSettled(_ entry: QueuedAgentTask, _ outcome: DispatchOutcome) {
-        guard outcome.wasHandled else { return }
+        guard outcome.wasHandled || outcome == .banned else { return }
         // Owners are found in the fold, so a read in flight is waited for.
         if let reading = commsLogRead {
             Task { [weak self] in
@@ -492,6 +574,14 @@ extension Store {
         }
         let owners = commsItems.filter { $0.queueKey == entry.id && Store.commsUnstarted($0) }
         guard !owners.isEmpty else { return }
+        if outcome == .banned {
+            let who = BanList.refusedWho(entry.job.authorLogin ?? "")
+            let why = Store.commsLeftQueueOutcome + " (\(who) \(Store.commsBanRefusal))"
+            recordComms(owners.filter { !Store.commsLeftQueue($0) }.map {
+                CommsEvent(kind: .action, id: $0.message.id, outcome: why)
+            })
+            return
+        }
         let label = AgentDispatchGate.label(source: .auto, core: entry.job.label,
                                             attemptNumber: entry.attemptNumber,
                                             requested: entry.job.requested)
@@ -591,10 +681,17 @@ extension Store {
         return kept
     }
 
-    static let commsLeftQueueOutcome = "its queued task left the queue before it ran"
+    nonisolated static let commsLeftQueueOutcome = "its queued task left the queue before it ran"
 
-    static func commsLeftQueue(_ item: CommsItem) -> Bool {
+    nonisolated static func commsLeftQueue(_ item: CommsItem) -> Bool {
         item.outcome?.hasPrefix(commsLeftQueueOutcome) == true
+    }
+
+    nonisolated static let commsBanRefusal = "is banned for prompt injection"
+
+    /// Its queued task left the queue because the dispatch gate found a ban (`commsSettled`).
+    nonisolated static func commsStoppedByBan(_ item: CommsItem) -> Bool {
+        commsLeftQueue(item) && item.outcome?.hasSuffix(commsBanRefusal + ")") == true
     }
 
     /// A ping may already have taken this failed run's row as its start (`noteCommsRuns`,
@@ -683,15 +780,22 @@ enum CommsLogReader {
     }
 }
 
+/// System notifications: a Comms ping, and every new prompt-injection ban.
+///
 /// Only from a real .app and never headless: `UNUserNotificationCenter` aborts a process
 /// with no bundle, which is what `swift run` is.
-enum CommsNotifier {
+enum Notifier {
     static var available: Bool {
         !Headless.active && Bundle.main.bundleIdentifier != nil
             && Bundle.main.bundleURL.pathExtension == "app"
     }
 
-    /// Not at launch: only once Comms is on with notifications wanted.
+    /// The self-tests' stand-in for the notification center: (identifier, title, body).
+    /// Consulted only headless.
+    static var sink: ((String, String, String) -> Void)?
+
+    /// Not at launch: only once Comms is on with notifications wanted, or a ban needs
+    /// telling (`postBan`).
     static func authorize() {
         guard available else { return }
         let center = UNUserNotificationCenter.current()
@@ -700,13 +804,43 @@ enum CommsNotifier {
     }
 
     static func post(_ m: CommsMessage) {
-        guard available else { return }
-        let content = UNMutableNotificationContent()
-        content.title = "Slack · \(m.place) from \(m.sender)"
-        content.body = Store.snippet(m.text, max: 160)
+        add(id: "comms-\(m.id)", title: "Slack · \(m.place) from \(m.sender)",
+            body: Store.snippet(m.text, max: 160))
+    }
+
+    /// Asks for authorization first, which prompts only the first time: a ban is worth
+    /// a notification whether or not Comms ever asked.
+    static func postBan(_ ban: BannedAuthor) {
+        let who = ban.isSlack ? "Slack user \(ban.displayName)" : ban.displayName
+        var parts: [String] = []
+        if let pr = ban.pr, !pr.isEmpty { parts.append(ban.isSlack ? "in a Slack message" : "on \(pr)") }
+        let evidence = (ban.evidence ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !evidence.isEmpty { parts.append("\"\(Store.snippet(evidence, max: 140))\"") }
+        if let by = ban.reportedBy, !by.isEmpty { parts.append("reported by \(by)") }
+        let id = "ban-\(ban.login)-\(ban.at ?? "")"
+        let title = "Banned \(who) for prompt injection"
+        let body = parts.joined(separator: " · ")
+        guard available else { return add(id: id, title: title, body: body) }
         let center = UNUserNotificationCenter.current()
         center.delegate = Presenter.shared
-        center.add(UNNotificationRequest(identifier: "comms-\(m.id)", content: content, trigger: nil))
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            add(id: id, title: title, body: body)
+        }
+    }
+
+    private static func add(id: String, title: String, body: String) {
+        if Headless.active, let sink {
+            sink(id, title, body)
+            return
+        }
+        guard available else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        let center = UNUserNotificationCenter.current()
+        center.delegate = Presenter.shared
+        center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
     }
 
     /// Shows notifications while the popover is open: an accessory app is active exactly
@@ -790,6 +924,9 @@ extension Dump {
         case .fixIssue(let n): return "queue a fix of issue #\(n), if open, at the front of its band"
         case .investigate(let cfg):
             return "queue \"\(cfg.label)\" (investigate:\(cfg.number)), report \(cfg.reportPath)"
+        case .ban(let b):
+            return "ban \(b.handle) (\(b.userID)) for prompt injection: "
+                + "\"\(Store.snippet(b.evidence))\""
         }
     }
 }

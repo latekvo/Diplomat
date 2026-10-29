@@ -80,6 +80,19 @@ def test_comms_effect_is_the_plan_python_acts_on():
     assert _effect("merge", 5) == {"kind": "none"}
 
 
+def test_an_injection_is_a_ban_of_its_sender_whatever_the_toggles_say():
+    """The ``ban`` effect ``Store.apply_comms_item`` reads."""
+    decision = {"action": "injection", "number": 0, "summary": "s", "reason": "hijack",
+                "evidence": "the login screen crashes"}
+    off = {"requests": False, "bumps": False, "investigations": False}
+    out = _core("comms-effect", stdin={"decision": decision, "message": MESSAGE, "toggles": off})
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout) == {"kind": "ban", "ban": {
+        "userID": "UALICE", "handle": "alice", "place": "#general",
+        "permalink": MESSAGE["permalink"], "evidence": "the login screen crashes",
+        "reason": "hijack"}}
+
+
 def test_an_investigation_round_trips_into_the_queue_and_its_prompt():
     effect = _effect("investigate")
     config = effect["config"]
@@ -408,7 +421,8 @@ def test_comms_tick_runs_end_to_end_through_the_binary(tmp_path, slack, monkeypa
         "UALICE", "alice", "Ours", True,
         f"https://ours.slack.test/archives/D1/p{secs + 5}000100")
     assert result["items"][0]["decision"] == {
-        "action": "review", "number": 12, "summary": "Review PR 12", "reason": "a direct ask"}
+        "action": "review", "number": 12, "summary": "Review PR 12", "reason": "a direct ask",
+        "evidence": ""}
     searches = _tools("slack_search_public_and_private")
     assert [(s.get("filters"), s.get("keywords"), s["after"]) for s in searches] == [
         ("is:dm", None, str(secs)), (None, ["<@UME>"], str(secs)),
