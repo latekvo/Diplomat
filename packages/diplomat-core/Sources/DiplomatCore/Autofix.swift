@@ -138,8 +138,9 @@ public enum AgentDispatchGate {
         /// every run that is not over, tracked or not) — never double-spawn, whoever
         /// asks.
         case inFlight
-        /// The author is on the prompt-injection ban list — never agent-review
-        /// them, whoever asks. (Un-ban first if that is really wanted.)
+        /// The author (a Slack sender, for an investigation) is on the prompt-injection
+        /// ban list — never run an agent on their work, whoever asks. (Un-ban first if
+        /// that is really wanted.)
         case banned
         /// The auto-review allowlist is set and this author is outside it — the
         /// operator narrowed the review monitor to a set of logins, whoever asks.

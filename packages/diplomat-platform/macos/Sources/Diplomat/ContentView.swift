@@ -520,20 +520,21 @@ struct ContentView: View {
 
     // MARK: prompt-injection ban list
 
-    /// Collapsible list of authors banned for prompt injection — they get no automated
-    /// reviews. Each row links to the captured evidence and can be un-banned.
+    /// Collapsible list of everyone banned for prompt injection — GitHub authors get no
+    /// automated reviews, Slack senders no Comms triage. Each row says who, when, where
+    /// and why, links to the captured evidence and can be un-banned.
     @ViewBuilder
     private func bannedList(_ bans: [BannedAuthor]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             SectionHeader(title: "BANNED", count: bans.count, expanded: $bannedExpanded,
                           countTint: .red, icon: "hand.raised.fill", iconTint: .red,
-                          caption: "prompt injection · no auto-reviews")
+                          caption: "prompt injection · no auto-reviews, no Slack triage")
             if bannedExpanded {
                 ForEach(bans) { ban in
                     if pendingUnban == ban.login {
                         unbanConfirmRow(ban).transition(.opacity)
                     } else {
-                        BanRow(ban: ban, onUnban: {
+                        BanRow(ban: ban, place: store.commsPlace(of: ban), onUnban: {
                             withAnimation(.easeInOut(duration: 0.15)) { pendingUnban = ban.login }
                         })
                     }
@@ -546,11 +547,14 @@ struct ContentView: View {
     /// Inline "Unban @X?" confirmation shown in place of the ban row when its ✕ is
     /// clicked — kept inside the popover so it can't open behind the menu-bar window.
     private func unbanConfirmRow(_ ban: BannedAuthor) -> some View {
-        HStack(spacing: 8) {
+        let title = ban.isSlack ? "Unban Slack user \(ban.displayName)?" : "Unban \(ban.displayName)?"
+        let effect = ban.isSlack ? "Comms will triage their Slack messages again."
+            : "Their PRs will receive automated reviews again."
+        return HStack(spacing: 8) {
             IconBadge(symbol: "questionmark.circle.fill", tint: Color.orange.opacity(0.85))
             VStack(alignment: .leading, spacing: 1) {
-                Text("Unban @\(ban.login)?").font(.caption.bold())
-                Text("Their PRs will receive automated reviews again.")
+                Text(title).font(.caption.bold())
+                Text(effect)
                     .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
@@ -1664,26 +1668,89 @@ struct AuditRow: View {
 
 // MARK: - Banned-author row
 
+/// Who (GitHub author or Slack sender), when, where, why and who reported it. The
+/// evidence is clipped to two lines until clicked.
 private struct BanRow: View {
     let ban: BannedAuthor
+    /// The Slack message's `#channel` or `DM`, when the ban or Comms' log recorded it.
+    let place: String?
     let onUnban: () -> Void
+
+    @State private var expanded = false
 
     private var evidenceLine: String {
         let e = (ban.evidence ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return e.isEmpty ? (ban.reason ?? "prompt injection") : e
+        return e.isEmpty ? (ban.reason ?? "prompt injection") : "\"\(e)\""
+    }
+
+    /// The PR ref for a GitHub ban; the place and "Slack message" for a Slack one.
+    private var whereText: String? {
+        if ban.isSlack {
+            guard let pr = ban.pr, !pr.isEmpty else { return place }
+            return [place, "Slack message"].compactMap { $0 }.joined(separator: " · ")
+        }
+        guard let pr = ban.pr, !pr.isEmpty else { return nil }
+        return pr
+    }
+
+    private var footer: String {
+        var parts: [String] = []
+        if let by = ban.reportedBy, !by.isEmpty { parts.append("reported by \(by)") }
+        if let first = ban.firstBannedIfRepeat {
+            parts.append("first banned \(BannedAuthor.absolute(first))")
+        }
+        return parts.joined(separator: " · ")
     }
 
     var body: some View {
-        HStack(spacing: 8) {
+        let when = ban.ago()
+        let absolute = ban.atDate.map(BannedAuthor.absolute) ?? "an unknown time"
+        let whereText = whereText
+        let link = ban.whereURL
+        let footer = footer
+        let id = ban.slackUserID
+        return HStack(alignment: .top, spacing: 8) {
             IconBadge(symbol: "hand.raised.slash.fill", tint: Color.red.opacity(0.7))
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 4) {
-                    Text("@\(ban.login)").font(.caption).lineLimit(1)
-                    if let pr = ban.pr, !pr.isEmpty {
-                        Text(pr).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    StatusPill(text: ban.isSlack ? "SLACK" : "GITHUB",
+                               tint: ban.isSlack ? .purple : .secondary)
+                    Text(ban.displayName).font(.caption.bold()).lineLimit(1)
+                    if let id {
+                        Text(id).font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    if !when.isEmpty {
+                        Text("banned \(when)").font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.red)
+                            .help("Banned \(absolute)")
                     }
                 }
-                Text(evidenceLine).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(2)
+                if let whereText {
+                    if let link {
+                        Button { NSWorkspace.shared.open(link) } label: {
+                            HStack(spacing: 2) {
+                                Text(whereText)
+                                Image(systemName: "arrow.up.forward.square")
+                            }
+                            .font(.system(size: 9))
+                        }
+                        .buttonStyle(.link)
+                        .help("Open \(link.absoluteString)")
+                    } else {
+                        Text(whereText).font(.system(size: 9)).foregroundStyle(.secondary)
+                    }
+                }
+                Text(evidenceLine).font(.system(size: 9))
+                    .lineLimit(expanded ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .contentShape(Rectangle())
+                    .onTapGesture { expanded.toggle() }
+                    .help(expanded ? "Click to collapse" : "Click to read it all")
+                if !footer.isEmpty {
+                    Text(footer).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                }
             }
             Spacer(minLength: 4)
             if let dir = ban.evidenceDir, !dir.isEmpty {
@@ -1691,10 +1758,11 @@ private struct BanRow: View {
                     Image(systemName: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.borderless).foregroundStyle(.secondary)
-                .help("Open the captured evidence (gh content\(ban.screenshot == true ? " + screenshot" : ""))")
+                .help(ban.isSlack ? "Open the captured evidence (the quoted words)"
+                      : "Open the captured evidence (gh content\(ban.screenshot == true ? " + screenshot" : ""))")
             }
             Button(action: onUnban) { Image(systemName: "xmark.circle.fill") }
-                .buttonStyle(.borderless).foregroundStyle(.secondary).help("Un-ban @\(ban.login)")
+                .buttonStyle(.borderless).foregroundStyle(.secondary).help("Un-ban \(ban.displayName)")
         }
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))

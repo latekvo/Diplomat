@@ -52,6 +52,15 @@ def left_queue(item: dict) -> bool:
     return str(item.get("outcome") or "").startswith(LEFT_QUEUE)
 
 
+#: Starts the reason of the ``none`` a banned sender's message gets in place of a triage
+#: (``CommsWatch.bannedPrefix``).
+BANNED_PREFIX = "sender banned: "
+
+
+def from_banned_sender(decision: dict | None) -> bool:
+    return str((decision or {}).get("reason") or "").startswith(BANNED_PREFIX)
+
+
 def unstarted(item: dict) -> bool:
     """Twin of ``Store.commsUnstarted``: a ping whose last run never started is waiting
     for one again."""
@@ -214,8 +223,9 @@ def feed(limit: int = 200) -> list[dict]:
 
 def effect(decision: dict, message: dict, toggles: dict, settings: dict) -> dict:
     """What a triaged ping makes the front-end do (``CommsPlan.effect``): ``{"kind":
-    "none"}``, ``{"kind": "review" | "fix_issue" | "bump", "number": N}``, or
-    ``{"kind": "investigate", "config": InvestigateConfig}``."""
+    "none"}``, ``{"kind": "review" | "fix_issue" | "bump", "number": N}``,
+    ``{"kind": "investigate", "config": InvestigateConfig}``, or ``{"kind": "ban",
+    "ban": CommsBan}``."""
     out = json.loads(_core(["comms-effect"], stdin={
         "decision": decision, "message": message, "toggles": toggles,
         "settings": settings}))

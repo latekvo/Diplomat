@@ -69,44 +69,55 @@ public enum CommsAction: String, Codable, CaseIterable, Sendable {
     case none, bump, review
     case fixIssue = "fix_issue"
     case investigate
+    /// A hijack attempt: the sender is banned (`CommsBan`).
+    case injection
 
     public var needsNumber: Bool {
         switch self {
-        case .bump, .review, .fixIssue: return true
-        case .none, .investigate:       return false
+        case .bump, .review, .fixIssue:          return true
+        case .none, .investigate, .injection:    return false
         }
     }
 }
 
 /// The triage's answer, valid by construction: every initializer (memberwise, decoding,
 /// `parse`) routes through one check, so a PR action without a positive number reads
-/// `none`, with the reason recorded. Whether the message holds that number is
-/// `checked(against:)`; whether it is an OPEN PR or issue is the front-end's check
-/// against GitHub before it acts.
+/// `none`, with the reason recorded, and so does an `injection` without evidence. Whether
+/// the message holds that number or that evidence is `checked(against:)`; whether it is
+/// an OPEN PR or issue is the front-end's check against GitHub before it acts.
 public struct CommsDecision: Codable, Equatable, Sendable {
     public let action: CommsAction
     /// 0 unless `action.needsNumber`.
     public let number: Int
     public let summary: String
     public let reason: String
+    /// The injected words, quoted from the message; "" unless `action` is `injection`.
+    public let evidence: String
 
     /// Classifier prose is clipped to this; it is shown on one row.
     static let maxText = 240
 
-    public init(action: CommsAction, number: Int, summary: String, reason: String) {
-        let summary = Self.clip(summary)
+    public init(action: CommsAction, number: Int, summary: String, reason: String,
+                evidence: String = "") {
         let reason = Self.clip(reason)
+        let evidence = action == .injection ? Self.unquoted(evidence) : ""
+        self.summary = Self.clip(summary)
         if action.needsNumber && number <= 0 {
             self.action = .none
             self.number = 0
-            self.summary = summary
             self.reason = "answered \(action.rawValue) without a positive PR or issue number"
                 + " (\(number)); \(reason)"
+            self.evidence = ""
+        } else if action == .injection && evidence.isEmpty {
+            self.action = .none
+            self.number = 0
+            self.reason = "answered injection without quoting any; \(reason)"
+            self.evidence = ""
         } else {
             self.action = action
             self.number = action.needsNumber ? number : 0
-            self.summary = summary
             self.reason = reason
+            self.evidence = evidence
         }
     }
 
@@ -115,9 +126,19 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     }
 
     /// This decision, or `none` when it names a number `message` does not contain: as
-    /// `#N`, `/pull/N`, `/issues/N` or `N`, with no letter or digit either side.
-    /// `CommsWatch.tick` applies it to every answer, so a guessed number never acts.
+    /// `#N`, `/pull/N`, `/issues/N` or `N`, with no letter or digit either side; or when
+    /// it is an `injection` whose evidence the message does not contain, ignoring case and
+    /// runs of whitespace, as sent or as the classifier read it (`CommsText.defang`).
+    /// `CommsWatch.tick` applies it to every answer, so a guessed number never acts and
+    /// nobody is banned for words they did not write.
     public func checked(against message: CommsMessage) -> CommsDecision {
+        let needle = Self.squashed(evidence)
+        if action == .injection, ![message.text, CommsText.defang(message.text)].contains(where: {
+            Self.squashed($0).localizedCaseInsensitiveContains(needle) }) {
+            return CommsDecision(action: .none, number: 0, summary: summary,
+                                 reason: "answered injection quoting words the message does "
+                                     + "not contain; \(reason)")
+        }
         guard action.needsNumber, !CommsMatch.containsWord(message.text, String(number)) else {
             return self
         }
@@ -126,7 +147,25 @@ public struct CommsDecision: Codable, Equatable, Sendable {
                                  + "message does not contain; \(reason)")
     }
 
-    private enum CodingKeys: String, CodingKey { case action, number, summary, reason }
+    /// Evidence copied from the classifier's stdin carries the fence's `|` on every line;
+    /// cut to `maxText` without an ellipsis, so a long quote is still the message's words.
+    private static func unquoted(_ s: String) -> String {
+        let lines = s.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map {
+            line -> Substring in
+            let t = line.drop { $0 == " " || $0 == "\t" }
+            guard t.hasPrefix(CommsText.quoteMarker) else { return line }
+            let rest = t.dropFirst(CommsText.quoteMarker.count)
+            return rest.hasPrefix(" ") ? rest.dropFirst() : rest
+        }
+        let t = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return String(t.prefix(maxText)).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func squashed(_ s: String) -> String {
+        s.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    private enum CodingKeys: String, CodingKey { case action, number, summary, reason, evidence }
 
     /// Field by field, so one bad field costs the decision its action instead of failing
     /// the object: an unknown action, or a number that is missing, fractional, a string or
@@ -142,7 +181,8 @@ public struct CommsDecision: Codable, Equatable, Sendable {
             return
         }
         self.init(action: action, number: (try? c.decode(Int.self, forKey: .number)) ?? 0,
-                  summary: summary, reason: reason)
+                  summary: summary, reason: reason,
+                  evidence: (try? c.decode(String.self, forKey: .evidence)) ?? "")
     }
 
     /// `claude -p --output-format json` prints a JSON array of events whose
@@ -208,6 +248,8 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     public var keywords: [String]
     /// Slack user ids or handles; empty admits any member of the operator's workspace.
     public var senderAllowlist: [String]
+    /// Slack user ids on the ban list (`CommsBan`): their messages are never triaged.
+    public var bannedSenders: [String]
     public var model: String
     public var maxPerTick: Int
     public var owner: String
@@ -216,12 +258,14 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     public var login: String
 
     public init(keywords: [String] = [], senderAllowlist: [String] = [],
+                bannedSenders: [String] = [],
                 model: String? = nil, maxPerTick: Int? = nil,
                 owner: String? = nil, repo: String? = nil, login: String = "") {
         let assets = try? CoreAssets.comms()
         let coordinates = CoreAssets.repoCoordinates()
         self.keywords = keywords
         self.senderAllowlist = senderAllowlist
+        self.bannedSenders = bannedSenders
         let m = (model ?? "").trimmingCharacters(in: .whitespaces)
         self.model = m.isEmpty ? (assets?.model ?? "haiku") : m
         self.maxPerTick = max(1, maxPerTick ?? assets?.maxPerTick ?? 8)
@@ -251,7 +295,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case keywords, senderAllowlist, model, maxPerTick, owner, repo, login
+        case keywords, senderAllowlist, bannedSenders, model, maxPerTick, owner, repo, login
         case keywordsRaw, senderAllowlistRaw
     }
 
@@ -264,6 +308,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         let allow = try c.decodeIfPresent([String].self, forKey: .senderAllowlist)
             ?? Self.allowlist(try c.decodeIfPresent(String.self, forKey: .senderAllowlistRaw) ?? "")
         self.init(keywords: keywords, senderAllowlist: allow,
+                  bannedSenders: try c.decodeIfPresent([String].self, forKey: .bannedSenders) ?? [],
                   model: try c.decodeIfPresent(String.self, forKey: .model),
                   maxPerTick: try c.decodeIfPresent(Int.self, forKey: .maxPerTick),
                   owner: try c.decodeIfPresent(String.self, forKey: .owner),
@@ -275,6 +320,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(keywords, forKey: .keywords)
         try c.encode(senderAllowlist, forKey: .senderAllowlist)
+        try c.encode(bannedSenders, forKey: .bannedSenders)
         try c.encode(model, forKey: .model)
         try c.encode(maxPerTick, forKey: .maxPerTick)
         try c.encode(owner, forKey: .owner)
@@ -311,7 +357,7 @@ public struct CommsToggles: Codable, Equatable, Sendable {
 /// list, the task cap and the budget gate all apply.
 ///
 /// JSON: `{"kind": "none"}`, `{"kind": "review" | "fix_issue" | "bump", "number": N}`,
-/// `{"kind": "investigate", "config": InvestigateConfig}`.
+/// `{"kind": "investigate", "config": InvestigateConfig}`, `{"kind": "ban", "ban": CommsBan}`.
 public enum CommsEffect: Equatable, Sendable {
     case none
     /// Move whatever is already queued for #N to the front of its band; start nothing.
@@ -320,10 +366,12 @@ public enum CommsEffect: Equatable, Sendable {
     case review(Int)
     case fixIssue(Int)
     case investigate(InvestigateConfig)
+    /// Put the sender on the prompt-injection ban list.
+    case ban(CommsBan)
 }
 
 extension CommsEffect: Codable {
-    private enum CodingKeys: String, CodingKey { case kind, number, config }
+    private enum CodingKeys: String, CodingKey { case kind, number, config, ban }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -334,6 +382,7 @@ extension CommsEffect: Codable {
         case "review":      self = .review(try c.decode(Int.self, forKey: .number))
         case "fix_issue":   self = .fixIssue(try c.decode(Int.self, forKey: .number))
         case "investigate": self = .investigate(try c.decode(InvestigateConfig.self, forKey: .config))
+        case "ban":         self = .ban(try c.decode(CommsBan.self, forKey: .ban))
         default:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: c,
                                                    debugDescription: "unknown effect \(kind)")
@@ -357,11 +406,15 @@ extension CommsEffect: Codable {
         case .investigate(let cfg):
             try c.encode("investigate", forKey: .kind)
             try c.encode(cfg, forKey: .config)
+        case .ban(let ban):
+            try c.encode("ban", forKey: .kind)
+            try c.encode(ban, forKey: .ban)
         }
     }
 }
 
-/// The one mapping from a triage answer to an effect.
+/// The one mapping from a triage answer to an effect. A ban has no switch: no review
+/// injection site has one either.
 public enum CommsPlan {
     public static func effect(for decision: CommsDecision, message: CommsMessage,
                               toggles: CommsToggles, settings: CommsSettings = CommsSettings(),
@@ -375,7 +428,49 @@ public enum CommsPlan {
             guard toggles.investigations else { return .none }
             return .investigate(InvestigateConfig(message: message, decision: decision,
                                                   settings: settings, reportDir: reportDir))
+        case .injection:   return .ban(CommsBan(message: message, decision: decision))
         }
+    }
+}
+
+/// A Slack sender's prompt-injection ban: one entry of the review ban list
+/// (`~/.diplomat/pr-monitor/banned.json`, written by the device-allocator daemon), keyed by
+/// `login(userID)`. The prefix keeps the two namespaces apart, since no GitHub login holds
+/// a colon, so every existing ban check reads a Slack entry as a login it never sees. The
+/// daemon and the Linux front-end spell the prefix themselves.
+public struct CommsBan: Codable, Equatable, Sendable {
+    public static let loginPrefix = "slack:"
+
+    public static func login(_ userID: String) -> String { loginPrefix + userID }
+
+    /// The Slack user id a ban-list login names, or nil for a GitHub one.
+    public static func userID(fromLogin login: String) -> String? {
+        login.hasPrefix(loginPrefix) ? String(login.dropFirst(loginPrefix.count)) : nil
+    }
+
+    public var userID: String
+    public var handle: String
+    /// `#channel` or `DM`.
+    public var place: String
+    public var permalink: String
+    public var evidence: String
+    /// The classifier's one-sentence reason.
+    public var reason: String
+
+    public init(userID: String, handle: String, place: String, permalink: String,
+                evidence: String, reason: String) {
+        self.userID = userID
+        self.handle = handle
+        self.place = place
+        self.permalink = permalink
+        self.evidence = evidence
+        self.reason = reason
+    }
+
+    public init(message: CommsMessage, decision: CommsDecision) {
+        self.init(userID: message.userID, handle: message.sender, place: message.place,
+                  permalink: message.permalink, evidence: decision.evidence,
+                  reason: decision.reason)
     }
 }
 
@@ -429,6 +524,9 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
     public var number: Int
     public var messageID: String
     public var sender: String
+    /// The sender's Slack user id: the ask's ban dimension, as `CommsBan.login(senderID)`.
+    /// "" for an ask queued before it was recorded.
+    public var senderID: String
     public var channel: String
     public var permalink: String
     public var text: String
@@ -439,12 +537,13 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
 
     public static let kind = "investigate"
 
-    public init(number: Int, messageID: String, sender: String, channel: String,
-                permalink: String, text: String, summary: String, reportPath: String,
-                owner: String, repo: String) {
+    public init(number: Int, messageID: String, sender: String, senderID: String = "",
+                channel: String, permalink: String, text: String, summary: String,
+                reportPath: String, owner: String, repo: String) {
         self.number = number
         self.messageID = messageID
         self.sender = sender
+        self.senderID = senderID
         self.channel = channel
         self.permalink = permalink
         self.text = text
@@ -458,7 +557,7 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
                 reportDir: URL) {
         let number = CommsTS.number(message.ts) ?? 0
         self.init(number: number, messageID: message.id, sender: message.sender,
-                  channel: message.place, permalink: message.permalink, text: message.text,
+                  senderID: message.userID, channel: message.place, permalink: message.permalink, text: message.text,
                   summary: decision.summary,
                   reportPath: reportDir.appendingPathComponent("\(number).md").path,
                   owner: settings.owner, repo: settings.repo)
@@ -466,7 +565,7 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
 
     /// `kind` and `label` are written for readers and never decoded: both follow from the rest.
     private enum CodingKeys: String, CodingKey {
-        case kind, number, messageID, sender, channel, permalink, text, summary,
+        case kind, number, messageID, sender, senderID, channel, permalink, text, summary,
              reportPath, owner, repo, label
     }
 
@@ -475,7 +574,8 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
         let coordinates = CoreAssets.repoCoordinates()
         func s(_ k: CodingKeys) throws -> String { try c.decodeIfPresent(String.self, forKey: k) ?? "" }
         self.init(number: try c.decode(Int.self, forKey: .number),
-                  messageID: try s(.messageID), sender: try s(.sender), channel: try s(.channel),
+                  messageID: try s(.messageID), sender: try s(.sender),
+                  senderID: try s(.senderID), channel: try s(.channel),
                   permalink: try s(.permalink), text: try s(.text), summary: try s(.summary),
                   reportPath: try s(.reportPath),
                   owner: try c.decodeIfPresent(String.self, forKey: .owner) ?? coordinates.owner,
@@ -488,6 +588,7 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
         try c.encode(number, forKey: .number)
         try c.encode(messageID, forKey: .messageID)
         try c.encode(sender, forKey: .sender)
+        try c.encode(senderID, forKey: .senderID)
         try c.encode(channel, forKey: .channel)
         try c.encode(permalink, forKey: .permalink)
         try c.encode(text, forKey: .text)
@@ -497,6 +598,10 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
         try c.encode(repo, forKey: .repo)
         try c.encode(label, forKey: .label)
     }
+
+    /// The queue's ban dimension (`RequestedWork.author`): "" when no sender id was
+    /// recorded.
+    public var banLogin: String { senderID.isEmpty ? "" : CommsBan.login(senderID) }
 
     /// The queue row and activity-feed label. Both front-ends tell runs apart by label, so
     /// it ends in the message's local time: one sender's two asks with the same summary
@@ -522,10 +627,13 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
         let values = [
             "owner": owner, "repo": repo, "permalink": permalink, "reportPath": reportPath,
             "sender": CommsText.oneLine(CommsText.defang(sender)),
+            "senderID": CommsText.oneLine(senderID),
             "channel": CommsText.oneLine(CommsText.defang(channel)),
             "summary": CommsText.defang(summary), "text": CommsText.defang(text),
         ]
-        return [b.intro, b.message, b.work, b.rules, b.report]
+        // Without an id there is nobody the agent could name in a report.
+        let injection = senderID.isEmpty ? [] : [b.injection]
+        return ([b.intro, b.message, b.work] + injection + [b.rules, b.report])
             .map { CommsText.fillFenced($0, values) }
             .joined(separator: "\n\n")
     }

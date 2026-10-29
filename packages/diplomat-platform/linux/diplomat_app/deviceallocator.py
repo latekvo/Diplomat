@@ -344,27 +344,38 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
         self.sock = sock
 
 
-def call(endpoint: str, body: dict | None = None, *,
-         timeout_secs: float) -> DaemonReply | None:
-    """Any HTTP status is an answer; None is no answer at all. Blocking, so off the GUI
-    thread. Each call is its own connection, so a long one (a sign-in) holds up no
-    other."""
+#: :func:`exchange` reached no daemon: no socket file, or nothing accepting on it.
+UNREACHABLE = "unreachable"
+#: :func:`exchange` met a daemon that did not answer in time, so it may yet act on the
+#: request.
+NO_REPLY = "no reply"
+
+
+def exchange(endpoint: str, body: dict | None = None, *,
+             timeout_secs: float) -> DaemonReply | str:
+    """Any HTTP status is an answer; otherwise :data:`UNREACHABLE` or :data:`NO_REPLY`.
+    Blocking, so off the GUI thread. Each call is its own connection, so a long one (a
+    sign-in) holds up no other. Raises on a body JSON cannot encode."""
     path = socket_path()
     if not path.exists():
-        return None
-    try:
-        payload = json.dumps(body or {})
-    except (TypeError, ValueError):
-        return None
+        return UNREACHABLE
+    payload = json.dumps(body or {})
     conn = _UnixHTTPConnection(str(path), timeout_secs)
     try:
-        conn.request("POST", f"/{endpoint}", body=payload,
-                     headers={"content-type": "application/json"})
-        resp = conn.getresponse()
-        raw = resp.read()
-        status = resp.status
-    except (OSError, http.client.HTTPException):
-        return None
+        try:
+            conn.connect()
+        except TimeoutError:
+            return NO_REPLY
+        except OSError:
+            return UNREACHABLE
+        try:
+            conn.request("POST", f"/{endpoint}", body=payload,
+                         headers={"content-type": "application/json"})
+            resp = conn.getresponse()
+            raw = resp.read()
+            status = resp.status
+        except (OSError, http.client.HTTPException):
+            return NO_REPLY
     finally:
         conn.close()
     try:
@@ -372,6 +383,16 @@ def call(endpoint: str, body: dict | None = None, *,
     except ValueError:
         parsed = None
     return DaemonReply(status, parsed)
+
+
+def call(endpoint: str, body: dict | None = None, *,
+         timeout_secs: float) -> DaemonReply | None:
+    """:func:`exchange`, with None for no answer of either kind."""
+    try:
+        reply = exchange(endpoint, body, timeout_secs=timeout_secs)
+    except (TypeError, ValueError):
+        return None
+    return reply if isinstance(reply, DaemonReply) else None
 
 
 def post(endpoint: str, body: dict, *, timeout_secs: float) -> bool:

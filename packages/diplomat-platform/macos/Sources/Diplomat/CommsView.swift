@@ -20,6 +20,7 @@ struct CommsView: View {
     var body: some View {
         let items = store.commsItems
         let jobs = items.filter { $0.queueKey != nil }
+        let senders = store.bannedAuthors.filter(\.isSlack)
         return VStack(alignment: .leading, spacing: 8) {
             header
             statusLine
@@ -28,6 +29,7 @@ struct CommsView: View {
             } else if let error = store.commsError {
                 errorBanner(error)
             }
+            if !senders.isEmpty { bannedStrip(senders) }
             if !items.isEmpty {
                 HStack(alignment: .top, spacing: 12) {
                     pingsColumn(Array(items.prefix(CommsView.maxPings)))
@@ -151,6 +153,31 @@ struct CommsView: View {
         .cardChrome(fill: Color.blue.opacity(0.08), padding: 10)
     }
 
+    // MARK: - Banned senders
+
+    private func bannedStrip(_ bans: [BannedAuthor]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: "hand.raised.fill").font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.red)
+                Text("BANNED SENDERS").font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.red).kerning(0.5)
+                Text("\(bans.count)").font(.system(size: 9).monospacedDigit())
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(Color.red.opacity(0.15)))
+                Text("prompt injection · their messages are not triaged · un-ban in the panel's Banned list")
+                    .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            ForEach(bans) { ban in
+                BannedSenderRow(ban: ban, place: store.commsPlace(of: ban))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardChrome(fill: Color.red.opacity(0.08), padding: 8)
+    }
+
     // MARK: - Pings
 
     private func pingsColumn(_ items: [CommsItem]) -> some View {
@@ -243,6 +270,9 @@ private struct PingRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if banned {
+                    StatusPill(text: "BANNED", tint: .red, symbol: "hand.raised.fill")
+                }
                 Text(item.outcome ?? "not acted on yet").font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -255,7 +285,23 @@ private struct PingRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .cardChrome(fill: unread ? Color.blue.opacity(0.13) : Color.gray.opacity(0.07))
+        .cardChrome(fill: banned ? Color.red.opacity(0.10)
+                        : (unread ? Color.blue.opacity(0.13) : Color.gray.opacity(0.07)))
+    }
+
+    private var fromBannedSender: Bool {
+        item.decision?.reason.hasPrefix(CommsWatch.bannedPrefix) == true
+    }
+
+    /// The ping that got its sender banned, one a banned sender sent, or an ask whose
+    /// run a ban stopped.
+    private var banned: Bool {
+        let outcome = item.outcome ?? ""
+        return fromBannedSender || outcome == Store.commsSenderBannedOutcome
+            || (item.decision?.action == .injection
+                && (outcome.hasPrefix(Store.commsBannedOutcomePrefix)
+                    || outcome.hasSuffix(Store.commsAlreadyBannedSuffix)))
+            || Store.commsStoppedByBan(item)
     }
 
     private var readableText: String {
@@ -275,29 +321,71 @@ private struct PingRow: View {
 
     private var actionWord: String {
         guard let d = item.decision else { return "triaging" }
+        if fromBannedSender { return "banned sender" }
         switch d.action {
         case .none:        return "none"
         case .bump:        return "bump #\(d.number)"
         case .review:      return "review #\(d.number)"
         case .fixIssue:    return "fix #\(d.number)"
         case .investigate: return "investigate"
+        case .injection:   return "injection"
         }
     }
 
     private var actionTint: Color {
+        if fromBannedSender { return .red }
         switch item.decision?.action {
         case .bump?:        return .orange
         case .review?:      return .purple
         case .fixIssue?:    return .green
         case .investigate?: return .teal
+        case .injection?:   return .red
         case .none?, nil:   return .secondary
         }
     }
 
-    /// A `none` usually has only a reason.
+    /// A `none` usually has only a reason; an injection shows the words it quoted.
     private var decisionText: String {
         guard let d = item.decision else { return "" }
+        if d.action == .injection { return "\"\(d.evidence)\" - \(d.reason)" }
+        if fromBannedSender { return d.reason }
         return d.summary.isEmpty ? d.reason : d.summary
+    }
+}
+
+/// One Slack sender on the ban list: who, when, where and the words that got them banned.
+private struct BannedSenderRow: View {
+    let ban: BannedAuthor
+    let place: String?
+
+    var body: some View {
+        let id = ban.slackUserID ?? ""
+        let when = ban.ago()
+        let absolute = ban.atDate.map(BannedAuthor.absolute) ?? "unknown time"
+        let evidence = (ban.evidence ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let link = ban.whereURL
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(ban.displayName).font(.system(size: 11, weight: .semibold))
+                Text(id).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                if let place {
+                    Text(place).font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                Text("banned \(when)").font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .help("Banned \(absolute)")
+                Spacer(minLength: 4)
+                if let link {
+                    Button("Open in Slack") { NSWorkspace.shared.open(link) }
+                        .buttonStyle(.link).font(.system(size: 10))
+                }
+            }
+            if !evidence.isEmpty {
+                Text("\"\(evidence)\"").font(.system(size: 10)).lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(evidence)
+            }
+        }
     }
 }
 

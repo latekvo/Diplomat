@@ -337,9 +337,17 @@ final class Store: ObservableObject {
     /// list is owed by GitHub's reckoning and not by this one.
     @Published var unaddressedReviews: Int = 0
 
-    /// Authors banned for prompt injection (read from the daemon's banned.json). They
-    /// receive no automated reviews, and appear in the "Banned" list above the sessions.
+    /// Authors and Slack senders banned for prompt injection (read from the daemon's
+    /// banned.json). They receive no automated reviews, their Slack messages are not
+    /// triaged, and they appear in the "Banned" list above the sessions.
     @Published var bannedAuthors: [BannedAuthor] = []
+
+    /// Each ban `refreshBanList` has seen, as login and `at`; nil until its first read,
+    /// which notifies nothing.
+    private var bansSeen: Set<String>?
+
+    /// Lowercased logins `refreshBanList` marks seen without announcing.
+    var bansUnannounced: Set<String> = []
 
     /// Recent actions (panel-triggered + automatic + agent-reported), newest first — the
     /// unified activity feed shown in the panel.
@@ -445,7 +453,7 @@ final class Store: ObservableObject {
         didSet {
             persist(commsEnabled, forKey: Keys.commsEnabled)
             guard commsEnabled, !oldValue, !Headless.active else { return }
-            if commsNotify { CommsNotifier.authorize() }
+            if commsNotify { Notifier.authorize() }
             Task { await runCommsPollOnce() }
         }
     }
@@ -471,7 +479,7 @@ final class Store: ObservableObject {
     @Published var commsNotify: Bool {
         didSet {
             persist(commsNotify, forKey: Keys.commsNotify)
-            if commsNotify && !oldValue && commsEnabled { CommsNotifier.authorize() }
+            if commsNotify && !oldValue && commsEnabled { Notifier.authorize() }
         }
     }
     /// The triage model; blank means `comms.json`'s default.
@@ -2133,9 +2141,19 @@ final class Store: ObservableObject {
         unaddressedReviews = unaddressed
     }
 
-    /// Re-read the prompt-injection ban list (cheap local file). Publishes on change.
+    /// Re-read the prompt-injection ban list (cheap local file). Publishes on change, and
+    /// posts a notification for each ban not seen by an earlier read: a new login, or a
+    /// repeat offence (a new `at`).
     func refreshBanList() {
         let next = BanList.read()
+        let keys = next.map { "\($0.login.lowercased())@\($0.at ?? "")" }
+        if let seen = bansSeen {
+            for (ban, key) in zip(next, keys)
+            where !seen.contains(key) && !bansUnannounced.contains(ban.login.lowercased()) {
+                Notifier.postBan(ban)
+            }
+        }
+        bansSeen = Set(keys)
         if next != bannedAuthors { bannedAuthors = next }
     }
     /// Re-read the audit log's tail. The file IO runs off-main (the log grows without
@@ -2150,14 +2168,18 @@ final class Store: ObservableObject {
     /// Remove a ban (the UI's un-ban button) and refresh. The daemon round-trip
     /// (curl over the unix socket, up to 5s against a wedged daemon) runs off-main
     /// so the popover can't freeze. When the daemon handled the unban it also wrote
-    /// the audit entry — don't double-log.
+    /// the audit entry - don't double-log.
     func unban(_ login: String) {
         Task { [weak self] in
-            let viaDaemon = await Task.detached(priority: .userInitiated) {
+            let done = await Task.detached(priority: .userInitiated) {
                 BanList.unban(login)
             }.value
             guard let self else { return }
-            if !viaDaemon { AuditLog.log("panel", "unban", "Un-banned @\(login)") }
+            switch done {
+            case .file: AuditLog.log("panel", "unban", "Un-banned @\(login)")
+            case .failed(let why): self.error = "Could not un-ban @\(login): \(why)"
+            case .daemon, .notBanned: break
+            }
             self.refreshAudit()
             self.refreshBanList()
         }
@@ -2958,7 +2980,8 @@ final class Store: ObservableObject {
         case .inFlight:
             error = "\(entry.job.label): an agent is already on this PR."
         case .banned:
-            error = "\(entry.job.label): the PR's author is banned (un-ban to review)."
+            let who = BanList.refusedWho(entry.job.authorLogin ?? "")
+            error = "\(entry.job.label): \(who) is banned (\(Store.banRemedy(entry.job)))."
         case .notAllowed:
             error = "\(entry.job.label): the PR's author is not on the auto-review list "
                   + "(add them, or review it from the wizard)."
@@ -3133,6 +3156,14 @@ final class Store: ObservableObject {
 
     enum AutoCounter { case reviewRequests, myReviews, conflicts }
 
+    /// What to do about a dispatch the ban gate refused. A monitor's find comes back by
+    /// itself once the ban lifts; an ask is retired by the refusal (`settleRequested`).
+    static func banRemedy(_ job: AgentJob) -> String {
+        guard job.requested else { return "un-ban to review" }
+        return job.auditAction == AgentTaskQueue.investigateAction ? "the ask is dropped"
+            : "the ask is dropped, sweep again to re-queue it"
+    }
+
     /// One unit of automatic work nothing has started yet: the whole job, held by the
     /// device's task cap, by the spending budget, by the disk floor, or by a switch the
     /// operator set (its own monitor, or the queue itself), until a slot frees or the
@@ -3290,8 +3321,9 @@ final class Store: ObservableObject {
             stageQueued(job, attemptNumber: attemptNumber)
             return .unaffordable
         case .banned:
+            let who = BanList.refusedWho(job.authorLogin ?? "")
             AuditLog.log(source.rawValue, "ban-skip",
-                         "\(job.label) — author is banned (un-ban to review)")
+                         "\(job.label) — \(who) is banned (\(Store.banRemedy(job)))")
             refreshAudit()
             return .banned
         case .notAllowed:
