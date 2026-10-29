@@ -59,7 +59,7 @@ extension Store {
     }
 
     /// Where a Slack ban's message was (`#channel`, `DM`): the ban's own `place`, else the
-    /// logged ping with its permalink (a ban recorded before bans kept a place).
+    /// logged ping with its permalink (an agent's report may name none).
     func commsPlace(of ban: BannedAuthor) -> String? {
         guard ban.isSlack else { return nil }
         if let place = ban.place, !place.isEmpty { return place }

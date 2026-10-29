@@ -82,8 +82,8 @@ extension BannedAuthor {
         case ghCaptured, source, handle, place
     }
 
-    /// Only `login` is required: a field of the wrong type (a numeric `pr`, which the
-    /// daemon once stored as given) reads as absent, and the ban still holds.
+    /// Only `login` is required: a field of the wrong type (a numeric `pr`) reads as
+    /// absent, and the ban still holds.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let login = try c.decode(String.self, forKey: .login)
