@@ -73,7 +73,7 @@ public struct SlackProfile: Equatable, Sendable {
     }
 
     /// The tool prints one `Key: value` line per field.
-    static func parse(_ text: String) -> SlackProfile? {
+    public static func parse(_ text: String) -> SlackProfile? {
         var fields: [String: String] = [:]
         for line in text.split(separator: "\n") {
             guard let colon = line.range(of: ": ") ?? line.range(of: ":") else { continue }
