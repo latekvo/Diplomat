@@ -213,7 +213,7 @@ def report_comms_ban(ban: dict, *, timeout_secs: float = 10) -> Reported:
     is final.
 
     A daemon older than Slack bans records the bare id, as a GitHub login: that entry is
-    lifted again, and the sender is not banned."""
+    lifted again, unless that login was banned already, and the sender is not banned."""
     from . import deviceallocator
 
     user_id = str(ban.get("userID") or "")
@@ -224,6 +224,7 @@ def report_comms_ban(ban: dict, *, timeout_secs: float = 10) -> Reported:
     if not _SLACK_USER_ID.match(user_id):
         return Reported(False, f"no Slack user id to ban ({user_id or 'none'})")
     login = slack_login(user_id)
+    before = {b.login.lower() for b in read()}
     reply = deviceallocator.exchange("report-injection", {
         "person": user_id, "source": "slack", "handle": handle, "place": place, "pr": permalink,
         "evidence": evidence, "agentName": COMMS_REPORTER, "via": "comms",
@@ -239,7 +240,9 @@ def report_comms_ban(ban: dict, *, timeout_secs: float = 10) -> Reported:
         return Reported(True)
     why = (f'the allocator daemon banned "{recorded}" instead of {login}; '
            "restart it to pick up Slack bans")
-    if recorded:
+    if recorded.lower() in before:
+        why += f'; "{recorded}" was banned already, so that ban stays'
+    elif recorded:
         undo = deviceallocator.exchange("unban", {"login": recorded}, timeout_secs=timeout_secs)
         if not (isinstance(undo, deviceallocator.DaemonReply) and undo.ok):
             why += f'; un-ban "{recorded}" in the panel'

@@ -199,6 +199,17 @@ def test_a_daemon_older_than_slack_bans_is_a_failure_and_its_entry_is_lifted(aud
     assert [e for e, _ in asked] == ["report-injection"]
 
 
+def test_an_old_daemons_stray_undo_never_lifts_a_ban_that_was_there(audit, daemon):
+    asked, answer = daemon
+    answer["report-injection"] = OLD_DAEMON
+    bans.banned_path().parent.mkdir(parents=True, exist_ok=True)
+    bans.banned_path().write_text(json.dumps({"banned": [
+        {"login": "umal123", "reason": "prompt injection", "at": "2026-10-01T00:00:00.000Z"}]}))
+    assert bans.report_comms_ban(BAN).error == (
+        STRAY + '; "UMAL123" was banned already, so that ban stays')
+    assert [e for e, _ in asked] == ["report-injection"]
+
+
 def test_a_daemon_that_never_answers_is_not_written_around(audit, daemon):
     """It may record the ban yet: a second entry written here would be its twin."""
     daemon[1]["report-injection"] = deviceallocator.NO_REPLY

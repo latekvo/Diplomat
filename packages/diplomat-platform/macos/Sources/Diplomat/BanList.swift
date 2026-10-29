@@ -265,7 +265,8 @@ enum BanList {
             return .failed("\"\(b.userID)\" is not a Slack user id")
         }
         let login = CommsBan.login(b.userID)
-        if isBanned(login, in: read()) { return .already }
+        let before = read()
+        if isBanned(login, in: before) { return .already }
         let body: [String: Any] = [
             "person": b.userID, "source": BannedAuthor.slackSource, "handle": b.handle,
             "place": b.place, "pr": b.permalink, "evidence": b.evidence, "agentName": reportedBy,
@@ -278,12 +279,14 @@ enum BanList {
                                ?? "the allocator daemon answered HTTP \(reply.status)")
             }
             // A daemon older than Slack bans takes the id for a GitHub login: that stray
-            // ban is lifted again.
+            // ban is lifted again, unless that login was banned already.
             let recorded = reply.json?["login"]?.string ?? ""
             guard recorded.lowercased() == login.lowercased() else {
-                let lifted = recorded.isEmpty || unbanViaDaemon(recorded)
+                let wasThere = !recorded.isEmpty && isBanned(recorded, in: before)
+                let lifted = recorded.isEmpty || wasThere || unbanViaDaemon(recorded)
                 return .failed("the allocator daemon banned \"\(recorded)\" instead of \(login)"
-                               + (lifted ? "" : ", and would not lift it")
+                               + (wasThere ? ", which was banned already, so that ban stays"
+                                  : lifted ? "" : ", and would not lift it")
                                + "; restart it to pick up Slack bans")
             }
             return .daemon
