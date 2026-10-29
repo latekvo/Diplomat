@@ -13,9 +13,10 @@ public enum CommsReason: String, Codable, CaseIterable, Sendable {
     case dm, mention, keyword
 }
 
-/// Who the token belongs to, as `auth.test` answers it.
+/// Who the Slack login belongs to, from their profile (`SlackProfile.identity`).
 public struct CommsIdentity: Codable, Equatable, Sendable {
     public var userID: String
+    /// The workspace as `SlackProfile.workspace` names it, not a Slack team id.
     public var teamID: String
     public var handle: String
 
