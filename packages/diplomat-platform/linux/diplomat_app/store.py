@@ -435,6 +435,7 @@ class Store(QObject):
         # first; replaced, never mutated, since the poll worker reads it.
         self.comms_items: list[dict] = []
         self.comms_error: str | None = None
+        # Who Claude Code's Slack login is, as the last tick to know said; None before.
         self.comms_identity: dict | None = None
         self.comms_last_poll: datetime | None = None
         # Queue key -> ids of the pings awaiting that work's dispatch, which writes their
@@ -991,15 +992,6 @@ class Store(QObject):
     @comms_seen_at.setter
     def comms_seen_at(self, value: str) -> None:
         self._settings.setValue("commsSeenAt", str(value))
-
-    @property
-    def slack_token_file(self) -> str:
-        """"" for the default. A path only: it lives in the shared config."""
-        return appconfig.get(appconfig.SLACK_TOKEN_FILE)
-
-    @slack_token_file.setter
-    def slack_token_file(self, value: str) -> None:
-        appconfig.set_value(appconfig.SLACK_TOKEN_FILE, value.strip())
 
     # MARK: derived settings
 
@@ -3236,11 +3228,6 @@ class Store(QObject):
                 "investigations": self.comms_act_investigations}
 
     @property
-    def comms_configured(self) -> bool:
-        """Whether there is a token to watch with."""
-        return bool(comms.read_token()[0])
-
-    @property
     def comms_unread(self) -> int:
         seen = comms.parse_iso(self.comms_seen_at)
         count = 0
@@ -3291,11 +3278,8 @@ class Store(QObject):
     def _comms_poll_once(self) -> dict:
         """The slow half of a tick, off the Qt thread. Changes nothing in the queue."""
         at = datetime.now().astimezone()
-        token, why = comms.read_token()
-        if not token:
-            return {"at": at, "error": why, "me": None, "items": []}
         settings = self.comms_settings_payload()
-        result = comms.tick(settings, token)
+        result = comms.tick(settings)
         toggles = self.comms_toggles()
         fresh = list(result.get("items") or [])
         items = []

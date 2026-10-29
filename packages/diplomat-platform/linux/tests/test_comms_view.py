@@ -15,10 +15,9 @@ from pathlib import Path
 import pytest
 from test_autofix import fake_probes
 
-from diplomat_app import commsview
 from diplomat_app.commsview import CommsView, JobRow, PingRow
 from diplomat_app.store import Store
-from diplomat_runtime import appconfig, autofix, comms
+from diplomat_runtime import autofix, comms
 
 pytest.importorskip("PySide6")
 
@@ -73,39 +72,50 @@ def _buttons(widget) -> list[str]:
     return [b.text() for b in widget.findChildren(QPushButton)]
 
 
-def test_no_token_shows_how_to_make_one(store, monkeypatch):
-    appconfig.set_value(appconfig.SLACK_TOKEN_FILE, "/nonexistent/slack token")
+NOT_SIGNED_IN = ("Claude Code is not signed in to Slack: in Claude Code, run /mcp and "
+                 "authenticate the Slack server")
+
+
+def test_until_a_tick_knows_the_login_the_card_says_why_not(store):
+    """The card holds the core's own words, once, and no setup steps; once a tick has
+    said who the login is, the screen is the feed and the error a banner."""
+    store.comms_enabled = True
+    store.comms_error = NOT_SIGNED_IN
     view = CommsView(store)
     assert not view.empty.isHidden()
     assert view.body.isHidden()
-    texts = " ".join(_texts(view.empty))
-    assert "User Token Scopes  search:read. Install it" in texts
-    assert "users:read" not in texts
-    assert view.empty_cmd.text() == \
-        "(umask 077; read -rs t; printf '%s\\n' \"$t\" > '/nonexistent/slack token')"
-    assert "/nonexistent/slack token" in view.empty_path.text()
+    assert view.error_banner.isHidden()
+    assert _texts(view.empty) == [
+        "Comms reads Slack as you, through Claude Code's Slack login", NOT_SIGNED_IN]
+    assert not view.empty_error.isHidden()
+
+    store.comms_error = None
+    store.comms_changed.emit()
+    assert not view.empty.isHidden()
+    assert view.empty_error.isHidden()
+
+    store.comms_identity = {"handle": "operator", "teamID": "Ours"}
+    store.comms_error = NOT_SIGNED_IN
+    store.comms_changed.emit()
+    assert view.empty.isHidden()
+    assert not view.body.isHidden()
+    assert view.error_banner.text() == f"⚠ {NOT_SIGNED_IN}"
+    assert not view.error_banner.isHidden()
 
 
-def test_the_default_path_is_shown_as_typed(store, monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    assert commsview.token_command() == \
-        "(umask 077; read -rs t; printf '%s\\n' \"$t\" > ~/.diplomat/slack-token)"
-
-
-def test_a_token_and_nothing_yet(store, monkeypatch):
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-1")
+def test_a_login_and_nothing_yet(store):
     store.comms_enabled = True
+    store.comms_identity = {"handle": "operator", "teamID": "Ours"}
     view = CommsView(store)
     assert view.empty.isHidden()
     assert not view.body.isHidden()
     assert view.error_banner.isHidden()
-    assert view.status.text() == "Watching Slack · waiting for the first poll"
+    assert view.status.text() == "Watching as @operator in Ours · waiting for the first poll"
     assert "No pings yet. A DM, an @-mention or a keyword lands here." in _texts(view)
     assert "Nothing queued from Slack yet." in _texts(view)
 
 
-def test_pings_jobs_and_what_is_new(store, monkeypatch, tmp_path):
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-1")
+def test_pings_jobs_and_what_is_new(store):
     comms.reports_dir().mkdir(parents=True)
     (comms.reports_dir() / "42.md").write_text("# report\n")
     store.comms_items = [
@@ -142,13 +152,12 @@ def test_pings_jobs_and_what_is_new(store, monkeypatch, tmp_path):
     assert reports == {"Job 3": [], "Job 2": ["Report"], "Job 1": [], "Job 5": []}
 
 
-def test_text_from_slack_or_the_triage_is_never_read_as_markup(store, monkeypatch):
+def test_text_from_slack_or_the_triage_is_never_read_as_markup(store):
     """A message can steer the triage's summary, and so the investigation's label,
     into HTML; every label showing Slack's or the model's words draws it as typed."""
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QLabel
 
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-1")
     markup = '<h1 style="font-size:60px">URGENT</h1>'
     item = _item(1, "2026-10-27T10:10:00Z", queue_key="investigate:1")
     item["message"].update(userName=f"<b>{markup}</b>", channelName=markup, isDM=False,
@@ -161,8 +170,9 @@ def test_text_from_slack_or_the_triage_is_never_read_as_markup(store, monkeypatc
     store.comms_error = markup
     view = CommsView(store)
     shown = [w for w in view.findChildren(QLabel) if markup in w.text()]
-    # sender, channel, keyword chip, text, summary, outcome, job label, status, banner
-    assert len(shown) == 9
+    # sender, channel, keyword chip, text, summary, outcome, job label, status, banner,
+    # and the signed-out card's line
+    assert len(shown) == 10
     assert [w.text() for w in shown if w.textFormat() != Qt.TextFormat.PlainText] == []
 
 
@@ -189,7 +199,8 @@ def test_the_settings_card_draws_slacks_words_as_typed(app, store, monkeypatch):
 def test_the_watch_slack_pill_reads_the_last_error_cut_to_fit(app, store):
     from diplomat_app.settingsview import SettingsView
 
-    long_error = "Slack rejected the token (invalid_auth): sign in again and store a new one"
+    long_error = ("Slack refused Claude Code's Slack login: in Claude Code, run /mcp and "
+                  "authenticate the Slack server again")
     store.comms_enabled = True
     store.comms_error = "invalid_auth"
     view = SettingsView(store)
@@ -225,14 +236,13 @@ def test_the_test_button_comes_back_whatever_the_ask_raises(app, store, monkeypa
 
     from diplomat_app.settingsview import SettingsView
 
-    def broken(token):
+    def broken():
         raise http.client.IncompleteRead(b"12345678", 92)
 
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-1")
-    monkeypatch.setattr(comms, "auth_test", broken)
+    monkeypatch.setattr(comms, "auth", broken)
     view = SettingsView(store)
     try:
-        view._test_comms_token()
+        view._test_comms_login()
         assert not view._comms_test.isEnabled()
         assert store.wait_for_background() == []
         app.processEvents()
@@ -242,9 +252,7 @@ def test_the_test_button_comes_back_whatever_the_ask_raises(app, store, monkeypa
         view.deleteLater()
 
 
-def test_opening_the_screen_marks_everything_seen_but_still_draws_it_new(store,
-                                                                       monkeypatch):
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-1")
+def test_opening_the_screen_marks_everything_seen_but_still_draws_it_new(store):
     store.comms_items = [_item(1, "2026-10-27T10:10:00Z")]
     store.comms_seen_at = "2026-10-27T10:00:00Z"
     view = CommsView(store)
@@ -256,27 +264,25 @@ def test_opening_the_screen_marks_everything_seen_but_still_draws_it_new(store,
     assert ["NEW" in _texts(p) for p in _rows(view, PingRow)] == [False]
 
 
-def test_a_failing_tick_is_a_banner(store, monkeypatch):
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-1")
+def test_a_failing_tick_is_a_banner(store):
     store.comms_enabled = True
-    store.comms_error = "Slack rejected the token (invalid_auth)"
+    store.comms_identity = {"handle": "operator", "teamID": "Ours"}
+    store.comms_error = "Slack rate-limited the watcher"
     view = CommsView(store)
     assert not view.error_banner.isHidden()
-    assert view.error_banner.text() == "⚠ Slack rejected the token (invalid_auth)"
+    assert view.error_banner.text() == "⚠ Slack rate-limited the watcher"
     store.comms_error = None
     store.comms_changed.emit()
     assert view.error_banner.isHidden()
 
 
-def test_off_says_so(store, monkeypatch):
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-1")
+def test_off_says_so(store):
     assert CommsView(store).status.text() == "Off — turn Comms on in Settings to watch Slack."
 
 
-def test_the_header_button_counts_unread_and_opening_clears_it(store, monkeypatch):
+def test_the_header_button_counts_unread_and_opening_clears_it(store):
     from diplomat_app.panel import Panel
 
-    monkeypatch.setenv(comms.TOKEN_ENV, "xoxp-1")
     store.comms_items = [_item(2, "2026-10-27T10:20:00Z"), _item(1, "2026-10-27T10:10:00Z")]
     store.comms_seen_at = "2026-10-27T10:15:00Z"
     panel = Panel(store)

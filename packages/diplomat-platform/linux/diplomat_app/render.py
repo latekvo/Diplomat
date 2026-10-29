@@ -518,11 +518,12 @@ def _mesh_fixture(store: Store) -> None:
     }
 
 
-def _comms_fixture(store: Store, *, configured: bool) -> None:
+def _comms_fixture(store: Store, *, signed_in: bool) -> None:
     """A synthetic Comms log, written into a scratch ``DIPLOMAT_COMMS_DIR`` and folded by
     the real ``diplomat-core comms-feed``: the screen draws that fold, so seeding the
-    Store would test nothing the user sees. The token is a placeholder, or (``configured``
-    off) an empty scratch path, so the operator's real token is never read."""
+    Store would test nothing the user sees. Claude Code's directory is an empty scratch
+    one, so the operator's real Slack login is never read; signed out, the error is the
+    real core's answer to that."""
     import json
     import tempfile
     from pathlib import Path
@@ -540,13 +541,11 @@ def _comms_fixture(store: Store, *, configured: bool) -> None:
     QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(scratch))
     store._settings = app_settings()
-    if configured:
-        os.environ[comms.TOKEN_ENV] = "xoxp-render"
-    else:
-        os.environ.pop(comms.TOKEN_ENV, None)
-        os.environ["DIPLOMAT_CONFIG"] = str(scratch / "config.json")
-        (scratch / "config.json").write_text(json.dumps(
-            {"slackTokenFile": str(scratch / "slack-token")}))
+    os.environ.pop(comms.TOKEN_ENV, None)
+    os.environ["DIPLOMAT_CLAUDE_DIR"] = str(scratch / "claude")
+    if not signed_in:
+        store.comms_enabled = True
+        store.comms_error = comms.auth()[1]
         return
 
     now = datetime.now(timezone.utc)
@@ -560,7 +559,8 @@ def _comms_fixture(store: Store, *, configured: bool) -> None:
         channel = "D0RENDER" if dm else "C0GENERAL"
         m = {"id": f"{channel}:{ts}", "channelID": channel,
              "channelName": "U0" + user.upper() if dm else "argent-dev", "isDM": dm,
-             "userID": "U0" + user.upper(), "userName": user, "teamID": "T0SWM",
+             "userID": "U0" + user.upper(), "userName": user,
+             "teamID": "Software Mansion",
              "text": text, "ts": ts, "reasons": reasons,
              "permalink": f"https://swm.slack.com/archives/{channel}/p{ts.replace('.', '')}"}
         if keyword:
@@ -617,7 +617,8 @@ def _comms_fixture(store: Store, *, configured: bool) -> None:
 
     store.comms_enabled = True
     store.comms_seen_at = comms.iso(at(25))
-    store.comms_identity = {"userID": "U0IGNACY", "teamID": "T0SWM", "handle": "ignacy"}
+    store.comms_identity = {"userID": "U0IGNACY", "teamID": "Software Mansion",
+                            "handle": "ignacy"}
     store.comms_last_poll = at(0.5)
     store.refresh_comms_feed()
 
@@ -661,7 +662,7 @@ def run(what: str, out: str) -> int:
 
     # Also before Panel(): the header's ✉ count is read as it is built.
     if what.startswith("comms"):
-        _comms_fixture(store, configured=what != "comms-empty")
+        _comms_fixture(store, signed_in=what != "comms-empty")
 
     # The screens shell `--check` as they are built, overwriting the seeded status.
     if what.startswith("devices-screen"):
