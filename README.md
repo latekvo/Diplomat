@@ -17,6 +17,8 @@ Left alone, it:
   doesn't approve or request changes unless you turn that on;
 - keeps your own PRs mergeable: it resolves merge conflicts, works through review
   threads and pushes to your branch;
+- reproduces every new issue filed from outside the org, and opens a draft PR with
+  the fix when it reproduces;
 - types "continue" into an agent stuck on a transient Claude API error;
 - watches your Slack through Claude Code's Slack login: a DM, an @-mention or a keyword becomes
   a ping on its own screen, and a request in it is acted on - a review or fix is
@@ -96,6 +98,7 @@ Everything below can be changed in Settings (⚙︎).
 | Review PRs that request me | **on**, from any author (an allowlist narrows it) |
 | Submit approve / request-changes verdicts | **off**, a neutral `COMMENT` review |
 | Thank-you review (body only) on a perfectly clean PR | **on** |
+| Reproduce and fix new community issues | **on**, issues filed from then on |
 | Nudge agents stalled on API errors | **on** |
 | Automatic agents running at once | **2** (1-16) |
 | Hold automatic work when the limit runs low | **on**: 95% confidence; until a task can be priced, keeps 20% of a window (or $1 of credit once Hermes has billed a task) |

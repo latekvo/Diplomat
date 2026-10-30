@@ -21,6 +21,7 @@
     "conflicts": "conflicts",
     "audit": "audit",
     "issues": "issues",
+    "community-issue": "issues",
     "nudge": "apiRestart",
     "quota-stall": "quota",
     "quota-resume": "quota",

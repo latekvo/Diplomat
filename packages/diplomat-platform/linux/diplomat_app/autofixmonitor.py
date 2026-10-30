@@ -17,6 +17,7 @@ import json
 
 from diplomat_runtime import core, gh
 from diplomat_runtime.autofix import PRSnapshot, ReviewRequest
+from diplomat_runtime.models import API, OpenIssue
 
 
 def _owed_thread(thread: dict, me: str) -> bool:
@@ -84,6 +85,12 @@ def fetch_closed_prs(owner: str, repo: str) -> set[int]:
     data = gh.run(["api", "graphql", "-f", f"query={query}", "-f", f"q={q}"])
     nodes = ((json.loads(data).get("data") or {}).get("search") or {}).get("nodes") or []
     return {n["number"] for n in nodes if n and n.get("number") is not None}
+
+
+def fetch_open_issues() -> list[OpenIssue]:
+    """The repo's newest open issues, the same read the panel lists them from, for
+    the new-community-issue monitor (:meth:`Store._poll_community_issues`)."""
+    return API.fetch_open_issues()
 
 
 def _parse_review_requests(env: dict, me: str) -> list[ReviewRequest]:

@@ -219,6 +219,29 @@ public enum Filters {
         }
         return unassignedOnly ? inScope.filter { $0.assignees.isEmpty } : inScope
     }
+
+    /// The community issues filed after `since` that nobody has picked up yet, oldest
+    /// first, and the mark the next scan starts from: the newest `createdAt` seen, by
+    /// anyone.
+    ///
+    /// Each issue is offered by exactly one scan, because the mark moves past it
+    /// whatever happens next. An issue the fix skips (a feature request, a bug it
+    /// cannot reproduce) leaves the issue as it found it, and a level-triggered rule
+    /// would queue it again on every poll.
+    ///
+    /// `since` is nil on the first scan, which offers nothing and only sets the mark.
+    /// Switching the monitor on never queues the backlog; a Fix-issues sweep covers
+    /// that. The mark is GitHub's own clock (`createdAt`); `now` is used only when
+    /// there is no open issue to read it from.
+    public static func newCommunityIssues(_ issues: [OpenIssue], since: Date?,
+                                          now: Date) -> (fresh: [OpenIssue], since: Date) {
+        let newest = issues.map(\.createdAt).max()
+        guard let since else { return ([], newest ?? now) }
+        let fresh = issues
+            .filter { $0.createdAt > since && $0.isExternal && !$0.isAddressed }
+            .sorted { $0.createdAt < $1.createdAt }
+        return (fresh, max(since, newest ?? since))
+    }
 }
 
 // MARK: - Tiny formatting helpers

@@ -507,6 +507,18 @@ class SettingsView(QWidget):
         )))
         approve.addWidget(self._verdict_rows)
         body.addWidget(approve_nest)
+
+        self._sw_community = SwitchToggle(_ORANGE)
+        self._sw_community.setChecked(self.store.community_issues_enabled)
+        self._sw_community.toggled.connect(self._on_community_toggled)
+        body.addWidget(self._track(SettingRow(
+            "Fix new community issues", self._sw_community,
+            summary="Reproduce each issue filed from outside the org, and fix it if "
+                    "it reproduces.",
+            detail="Issues filed from the moment it is on; the backlog is a Fix-issues "
+                   "sweep's. Each is a cancellable fix under Agent tasks. Off, nothing "
+                   "is queued, and issues filed meanwhile are left for a sweep.",
+        )))
         return card
 
     def _allowlist_row(self) -> QWidget:
@@ -582,7 +594,7 @@ class SettingsView(QWidget):
     def _limits_card(self) -> QWidget:
         """How much automatic work this machine may run, and whether it can afford
         it. Its own card, beside the monitors rather than under them: both rows
-        bound *every* automatic agent — the two monitors and anything a mesh peer
+        bound *every* automatic agent — the monitors and anything a mesh peer
         routes here."""
         card, body, self._limits_pill = settings_card(glyphs.G_LIMITS, "LIMITS", _ORANGE)
 
@@ -601,7 +613,7 @@ class SettingsView(QWidget):
         self._auto_limit.changed.connect(self._on_auto_limit_changed)
         body.addWidget(self._track(SettingRow(
             "Run at most", self._auto_limit, stacked=True,
-            summary="Across both monitors, a PR sweep's reviews, and anything a mesh "
+            summary="Across every monitor, a PR sweep's reviews, and anything a mesh "
                     "peer routes here.",
             detail="The agent a wizard press opens on the spot is outside the cap; a "
                    "review it queues instead is inside. Work over the cap waits in "
@@ -713,6 +725,13 @@ class SettingsView(QWidget):
         if on:
             self.store.run_autofix_poll_async()
 
+    def _on_community_toggled(self, on: bool) -> None:
+        self.store.community_issues_enabled = on
+        self.store.changed.emit()
+        self._refresh_autofix_ui()
+        if on:
+            self.store.run_autofix_poll_async()
+
     def _on_auto_approve_toggled(self, on: bool) -> None:
         self.store.auto_approve_enabled = on
         self.store.changed.emit()
@@ -736,7 +755,7 @@ class SettingsView(QWidget):
         st = self.store.autofix_status
         live = bool(st) and (time.time() - st.get("updatedAt", 0)) < 15 * 60
 
-        if not (autofix_on or review_on):
+        if not (autofix_on or review_on or self.store.community_issues_enabled):
             self._autofix_pill.set_state("manual", _GREY)
         elif err:
             self._autofix_pill.set_state("polls failing", _RED)

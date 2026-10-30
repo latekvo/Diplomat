@@ -1414,6 +1414,35 @@ check(swept(.mine) == [], "…and sweeps nobody at all before that login resolve
 check(swept(.contributors) == [301] && swept(.members, unassignedOnly: false) == [302, 303],
       "the association scopes cut on filters.json's orgAssociations")
 check(swept(.specific) == [], "one named issue is dispatched, never swept")
+
+// The new-community-issue monitor offers each issue filed after its mark once, and
+// only one nobody inside the org has answered or claimed.
+func filed(_ n: Int, _ assoc: String, at minutes: Double, assignees: [String] = [],
+           memberResponded: Bool = false) -> OpenIssue {
+    let at = now.addingTimeInterval(minutes * 60)
+    return OpenIssue(number: n, title: "#\(n)", url: "i/\(n)", author: "u\(n)",
+                     authorAssociation: assoc, createdAt: at, updatedAt: at, commentCount: 0,
+                     assignees: assignees, labels: [], memberResponded: memberResponded)
+}
+let filedIssues = [filed(405, "NONE", at: 9), filed(401, "NONE", at: -5),
+                   filed(402, "CONTRIBUTOR", at: 2), filed(403, "MEMBER", at: 4),
+                   filed(404, "NONE", at: 6, assignees: ["dev"]),
+                   filed(406, "COLLABORATOR", at: 7, memberResponded: true),
+                   filed(407, "COLLABORATOR", at: 8)]
+let firstScan = Filters.newCommunityIssues(filedIssues, since: nil, now: now)
+check(firstScan.fresh.isEmpty && firstScan.since == now.addingTimeInterval(9 * 60),
+      "the first scan queues none of the backlog, and marks the newest issue it saw")
+check(Filters.newCommunityIssues([], since: nil, now: now).since == now,
+      "…falling back to the local clock when there is no issue to read one from")
+let nextScan = Filters.newCommunityIssues(filedIssues, since: now, now: now)
+check(nextScan.fresh.map(\.number) == [402, 407, 405],
+      "after the mark: outsiders' issues nobody answered or claimed, oldest first")
+check(nextScan.since == now.addingTimeInterval(9 * 60)
+      && Filters.newCommunityIssues(filedIssues, since: nextScan.since, now: now).fresh.isEmpty,
+      "…and the mark moves past them, so the next scan offers none of them again")
+let lateMark = now.addingTimeInterval(60 * 60)
+check(Filters.newCommunityIssues(filedIssues, since: lateMark, now: now).since == lateMark,
+      "the mark never moves backwards")
 check(IssueConfig(target: .mine, me: goldenMeSeed).sweepAuthor == goldenMeSeed
       && IssueConfig(target: .someone, username: "someuser").sweepAuthor == "someuser"
       && IssueConfig(target: .all, me: goldenMeSeed).sweepAuthor.isEmpty,
