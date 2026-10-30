@@ -44,7 +44,6 @@ _DECL = re.compile(
 #: genuinely consumed — which is exactly what a reviewer has to check, because waving a
 #: type through here is also how the drift this test exists to catch would get in.
 REACHED_INDIRECTLY = {
-    "PRRef": "ReviewConfig.prRef — the wizards read .number / .repoMismatch / .repo off it",
     "JSONInput": "Store reads the run book through AgentRegistry.load, TelemetryLog the "
                  "ledger through Telemetry.fold",
 }

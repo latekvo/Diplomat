@@ -47,6 +47,8 @@ def _checkout(tmp_path, name: str, **remotes: str):
     "https://github.com/software-mansion/radon/",
     "ssh://git@github.com/software-mansion/radon.git",
     "ssh://git@github.com/software-mansion/radon",
+    "https://user@github.com/software-mansion/radon.git",
+    "ssh://git@github.com:22/software-mansion/radon.git",
 ])
 def test_every_github_remote_spelling_parses(url):
     assert localrepos.parse_remote(url) == ("software-mansion", "radon")
@@ -61,6 +63,7 @@ def test_a_repo_name_with_dots_keeps_them():
     "https://example.com/software-mansion/radon",
     "/srv/git/radon.git",
     "https://github.com/software-mansion",
+    "https://github.com.evil.io/software-mansion/radon",
     "",
 ])
 def test_anything_else_is_no_github_remote(url):

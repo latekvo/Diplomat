@@ -1820,6 +1820,8 @@ class Store(QObject):
             raise review.SpawnError(
                 f"couldn't register the run: {exc.strerror or exc}") from exc
         chosen = agentregistry.stage_runner(record.run_id)
+        if checkout:
+            agentregistry.stage_directory(record.run_id, checkout)
         port = None
         staged = {"checkout": checkout} if checkout else {}
         try:

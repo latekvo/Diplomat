@@ -235,7 +235,8 @@ check(radonConflict.isValid && radonConflict.checkout == "/tmp/radon"
 // A checkout's GitHub remotes, in every URL form git writes, upstream first.
 for url in ["git@github.com:software-mansion/radon.git", "https://github.com/software-mansion/radon",
             "https://github.com/software-mansion/radon.git/", "ssh://git@github.com/software-mansion/radon.git",
-            "https://user@github.com/software-mansion/radon.git"] {
+            "https://user@github.com/software-mansion/radon.git",
+            "ssh://git@github.com:22/software-mansion/radon.git"] {
     check(PRRef.LocalRepo.coordinates(remoteURL: url) ?? ("", "") == ("software-mansion", "radon"), url)
 }
 check(PRRef.LocalRepo.coordinates(remoteURL: "git@gitlab.com:software-mansion/radon.git") == nil)

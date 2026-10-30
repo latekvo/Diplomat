@@ -12,7 +12,7 @@ enum LocalRepos {
         let repos: [PRRef.LocalRepo]
     }
 
-    /// Runs `git` once per path, so callers stay off the main actor.
+    /// One `git` call per path: keep it off the main actor.
     static func resolve(_ paths: [String]) -> [Checkout] {
         paths.map { raw in
             let path = (raw as NSString).expandingTildeInPath

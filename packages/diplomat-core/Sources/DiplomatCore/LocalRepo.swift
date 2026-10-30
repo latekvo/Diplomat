@@ -1,9 +1,9 @@
 import Foundation
 
 extension PRRef.LocalRepo {
-    /// The GitHub `owner`/`repo` a git remote URL names, or nil for any other host. Takes
-    /// the scp form (`git@github.com:o/r.git`) and the `https://` / `ssh://` URL forms,
-    /// with or without `.git`.
+    /// The GitHub `owner`/`repo` a git remote URL names, or nil for any other host: the scp
+    /// form (`git@github.com:o/r`) or a URL (`https`/`http`/`ssh`/`git`, any user and
+    /// port), with or without `.git`. Same pattern as `localrepos.py`.
     public static func coordinates(remoteURL: String) -> (owner: String, repo: String)? {
         let s = remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let pattern = #"^(?:(?:https?|ssh|git)://(?:[^@/]+@)?github\.com(?::[0-9]+)?/|[^@/:]+@github\.com:)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$"#
@@ -14,8 +14,8 @@ extension PRRef.LocalRepo {
         return (String(s[o]), String(s[r]))
     }
 
-    /// Every GitHub remote of the checkout at `path`, from `git config --get-regexp
-    /// '^remote\..*\.url$'` output, each once. A fork clone carries both the fork and the
+    /// Every GitHub remote of the checkout at `path`, from `git config --local
+    /// --get-regexp '^remote\..*\.url$'` output, each once. A fork clone carries both the fork and the
     /// project it forked, and a link to either belongs in that checkout. `upstream` comes
     /// first, then `origin`, then the rest in config order: the first entry is the one
     /// Settings names the checkout by.

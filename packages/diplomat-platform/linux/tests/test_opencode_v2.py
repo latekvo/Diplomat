@@ -346,14 +346,16 @@ def test_a_run_in_another_checkout_is_started_and_staged_there(opencode, as_v2, 
                          checkout=str(other))
     run_id = agentregistry.load()[0].run_id
     assert calls[0]["checkout"] == str(other)
+    assert agentregistry.run_directory(run_id) == str(other)
     session, _ = _staged(agentregistry.prompt_path(run_id))
     assert session["location"]["directory"] == str(other.resolve())
 
 
 def test_a_run_in_the_repo_root_names_no_checkout(monkeypatch):
     calls = _spawned(monkeypatch)
-    _spawn_tracked()
+    run_id = _spawn_tracked()
     assert "checkout" not in calls[0]
+    assert agentregistry.run_directory(run_id) == ""
 
 
 def test_a_1x_run_gets_its_port_and_binds_later(opencode, monkeypatch):

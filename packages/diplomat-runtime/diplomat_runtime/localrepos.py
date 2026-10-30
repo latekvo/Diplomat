@@ -23,10 +23,11 @@ from .prref import LocalRepo
 #: near this is a wedged filesystem, and the caller is the GUI thread.
 GIT_TIMEOUT = 5.0
 
-#: The three spellings of a GitHub remote: scp-like SSH, HTTPS, and an ``ssh://`` URL,
-#: each with an optional ``.git`` and the HTTPS one with an optional trailing slash.
+#: A GitHub remote in either spelling git writes: scp-like (``git@github.com:o/r``) or
+#: a URL (``https``/``http``/``ssh``/``git``, with any user and port), each with an
+#: optional ``.git`` and trailing slash. Same pattern as ``LocalRepo.swift``.
 _GITHUB_REMOTE = re.compile(
-    r"^(?:git@github\.com:|https://github\.com/|ssh://git@github\.com/)"
+    r"^(?:(?:https?|ssh|git)://(?:[^@/]+@)?github\.com(?::[0-9]+)?/|[^@/:]+@github\.com:)"
     r"([\w.-]+)/([\w.-]+?)(?:\.git)?/?$",
     re.IGNORECASE,
 )

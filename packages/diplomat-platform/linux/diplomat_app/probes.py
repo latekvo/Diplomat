@@ -377,9 +377,11 @@ def agent_sessions(records: list[RunRecord], directory: str,
     repaint two full per-run timeouts on the Qt thread. The staleness it buys is the
     one the pane tail already has for the very same busy-or-idle decision.
 
-    The directory is resolved because both stores record the agent's own ``getcwd()``,
-    which is physical, while the configured repo root is whatever the operator typed —
-    and the match is exact equality, so one symlink between them and no run ever binds.
+    The search is by the run's working directory: ``directory`` (the repo root), or the
+    checkout staged for a run on another repo (:func:`agentregistry.run_directory`). It
+    is resolved because both stores record the agent's own ``getcwd()``, which is
+    physical, while the path is whatever the operator typed — and the match is exact
+    equality, so one symlink between them and no run ever binds.
     """
     from diplomat_runtime import agentregistry
 
@@ -408,7 +410,9 @@ def agent_sessions(records: list[RunRecord], directory: str,
         backend = _BACKENDS[name]
         session_id = service_session(record) or agentregistry.bound_session(record.run_id)
         if not session_id:
-            session_id = backend.bind(record, directory, taken)
+            own = agentregistry.run_directory(record.run_id)
+            session_id = backend.bind(record, os.path.realpath(own) if own else directory,
+                                      taken)
             if not session_id:
                 continue
             agentregistry.bind_session(record.run_id, session_id)
