@@ -75,6 +75,10 @@ public enum AgentRegistry {
         runDir(runID).appendingPathComponent("runner")
     }
 
+    public static func directoryPath(_ runID: String) -> URL {
+        runDir(runID).appendingPathComponent("directory")
+    }
+
     public static func portPath(_ runID: String) -> URL {
         runDir(runID).appendingPathComponent("port")
     }
@@ -294,6 +298,17 @@ public enum AgentRegistry {
     /// ever had.
     public static func runRunner(_ runID: String) -> String {
         read(runnerPath(runID))
+    }
+
+    /// Record the checkout a run works in, when that is not the repo root. Its session is
+    /// found by the directory the agent ran in (`AgentSessionProbe.states`).
+    public static func stageDirectory(_ runID: String, _ path: String) {
+        try? path.write(to: directoryPath(runID), atomically: true, encoding: .utf8)
+    }
+
+    /// The checkout this run works in, or "" for the repo root.
+    public static func runDirectory(_ runID: String) -> String {
+        read(directoryPath(runID))
     }
 
     /// Which agent CLIs the runs the run deadline could end were started under — what

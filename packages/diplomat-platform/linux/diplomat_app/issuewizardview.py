@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from . import glyphs, issues, widgets
 from .issues import Target
 from .store import Store
-from .wizardbase import SpawnWizard
+from .wizardbase import SpawnWizard, mesh_applicable, mismatch_warning
 
 _TINT = "#00C7BE"  # mint, matching the macOS Fix-issues card
 
@@ -164,6 +164,7 @@ class IssueWizardView(SpawnWizard):
             open_prs=self.open_prs.isChecked(),
             comment_on_issue=self.comment_on_issue.isChecked(),
             include_features=self.include_features.isChecked(),
+            local_repos=self.store.local_repos,
         )
 
     def _sync(self) -> None:
@@ -183,17 +184,14 @@ class IssueWizardView(SpawnWizard):
 
         ref = cfg.issue_ref
         if is_specific and ref.repo_mismatch:
-            owner, repo = cfg.target_repo
-            self.issue_warning.setText(f"That issue isn't in {owner}/{repo}.")
+            self.issue_warning.setText(mismatch_warning("issue", cfg))
             self.issue_warning.setVisible(True)
         else:
             self.issue_warning.setVisible(False)
 
         self.unassigned_only.setVisible(cfg.can_filter_unassigned)
 
-        # Only a named issue is a session this row could place: a scope opens none,
-        # it queues one fix per issue for this machine's own cap to start.
-        self.mesh_row.set_applicable(is_specific)
+        self.mesh_row.set_applicable(mesh_applicable(cfg, is_specific))
 
         self._restyle_spawn()
 
@@ -213,5 +211,5 @@ class IssueWizardView(SpawnWizard):
         own :class:`~diplomat_runtime.autofix.RequestedWork`."""
         cfg = self._config()
         n = cfg.issue_ref.number
-        scope = f"#{n}" if n is not None else "issue"
+        scope = cfg.listed_scope or (f"#{n}" if n is not None else "issue")
         return f"Issues · {scope} · {issues.depth_by_id(cfg.depth)['title']}"

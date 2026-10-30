@@ -34,6 +34,22 @@ from .meshspawn import MeshSpawnRow
 from .store import Store
 
 
+def mismatch_warning(noun: str, cfg) -> str:
+    """The line under a single-item field whose link names a repo nothing here works
+    in: neither the configured one nor, once any are listed, the other checkouts."""
+    owner, repo = cfg.configured_repo
+    listed = " or any repo listed in Settings" if cfg.local_repos else ""
+    return f"That {noun} isn't in {owner}/{repo}{listed}."
+
+
+def mesh_applicable(cfg, opens_session: bool) -> bool:
+    """Whether the mesh row may route this spawn: only one that opens a session (a
+    Review or Fix-issues scope opens none, it queues one per item for this machine's
+    own cap), and never one in another listed checkout, which a peer would start in
+    its own repo root."""
+    return opens_session and cfg.checkout is None
+
+
 class SpawnWizard(QWidget):
     """Base for the four wizards: owns the mesh row, the SPAWN button and the
     dispatch branch. Subclasses build their own inputs and supply the hooks below."""
@@ -67,6 +83,9 @@ class SpawnWizard(QWidget):
         # and would otherwise hand it back mid-flight: every input change calls one,
         # and so does the panel's own periodic refresh_identity().
         self._dispatch_inflight = False
+        # A link already in the single-item field may name a checkout that was just
+        # listed or removed in Settings.
+        store.local_repos_changed.connect(self._sync)
 
     # ---- hooks the subclasses fill in ------------------------------------
 
@@ -157,6 +176,7 @@ class SpawnWizard(QWidget):
                 pr_number=cfg.single_pr_number,
                 author_login=self._author_login(),
                 duty=self._kind,
+                checkout=cfg.checkout,
             ),
             autofix.SOURCE_PANEL,
         )

@@ -28,10 +28,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from diplomat_runtime import core
-from diplomat_runtime.configbase import RepoConfig
+from diplomat_runtime.configbase import RepoConfig, listed_payload
 from diplomat_runtime.depths import DepthLadder
 from diplomat_runtime.issuetarget import IssueTarget
-from diplomat_runtime.prref import PRRef, parse_pr_ref
+from diplomat_runtime.prref import LocalRepo, PRRef, parse_pr_ref
 
 # Whose issues we sweep. Re-exported as ``Target`` so the wizard reads like its
 # Review/Resolve-conflicts siblings.
@@ -66,6 +66,9 @@ class IssueConfig(RepoConfig):
     #: The one issue this run works. Typed by hand under the SPECIFIC scope, and
     #: filled in per issue by :meth:`for_issue` for every other one.
     specific_issue: str = ""
+    #: The checkouts listed in Settings that a pasted link in ``specific_issue`` may
+    #: name.
+    local_repos: tuple[LocalRepo, ...] = ()
 
     #: Skip every issue that already has an assignee — somebody is on it already.
     unassigned_only: bool = True
@@ -130,8 +133,9 @@ class IssueConfig(RepoConfig):
         only the issue is added. The scope is deliberately KEPT rather than collapsed
         to SPECIFIC: it is what still says this issue was swept rather than named, and
         so that the run re-checks the state the sweep selected on before working an
-        issue whose turn came hours later."""
-        return replace(self, specific_issue=str(number))
+        issue whose turn came hours later. No listed checkouts: a swept issue is the
+        configured repo's, so they would only be stored."""
+        return replace(self, specific_issue=str(number), local_repos=())
 
     @property
     def can_filter_unassigned(self) -> bool:
@@ -143,9 +147,14 @@ class IssueConfig(RepoConfig):
     @property
     def issue_ref(self) -> PRRef:
         """The single-issue field parsed as a number / URL / ``owner/repo#n``
-        shorthand, checked against the target repo."""
-        owner, repo = self.target_repo
-        return parse_pr_ref(self.specific_issue, owner, repo, kind="issues")
+        shorthand, checked against the configured repo, then ``local_repos``."""
+        owner, repo = self.configured_repo
+        return parse_pr_ref(self.specific_issue, owner, repo, kind="issues",
+                            also=self.local_repos)
+
+    @property
+    def single_ref(self) -> PRRef | None:
+        return self.issue_ref if self.is_single_issue else None
 
     @property
     def is_valid(self) -> bool:
@@ -172,6 +181,7 @@ class IssueConfig(RepoConfig):
             "openPRs": self.open_prs,
             "commentOnIssue": self.comment_on_issue,
             "includeFeatures": self.include_features,
+            **listed_payload(self.local_repos),
         }
 
     def build_prompt(self) -> str:

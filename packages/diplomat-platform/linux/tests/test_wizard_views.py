@@ -682,3 +682,114 @@ def test_every_wizard_survives_refresh_identity(store, build):
     which has no identity to refresh."""
     w = build(store)
     w.refresh_identity()  # must not raise
+
+
+# ---- links to the other checkouts listed in Settings -----------------------
+
+
+RADON_PR = "https://github.com/software-mansion/radon/pull/291"
+RADON_ISSUE = "https://github.com/software-mansion/radon/issues/7"
+
+
+def _list_radon(monkeypatch, store, path="/src/radon"):
+    """List one other checkout in Settings, answering for software-mansion/radon."""
+    from diplomat_runtime import localrepos
+    from diplomat_runtime.prref import LocalRepo
+
+    monkeypatch.setattr(localrepos, "resolve", lambda paths: [
+        localrepos.Checkout(p, (LocalRepo("software-mansion", "radon", p),))
+        for p in paths])
+    store.other_repo_paths = [path]
+
+
+@pytest.fixture
+def radon_listed(monkeypatch, store):
+    _list_radon(monkeypatch, store)
+
+
+def _single(store, cls, text):
+    w = cls(store)
+    if cls is IssueWizardView:
+        w.target.setCurrentIndex(w.target.findData(issues.Target.SPECIFIC))
+        w.specific_issue.setText(text)
+    else:
+        w.target.setCurrentIndex(w.target.findData(PRTarget.SPECIFIC))
+        w.specific_pr.setText(text)
+    return w
+
+
+LISTED = [
+    pytest.param(WizardView, RADON_PR, "Review · software-mansion/radon#291 · ", id="review"),
+    pytest.param(ConflictWizardView, RADON_PR,
+                 "Resolve conflicts · software-mansion/radon#291", id="conflicts"),
+    pytest.param(IssueWizardView, RADON_ISSUE, "Issues · software-mansion/radon#7 · ",
+                 id="issues"),
+]
+
+
+@pytest.mark.parametrize("cls, text, label", LISTED)
+def test_a_link_to_a_listed_repo_spawns_in_its_checkout(
+        store, dispatched, local_only, radon_listed, cls, text, label):
+    w = _single(store, cls, text)
+    assert w.spawn_btn.isEnabled()
+    w._spawn()
+
+    job, _ = dispatched[0]
+    assert job.checkout == "/src/radon"
+    assert job.label.startswith(label)
+    # Booked by its link only: a bare 291 would be deduped against the configured
+    # repo's PR of that number.
+    assert job.pr_number is None
+    assert job.pr_url == (None if cls is IssueWizardView else RADON_PR)
+
+
+@pytest.mark.parametrize("cls, text, label", LISTED)
+def test_a_link_to_a_listed_repo_is_never_offered_to_the_mesh(store, radon_listed,
+                                                              cls, text, label):
+    w = _single(store, cls, text)
+    assert not w.mesh_row._applicable
+    assert not w.mesh_row.use_mesh()
+
+
+def test_the_configured_repo_still_spawns_in_the_repo_root(store, dispatched, local_only,
+                                                          radon_listed):
+    w = _single(store, WizardView, "455")
+    assert w.mesh_row._applicable
+    w._spawn()
+    job, _ = dispatched[0]
+    assert job.checkout is None and job.pr_number == 455
+    assert job.label.startswith("Review · 455 · ")
+
+
+def test_listing_a_repo_re_judges_a_link_already_in_the_field(store, monkeypatch):
+    w = _single(store, WizardView, RADON_PR)
+    assert not w.spawn_btn.isEnabled()
+    assert w.pr_warning.text() == "That PR isn't in software-mansion/argent."
+
+    _list_radon(monkeypatch, store)
+    assert w.spawn_btn.isEnabled() and w.pr_warning.isHidden()
+
+
+@pytest.mark.parametrize("cls, noun", [
+    pytest.param(WizardView, "PR", id="review"),
+    pytest.param(ConflictWizardView, "PR", id="conflicts"),
+    pytest.param(IssueWizardView, "issue", id="issues"),
+])
+def test_the_warning_names_the_listed_repos_once_there_are_any(store, radon_listed,
+                                                               cls, noun):
+    kind = "issues" if noun == "issue" else "pull"
+    w = _single(store, cls, f"https://github.com/other/proj/{kind}/5")
+    warning = w.issue_warning if cls is IssueWizardView else w.pr_warning
+    assert warning.text() == (f"That {noun} isn't in software-mansion/argent "
+                              "or any repo listed in Settings.")
+
+
+def test_the_author_poll_asks_about_the_listed_repo(store, radon_listed, monkeypatch):
+    asked = []
+    monkeypatch.setattr(review, "fetch_specific_author",
+                        lambda owner, repo, number: asked.append((owner, repo, number)))
+    monkeypatch.setattr(store, "start_background", lambda work: work())
+    _single(store, WizardView, RADON_PR)
+    # Other tests' wizards may still have a debounced poll in flight, landing here too.
+    assert ("software-mansion", "radon", 291) in asked
+    assert ("software-mansion", "argent", 291) not in asked

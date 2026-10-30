@@ -45,11 +45,13 @@ struct ConflictWizardView: View {
     @State private var meshDispatching = false
 
     private var config: ConflictConfig {
-        ConflictConfig(
+        var cfg = ConflictConfig(
             target: target,
             username: username,
             me: store.effectiveMe,
             specificPR: specificPR)
+        cfg.localRepos = store.localRepos
+        return cfg
     }
 
     var body: some View {
@@ -102,11 +104,9 @@ struct ConflictWizardView: View {
         }
     }
 
-    /// A hint under the PR field when a pasted URL points at a different repo.
+    /// A hint under the PR field when a pasted URL points at an unknown repo.
     private var prWarning: String? {
-        guard config.prRef.repoMismatch else { return nil }
-        let (owner, repo) = config.targetRepo
-        return "That PR isn't in \(owner)/\(repo)."
+        config.prRef.mismatchWarning("PR", anyListed: !store.localRepos.isEmpty)
     }
 
     private var blurbRow: some View {
@@ -118,6 +118,7 @@ struct ConflictWizardView: View {
                             isValid: config.isValid && !meshDispatching,
                             tint: tint,
                             terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                            routable: config.checkout == nil,
                             action: spawn)
     }
 
@@ -129,21 +130,26 @@ struct ConflictWizardView: View {
             let u = username.trimmingCharacters(in: .whitespaces)
             return "Resolve · @\(u.isEmpty ? "user" : u)"
         case .specific:
-            let n = config.prRef.number.map { "#\($0)" } ?? "PR"
-            return "Resolve · \(n)"
+            return "Resolve · \(config.prRef.label ?? "PR")"
         }
     }
 
     /// The one PR this run concerns (single-PR mode only) — the open-in-browser
     /// fallback when its window can't be focused.
     private var trackingPRURL: String? {
-        guard let n = specificNumber else { return nil }
+        guard let n = linkedNumber else { return nil }
         let (owner, repo) = config.targetRepo
         return "https://github.com/\(owner)/\(repo)/pull/\(n)"
     }
 
-    /// The single PR's number (single-PR mode only) — the pipeline's dedup key.
+    /// The single PR's number (single-PR mode only) — the pipeline's dedup key. Nil
+    /// for a PR in a listed repo: the key is a bare number, read as the configured repo's.
     private var specificNumber: Int? {
+        target == .specific && config.checkout == nil ? config.prRef.number : nil
+    }
+
+    /// The single PR's number whichever repo it is in — the tracking link.
+    private var linkedNumber: Int? {
         target == .specific ? config.prRef.number : nil
     }
 
@@ -151,7 +157,7 @@ struct ConflictWizardView: View {
         let cfg = config
         // Mesh path: hand the job to the local node (it picks the executor, with
         // failover) instead of opening a terminal here — mirrors the Linux wizards.
-        if MeshSpawnRow.isLive(store), useMesh {
+        if MeshSpawnRow.isLive(store), useMesh, cfg.checkout == nil {
             meshDispatching = true
             status = "Dispatching over the mesh…"
             AuditLog.log("panel", "conflicts", "\(trackingLabel) · via mesh")
@@ -169,7 +175,7 @@ struct ConflictWizardView: View {
                                  label: trackingLabel, prompt: cfg.buildPrompt(),
                                  prURL: trackingPRURL, prNumber: specificNumber,
                                  authorLogin: nil, duty: "conflicts",
-                                 workKey: "", counter: nil)
+                                 workKey: "", counter: nil, directory: cfg.checkout)
         status = "Launching \(term.title)…"
         Task {
             status = statusText(for: await store.dispatchAgent(job, source: .panel),
