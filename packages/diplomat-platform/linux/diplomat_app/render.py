@@ -65,6 +65,7 @@ def _settings_fixture(store: Store, *, explain: bool) -> None:
     store.review_requests_enabled = True
     store.review_allowlist_raw = "latekvo, @t0tl"
     store.auto_approve_enabled = True
+    store.community_issues_enabled = True
     store.review_requests_handled = 7
     store.unaddressed_reviews = 2
     store.settings_explain = explain

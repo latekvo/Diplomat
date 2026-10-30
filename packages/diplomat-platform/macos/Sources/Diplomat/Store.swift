@@ -148,6 +148,24 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Whether to queue a reproduce-and-fix of every issue the community files from
+    /// here on. Persisted; kicks a poll on enable. Off, nothing is queued and the mark
+    /// is dropped, so switching it back on starts from that moment
+    /// (`queueCommunityIssues`).
+    @Published var communityIssuesEnabled: Bool {
+        didSet {
+            persist(communityIssuesEnabled, forKey: Keys.communityIssuesEnabled)
+            if !communityIssuesEnabled { communityIssuesSince = nil }
+            if communityIssuesEnabled && !oldValue && !Headless.active { Task { await runAutofixPollOnce() } }
+        }
+    }
+
+    /// Where the next community-issue scan starts (`Filters.newCommunityIssues`); nil
+    /// until the first scan sets it.
+    private var communityIssuesSince: Date? {
+        didSet { persist(communityIssuesSince, forKey: Keys.communityIssuesSince) }
+    }
+
     /// The logins the auto-review monitor is limited to, as the operator typed them.
     /// Blank ⇒ every author, which is what an applet that was never told otherwise
     /// does. Stored raw because this is a text field: parsing on the way in would
@@ -614,6 +632,8 @@ final class Store: ObservableObject {
         static let autofixReviews = "autofixReviewsHandled"
         static let reviewRequestsEnabled = "reviewRequestsEnabled"
         static let reviewAllowlistRaw = "reviewAllowlistRaw"
+        static let communityIssuesEnabled = "communityIssuesEnabled"
+        static let communityIssuesSince = "communityIssuesSince"
         static let reviewReqAttempts = "reviewReqAttempts"
         static let myReviewAttempts = "myReviewAttempts"
         static let reviewRequestsHandled = "reviewRequestsHandled"
@@ -774,6 +794,8 @@ final class Store: ObservableObject {
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
         reviewRequestsEnabled = defaults.object(forKey: Keys.reviewRequestsEnabled) as? Bool ?? true
         reviewAllowlistRaw = defaults.string(forKey: Keys.reviewAllowlistRaw) ?? ""
+        communityIssuesEnabled = defaults.object(forKey: Keys.communityIssuesEnabled) as? Bool ?? true
+        communityIssuesSince = defaults.object(forKey: Keys.communityIssuesSince) as? Date
         queueAutoRun = defaults.object(forKey: Keys.queueAutoRun) as? Bool ?? true
         // Auto-approvals OFF by default — an auto-review never submits a verdict on my
         // behalf until I explicitly opt in.
@@ -1841,7 +1863,7 @@ final class Store: ObservableObject {
     /// agent for each PR that just gained a conflict or new review work. No-op until
     /// our login is known.
     ///
-    /// Both monitors poll on every cycle, switched on or off. A switched-off one
+    /// Both PR monitors poll on every cycle, switched on or off. A switched-off one
     /// still finds what it would have done and queues it (`isPaused`) — the panel is
     /// where the operator sees what their PRs owe, and that question does not go away
     /// with the toggle that answers it automatically. Nothing of a paused monitor's is
@@ -1891,6 +1913,7 @@ final class Store: ObservableObject {
             stagedQueue = []
             if let snaps { await pollMyPRs(snaps: snaps) }
             await pollReviewRequests(owner: owner, repo: repo)
+            await pollCommunityIssues()
             // Last, so the monitors' finds keep the places they were found in: the
             // operator's own sweep bands behind them anyway, and a fifty-item ask
             // offered first would otherwise decide the arrangement of a queue it is
@@ -2043,6 +2066,44 @@ final class Store: ObservableObject {
     }
     private func saveMyConflictAttempts(_ map: [String: ReviewAttempt]) {
         persistJSON(map, forKey: Keys.myConflictAttempts)
+    }
+
+    private func pollCommunityIssues() async {
+        guard communityIssuesEnabled else { return }
+        do {
+            queueCommunityIssues(try await API.fetchOpenIssues())
+        } catch {
+            notePollFailure(error)
+        }
+    }
+
+    /// Queue one fix for each issue the community filed since the last scan of
+    /// `found`, the repo's open issues.
+    ///
+    /// Queued as an ask, the same row a Fix-issues sweep of the community leaves,
+    /// because nothing on GitHub would re-offer it: the mark moves past each issue once
+    /// (`Filters.newCommunityIssues`). So it is offered until it is dispatched, can be
+    /// cancelled, and re-reads its issue when its turn comes.
+    ///
+    /// Not private: the queue self-test drives it with a fixture fetch.
+    func queueCommunityIssues(_ found: [OpenIssue]) {
+        let scan = Filters.newCommunityIssues(found, since: communityIssuesSince, now: Date())
+        let banned = BanList.read()
+        for issue in scan.fresh {
+            let who = "Issue #\(issue.number) by @\(issue.author)"
+            if BanList.isBanned(issue.author, in: banned) {
+                AuditLog.log("auto", "ban-skip", "\(who) — author is banned, not queued")
+                continue
+            }
+            let cfg = IssueConfig(target: .contributors, me: effectiveMe)
+            if requestOne(RequestedWork(number: issue.number, url: issue.url,
+                                        author: issue.author,
+                                        config: .issues(cfg.forIssue(issue.number)))) {
+                AuditLog.log("auto", "community-issue", "\(who) — fix queued")
+            }
+        }
+        communityIssuesSince = scan.since
+        if !scan.fresh.isEmpty { refreshAudit() }
     }
 
     /// PRs that request MY review: dispatch the most-comprehensive review whenever I OWE

@@ -665,6 +665,20 @@ class Store(QObject):
         self._settings.setValue("reviewRequestsEnabled", bool(value))
 
     @property
+    def community_issues_enabled(self) -> bool:
+        """Queue a reproduce-and-fix of every issue the community files from here on.
+        On by default (matches macOS). Off, nothing is queued and the mark is
+        dropped, so switching it back on starts from that moment rather than
+        queueing what was filed meanwhile (:meth:`_poll_community_issues`)."""
+        return self._settings.value("communityIssuesEnabled", True, bool)
+
+    @community_issues_enabled.setter
+    def community_issues_enabled(self, value: bool) -> None:
+        self._settings.setValue("communityIssuesEnabled", bool(value))
+        if not value:
+            self._settings.remove("communityIssuesSince")
+
+    @property
     def review_allowlist_raw(self) -> str:
         """The logins the auto-review monitor is limited to, as the operator typed
         them. Blank ⇒ every author, which is what an applet that was never told
@@ -1167,11 +1181,12 @@ class Store(QObject):
                 # succeeds, since the refusal that staged them wrote no attempt
                 # record.
                 self._staged_queue = []
-                # Both monitors run whatever their toggles say; a switched-off one
+                # Both PR monitors run whatever their toggles say; a switched-off one
                 # queues what it finds instead of dispatching it (see is_paused).
                 if snaps is not None:
                     self._poll_my_prs(snaps)
                 self._poll_review_requests(owner, repo)
+                self._poll_community_issues()
                 # Last, so the monitors' finds keep the places they were found in:
                 # the operator's own sweep bands behind them anyway, and a fifty-item
                 # ask offered first would otherwise decide the arrangement of a queue
@@ -1289,6 +1304,43 @@ class Store(QObject):
                 )
         keep = {str(s.number) for s in snaps if s.mergeable != "MERGEABLE"}
         self._save_attempts(key, {k: v for k, v in attempts.items() if k in keep})
+
+    def _poll_community_issues(self) -> None:
+        """Queue one fix for each issue the community filed since the last scan.
+
+        Queued as an ask, the same row a Fix-issues sweep of the community leaves,
+        because nothing on GitHub would re-offer it: the mark moves past each issue
+        once (:meth:`Filters.new_community_issues`). So it is offered until it is
+        dispatched, can be cancelled, and re-reads its issue when its turn comes."""
+        if not self.community_issues_enabled:
+            return
+        try:
+            found = autofixmonitor.fetch_open_issues()
+        except Exception as exc:  # noqa: BLE001
+            self._note_poll_failure(exc)
+            return
+        try:
+            since = datetime.fromisoformat(
+                self._settings.value("communityIssuesSince", "", str))
+        except ValueError:
+            # Unset or unreadable: re-baseline rather than fail every poll from here on.
+            since = None
+        fresh, mark = Filters.new_community_issues(
+            found, since, datetime.now().astimezone())
+        banned = bans.read()
+        for issue in fresh:
+            who = f"Issue #{issue.number} by @{issue.author}"
+            if bans.is_banned(issue.author, banned):
+                activity.log("auto", "ban-skip", f"{who} - author is banned, not queued")
+                continue
+            cfg = issues.IssueConfig(target=issues.Target.CONTRIBUTORS,
+                                     me=self.effective_me)
+            queued, _ = self._request([autofix.RequestedWork(
+                number=issue.number, url=issue.url, author=issue.author,
+                config=cfg.for_issue(issue.number).prompt_payload())])
+            if queued:
+                activity.log("auto", "community-issue", f"{who} - fix queued")
+        self._settings.setValue("communityIssuesSince", mark.isoformat())
 
     def _poll_review_requests(self, owner: str, repo: str) -> None:
         try:

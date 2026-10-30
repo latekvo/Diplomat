@@ -297,12 +297,13 @@ struct SettingsView: View {
             pollErrorRow
             reviewRequestsRow
             reviewPolicyBlock
+            communityIssuesRow
         }
     }
 
     /// How much automatic work this machine may run, and whether it can afford to. Its
     /// own card, beside the monitors rather than under them: both rows bound *every*
-    /// automatic agent — the two monitors above and anything a mesh peer routes here.
+    /// automatic agent — the monitors above and anything a mesh peer routes here.
     private var limitsSection: some View {
         let n = store.autoTaskLimit
         return SettingsCard(symbol: "speedometer", title: "LIMITS", tint: .orange,
@@ -317,6 +318,7 @@ struct SettingsView: View {
     /// stale, and nothing dispatched.
     private var autofixPill: StatusPill {
         let on = store.prAutofixEnabled || store.reviewRequestsEnabled
+            || store.communityIssuesEnabled
         if !on { return StatusPill(text: "manual", tint: .secondary, symbol: "hand.raised") }
         if store.autofixPollError != nil {
             return StatusPill(text: "polls failing", tint: .red,
@@ -366,6 +368,21 @@ struct SettingsView: View {
             }
         }
     }
+
+    private var communityIssuesRow: some View {
+        SettingRow(title: "Fix new community issues",
+                   summary: "Reproduce each issue filed from outside the org, and fix it "
+                          + "if it reproduces.",
+                   detail: SettingsView.communityIssuesDetail) {
+            switchControl("Fix new community issues", $store.communityIssuesEnabled)
+        }
+    }
+
+    private static let communityIssuesDetail = """
+        Issues filed from the moment it is on; the backlog is a Fix-issues sweep's. \
+        Each is a cancellable fix under Agent tasks. Off, nothing is queued, and issues \
+        filed meanwhile are left for a sweep.
+        """
 
     private static let reviewRequestsDetail = """
         A review that never lands (agent died, window closed) is retried. Off, the \
@@ -480,9 +497,9 @@ struct SettingsView: View {
         }
     }
 
-    /// The device-wide ceiling on concurrent automatic agents. Under both monitors
-    /// because it governs both — a poll of either can find any number of pending units
-    /// at once, and this is what keeps them from all opening at the same moment.
+    /// The device-wide ceiling on concurrent automatic agents. It governs every
+    /// monitor — a poll of any can find any number of pending units at once, and this
+    /// is what keeps them from all opening at the same moment.
     private var autoTaskLimitRow: some View {
         let n = store.autoTaskLimit
         let lo = AgentDispatchGate.minAutoTaskLimit, hi = AgentDispatchGate.maxAutoTaskLimit
@@ -508,7 +525,7 @@ struct SettingsView: View {
     /// or a ternary inside a `Text(...)` in a builder is what tips this file over the
     /// type-checker's time limit on a CI runner, while still compiling here.
     private static let autoTaskLimitSummary =
-        "Across both monitors, a PR sweep's reviews, and anything a mesh peer routes here."
+        "Across every monitor, a PR sweep's reviews, and anything a mesh peer routes here."
 
     private static let autoTaskLimitDetail = """
         The agent a wizard press opens on the spot is outside the cap; a review it \

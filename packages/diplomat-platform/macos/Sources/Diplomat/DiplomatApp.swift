@@ -846,6 +846,24 @@ enum Dump {
                                specificPR: String(sample), finalPass: sampleVerdict,
                                specificAuthor: .theirs).buildPrompt())
 
+            // New community issues: the scan the monitor runs, against a mark a week back
+            // (a live mark is the newest issue, which would show nothing).
+            let open = try await API.fetchOpenIssues()
+            let weekAgo = Date().addingTimeInterval(-7 * 86400)
+            let scan = Filters.newCommunityIssues(open, since: weekAgo, now: Date())
+            print("\n== new community issues: \(scan.fresh.count) of \(open.count) open issue(s) "
+                + "filed since \(weekAgo) would be queued ==")
+            for i in open where i.createdAt > weekAgo {
+                let queued = scan.fresh.contains { $0.number == i.number }
+                print("  #\(i.number)  \(queued ? "QUEUE" : "skip ")  @\(i.author)[\(i.authorAssociation)]  "
+                    + "assignees=\(i.assignees.count) teamReplied=\(i.memberResponded)  \(i.title.prefix(40))")
+            }
+            print("→ next mark: \(scan.since)")
+            if let first = scan.fresh.first {
+                print("\n----- COMMUNITY FIX prompt (#\(first.number)) -----")
+                print(IssueConfig(target: .contributors, me: me).forIssue(first.number).buildPrompt())
+            }
+
             // Mesh coordination: every machine scans and routes each find through
             // claim-gated DISPATCH to the best-surplus node (szpontnet-spec/docs/12) —
             // REAL node state, REAL claim verb probe, no spawn.
