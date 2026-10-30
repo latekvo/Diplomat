@@ -80,6 +80,10 @@ public struct ReviewConfig: Codable, Equatable {
     public var includeReady: Bool
     public var specificPR: String
 
+    /// The local checkouts besides the configured repo that a pasted link may name
+    /// (Settings → OTHER REPOS). Optional so a queued config stored without it decodes.
+    public var localRepos: [PRRef.LocalRepo]?
+
     /// The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     public var finalPass: Bool
 
@@ -164,16 +168,23 @@ public struct ReviewConfig: Codable, Equatable {
     /// deliberately NOT review-only.)
     public var isReviewOnly: Bool { target == .someone }
 
-    /// The configured target repo (owner, repo), from the shared core config.
+    /// The repo this run works in: the listed checkout a single-item link named, else
+    /// the configured one. A sweep never reads the single-item field, so text left in it
+    /// can't retarget one.
     public var targetRepo: (owner: String, repo: String) {
-        CoreAssets.repoCoordinates()
+        if isSinglePR, let local = prRef.repo { return (local.owner, local.repo) }
+        return CoreAssets.repoCoordinates()
     }
 
+    /// Where the agent works when that is not the repo root: the listed checkout
+    /// `targetRepo` came from, or nil.
+    public var checkout: String? { isSinglePR ? prRef.repo?.path : nil }
+
     /// The single-PR field parsed as a number / URL / `owner/repo#n` shorthand,
-    /// checked against the target repo.
+    /// checked against the configured repo, then `localRepos`.
     public var prRef: PRRef {
-        let (owner, repo) = targetRepo
-        return PRRef.parse(specificPR, owner: owner, repo: repo)
+        let (owner, repo) = CoreAssets.repoCoordinates()
+        return PRRef.parse(specificPR, owner: owner, repo: repo, also: localRepos ?? [])
     }
 
     public var isValid: Bool {
@@ -246,7 +257,7 @@ public struct ReviewConfig: Codable, Equatable {
         let review = try? CoreAssets.review()
         let scope = review?.scope ?? [:]
         let blocks = review?.blocks ?? [:]
-        let (owner, repo) = CoreAssets.repoCoordinates()
+        let (owner, repo) = targetRepo
 
         // A specific PR may be mine OR someone else's — which decides whether the agent
         // may touch the branch. When we know the author (the wizard polled it, or a

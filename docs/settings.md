@@ -125,6 +125,12 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   process, so the pick lives in
   the shared `~/.diplomat/config.json` that both front-ends and the node re-read on
   each spawn - change it and a *running* node picks it up.
+- **Other repos** - more local checkouts, added with **Add…**. A PR or issue link
+  (URL or `owner/repo#N`) pasted into a wizard may name any of them: the prompt
+  targets that repo and its agent starts in that checkout. Each is known by its
+  GitHub remotes (`upstream` is the one shown, then `origin`), so a fork clone takes
+  links to both. Such a run never goes over the mesh - a peer would start it in its
+  own repo root. Bare numbers, sweeps and the monitors stay on the configured repo.
 - **Auto-queue fixes for my PRs / Auto-queue reviews that request me** - the two
   monitor toggles, with live status: PRs watched, reviews done so far, "N
   unaddressed reviews - retrying", and any poll failure. (The combined *fixed N*

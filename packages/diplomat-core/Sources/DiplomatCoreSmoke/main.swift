@@ -198,6 +198,64 @@ check(PRRef.parse("not-a-pr", owner: cfg.owner, repo: cfg.repo).number == nil)
 check(PRRef.parse("+337", owner: cfg.owner, repo: cfg.repo).number == nil)
 check(PRRef.parse("#+337", owner: cfg.owner, repo: cfg.repo).number == nil)
 check(PRRef.parse("٣٣٧", owner: cfg.owner, repo: cfg.repo).number == nil)
+// A link to a listed checkout is accepted and resolves to it; the configured repo
+// outranks a listed one with the same coordinates, and an unlisted repo still mismatches.
+let radon = PRRef.LocalRepo(owner: "software-mansion", repo: "radon", path: "/tmp/radon")
+let twin = PRRef.LocalRepo(owner: cfg.owner, repo: cfg.repo, path: "/tmp/twin")
+let listed = PRRef.parse("https://github.com/Software-Mansion/Radon/pull/291",
+                         owner: cfg.owner, repo: cfg.repo, also: [twin, radon])
+check(listed.number == 291 && listed.isValid && listed.repo == radon)
+check(PRRef.parse("software-mansion/radon#7", owner: cfg.owner, repo: cfg.repo,
+                  also: [radon]).repo == radon)
+check(PRRef.parse("\(cfg.owner)/\(cfg.repo)#9", owner: cfg.owner, repo: cfg.repo,
+                  also: [twin]).repo == nil)
+check(PRRef.parse("https://github.com/other/proj/pull/5", owner: cfg.owner, repo: cfg.repo,
+                  also: [radon]).repoMismatch)
+check(PRRef.parse("291", owner: cfg.owner, repo: cfg.repo, also: [radon]).repo == nil)
+// The configs follow the resolved repo in single-item mode only: a sweep with a listed
+// link left in its field still targets, and works in, the configured repo.
+var radonReview = single("https://github.com/software-mansion/radon/pull/291")
+radonReview.localRepos = [radon]
+check(radonReview.targetRepo == ("software-mansion", "radon") && radonReview.checkout == "/tmp/radon")
+check(radonReview.buildPrompt().contains("software-mansion/radon"))
+check(!radonReview.buildPrompt().contains("\(cfg.owner)/\(cfg.repo)"))
+radonReview.target = .mine
+check(radonReview.targetRepo == (cfg.owner, cfg.repo) && radonReview.checkout == nil)
+var radonIssue = IssueConfig(target: .specific,
+                             specificIssue: "https://github.com/software-mansion/radon/issues/4")
+check(!radonIssue.isValid)
+radonIssue.localRepos = [radon]
+check(radonIssue.isValid && radonIssue.checkout == "/tmp/radon"
+      && radonIssue.buildPrompt().contains("software-mansion/radon"))
+var radonConflict = ConflictConfig(target: .specific,
+                                   specificPR: "https://github.com/software-mansion/radon/pull/291")
+radonConflict.localRepos = [radon]
+check(radonConflict.isValid && radonConflict.checkout == "/tmp/radon"
+      && radonConflict.buildPrompt().contains("software-mansion/radon"))
+// A checkout's GitHub remotes, in every URL form git writes, upstream first.
+for url in ["git@github.com:software-mansion/radon.git", "https://github.com/software-mansion/radon",
+            "https://github.com/software-mansion/radon.git/", "ssh://git@github.com/software-mansion/radon.git",
+            "https://user@github.com/software-mansion/radon.git"] {
+    check(PRRef.LocalRepo.coordinates(remoteURL: url) ?? ("", "") == ("software-mansion", "radon"), url)
+}
+check(PRRef.LocalRepo.coordinates(remoteURL: "git@gitlab.com:software-mansion/radon.git") == nil)
+check(PRRef.LocalRepo.coordinates(remoteURL: "https://github.com.evil.io/a/b") == nil)
+check(PRRef.LocalRepo.coordinates(remoteURL: "/srv/git/radon.git") == nil)
+let remotes = """
+remote.mine.url git@github.com:me/thing.git
+remote.origin.url git@github.com:me/radon.git
+remote.gitlab.url git@gitlab.com:x/y.git
+remote.upstream.url https://github.com/software-mansion/radon.git
+remote.dup.url https://github.com/Software-Mansion/Radon
+"""
+check(PRRef.LocalRepo.entries(path: "/r", remotes: remotes).map(\.slug)
+      == ["software-mansion/radon", "me/radon", "me/thing"])
+check(PRRef.LocalRepo.entries(path: "/r", remotes: "").isEmpty)
+// A queued config stored before the field existed still decodes.
+var stored = try JSONSerialization.jsonObject(with: JSONEncoder().encode(single("337"))) as! [String: Any]
+stored.removeValue(forKey: "localRepos")
+check((try? JSONDecoder().decode(ReviewConfig.self,
+                                 from: JSONSerialization.data(withJSONObject: stored))) != nil)
 print("PR-reference assertions passed")
 
 section("mesh model + snapshot decode")

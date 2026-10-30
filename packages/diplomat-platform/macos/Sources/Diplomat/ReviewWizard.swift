@@ -196,6 +196,8 @@ enum AgentSpawner {
         /// the `gh auth login` token. Resolved by the caller, like `runner`, so the
         /// audit line and the command agree on which one the run got.
         var tokenItem: String = ""
+        /// Where the agent starts, or nil for the repo root (`repoPath`).
+        var directory: String? = nil
     }
 
     /// What a spawn produced: the handle the applet keeps so it can raise the window
@@ -449,7 +451,7 @@ enum AgentSpawner {
         if let token = tokenExport(keychainItem: plan.tokenItem) {
             body = "\(token) && { \(body); }"
         }
-        return "cd \(shq(repoPath)) 2>/dev/null; unset \(SlackToken.envVar); " + body
+        return "cd \(shq(plan.directory ?? repoPath)) 2>/dev/null; unset \(SlackToken.envVar); " + body
     }
 
     /// Appended to the audit line of a run spawned behind `tokenExport`. Same text on
@@ -822,7 +824,7 @@ struct ReviewWizardView: View {
     }
 
     private var config: ReviewConfig {
-        ReviewConfig(
+        var cfg = ReviewConfig(
             depth: depth.id,
             target: target,
             username: username,
@@ -836,6 +838,8 @@ struct ReviewWizardView: View {
             finalPass: finalPass,
             softApprove: softApprove,
             specificAuthor: specificAuthor)
+        cfg.localRepos = store.localRepos
+        return cfg
     }
 
     var body: some View {
@@ -954,11 +958,9 @@ struct ReviewWizardView: View {
         }
     }
 
-    /// A hint under the PR field when a pasted URL points at a different repo.
+    /// A hint under the PR field when a pasted URL points at an unknown repo.
     private var prWarning: String? {
-        guard config.prRef.repoMismatch else { return nil }
-        let (owner, repo) = config.targetRepo
-        return "That PR isn't in \(owner)/\(repo)."
+        config.prRef.mismatchWarning("PR", anyListed: !store.localRepos.isEmpty)
     }
 
     private var scopeRow: some View {
@@ -1037,7 +1039,7 @@ struct ReviewWizardView: View {
                             // Only a single PR is a session the mesh could place: a
                             // sweep opens none, it queues one review per PR for this
                             // machine's own cap to start.
-                            routable: target == .specific,
+                            routable: target == .specific && config.checkout == nil,
                             action: spawn)
     }
 
@@ -1046,8 +1048,7 @@ struct ReviewWizardView: View {
     /// queued a PR at a time and each of those rows is labelled by its own
     /// `Store.RequestedWork`.
     private var trackingLabel: String {
-        let n = config.prRef.number.map { "#\($0)" } ?? "PR"
-        return "Review · \(n) · \(depth.title)"
+        return "Review · \(config.prRef.label ?? "PR") · \(depth.title)"
     }
 
     /// The one PR this run concerns — the open-in-browser fallback when its window
@@ -1109,7 +1110,7 @@ struct ReviewWizardView: View {
         }
         // Mesh path: hand the job to the local node (it picks the executor, with
         // failover) instead of opening a terminal here — mirrors the Linux wizards.
-        if MeshSpawnRow.isLive(store), useMesh {
+        if MeshSpawnRow.isLive(store), useMesh, cfg.checkout == nil {
             meshDispatching = true
             status = "Dispatching over the mesh…"
             AuditLog.log("panel", "review", "\(trackingLabel) · via mesh")
@@ -1125,9 +1126,10 @@ struct ReviewWizardView: View {
         let term = AgentSpawner.resolved(store.terminal)
         let job = Store.AgentJob(kind: "review", auditAction: "review",
                                  label: trackingLabel, prompt: cfg.buildPrompt(),
-                                 prURL: trackingPRURL, prNumber: cfg.prRef.number,
+                                 prURL: trackingPRURL,
+                                 prNumber: cfg.checkout == nil ? cfg.prRef.number : nil,
                                  authorLogin: reviewedAuthorLogin, duty: "review",
-                                 workKey: "", counter: nil)
+                                 workKey: "", counter: nil, directory: cfg.checkout)
         status = "Launching \(term.title)…"
         Task {
             status = statusText(for: await store.dispatchAgent(job, source: .panel),
