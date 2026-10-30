@@ -427,7 +427,7 @@ public enum AgentModel {
 
     /// Claude Code's own state directory, under the same `DIPLOMAT_CLAUDE_DIR` override
     /// the transcript-based token scans on both platforms already honour.
-    private static func claudeHomeURL() -> URL {
+    static func claudeHomeURL() -> URL {
         envPath("DIPLOMAT_CLAUDE_DIR") ?? homePath(".claude")
     }
 

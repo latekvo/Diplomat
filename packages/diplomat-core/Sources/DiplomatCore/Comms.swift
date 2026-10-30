@@ -13,9 +13,10 @@ public enum CommsReason: String, Codable, CaseIterable, Sendable {
     case dm, mention, keyword
 }
 
-/// Who the token belongs to, as `auth.test` answers it.
+/// Who the Slack login belongs to, from their profile (`SlackProfile.identity`).
 public struct CommsIdentity: Codable, Equatable, Sendable {
     public var userID: String
+    /// The workspace as `SlackProfile.workspace` names it, not a Slack team id.
     public var teamID: String
     public var handle: String
 
@@ -499,19 +500,6 @@ public enum CommsTS {
     /// `date` in the same units.
     public static func number(_ date: Date) -> Int {
         Int((date.timeIntervalSince1970 * 1_000_000).rounded(.down))
-    }
-
-    /// The `after:` date for a search reaching back to `watermark`. `after:` is
-    /// day-granular and exclusive, and Slack may read it in the operator's timezone, so
-    /// this is the day before the watermark's day at UTC-12, the westernmost offset:
-    /// under any offset, that date's local end is at or before the watermark.
-    public static func afterDay(_ watermark: Int) -> String {
-        let day = (watermark / 1_000_000 - 12 * 3_600) / 86_400 - 1
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(identifier: "UTC")
-        f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: Date(timeIntervalSince1970: TimeInterval(day * 86_400)))
     }
 }
 

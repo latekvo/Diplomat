@@ -225,6 +225,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: swift --version
+      # Comms reaches Slack through curl off Darwin; without it the smoke skips those checks.
+      - run: apt-get update && apt-get install -y --no-install-recommends curl
       - name: Build + run shared-core smoke test
         run: swift run DiplomatCoreSmoke
       # Build the static, portable diplomat-core CLI and hand it to the python-linux

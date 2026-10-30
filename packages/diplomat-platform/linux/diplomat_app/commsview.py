@@ -8,8 +8,6 @@ as **Pings** (every message that reached the operator, newest first) and **Jobs*
 
 from __future__ import annotations
 
-import os
-import shlex
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
@@ -33,18 +31,6 @@ from .widgets import GlyphLabel, muted, plain_tooltip, tint_bg
 #: assets/audit-categories.json → comms.colorHex.
 TINT = "#007AFF"
 _RED, _GREEN, _ORANGE, _GREY = "#FF3B30", "#34C759", "#FF9500", glyphs.MUTED
-
-SCOPES = "search:read"
-
-
-def token_command() -> str:
-    """The empty state's line for storing the token: the umask creates the file 0600,
-    and ``read -s`` keeps the token off screen and out of the shell's history."""
-    path = comms.token_file()
-    shown = (comms.DEFAULT_TOKEN_FILE if path == os.path.expanduser(comms.DEFAULT_TOKEN_FILE)
-             else shlex.quote(path))
-    return f"(umask 077; read -rs t; printf '%s\\n' \"$t\" > {shown})"
-
 
 def _card() -> tuple[QFrame, QVBoxLayout]:
     """Not ``widgets.card_host``: its unscoped stylesheet paints the fill behind every
@@ -386,39 +372,19 @@ class CommsView(QWidget):
         return row
 
     def _build_empty(self) -> QWidget:
+        """Until a tick says who the login is. It holds the error, so the banner does
+        not say it twice."""
         host, col = _card()
         col.setContentsMargins(14, 14, 14, 14)
         col.setSpacing(8)
-        head = QLabel("Comms needs a Slack user token")
+        head = QLabel("Comms reads Slack as you, through Claude Code's Slack login")
+        head.setWordWrap(True)
         head.setStyleSheet("font-weight: 700; font-size: 12px;")
         col.addWidget(head)
-        steps = [
-            "1. Create a Slack app in your workspace (api.slack.com/apps) and give it the "
-            f"User Token Scopes  {SCOPES}. Install it and copy the User OAuth Token "
-            "(xoxp-…).",
-            "2. Store it where only you can read it — paste it after running this, then "
-            "press Return:",
-        ]
-        for text in steps:
-            label = QLabel(text)
-            label.setWordWrap(True)
-            label.setStyleSheet("font-size: 10px;")
-            col.addWidget(label)
-        self.empty_cmd = QLabel("")
-        self.empty_cmd.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.empty_cmd.setStyleSheet(
-            "font-family: monospace; font-size: 10px; padding: 6px;"
-            " background-color: rgba(128,128,128,0.15); border-radius: 5px;")
-        col.addWidget(self.empty_cmd)
-        self.empty_path = QLabel("")
-        self.empty_path.setWordWrap(True)
-        self.empty_path.setStyleSheet(muted(10))
-        col.addWidget(self.empty_path)
-        last = QLabel("3. Turn Comms on in Settings. The token never enters "
-                      "~/.diplomat/config.json — only the file's path does.")
-        last.setWordWrap(True)
-        last.setStyleSheet("font-size: 10px;")
-        col.addWidget(last)
+        self.empty_error = _plain("")
+        self.empty_error.setWordWrap(True)
+        self.empty_error.setStyleSheet(f"color: {_RED}; font-size: 10px;")
+        col.addWidget(self.empty_error)
         return host
 
     def open(self) -> None:
@@ -442,18 +408,17 @@ class CommsView(QWidget):
                        else " · waiting for the first poll")
 
     def rebuild(self) -> None:
-        configured = self.store.comms_configured
-        self.empty.setVisible(not configured)
-        self.empty_cmd.setText(token_command())
-        self.empty_path.setText(f"Comms reads it from {comms.token_file()}; "
-                                "Settings → Comms changes the path.")
+        known = self.store.comms_identity is not None
+        items = self.store.comms_items
+        empty = not known and not items
+        self.empty.setVisible(empty)
         self.status.setText(self._status_text())
         error = self.store.comms_error
-        self.error_banner.setVisible(bool(error))
+        self.empty_error.setVisible(bool(error))
+        self.empty_error.setText(error or "")
+        self.error_banner.setVisible(bool(error) and not empty)
         self.error_banner.setText(f"⚠ {error}" if error else "")
-
-        items = self.store.comms_items
-        self.body.setVisible(configured or bool(items))
+        self.body.setVisible(not empty)
         seen = comms.parse_iso(self._seen_before)
 
         senders = sorted((b for b in self.store.banned_authors if b.is_slack),

@@ -204,10 +204,14 @@ public struct CommsState: Codable, Equatable, Sendable {
     /// Per query that overflowed `maxSearchPages`, the oldest ts already reported, so one
     /// shortfall logs one `error` event.
     public var gaps: [String: String]
+    /// When a tick last had Claude Code refresh its Slack login (Unix seconds), so a login
+    /// that stays dead costs one `claude mcp list` per `loginRefreshSecs`, not per tick.
+    public var loginRefreshedAt: Double?
 
     public init(watermark: String? = nil, seen: [String] = [], me: CommsIdentity? = nil,
                 error: String? = nil, classifierError: String? = nil,
-                undelivered: [CommsTickResult.Item] = [], gaps: [String: String] = [:]) {
+                undelivered: [CommsTickResult.Item] = [], gaps: [String: String] = [:],
+                loginRefreshedAt: Double? = nil) {
         self.watermark = watermark
         self.seen = seen
         self.me = me
@@ -215,10 +219,11 @@ public struct CommsState: Codable, Equatable, Sendable {
         self.classifierError = classifierError
         self.undelivered = undelivered
         self.gaps = gaps
+        self.loginRefreshedAt = loginRefreshedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case watermark, seen, me, error, classifierError, undelivered, gaps
+        case watermark, seen, me, error, classifierError, undelivered, gaps, loginRefreshedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -230,7 +235,8 @@ public struct CommsState: Codable, Equatable, Sendable {
                   classifierError: try? c.decodeIfPresent(String.self, forKey: .classifierError),
                   undelivered: (try? c.decodeIfPresent([CommsTickResult.Item].self,
                                                        forKey: .undelivered)) ?? [],
-                  gaps: (try? c.decodeIfPresent([String: String].self, forKey: .gaps)) ?? [:])
+                  gaps: (try? c.decodeIfPresent([String: String].self, forKey: .gaps)) ?? [:],
+                  loginRefreshedAt: try? c.decodeIfPresent(Double.self, forKey: .loginRefreshedAt))
     }
 
     public static func url(in dir: URL = CommsLog.dir) -> URL {
@@ -306,8 +312,6 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
 public enum CommsWatch {
     static let interrupted = "the tick ended before its triage answered, so it was not triaged"
 
-    public static let noToken = "no Slack token is configured"
-
     /// Starts the reason of the `none` a banned sender's message gets in place of a
     /// triage: its text never reaches a model.
     public static let bannedPrefix = "sender banned: "
@@ -317,11 +321,12 @@ public enum CommsWatch {
             + "not triaged"
     }
 
-    /// The first tick only learns who the token is and sets the watermark to `now`, so
+    /// The first tick only learns who the login is and sets the watermark to `now`, so
     /// turning Comms on triages no backlog; a watermark older than `catchUpHours` likewise
     /// moves up to `now` less `indexLagSecs`, and one `error` event names the skipped
     /// stretch. Otherwise the `comms.json` queries run, matches at or below the watermark
-    /// or already `seen` drop, and the oldest `maxPerTick` are triaged. A query overflowing
+    /// or already `seen` drop, and the oldest `maxPerTick` whose senders' profiles admit them
+    /// are triaged. All Slack calls past signing in share `slackBudgetSecs`. A query overflowing
     /// `maxSearchPages` is read newest first, and one `error` event names what went unread.
     ///
     /// A message from one of `settings.bannedSenders` is taken like any other but never
@@ -337,10 +342,14 @@ public enum CommsWatch {
     /// a message well after it was posted; `seen` stops one in that window being triaged
     /// twice. With pings left over past `maxPerTick`, it stops short of the first one.
     ///
+    /// Slack is reached under Claude Code's own Slack login (`SlackAPI.signIn`), unless
+    /// `api` is given; an expired or refused login has Claude Code refresh it, at most
+    /// once per `loginRefreshSecs`.
+    ///
     /// A Slack failure leaves the watermark in place and is the result's `error`; so is the
     /// last triage's failure, until one succeeds. An `error` event is logged only on the
     /// tick that goes from working to failing.
-    public static func tick(token: String, settings: CommsSettings, now: Date = Date(),
+    public static func tick(settings: CommsSettings, now: Date = Date(),
                             dir: URL = CommsLog.dir, api: SlackAPI? = nil,
                             deliver: (CommsTickResult) -> Bool = { _ in true },
                             classify: (CommsMessage) -> CommsDecision) -> CommsTickResult {
@@ -375,13 +384,25 @@ public enum CommsWatch {
         guard let assets = try? CoreAssets.comms() else {
             return finish(error: "assets/comms.json could not be read")
         }
-        guard !token.isEmpty else { return finish(error: noToken) }
-        let api = api ?? SlackAPI(token: token)
+        let injected = api
+        let api: SlackAPI
         let me: CommsIdentity
         do {
-            // Not cached: a swapped token must not leave the previous owner's id deciding
+            // Not cached: a swapped login must not leave the previous owner's id deciding
             // which messages are "my own".
-            me = try api.authTest()
+            if let given = injected {
+                (api, me) = (given, try given.authTest())
+            } else {
+                let due = state.loginRefreshedAt.map {
+                    now.timeIntervalSince1970 - $0 >= Double(assets.loginRefreshSecs)
+                } ?? true
+                let signedIn = try SlackAPI.signIn(refresh: due ? {
+                    state.loginRefreshedAt = now.timeIntervalSince1970
+                    SlackToken.refresh(timeout: Double(assets.loginRefreshTimeoutSecs))
+                } : nil)
+                (api, me) = (signedIn.api, signedIn.me.identity)
+            }
+            api.deadline = Date().addingTimeInterval(Double(assets.slackBudgetSecs))
             state.me = me
         } catch {
             return finish(error: error.localizedDescription)
@@ -401,15 +422,13 @@ public enum CommsWatch {
         }
         let queries = assets.queries
 
-        let after = CommsTS.afterDay(watermark)
         var searches = [
-            ("DMs", CommsText.fill(queries.dm, ["after": after])),
-            ("mentions", CommsText.fill(queries.mention, ["after": after, "user": me.userID])),
+            ("DMs", queries.dm.filled([:])),
+            ("mentions", queries.mention.filled(["user": me.userID])),
         ]
         for keyword in settings.keywords {
             let k = keyword.replacingOccurrences(of: "\"", with: "")
-            searches.append(("matches of \"\(k)\"",
-                             CommsText.fill(queries.keyword, ["after": after, "keyword": k])))
+            searches.append(("matches of \"\(k)\"", queries.keyword.filled(["keyword": k])))
         }
         var found: [String: SlackMatch] = [:]
         var gaps: [String: Int] = [:]
@@ -430,11 +449,33 @@ public enum CommsWatch {
         state.gaps = gaps.mapValues(CommsTS.string)
 
         let seen = Set(state.seen)
-        let pending = found.values
-            .compactMap { CommsMatch.message(from: $0, me: me, settings: settings) }
+        let fresh = found.values
             .compactMap { m in CommsTS.number(m.ts).map { (n: $0, m: m) } }
             .filter { $0.n > watermark && !seen.contains($0.m.id) }
             .sorted { ($0.n, $0.m.id) < ($1.n, $1.m.id) }
+        // Oldest first, reading senders' profiles only until one ping past `maxPerTick` is
+        // found or `maxProfileReads` are spent; `unread` is where that walk stopped.
+        var senders: [String: SlackProfile?] = [:]
+        var pending: [(n: Int, m: CommsMessage)] = []
+        var unread: Int?
+        do {
+            for (n, match) in fresh where pending.count <= settings.maxPerTick {
+                let user = match.user
+                if !user.isEmpty, !match.isBot, user != me.userID, senders[user] == nil {
+                    guard senders.count < assets.maxProfileReads else {
+                        unread = n
+                        break
+                    }
+                    senders[user] = .some(try api.profile(user))
+                }
+                if let m = CommsMatch.message(from: match, sender: senders[user] ?? nil, me: me,
+                                              settings: settings) {
+                    pending.append((n, m))
+                }
+            }
+        } catch {
+            return finish(error: error.localizedDescription)
+        }
         let take = pending.prefix(settings.maxPerTick)
         let rest = pending.dropFirst(settings.maxPerTick)
 
@@ -463,8 +504,8 @@ public enum CommsWatch {
             state.save(in: dir)
         }
 
-        let next = rest.first.map { max(watermark, min(lagged, $0.n - 1)) }
-            ?? max(watermark, lagged)
+        let next = [rest.first?.n, unread].compactMap { $0 }.min()
+            .map { max(watermark, min(lagged, $0 - 1)) } ?? max(watermark, lagged)
         state.watermark = CommsTS.string(next)
         // An id at or below the watermark can never be offered again.
         state.seen = Array(state.seen.filter { id in
@@ -477,19 +518,19 @@ public enum CommsWatch {
         CommsLog.isoString(Date(timeIntervalSince1970: TimeInterval(ts / 1_000_000)))
     }
 
-    /// Pages until one reaches the watermark, comes back short, or is the last. Stopped by
+    /// Pages until one reaches the watermark or comes back short. Stopped by
     /// `maxSearchPages`, it returns the oldest ts read: below it, to the watermark, went
-    /// unread.
-    private static func collect(_ query: String, above watermark: Int,
+    /// unread. Slack's `after` is whole seconds; the exact cut is the caller's.
+    private static func collect(_ query: CoreAssets.CommsModel.Query, above watermark: Int,
                                 into found: inout [String: SlackMatch], api: SlackAPI,
                                 assets: CoreAssets.CommsModel) throws -> Int? {
         var page = 1
         while true {
-            let (matches, pages) = try api.search(query: query, page: page,
-                                                  count: assets.searchCount)
+            let matches = try api.search(query, after: watermark / 1_000_000, page: page,
+                                         count: assets.searchCount)
             for m in matches where found[m.id] == nil { found[m.id] = m }
             let oldest = matches.compactMap { CommsTS.number($0.ts) }.min()
-            guard page < pages, matches.count >= assets.searchCount,
+            guard matches.count >= assets.searchCount,
                   let oldest, oldest > watermark else { return nil }
             guard page < assets.maxSearchPages else { return oldest }
             page += 1

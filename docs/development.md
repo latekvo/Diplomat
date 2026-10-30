@@ -184,7 +184,7 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   scratch dir); telemetry-panel (the same inside the panel)
                                                      #   comms (the Comms screen over a synthetic events.jsonl in a
                                                      #   scratch dir); comms-panel; comms-badge (the main panel with
-                                                     #   unread pings); comms-empty (no token yet);
+                                                     #   unread pings); comms-empty (no Slack login yet);
                                                      #   settings-comms-error (the Comms card's failing pill)
                                                      #   popover (REAL NSWindow snapshot incl. the legacy
                                                      #   scroller - pair with DIPLOMAT_POPOVER_CAP=400
@@ -325,7 +325,7 @@ packages/
         AuditCategory.swift        audit action verb → activity-feed filter category (mirrors assets/audit-categories.json)
         Comms.swift                Comms (the Slack watcher): its types, the triage answer's validation, what
                                    each answer does, and the investigate prompt (assets/comms.json)
-        SlackAPI.swift             Slack Web API reads (auth.test, search.messages) + who becomes a ping
+        SlackAPI.swift             Slack's MCP server under Claude Code's login (profiles, search) + who becomes a ping
         CommsWatch.swift           one watcher tick: search, watermark, the sandboxed `claude -p` classifier
         CommsLog.swift             ~/.diplomat/comms/events.jsonl, both applets' log, folded for the screen
         LoginShell.swift           locating a CLI through the operator's login shell, past any alias
@@ -386,7 +386,7 @@ packages/
         MeshBridge.swift           drives the local mesh node (spawn python3 -m szpontnet --daemon, NDJSON control)
         MeshView.swift             the ⬡ Mesh screen: node graph, tier/token/trust editors, duty table
         MeshSpawn.swift            the wizards' "⬡ Run on mesh" row + destination preview
-        CommsMonitor.swift         the Slack watcher: the poll loop, the token, applying each triage answer to the queue
+        CommsMonitor.swift         the Slack watcher: the poll loop, applying each triage answer to the queue
         CommsView.swift            the Comms screen: pings, the jobs they queued, the watcher's status
         CommsTest.swift            self-test of what each triage answer does to the queue (DIPLOMAT_COMMS_TEST)
         TelemetryView.swift        the Telemetry screen: the bell curve, the rate-limit windows, the backlog and finished-work series, the token split

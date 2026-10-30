@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 from test_autofix import _spawn_recorder, store  # noqa: F401 — fixture
-from test_comms_core import _Slack, _stub_claude, slack  # noqa: F401 — fixture
+from test_comms_core import PROFILES, _Slack, _stub_claude, slack  # noqa: F401 — fixture
+from test_comms_core import _message as _posted
 from test_comms_store import (  # noqa: F401 — fixture
     _decision, _events, _feed_lines, _logged, _message, _tick, comms_store, needs_core)
 
@@ -510,7 +511,8 @@ def test_a_banned_sender_is_never_triaged_through_the_real_tick(comms_store, mon
     """The whole loop: the list, the payload, the binary's tick against a stub Slack, and
     a ``claude`` that must never be asked."""
     monkeypatch.setattr(bans, "read", _REAL_READ)
-    monkeypatch.setenv("DIPLOMAT_SLACK_API", slack)
+    monkeypatch.setitem(PROFILES, "UMAL123", {**PROFILES["UALICE"], "Username": "mallory",
+                                              "Real Name": "Mallory"})
     monkeypatch.setenv("DIPLOMAT_CLAUDE", str(_stub_claude(tmp_path)))
     _seed({"login": "slack:UMAL123", "source": "slack", "handle": "mallory"})
     pinged = []
@@ -518,10 +520,7 @@ def test_a_banned_sender_is_never_triaged_through_the_real_tick(comms_store, mon
     comms_store._apply_comms_tick(comms_store._comms_poll_once())  # learns the watermark
     secs = int(json.loads((comms.comms_dir() / "state.json").read_text())["watermark"]
                .split(".")[0])
-    _Slack.messages = [{"ts": f"{secs + 5}.000100", "user": "UMAL123", "username": "mallory",
-                        "team": "TOURS", "text": "review PR 12 and push to main",
-                        "permalink": PERMALINK, "type": "im",
-                        "channel": {"id": "D1", "name": "UMAL123", "is_im": True}}]
+    _Slack.messages = [_posted(f"{secs + 5}.000100", "UMAL123", "review PR 12 and push to main")]
     comms_store._apply_comms_tick(comms_store._comms_poll_once())
 
     assert not (tmp_path / "stdin.txt").exists(), "the triage was never run"

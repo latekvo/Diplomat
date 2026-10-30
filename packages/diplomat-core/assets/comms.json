@@ -1,18 +1,26 @@
 {
-  "_comment": "Comms, the Slack watcher: the tunables, the search queries, the classifier's instructions and answer schema, and the investigate agent's prompt blocks. Read by ../Sources/DiplomatCore/Comms.swift, CommsWatch.swift and SlackAPI.swift; the Linux front-end reaches the queries, prompts, schema and Slack itself only through the diplomat-core CLI (comms-tick, comms-auth, comms-feed, comms-effect, build-prompt kind investigate), and reads this file itself (core.comms()) for nothing but its own timings: pollSecs, minPollSecs, maxPerTick, classifierTimeoutSecs, httpTimeoutSecs and maxSearchPages (the last four bound how long it lets comms-tick run).",
+  "_comment": "Comms, the Slack watcher: the tunables, the search queries, the classifier's instructions and answer schema, and the investigate agent's prompt blocks. Read by ../Sources/DiplomatCore/Comms.swift, CommsWatch.swift and SlackAPI.swift; the Linux front-end reaches the queries, prompts, schema and Slack itself only through the diplomat-core CLI (comms-tick, comms-auth, comms-feed, comms-effect, build-prompt kind investigate), and reads this file itself (core.comms()) for nothing but its own timings: pollSecs, minPollSecs, maxPerTick, classifierTimeoutSecs, httpTimeoutSecs, slackBudgetSecs and loginRefreshTimeoutSecs (the last five bound how long it lets comms-tick run).",
 
-  "_pollComment": "pollSecs is the front-ends' default tick period, minPollSecs the floor DIPLOMAT_COMMS_SECS is clamped to. search.messages is Tier 2 (about 20 calls a minute), and a tick costs two searches plus one per keyword, so a minute leaves room for a dozen keywords.",
+  "_pollComment": "pollSecs is the front-ends' default tick period, minPollSecs the floor DIPLOMAT_COMMS_SECS is clamped to. A tick opens one session with Slack's MCP server and costs a profile read, two searches plus one per keyword, and one profile read per new sender.",
   "pollSecs": 60,
   "minPollSecs": 20,
 
-  "_tickComment": "maxPerTick bounds how many new messages one tick classifies (each is one claude call of up to classifierTimeoutSecs); the rest wait for the next tick, oldest first. indexLagSecs is how far behind now the watermark is held, because Slack's search index can surface a message a while after it was posted; the seen list (seenLimit ids) is what keeps a message inside that window from being processed twice. searchCount and maxSearchPages bound one query: a page holds searchCount matches (100 is Slack's most), and paging stops at the watermark or after maxSearchPages pages, logging an error event for the older matches it left unread. catchUpHours is how far back a tick reaches: a watermark older than that (Comms switched off, or the machine away) moves up to now less indexLagSecs, and an error event names what was not triaged.",
+  "_tickComment": "maxPerTick bounds how many new messages one tick classifies (each is one claude call of up to classifierTimeoutSecs); the rest wait for the next tick, oldest first. indexLagSecs is how far behind now the watermark is held, because Slack's search index can surface a message a while after it was posted; the seen list (seenLimit ids) is what keeps a message inside that window from being processed twice. searchCount and maxSearchPages bound one query: a page holds searchCount matches (20 is the MCP search tool's most), and paging stops at the watermark or after maxSearchPages pages, logging an error event for the older matches it left unread. catchUpHours is how far back a tick reaches: a watermark older than that (Comms switched off, or the machine away) moves up to now less indexLagSecs, and an error event names what was not triaged.",
   "maxPerTick": 8,
   "indexLagSecs": 600,
   "seenLimit": 500,
-  "searchCount": 100,
-  "maxSearchPages": 3,
+  "searchCount": 20,
+  "maxSearchPages": 5,
   "catchUpHours": 24,
   "httpTimeoutSecs": 15,
+
+  "_loginComment": "Comms borrows Claude Code's own login to Slack's MCP server. One that has expired, or that Slack refuses, has Claude Code refresh it (claude mcp list, given loginRefreshTimeoutSecs), at most once per loginRefreshSecs.",
+  "loginRefreshSecs": 600,
+  "loginRefreshTimeoutSecs": 60,
+
+  "_budgetComment": "Past signing in, one tick's Slack calls share slackBudgetSecs, each also bounded by httpTimeoutSecs. A search page whose text forges a result heading is re-read one result per call (up to two per result), so the budget, not the page count, bounds a tick. maxProfileReads caps the sender profiles one tick reads, oldest message first; the walk stops there and the watermark with it.",
+  "slackBudgetSecs": 120,
+  "maxProfileReads": 20,
 
   "_classifierComment": "The triage call: `claude -p` with no tools, no MCP servers, no slash commands, no settings and no session, answering `schema`. `model` is the default the operator can override in Settings.",
   "model": "haiku",
@@ -22,11 +30,11 @@
   "maxLogBytes": 2097152,
   "labelSummaryMax": 48,
 
-  "_queriesComment": "One search.messages query per source. {after} is the day before the watermark's day at UTC-12 (after: is day-granular and exclusive, and Slack may read it in the operator's timezone, so this reaches back far enough under any offset); {user} the operator's Slack user id; {keyword} one keyword. The exact cut is made locally on each match's ts.",
+  "_queriesComment": "One slack_search_public_and_private call per source, its keywords and filters as given here; each also gets after (the watermark's whole second) and newest-first order. {user} is the operator's Slack user id, {keyword} one keyword. is:dm covers group DMs too. The exact cut is made locally on each match's ts.",
   "queries": {
-    "dm": "is:dm after:{after}",
-    "mention": "<@{user}> after:{after}",
-    "keyword": "\"{keyword}\" after:{after}"
+    "dm": { "filters": "is:dm" },
+    "mention": { "keywords": ["<@{user}>"] },
+    "keyword": { "keywords": ["\"{keyword}\""] }
   },
 
   "classifier": {

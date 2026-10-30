@@ -211,7 +211,7 @@ def run_comms_poll() -> int:
 
     Unless ``DIPLOMAT_COMMS_DIR`` is set, it ticks a scratch dir whose watermark is
     :data:`COMMS_POLL_LOOKBACK_SECS` ago, removed afterwards, so the live applet's own
-    directory is untouched. 1 when there is no token or the tick failed."""
+    directory is untouched. 1 when the tick failed, a missing Slack login included."""
     import json
 
     from diplomat_runtime import comms
@@ -237,13 +237,9 @@ def _comms_poll(comms) -> int:
 
     store = Store()
     store.fetch_me()
-    token, why = comms.read_token()
-    if not token:
-        print(f"COMMS: {why}")
-        return 1
     settings = store.comms_settings_payload()
     print(f"== comms tick · dir {comms.comms_dir()} · model {settings['model']} ==")
-    result = comms.tick(settings, token)
+    result = comms.tick(settings)
     me = result.get("me") or {}
     if me:
         print(f"as @{me.get('handle', '')} ({me.get('userID', '')} in {me.get('teamID', '')})")

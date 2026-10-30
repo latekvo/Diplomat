@@ -25,8 +25,8 @@ enum CommsTargetKind { case pr, issue }
 
 extension Store {
     /// `DIPLOMAT_COMMS_SECS` (ignored unless finite), else `comms.json`'s `pollSecs`. Never
-    /// under `minPollSecs` (`search.messages` is Tier 2, and a tick is two searches plus
-    /// one per keyword), nor over a day (a huge value would overflow the nanosecond sleep).
+    /// under `minPollSecs` (a tick is two searches plus one per keyword, and a profile read
+    /// per new sender), nor over a day (a huge value would overflow the nanosecond sleep).
     static var commsPollInterval: TimeInterval {
         let model = try? CoreAssets.comms()
         let floor = Double(model?.minPollSecs ?? 20)
@@ -160,41 +160,39 @@ extension Store {
         guard commsEnabled, !Headless.active, !commsPollInFlight else { return }
         commsPollInFlight = true
         defer { commsPollInFlight = false }
-        let item = AppConfig.slackTokenKeychainItem
-        let token = await Task.detached(priority: .utility) { CommsToken.read(item: item) }.value
-        guard let token else {
-            commsTokenMissing = true
-            noteCommsHealth(CommsToken.missingMessage(item: item))
-            return
-        }
-        commsTokenMissing = false
         let settings = commsSettings
         let result = await Task.detached(priority: .utility) {
-            CommsWatch.tick(token: token, settings: settings,
+            CommsWatch.tick(settings: settings,
                             classify: { CommsClassifier.run($0, settings: settings) })
         }.value
         commsLastPoll = Date()
         await applyComms(result)
     }
 
-    func testSlackToken() async {
+    /// Signs in the way a tick does, refreshing a dead login through Claude Code.
+    func testSlackLogin() async {
         guard !commsTesting else { return }
         commsTesting = true
         defer { commsTesting = false }
-        let item = AppConfig.slackTokenKeychainItem
-        let answer: Result<CommsIdentity, Error>? = await Task.detached(priority: .userInitiated) {
-            guard let token = CommsToken.read(item: item) else { return nil }
-            return Result { try SlackAPI(token: token).authTest() }
+        let answer = await Task.detached(priority: .userInitiated) {
+            Result {
+                try SlackAPI.signIn(refresh: {
+                    SlackToken.refresh(timeout: (try? CoreAssets.comms())?.loginRefreshTimeoutSecs ?? 60)
+                }).me
+            }
         }.value
         switch answer {
-        case nil:
-            commsTestResult = CommsToken.missingMessage(item: item)
-        case .success(let me)?:
-            commsIdentity = me
-            commsTestResult = "Token is @\(me.handle) (\(me.userID)) in workspace \(me.teamID)"
-        case .failure(let error)?:
+        case .success(let me):
+            commsIdentity = me.identity
+            commsTestResult = "Signed in as " + Store.commsWho(me.identity)
+        case .failure(let error):
             commsTestResult = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         }
+    }
+
+    /// `@handle in <workspace>`, or just `@handle` for a profile that names none.
+    static func commsWho(_ me: CommsIdentity) -> String {
+        me.teamID.isEmpty ? "@\(me.handle)" : "@\(me.handle) in \(me.teamID)"
     }
 
     // MARK: acting on a tick
@@ -541,7 +539,7 @@ extension Store {
                                   state: state))
     }
 
-    /// Logs only transitions: a bad token fails every poll, and a line per poll would bury
+    /// Logs only transitions: a dead login fails every poll, and a line per poll would bury
     /// the feed.
     func noteCommsHealth(_ error: String?) {
         if let error {
@@ -782,51 +780,6 @@ enum CommsLogReader {
     }
 }
 
-/// Read on each use, never cached or written: `DIPLOMAT_SLACK_TOKEN` (tests, a headless
-/// poll), else the Keychain item Settings names, through `security` so an unsigned build
-/// raises no Keychain prompt from a background tick.
-enum CommsToken {
-    static let timeout: TimeInterval = 10
-
-    static let envVar = "DIPLOMAT_SLACK_TOKEN"
-
-    static func read(item: String) -> String? {
-        if let env = ProcessInfo.processInfo.environment[envVar], !env.isEmpty {
-            return env
-        }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        p.arguments = ["find-generic-password", "-s", item, "-w"]
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        let exited = DispatchSemaphore(value: 0)
-        p.terminationHandler = { _ in exited.signal() }
-        do { try p.run() } catch {
-            p.terminationHandler = nil
-            return nil
-        }
-        // A token is far under a pipe's buffer, so the child never blocks on writing it
-        // and the read below can wait for the exit.
-        if exited.wait(timeout: .now() + timeout) == .timedOut {
-            p.terminate()
-            return nil
-        }
-        guard p.terminationStatus == 0 else { return nil }
-        let token = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return token.isEmpty ? nil : token
-    }
-
-    static func missingMessage(item: String) -> String {
-        "No Slack token in the Keychain item \"\(item)\""
-    }
-
-    static func addCommand(item: String) -> String {
-        "security add-generic-password -a \"$USER\" -s \(item) -w"
-    }
-}
-
 /// System notifications: a Comms ping, and every new prompt-injection ban.
 ///
 /// Only from a real .app and never headless: `UNUserNotificationCenter` aborts a process
@@ -910,7 +863,7 @@ extension Dump {
     /// `DIPLOMAT_COMMS_POLL=1`: one real tick, printing each ping's would-be effect. Without
     /// `DIPLOMAT_COMMS_DIR` it ticks a scratch dir whose watermark is `commsPollLookback`
     /// ago, so it triages that window whether or not Comms is on and leaves the live
-    /// watermark alone. False when there is no token or the tick failed.
+    /// watermark alone. False when the tick failed, a missing Slack login included.
     @MainActor
     static func commsPoll() async -> Bool {
         let env = ProcessInfo.processInfo.environment
@@ -925,17 +878,12 @@ extension Dump {
         }
         defer { if let scratch { try? FileManager.default.removeItem(at: scratch) } }
         let dir = CommsLog.dir
-        let item = AppConfig.slackTokenKeychainItem
-        let fromEnv = !(env["DIPLOMAT_SLACK_TOKEN"] ?? "").isEmpty
+        let fromEnv = !(env[SlackToken.envVar] ?? "").isEmpty
         print("== comms poll (dry run) ==")
         print("dir:   \(dir.path)"
               + (scratch == nil ? "" : " (scratch: the last \(Int(commsPollLookback / 60)) min)"))
-        print("token: " + (fromEnv ? "DIPLOMAT_SLACK_TOKEN" : "Keychain item \"\(item)\""))
-        let token = await Task.detached { CommsToken.read(item: item) }.value
-        guard let token else {
-            print(CommsToken.missingMessage(item: item))
-            return false
-        }
+        print("login: " + (fromEnv ? "\(SlackToken.envVar) (overriding Claude Code's)"
+                                   : "Claude Code's Slack MCP login"))
         let store = Store()
         // The login the live app's triage prompt names; a headless Store has not fetched it.
         await store.fetchMe()
@@ -944,10 +892,10 @@ extension Dump {
         let model = settings.model.isEmpty ? "(default)" : settings.model
         print("keywords: \(settings.keywords)  senders: \(settings.senderAllowlist)  model: \(model)")
         let result = await Task.detached {
-            CommsWatch.tick(token: token, settings: settings,
+            CommsWatch.tick(settings: settings,
                             classify: { CommsClassifier.run($0, settings: settings) })
         }.value
-        if let me = result.me { print("as:    @\(me.handle) (\(me.userID)) in \(me.teamID)") }
+        if let me = result.me { print("as:    \(Store.commsWho(me)) (\(me.userID))") }
         if let error = result.error { print("error: \(error)") }
         print("\(result.items.count) new ping(s)\n")
         let reports = CommsLog.reportsDir()

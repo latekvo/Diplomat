@@ -1,7 +1,7 @@
 # Comms
 
-The Slack watcher: what it reads, how it decides, what it is allowed to do about a message, and
-how to give it a token. It ships **off**, and does nothing until it has one.
+The Slack watcher: what it reads, how it decides, and what it is allowed to do about a message. It
+ships **off**, and reads Slack through the login Claude Code already holds for Slack's MCP server.
 
 ## What it does
 
@@ -36,9 +36,9 @@ that find runs even with its monitor switched off, and stays queued until it doe
 
 ## The Comms screen
 
-- **Status** - who the token is (`@handle` in which workspace), when Slack was last asked, and the
-  last error, if any: a rejected token, a missing scope, Slack rate-limiting the watcher, or no
-  `claude` to triage with.
+- **Status** - who the Slack login is (`@handle` in which workspace), when Slack was last asked, and
+  the last error, if any: Claude Code not signed in to Slack, a login Slack refused, Slack
+  rate-limiting the watcher, or no `claude` to triage with.
 - **Pings** - newest first, the unread ones highlighted. Each shows the sender, the DM or channel,
   why it reached you (DM, @mention, keyword), the text, what triage decided and what came of it, and
   **Open in Slack**. Opening the screen marks them read.
@@ -59,8 +59,12 @@ Slack text is written by other people, so Comms treats it as data from end to en
   whose number does not appear in the message, or an injection whose quoted evidence does not appear in
   it (case, runs of whitespace and the fence's `|` quoting aside), becomes `none`. The number must name an **open** PR
   (for a review) or an **open** issue (for a fix) of the watched repo, or nothing is queued.
-- Your own messages, bots, and people from other organisations (Slack Connect) are never pinged. A
-  **sender allowlist** narrows it to the people you name.
+- Your own messages, bots, and people from other organisations (Slack Connect) are never pinged:
+  each sender's Slack profile must name your organisation (or, in a workspace without one, share
+  your email domain). A **sender allowlist** narrows it to the people you name.
+- Slack's search answers are markdown with each message's text printed raw, so a message could
+  carry a fake result heading to pose as someone else. A page with more result headings than results
+  is read again one result per call, where the sender and channel come before any text.
 - The **Investigate** agent's prompt quotes the message between untrusted-data markers - a message
   cannot close them early: every line of it is quoted with a leading "|" - and forbids,
   whatever the message says: pushing, any GitHub write (PRs, issues, reviews, comments), posting
@@ -104,22 +108,15 @@ Every ban is announced:
 
 ## Setting it up
 
-1. **Create a Slack app** for yourself at <https://api.slack.com/apps> (*From scratch*, your
-   workspace). Under **OAuth & Permissions → User Token Scopes** add `search:read`, install it to
-   the workspace, and copy the **User OAuth Token** (`xoxp-…`). A bot token cannot read
-   your DMs and will not work.
-2. **Store the token where Diplomat can read it - never in `config.json`**:
+Comms has no Slack app or token of its own. It uses Claude Code's login to Slack's MCP server
+(`https://mcp.slack.com/mcp`, the Slack plugin's server), read from Claude Code's credentials: the
+`Claude Code-credentials` Keychain item on macOS, `~/.claude/.credentials.json` on Linux. If Claude
+Code is already signed in to Slack, switch **Watch Slack** on in **Settings → Comms (Slack)**;
+**Test** names your handle. If not, sign in once from Claude Code: `/mcp`, pick the Slack server,
+**Authenticate**.
 
-   ```bash
-   # macOS: the login Keychain (Diplomat reads the item named in Settings, default diplomat-slack)
-   security add-generic-password -a "$USER" -s diplomat-slack -w
-   # Linux: a 0600 file (Settings names the path, default ~/.diplomat/slack-token)
-   (umask 077; read -rs t; printf '%s\n' "$t" > ~/.diplomat/slack-token)
-   ```
-
-   `-w` last makes `security` ask for the token, so it stays out of your shell history.
-3. **Settings → Comms (Slack)**: press **Test** (it should name your handle), add keywords if you
-   want them, and switch **Watch Slack** on.
+Claude Code refreshes that login as it runs. When the watcher finds it expired, or Slack refuses it,
+it runs `claude mcp list` (which refreshes it) at most once every ten minutes.
 
 The first poll only records where "now" is: nothing already in Slack is triaged, so turning it on does
 not unleash a day of old DMs. Later, a poll catches up on whatever arrived while Comms was off or the
@@ -142,24 +139,25 @@ All of them are on the **Comms (Slack)** card.
   held it; nothing is queued.
 - **Notify on new pings** (**default on**) - a system notification per new ping.
 - **Triage model** (blank = **`haiku`**) - any model id `claude --model` accepts.
-- **Token Keychain item** (macOS) / **Token file** (Linux) - where the token is read from, and
-  **Test**, which asks Slack who it is.
+- **Test** - asks Slack who Claude Code's login is.
 
-`DIPLOMAT_SLACK_TOKEN` overrides the stored token, `DIPLOMAT_COMMS_SECS` the one-minute poll
-(20 seconds to a day), and `DIPLOMAT_CLAUDE` the `claude` binary triage runs.
+`DIPLOMAT_SLACK_TOKEN` overrides Claude Code's login with a Slack MCP access token,
+`DIPLOMAT_COMMS_SECS` the one-minute poll (20 seconds to a day), and `DIPLOMAT_CLAUDE` the `claude`
+binary triage and the login refresh run.
 
 ## Where it keeps things
 
 `~/.diplomat/comms/` (`DIPLOMAT_COMMS_DIR` moves it), readable by you alone - it holds your DMs:
 
-- `state.json` - the watermark (the newest Slack timestamp already handled), the ids seen near it, and
-  who the token is. Delete it and the next poll starts again from "now".
+- `state.json` - the watermark (the newest Slack timestamp already handled), the ids seen near it,
+  who the Slack login is, and when the login was last refreshed. Delete it and the next poll starts
+  again from "now".
 - `events.jsonl` - the module's own log: one line per ping, triage answer, action, start and finish
   (and per poll failure, once on the way in). It is what the Comms screen is drawn from, and it is
   trimmed to its newest half past 2 MB.
 - `reports/<id>.md` - the investigations' reports.
 
-To check a token and see what triage would do with the last hour of Slack (its oldest eight
+To check the login and see what triage would do with the last hour of Slack (its oldest eight
 messages, as one poll would), without queueing anything or touching the files above:
 `DIPLOMAT_COMMS_POLL=1 ./Diplomat.app/Contents/MacOS/Diplomat` (Linux: `DIPLOMAT_COMMS_POLL=1
 ./diplomat`). It exits non-zero when the poll fails. With `DIPLOMAT_COMMS_DIR` set it polls that
@@ -172,7 +170,7 @@ messages without queueing their asks.
 - Slack's search index can trail a message by a while, so the watcher looks ten minutes behind "now"
   and remembers what it has already seen there. A ping can therefore arrive a minute or two late.
 - One poll triages at most eight messages; the rest wait for the next poll, oldest first. It reads at
-  most 300 matches per search; anything older than those is reported in the activity feed, not
+  most 100 matches per search; anything older than those is reported in the activity feed, not
   triaged.
 - On Linux the Slack calls go through `curl`, which must be installed.
 - Triage needs Claude Code's `claude` on the machine whichever agent runner you use; without it every

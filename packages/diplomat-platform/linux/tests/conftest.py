@@ -327,10 +327,13 @@ def isolated_app_config(tmp_path, monkeypatch):
 def isolated_comms_dir(tmp_path, monkeypatch):
     """Redirect ``~/.diplomat/comms`` to a per-test temp dir: the real one holds the
     watermark, which a test would move past messages nobody triaged. The variable reaches
-    the child ``diplomat-core`` too; ``DIPLOMAT_SLACK_TOKEN`` is dropped so no test reaches
-    the operator's Slack."""
+    the child ``diplomat-core`` too. The core's Slack login is the one in the scratch
+    ``DIPLOMAT_CLAUDE_DIR`` (:func:`isolated_claude_dir`), so ``DIPLOMAT_SLACK_TOKEN`` is
+    dropped and no test reaches the operator's Slack; ``DIPLOMAT_CLAUDE`` names no file,
+    so neither a triage nor a login refresh starts the operator's ``claude``."""
     monkeypatch.setenv("DIPLOMAT_COMMS_DIR", str(tmp_path / "comms"))
     monkeypatch.delenv("DIPLOMAT_SLACK_TOKEN", raising=False)
+    monkeypatch.setenv("DIPLOMAT_CLAUDE", str(tmp_path / "no-claude"))
     yield
 
 
