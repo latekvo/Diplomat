@@ -100,13 +100,22 @@ public enum OpenCodeCLI {
         return LoginShell.arguments(shell: shell, probe: probe)
     }
 
+    /// OSC, DCS, APC, PM and SOS strings (ended by BEL or ST), and CSI sequences.
+    private static let escapeSequence = try! NSRegularExpression(
+        pattern: "\u{1B}(?:[\\]P_^X][^\u{07}\u{1B}]*(?:\u{07}|\u{1B}\\\\)|\\[[0-?]*[ -/]*[@-~])")
+
     /// The resolver's answer out of what the shell printed. The path is the last line
     /// before the marker that names an executable file — an rc is free to print above it,
     /// and an alias or a shell function fails the test, since `command -v` describes those
     /// rather than locating them — and the state root is the marker line's value.
+    /// Terminal escape sequences are dropped first: a shell integration sourced by the rc
+    /// (iTerm2's, with no `TERM` set) prints them unterminated by a newline, on the path's
+    /// own line.
     public static func parseResolution(_ text: String,
                                        isExecutable: (String) -> Bool) -> Resolution {
-        let lines = text.split(whereSeparator: \.isNewline).map(String.init)
+        let plain = escapeSequence.stringByReplacingMatches(
+            in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
+        let lines = plain.split(whereSeparator: \.isNewline).map(String.init)
         let marker = lines.lastIndex { $0.hasPrefix(stateMarker) }
         let above = marker.map { Array(lines[..<$0]) } ?? lines
         let path = above.reversed()

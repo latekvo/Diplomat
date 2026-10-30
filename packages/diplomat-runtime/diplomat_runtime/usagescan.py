@@ -425,6 +425,9 @@ _RESOLVE_TTL = 60.0
 _SHELL_PROBE = ("command -v opencode; "
                 "printf '\\n@@XDG_STATE_HOME=%s\\n' \"$XDG_STATE_HOME\"")
 _STATE_MARKER = "@@XDG_STATE_HOME="
+#: OSC, DCS, APC, PM and SOS strings (ended by BEL or ST), and CSI sequences: a shell
+#: integration sourced by the rc prints them on the answer's own line.
+_ESCAPE_SEQUENCE = re.compile(r"\x1b(?:[\]P_^X][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~])")
 
 
 @dataclass(frozen=True)
@@ -576,7 +579,7 @@ def _shell_probe() -> tuple[str | None, str | None]:
             capture_output=True, text=True, timeout=_RESOLVE_TIMEOUT)
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None, None
-    lines = out.stdout.splitlines()
+    lines = _ESCAPE_SEQUENCE.sub("", out.stdout).splitlines()
     marks = [i for i, line in enumerate(lines) if line.startswith(_STATE_MARKER)]
     state_home = lines[marks[-1]][len(_STATE_MARKER):].strip() if marks else None
     for line in reversed(lines[:marks[-1]] if marks else lines):

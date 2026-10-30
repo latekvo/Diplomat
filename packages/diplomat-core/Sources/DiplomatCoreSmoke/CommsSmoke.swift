@@ -1613,6 +1613,16 @@ private func classifierSmoke() throws {
               "\(shell) with an alias for claude still names the file: \(String(describing: found))")
     }
     check(shellsTried > 0, "at least one real shell was asked")
+    // iTerm2's integration, sourced from the rc of a shell with no TERM, opens with these.
+    let integration = alias + "printf '\\033]1337;RemoteHost=u@h\\007\\033]1337;ShellIntegrationVersion=14\\007'\n"
+    try integration.write(to: dir.appendingPathComponent(".zshrc"), atomically: true, encoding: .utf8)
+    try integration.write(to: dir.appendingPathComponent(".bashrc"), atomically: true, encoding: .utf8)
+    for shell in ["/bin/zsh", "/bin/bash"] where FileManager.default.isExecutableFile(atPath: shell) {
+        let found = LoginShell.locate("claude", shell: shell, environment: env)
+        check(found == bin.appendingPathComponent("claude").path,
+              "\(shell) whose rc prints a shell integration's escapes still names the file: "
+              + String(describing: found))
+    }
 }
 
 private func promptSmoke() throws {
