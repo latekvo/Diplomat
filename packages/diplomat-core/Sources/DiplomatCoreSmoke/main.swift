@@ -1140,6 +1140,11 @@ check(OpenCodeCLI.parseResolution("@@XDG_STATE_HOME=/rc\n/opt/a/opencode\n@@XDG_
         executables.contains($0)
       }.fields == ["/opt/a/opencode", "/s"],
       "the probe's own marker is the last one")
+check(OpenCodeCLI.parseResolution("\u{1B}]1337;RemoteHost=u@h\u{07}\u{1B}]1337;CurrentDir=/tmp\u{1B}\\"
+        + "\u{1B}[?2004h/opt/a/opencode\n\u{1B}]133;D\u{07}@@XDG_STATE_HOME=/s\n") {
+        executables.contains($0)
+      }.fields == ["/opt/a/opencode", "/s"],
+      "a shell integration's escapes, on the path's own line, are not part of the path")
 
 // …against real shells, over a throwaway HOME.
 do {

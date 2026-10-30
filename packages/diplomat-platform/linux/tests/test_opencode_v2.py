@@ -1107,6 +1107,17 @@ def test_an_rc_that_prints_paths_does_not_name_the_binary(tmp_path, monkeypatch)
     assert usagescan.opencode_binary() == str(exe)
 
 
+def test_a_shell_integrations_escapes_do_not_hide_the_binary(tmp_path, monkeypatch):
+    """iTerm2's integration, sourced from the rc of a shell with no ``TERM``, prints
+    escape sequences with no newline after them, so they share the path's line."""
+    exe = fake_opencode(tmp_path, monkeypatch, V2)
+    monkeypatch.setenv("DIPLOMAT_SHELL", quiet_shell(
+        tmp_path, f"export PATH={shlex.quote(str(exe.parent))}:$PATH\n"
+        "printf '\\033]1337;RemoteHost=u@h\\007\\033]1337;CurrentDir=/tmp\\033\\\\'\n"))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert usagescan.opencode_binary() == str(exe)
+
+
 # MARK: - What the rest of the applet is told
 
 
