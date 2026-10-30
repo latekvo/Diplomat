@@ -333,6 +333,29 @@ def test_a_2x_run_is_bound_at_spawn_and_given_no_port(opencode, as_v2, monkeypat
     assert session["id"] == sid and prompt == {"text": PROMPT}
 
 
+def test_a_run_in_another_checkout_is_started_and_staged_there(opencode, as_v2, tmp_path,
+                                                               monkeypatch):
+    """A wizard run on a link to another listed checkout: both the ``cd`` and the 2.x
+    session's directory are that checkout, not the repo root."""
+    other = tmp_path / "radon"
+    other.mkdir()
+    calls = _spawned(monkeypatch)
+    from diplomat_app.store import Store
+
+    Store._spawn_tracked(Store(), PROMPT, "https://github.com/x/radon/pull/7", None, "click",
+                         checkout=str(other))
+    run_id = agentregistry.load()[0].run_id
+    assert calls[0]["checkout"] == str(other)
+    session, _ = _staged(agentregistry.prompt_path(run_id))
+    assert session["location"]["directory"] == str(other.resolve())
+
+
+def test_a_run_in_the_repo_root_names_no_checkout(monkeypatch):
+    calls = _spawned(monkeypatch)
+    _spawn_tracked()
+    assert "checkout" not in calls[0]
+
+
 def test_a_1x_run_gets_its_port_and_binds_later(opencode, monkeypatch):
     monkeypatch.setattr(usagescan, "opencode_is_v2", lambda: False)
     calls = _spawned(monkeypatch)

@@ -280,3 +280,51 @@ def test_the_idle_limit_sliders_open_on_the_stored_values(make_view):
     view = make_view()
     assert view._idle_free.value() == 12
     assert view._idle_leased.badge() == "never"
+
+
+def _other_repo_rows(view) -> list[list[str]]:
+    from PySide6.QtWidgets import QLabel
+
+    out = []
+    for i in range(view._other_repos_list.count()):
+        row = view._other_repos_list.itemAt(i).widget()
+        out.append([w.toolTip() or w.text() for w in row.findChildren(QLabel)])
+    return out
+
+
+def test_other_repos_are_added_named_by_their_remote_and_removed(view, tmp_path, monkeypatch):
+    import subprocess
+
+    from PySide6.QtWidgets import QFileDialog, QPushButton
+
+    radon = tmp_path / "radon"
+    radon.mkdir()
+    subprocess.run(["git", "-C", str(radon), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(radon), "remote", "add", "origin",
+                    "git@github.com:software-mansion/radon.git"], check=True)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert _other_repo_rows(view) == [] and view._other_repos_pill.text() == ""
+
+    for picked in (radon, plain, radon):  # the second pick of radon is a no-op
+        monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                            staticmethod(lambda *a, p=picked: str(p)))
+        view._add_other_repo()
+    assert view.store.other_repo_paths == [str(radon), str(plain)]
+    assert _other_repo_rows(view) == [["software-mansion/radon", str(radon)],
+                                      ["⚠ No GitHub remote", str(plain)]]
+    assert view._other_repos_pill.text() == "check this"
+    assert [r.repo for r in view.store.local_repos] == ["radon"]
+
+    plain_row = view._other_repos_list.itemAt(1).widget()
+    plain_row.findChild(QPushButton).click()
+    assert view.store.other_repo_paths == [str(radon)]
+    assert view._other_repos_pill.text() == "1 repo"
+
+
+def test_other_repos_persist_and_resolve_again_at_start(make_view, tmp_path):
+    view = make_view(other_repo_paths=[str(tmp_path / "gone")])
+    assert _other_repo_rows(view) == [["⚠ Folder not found", str(tmp_path / "gone")]]
+    from diplomat_app.store import Store
+
+    assert Store().other_repo_paths == [str(tmp_path / "gone")]

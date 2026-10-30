@@ -36,6 +36,7 @@ from diplomat_runtime import (
     comms,
     core,
     diskfloor,
+    localrepos,
     opencodeapi,
     promptcore,
     review,
@@ -45,6 +46,7 @@ from diplomat_runtime import (
     tmuxwatch,
 )
 from diplomat_runtime.models import API, Filters, Fmt, OpenIssue, OpenPR
+from diplomat_runtime.prref import LocalRepo
 from diplomat_runtime.prtarget import PRTarget
 from . import (
     autofixmonitor,
@@ -259,6 +261,9 @@ class Store(QObject):
     ban_noticed = Signal(str, str)
     # A tick's findings, handed to the Qt thread, where the queue is changed.
     _comms_ticked = Signal(object)
+    # Emitted when the other checkouts listed in Settings change, so the wizards
+    # re-judge a link they are already holding.
+    local_repos_changed = Signal()
 
     # How many agent screens must be read without once showing the CLI's interrupt
     # hint before that is worth reporting. High, because a quiet machine legitimately
@@ -467,6 +472,10 @@ class Store(QObject):
         self._workers_lock = threading.Lock()
 
         self._settings = app_settings()
+        # The checkouts behind `other_repo_paths`, resolved on first read and again
+        # whenever the list is set: each is a `git` call, and the wizards read this on
+        # every keystroke.
+        self._local_checkouts: list[localrepos.Checkout] | None = None
 
         # Re-point a hidden default selection.
         if self.selected in self.hidden_tools:
@@ -579,6 +588,33 @@ class Store(QObject):
     @repo_path_override.setter
     def repo_path_override(self, value: str) -> None:
         appconfig.set_value(appconfig.REPO_ROOT, value)
+
+    @property
+    def other_repo_paths(self) -> list[str]:
+        """The checkouts besides the repo root that a wizard accepts a pasted link to
+        (Settings → OTHER REPOS), as picked.
+
+        In QSettings rather than :mod:`appconfig`: only a wizard press reads it, and a
+        run on one of them is never routed over the mesh, so no node needs it."""
+        return [str(p) for p in (self._settings.value("otherRepoPaths", [], list) or [])]
+
+    @other_repo_paths.setter
+    def other_repo_paths(self, value: list[str]) -> None:
+        self._settings.setValue("otherRepoPaths", list(value))
+        self._local_checkouts = localrepos.resolve(list(value))
+        self.local_repos_changed.emit()
+
+    @property
+    def local_checkouts(self) -> list[localrepos.Checkout]:
+        """:attr:`other_repo_paths`, each with the GitHub repos it answers for."""
+        if self._local_checkouts is None:
+            self._local_checkouts = localrepos.resolve(self.other_repo_paths)
+        return self._local_checkouts
+
+    @property
+    def local_repos(self) -> tuple[LocalRepo, ...]:
+        """Every repo the listed checkouts answer for: the wizards' ``local_repos``."""
+        return localrepos.local_repos(self.local_checkouts)
 
     @property
     def agent_runner(self) -> str:
@@ -1484,7 +1520,10 @@ class Store(QObject):
             outside_allowlist = job.counter == "review_requests" and not (
                 autofix.author_allowed(job.author_login or "", self.review_allowlist)
             )
-            agent_on_pr = bool(job.pr_url) and self._in_flight(job.pr_url)
+            # Keyed on the number, as the claim on ``_dispatching_prs`` above is: a job
+            # with a link and no number is a PR of another checkout, which shares its
+            # numbering with ours only by coincidence.
+            agent_on_pr = job.pr_number is not None and self._in_flight(job.pr_url or "")
             # The disk first: it outranks every other hold on auto work. Measured on
             # the fuller of the two volumes an agent fills: the repo root (its
             # worktree) and ~/.diplomat (the tool caches).
@@ -1609,7 +1648,8 @@ class Store(QObject):
                 try:
                     self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
                                         source, job.ledger_key,
-                                        label=row_label, kind=job.kind)
+                                        label=row_label, kind=job.kind,
+                                        checkout=job.checkout)
                 except review.SpawnError as exc:
                     activity.log(source, "spawn-failed",
                                  f"{job.label} failed to spawn: {exc}")
@@ -1731,7 +1771,7 @@ class Store(QObject):
 
     def _spawn_tracked(self, prompt: str, url: str | None, number: int | None,
                        source: str, ledger_key: str = "", label: str = "",
-                       kind: str = "") -> None:
+                       kind: str = "", checkout: str | None = None) -> None:
         """Register a run, then spawn its agent into it. Raises
         :class:`review.SpawnError` when the run can't be booked or no terminal
         launched; the run is forgotten unless the book refuses that write too.
@@ -1763,6 +1803,9 @@ class Store(QObject):
         run has no server of its own and gets no port: its session is minted and staged
         instead (:func:`review.stage_opencode_session`) and bound to the run before the
         spawn, so the probe asks the per-user service about it from the first tick.
+
+        ``checkout`` is where the agent works when that is not the repo root
+        (:attr:`autofix.AgentJob.checkout`).
         """
         now = time.time()
         try:
@@ -1778,14 +1821,14 @@ class Store(QObject):
                 f"couldn't register the run: {exc.strerror or exc}") from exc
         chosen = agentregistry.stage_runner(record.run_id)
         port = None
-        staged = {}
+        staged = {"checkout": checkout} if checkout else {}
         try:
             if chosen == runner.OPENCODE:
                 session_id = review.stage_opencode_session(
-                    str(agentregistry.prompt_path(record.run_id)))
+                    str(agentregistry.prompt_path(record.run_id)), checkout)
                 if session_id:
                     agentregistry.bind_session(record.run_id, session_id)
-                    staged = {"opencode_session": session_id}
+                    staged["opencode_session"] = session_id
                 else:
                     port = agentregistry.stage_port(record.run_id)
             review.spawn(prompt, self.terminal,
