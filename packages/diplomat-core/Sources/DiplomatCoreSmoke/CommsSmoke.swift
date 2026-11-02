@@ -852,6 +852,22 @@ private func batchSmoke() {
     check(rest.pings.map(\.text) == ["burst 4"] && rest.items.isEmpty && calls.count == 1,
           "…and the rest waits as a shorter queue: \(rest.items.map(\.message.text))")
 
+    section("comms: a flush at 0 takes a message stamped ahead of the clock")
+    calls = []
+    let skew = scratchDir("batch-skew")
+    defer { try? FileManager.default.removeItem(at: skew) }
+    CommsState(watermark: "\(w).000000", me: slackMe).save(in: skew)
+    let ahead = StubSlack()
+    ahead.messages = [dm("\(w + 705).000000", "from a fast clock")]
+    let skewed = CommsWatch.tick(settings: CommsSettings(flushAfterSecs: 0),
+                                 now: Date(timeIntervalSince1970: TimeInterval(w + 700)),
+                                 dir: skew, api: ahead.api) { batch in
+        calls.append(batch)
+        return batch.messages.map { _ in .none("chat") }
+    }
+    check(skewed.items.map(\.message.text) == ["from a fast clock"] && calls.count == 1,
+          "…and triages it that tick: \(skewed.items.count) items")
+
     section("comms: a queue waits while Slack fails")
     calls = []
     let qdir = scratchDir("batch-offline")

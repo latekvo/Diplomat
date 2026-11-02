@@ -580,8 +580,9 @@ public enum CommsWatch {
                                                           decision: .none(bannedReason(m))))
         }
         state.queue.removeAll { settings.bannedSenders.contains($0.userID) }
+        // A message stamped ahead of this clock is age 0, not too young for a flush at 0.
         let stale = state.queue.last.map {
-            CommsTS.number(now) - ts($0) >= settings.flushAfterSecs * 1_000_000
+            max(0, CommsTS.number(now) - ts($0)) >= settings.flushAfterSecs * 1_000_000
         } ?? false
         guard state.queue.count >= settings.maxPerTick || stale else {
             state.save(in: dir)
