@@ -395,8 +395,9 @@ public enum CommsWatch {
     /// `maxPerTick` once it holds that many, or all of it once its newest message is
     /// `settings.flushAfterSecs` old; at most one batch a tick.
     ///
-    /// A message from one of `settings.bannedSenders`, when taken or when its batch comes,
-    /// is never triaged: its decision is a `none` whose reason starts with `bannedPrefix`.
+    /// A queued message from one of `settings.bannedSenders` is never triaged: its decision
+    /// is a `none` whose reason starts with `bannedPrefix`, on the tick it is taken or the
+    /// first after the ban.
     ///
     /// Each batch is saved as taken before its triage runs, so a tick that never returns
     /// hands it over on the next one (triaged, or as an interrupted `none`) and never
@@ -550,12 +551,7 @@ public enum CommsWatch {
         for (_, message) in take {
             state.seen.append(message.id)
             state.unannounced.append(message)
-            if settings.bannedSenders.contains(message.userID) {
-                state.undelivered.append(CommsTickResult.Item(message: message,
-                                                              decision: .none(bannedReason(message))))
-            } else {
-                state.queue.append(message)
-            }
+            state.queue.append(message)
         }
         let next = [rest.first?.n, unread].compactMap { $0 }.min()
             .map { max(watermark, min(lagged, $0 - 1)) } ?? max(watermark, lagged)
@@ -628,8 +624,8 @@ public enum CommsWatch {
         }
     }
 
-    /// The newest `contextMessages` pings already triaged in `messages`' conversations,
-    /// at most `contextHours` older than the oldest of them, oldest first. A banned
+    /// Per conversation of `messages`, its newest `contextMessages` pings already triaged,
+    /// at most `contextHours` older than the oldest of `messages`; oldest first. A banned
     /// sender's, or one triaged as an injection, is left out: its text reaches no model
     /// again.
     static func context(for messages: [CommsMessage], in dir: URL, settings: CommsSettings,
@@ -638,19 +634,20 @@ public enum CommsWatch {
         guard assets.contextMessages > 0,
               let oldest = messages.compactMap({ CommsTS.number($0.ts) }).min() else { return [] }
         let since = oldest - assets.contextHours * 3_600 * 1_000_000
-        return CommsLog.fold(CommsLog.read(in: dir))
-            .filter { item in
-                guard let d = item.decision, d.action != .injection,
-                      !d.reason.hasPrefix(bannedPrefix),
-                      places.contains(item.message.channelID), !ids.contains(item.message.id),
-                      !settings.bannedSenders.contains(item.message.userID),
-                      let n = CommsTS.number(item.message.ts) else { return false }
-                return n >= since
-            }
-            .map(\.message)
-            .sorted { (CommsTS.number($0.ts) ?? 0, $0.id) < (CommsTS.number($1.ts) ?? 0, $1.id) }
-            .suffix(assets.contextMessages)
-            .map { $0 }
+        func order(_ a: CommsMessage, _ b: CommsMessage) -> Bool {
+            (CommsTS.number(a.ts) ?? 0, a.id) < (CommsTS.number(b.ts) ?? 0, b.id)
+        }
+        let earlier = CommsLog.fold(CommsLog.read(in: dir)).compactMap { item -> CommsMessage? in
+            guard let d = item.decision, d.action != .injection,
+                  !d.reason.hasPrefix(bannedPrefix),
+                  places.contains(item.message.channelID), !ids.contains(item.message.id),
+                  !settings.bannedSenders.contains(item.message.userID),
+                  let n = CommsTS.number(item.message.ts), n >= since else { return nil }
+            return item.message
+        }
+        return Dictionary(grouping: earlier, by: \.channelID).values
+            .flatMap { $0.sorted(by: order).suffix(assets.contextMessages) }
+            .sorted(by: order)
     }
 
     private static func iso(_ ts: Int) -> String {
