@@ -100,16 +100,21 @@ def comms_store(store, monkeypatch):  # noqa: F811 — the shared Store fixture
     return store
 
 
-def _tick(store, monkeypatch, *pings, error=None, notices=(), between=None) -> dict:
-    """One poll whose ``comms-tick`` answers ``pings`` (``(message, decision)`` pairs)
-    and ``notices``, applied as the Qt thread applies it, with ``between`` run after
-    the worker's half and before the Qt thread's. Returns what the tick was handed."""
+def _tick(store, monkeypatch, *items, pings=None, error=None, notices=(),
+          between=None) -> dict:
+    """One poll whose ``comms-tick`` answers ``items`` (``(message, decision)`` pairs),
+    ``pings`` (by default the items' messages, as a tick that triages what it takes
+    answers) and ``notices``, applied as the Qt thread applies it, with ``between`` run
+    after the worker's half and before the Qt thread's. Returns what the tick was
+    handed."""
     handed: dict = {}
+    pings = [m for m, _ in items] if pings is None else list(pings)
 
     def fake_tick(settings):
         handed.update(settings=settings)
-        _logged(*pings)
-        return {"me": ME, "items": [{"message": m, "decision": d} for m, d in pings],
+        _logged(*items, pings=pings)
+        return {"me": ME, "pings": pings,
+                "items": [{"message": m, "decision": d} for m, d in items],
                 "error": error, "notices": list(notices)}
 
     monkeypatch.setattr(comms, "tick", fake_tick)
@@ -120,14 +125,16 @@ def _tick(store, monkeypatch, *pings, error=None, notices=(), between=None) -> d
     return handed
 
 
-def _logged(*pings) -> None:
-    """The two lines the core's tick logs for each ping it hands back."""
+def _logged(*items, pings=None) -> None:
+    """The lines the core's tick logs as it hands over: a ``ping`` for each of
+    ``pings`` (by default the items' messages), then a ``decision`` for each item."""
     comms.comms_dir().mkdir(parents=True, exist_ok=True)
+    pings = [m for m, _ in items] if pings is None else pings
+    lines = ([("ping", m["id"], {"message": m}) for m in pings]
+             + [("decision", m["id"], {"decision": d}) for m, d in items])
     with open(comms.events_path(), "a") as f:
-        for m, d in pings:
-            for kind, extra in (("ping", {"message": m}), ("decision", {"decision": d})):
-                f.write(json.dumps({"at": comms.iso(), "kind": kind, "id": m["id"],
-                                    **extra}) + "\n")
+        for kind, msg_id, extra in lines:
+            f.write(json.dumps({"at": comms.iso(), "kind": kind, "id": msg_id, **extra}) + "\n")
 
 
 def _sweep_review(store, *numbers):
@@ -194,6 +201,19 @@ def test_a_ticks_notices_are_handed_on_and_default_to_none(fake_core):
         assert comms.tick({})["notices"] == []
 
 
+def test_a_ticks_pings_are_handed_on_and_default_to_none(fake_core):
+    tick = {"me": None, "items": [], "error": None}
+    m = _message(1)
+    fake_core({**tick, "pings": [m, "stray", None]})
+    assert comms.tick({})["pings"] == [m]
+    for body in (tick, {**tick, "pings": None}, {**tick, "pings": {"id": "x"}}):
+        fake_core(body)
+        assert comms.tick({})["pings"] == []
+    for body, code in (("not json", 0), ('{"items": 1}', 0), ("", 3)):
+        fake_core(body, code)
+        assert comms.tick({})["pings"] == []
+
+
 def test_each_notice_of_a_tick_is_one_line_of_the_activity_feed(comms_store, monkeypatch):
     refreshed = []
     monkeypatch.setattr(comms_store, "refresh_activity", lambda: refreshed.append(1))
@@ -216,7 +236,7 @@ def test_a_tick_that_cannot_sign_in_is_an_error_and_no_one(comms_store, monkeypa
     why = ("Claude Code is not signed in to Slack: in Claude Code, run /mcp and "
            "authenticate the Slack server")
     monkeypatch.setattr(comms, "tick", lambda settings: {
-        "me": None, "items": [], "error": why, "notices": []})
+        "me": None, "pings": [], "items": [], "error": why, "notices": []})
     comms_store._apply_comms_tick(comms_store._comms_poll_once())
     assert comms_store.comms_error == why
     assert comms_store.comms_identity is None
@@ -534,6 +554,25 @@ def test_new_pings_notify_only_while_notify_is_on(comms_store, monkeypatch):
     assert shown == [("Slack · DM from kacper", "can you review #12?"),
                      ("Slack · DM from ola", "any news?"),
                      ("Slack · #general from kacper", "@me look at this")]
+
+
+@needs_core
+def test_a_ping_is_notified_when_taken_and_not_again_at_its_triage(comms_store,
+                                                                   monkeypatch):
+    """The core hands a message over twice: as a ping the tick it is taken, then as an
+    item once a later tick triages it. Only the first is news."""
+    shown = []
+    comms_store.comms_pinged.connect(lambda t, b: shown.append((t, b)))
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, pings=[m])
+    assert shown == [("Slack · DM from kacper", "review #12 please")]
+    assert _events() == [] and comms_store.requested_work == [], "nothing triaged yet"
+
+    _tick(comms_store, monkeypatch, (m, d), pings=[])
+    assert len(shown) == 1
+    [action] = _events()
+    assert (action["id"], action["outcome"]) == (
+        m["id"], "review of #12 queued, at the front of its band")
 
 
 def test_the_poll_does_nothing_while_comms_is_off(comms_store, monkeypatch):
@@ -1285,14 +1324,14 @@ def test_auth_without_a_core_says_so(monkeypatch):
 def test_the_tick_is_given_every_bound_the_child_holds_itself_to(monkeypatch):
     """Killed inside its own bounds, the child loses the messages it already marked
     seen, so the front-end's limit is the sum of them: two sign-ins of three calls with a
-    login refresh between, the deadline every later Slack call shares, the triage, each
-    lookup of ``claude``, and a margin. Keywords add nothing: the deadline covers every
-    search."""
+    login refresh between, the deadline every later Slack call shares, the triage (the
+    lookup of ``claude``, a batch call, and one call per message of a batch triaged
+    again), and a margin. Keywords add nothing: the deadline covers every search."""
     t = comms.tunables()
     call = t["httpTimeoutSecs"] + 5
     sign_in = 6 * call + 10 + t["loginRefreshTimeoutSecs"]
     deadline = t["slackBudgetSecs"] + 5
-    triage = 10 + t["maxPerTick"] * t["classifierTimeoutSecs"]
+    triage = 10 + (1 + t["maxPerTick"]) * t["classifierTimeoutSecs"]
     assert comms.tick_timeout() == sign_in + deadline + triage + 30
     seen = []
 
@@ -1309,6 +1348,21 @@ def test_the_tick_is_given_every_bound_the_child_holds_itself_to(monkeypatch):
     comms.auth()
     assert seen == [("comms-tick", comms.tick_timeout()),
                     ("comms-auth", sign_in + 30)]
+
+
+def test_the_triage_bound_is_a_batch_call_and_one_call_per_message(monkeypatch):
+    """A batch whose answers hold an injection is triaged again one message per call,
+    so a tick of ``maxPerTick`` messages may make ``1 + maxPerTick`` calls."""
+    fixed = {"httpTimeoutSecs": 15, "loginRefreshTimeoutSecs": 60, "slackBudgetSecs": 120,
+             "classifierTimeoutSecs": 90}
+    sign_in_and_slack = 6 * 20 + 10 + 60 + 125
+
+    def bound(per_tick: int) -> float:
+        monkeypatch.setattr(comms, "tunables", lambda: {**fixed, "maxPerTick": per_tick})
+        return comms.tick_timeout()
+
+    assert bound(1) == sign_in_and_slack + 10 + 2 * 90 + 30
+    assert bound(8) == sign_in_and_slack + 10 + 9 * 90 + 30
 
 
 @pytest.mark.parametrize("raw", ["inf", "1e12", "-inf", "nan"])

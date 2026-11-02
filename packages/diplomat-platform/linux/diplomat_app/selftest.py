@@ -237,14 +237,15 @@ def _comms_poll(comms) -> int:
 
     store = Store()
     store.fetch_me()
-    settings = store.comms_settings_payload()
+    # A dry run has no later tick to triage what it takes.
+    settings = {**store.comms_settings_payload(), "flushAfterSecs": 0}
     print(f"== comms tick · dir {comms.comms_dir()} · model {settings['model']} ==")
     result = comms.tick(settings)
     me = result.get("me") or {}
     if me:
         print(f"as @{me.get('handle', '')} ({me.get('userID', '')} in {me.get('teamID', '')})")
-    items = result.get("items") or []
-    print(f"{len(items)} new ping{'' if len(items) == 1 else 's'}")
+    pings, items = result.get("pings") or [], result.get("items") or []
+    print(f"{len(pings)} new ping{'' if len(pings) == 1 else 's'}, {len(items)} triaged")
     for it in items:
         m, d = it["message"], it["decision"]
         print(f"\n- {m['id']}  {Store.comms_place(m)} from {Store.comms_sender(m)}"
