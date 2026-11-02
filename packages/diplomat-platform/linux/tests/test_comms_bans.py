@@ -462,8 +462,7 @@ def test_an_injection_stops_the_senders_next_ask_in_the_same_tick(comms_store, m
     assert ("auto", "comms-ping", "#general from mallory: review #12 please "
             f"({Store.COMMS_SENDER_BANNED_OUTCOME})") in audit
     assert "comms-review" not in [a for _, a, _ in audit]
-    assert pinged == ["Slack · #general from mallory", "Slack · #general from mallory",
-                      "Slack · DM from kacper"], "the list this apply read did not hold her"
+    assert pinged == ["Slack · DM from kacper"], "banned in this apply, so none of hers"
 
 
 @needs_core

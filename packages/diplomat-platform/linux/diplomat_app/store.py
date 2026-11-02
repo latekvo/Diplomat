@@ -3421,10 +3421,10 @@ class Store(QObject):
         """The Qt-thread half of a tick: publish what it found, notify each new ping, and
         act on each triaged one.
 
-        A ping is notified once, in the tick that takes it, unless its sender is on the
-        list this apply reads; its triage, in that tick or a later one, notifies nothing.
-        A sender on the list now, or banned by an earlier ping of this apply, has
-        nothing else acted on."""
+        A ping is notified once, in the tick that takes it, once that tick's answers are
+        acted on; its triage, in that tick or a later one, notifies nothing. A sender on
+        the list now, or banned by an earlier ping of this apply, has nothing else acted
+        on, and no ping of theirs is notified: the ban's own notification says it."""
         items = plan.get("items") or []
         try:
             self.comms_last_poll = plan.get("at")
@@ -3434,8 +3434,7 @@ class Store(QObject):
             notices = plan.get("notices") or []
             for notice in notices:
                 activity.log("auto", "comms-notice", notice)
-            listed = set(bans.slack_ids(bans.read()))
-            banned_now = set(listed)
+            banned_now = set(bans.slack_ids(bans.read()))
             for entry in items:
                 entry["sender_banned"] = (
                     str(entry["message"].get("userID") or "") in banned_now)
@@ -3448,7 +3447,7 @@ class Store(QObject):
                 self.refresh_activity()
             if self.comms_notify and self.comms_enabled:
                 for message in plan.get("pings") or []:
-                    if str(message.get("userID") or "") not in listed:
+                    if str(message.get("userID") or "") not in banned_now:
                         self.comms_pinged.emit(*self._comms_notification(message))
         finally:
             with self._comms_feed_lock:
