@@ -25,7 +25,7 @@
   "slackBudgetSecs": 120,
   "maxProfileReads": 20,
 
-  "_classifierComment": "The triage call: `claude -p` with no tools, no MCP servers, no slash commands, no settings and no session, answering `schema`. `model` is the default the operator can override in Settings. Its stdin is one `input` block per message, context first: contextLabel or messageLabel, then the fenced message. A call with an injection among its answers is made again one message per call, without context, so no message's verdict rests on another's text.",
+  "_classifierComment": "The triage call: `claude -p` with no tools, no MCP servers, no slash commands, no settings and no session, answering `schema`. `model` is the default the operator can override in Settings. Its stdin is one `input` block per message, context first: contextLabel or messageLabel, then the fenced message. A call with an injection among its answers is made again one message per call, each with only its own conversation's context, so no message's verdict rests on another batch message's text.",
   "model": "haiku",
   "classifierTimeoutSecs": 90,
 

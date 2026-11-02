@@ -64,9 +64,9 @@ Slack text is written by other people, so Comms treats it as data from end to en
   message of its conversation, or an injection whose quoted evidence does not appear in the message
   itself (case, runs of whitespace and the fence's `|` quoting aside), becomes `none`. The number must name an **open** PR
   (for a review) or an **open** issue (for a fix) of the watched repo, or nothing is queued.
-- A batch with an `injection` among its answers is **triaged again, one message per call and
-  without context**, and those answers stand: nobody is banned, and nothing is asked, on the strength
-  of another sender's words. A banned sender's messages, and messages triaged as injections, are
+- A batch with an `injection` among its answers is **triaged again, one message per call**, each
+  with only its own conversation's earlier pings, and those answers stand: nobody is banned, and
+  nothing is asked, on the strength of another batch message's words. A banned sender's messages, and messages triaged as injections, are
   never anyone's context.
 - Your own messages, bots, and people from other organisations (Slack Connect) are never pinged:
   each sender's Slack profile must name your organisation (or, in a workspace without one, share
