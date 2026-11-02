@@ -48,6 +48,7 @@ from .devicesview import AllocatorControls, allocator_pill, allocator_summary, i
 from .store import Store, tools
 from .widgets import (
     ChoiceChips,
+    ElidedLabel,
     IconChip,
     Pill,
     SegmentedControl,
@@ -115,6 +116,7 @@ class SettingsView(QWidget):
         left.addWidget(self._identity_card())
         left.addWidget(self._runner_card())
         left.addWidget(self._repo_card())
+        left.addWidget(self._other_repos_card())
         left.addWidget(self._autofix_card())
         left.addWidget(self._limits_card())
         left.addStretch(1)
@@ -426,6 +428,95 @@ class SettingsView(QWidget):
             f"Blank = the default path, {default}. DIPLOMAT_REPO in this app's "
             "environment outranks both." if ok else None
         )
+
+    # MARK: other repos
+
+    def _other_repos_card(self) -> QWidget:
+        card, body, self._other_repos_pill = settings_card(
+            glyphs.G_REPO, "OTHER REPOS", _TEAL
+        )
+
+        self._other_repos_host = QWidget()
+        self._other_repos_list = QVBoxLayout(self._other_repos_host)
+        self._other_repos_list.setContentsMargins(0, 0, 0, 0)
+        self._other_repos_list.setSpacing(4)
+        add = QPushButton("Add…")
+        add.setToolTip("Pick another local checkout a wizard may work in")
+        add.clicked.connect(self._add_other_repo)
+
+        col = QWidget()
+        col_layout = QVBoxLayout(col)
+        col_layout.setContentsMargins(0, 0, 0, 0)
+        col_layout.setSpacing(6)
+        col_layout.addWidget(self._other_repos_host)
+        col_layout.addWidget(add, 0, Qt.AlignmentFlag.AlignLeft)
+
+        body.addWidget(self._track(SettingRow(
+            "Checkouts a pasted link may name", col, stacked=True,
+            summary="The wizards accept a PR or issue link to any of these repos; "
+                    "the agent works in that checkout.",
+            detail="Each checkout answers for every GitHub remote it has, so a fork "
+                   "clone takes links to both its upstream and its origin. A bare "
+                   "#number still means the repo root's repo, and a run here is never "
+                   "routed over the mesh: a peer would start it in its own repo root.",
+        )))
+        self.store.local_repos_changed.connect(self._refresh_other_repos_ui)
+        self._refresh_other_repos_ui()
+        return card
+
+    def _add_other_repo(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Choose another checkout", os.path.dirname(review.repo_path())
+        )
+        if chosen and chosen not in self.store.other_repo_paths:
+            self.store.other_repo_paths = [*self.store.other_repo_paths, chosen]
+
+    def _remove_other_repo(self, path: str) -> None:
+        self.store.other_repo_paths = [p for p in self.store.other_repo_paths if p != path]
+
+    def _refresh_other_repos_ui(self) -> None:
+        """One row per listed checkout: the repo it is named by and its path, or a
+        warning where it answers for no GitHub repo at all."""
+        while self._other_repos_list.count():
+            item = self._other_repos_list.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        checkouts = self.store.local_checkouts
+        unusable = 0
+        for checkout in checkouts:
+            row = QWidget()
+            line = QHBoxLayout(row)
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(6)
+            if checkout.slug:
+                name = QLabel(checkout.slug)
+                name.setStyleSheet("font-size: 11px; font-weight: 600;")
+            else:
+                unusable += 1
+                missing = not os.path.isdir(os.path.expanduser(checkout.path))
+                name = QLabel("⚠ Folder not found" if missing else "⚠ No GitHub remote")
+                name.setStyleSheet(f"font-size: 11px; font-weight: 600; color: {_ORANGE};")
+            name.setTextFormat(Qt.TextFormat.PlainText)
+            line.addWidget(name)
+            path = ElidedLabel(checkout.path, 10, _GREY)
+            path.setToolTip(checkout.path)
+            line.addWidget(path, 1)
+            remove = QPushButton("✕")
+            remove.setToolTip("Stop accepting links to this checkout")
+            remove.setAccessibleName(f"Remove {checkout.path}")
+            remove.setFixedWidth(26)
+            remove.clicked.connect(
+                lambda _=False, p=checkout.path: self._remove_other_repo(p))
+            line.addWidget(remove)
+            self._other_repos_list.addWidget(row)
+        self._other_repos_host.setVisible(bool(checkouts))
+        if unusable:
+            self._other_repos_pill.set_state("check this", _ORANGE)
+        elif checkouts:
+            n = len(checkouts)
+            self._other_repos_pill.set_state(f"{n} repo{'s' if n != 1 else ''}", _GREEN)
+        else:
+            self._other_repos_pill.set_state("")
 
     # MARK: PR auto-fix monitor
 

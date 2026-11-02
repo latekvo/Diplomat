@@ -973,8 +973,10 @@ class AgentJob:
     audit_action: str  # activity-feed verb
     label: str  # label core (source prefix / retry suffix added by dispatch_label)
     prompt: str
-    pr_url: str | None = None  # None = not PR-scoped -> no PR dedup possible
-    pr_number: int | None = None  # a PR number, never an issue's
+    pr_url: str | None = None  # the PR's link, for the sessions list; None = not PR-scoped
+    # The dedup key: a PR number of the configured repo, never an issue's, and None for
+    # a PR in another listed checkout, which the bare number would confuse with ours.
+    pr_number: int | None = None
     author_login: str | None = None  # whose PR we'd review - the ban dimension
     duty: str = ""  # mesh duty, for auto-origination gating
     work_key: str = ""  # mesh claim key ("" = no claim)
@@ -991,6 +993,10 @@ class AgentJob:
     # panel spawn keeps no attempt record, and a job with no monitor behind it (the
     # sweeps) has no stamp to carry.
     attempt_stamp: str = ""
+    # Where the agent works when that is not the repo root: a wizard run on a link to
+    # another checkout listed in Settings. Never set on a job the mesh may route, since
+    # a peer would start it in its own repo root.
+    checkout: str | None = None
 
     @property
     def requested(self) -> bool:

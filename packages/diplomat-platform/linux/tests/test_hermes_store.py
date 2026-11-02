@@ -393,6 +393,19 @@ def test_two_hermes_runs_in_one_checkout_do_not_take_each_others_session():
     assert obs.value["r1"].busy is False and obs.value["r2"].busy is True
 
 
+def test_a_run_in_another_checkout_finds_its_session_there():
+    """A wizard run on a repo listed under Other repos works in that checkout, so its
+    session is searched for there rather than in the repo root."""
+    store({OURS: [user(PROMPT), FINISHED]}, cwds={OURS: "/other"})
+    record = staged("r1")
+    agentregistry.stage_directory("r1", "/other")
+
+    obs = probes.agent_sessions([record], REPO)
+
+    assert agentregistry.bound_session("r1") == OURS
+    assert obs.value["r1"] == SessionState(busy=False)
+
+
 def test_a_hermes_run_whose_session_cannot_be_found_is_simply_absent():
     """Absent, not wrong: the resolver reads its screen instead, so a run this cannot
     reach costs the older evidence and never a verdict."""

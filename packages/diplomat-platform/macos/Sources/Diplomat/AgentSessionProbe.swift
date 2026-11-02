@@ -43,10 +43,11 @@ enum AgentSessionProbe {
     /// reads a single message. An OpenCode 2.x run's is never searched for: its spawn or
     /// `OpenCodeProbe.adopt` binds it.
     ///
-    /// The directory is resolved because both stores record the agent's own working
-    /// directory, which is physical, while the configured repo root is whatever the
-    /// operator typed — and the match is exact equality, so one symlink between them and
-    /// no run ever binds.
+    /// The search is by the run's working directory: `directory` (the repo root), or the
+    /// checkout staged for a run on another repo (`AgentRegistry.runDirectory`). It is
+    /// resolved because both stores record the agent's own working directory, which is
+    /// physical, while the path is whatever the operator typed — and the match is exact
+    /// equality, so one symlink between them and no run ever binds.
     static func states(for records: [AgentState.RunRecord],
                        directory: String = AgentSpawner.repoPath)
         -> [String: AgentState.SessionState] {
@@ -56,7 +57,10 @@ enum AgentSessionProbe {
         }
         guard !asking.isEmpty else { return [:] }
         let pass = OpenCodeProbe.ServicePass()
-        let directory = URL(fileURLWithPath: directory).resolvingSymlinksInPath().path
+        func resolved(_ path: String) -> String {
+            URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        }
+        let root = resolved(directory)
         var taken = Set(asking.map { AgentRegistry.boundSession($0.0.runID) }.filter { !$0.isEmpty })
         var out: [String: AgentState.SessionState] = [:]
         // In dispatch order, so the runs that have already matched a session are out of
@@ -65,7 +69,8 @@ enum AgentSessionProbe {
         for (r, backend) in asking.sorted(by: { $0.0.dispatchedAt < $1.0.dispatchedAt }) {
             var sessionID = OpenCodeProbe.serviceSession(of: r) ?? AgentRegistry.boundSession(r.runID)
             if sessionID.isEmpty {
-                sessionID = backend.bind(r, directory, taken)
+                let own = AgentRegistry.runDirectory(r.runID)
+                sessionID = backend.bind(r, own.isEmpty ? root : resolved(own), taken)
                 guard !sessionID.isEmpty else { continue }
                 AgentRegistry.bindSession(r.runID, sessionID)
                 taken.insert(sessionID)

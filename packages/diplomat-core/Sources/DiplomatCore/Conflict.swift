@@ -15,6 +15,10 @@ public struct ConflictConfig {
     public var me: String
     public var specificPR: String
 
+    /// The local checkouts besides the configured repo that a pasted link may name
+    /// (Settings → OTHER REPOS). Optional so a queued config stored without it decodes.
+    public var localRepos: [PRRef.LocalRepo]?
+
     public init(target: Target = .mine, username: String = "", me: String = "",
                 specificPR: String = "") {
         self.target = target
@@ -38,16 +42,23 @@ public struct ConflictConfig {
 
     public var isSinglePR: Bool { target == .specific }
 
-    /// The configured target repo (owner, repo), from the shared core config.
+    /// The repo this run works in: the listed checkout a single-item link named, else
+    /// the configured one. A sweep never reads the single-item field, so text left in it
+    /// can't retarget one.
     public var targetRepo: (owner: String, repo: String) {
-        CoreAssets.repoCoordinates()
+        if isSinglePR, let local = prRef.repo { return (local.owner, local.repo) }
+        return CoreAssets.repoCoordinates()
     }
 
+    /// Where the agent works when that is not the repo root: the listed checkout
+    /// `targetRepo` came from, or nil.
+    public var checkout: String? { isSinglePR ? prRef.repo?.path : nil }
+
     /// The single-PR field parsed as a number / URL / `owner/repo#n` shorthand,
-    /// checked against the target repo.
+    /// checked against the configured repo, then `localRepos`.
     public var prRef: PRRef {
-        let (owner, repo) = targetRepo
-        return PRRef.parse(specificPR, owner: owner, repo: repo)
+        let (owner, repo) = CoreAssets.repoCoordinates()
+        return PRRef.parse(specificPR, owner: owner, repo: repo, also: localRepos ?? [])
     }
 
     /// SPAWN is only meaningful once we know what to sweep: a usable PR reference in
@@ -60,7 +71,7 @@ public struct ConflictConfig {
         let conflicts = try? CoreAssets.conflicts()
         let scope = conflicts?.scope ?? [:]
         let blocks = conflicts?.blocks ?? [:]
-        let (owner, repo) = CoreAssets.repoCoordinates()
+        let (owner, repo) = targetRepo
 
         var out: [String] = []
 

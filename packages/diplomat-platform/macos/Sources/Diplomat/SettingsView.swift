@@ -26,6 +26,7 @@ struct SettingsView: View {
                     identitySection
                     runnerSection
                     repoSection
+                    otherReposSection
                     autofixSection
                     limitsSection
                     commsSection
@@ -286,6 +287,72 @@ struct SettingsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             store.repoPathOverride = url.path
         }
+    }
+
+    // MARK: Other repos (links the wizards accept)
+
+    private var otherReposSection: some View {
+        let checkouts = store.localRepoCheckouts
+        let broken = checkouts.contains { $0.repos.isEmpty }
+        let pill = checkouts.isEmpty ? nil
+            : StatusPill(text: broken ? "check this" : "\(checkouts.count) listed",
+                         tint: broken ? .orange : .green,
+                         symbol: broken ? "exclamationmark.triangle.fill" : "checkmark.seal.fill")
+        return SettingsCard(symbol: "folder.badge.plus", title: "OTHER REPOS", tint: .teal,
+                            pill: pill) {
+            SettingRow(title: "Checkouts the wizards take links to",
+                       summary: "Paste a PR or issue link to one of these and its agent "
+                            + "starts in that checkout, never over the mesh.",
+                       detail: "Each is known by its GitHub remotes, `upstream` first.",
+                       stacked: true) {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(store.localRepoPaths.enumerated()), id: \.offset) { i, path in
+                        otherRepoRow(path, checkout: checkouts.first { $0.path == path }) {
+                            store.localRepoPaths.remove(at: i)
+                        }
+                    }
+                    Button("Add…") { chooseOtherRepos() }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+                // A remote added since the last read shows up without a relaunch.
+                .onAppear { store.refreshLocalRepos() }
+            }
+        }
+    }
+
+    private func otherRepoRow(_ path: String, checkout: LocalRepos.Checkout?,
+                              remove: @escaping () -> Void) -> some View {
+        let slug = checkout?.repos.first?.slug
+        return HStack(spacing: 6) {
+            Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(slug ?? (checkout == nil ? "…" : "no GitHub remote here"))
+                    .font(.callout)
+                    .foregroundStyle(slug == nil && checkout != nil ? .orange : .primary)
+                Text(path).font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            Button(action: remove) { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.borderless).foregroundStyle(.secondary)
+                .help("Stop accepting links to this repo")
+        }
+        .padding(7)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
+    }
+
+    /// Same popover caveat as `chooseRepoRoot`.
+    private func chooseOtherRepos() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose local checkouts whose PR and issue links the wizards accept"
+        panel.prompt = "Add"
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK else { return }
+        let added = panel.urls.map(\.path).filter { !store.localRepoPaths.contains($0) }
+        store.localRepoPaths.append(contentsOf: added)
     }
 
     // MARK: PR auto-fix monitor

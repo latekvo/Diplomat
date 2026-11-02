@@ -131,11 +131,18 @@ if args[1] == "agent-registry" {
 func str(_ key: String, _ def: String = "") -> String { obj[key] as? String ?? def }
 func flag(_ key: String, _ def: Bool) -> Bool { JSONInput.flag(obj[key], def) }
 
+/// The `localRepos` entries (`owner`, `repo`, `path`); malformed ones are dropped.
+let localRepos: [PRRef.LocalRepo] = (obj["localRepos"] as? [[String: Any]] ?? []).compactMap {
+    guard let o = $0["owner"] as? String, let r = $0["repo"] as? String,
+          let p = $0["path"] as? String else { return nil }
+    return PRRef.LocalRepo(owner: o, repo: r, path: p)
+}
+
 let kind = str("kind")
 let prompt: String
 switch kind {
 case "review":
-    let cfg = ReviewConfig(
+    var cfg = ReviewConfig(
         depth: str("depth"),
         target: prTarget(obj["target"] as? String),
         username: str("username"),
@@ -150,20 +157,22 @@ case "review":
         softApprove: flag("softApprove", true),
         specificAuthor: specificAuthor(obj["specificAuthor"] as? String)
     )
+    cfg.localRepos = localRepos
     prompt = cfg.buildPrompt()
 case "conflicts":
-    let cfg = ConflictConfig(
+    var cfg = ConflictConfig(
         target: prTarget(obj["target"] as? String),
         username: str("username"),
         me: str("me"),
         specificPR: str("specificPR")
     )
+    cfg.localRepos = localRepos
     prompt = cfg.buildPrompt()
 case "audit":
     let cfg = AuditConfig(fixIssues: flag("fixIssues", false), openPRs: flag("openPRs", false))
     prompt = cfg.buildPrompt()
 case "issues":
-    let cfg = IssueConfig(
+    var cfg = IssueConfig(
         depth: str("depth"),
         target: issueTarget(obj["target"] as? String),
         username: str("username"),
@@ -175,6 +184,7 @@ case "issues":
         commentOnIssue: flag("commentOnIssue", true),
         includeFeatures: flag("includeFeatures", false)
     )
+    cfg.localRepos = localRepos
     prompt = cfg.buildPrompt()
 case InvestigateConfig.kind:
     prompt = CommsCommand.investigatePrompt(input)

@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from diplomat_runtime.configbase import PRSweepConfig
+from diplomat_runtime.configbase import PRSweepConfig, listed_payload
+from diplomat_runtime.prref import LocalRepo
 from diplomat_runtime.prtarget import PRTarget
 
 # Whose PRs we sweep — the same axis the Review wizard uses. Kept as ``Target`` here
@@ -24,6 +25,8 @@ class ConflictConfig(PRSweepConfig):
     username: str = ""
     me: str = ""  # authenticated viewer login, used as the @handle for "mine"
     specific_pr: str = ""
+    # The checkouts listed in Settings that a pasted link in ``specific_pr`` may name.
+    local_repos: tuple[LocalRepo, ...] = ()
 
     # author_handle / is_single_pr / target_repo / pr_ref are inherited verbatim
     # from PRSweepConfig (shared with ReviewConfig).
@@ -34,14 +37,19 @@ class ConflictConfig(PRSweepConfig):
             return self.pr_ref.is_valid
         return bool(self.author_handle)
 
-    def build_prompt(self) -> str:
-        # Single-sourced in Swift (DiplomatCore) via the diplomat-core CLI.
-        from diplomat_runtime import promptcore
-
-        return promptcore.build_prompt({
+    def prompt_payload(self) -> dict:
+        """The inputs the prompt is assembled from, as ``diplomat-core`` reads them."""
+        return {
             "kind": "conflicts",
             "target": self.target.name.lower(),
             "username": self.username,
             "me": self.me,
             "specificPR": self.specific_pr,
-        })
+            **listed_payload(self.local_repos),
+        }
+
+    def build_prompt(self) -> str:
+        # Single-sourced in Swift (DiplomatCore) via the diplomat-core CLI.
+        from diplomat_runtime import promptcore
+
+        return promptcore.build_prompt(self.prompt_payload())

@@ -358,6 +358,29 @@ enum SpawnScriptTest {
         check("…and refusing it names the item",
               AgentSpawner.SpawnError.noToken(item: "diplomat-agent-gh").errorDescription
                 == "no agent token in Keychain item 'diplomat-agent-gh'")
+        // A run on a repo listed under OTHER REPOS starts in that checkout.
+        let elsewhere = tokenDir.appendingPathComponent("other repo", isDirectory: true)
+        try? FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        let cwdSeen = tokenDir.appendingPathComponent("cwd")
+        stub("claude", "pwd -P > '\(cwdSeen.path)'")
+        let moved = Process()
+        moved.executableURL = URL(fileURLWithPath: "/bin/sh")
+        moved.arguments = ["-c", AgentSpawner.shellCommand(AgentSpawner.SpawnPlan(
+            promptFile: tokenDir.appendingPathComponent("prompt.txt"),
+            donePath: tokenDir.appendingPathComponent("done").path,
+            pidPath: tokenDir.appendingPathComponent("pid").path,
+            runner: .claude, port: 0, directory: elsewhere.path))]
+        moved.environment = ["PATH": "\(stubs.path):/usr/bin:/bin", "SHELL": "/bin/sh",
+                             "HOME": tokenDir.path, "ENV": ""]
+        moved.standardOutput = Pipe()
+        moved.standardError = Pipe()
+        try? moved.run()
+        moved.waitUntilExit()
+        let cwd = (try? String(contentsOf: cwdSeen, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        check("a run given a checkout starts in it",
+              cwd.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath() }
+                == elsewhere.resolvingSymlinksInPath(), "cwd \(cwd ?? "nil")")
         let plain = AgentSpawner.shellCommand(AgentSpawner.SpawnPlan(
             promptFile: URL(fileURLWithPath: "/tmp/p.txt"), donePath: "/tmp/d",
             pidPath: "/tmp/pid", runner: .claude, port: 0))

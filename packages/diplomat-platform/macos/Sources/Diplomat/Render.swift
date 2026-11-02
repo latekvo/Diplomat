@@ -186,6 +186,11 @@ enum Render {
             let _ = seedProcessesIfNeeded("procs", store: store)
             let _ = seedDeviceState(store)
             ContentView(showSettings: true)
+        case "settings-repos":
+            // OTHER REPOS with a checkout it resolved and one it could not.
+            let _ = seedSettings(store, explain: false)
+            let _ = seedListedRepos(store)
+            SettingsView(isPresented: .constant(true))
         case "settings", "settings-explain", "settings-comms-error":
             // Seed an outstanding review count so the "2 owed" pill renders on the
             // review-requests row. No fixed height: the two-column form sizes to its
@@ -249,14 +254,19 @@ enum Render {
         case let s where s.hasPrefix("wizard"):
             // Suffix-driven states: "wizard" (mine), "-other" (someone else's →
             // handle field), "-specific" (specific PR → PR field), "-wrong"
-            // (specific PR with a URL pointing at another repo → warning).
+            // (specific PR with a URL pointing at another repo → warning), "-listed"
+            // (a URL to a repo listed under OTHER REPOS → accepted, no mesh row).
             let wrong = s.contains("wrong")
             let banned = s.contains("banned")
-            let specific = wrong || banned || s.contains("specific") || s.contains("single")
+            let listed = s.contains("listed")
+            let specific = wrong || banned || listed || s.contains("specific") || s.contains("single")
             let other = s.contains("other")
             let target: PRTarget = specific ? .specific : (other ? .someone : .mine)
             let pr = wrong ? "https://github.com/some-org/other-repo/pull/42"
-                           : "https://github.com/software-mansion/argent/pull/455"
+                : listed ? "https://github.com/software-mansion/radon/pull/291"
+                : "https://github.com/software-mansion/argent/pull/455"
+            // Both "-wrong" and "-listed" list repos, so the warning names Settings.
+            if wrong || listed { let _ = seedListedRepos(store) }
             // "-specific-mine" / "-specific-theirs" seed the polled author so the
             // toggle-hiding can be eyeballed; "-banned" seeds a @foobar ban + a specific
             // PR authored by them, to show the flashing banned-author warning.
@@ -276,12 +286,16 @@ enum Render {
                 .frame(height: 560)
         case let s where s.hasPrefix("conflicts"):
             // Same suffix states as the review wizard: "-other" (someone else's →
-            // handle field), "-specific" (PR field), "-wrong" (repo-mismatch warning).
+            // handle field), "-specific" (PR field), "-wrong" (repo-mismatch warning),
+            // "-listed" (a PR in a repo listed under OTHER REPOS).
             let wrong = s.contains("wrong")
-            let specific = wrong || s.contains("specific") || s.contains("single")
+            let listed = s.contains("listed")
+            let specific = wrong || listed || s.contains("specific") || s.contains("single")
             let other = s.contains("other")
             let pr = wrong ? "https://github.com/some-org/other-repo/pull/42"
-                           : "https://github.com/software-mansion/argent/pull/455"
+                : listed ? "https://github.com/software-mansion/radon/pull/291"
+                : "https://github.com/software-mansion/argent/pull/455"
+            if listed { let _ = seedListedRepos(store) }
             let _ = seedMesh(store)
             ConflictWizardView(scrolls: false,
                                seedTarget: specific ? .specific : (other ? .someone : .mine),
@@ -291,12 +305,16 @@ enum Render {
         case let s where s.hasPrefix("issues"):
             // Suffix-driven states, matching the other wizards: "-other" (someone
             // else's → handle field), "-specific" (issue field), "-wrong" (repo-
-            // mismatch warning), "-features" (the escalation ticked).
+            // mismatch warning), "-features" (the escalation ticked), "-listed" (an
+            // issue in a repo listed under OTHER REPOS).
             let wrong = s.contains("wrong")
-            let specific = wrong || s.contains("specific") || s.contains("single")
+            let listed = s.contains("listed")
+            let specific = wrong || listed || s.contains("specific") || s.contains("single")
             let other = s.contains("other")
             let issue = wrong ? "https://github.com/some-org/other-repo/issues/42"
-                              : "https://github.com/software-mansion/argent/issues/455"
+                : listed ? "https://github.com/software-mansion/radon/issues/7"
+                : "https://github.com/software-mansion/argent/issues/455"
+            if listed { let _ = seedListedRepos(store) }
             let _ = seedMesh(store)
             IssueWizardView(scrolls: false,
                             seedTarget: specific ? .specific : (other ? .someone : .all),
@@ -837,6 +855,32 @@ enum Render {
         store.prAutofixEnabled = true
         store.autofixStatus = AutofixStatus(
             updatedAt: Date(), watching: 28, conflictsHandled: 3, reviewsHandled: 2)
+    }
+
+    /// OTHER REPOS holding a scratch checkout whose `upstream` is software-mansion/radon,
+    /// and a directory that is no checkout. Resolved before the render, which would
+    /// otherwise draw ahead of the store's own background read.
+    @MainActor
+    private static func seedListedRepos(_ store: Store) -> Bool {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-render-repos-\(UUID().uuidString)")
+        let radon = root.appendingPathComponent("radon")
+        let plain = root.appendingPathComponent("notes")
+        for dir in [radon, plain] {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        for args in [["init", "-q"],
+                     ["remote", "add", "origin", "git@github.com:octocat/radon.git"],
+                     ["remote", "add", "upstream", "https://github.com/software-mansion/radon.git"]] {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = ["-C", radon.path] + args
+            try? p.run()
+            p.waitUntilExit()
+        }
+        store.localRepoPaths = [radon.path, plain.path]
+        store.localRepoCheckouts = LocalRepos.resolve(store.localRepoPaths)
+        return true
     }
 
     /// A single @foobar ban so the wizard's flashing "banned author" warning can be

@@ -104,6 +104,29 @@ final class Store: ObservableObject {
             AppConfig.set(AppConfig.repoRootKey, repoPathOverride)
         }
     }
+    /// Checkouts besides the repo root whose PR and issue links the wizards accept
+    /// (Settings → OTHER REPOS), as entered.
+    @Published var localRepoPaths: [String] {
+        didSet {
+            persist(localRepoPaths, forKey: Keys.localRepoPaths)
+            refreshLocalRepos()
+        }
+    }
+    /// `localRepoPaths` read for their GitHub remotes, in list order.
+    @Published var localRepoCheckouts: [LocalRepos.Checkout] = []
+    /// What a wizard parses a pasted link against, besides the configured repo.
+    var localRepos: [PRRef.LocalRepo] { localRepoCheckouts.flatMap(\.repos) }
+
+    /// Re-read every listed checkout's remotes, off the main actor.
+    func refreshLocalRepos() {
+        let paths = localRepoPaths
+        Task {
+            let resolved = await Task.detached(priority: .userInitiated) {
+                LocalRepos.resolve(paths)
+            }.value
+            if localRepoPaths == paths { localRepoCheckouts = resolved }
+        }
+    }
     /// Which agent CLI a spawn runs (Settings → AGENT RUNNER). In `AppConfig` rather
     /// than UserDefaults for the same reason the repo root is: a mesh node spawns
     /// agents from a process with no UserDefaults to ask.
@@ -606,6 +629,7 @@ final class Store: ObservableObject {
     private enum Keys {
         static let usernameOverride = "usernameOverride"
         static let hiddenTools = "hiddenTools"
+        static let localRepoPaths = "localRepoPaths"
         static let colorOverrides = "colorOverrides"
         static let terminalChoice = "terminalChoice"
         static let prAutofixEnabled = "prAutofixEnabled"
@@ -757,6 +781,7 @@ final class Store: ObservableObject {
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
             ?? AgentSpawner.resolved(.ghostty).rawValue
         repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
+        localRepoPaths = defaults.stringArray(forKey: Keys.localRepoPaths) ?? []
         agentRunner = AppConfig.agentRunner
         if !Headless.active { Store.warmOpenCode(AppConfig.agentRunner) }
         agentModel = AppConfig.agentModel
@@ -804,6 +829,7 @@ final class Store: ObservableObject {
         commsSeenAt = defaults.object(forKey: Keys.commsSeenAt) as? Date ?? Date()
         queuedTaskOrder = defaults.stringArray(forKey: Keys.queuedTaskOrder) ?? []
         requestedWork = Store.loadRequestedWork()
+        refreshLocalRepos()
         if hiddenTools.contains(selected.rawValue),
            let first = ToolKind.allCases.first(where: { !hiddenTools.contains($0.rawValue) }) {
             selected = first
@@ -1145,7 +1171,8 @@ final class Store: ObservableObject {
     @discardableResult
     func spawnTracked(kind: String, label: String, prURL: String?, prNumber: Int?,
                       prompt: String, source: String, auditAction: String? = nil,
-                      ledgerKey: String = "", terminal preferred: SpawnTerminal,
+                      ledgerKey: String = "", directory: String? = nil,
+                      terminal preferred: SpawnTerminal,
                       restoreFocusTo restoreBID: String? = nil) async throws -> SpawnTerminal {
         let now = Date().timeIntervalSince1970
         guard let record = AgentRegistry.createRun(
@@ -1158,6 +1185,7 @@ final class Store: ObservableObject {
         }
         let runner = AppConfig.agentRunner
         AgentRegistry.stageRunner(record.runID, runner.rawValue)
+        if let directory { AgentRegistry.stageDirectory(record.runID, directory) }
         var service = false
         if runner == .opencode {
             // Off this actor: it runs the binary, which takes most of a second on 1.x.
@@ -1170,7 +1198,7 @@ final class Store: ObservableObject {
         if service {
             guard let minted = OpenCodeCLI.stageSession(
                 promptFile: AgentRegistry.promptPath(record.runID),
-                directory: AgentSpawner.repoPath, model: AppConfig.agentModel) else {
+                directory: directory ?? AgentSpawner.repoPath, model: AppConfig.agentModel) else {
                 bookWritten(AgentRegistry.forget([record.runID]))
                 throw AgentSpawner.SpawnError.write("could not stage the OpenCode session")
             }
@@ -1186,7 +1214,7 @@ final class Store: ObservableObject {
             pidPath: AgentRegistry.pidPath(record.runID).path,
             runner: runner, port: port, serviceSession: session,
             settingsPath: AgentRegistry.stageHooks(record.runID),
-            tokenItem: AppConfig.agentTokenKeychainItem)
+            tokenItem: AppConfig.agentTokenKeychainItem, directory: directory)
         do {
             // Detached: the spawn's `osascript` blocks for `inputSettleDelay` seconds,
             // and this actor draws the panel.
@@ -3132,6 +3160,9 @@ final class Store: ObservableObject {
         /// path: a panel spawn keeps no attempt record, and a job with no monitor
         /// behind it (the sweeps) has no stamp to carry.
         var attemptStamp: String = ""
+        /// The checkout the agent works in when it is not the repo root: a wizard run on
+        /// a link to a repo listed under Settings → OTHER REPOS.
+        var directory: String?
 
         /// Whether the operator asked for this exact unit of work, as opposed to a
         /// monitor having found it. Read off the verb, which already distinguishes
@@ -3383,8 +3414,8 @@ final class Store: ObservableObject {
             let opened = try await spawnTracked(
                 kind: job.kind, label: rowLabel, prURL: job.prURL, prNumber: job.prNumber,
                 prompt: job.prompt, source: source.rawValue, auditAction: job.auditAction,
-                ledgerKey: source == .auto ? job.ledgerKey : "", terminal: terminal,
-                restoreFocusTo: AgentDispatchGate.stealsFocus(source) ? nil
+                ledgerKey: source == .auto ? job.ledgerKey : "", directory: job.directory,
+                terminal: terminal, restoreFocusTo: AgentDispatchGate.stealsFocus(source) ? nil
                     : frontmostAppBundleID)
             bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)
             recordTelemetryStart(job, source: source, remote: false,
