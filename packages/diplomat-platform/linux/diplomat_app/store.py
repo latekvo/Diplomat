@@ -3339,7 +3339,7 @@ class Store(QObject):
                 plan = self._comms_poll_once()
             except Exception as exc:  # noqa: BLE001 — a tick must never stop the timer
                 plan = {"at": datetime.now().astimezone(), "error": str(exc),
-                        "me": None, "items": []}
+                        "me": None, "pings": [], "items": []}
             finally:
                 self._comms_lock.release()
             self._comms_ticked.emit(plan)
@@ -3360,8 +3360,7 @@ class Store(QObject):
                 effect = comms.effect(decision, message, toggles, settings)
             except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
                 effect = {"kind": "none", "error": str(exc)}
-            entry = {"message": message, "decision": decision, "effect": effect,
-                     "stranded": bool(it.get("stranded"))}
+            entry = {"message": message, "decision": decision, "effect": effect}
             if effect.get("kind") in ("review", "fix_issue"):
                 entry["target"] = self._comms_lookup(effect["kind"],
                                                      int(effect.get("number") or 0))
@@ -3371,7 +3370,7 @@ class Store(QObject):
         with self._comms_feed_lock:
             self._comms_in_flight |= {str(e["message"].get("id", "")) for e in items}
         return {"at": at, "error": result.get("error"), "me": result.get("me"),
-                "items": items, "notices": result["notices"]}
+                "pings": result["pings"], "items": items, "notices": result["notices"]}
 
     def _comms_stranded(self, fresh: list[dict]) -> list[dict]:
         """Twin of ``applyComms``' first pass: a logged ping with no action, oldest first.
@@ -3384,7 +3383,7 @@ class Store(QObject):
             logged = comms.feed()
         except (RuntimeError, promptcore.CoreBinaryMissing, ValueError):
             return []
-        return [{"message": i["message"], "decision": i["decision"], "stranded": True}
+        return [{"message": i["message"], "decision": i["decision"]}
                 for i in reversed(logged)
                 if not i.get("outcome") and i.get("decision")
                 and str(i["message"].get("id", "")) not in skip]
@@ -3419,12 +3418,13 @@ class Store(QObject):
                 "state": str(obj.get("state") or "")}
 
     def _apply_comms_tick(self, plan: dict) -> None:
-        """The Qt-thread half of a tick: publish what it found and act on each ping. A
-        stranded one (:meth:`_comms_stranded`) is not notified.
+        """The Qt-thread half of a tick: publish what it found, notify each new ping, and
+        act on each triaged one.
 
-        A sender on the list now, or banned by an earlier ping of this apply, has
-        nothing else acted on, and no ping of theirs is notified: the ban's own
-        notification says it."""
+        A ping is notified once, in the tick that takes it, once that tick's answers are
+        acted on; its triage, in that tick or a later one, notifies nothing. A sender on
+        the list now, or banned by an earlier ping of this apply, has nothing else acted
+        on, and no ping of theirs is notified: the ban's own notification says it."""
         items = plan.get("items") or []
         try:
             self.comms_last_poll = plan.get("at")
@@ -3445,10 +3445,10 @@ class Store(QObject):
             self.refresh_comms_feed()
             if items or notices:
                 self.refresh_activity()
-                if self.comms_notify and self.comms_enabled:
-                    for entry in items:
-                        if self._comms_notifies(entry):
-                            self.comms_pinged.emit(*self._comms_notification(entry["message"]))
+            if self.comms_notify and self.comms_enabled:
+                for message in plan.get("pings") or []:
+                    if str(message.get("userID") or "") not in banned_now:
+                        self.comms_pinged.emit(*self._comms_notification(message))
         finally:
             with self._comms_feed_lock:
                 self._comms_in_flight -= {str(e["message"].get("id", "")) for e in items}
@@ -3479,15 +3479,6 @@ class Store(QObject):
     def comms_sender(message: dict) -> str:
         """Twin of ``CommsMessage.sender``."""
         return str(message.get("userName") or message.get("userID") or "")
-
-    @staticmethod
-    def _comms_notifies(entry: dict) -> bool:
-        """A banned sender's message is not news, and a ban announces itself
-        (:attr:`ban_noticed`)."""
-        return (not entry.get("stranded")
-                and not entry.get("sender_banned")
-                and not comms.from_banned_sender(entry.get("decision"))
-                and (entry.get("effect") or {}).get("kind") != "ban")
 
     def _comms_notification(self, message: dict) -> tuple[str, str]:
         """Worded as ``CommsNotifier.post`` words it."""

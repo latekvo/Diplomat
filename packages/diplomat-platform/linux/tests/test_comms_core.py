@@ -358,12 +358,14 @@ def slack(monkeypatch):
 
 def _stub_claude(tmp_path: Path) -> Path:
     """A ``claude`` that answers like ``-p --output-format json``, recording its stdin in
-    ``stdin.txt`` and its arguments, one call a line, in ``args.txt``."""
+    ``stdin.txt`` and its arguments, one call a line, in ``args.txt``. It answers a
+    batch's first message only."""
     answer = json.dumps([
         {"type": "system", "subtype": "init", "tools": ["StructuredOutput"]},
         {"type": "result", "is_error": False, "result": "",
-         "structured_output": {"action": "review", "number": 12, "summary": "Review PR 12",
-                               "reason": "a direct ask"}},
+         "structured_output": {"decisions": [
+             {"message": 1, "action": "review", "number": 12, "summary": "Review PR 12",
+              "reason": "a direct ask"}]}},
     ])
     # Not tmp_path/claude: that is conftest's DIPLOMAT_CLAUDE_DIR.
     stub = tmp_path / "bin" / "claude"
@@ -380,19 +382,25 @@ def _tools(name: str) -> list[dict]:
 
 
 def _first_tick(settings: dict) -> int:
-    """The tick that only learns who the login is; the watermark's whole seconds."""
+    """The tick that only learns who the login is; the watermark's whole seconds, set a
+    minute back so a message a test posts a few seconds above it was sent before now,
+    as a real one was, and is due once ``flushAfterSecs`` is 0."""
     first = _core("comms-tick", stdin=settings)
     assert first.returncode == 0, first.stderr
     assert json.loads(first.stdout) == {
         "me": {"userID": "UME", "teamID": "Ours", "handle": "operator"},
-        "items": [], "error": None, "notices": []}
-    watermark = json.loads((_comms_dir() / "state.json").read_text())["watermark"]
-    return int(watermark.split(".")[0])
+        "pings": [], "items": [], "error": None, "notices": []}
+    path = _comms_dir() / "state.json"
+    state = json.loads(path.read_text())
+    secs = int(state["watermark"].split(".")[0]) - 60
+    state["watermark"] = f"{secs}.000000"
+    path.write_text(json.dumps(state))
+    return secs
 
 
 def test_comms_tick_runs_end_to_end_through_the_binary(tmp_path, slack, monkeypatch):
     monkeypatch.setenv("DIPLOMAT_CLAUDE", str(_stub_claude(tmp_path)))
-    settings = {"keywordsRaw": "argent", "login": "testuser"}
+    settings = {"keywordsRaw": "argent", "login": "testuser", "flushAfterSecs": 0}
 
     secs = _first_tick(settings)
     assert [m for m, _ in _Slack.calls] == ["initialize", "notifications/initialized",
@@ -414,7 +422,8 @@ def test_comms_tick_runs_end_to_end_through_the_binary(tmp_path, slack, monkeypa
     assert second.returncode == 0, second.stderr
     result = json.loads(second.stdout)
     assert result["error"] is None
-    assert [i["message"]["text"] for i in result["items"]] == ["can you review PR 12?"]
+    assert [m["text"] for m in result["pings"]] == ["can you review PR 12?"]
+    assert [i["message"] for i in result["items"]] == result["pings"]
     message = result["items"][0]["message"]
     assert (message["userID"], message["userName"], message["teamID"], message["isDM"],
             message["permalink"]) == (
@@ -430,7 +439,8 @@ def test_comms_tick_runs_end_to_end_through_the_binary(tmp_path, slack, monkeypa
     # The operator's own message and the one under the watermark cost no profile read.
     assert [p.get("user_id") for p in _tools("slack_read_user_profile")] == [None, "UALICE"]
     stdin = (tmp_path / "stdin.txt").read_text()
-    assert stdin.startswith("BEGIN UNTRUSTED SLACK MESSAGE\n| From: alice\n| Where: DM\n")
+    assert stdin.startswith("Message 1: triage this one.\nBEGIN UNTRUSTED SLACK MESSAGE\n"
+                            "| From: alice\n| Where: DM D1\n")
     assert "can you review PR 12?" in stdin
 
     feed = json.loads(_core("comms-feed").stdout)
@@ -438,7 +448,58 @@ def test_comms_tick_runs_end_to_end_through_the_binary(tmp_path, slack, monkeypa
         ("can you review PR 12?", "review")]
 
     third = json.loads(_core("comms-tick", stdin=settings).stdout)
-    assert third["items"] == [], "a triaged message is never triaged again"
+    assert (third["pings"], third["items"]) == ([], []), \
+        "a triaged message is never pinged or triaged again"
+
+
+def _triage_calls(tmp_path: Path) -> int:
+    path = tmp_path / "args.txt"
+    lines = path.read_text().splitlines() if path.exists() else []
+    return sum(line.startswith("-p ") for line in lines)
+
+
+def test_a_ping_is_triaged_in_a_later_tick_once_its_queue_is_stale(tmp_path, slack,
+                                                                   monkeypatch):
+    """Found, a message is a ping at once and waits in the queue: the default
+    ``flushAfterSecs`` holds it past the tick that took it, and a tick that finds it
+    stale hands over its triage alone."""
+    monkeypatch.setenv("DIPLOMAT_CLAUDE", str(_stub_claude(tmp_path)))
+    secs = _first_tick({})
+    _Slack.messages = [_message(f"{secs + 5}.000100", "UALICE", "can you review PR 12?")]
+
+    taken = json.loads(_core("comms-tick", stdin={}).stdout)
+    assert taken["error"] is None
+    assert [m["text"] for m in taken["pings"]] == ["can you review PR 12?"]
+    assert taken["items"] == [] and _triage_calls(tmp_path) == 0
+    [row] = json.loads(_core("comms-feed").stdout)
+    assert row["message"] == taken["pings"][0] and "decision" not in row
+
+    triaged = json.loads(_core("comms-tick", stdin={"flushAfterSecs": 0}).stdout)
+    assert triaged["pings"] == []
+    assert [(i["message"], i["decision"]["action"]) for i in triaged["items"]] == [
+        (taken["pings"][0], "review")]
+    assert _triage_calls(tmp_path) == 1
+    [row] = json.loads(_core("comms-feed").stdout)
+    assert row["decision"]["number"] == 12
+
+
+def test_a_full_queue_is_triaged_in_one_call(tmp_path, slack, monkeypatch):
+    """``maxPerTick`` pings are one batch, whatever ``flushAfterSecs`` says; a message
+    the classifier left unanswered is a ``none``."""
+    monkeypatch.setenv("DIPLOMAT_CLAUDE", str(_stub_claude(tmp_path)))
+    settings = {"maxPerTick": 2}
+    secs = _first_tick(settings)
+    _Slack.messages = [_message(f"{secs + 5}.000100", "UALICE", "can you review PR 12?"),
+                       _message(f"{secs + 6}.000100", "UALICE", "thanks!")]
+    result = json.loads(_core("comms-tick", stdin=settings).stdout)
+    assert [m["text"] for m in result["pings"]] == ["can you review PR 12?", "thanks!"]
+    assert [(i["message"]["text"], i["decision"]["action"]) for i in result["items"]] == [
+        ("can you review PR 12?", "review"), ("thanks!", "none")]
+    assert result["items"][1]["decision"]["reason"] == (
+        "the classifier gave this message no answer")
+    assert _triage_calls(tmp_path) == 1
+    stdin = (tmp_path / "stdin.txt").read_text()
+    assert "Message 1: triage this one." in stdin and "Message 2: triage this one." in stdin
 
 
 def test_a_sender_from_another_workspace_is_never_a_ping(tmp_path, slack, monkeypatch):
@@ -454,8 +515,9 @@ def test_a_sender_from_another_workspace_is_never_a_ping(tmp_path, slack, monkey
         _message(f"{secs + 7}.000100", "UALICE", "<@UME> review #4 please",
                  channel="C0TEAM", where="#team"),
     ]
-    result = json.loads(_core("comms-tick", stdin={}).stdout)
+    result = json.loads(_core("comms-tick", stdin={"flushAfterSecs": 0}).stdout)
     assert result["error"] is None
+    assert [m["text"] for m in result["pings"]] == ["<@UME> review #4 please"]
     assert [i["message"]["text"] for i in result["items"]] == ["<@UME> review #4 please"]
     assert {p.get("user_id") for p in _tools("slack_read_user_profile")} == {
         None, "UEXT", "UALICE"}
@@ -489,7 +551,8 @@ def test_without_a_login_the_tick_says_how_to_sign_in(slack):
            "authenticate the Slack server")
     out = _core("comms-tick", stdin={})
     assert out.returncode == 0, out.stderr
-    assert json.loads(out.stdout) == {"me": None, "items": [], "notices": [], "error": why}
+    assert json.loads(out.stdout) == {"me": None, "pings": [], "items": [], "notices": [],
+                                      "error": why}
     events = [json.loads(line) for line in
               (_comms_dir() / "events.jsonl").read_text().splitlines()]
     assert [(e["kind"], e["id"], e["detail"]) for e in events] == [("error", "", why)]
@@ -532,7 +595,7 @@ def test_the_dry_run_through_the_entry_point_consumes_no_ping(tmp_path, slack):
         run = subprocess.run([sys.executable, "-m", "diplomat_app"], cwd=str(linux), env=env,
                              capture_output=True, text=True, timeout=120)
         assert run.returncode == 0, run.stdout + run.stderr
-        assert "1 new ping\n" in run.stdout
+        assert "1 new ping, 1 triaged\n" in run.stdout
         assert "can you review PR 12?" in run.stdout
         assert '"kind": "review", "number": 12' in run.stdout
     assert (live / "state.json").read_text() == state

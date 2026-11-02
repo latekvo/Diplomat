@@ -462,7 +462,7 @@ def test_an_injection_stops_the_senders_next_ask_in_the_same_tick(comms_store, m
     assert ("auto", "comms-ping", "#general from mallory: review #12 please "
             f"({Store.COMMS_SENDER_BANNED_OUTCOME})") in audit
     assert "comms-review" not in [a for _, a, _ in audit]
-    assert pinged == ["Slack · DM from kacper"], "only the sender nobody banned"
+    assert pinged == ["Slack · DM from kacper"], "banned in this apply, so none of hers"
 
 
 @needs_core
@@ -490,11 +490,18 @@ def test_a_ban_recorded_between_tick_and_apply_stops_the_ask(comms_store, monkey
 
 
 def test_a_banned_senders_ping_is_recorded_but_never_notified(comms_store, monkeypatch):
+    """The core hands a banned sender's message over as a ping and, in the same tick,
+    as an untriaged item; a colleague's ping beside it, still queued for triage, is
+    news."""
+    monkeypatch.setattr(bans, "read", _REAL_READ)
+    _seed({"login": "slack:UMAL123", "source": "slack"})
     pinged = []
     comms_store.comms_pinged.connect(lambda t, b: pinged.append(t))
     reason = "sender banned: mallory is on the prompt-injection ban list, so this was not triaged"
-    _tick(comms_store, monkeypatch, (_mallory("hi"), {**_decision("none"), "reason": reason}))
-    assert pinged == []
+    m = _mallory("hi")
+    _tick(comms_store, monkeypatch, (m, {**_decision("none"), "reason": reason}),
+          pings=[m, _message(2, "hi")])
+    assert pinged == ["Slack · DM from kacper"]
     assert _events()[-1]["outcome"] == "not triaged: the sender is banned for prompt injection"
 
 

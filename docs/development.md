@@ -326,7 +326,8 @@ packages/
         Comms.swift                Comms (the Slack watcher): its types, the triage answer's validation, what
                                    each answer does, and the investigate prompt (assets/comms.json)
         SlackAPI.swift             Slack's MCP server under Claude Code's login (profiles, search) + who becomes a ping
-        CommsWatch.swift           one watcher tick: search, watermark, the sandboxed `claude -p` classifier
+        CommsWatch.swift           one watcher tick: search, watermark, the triage queue and its batched
+                                   `claude -p` classifier
         CommsLog.swift             ~/.diplomat/comms/events.jsonl, both applets' log, folded for the screen
         LoginShell.swift           locating a CLI through the operator's login shell, past any alias
         Mesh.swift                 mesh model: decodes assets/mesh.json + ~/.diplomat/mesh/state.json, pure placement

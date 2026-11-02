@@ -5,8 +5,9 @@ import Foundation
 /// implementation.
 ///
 ///   comms-tick    stdin = CommsSettings JSON. One tick with the
-///                 real classifier; stdout = {"me": {...}|null, "items": [{"message",
-///                 "decision"}], "error": "..."|null, "notices": ["..."]}. Exits 0 when
+///                 real classifier; stdout = {"me": {...}|null, "pings": [message],
+///                 "items": [{"message", "decision"}], "error": "..."|null,
+///                 "notices": ["..."]}. Exits 0 when
 ///                 `error` is set (a failed tick is an answer), 1 when stdout cannot be
 ///                 written, leaving the items for the next tick.
 ///   comms-auth    no stdin. Who Claude Code's Slack login is, through the tick's own

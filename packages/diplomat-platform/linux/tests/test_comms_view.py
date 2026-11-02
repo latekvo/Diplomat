@@ -152,6 +152,20 @@ def test_pings_jobs_and_what_is_new(store):
     assert reports == {"Job 3": [], "Job 2": ["Report"], "Job 1": [], "Job 5": []}
 
 
+def test_a_ping_still_queued_for_triage_says_so(store):
+    """A ping has no decision until the core triages its batch, up to ``flushAfterSecs``
+    after it was taken."""
+    item = _item(1, "2026-10-27T10:10:00Z")
+    del item["decision"], item["outcome"]
+    store.comms_items = [item]
+    store.comms_enabled = True
+    view = CommsView(store)
+    [row] = _rows(view, PingRow)
+    texts = _texts(row)
+    assert "awaiting triage" in texts
+    assert not any(t.startswith(("REVIEW", "NO ACTION", "→")) for t in texts)
+
+
 def test_text_from_slack_or_the_triage_is_never_read_as_markup(store):
     """A message can steer the triage's summary, and so the investigation's label,
     into HTML; every label showing Slack's or the model's words draws it as typed."""

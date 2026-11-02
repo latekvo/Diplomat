@@ -126,11 +126,12 @@ def _sign_in_secs(t: dict) -> float:
 def tick_timeout() -> float:
     """The sum of the bounds the ``comms-tick`` child holds itself to, so it is never
     killed inside them: signing in, the deadline every later Slack call shares, and the
-    triage."""
+    triage: one batch call, then one call per message of it when its answers hold an
+    ``injection``."""
     t = tunables()
     slack = float(t.get("slackBudgetSecs", 120)) + _HTTP_GRACE_SECS
     triage = (_LOGIN_SHELL_SECS
-              + float(t.get("maxPerTick", 8)) * float(t.get("classifierTimeoutSecs", 60)))
+              + (1 + float(t.get("maxPerTick", 8))) * float(t.get("classifierTimeoutSecs", 90)))
     return _sign_in_secs(t) + slack + triage + _MARGIN_SECS
 
 
@@ -159,17 +160,21 @@ def _core(args: list[str], *, stdin: object = None, timeout: float = 30) -> str:
 
 
 def tick(settings: dict) -> dict:
-    """``{"me", "items": [{"message", "decision"}], "error", "notices"}``. Never
-    raises: a CLI failure is the tick's ``error``."""
+    """``{"me", "pings": [message], "items": [{"message", "decision"}], "error",
+    "notices"}``: ``pings`` the messages this tick took, ``items`` triage answers, each
+    for a ping of this tick or an earlier one. Never raises: a CLI failure is the
+    tick's ``error``."""
     try:
         out = _core(["comms-tick"], stdin=settings, timeout=tick_timeout())
         result = json.loads(out)
     except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
-        return {"me": None, "items": [], "error": str(exc), "notices": []}
+        return {"me": None, "pings": [], "items": [], "error": str(exc), "notices": []}
     if not isinstance(result, dict) or not isinstance(result.get("items"), list):
-        return {"me": None, "items": [], "notices": [],
+        return {"me": None, "pings": [], "items": [], "notices": [],
                 "error": "diplomat-core comms-tick answered something that is not a tick"}
-    notices = result.get("notices")
+    pings, notices = result.get("pings"), result.get("notices")
+    result["pings"] = ([p for p in pings if isinstance(p, dict)]
+                       if isinstance(pings, list) else [])
     result["notices"] = ([n for n in notices if isinstance(n, str)]
                          if isinstance(notices, list) else [])
     return result

@@ -202,12 +202,13 @@ extension Store {
     /// A tick that Comms was switched off during still lands its pings (the tick has
     /// already logged them), and acts on and notifies none but a ban, which has no switch.
     ///
-    /// A logged ping with no action is acted on first, unnotified: an earlier apply that
-    /// never finished (a quit or handover during a lookup) delivered it, and the
+    /// A logged ping with a decision and no action is acted on first: an earlier apply
+    /// that never finished (a quit or handover during a lookup) delivered it, and the
     /// watermark is past it.
     ///
-    /// A sender banned before or during this apply has nothing else acted on, and no
-    /// ping of theirs is notified: the ban's own notification says it.
+    /// The tick's new pings are notified once its answers are acted on; answers are not,
+    /// their pings having been. A sender banned before or during this apply has nothing
+    /// else acted on, and no ping of theirs is notified: the ban's own notification says it.
     func applyComms(_ result: CommsTickResult) async {
         if let me = result.me, me != commsIdentity { commsIdentity = me }
         noteCommsHealth(result.error)
@@ -255,11 +256,9 @@ extension Store {
             // that gap finds its owner here (`commsSettled`).
             recordComms(lines)
             if let line = act.feedLine { AuditLog.log("auto", act.verb, line) }
-            let quiet = senderBanned || Store.isBan(effect)
-                || item.decision.reason.hasPrefix(CommsWatch.bannedPrefix)
-            if commsNotify && commsEnabled && fresh.contains(item.message.id) && !quiet {
-                Notifier.post(item.message)
-            }
+        }
+        for m in result.pings where commsNotify && commsEnabled && !bannedNow.contains(m.userID) {
+            Notifier.post(m)
         }
         if !result.items.isEmpty || !stranded.isEmpty { refreshAudit() }
         refreshComms()
@@ -887,7 +886,10 @@ extension Dump {
         let store = Store()
         // The login the live app's triage prompt names; a headless Store has not fetched it.
         await store.fetchMe()
-        let settings = store.commsSettings
+        // Triage what the poll takes, rather than queue it for a later tick.
+        var flushing = store.commsSettings
+        flushing.flushAfterSecs = 0
+        let settings = flushing
         let toggles = store.commsToggles
         let model = settings.model.isEmpty ? "(default)" : settings.model
         print("keywords: \(settings.keywords)  senders: \(settings.senderAllowlist)  model: \(model)")
@@ -897,7 +899,7 @@ extension Dump {
         }.value
         if let me = result.me { print("as:    \(Store.commsWho(me)) (\(me.userID))") }
         if let error = result.error { print("error: \(error)") }
-        print("\(result.items.count) new ping(s)\n")
+        print("\(result.pings.count) new ping(s), \(result.items.count) triaged\n")
         let reports = CommsLog.reportsDir()
         for it in result.items {
             let m = it.message
