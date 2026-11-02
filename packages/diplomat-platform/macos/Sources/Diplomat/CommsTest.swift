@@ -138,16 +138,19 @@ enum CommsTest {
             return .init(message: m, decision: CommsDecision(action: action, number: number,
                                                              summary: summary, reason: "r"))
         }
-        // What `CommsWatch.tick` writes before it returns: each ping, then its triage.
+        // What `CommsWatch.tick` writes before it returns, for messages pinged and triaged
+        // in one tick: the pings, then their triage.
         func apply(_ items: [CommsTickResult.Item], error: String? = nil,
                    notices: [String] = []) async {
             for it in items {
                 CommsLog.append(CommsEvent(kind: .ping, id: it.message.id, message: it.message))
+            }
+            for it in items {
                 CommsLog.append(CommsEvent(kind: .decision, id: it.message.id, decision: it.decision))
             }
             await store.applyComms(CommsTickResult(
                 me: CommsIdentity(userID: "U0ME", teamID: "T0", handle: "latekvo"),
-                items: items, error: error, notices: notices))
+                pings: items.map(\.message), items: items, error: error, notices: notices))
         }
         func ids() -> [String] { store.queuedTasks.map(\.id) }
         func band(_ b: Int) -> [String] { ids().filter { AgentTaskQueue.band($0) == b } }
@@ -348,8 +351,7 @@ enum CommsTest {
         setenv("DIPLOMAT_CLAUDE_DIR", scratch.appendingPathComponent("claude").path, 1)
         let loginless = CommsWatch.tick(settings: store.commsSettings,
                                         dir: scratch.appendingPathComponent("nologin"),
-                                        classify: { _ in CommsDecision(action: .none, number: 0,
-                                                                       summary: "", reason: "") })
+                                        classify: { $0.messages.map { _ in .none("") } })
         unsetenv("DIPLOMAT_CLAUDE_DIR")
         if let overridden { setenv(SlackToken.envVar, overridden, 1) }
         await store.applyComms(loginless)
@@ -737,6 +739,22 @@ enum CommsTest {
         check("a banned sender's pings are never notified, another sender's still is",
               notified.count == pingsNotified + 2
                 && notified.last?.title.contains("bob") == true)
+
+        // A ping whose batch is triaged ticks later: notified when it lands, acted on when
+        // its answer does, and notified once.
+        let carolAsk = from("U0CAROL", "carol", "can you check #90050?",
+                           CommsDecision(action: .bump, number: 90050, summary: "", reason: "r"))
+        CommsLog.append(CommsEvent(kind: .ping, id: carolAsk.message.id, message: carolAsk.message))
+        await store.applyComms(CommsTickResult(me: nil, pings: [carolAsk.message], items: [],
+                                               error: nil))
+        check("a ping is notified as it lands, before any triage",
+              notified.count == pingsNotified + 3 && notified.last?.title.contains("carol") == true
+                && folded(carolAsk)?.decision == nil && folded(carolAsk)?.outcome == nil)
+        CommsLog.append(CommsEvent(kind: .decision, id: carolAsk.message.id,
+                                   decision: carolAsk.decision))
+        await store.applyComms(CommsTickResult(me: nil, items: [carolAsk], error: nil))
+        check("…and its answer, a later tick's, is acted on without a second notification",
+              notified.count == pingsNotified + 3 && outcome(carolAsk) != "<none>")
         check("…and nothing a banned sender asks for is acted on",
               ids() == beforeBanned && lookups.isEmpty
                 && outcome(lateAsk) == Store.commsSenderBannedOutcome)

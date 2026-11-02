@@ -10,8 +10,11 @@ Every minute Comms asks Slack for messages that reached you since it last looked
 **ping** - a row on the Comms screen (the speech-bubble button in the panel header, which carries
 an unread count), a line in the activity feed under its own **Comms** chip, and a system notification.
 
-Then it **triages** the message - one short, sandboxed model call that answers one of six words -
-and acts on the answer through the same queue every other task goes through:
+Then it **triages** the message - a short, sandboxed model call that answers one of six words -
+and acts on the answer through the same queue every other task goes through. Triage runs in
+**batches**: a ping waits in a queue until it holds eight, or until its newest message is 30
+minutes old, and the whole batch is one call. Each call also reads the earlier pings of the same
+conversations, so "can you review it?" after "#412 is ready" is understood as a review of #412.
 
 | Triage | What Diplomat does |
 |---|---|
@@ -50,15 +53,21 @@ that find runs even with its monitor switched off, and stays queued until it doe
 Slack text is written by other people, so Comms treats it as data from end to end:
 
 - The triage call is `claude -p` with **no tools, no MCP servers, no slash commands and no settings**
-  (`--tools "" --strict-mcp-config --disable-slash-commands --setting-sources ""`), the message fenced
-  on stdin as untrusted, and a JSON schema as the only way to answer. `--tools ""` alone would still
+  (`--tools "" --strict-mcp-config --disable-slash-commands --setting-sources ""`), each message
+  fenced on stdin as untrusted, its label written outside the fence so no message can pose as
+  another, and a JSON schema as the only way to answer. `--tools ""` alone would still
   load every MCP server you have configured, Slack's included - that is why the other flags are there.
-  It runs the `claude` binary itself, never your shell alias. It costs about $0.001 and three seconds
-  a message on Haiku; the model is a setting.
-- The answer is **validated** before anything acts on it: an unknown action, a review / fix / bump
-  whose number does not appear in the message, or an injection whose quoted evidence does not appear in
-  it (case, runs of whitespace and the fence's `|` quoting aside), becomes `none`. The number must name an **open** PR
+  It runs the `claude` binary itself, never your shell alias. The model is a setting (Haiku by
+  default).
+- Each answer is **validated** against its own message before anything acts on it: an unknown
+  action, a review / fix / bump whose number appears neither in the message nor in an earlier
+  message of its conversation, or an injection whose quoted evidence does not appear in the message
+  itself (case, runs of whitespace and the fence's `|` quoting aside), becomes `none`. The number must name an **open** PR
   (for a review) or an **open** issue (for a fix) of the watched repo, or nothing is queued.
+- A batch with an `injection` among its answers is **triaged again, one message per call and
+  without context**, and those answers stand: nobody is banned, and nothing is asked, on the strength
+  of another sender's words. A banned sender's messages, and messages triaged as injections, are
+  never anyone's context.
 - Your own messages, bots, and people from other organisations (Slack Connect) are never pinged:
   each sender's Slack profile must name your organisation (or, in a workspace without one, share
   your email domain). A **sender allowlist** narrows it to the people you name.
@@ -92,8 +101,9 @@ injection:
 
 Once banned, a sender's messages are still listed as pings, marked as from a banned sender, but are
 never triaged: their text reaches no model, nothing is queued and no notification is shown. That holds
-from the moment of the ban, for their other messages in the same poll too, and also while Comms is
-switched off mid-poll: a ban has no switch. An
+from the moment of the ban, for their other messages in the same poll and those still waiting for
+triage too, and also while Comms is switched off mid-poll: a ban has no switch. A message pinged before
+its batch was triaged was notified when it landed, an injection included. An
 investigation of theirs still waiting in the queue is dropped when its turn comes, and its ping says
 why. Reviews or fixes they asked for earlier stay queued: those agents read GitHub, not the message.
 
@@ -137,7 +147,8 @@ All of them are on the **Comms (Slack)** card.
 - **Act on asks for…** **reviews & fixes** / **bumps** / **investigations** (**default on**) - one
   switch per acting triage answer. Off, that answer is still shown on the ping, with which switch
   held it; nothing is queued.
-- **Notify on new pings** (**default on**) - a system notification per new ping.
+- **Notify on new pings** (**default on**) - a system notification per new ping, as it lands,
+  before its triage.
 - **Triage model** (blank = **`haiku`**) - any model id `claude --model` accepts.
 - **Test** - asks Slack who Claude Code's login is.
 
@@ -150,15 +161,16 @@ binary triage and the login refresh run.
 `~/.diplomat/comms/` (`DIPLOMAT_COMMS_DIR` moves it), readable by you alone - it holds your DMs:
 
 - `state.json` - the watermark (the newest Slack timestamp already handled), the ids seen near it,
-  who the Slack login is, and when the login was last refreshed. Delete it and the next poll starts
-  again from "now".
+  the pings waiting for triage, who the Slack login is, and when the login was last refreshed.
+  Delete it and the next poll starts again from "now"; the pings that were waiting stay untriaged.
 - `events.jsonl` - the module's own log: one line per ping, triage answer, action, start and finish
   (and per poll failure, once on the way in). It is what the Comms screen is drawn from, and it is
   trimmed to its newest half past 2 MB.
 - `reports/<id>.md` - the investigations' reports.
 
 To check the login and see what triage would do with the last hour of Slack (its oldest eight
-messages, as one poll would), without queueing anything or touching the files above:
+messages, triaged as one batch at once rather than queued), without queueing anything or touching
+the files above:
 `DIPLOMAT_COMMS_POLL=1 ./Diplomat.app/Contents/MacOS/Diplomat` (Linux: `DIPLOMAT_COMMS_POLL=1
 ./diplomat`). It exits non-zero when the poll fails. With `DIPLOMAT_COMMS_DIR` set it polls that
 directory instead: it moves its watermark like a real poll and appends the ping and triage lines
@@ -169,9 +181,12 @@ messages without queueing their asks.
 
 - Slack's search index can trail a message by a while, so the watcher looks ten minutes behind "now"
   and remembers what it has already seen there. A ping can therefore arrive a minute or two late.
-- One poll triages at most eight messages; the rest wait for the next poll, oldest first. It reads at
-  most 100 matches per search; anything older than those is reported in the activity feed, not
-  triaged.
+- One poll takes at most eight new messages, and triages at most one batch of eight; the rest wait
+  for the next poll, oldest first. It reads at most 100 matches per search; anything older than
+  those is reported in the activity feed, not triaged.
+- A ping can wait up to 30 minutes for its triage, and so for the review or investigation it asks for.
+- The context is earlier **pings** only: what Comms already saw of the conversation. Your own replies
+  and messages that were not pings are not in it.
 - On Linux the Slack calls go through `curl`, which must be installed.
 - Triage needs Claude Code's `claude` on the machine whichever agent runner you use; without it every
   message is still pinged and nothing is acted on.
