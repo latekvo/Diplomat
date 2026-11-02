@@ -887,8 +887,9 @@ extension Dump {
         // The login the live app's triage prompt names; a headless Store has not fetched it.
         await store.fetchMe()
         // Triage what the poll takes, rather than queue it for a later tick.
-        var settings = store.commsSettings
-        settings.flushAfterSecs = 0
+        var flushing = store.commsSettings
+        flushing.flushAfterSecs = 0
+        let settings = flushing
         let toggles = store.commsToggles
         let model = settings.model.isEmpty ? "(default)" : settings.model
         print("keywords: \(settings.keywords)  senders: \(settings.senderAllowlist)  model: \(model)")
