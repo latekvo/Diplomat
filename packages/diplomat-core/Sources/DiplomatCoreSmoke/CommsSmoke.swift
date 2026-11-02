@@ -852,6 +852,40 @@ private func batchSmoke() {
     check(rest.pings.map(\.text) == ["burst 4"] && rest.items.isEmpty && calls.count == 1,
           "…and the rest waits as a shorter queue: \(rest.items.map(\.message.text))")
 
+    section("comms: a queue waits while Slack fails")
+    calls = []
+    let qdir = scratchDir("batch-offline")
+    defer { try? FileManager.default.removeItem(at: qdir) }
+    let queued = CommsMessage(id: "D1:\(w + 10).000000", channelID: "D1", channelName: "UALICE",
+                              isDM: true, userID: "UALICE", userName: "alice", teamID: "Ours",
+                              text: "still there?", ts: "\(w + 10).000000", permalink: "p",
+                              reasons: [.dm])
+    CommsState(watermark: "\(w).000000", me: slackMe, queue: [queued]).save(in: qdir)
+    let offline = StubSlack()
+    offline.status = 429
+    offline.headers = ["retry-after": "30"]
+    offline.body = Data()
+    let down = CommsWatch.tick(settings: CommsSettings(),
+                               now: Date(timeIntervalSince1970: TimeInterval(w + 10 + 1_800)),
+                               dir: qdir, api: offline.api) { batch in
+        calls.append(batch)
+        return batch.messages.map { _ in .none("chat") }
+    }
+    check(down.error != nil && calls.isEmpty && down.items.isEmpty
+          && CommsState.load(in: qdir).queue.map(\.text) == ["still there?"],
+          "a due batch is not triaged on a tick whose Slack calls fail: \(String(describing: down.error))")
+    offline.status = 200
+    offline.headers = [:]
+    offline.body = nil
+    let up = CommsWatch.tick(settings: CommsSettings(),
+                             now: Date(timeIntervalSince1970: TimeInterval(w + 10 + 1_860)),
+                             dir: qdir, api: offline.api) { batch in
+        calls.append(batch)
+        return batch.messages.map { _ in .none("chat") }
+    }
+    check(up.error == nil && up.items.map(\.message.text) == ["still there?"],
+          "…and is the tick Slack answers again: \(String(describing: up.error))")
+
     section("comms: a sender banned while their message waits")
     calls = []
     let bdir = scratchDir("batch-banned")

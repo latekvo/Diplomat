@@ -393,7 +393,8 @@ public enum CommsWatch {
     ///
     /// The queue is triaged in batches, one `classify` call each (`flush`): its oldest
     /// `maxPerTick` once it holds that many, or all of it once its newest message is
-    /// `settings.flushAfterSecs` old; at most one batch a tick.
+    /// `settings.flushAfterSecs` old; at most one batch a tick. A tick whose Slack calls fail
+    /// triages nothing: offline, the classifier would fail too, and spend the batch.
     ///
     /// A queued message from one of `settings.bannedSenders` is never triaged: its decision
     /// is a `none` whose reason starts with `bannedPrefix`, on the tick it is taken or the
