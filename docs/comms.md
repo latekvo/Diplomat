@@ -184,7 +184,8 @@ messages without queueing their asks.
 - One poll takes at most eight new messages, and triages at most one batch of eight; the rest wait
   for the next poll, oldest first. It reads at most 100 matches per search; anything older than
   those is reported in the activity feed, not triaged.
-- A ping can wait up to 30 minutes for its triage, and so for the review or investigation it asks for.
+- A ping can wait up to 30 minutes for its triage, and so for the review or investigation it asks for;
+  longer while Slack is failing, as a poll that cannot reach Slack triages nothing.
 - The context is earlier **pings** only: what Comms already saw of the conversation. Your own replies
   and messages that were not pings are not in it.
 - On Linux the Slack calls go through `curl`, which must be installed.
