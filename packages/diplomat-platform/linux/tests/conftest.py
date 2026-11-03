@@ -338,6 +338,31 @@ def isolated_comms_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_comms_replies(monkeypatch):
+    """Answer every ``comms-reply`` with "no reply due", and yield the real function.
+
+    A tick that queues work hands its ping to the reply worker, which would otherwise run
+    the real core on a background thread and append ``reply`` lines to the log a test is
+    reading."""
+    from diplomat_runtime import comms
+
+    real = comms.reply
+    monkeypatch.setattr(comms, "reply", lambda request: {"outcome": None, "text": None})
+    yield real
+
+
+@pytest.fixture(autouse=True)
+def no_session_probe(monkeypatch):
+    """Read the session lock as unknown, and yield the real probe: the host's logind
+    must not decide whether a test is away."""
+    from diplomat_runtime import comms
+
+    real = comms.session_locked
+    monkeypatch.setattr(comms, "session_locked", lambda: None)
+    yield real
+
+
+@pytest.fixture(autouse=True)
 def isolated_ban_list(tmp_path, monkeypatch):
     """Redirect ``~/.diplomat/pr-monitor/banned.json`` to a per-test temp dir: the real
     one decides what the operator's monitors skip, and Comms writes to it when no
