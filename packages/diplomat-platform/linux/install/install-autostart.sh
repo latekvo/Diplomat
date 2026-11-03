@@ -25,6 +25,7 @@ if ! "${LINUX_DIR}/install/build-core.sh"; then
 fi
 
 # DIPLOMAT_BACKGROUND=1: a login start shows no window and takes no focus.
+# diplomat_app/migrate.py brings an existing install to these same two entries.
 cat > "$DESKTOP" <<EOF
 [Desktop Entry]
 Type=Application
