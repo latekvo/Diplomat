@@ -217,6 +217,8 @@ enum PopoverPlacement {
 /// any other window sharing the class hides normally.
 enum PopoverFadeOut {
     static let duration: TimeInterval = 0.1
+    /// Posted each time the popover is dismissed (click-away, the wrench, Esc).
+    static let didHide = Notification.Name("DiplomatPopoverDidHide")
     /// `NSWindowOrderingMode.out` — the hide case of `orderWindow:relativeTo:`.
     private static let orderOut = 0
     private static var swizzled = Set<ObjectIdentifier>()
@@ -248,6 +250,9 @@ enum PopoverFadeOut {
         let block: @convention(block) (NSWindow, Int, Int) -> Void = { win, place, relativeTo in
             let ours = (objc_getAssociatedObject(win, &isPopoverKey) as? Bool) ?? false
             let fading = (objc_getAssociatedObject(win, &isFadingKey) as? Bool) ?? false
+            if place == orderOut, ours, !fading {
+                NotificationCenter.default.post(name: didHide, object: win)
+            }
             // Only intercept OUR popover's hide, once, while it's actually visible.
             guard place == orderOut, ours, !fading, win.isVisible, win.alphaValue > 0.01 else {
                 callOriginal(win, place, relativeTo)
@@ -367,6 +372,11 @@ struct ContentView: View {
         // An agent starting or finishing takes a slot's row with it; without this the
         // bays pop in and out while the rows around them animate.
         .animation(.easeInOut(duration: 0.18), value: store.freeAutoSlots)
+        .onReceive(NotificationCenter.default.publisher(for: PopoverFadeOut.didHide)) { _ in
+            // Reopening the applet lands on the panel, not on Settings. A modal (the
+            // repo-root folder picker) also hides the popover; that is not a dismissal.
+            if screen == .settings, NSApp.modalWindow == nil { screen = .main }
+        }
         .onChange(of: store.bannedAuthors) { bans in
             // The pending "Unban @X?" confirmation must not outlive the ban itself
             // (un-banned elsewhere / list rewritten) — a stale login would open the
