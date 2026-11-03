@@ -26,6 +26,14 @@ cat > "$SCRATCH/bin/pkill" <<'EOF'
 #!/bin/sh
 echo "pkill $*" >> "$SCRATCH/calls"
 EOF
+cat > "$SCRATCH/bin/pgrep" <<'EOF'
+#!/bin/sh
+echo "pgrep $*" >> "$SCRATCH/calls"
+EOF
+cat > "$SCRATCH/bin/open" <<'EOF'
+#!/bin/sh
+echo "open $*" >> "$SCRATCH/calls"
+EOF
 cat > "$SCRATCH/bin/swift" <<'EOF'
 #!/bin/sh
 case "$*" in *--show-bin-path*) echo "$SCRATCH/build" ;; esac
@@ -57,6 +65,9 @@ check "the login agent starts the bundle beside the package" \
   grep -qF "<string>$BIN</string>" "$AGENTS/com.ignacy.diplomat.plist"
 check "the login agent marks its start unattended, so it opens no window" \
   grep -qF "<key>DIPLOMAT_BACKGROUND</key><string>1</string>" "$AGENTS/com.ignacy.diplomat.plist"
+check "…so the installer's own start, the operator's, opens the window once the app is up" \
+  bash -c 'grep -A99 "bootstrap gui/[0-9]* .*/com.ignacy.diplomat.plist$" "$1" | grep -A99 "pgrep -xq Diplomat" | grep -qxF "open $2"' \
+  _ "$SCRATCH/calls" "$PKG/Diplomat.app"
 check "the bundle is a regular app, with a Dock icon" \
   bash -c '! grep -q LSUIElement "$1"' _ "$PKG/Diplomat.app/Contents/Info.plist"
 check "the auto-update agent runs that same bundle" \

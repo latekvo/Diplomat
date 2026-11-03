@@ -62,7 +62,12 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 pkill -x Diplomat 2>/dev/null || true
 sleep 1
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "Loaded. Autostarts on login and is running now (look for the wrench in your menu bar)."
+# The plist makes that start unattended, with no window. Whoever ran this is at the
+# screen, so bring the window up - once the instance is there, or `open` would start a
+# second one.
+for _ in $(seq 1 40); do pgrep -xq Diplomat && break; sleep 0.25; done
+open "$PKG_DIR/$APP" || true
+echo "Loaded. Autostarts on login and is running now."
 
 # Also schedule the daily 6AM self-update (soft-fail: the manual Update button still
 # works without it; only the unattended schedule needs this agent).
