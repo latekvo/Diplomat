@@ -85,7 +85,7 @@ public enum AuditCategory: String, CaseIterable, Sendable {
             return .conflicts
         case "audit":
             return .audit
-        case "issues":
+        case "issues", "community-issue":
             return .issues
         case "nudge":
             return .apiRestart

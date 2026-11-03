@@ -123,7 +123,7 @@ def no_github_reads(monkeypatch):
     reaches it is a test whose answer depends on the operator's own PRs, their auth,
     and the network — green here, red on a runner with no ``GH_TOKEN``, and slow and
     rate-limit-consuming in both. It is easy to reach by accident: one poll drives
-    BOTH monitors, so stubbing one monitor's fetch leaves the other's live.
+    every monitor, so stubbing one monitor's fetch leaves the others' live.
 
     Tests that mean to exercise a fetch stub ``autofixmonitor.fetch_*`` (or
     ``models.API``) themselves; this is the backstop for the ones that don't.
@@ -134,7 +134,7 @@ def no_github_reads(monkeypatch):
         raise AssertionError(
             f"a test reached the real `gh` ({' '.join(args[:2])}…) — stub the fetch "
             "it goes through (autofixmonitor.fetch_snapshots / fetch_review_requests "
-            "/ fetch_closed_prs)"
+            "/ fetch_closed_prs / fetch_open_issues)"
         )
 
     monkeypatch.setattr(gh, "run", refuse)
@@ -156,6 +156,18 @@ def nothing_closed(monkeypatch):
 
     real = autofixmonitor.fetch_closed_prs
     monkeypatch.setattr(autofixmonitor, "fetch_closed_prs", lambda *a, **k: set())
+    yield real
+
+
+@pytest.fixture(autouse=True)
+def no_open_issues(monkeypatch):
+    """Answer the new-community-issue monitor's read with an empty repo, and yield the
+    real function. Unstubbed it would reach ``gh`` on every poll and stand the cycle
+    down as a failed fetch; a test about that monitor stubs the issues itself."""
+    from diplomat_app import autofixmonitor
+
+    real = autofixmonitor.fetch_open_issues
+    monkeypatch.setattr(autofixmonitor, "fetch_open_issues", lambda: [])
     yield real
 
 

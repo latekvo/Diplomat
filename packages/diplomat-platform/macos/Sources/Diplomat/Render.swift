@@ -846,6 +846,7 @@ enum Render {
         store.reviewRequestsHandled = 7
         store.unaddressedReviews = 2
         store.autoApproveEnabled = true   // show the master toggle ON + its nested suppressors
+        store.communityIssuesEnabled = true
         store.settingsExplain = explain
     }
 

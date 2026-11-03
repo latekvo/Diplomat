@@ -74,8 +74,9 @@ queues one fix per issue it covers, so the task cap starts them a few at a time 
 each is a row you can reorder, run ahead of the rest, or cancel - forty open issues
 are forty fixes, not one session told to work through forty. (Which is also why the
 mesh row is offered for one hand-named issue only: a scope opens no session to place.)
-Each queued fix carries the same choices you made, aimed at its own issue, and
-re-reads that issue when its turn comes - hours can pass first, so a fix whose issue
+The [new-community-issue monitor](automation.md#autonomous-monitors) queues the same fix
+for each issue the community files, with the defaults below. Each queued fix carries the
+same choices you made, aimed at its own issue, and re-reads that issue when its turn comes - hours can pass first, so a fix whose issue
 has been closed or claimed since stops there and reports it as skipped.
 
 Which issues is a six-way scope selector - wider than the three-way whose-PRs

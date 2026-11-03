@@ -221,8 +221,12 @@ the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/di
   polling and keeps listing what it finds under [Agent tasks](#agent-tasks); what
   stops is the automatic start — which is why the allowlist stays editable while it
   is off, alone in that nest, since it is what decides which requests get listed.
+- **Fix new community issues** — the [new-community-issue
+  monitor](../../../docs/automation.md#autonomous-monitors) (default **ON**). Unlike the two
+  toggles above, switched off it queues nothing, and issues filed while it is off
+  are left for a Fix-issues sweep.
 - **Run at most N automatic tasks at a time** — this machine's hard cap on
-  concurrent automatic agents (default **2**, range 1–16), spanning both monitors
+  concurrent automatic agents (default **2**, range 1–16), spanning every monitor
   above, the reviews a PR sweep queues, and any work a mesh peer routes here. The
   agent a wizard press opens on the spot is never capped and doesn't count against
   it; work over the cap is not dropped — it waits in the [Agent tasks](#agent-tasks)
