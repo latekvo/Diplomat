@@ -2659,6 +2659,11 @@ check(!kt.contains("CASE A") && !kt.contains("CASE B"), "no case branching")
 check(kt.contains("SOMEONE ELSE'S"), "review-only framing")
 check(kt.contains("ABSOLUTELY DO NOT touch their branch"), "reviewOnly block present")
 check(kt.contains("Anything you post on someone else's PR goes in ONE formal GitHub review"), "leaveReviews block present")
+// A reply on an existing thread reacts to what the author said there, never a bare repeat.
+check(kt.contains("A reply that disputes the finding without explaining why"), "an unexplained dispute gets a question")
+check(kt.contains("judge the explanation, not the finding. If it holds, post nothing more"), "an explanation that holds ends the thread")
+check(kt.contains("re-running the same reproduction is not new evidence"), "a repeated repro is not a reply")
+check(!km.contains("judge the explanation"), "a no-reviews prompt carries no thread-reply rules")
 // The lifecycle, step by step: opened PENDING, filled inside, submitted once.
 check(kt.contains("with NO `event` field leaves the review PENDING"), "the review is opened pending")
 check(kt.contains("one pending review per person per PR"), "a leftover pending review is handled")
@@ -2722,6 +2727,7 @@ let ktv = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
                        specificPR: "500", finalPass: true, specificAuthor: .theirs).buildPrompt()
 check(ktv.contains("SOMEONE ELSE'S"), "review-only framing still present with verdict")
 check(ktv.contains("still APPROVE"), "trusted author ⇒ finalPass APPROVE-verdict block present")
+check(ktv.contains("gets a reply on that thread, under the reply rules above") && !ktv.contains("(\"Still present as of <commit_hash>\"), never a fresh comment"), "finalPass defers to the thread-reply rules")
 check(!ktv.contains("Do NOT submit an APPROVE"), "trusted author ⇒ no no-verdict block")
 check(!ktv.contains("Thank you for contributing"), "hard verdict outranks soft-approve")
 check(ktv.contains("COMMENT unless a verdict instruction below explicitly tells you to APPROVE"),
