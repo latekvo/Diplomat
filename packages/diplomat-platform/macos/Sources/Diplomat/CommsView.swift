@@ -21,7 +21,7 @@ struct CommsView: View {
 
     private static let maxPings = 40
 
-    /// The seeds are the renders'.
+    /// Seeded only by the headless renders.
     init(isPresented: Binding<Bool>, seedExpanded: Set<String> = [],
          seedEarlierOpen: Bool = false) {
         _isPresented = isPresented

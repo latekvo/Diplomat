@@ -162,8 +162,7 @@ extension Store {
 
     // MARK: away
 
-    /// The session lock alone says whether the operator is away: idle time, display sleep
-    /// and the screensaver are all held off by a `caffeinate` this Mac may run for good.
+    /// The session lock alone, as `CommsAway` says.
     private func startCommsLockWatch() {
         guard commsLockObservers.isEmpty, !Headless.active else { return }
         refreshCommsLock()
