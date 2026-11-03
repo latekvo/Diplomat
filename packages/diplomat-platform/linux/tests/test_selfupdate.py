@@ -379,11 +379,8 @@ def test_the_0600_relaunch_of_a_running_app_is_in_the_background(repos, monkeypa
     assert _launched_env(marker).get("DIPLOMAT_BACKGROUND") == "1"
 
 
-def test_the_update_button_relaunches_in_the_foreground(repos, monkeypatch):
-    """The operator pressed it, so the new instance opens its window - even where this
-    process's environment says background, as a login start's would if nothing took it
-    out."""
-    monkeypatch.setenv("DIPLOMAT_BACKGROUND", "1")
+def test_the_update_button_relaunches_in_the_foreground(repos):
+    """The operator pressed it, so the new instance opens its window."""
     origin, _clone, marker = repos
     _advance_origin(origin)
     qapp, store, view = _settings_view()
@@ -401,12 +398,14 @@ def test_a_quit_leaves_the_mark_and_the_next_launch_clears_it(monkeypatch):
     app = DiplomatApp.__new__(DiplomatApp)
     app.store = type("_Store", (), {"wait_for_background": lambda self, timeout=5.0: []})()
     app.tray = type("_Tray", (), {"hide": lambda self: None})()
-    app.panel = type("_Panel", (), {"hide": lambda self: None})()
+    hidden: list[str] = []
+    app.panel = type("_Panel", (), {"hide": lambda self: hidden.append("window")})()
     app.app = type("_Qt", (), {"quit": lambda self: None})()
     monkeypatch.setattr(SingleInstance, "release", staticmethod(lambda: None))
     assert not selfupdate.operator_quit()
     app.quit()
     assert selfupdate.operator_quit()
+    assert hidden == ["window"]
 
     class _Launched:
         def show_window(self):
