@@ -125,6 +125,8 @@ jobs:
       # run book and config scratch, as QUEUE_TEST does. COMMS_TEST hands composed
       # Slack ticks to the real effect application with GitHub stood in for, and keeps
       # its feed, Comms log, run book and config scratch; nothing it queues is drained.
+      # POPOVER_TEST hosts the panel in off-screen windows; the Settings and Devices
+      # screens it opens run only their read-only allocator, update and mesh checks.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
       # and not by oversight: both drive real throwaway terminal windows and need a
@@ -168,6 +170,7 @@ jobs:
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
           DIPLOMAT_WATCHDOG_TEST=1 swift run Diplomat
           DIPLOMAT_REPOPATHS_TEST=1 swift run Diplomat
+          DIPLOMAT_POPOVER_TEST=1 swift run Diplomat
           DIPLOMAT_RELAUNCH_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
           DIPLOMAT_COMMS_TEST=1 swift run Diplomat

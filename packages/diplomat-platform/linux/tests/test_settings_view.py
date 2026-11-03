@@ -80,7 +80,9 @@ def test_the_cap_reads_back_on_the_card(view):
 
 
 def _details(view) -> list:
-    return [row._detail for row in view._rows if row._detail.text()]
+    """The paragraphs of the rows on screen; a row its switch hides shows nothing."""
+    return [row._detail for row in view._rows
+            if row._detail.text() and row.isVisibleTo(view)]
 
 
 def test_a_screen_opened_with_explain_off_shows_no_paragraph(make_view):
@@ -172,26 +174,19 @@ def test_the_author_allowlist_opens_on_its_stored_line(make_view):
     assert view._allowlist_setting_row._control.text() == "carol"
 
 
-def test_typing_an_author_allowlist_writes_through_and_counts(view):
+def test_typing_an_author_allowlist_writes_through(view):
     """A text field that stops writing through is silent in the worst way here: the
-    line sits where it was typed and the monitor goes on reviewing everyone. The
-    summary is pinned with it because it is the only place the PARSED list is shown —
-    the operator's one chance to see that a typo cost them a name."""
+    line sits where it was typed and the monitor goes on reviewing everyone."""
     row = view._allowlist_setting_row
     assert row._control.text() == ""
-    assert row.summary() == "Blank = anyone who requests my review."
 
     row._control.setText("@Alice, bob")
     assert view.store.review_allowlist_raw == "@Alice, bob"
     assert view.store.review_allowlist == ["Alice", "bob"]
-    assert row.summary().startswith("2 authors")
-
-    row._control.setText("alice")
-    assert row.summary().startswith("1 author —")
+    assert row.summary() == ""
 
     row._control.setText("")
     assert view.store.review_allowlist == []
-    assert row.summary() == "Blank = anyone who requests my review."
 
 
 def test_the_author_allowlist_stays_editable_while_the_monitor_is_off(make_view):
@@ -235,7 +230,9 @@ def test_the_runner_row_names_the_opencode_a_spawn_would_run(make_view, monkeypa
     monkeypatch.setattr(usagescan, "opencode_binary", lambda: "/rc-only/opencode")
     monkeypatch.setattr(settingsview.shutil, "which", lambda name: None)
     view = make_view(agent_runner=runner.OPENCODE)
-    assert view._runner_row._summary.text() == "Spawns run `opencode` (/rc-only/opencode)."
+    assert view._runner_row.summary() == ""
+    assert view._runner_row._detail.text().startswith(
+        "Spawns run `opencode` (/rc-only/opencode). ")
 
 
 def test_a_missing_opencode_is_not_promised_to_an_rc(make_view, monkeypatch):
@@ -252,34 +249,10 @@ def test_a_missing_opencode_is_not_promised_to_an_rc(make_view, monkeypatch):
         "check it if spawned runs finish instantly without doing anything.")
 
 
-@pytest.mark.parametrize("slider,key,maximum,step", [
-    ("_idle_free", "deviceIdleFreeMinutes", 60, 1),
-    ("_idle_leased", "deviceIdleLeasedMinutes", 240, 5),
-])
-def test_an_idle_limit_slider_writes_its_key_and_reads_zero_as_never(
-        view, slider, key, maximum, step):
-    """Both limits are read by the device-allocator daemon from the shared config, so
-    the slider has to land there, not in QSettings."""
-    from diplomat_runtime import appconfig
+def test_the_allocator_card_leaves_the_idle_limits_to_the_devices_screen(view):
+    from diplomat_app.widgets import SliderSetting
 
-    control = getattr(view, slider)
-    assert (control.minimum(), control.maximum(), control._step) == (0, maximum, step)
-    control._slider.setValue(2 * step)
-    assert appconfig.read()[key] == 2 * step
-    assert control.badge() == f"{2 * step} min"
-    control._slider.setValue(0)
-    assert appconfig.read()[key] == 0
-    assert control.badge() == "never"
-
-
-def test_the_idle_limit_sliders_open_on_the_stored_values(make_view):
-    from diplomat_runtime import appconfig
-
-    appconfig.set_int(appconfig.DEVICE_IDLE_FREE_MINUTES, 12)
-    appconfig.set_int(appconfig.DEVICE_IDLE_LEASED_MINUTES, 0)
-    view = make_view()
-    assert view._idle_free.value() == 12
-    assert view._idle_leased.badge() == "never"
+    assert view._alloc_row.parentWidget().findChildren(SliderSetting) == []
 
 
 def _other_repo_rows(view) -> list[list[str]]:
@@ -356,3 +329,104 @@ def test_the_reply_switch_sits_with_the_comms_switches_and_writes_through(make_v
 
 def test_the_keywords_hint_names_the_wildcard(view):
     assert "argent*, ignac*" in _row_of(view._comms_keywords)._detail.text()
+
+
+def test_a_healthy_screen_draws_no_line_under_any_row(make_view, monkeypatch, tmp_path):
+    """The line under a row is for live state: a problem, a test result, an update in
+    progress. With none of those, every row is its title and its control, and what a
+    setting does waits behind Explain."""
+    from diplomat_app import deviceallocator, settingsview, szpont
+    from diplomat_runtime import comms, review
+
+    (tmp_path / ".git").mkdir()
+    monkeypatch.delenv("DIPLOMAT_REPO", raising=False)
+    monkeypatch.delenv(comms.TOKEN_ENV, raising=False)
+    monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
+    monkeypatch.setattr(settingsview.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(deviceallocator, "package_available", lambda: True)
+    monkeypatch.setattr(deviceallocator, "resolve_node", lambda: "/usr/bin/node")
+    monkeypatch.setattr(szpont, "AVAILABLE", True)
+    view = make_view(update_state={"phase": "idle", "commit": "abc1234", "branch": "main",
+                                   "upstream": "origin/main", "ahead": 0, "behind": 0})
+    assert [(r._control.accessibleName(), r.summary()) for r in view._rows
+            if r.summary()] == []
+    assert str(tmp_path) in view._repo_row._detail.text()
+    assert "Devices screen" in view._alloc_row._detail.text()
+
+
+@pytest.mark.parametrize("ahead,behind,line", [
+    (0, 0, ""),
+    (0, 2, "abc1234 on main · upstream origin/main"),
+    (1, 0, "abc1234 on main · upstream origin/main · 1 local ahead"),
+])
+def test_the_update_line_is_drawn_only_when_there_is_something_to_pull_or_keep(
+        view, ahead, behind, line):
+    view.store.update_state = {"phase": "idle", "commit": "abc1234", "branch": "main",
+                               "upstream": "origin/main", "ahead": ahead,
+                               "behind": behind}
+    view._refresh_update_ui()
+    assert view._update_row.summary() == line
+    assert view._update_row._summary.isVisibleTo(view) is bool(line)
+
+
+def test_the_slack_options_are_drawn_only_while_slack_is_watched(make_view, monkeypatch):
+    """Like the verdict rows: nothing under the switch acts until the watcher runs."""
+    monkeypatch.setattr(Store, "run_comms_poll_async", lambda self: None)
+    view = make_view(comms_enabled=False)
+    nested = [view._comms_keywords, view._comms_allow, view._sw_comms_requests,
+              view._sw_comms_notify, view._comms_model, view._comms_test]
+    assert view._comms_row.isVisibleTo(view)
+    assert not any(w.isVisibleTo(view) for w in nested)
+
+    view._sw_comms.setChecked(True)
+    assert all(w.isVisibleTo(view) for w in nested)
+    view._sw_comms.setChecked(False)
+    assert not any(w.isVisibleTo(view) for w in nested)
+
+
+@pytest.fixture
+def panel(app, monkeypatch):
+    from diplomat_app.panel import Panel
+
+    monkeypatch.delenv("DIPLOMAT_RENDER", raising=False)
+    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_auto_task_count_async", lambda self: None)
+    p = Panel(Store())
+    p.show()
+    yield p
+    p.hide()
+    p.deleteLater()
+
+
+def test_dismissing_the_panel_on_settings_reopens_it_on_the_main_screen(panel):
+    panel._set_screen("settings")
+    panel.hide()
+    assert panel._screen == "main"
+    assert panel.body.currentIndex() == panel._screens["main"]
+    panel.show()
+    assert panel._screen == "main"
+
+
+def test_dismissing_the_panel_on_another_screen_keeps_it(panel):
+    panel._set_screen("devices")
+    panel.hide()
+    assert panel._screen == "devices"
+
+
+def test_a_modal_over_settings_hiding_the_panel_is_not_a_dismissal(panel):
+    """The repo-root picker is modal and, as a portal or GTK dialog, another process's
+    window, so the panel loses focus to it and hides."""
+    from PySide6.QtWidgets import QApplication, QDialog
+
+    panel._set_screen("settings")
+    picker = QDialog()
+    picker.setModal(True)
+    picker.show()
+    try:
+        assert QApplication.activeModalWidget() is picker
+        panel.hide()
+        assert panel._screen == "settings"
+    finally:
+        picker.close()
+        picker.deleteLater()

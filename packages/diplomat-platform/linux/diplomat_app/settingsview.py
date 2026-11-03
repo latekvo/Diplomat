@@ -6,8 +6,9 @@ through the Store (QSettings, or the shared ``~/.diplomat/config.json`` for the
 knobs another process also reads). Built once and updated in place so typing in
 the handle field is never disrupted by a background data refresh.
 
-Each row states what it does in a line; the paragraph behind that line is drawn
-only while the header's *Explain* switch is on.
+A row is its title and its control. What a setting does is drawn only while the
+header's *Explain* switch is on; the line under a row is reserved for live state -
+a problem, a test result, an update in progress - so it is never boilerplate.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ from . import (
     glyphs,
     szpont,
 )
-from .devicesview import AllocatorControls, allocator_pill, allocator_summary, idle_limit_rows
+from .devicesview import AllocatorControls, allocator_pill, allocator_summary
 from .store import Store, tools
 from .widgets import (
     ChoiceChips,
@@ -105,10 +106,10 @@ class SettingsView(QWidget):
         self._save_error.hide()
         root.addWidget(self._save_error)
 
-        # Two columns, matching the macOS SettingsView and the main panel: identity +
-        # automation behaviour on the left, appearance + environment on the right. Each
-        # column pushes its cards up with a bottom stretch so the two stay top-aligned
-        # regardless of differing heights.
+        # Two columns, matching the macOS SettingsView and the main panel: who the
+        # agents are and what they may do on the left; the panel, the watchers and the
+        # environment on the right. Each column pushes its cards up with a bottom
+        # stretch so the two stay top-aligned regardless of differing heights.
         body = QHBoxLayout()
         body.setSpacing(12)
 
@@ -225,8 +226,9 @@ class SettingsView(QWidget):
 
         self._identity_row = self._track(SettingRow(
             "GitHub username", field, stacked=True,
-            detail="Scopes the “My …” tools and the Review wizard: which PRs count "
-                   "as mine, and whose reviews the monitors owe.",
+            detail="Blank = whoever `gh` is authenticated as. Scopes the “My …” "
+                   "tools and the Review wizard: which PRs count as mine, and whose "
+                   "reviews the monitors owe.",
         ))
         body.addWidget(self._identity_row)
 
@@ -236,10 +238,6 @@ class SettingsView(QWidget):
             self._identity_pill.set_state(
                 f"@{effective}" if effective else "not signed in",
                 _BLUE if override else _GREY,
-            )
-            self._identity_row.set_summary(
-                "Overriding the gh-authenticated user."
-                if override else "Blank = whoever `gh` is authenticated as."
             )
 
         def on_text(text: str) -> None:
@@ -299,7 +297,7 @@ class SettingsView(QWidget):
 
     def _refresh_runner_ui(self) -> None:
         """Show the model and provider controls only for a runner that has them, and
-        say which CLI has to be on PATH.
+        warn when the CLI is not on PATH.
 
         A missing binary is otherwise near-silent: the window opens, the shell prints
         "command not found", the completion sentinel takes the 127 straight away, and
@@ -315,23 +313,24 @@ class SettingsView(QWidget):
         found = (usagescan.opencode_binary() if chosen == runner.OPENCODE
                  else shutil.which(chosen))
         if found:
-            where = f"Spawns run `{chosen}` ({found})."
+            missing = ""
         elif chosen == runner.OPENCODE:
-            where = (f"Neither your login shell nor this app's PATH has an `{chosen}` "
-                     f"executable — check it if spawned runs finish instantly without "
-                     f"doing anything.")
+            missing = (f"Neither your login shell nor this app's PATH has an `{chosen}` "
+                       f"executable — check it if spawned runs finish instantly without "
+                       f"doing anything.")
         else:
-            where = (f"`{chosen}` is not on this app's PATH. Agents run under your "
-                     f"login shell, so an rc-only install still works — but check it "
-                     f"if spawned runs finish instantly without doing anything.")
-        self._runner_row.set_summary(where, color=None if found else _ORANGE)
-        self._runner_row.set_detail(
+            missing = (f"`{chosen}` is not on this app's PATH. Agents run under your "
+                       f"login shell, so an rc-only install still works — but check it "
+                       f"if spawned runs finish instantly without doing anything.")
+        self._runner_row.set_summary(missing, color=_ORANGE)
+        where = f"Spawns run `{chosen}` ({found}). " if found else ""
+        self._runner_row.set_detail(where + (
             f"Diplomat never holds an API key: {label} stores its own credential, and "
             f"*Connect a provider* opens its login wizard, which knows every provider "
             f"in its catalog."
             if foreign else
             "SPAWN AGENT picks up whatever flags your shell alias for `claude` gives it."
-        )
+        ))
 
     def _open_provider_setup(self) -> None:
         try:
@@ -393,10 +392,10 @@ class SettingsView(QWidget):
         return "ok" if os.path.exists(os.path.join(resolved, ".git")) else "not-a-checkout"
 
     def _refresh_repo_ui(self) -> None:
-        """Pill, summary and colour, from one state read so the three can't disagree.
+        """Pill, summary and detail, from one state read so the three can't disagree.
 
-        A problem states itself on the face of the card; only the happy path is short
-        enough to fold into the summary line and put the rest behind *Explain*."""
+        A problem states itself on the face of the card; the happy path is what the
+        field already shows, so it waits behind *Explain*."""
         state = self._repo_state()
         resolved = review.repo_path()
         owner, repo = core.config()["owner"], core.config()["repo"]
@@ -424,9 +423,9 @@ class SettingsView(QWidget):
         ok = state == "ok"
         self._repo_pill.set_state("checkout ok" if ok else "check this",
                                   _GREEN if ok else _ORANGE)
-        self._repo_row.set_summary(text, color=None if ok else _ORANGE)
+        self._repo_row.set_summary("" if ok else text, color=_ORANGE)
         self._repo_row.set_detail(
-            f"Blank = the default path, {default}. DIPLOMAT_REPO in this app's "
+            f"{text} Blank = the default path, {default}. DIPLOMAT_REPO in this app's "
             "environment outranks both." if ok else None
         )
 
@@ -454,10 +453,10 @@ class SettingsView(QWidget):
 
         body.addWidget(self._track(SettingRow(
             "Checkouts a pasted link may name", col, stacked=True,
-            summary="The wizards accept a PR or issue link to any of these repos; "
-                    "the agent works in that checkout.",
-            detail="Each checkout answers for every GitHub remote it has, so a fork "
-                   "clone takes links to both its upstream and its origin. A bare "
+            detail="The wizards accept a PR or issue link to any of these repos; "
+                   "the agent works in that checkout. Each checkout answers for every "
+                   "GitHub remote it has, so a fork clone takes links to both its "
+                   "upstream and its origin. A bare "
                    "#number still means the repo root's repo, and a run here is never "
                    "routed over the mesh: a peer would start it in its own repo root.",
         )))
@@ -531,9 +530,9 @@ class SettingsView(QWidget):
         self._sw_autofix.toggled.connect(self._on_autofix_toggled)
         body.addWidget(self._track(SettingRow(
             "Auto-queue fixes for my PRs", self._sw_autofix,
-            summary="Merge conflicts and new review threads.",
-            detail="Off, the monitor still lists what it finds under Agent tasks — "
-                   "queued, for “execute now” only.",
+            detail="Merge conflicts and new review threads. Off, the monitor still "
+                   "lists what it finds under Agent tasks — queued, for “execute now” "
+                   "only.",
         )))
 
         # The failing-poll line. The card's pill flags it; this names the error.
@@ -556,8 +555,8 @@ class SettingsView(QWidget):
         review_row.addWidget(self._sw_review_req)
         body.addWidget(self._track(SettingRow(
             "Auto-queue reviews that request me", review_control,
-            summary="Full E2E · max, inline comments — read-only, never their branch.",
-            detail="A review that never lands (agent died, window closed) is retried. "
+            detail="Full E2E · max, inline comments — read-only, never their branch. "
+                   "A review that never lands (agent died, window closed) is retried. "
                    "Off, the requests still list under Agent tasks, queued for "
                    "“execute now” only.",
         )))
@@ -581,9 +580,9 @@ class SettingsView(QWidget):
         self._sw_auto_approve.toggled.connect(self._on_auto_approve_toggled)
         verdict_rows.addWidget(self._track(SettingRow(
             "May approve / request changes", self._sw_auto_approve,
-            summary="Off ⇒ inline comments only; the verdict stays with you.",
-            detail="On ⇒ a clean review may submit a verdict, except on the classes "
-                   "withheld below.",
+            detail="Off ⇒ inline comments only; the verdict stays with you. On ⇒ a "
+                   "clean review may submit a verdict, except on the classes withheld "
+                   "below.",
         )))
         verdict_rows.addWidget(self._verdict_block())
 
@@ -592,10 +591,9 @@ class SettingsView(QWidget):
         self._sw_soft_approve.toggled.connect(self._on_soft_approve_toggled)
         verdict_rows.addWidget(self._track(SettingRow(
             "Soft-approve clean PRs", self._sw_soft_approve,
-            summary="One “ran the sweep, all clean” COMMENT review — never an APPROVE.",
-            detail="Off ⇒ a review that finds nothing says nothing. Independent of "
-                   "the verdict switch above: a soft approval is a COMMENT review, "
-                   "not a GitHub approval.",
+            detail="One “ran the sweep, all clean” COMMENT review — never an APPROVE. "
+                   "Off ⇒ a review that finds nothing says nothing. Independent of "
+                   "the verdict switch above.",
         )))
         approve.addWidget(self._verdict_rows)
         body.addWidget(approve_nest)
@@ -614,26 +612,17 @@ class SettingsView(QWidget):
 
         self._allowlist_setting_row = self._track(SettingRow(
             "Only these authors", field, stacked=True,
-            detail="Commas or spaces between logins; a leading @ is fine. Unlike "
-                   "the switch above, an excluded request is dropped rather than "
-                   "queued — no agent and no row — and the Review wizard still "
-                   "reviews anyone. The ban list wins over this.",
+            detail="Blank = anyone who requests my review. Commas or spaces between "
+                   "logins; a leading @ is fine. Unlike the switch above, an excluded "
+                   "request is dropped rather than queued — no agent and no row — and "
+                   "the Review wizard still reviews anyone. The ban list wins over this.",
         ))
-
-        def refresh() -> None:
-            n = len(self.store.review_allowlist)
-            self._allowlist_setting_row.set_summary(
-                "Blank = anyone who requests my review." if not n else
-                f"{n} author{'' if n == 1 else 's'} — everyone else is left for me."
-            )
 
         def on_text(text: str) -> None:
             self.store.review_allowlist_raw = text
-            refresh()
             self.store.changed.emit()
 
         field.textChanged.connect(on_text)
-        refresh()
         return self._allowlist_setting_row
 
     def _verdict_block(self) -> QWidget:
@@ -693,10 +682,10 @@ class SettingsView(QWidget):
         self._auto_limit.changed.connect(self._on_auto_limit_changed)
         body.addWidget(self._track(SettingRow(
             "Run at most", self._auto_limit, stacked=True,
-            summary="Across both monitors, a PR sweep's reviews, and anything a mesh "
-                    "peer routes here.",
-            detail="The agent a wizard press opens on the spot is outside the cap; a "
-                   "review it queues instead is inside. Work over the cap waits in "
+            detail="Across both monitors, a PR sweep's reviews, and anything a mesh "
+                   "peer routes here. The agent a wizard press opens on the spot is "
+                   "outside the cap; a review it queues instead is inside. Work over "
+                   "the cap waits in "
                    "Agent tasks, in the order you put it, and starts when a bay frees "
                    "— unless you switch off Auto-execute queue there.",
         )))
@@ -706,8 +695,8 @@ class SettingsView(QWidget):
         self._sw_budget.toggled.connect(self._on_budget_gate_toggled)
         body.addWidget(self._track(SettingRow(
             "Hold work when the limit runs low", self._sw_budget,
-            summary="Wait for a window to refill rather than start what won't fit.",
-            detail="Priced from Telemetry → limit per task: against both rate-limit "
+            detail="Wait for a window to refill rather than start what won't fit. "
+                   "Priced from Telemetry → limit per task: against both rate-limit "
                    "windows under Claude Code, or — under a runner billed in money — "
                    "against what one task costs on the model it runs, and what your "
                    "OpenRouter key and credit balance have left. Higher confidence is "
@@ -736,7 +725,7 @@ class SettingsView(QWidget):
         self._budget_floor.changed.connect(self._on_budget_floor_changed)
         knobs.addWidget(self._track(SettingRow(
             "Keep in hand until it can be priced", self._budget_floor, stacked=True,
-            summary="Of each rate-limit window, under Claude Code.",
+            detail="Of each rate-limit window, under Claude Code.",
         )))
 
         # The same knob in the other currency. Both are shown whichever runner is
@@ -753,7 +742,7 @@ class SettingsView(QWidget):
         knobs.addWidget(self._track(SettingRow(
             "Keep on the account until it can be priced", self._budget_reserve,
             stacked=True,
-            summary="Of your OpenRouter balance, under a runner billed in money.",
+            detail="Of your OpenRouter balance, under a runner billed in money.",
         )))
         body.addWidget(self._budget_knobs)
         self._budget_knobs.setVisible(self._sw_budget.isChecked())
@@ -872,8 +861,8 @@ class SettingsView(QWidget):
         self._sw_apiwatch.toggled.connect(self._on_apiwatch_toggled)
         self._apiwatch_row = self._track(SettingRow(
             "Auto-continue on API errors", self._sw_apiwatch,
-            summary="A 529 stops an agent dead; this types it back into motion.",
-            detail="Watches the tmux panes an agent is running in and types “"
+            detail="A 529 stops an agent dead; this types it back into motion. "
+                   "Watches the tmux panes an agent is running in and types “"
                    + apiwatch.CONTINUE_MESSAGE
                    + "” when a Claude API error shows up. A pane with nobody's agent in "
                    "it is left alone whatever it shows — the nudge is submitted as a "
@@ -895,9 +884,10 @@ class SettingsView(QWidget):
         self._sw_deadline.toggled.connect(self._on_run_deadline_toggled)
         body.addWidget(self._track(SettingRow(
             f"Give up on a task after {cutoff}", self._sw_deadline,
-            summary="Close the window and hand the bay back, even if the agent still looks busy.",
-            detail="Agents report their turn boundaries through hooks staged into each "
-                   "run, and a run whose report never comes — a runner without hooks, "
+            detail="Close the window and hand the bay back, even if the agent still "
+                   "looks busy. Agents report their turn boundaries through hooks "
+                   "staged into each run, and a run whose report never comes — a "
+                   "runner without hooks, "
                    "settings that would not stage, an agent wedged with its status bar "
                    "frozen — holds a task-cap bay until you close its window. This is "
                    "the backstop under all of them, and it reads a clock rather than "
@@ -947,9 +937,7 @@ class SettingsView(QWidget):
                 color=_ORANGE,
             )
             return
-        self._apiwatch_row.set_summary(
-            "A 529 stops an agent dead; this types it back into motion."
-        )
+        self._apiwatch_row.set_summary("")
         if live:
             n = st.get("watching", 0)
             self._apiwatch_pill.set_state(
@@ -971,8 +959,8 @@ class SettingsView(QWidget):
         self._sw_comms.toggled.connect(self._on_comms_toggled)
         self._comms_row = self._track(SettingRow(
             "Watch Slack", self._sw_comms,
-            summary="DMs, @-mentions and keywords become pings; asks become queued work.",
-            detail="Every minute, searches your Slack for new DMs to you, @-mentions of "
+            detail="DMs, @-mentions and keywords become pings; asks become queued "
+                   "work. Every minute, searches your Slack for new DMs to you, @-mentions of "
                    "you and your keywords. Each one is a ping (the ✉ screen, the "
                    "activity feed, a notification), and is triaged by one model call "
                    "with no tools and no MCP servers, which only answers what it asks "
@@ -984,13 +972,20 @@ class SettingsView(QWidget):
         ))
         body.addWidget(self._comms_row)
 
+        # Like the verdict rows: nothing below acts until the watcher runs.
+        self._comms_options = QWidget()
+        options = QVBoxLayout(self._comms_options)
+        options.setContentsMargins(0, 0, 0, 0)
+        options.setSpacing(10)
+        body.addWidget(self._comms_options)
+
         def text_row(title: str, value: str, placeholder: str, setter, detail: str):
             field = QLineEdit(value)
             field.setPlaceholderText(placeholder)
             field.setClearButtonEnabled(True)
             field.textChanged.connect(setter)
-            body.addWidget(self._track(SettingRow(title, field, stacked=True,
-                                                  detail=detail)))
+            options.addWidget(self._track(SettingRow(title, field, stacked=True,
+                                                     detail=detail)))
             return field
 
         self._comms_keywords = text_row(
@@ -1032,7 +1027,7 @@ class SettingsView(QWidget):
         self._sw_comms_notify = self._comms_switch(
             inner, "Notify on new pings", st.comms_notify, "comms_notify",
             "A tray notification per new ping.")
-        body.addWidget(nest)
+        options.addWidget(nest)
 
         self._comms_model = text_row(
             "Triage model", st.comms_model, "haiku",
@@ -1050,13 +1045,13 @@ class SettingsView(QWidget):
                    "in, run /mcp in Claude Code and authenticate the Slack server. "
                    "DIPLOMAT_SLACK_TOKEN in the environment wins over it.",
         ))
-        body.addWidget(self._comms_login_row)
+        options.addWidget(self._comms_login_row)
         # Its own line rather than the row's summary, which every poll rewrites.
         self._comms_test_status = QLabel("")
         self._comms_test_status.setTextFormat(Qt.TextFormat.PlainText)
         self._comms_test_status.setWordWrap(True)
         self._comms_test_status.hide()
-        body.addWidget(self._comms_test_status)
+        options.addWidget(self._comms_test_status)
         self._refresh_comms_ui()
         return card
 
@@ -1112,15 +1107,12 @@ class SettingsView(QWidget):
             handle = (st.comms_identity or {}).get("handle")
             self._comms_pill.set_state(f"watching @{handle}" if handle else "watching",
                                        _GREEN)
-        if st.comms_enabled and st.comms_error:
-            self._comms_row.set_summary(st.comms_error, color=_RED)
-        else:
-            self._comms_row.set_summary(
-                "DMs, @-mentions and keywords become pings; asks become queued work.")
+        self._comms_row.set_summary(
+            st.comms_error if st.comms_enabled and st.comms_error else "", color=_RED)
+        self._comms_options.setVisible(st.comms_enabled)
         self._comms_login_row.set_summary(
             f"${comms.TOKEN_ENV}, which wins over Claude Code's login"
-            if os.environ.get(comms.TOKEN_ENV)
-            else "Claude Code's own login to Slack's MCP server")
+            if os.environ.get(comms.TOKEN_ENV) else "")
 
     # MARK: tool colour & visibility
 
@@ -1233,9 +1225,6 @@ class SettingsView(QWidget):
         self._terminal_pill = pill
         self._terminal_row = self._track(SettingRow(
             "Window SPAWN AGENT opens", picker, stacked=True,
-            detail="A greyed chip is a terminal this machine does not have. The "
-                   "spawn resolves to the first installed one, and to xterm if none "
-                   "of them is.",
         ))
         body.addWidget(self._terminal_row)
         self._refresh_terminal_ui()
@@ -1248,8 +1237,10 @@ class SettingsView(QWidget):
     def _refresh_terminal_ui(self) -> None:
         resolved = review.resolved(self.store.terminal)
         self._terminal_pill.set_state(resolved.title, _GREY)
-        self._terminal_row.set_summary(
-            f"Runs the agent runner with the review prompt in {resolved.title}."
+        self._terminal_row.set_detail(
+            f"Runs the agent runner with the review prompt in {resolved.title}. A "
+            "greyed chip is a terminal this machine does not have. The spawn resolves "
+            "to the first installed one, and to xterm if none of them is."
         )
 
     # MARK: device allocator (MCP server + skill + rule)
@@ -1261,17 +1252,17 @@ class SettingsView(QWidget):
         self._alloc_controls = AllocatorControls(self.store)
         self._alloc_row = self._track(SettingRow(
             "Reserve a simulator before using it", self._alloc_controls, stacked=True,
-            detail="Installs an MCP server, a skill and an always-on rule. Reclaims a "
-                   "device when its agent dies or it sits idle past the limits below.",
         ))
+        # Untinted is the ready allocator's line, which is boilerplate.
         summary, tint = allocator_summary()
-        self._alloc_row.set_summary(summary, color=tint)
+        if tint is None:
+            self._alloc_row.set_detail(
+                f"{summary} Installs an MCP server, a skill and an always-on rule. "
+                "Reclaims a device when its agent dies or it sits idle past the limits "
+                "on the Devices screen.")
+        else:
+            self._alloc_row.set_summary(summary, color=tint)
         body.addWidget(self._alloc_row)
-
-        (self._idle_free, free_row), (self._idle_leased, leased_row) = idle_limit_rows(
-            self.store, self._save)
-        body.addWidget(self._track(free_row))
-        body.addWidget(self._track(leased_row))
         return card
 
     def _refresh_allocator_ui(self) -> None:
@@ -1292,8 +1283,7 @@ class SettingsView(QWidget):
         self._sw_mesh.toggled.connect(self._on_mesh_toggled)
         self._mesh_row = self._track(SettingRow(
             "Coordinate duties with this LAN", self._sw_mesh,
-            summary="Routes reviews, conflict fixes and audits to whichever machine "
-                    "fits the policy."
+            summary=None
                     if szpont.AVAILABLE else
                     # The ⬡ screen and its header button are not built without the
                     # add-on, so pointing at them would send the reader looking for a
@@ -1302,11 +1292,13 @@ class SettingsView(QWidget):
                     f"SzpontNet library, which is not installed (looked for "
                     f"{szpont.package_dir()}). Everything else in Diplomat runs on "
                     "this machine alone and is unaffected.",
-            detail="Runs a small peer-to-peer node that discovers the other Diplomat "
-                   "machines on your LAN (UDP beacons); placement is surplus-first by "
-                   "default, token- and platform-aware. Configure the whole mesh from "
-                   "the ⬡ Mesh screen (the ⬡ button in the panel header). Off by "
-                   "default; no node opens on the network until you enable it here."
+            detail="Routes reviews, conflict fixes and audits to whichever machine "
+                   "fits the policy. Runs a small peer-to-peer node that discovers the "
+                   "other Diplomat machines on your LAN (UDP beacons); placement is "
+                   "surplus-first by default, token- and platform-aware. Configure the "
+                   "whole mesh from the ⬡ Mesh screen (the ⬡ button in the panel "
+                   "header). Off by default; no node opens on the network until you "
+                   "enable it here."
                    if szpont.AVAILABLE else None,
         ))
         body.addWidget(self._mesh_row)
@@ -1405,7 +1397,11 @@ class SettingsView(QWidget):
                 self._update_pill.set_state(f"{behind} behind", _BLUE)
             else:
                 self._update_pill.set_state("up to date", _GREEN)
-            detail = f"{s.get('commit')} on {s.get('branch')} · upstream {s.get('upstream')}"
+            # Nothing when the pill's "up to date" already says it all.
+            detail = ""
+            if ahead or behind:
+                detail = (f"{s.get('commit')} on {s.get('branch')} · upstream "
+                          f"{s.get('upstream')}")
             if ahead:
                 # A diverged checkout still updates — via a merge, not a discard.
                 detail += f" · {ahead} local ahead" + (" (will merge)" if behind else "")
