@@ -3,7 +3,7 @@ import DiplomatCore
 
 // Comms, the Slack watcher. No call here reaches Slack or a real `claude`.
 
-private let slackMe = CommsIdentity(userID: "UME", teamID: "Ours", handle: "operator")
+private let slackMe = CommsIdentity(userID: "UME", teamID: "Ours", handle: "operator", name: "operator")
 
 /// What `slack_read_user_profile` prints for one user.
 private func profileText(_ id: String, _ username: String, org: String = "Ours",
@@ -385,10 +385,10 @@ func commsSmoke() throws {
     check(assets.pollSecs == 60 && assets.maxPerTick == 8 && assets.model == "haiku"
           && assets.flushAfterSecs == 1800 && CommsSettings().flushAfterSecs == 1800,
           "comms.json defaults: poll 60s, 8 per tick and batch, a batch waits 30 min, haiku")
-    check(assets.schema.contains("\"enum\":[\"none\",\"bump\",\"review\",\"fix_issue\",\"investigate\",\"injection\"]"),
+    check(assets.schema.contains("\"enum\":[\"none\",\"bump\",\"review\",\"fix_issue\",\"investigate\",\"question\",\"injection\"]"),
           "the schema's action enum is the CommsAction cases: \(assets.schema)")
     check(CommsAction.allCases.map(\.rawValue)
-          == ["none", "bump", "review", "fix_issue", "investigate", "injection"])
+          == ["none", "bump", "review", "fix_issue", "investigate", "question", "injection"])
     check(assets.schema.contains("\"required\":[\"message\",\"action\",\"number\",\"summary\",\"reason\",\"evidence\"]")
           && assets.schema.contains("\"required\":[\"decisions\"]"),
           "the schema requires a decisions list, each naming its message and carrying evidence: \(assets.schema)")
@@ -399,11 +399,16 @@ func commsSmoke() throws {
         + "Organization Name: Acme\nPhone: \nStatus: \nTimezone: Europe/Warsaw\nAdmin: No\n"
         + "Owner: No\nBot: No\nRestricted: No\n")
     check(jane == SlackProfile(userID: "U0ME", username: "jane.doe", organization: "Acme",
-                               email: "jane.doe@acme.com", isBot: false),
-          "a profile's lines read into its fields: \(String(describing: jane))")
+                               email: "jane.doe@acme.com", isBot: false, realName: "Jane Doe",
+                               displayName: "jane", title: "Lead: Platform",
+                               timezone: "Europe/Warsaw"),
+          "a profile's lines read into its fields, a colon inside a value kept: \(String(describing: jane))")
     check(jane?.workspace == "Acme" && jane?.identity == CommsIdentity(userID: "U0ME", teamID: "Acme",
-                                                                       handle: "jane.doe"),
-          "the workspace is the organization's name, and the identity carries it")
+                                                                       handle: "jane.doe", name: "Jane"),
+          "the workspace is the organization's name, and the identity carries it and the first name")
+    check(SlackProfile(userID: "U1", displayName: "jd").identity.name == "jd"
+          && SlackProfile(userID: "U1").identity.name == nil,
+          "with no real name the identity's name is the display name, and with neither none")
     let external = SlackProfile.parse(profileText("U0EXT", "mitch", org: "", email: "Mitch@Other.CO"))
     check(external?.workspace == "@other.co",
           "with no organization, the workspace is the email's domain, lowercased: \(String(describing: external))")
@@ -1427,7 +1432,9 @@ private func mcpSmoke() {
           && slack.seen.dropFirst().allSatisfy { $0.header("Mcp-Session-Id") == "sess-1" }
           && slack.seen.allSatisfy { $0.header("MCP-Protocol-Version") == "2025-06-18" },
           "a session is opened, and its id echoed on every later request: \(slack.seen.map(\.method))")
-    check((try? api.profile("UBOB")) == SlackProfile(userID: "UBOB", username: "bob", email: "bob@other.co")
+    check((try? api.profile("UBOB")) == SlackProfile(userID: "UBOB", username: "bob", email: "bob@other.co",
+                                                     realName: "bob", displayName: "bob",
+                                                     timezone: "Europe/Warsaw")
           && slack.sessions == ["sess-1"] && slack.seen.count == 4,
           "a second call reuses the session")
     check((try? api.profile("UNOBODY")) == .some(nil), "an unknown user's answer is no profile")
