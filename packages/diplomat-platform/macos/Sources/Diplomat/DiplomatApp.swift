@@ -67,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !Headless.active {
             SingleInstance.terminateOthers()
             OperatorQuit.clear()
+            Daemon.markLoginStartUnattended()
 
             // First run from a terminal (`swift run`): offer to install as a login
             // daemon. If accepted, the detached installer builds + launches the
@@ -305,7 +306,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Quit confirmation, so a stray ⌘Q or click cannot silently stop the automation.
+/// Quit confirmation for ⌘Q and the ⏻ button, so a stray keystroke or click inside the
+/// app cannot silently stop the automation. A quit from outside it (the Dock's Quit, the
+/// app switcher, a script) is taken as meant: the app is seldom frontmost then, and an
+/// alert it cannot bring forward would sit unseen behind the frontmost app.
 enum QuitFlow {
     @MainActor static func confirm() {
         let alert = NSAlert()

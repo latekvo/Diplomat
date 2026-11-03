@@ -4,7 +4,8 @@ import AppKit
 ///
 /// What a launch decides before anything is on screen: an unattended start is read off
 /// the environment and removed from it, and the window is a regular one that a close
-/// keeps for the next open. Orders no window in, so it takes no focus; showing,
+/// keeps for the next open; and an older login agent gets the unattended mark, on a
+/// scratch plist. Orders no window in, so it takes no focus; showing,
 /// reopening and focus are checked by `scripts/macos-vm-test.sh` in a VM.
 ///
 ///     DIPLOMAT_WINDOW_TEST=1 swift run Diplomat
@@ -59,6 +60,30 @@ enum WindowTest {
               !AppDelegate().applicationShouldTerminateAfterLastWindowClosed(NSApp))
         check("a headless window records no frame in the live app's defaults",
               w.frameAutosaveName.isEmpty, "got \(w.frameAutosaveName)")
+
+        print("login agent: an older plist is marked unattended")
+        let fm = FileManager.default
+        let scratch = fm.temporaryDirectory.appendingPathComponent("diplomat-window-\(getpid())")
+        try? fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: scratch) }
+        let plist = scratch.appendingPathComponent("agent.plist")
+        let old: [String: Any] = ["Label": Daemon.label, "ProgramArguments": ["/x/Diplomat"],
+                                  "RunAtLoad": true, "EnvironmentVariables": ["KEEP": "me"]]
+        try? PropertyListSerialization.data(fromPropertyList: old, format: .xml, options: 0).write(to: plist)
+        check("a plist without the mark is rewritten", Daemon.markLoginStartUnattended(plist: plist))
+        let read = (try? Data(contentsOf: plist)).flatMap {
+            try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any]
+        } ?? [:]
+        let env = read["EnvironmentVariables"] as? [String: String] ?? [:]
+        check("…with DIPLOMAT_BACKGROUND=1", env[LaunchMode.backgroundVar] == "1", "\(env)")
+        check("…and every other key kept",
+              env["KEEP"] == "me" && read["Label"] as? String == Daemon.label
+                  && read["RunAtLoad"] as? Bool == true
+                  && read["ProgramArguments"] as? [String] == ["/x/Diplomat"], "\(read)")
+        check("a marked plist is left alone", !Daemon.markLoginStartUnattended(plist: plist))
+        let absent = scratch.appendingPathComponent("none.plist")
+        check("no plist, no agent: nothing is written",
+              !Daemon.markLoginStartUnattended(plist: absent) && !fm.fileExists(atPath: absent.path))
 
         if failures.isEmpty { print("window: all passed") }
         else { print("window: FAILED \(failures.count): \(failures.joined(separator: "; "))") }

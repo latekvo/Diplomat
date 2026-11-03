@@ -64,6 +64,25 @@ enum Daemon {
         return true
     }
 
+    /// Mark the login agent's start unattended (`DIPLOMAT_BACKGROUND=1`) when its plist
+    /// lacks the mark: one written by an older installer opens the window at every
+    /// login, and the 06:00 update rebuilds the app without re-running the installer.
+    /// launchd reads the plist at the next login. Leaves a missing or unreadable plist
+    /// alone and keeps every other key; returns whether it wrote.
+    @discardableResult
+    static func markLoginStartUnattended(plist url: URL = URL(fileURLWithPath: plistPath)) -> Bool {
+        guard let data = try? Data(contentsOf: url),
+              var dict = try? PropertyListSerialization.propertyList(from: data, format: nil)
+                  as? [String: Any] else { return false }
+        var env = dict["EnvironmentVariables"] as? [String: String] ?? [:]
+        guard env[LaunchMode.backgroundVar] != "1" else { return false }
+        env[LaunchMode.backgroundVar] = "1"
+        dict["EnvironmentVariables"] = env
+        guard let out = try? PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
+        else { return false }
+        return (try? out.write(to: url, options: .atomic)) != nil
+    }
+
     private static func installScriptPath() -> String? {
         let p = RepoPaths.installDir.appendingPathComponent("install-autostart.sh").path
         return FileManager.default.isExecutableFile(atPath: p) ? p : nil

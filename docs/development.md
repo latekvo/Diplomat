@@ -58,7 +58,8 @@ swift run Diplomat    # launches the app and opens its window
 > self-test and the `diplomat-core` prompt CLI the Linux front-end shells out to.
 > The core holds more than one executable, so name the target there.
 
-Quit with ⌘Q or the panel's ⏻ button; closing the window leaves the app running, and a
+Quit with ⌘Q or the panel's ⏻ button, which ask first, or the Dock icon's Quit, which
+does not; closing the window leaves the app running, and a
 click on its Dock icon (or Window ▸ Diplomat, ⌘0) brings the window back. `pkill Diplomat` leaves no operator-quit marker, so
 the [watchdog](#autostart-on-login), if installed, relaunches the app within five minutes.
 
@@ -130,8 +131,8 @@ neither. It's the unattended twin of the Settings **Update** button, and it logs
 A **third**, `com.ignacy.diplomat.watchdog`, runs the binary headless every 5 minutes
 (`DIPLOMAT_WATCHDOG=1`, `StartInterval`) and launches the app if no instance is up -
 after a crash, a force-quit, a kill or a failed update. The 06:00 run does the same.
-Neither brings back an app you quit yourself (⌘Q, the ⏻ button, `osascript … quit`,
-Activity Monitor's Quit): that leaves `~/.diplomat/operator-quit`, which the next
+Neither brings back an app you quit yourself (⌘Q, the ⏻ button, the Dock's Quit,
+`osascript … quit`, Activity Monitor's Quit): that leaves `~/.diplomat/operator-quit`, which the next
 launch clears. A hand-over to a newer instance leaves no mark, and the watchdog only
 acts when there is no instance at all, so it never contends with the newest-wins
 singleton or an update's relaunch. It launches the bundle the updater builds, and logs
@@ -141,7 +142,9 @@ what it launched to the same file. Manage it with `./install/install-watchdog.sh
 Those three starts - login, the 06:00 relaunch and the watchdog's - are unattended:
 each passes `DIPLOMAT_BACKGROUND=1`, so the app comes up with no window and leaves the
 frontmost app in front. Click the Dock icon to open the window. Any other launch (Finder,
-`open`, **Update**, `szpont`) opens it.
+`open`, **Update**, `szpont`, `install-autostart.sh`) opens it. The watchdog's check
+answers before AppKit starts, so it never registers as an app. A login agent an
+older installer wrote, without `DIPLOMAT_BACKGROUND`, gets it at the next GUI launch.
 
 ### Headless self-test
 
@@ -192,8 +195,9 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   scratch dir); comms-panel; comms-badge (the main panel with
                                                      #   unread pings); comms-empty (no Slack login yet);
                                                      #   settings-comms-error (the Comms card's failing pill)
-                                                     #   app (the REAL window root at its narrowest, incl.
-                                                     #   the legacy scroller; DIPLOMAT_RENDER_HEIGHT sets
+                                                     #   app (the REAL window root at the width that shows
+                                                     #   the whole panel, incl. the legacy scroller lane;
+                                                     #   DIPLOMAT_RENDER_HEIGHT sets
                                                      #   the window height, default 800)
                                                      #   window-<state> (any state above through a real
                                                      #   window: ImageRenderer draws no AppKit control, so
@@ -257,8 +261,9 @@ machine you are working on. `scripts/macos-vm-test.sh` builds the bundle from th
 checkout, boots a [tart](https://tart.run) VM headless (cloned on first use, ~25 GB),
 and drives the real app there through the VM's own VNC server: an attended launch
 opens the window and takes focus, ⌘, opens Settings, ⌘W leaves the app running, a
-second launch or ⌘0 brings the window back, ⌘Q asks first, and an unattended start (the
-login agent, the watchdog) opens no window and leaves the frontmost app in front.
+second launch or ⌘0 brings the window back, ⌘Q asks first, an
+unattended start (the login agent, the watchdog) opens no window and leaves the
+frontmost app in front.
 Its exit code is the verdict, and it keeps a screenshot per step:
 
 ```bash
@@ -377,7 +382,8 @@ packages/
   diplomat-platform/           ← the platform wrappers: one UI each over that same core
     macos/                     ← macOS SwiftUI app - thin UI over the core
       Sources/Diplomat/
-        DiplomatApp.swift          @main entry + app + MenuBarExtra + the headless self-test entry points
+        DiplomatApp.swift          @main entry + app delegate + menu commands + quit flow + the headless self-test entry points
+        MainWindow.swift           the one AppKit-owned window, its SwiftUI root, LaunchMode (unattended starts), the Dock icon
         Headless.swift             the single "are we a one-shot self-test?" env-var list
         ContentView.swift          two-column panel (left: monitoring lists, right: grid + wizards/results)
         Components.swift           shared UI atoms (cards, chips, badges)

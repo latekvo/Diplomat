@@ -92,10 +92,11 @@ STAGED="/Volumes/My Shared Files/stage"
 # A layout RepoPaths takes for a checkout, so the watchdog finds the bundle it launches.
 APP='$HOME/chk/packages/diplomat-platform/macos/Diplomat.app'
 BIN="$APP/Contents/MacOS/Diplomat"
+AGENT='$HOME/Library/LaunchAgents/com.ignacy.diplomat.plist'
 
 echo "== guest: install the bundle"
 g "pkill -x Diplomat; launchctl bootout gui/\$(id -u)/com.ignacy.diplomat 2>/dev/null; \
-   rm -rf ~/chk ~/.diplomat/operator-quit && mkdir -p ~/chk/packages/diplomat-platform/macos && touch ~/chk/.git && \
+   rm -rf ~/chk ~/.diplomat/operator-quit $AGENT && mkdir -p ~/chk/packages/diplomat-platform/macos && touch ~/chk/.git && \
    cp -R '$STAGED/Diplomat.app' $APP && cp '$STAGED/winlist' ~/winlist && \
    defaults write com.ignacy.diplomat didTriggerTerminalAutomation -bool true"
 
@@ -118,13 +119,18 @@ echo "== the window self-test, on this VM's narrower screen"
 check "DIPLOMAT_WINDOW_TEST passes" g "DIPLOMAT_WINDOW_TEST=1 $BIN"
 
 echo "== an attended launch opens the window and takes focus"
+# A login agent an older installer wrote, without the unattended mark (not loaded).
+g "mkdir -p ~/Library/LaunchAgents && plutil -create xml1 $AGENT && \
+   plutil -insert Label -string com.ignacy.diplomat $AGENT"
 check "Finder is frontmost to begin with" finder_front
 g "open -n $APP"
 check "a window comes up" within 20 has_window
+check "the launch marks that older login agent unattended" \
+  within 5 g "[ \"\$(plutil -extract EnvironmentVariables.DIPLOMAT_BACKGROUND raw $AGENT)\" = 1 ]"
 check "Diplomat is frontmost" within 5 front_is Diplomat
 check "it is a regular app, with a Dock icon" [ "$(app_type)" = "Foreground" ]
 shot 1-attended
-check "the main panel shows, not Settings" bash -c '! "$0" "$1" "AGENT RUNNER" >/dev/null' "$CACHE/ocr" "$OUT/1-attended.png"
+check "the main panel shows, not Settings" "$CACHE/ocr" "$OUT/1-attended.png" "AGENT TASKS"
 FIRST="$(pid)"
 
 echo "== the menu bar: Settings, close, reopen"
@@ -187,15 +193,25 @@ echo "== the watchdog's revival takes no focus either"
 g "launchctl bootout gui/\$(id -u)/com.ignacy.diplomat; pkill -9 -x Diplomat; rm -f ~/.diplomat/operator-quit"
 check "the app is down" within 10 gone
 check "Finder is frontmost" finder_front
-g "DIPLOMAT_WATCHDOG=1 $BIN; tail -1 ~/Library/Logs/diplomat-autoupdate.log"
+check "the watchdog run succeeds" g "DIPLOMAT_WATCHDOG=1 $BIN"
+# Diplomat processes LaunchServices registers while a check runs with the app up (as
+# every 5 minutes) and then one self-test, which registers by design: only that one.
+registrations() {
+  g "(lsappinfo listen +all forever > /tmp/listen.txt 2>&1 &); sleep 1
+     DIPLOMAT_WATCHDOG=1 $BIN; DIPLOMAT_WINDOW_TEST=1 $BIN >/dev/null; sleep 1; pkill -f 'lsappinfo listen'
+     grep kLSNotifyApplicationCreation /tmp/listen.txt | grep -c 'CFBundleExecutable\"=\"Diplomat'"
+}
 check "the watchdog brings it back" within 20 running
 sleep 5
 check "no window comes up" no_window
 check "Finder stays frontmost" front_is Finder
 shot 6-watchdog
+REVIVED="$(pid)"
 g "open $APP"
 check "launching it opens the window" within 10 has_window
+check "…in the revived instance" same_pid "$REVIVED"
 check "…frontmost" within 5 front_is Diplomat
+check "its check with the app up never registers as an app" [ "$(registrations)" = 1 ]
 
 echo
 if [ "$FAILED" -eq 0 ]; then echo "vm: all passed  (screenshots: $OUT)"; else echo "vm: FAILED $FAILED  (screenshots: $OUT)"; fi

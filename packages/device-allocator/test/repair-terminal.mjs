@@ -173,7 +173,7 @@ assert.match(order.stdout, /claude-ran x/, 'the daemon\'s PATH shadowed the wind
 console.log('ok   no $SHELL: window PATH, then the daemon\'s');
 
 // tmux: Linux takes it from PATH, as review.terminal_argv does; macOS keeps
-// TerminalFocus.binary's fixed list, a menu-bar app having no shell PATH.
+// TerminalFocus.binary's fixed list, an app started by launchd or Finder having no shell PATH.
 fake('tmux', 'exit 0');
 delete process.env.DIPLOMAT_TMUX;
 assert.equal(tmuxBinary('linux'), path.join(BIN, 'tmux'));

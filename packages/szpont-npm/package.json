@@ -3,7 +3,7 @@
   "version": "0.111.0",
   "type": "module",
   "description": "Install-and-run for Diplomat (Szpont Yon): fetches the checkout, builds it, and starts the applet.",
-  "keywords": ["diplomat", "szpont", "szpontnet", "launcher", "menu-bar", "tray"],
+  "keywords": ["diplomat", "szpont", "szpontnet", "launcher", "desktop-app", "tray"],
   "license": "MIT",
   "author": "Ignacy Łątka",
   "homepage": "https://github.com/latekvo/Diplomat",
