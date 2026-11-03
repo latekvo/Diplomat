@@ -186,9 +186,13 @@ enum SelfUpdate {
     /// headless marker removed: launched by the 06:00 updater or the watchdog with its
     /// marker intact, the instance would be another headless job, not the GUI.
     ///
+    /// `background` is an unattended launch: `open -g` leaves the frontmost app in front
+    /// and `DIPLOMAT_BACKGROUND=1` tells the instance to put no window up.
+    ///
     /// The default `app` is beside the macOS package, where `build-app.sh` writes it.
     /// `lister` is one read of `app`'s instances; `RelaunchTest` swaps in a lossier one.
     static func relaunch(_ app: URL = RepoPaths.macosPackage.appendingPathComponent("Diplomat.app"),
+                         background: Bool,
                          window: TimeInterval = 3,
                          lister: (URL) -> [pid_t] = listed) throws {
         let name = app.lastPathComponent
@@ -198,8 +202,10 @@ enum SelfUpdate {
         let requested = Date()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = ["-n", app.path]
-        p.environment = Headless.stripped(ProcessInfo.processInfo.environment)
+        p.arguments = (background ? ["-n", "-g"] : ["-n"]) + [app.path]
+        var env = Headless.stripped(ProcessInfo.processInfo.environment)
+        if background { env[LaunchMode.backgroundVar] = "1" }
+        p.environment = env
         do { try p.run() } catch {
             throw UpdateError(message: "could not relaunch the app: \(error.localizedDescription)")
         }
@@ -292,7 +298,7 @@ enum SelfUpdate {
         var rebuild: () throws -> Void = SelfUpdate.rebuild
         var appRunning: () -> Bool = SingleInstance.isRunning
         var operatorQuit: () -> Bool = { OperatorQuit.isMarked }
-        var launch: () throws -> Void = { try SelfUpdate.relaunch() }
+        var launch: () throws -> Void = { try SelfUpdate.relaunch(background: true) }
         var log: (String) -> Void = SelfUpdate.schedLog
         var disk: () -> DiskFloor.Reading? = { DiskFloor.lowest(of: [RepoPaths.root.path]) }
     }

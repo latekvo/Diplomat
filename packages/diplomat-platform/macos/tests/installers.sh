@@ -55,6 +55,10 @@ check "…and says so" grep -q "delete it by hand" "$SCRATCH/out"
 check "build-app.sh writes the bundle the agents name" test -x "$BIN"
 check "the login agent starts the bundle beside the package" \
   grep -qF "<string>$BIN</string>" "$AGENTS/com.ignacy.diplomat.plist"
+check "the login agent marks its start unattended, so it opens no window" \
+  grep -qF "<key>DIPLOMAT_BACKGROUND</key><string>1</string>" "$AGENTS/com.ignacy.diplomat.plist"
+check "the bundle is a regular app, with a Dock icon" \
+  bash -c '! grep -q LSUIElement "$1"' _ "$PKG/Diplomat.app/Contents/Info.plist"
 check "the auto-update agent runs that same bundle" \
   grep -qF "<string>$BIN</string>" "$AGENTS/com.ignacy.diplomat.autoupdate.plist"
 check "…in self-update mode" \

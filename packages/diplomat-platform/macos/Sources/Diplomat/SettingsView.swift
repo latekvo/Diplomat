@@ -31,7 +31,7 @@ struct SettingsView: View {
                     limitsSection
                     commsSection
                 }
-                .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
+                .frame(width: MainRoot.columnWidth, alignment: .topLeading)
 
                 VStack(alignment: .leading, spacing: 10) {
                     toolsSection
@@ -41,7 +41,7 @@ struct SettingsView: View {
                     meshSection
                     updateSection
                 }
-                .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
+                .frame(width: MainRoot.columnWidth, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -272,9 +272,7 @@ struct SettingsView: View {
         return "\(c.owner)/\(c.repo)"
     }
 
-    /// Directory picker for the repo root. The menu-bar popover closes when the panel
-    /// takes focus (it's a `.window`-style MenuBarExtra) — the pick is still stored, so
-    /// reopening Settings shows the new path.
+    /// Directory picker for the repo root.
     private func chooseRepoRoot() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -283,7 +281,6 @@ struct SettingsView: View {
         panel.message = "Choose the local checkout agents should work in"
         panel.prompt = "Use as repo root"
         panel.directoryURL = URL(fileURLWithPath: RepoPaths.agentRepo)
-        NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url {
             store.repoPathOverride = url.path
         }
@@ -341,7 +338,6 @@ struct SettingsView: View {
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
     }
 
-    /// Same popover caveat as `chooseRepoRoot`.
     private func chooseOtherRepos() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -349,7 +345,6 @@ struct SettingsView: View {
         panel.allowsMultipleSelection = true
         panel.message = "Choose local checkouts whose PR and issue links the wizards accept"
         panel.prompt = "Add"
-        NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK else { return }
         let added = panel.urls.map(\.path).filter { !store.localRepoPaths.contains($0) }
         store.localRepoPaths.append(contentsOf: added)

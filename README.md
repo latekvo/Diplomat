@@ -111,7 +111,7 @@ contents and pull requests, which is safer.
 ## Running from a checkout
 
 ```bash
-# macOS - a menu-bar app, no Dock icon
+# macOS
 cd packages/diplomat-platform/macos
 ./install/build-app.sh && open ./Diplomat.app
 ./install/install-autostart.sh   # start at login, update daily at 06:00, restart after a crash

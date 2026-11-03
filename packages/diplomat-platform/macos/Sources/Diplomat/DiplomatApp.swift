@@ -2,24 +2,26 @@ import SwiftUI
 import AppKit
 import DiplomatCore
 
-/// The process entry point. `Headless.unrunnable` is checked here, before
-/// `DiplomatApp` exists, because the app builds its Store as a state object and
-/// the Store reads the real state and starts its polls as it is built.
+/// The process entry point. `Headless.unrunnable` is checked here, before anything
+/// reads the real state or starts a poll.
 @main
 enum Launch {
     static func main() {
-        let unrunnable = Headless.unrunnable(in: ProcessInfo.processInfo.environment)
+        let env = ProcessInfo.processInfo.environment
+        let unrunnable = Headless.unrunnable(in: env)
         guard unrunnable.isEmpty else {
             try? FileHandle.standardError.write(contentsOf: Data(Headless.refusal(unrunnable).utf8))
             exit(64)   // EX_USAGE
         }
+        LaunchMode.adopt(from: env)
         DiplomatApp.main()
     }
 }
 
+/// A regular app whose one window AppKit owns (`MainWindow`), so an unattended launch
+/// can start without it. The scene only supplies the menu bar's commands.
 struct DiplomatApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var store = Store()
 
     init() {
         // The launchd liveness check: answers and exits before AppKit or the Store
@@ -30,22 +32,38 @@ struct DiplomatApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("Diplomat", systemImage: "wrench.and.screwdriver") {
-            PopoverRoot()
-                .environmentObject(store)
-        }
-        .menuBarExtraStyle(.window)
+        Settings { EmptyView() }
+            .commands {
+                CommandGroup(replacing: .appSettings) {
+                    Button("Settings…") { delegate.mainWindow?.showSettings() }
+                        .keyboardShortcut(",")
+                }
+                // ⌘-Tab to the app sends no reopen, so the closed window needs a way back.
+                CommandGroup(before: .windowList) {
+                    Button("Diplomat") { delegate.mainWindow?.show() }
+                        .keyboardShortcut("0")
+                }
+                CommandGroup(replacing: .appTermination) {
+                    Button("Quit Diplomat") { QuitFlow.confirm() }
+                        .keyboardShortcut("q")
+                }
+            }
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// The GUI's state and its window; nil in a headless mode, which builds its own
+    /// Store where it needs one.
+    private var store: Store?
+    private(set) var mainWindow: MainWindow?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let env = ProcessInfo.processInfo.environment
 
         // Singleton, newest-wins: a freshly launched GUI instance kills any older
-        // ones so there's never more than one wrench. Skipped in headless self-test
+        // ones so there's never more than one app. Skipped in headless self-test
         // mode (see `Headless` for the single env-var list shared with Store) so a
-        // dump/lookup run can't kill the live menu-bar app.
+        // dump/lookup run can't kill the live app.
         if !Headless.active {
             SingleInstance.terminateOthers()
             OperatorQuit.clear()
@@ -54,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // daemon. If accepted, the detached installer builds + launches the
             // daemon, which replaces this instance via the singleton. We keep
             // running rather than exit, so a *failed* install still leaves a
-            // usable wrench in the menu bar instead of nothing.
+            // usable app instead of nothing.
             Daemon.offerInstallIfInteractive()
 
             // Proactively provoke the macOS "control <terminal>" automation prompt
@@ -67,8 +85,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Menu-bar-only: no Dock icon.
-        NSApp.setActivationPolicy(.accessory)
+        if Headless.active {
+            // No Dock icon for a one-shot.
+            NSApp.setActivationPolicy(.accessory)
+        } else {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.applicationIconImage = AppIcon.image()
+            let store = Store()
+            let window = MainWindow(store: store)
+            self.store = store
+            mainWindow = window
+            if !LaunchMode.background { window.show() }
+        }
 
         // Unattended 6AM self-update (launchd StartCalendarInterval): merge upstream if
         // behind, rebuild, relaunch the app if it was running and launch it if it was
@@ -101,8 +129,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in Dump.settings(); exit(0) }
         }
         // Headless UI render: snapshot a view to PNG and exit. `run` returns false
-        // for the window-hosted `popover` mode, which needs the app runloop to lay
-        // out first — it exits by itself once the snapshot is written.
+        // for the window-hosted modes, which need the app runloop to lay out
+        // first — they exit by themselves once the snapshot is written.
         if let what = env["DIPLOMAT_RENDER"] {
             Task { @MainActor in if Render.run(what, store: Store()) { exit(0) } }
         }
@@ -233,6 +261,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 Task.detached { exit(RelaunchTest.run() ? 0 : 1) }
             }
         }
+        // App-window self-test: the launch mode and the window's shape. Orders no
+        // window in. Exit code = pass/fail.
+        if env["DIPLOMAT_WINDOW_TEST"] == "1" {
+            Task { @MainActor in exit(WindowTest.run() ? 0 : 1) }
+        }
         // Revival self-test: who brings a dead app back and who leaves it closed, and
         // what a deliberate quit is. Every job step is a fixture and the quit mark a
         // scratch file. Exit code = pass/fail.
@@ -240,6 +273,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(WatchdogTest.run() ? 0 : 1)
         }
     }
+
+    /// A click on the Dock icon, or a launch of the running bundle, brings the window
+    /// back after it was closed or never shown.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        mainWindow?.show()
+        return false
+    }
+
+    /// Closing the window leaves the monitors and the queue running.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     /// A quit the operator asked for leaves the marker that keeps the unattended jobs
     /// from bringing the app back; one sent by another Diplomat (the singleton handing
@@ -262,14 +305,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Quit confirmation. A real AppKit modal (SwiftUI's `.alert` is unreliable inside
-/// a `MenuBarExtra` window), so a stray click can never silently kill the wrench.
+/// Quit confirmation, so a stray ⌘Q or click cannot silently stop the automation.
 enum QuitFlow {
     @MainActor static func confirm() {
-        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Quit Diplomat?"
-        alert.informativeText = "The menu-bar wrench disappears until you launch it again."
+        alert.informativeText = "Automatic reviews and fixes stop until you launch it again "
+            + "or next log in."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Cancel")   // default — Return cancels
         alert.addButton(withTitle: "Quit")
@@ -285,8 +327,8 @@ enum SingleInstance {
     static let execName = "Diplomat"
 
     /// Every other live GUI instance of the app. A headless one-shot (the 06:00 updater,
-    /// the watchdog, a self-test) runs the same binary but exits on its own and puts no
-    /// wrench in the menu bar, so it is neither terminated nor counted as the app being
+    /// the watchdog, a self-test) runs the same binary but exits on its own and shows no
+    /// window, so it is neither terminated nor counted as the app being
     /// up; its environment tells it apart, and one whose environment cannot be read
     /// counts as GUI.
     static func otherInstances() -> [NSRunningApplication] {
@@ -618,7 +660,7 @@ enum Dump {
     /// forward: macOS focus-stealing PREVENTION suppresses cross-app `activate` requests
     /// from a process that isn't itself frontmost (this backgrounded self-test), so a live
     /// activation check here is unreliable. The user path activates fine because the
-    /// menu-bar popover IS frontmost at click time, and its generated AppleScript is
+    /// Diplomat window IS frontmost at click time, and its generated AppleScript is
     /// unchanged from before this fix (see DIPLOMAT_PRINT_PROMPT) — that identity is
     /// the real regression guard; the foreground focus result below is informational only.
     /// Returns overall pass/fail so a hook/script can gate on the exit code. Drives the

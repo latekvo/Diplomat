@@ -35,6 +35,9 @@ cat > "$PLIST" <<PL
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array><string>$BIN</string></array>
+  <!-- An unattended start: no window, and the frontmost app keeps focus. -->
+  <key>EnvironmentVariables</key>
+  <dict><key>DIPLOMAT_BACKGROUND</key><string>1</string></dict>
   <key>RunAtLoad</key><true/>
   <key>ProcessType</key><string>Interactive</string>
   <!-- ~/Library/Logs, not /tmp: a predictable name in the shared, sticky /tmp can

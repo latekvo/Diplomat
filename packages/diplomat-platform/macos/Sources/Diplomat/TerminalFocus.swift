@@ -429,7 +429,7 @@ enum TerminalFocus {
     }
 
     /// Where tmux is, or nil when it is not installed — resolved the same way `node`
-    /// and `npm` are, because a menu-bar app inherits no shell PATH.
+    /// and `npm` are, because an app started by launchd or Finder inherits no shell PATH.
     static var binary: String? {
         let fm = FileManager.default
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_TMUX"] {

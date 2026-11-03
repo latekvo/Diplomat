@@ -2,8 +2,8 @@ import SwiftUI
 import AppKit
 import DiplomatCore
 
-/// Headless UI render: snapshot a view to a PNG with `ImageRenderer`, no menu-bar
-/// popover required. A deterministic "headless UI check" in the spirit of the
+/// Headless UI render: snapshot a view to a PNG with `ImageRenderer`, no app window
+/// required. A deterministic "headless UI check" in the spirit of the
 /// existing dump/lookup self-tests. Driven by `DIPLOMAT_RENDER=<what>` and
 /// `DIPLOMAT_RENDER_OUT=<path>` (defaults under the temp dir).
 @MainActor
@@ -21,10 +21,11 @@ enum Render {
             NSApp.appearance = NSAppearance(named: theme == "light" ? .aqua : .darkAqua)
         }
 
-        if what.lowercased() == "popover" {
+        if what.lowercased() == "app" {
             let _ = seedProcessesIfNeeded("procs", store: store)
             let _ = seedAutofix(store)
-            runWindow(what: "popover", out: out, root: PopoverRoot().environmentObject(store))
+            runWindow(what: "app", out: out, root: MainRoot().environmentObject(store),
+                      size: appWindowSize)
             return false
         }
         if what.lowercased() == "live" {
@@ -57,13 +58,13 @@ enum Render {
         return true
     }
 
-    /// The frame every snapshot is taken in: the popover's fixed width, its outer
+    /// The frame every snapshot is taken in: the panel's fixed width, its outer
     /// margin, its background. Shared by the `ImageRenderer` and window paths so the
     /// two cannot disagree about what a mode's snapshot is a picture of.
     private static func chrome(_ body: some View, store: Store) -> some View {
         body
             .environmentObject(store)
-            .frame(width: PopoverRoot.width)
+            .frame(width: MainRoot.width)
             .padding(10)
             .background(Color(nsColor: .windowBackgroundColor))
     }
@@ -80,25 +81,25 @@ enum Render {
     /// Snapshot a root view in a live NSWindow (via `cacheDisplay`, no screen-recording
     /// permission needed) instead of `ImageRenderer`. Two callers:
     ///
-    /// `DIPLOMAT_RENDER=popover` passes the REAL popover root — the only mode that draws
-    /// window-level AppKit chrome, notably the legacy ("Show scroll bars: Always")
-    /// vertical scroller, which lives INSIDE the window and once clipped the fixed-width
-    /// content's outer margins. Pair with `DIPLOMAT_POPOVER_CAP` (e.g. 400) to force the
-    /// scrolling state; the snapshot must show the content's 10pt left margin intact WITH
-    /// the scroller.
+    /// `DIPLOMAT_RENDER=app` passes the REAL window root at the narrowest width the app
+    /// window allows — the only mode that draws window-level AppKit chrome, notably the
+    /// legacy ("Show scroll bars: Always") vertical scroller, which lives INSIDE the
+    /// window; the snapshot must show the content's 10pt left margin intact WITH the
+    /// scroller. `DIPLOMAT_RENDER_HEIGHT` sets the window's height (default 800).
     ///
-    /// `DIPLOMAT_RENDER=window-<mode>` passes any other mode's view, for the controls
-    /// `ImageRenderer` leaves blank.
-    private static func runWindow(what: String, out: String, root: some View) {
+    /// `DIPLOMAT_RENDER=window-<mode>` passes any other mode's view, sized to it, for the
+    /// controls `ImageRenderer` leaves blank.
+    private static func runWindow(what: String, out: String, root: some View, size: NSSize? = nil) {
         let hosting = NSHostingController(rootView: root)
+        if size != nil { hosting.sizingOptions = [] }
         let window = OffscreenWindow(contentViewController: hosting)
+        if let size { window.setContentSize(size) }
         // Ordered, so AppKit lays the window out and commits it, but parked off-screen:
         // `cacheDisplay` draws the hierarchy directly, so it never has to be visible.
         window.setFrameOrigin(NSPoint(x: -4000, y: -4000))
         window.orderFrontRegardless()
-        // Snapshot after the app runloop has run the layout passes (content-height
-        // preference + scroller-inset width correction), then exit ourselves — the
-        // caller has already returned without exiting.
+        // Snapshot after the app runloop has run the layout passes, then exit
+        // ourselves — the caller has already returned without exiting.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             guard let view = window.contentView,
                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
@@ -119,7 +120,13 @@ enum Render {
         }
     }
 
-    /// `DIPLOMAT_RENDER=live` — the same real popover as `popover`, but **on-screen
+    /// The app window's size in the `app` and `live` modes.
+    private static var appWindowSize: NSSize {
+        let h = ProcessInfo.processInfo.environment["DIPLOMAT_RENDER_HEIGHT"].flatMap(Double.init) ?? 800
+        return NSSize(width: MainRoot.minWindowWidth, height: h)
+    }
+
+    /// `DIPLOMAT_RENDER=live` — the same real window root as `app`, but **on-screen
     /// and left running**, so the two things a snapshot can never answer get driven
     /// by an actual mouse: does the queue's drag grip reorder rows, and does
     /// *execute now* fire. It prints the window's rect in screen (top-left) points,
@@ -127,7 +134,7 @@ enum Render {
     ///
     /// Not a CI mode — it needs a window server and Accessibility permission for the
     /// synthetic clicks, like `DIPLOMAT_SPAWN_FOCUS_TEST`. It is a `DIPLOMAT_RENDER`
-    /// mode so it inherits `Headless.active`: the live menu-bar app is left alone
+    /// mode so it inherits `Headless.active`: the live app is left alone
     /// (no singleton kill), nothing is persisted (a drag here cannot reorder the
     /// operator's real queue), and no poll or watcher runs.
     ///
@@ -143,13 +150,15 @@ enum Render {
             queuedFixture(number: 462, kind: "conflicts", auditAction: "conflicts",
                           label: "Resolve · #462", counter: .conflicts, attemptNumber: 2),
         ]
-        let hosting = NSHostingController(rootView: PopoverRoot().environmentObject(store))
+        let hosting = NSHostingController(rootView: MainRoot().environmentObject(store))
+        hosting.sizingOptions = []
         let window = NSWindow(contentViewController: hosting)
+        window.setContentSize(appWindowSize)
         window.title = "Diplomat (live UI test)"
         window.setFrameOrigin(NSPoint(x: 200, y: 200))
         window.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
-        // Report where it landed once AppKit has sized it to the content, in the
+        // Report where it landed once AppKit has laid it out, in the
         // top-left-origin points the automation tools use.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             let f = window.frame
@@ -215,7 +224,7 @@ enum Render {
             // `mesh-blocked` additionally sets beaconBlocked, snapshotting the loud
             // "device is not discoverable" banner.
             let _ = seedMesh(store, blocked: m.contains("blocked"))
-            // `mesh-reminder` pre-opens the "Marked as Personal" in-popover modal (with its
+            // `mesh-reminder` pre-opens the "Marked as Personal" in-panel modal (with its
             // "Don't show again" checkbox) so its layout is snapshot-verifiable headlessly.
             MeshView(isPresented: .constant(true),
                      seedTrustReminder: m.contains("reminder") ? "newbox" : nil)
@@ -355,7 +364,7 @@ enum Render {
             }
         case let s where s.hasPrefix("natural"):
             // No forced height — the rendered PNG's height IS ContentView's natural
-            // height, proving the content sizes to its content (what PopoverRoot caps).
+            // height, proving the content sizes to its content.
             let _ = seedProcessesIfNeeded(s, store: store)
             ContentView()
         default: // "panel" — the whole content view; "panel-procs" seeds the
