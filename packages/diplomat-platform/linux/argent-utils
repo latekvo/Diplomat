@@ -5,6 +5,8 @@
 # forwarding until every machine has re-run install/install-autostart.sh;
 # then this file can be deleted.
 set -euo pipefail
+# The login entry and the 06:00 unit are unattended: start without a window.
+export DIPLOMAT_BACKGROUND=1
 if [ "${ARGENT_UTILS_SELF_UPDATE:-}" = "1" ]; then
     export DIPLOMAT_SELF_UPDATE=1
 fi

@@ -363,6 +363,35 @@ def test_a_launched_applet_that_dies_is_a_failed_launch(recorded_display):
     assert _log() == ["watchdog: tray not running: launch failed: the applet exited 3"]
 
 
+def test_a_revival_starts_the_app_in_the_background(recorded_display):
+    """Nobody asked for the window: the watchdog's and the 06:00 job's revivals open
+    none."""
+    _origin, _clone, marker = recorded_display
+    assert selfupdate.run_watchdog() == 0
+    assert _launched_env(marker).get("DIPLOMAT_BACKGROUND") == "1"
+
+
+def test_the_0600_relaunch_of_a_running_app_is_in_the_background(repos, monkeypatch):
+    origin, _clone, marker = repos
+    _advance_origin(origin)
+    _running_tray(monkeypatch)
+    assert selfupdate.run_scheduled() == 0
+    assert _launched_env(marker).get("DIPLOMAT_BACKGROUND") == "1"
+
+
+def test_the_update_button_relaunches_in_the_foreground(repos, monkeypatch):
+    """The operator pressed it, so the new instance opens its window - even where this
+    process's environment says background, as a login start's would if nothing took it
+    out."""
+    monkeypatch.setenv("DIPLOMAT_BACKGROUND", "1")
+    origin, _clone, marker = repos
+    _advance_origin(origin)
+    qapp, store, view = _settings_view()
+    assert _click_update(qapp, store, view) == "restarting", store.update_state
+    assert "DIPLOMAT_BACKGROUND" not in _launched_env(marker)
+    view.deleteLater()
+
+
 def test_a_quit_leaves_the_mark_and_the_next_launch_clears_it(monkeypatch):
     """Quitting from the tray marks; starting the tray clears the mark and records
     the display a revival will launch onto."""
@@ -372,6 +401,7 @@ def test_a_quit_leaves_the_mark_and_the_next_launch_clears_it(monkeypatch):
     app = DiplomatApp.__new__(DiplomatApp)
     app.store = type("_Store", (), {"wait_for_background": lambda self, timeout=5.0: []})()
     app.tray = type("_Tray", (), {"hide": lambda self: None})()
+    app.panel = type("_Panel", (), {"hide": lambda self: None})()
     app.app = type("_Qt", (), {"quit": lambda self: None})()
     monkeypatch.setattr(SingleInstance, "release", staticmethod(lambda: None))
     assert not selfupdate.operator_quit()
@@ -379,13 +409,14 @@ def test_a_quit_leaves_the_mark_and_the_next_launch_clears_it(monkeypatch):
     assert selfupdate.operator_quit()
 
     class _Launched:
+        def show_window(self):
+            pass
+
         def exec(self):
             return 0
 
     monkeypatch.setattr(SingleInstance, "acquire_newest_wins", staticmethod(lambda: None))
     monkeypatch.setattr(app_module, "DiplomatApp", _Launched)
-    monkeypatch.setattr(app_module.QSystemTrayIcon, "isSystemTrayAvailable",
-                        staticmethod(lambda: True))
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-3")
     assert app_module.run_app() == 0
     assert not selfupdate.operator_quit()

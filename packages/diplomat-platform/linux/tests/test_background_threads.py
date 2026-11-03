@@ -133,6 +133,7 @@ def test_a_second_interrupt_during_the_wait_does_not_restart_it(monkeypatch):
 
     app.store = _Store()
     app.tray = type("_Tray", (), {"hide": lambda self: None})()
+    app.panel = type("_Panel", (), {"hide": lambda self: None})()
     app.app = type("_Qt", (), {"quit": lambda self: None})()
     monkeypatch.setattr(SingleInstance, "release", staticmethod(lambda: None))
 

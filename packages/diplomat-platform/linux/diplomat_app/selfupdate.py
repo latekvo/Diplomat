@@ -27,6 +27,12 @@ from diplomat_runtime import diskfloor
 from .singleton import SingleInstance, headless_markers
 
 
+#: Set to ``1`` for an unattended launch (login autostart, the 06:00 update's
+#: relaunch, the watchdog's revival): the app starts with its window hidden and
+#: activates nothing. Not a headless mode - the GUI runs, so newest-wins can end it.
+BACKGROUND_ENV = "DIPLOMAT_BACKGROUND"
+
+
 class UpdateError(RuntimeError):
     """A self-update step failed; str(exc) is the user-facing reason."""
 
@@ -189,17 +195,19 @@ def _state_dir() -> Path:
     )
 
 
-def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
+def relaunch(extra_env: dict[str, str] | None = None, *,
+             background: bool = False) -> subprocess.Popen:
     """Start the updated launcher detached, logging where autostart logs.
 
-    The new instance's newest-wins singleton terminates any GUI tray still
+    The new instance's newest-wins singleton terminates any GUI instance still
     running, so a caller that is one only reports "restarting…" and waits to be
     replaced - after asking :func:`relaunch_failure` whether the child died first.
 
     ``extra_env`` is merged over the current environment for the child — the
     unattended jobs use it to hand the GUI the display env (DISPLAY / Wayland /
-    D-Bus) of the tray it replaces or revives, which a bare systemd service env
-    lacks.
+    D-Bus) of the instance it replaces or revives, which a bare systemd service env
+    lacks. ``background`` (the unattended jobs) starts it with its window hidden;
+    otherwise (the Update button) it opens its window.
     """
     root = repo_root()
     launcher = linux_package(root) / "diplomat"
@@ -207,11 +215,15 @@ def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
     env = dict(os.environ)
     # Strip every headless-mode marker: the unattended jobs run with DIPLOMAT_SELF_UPDATE=1
     # or DIPLOMAT_WATCHDOG=1 in their env, and a copied env would make the child re-enter
-    # __main__.main's headless mode and exit instead of launching the GUI tray.
+    # __main__.main's headless mode and exit instead of launching the GUI.
     for marker in headless_markers():
         env.pop(marker, None)
     if extra_env:
         env.update(extra_env)
+    if background:
+        env[BACKGROUND_ENV] = "1"
+    else:
+        env.pop(BACKGROUND_ENV, None)
     argv = ["bash", str(launcher)]
     if _in_service_cgroup() and shutil.which("systemd-run"):
         # A tray started from a systemd service stays in that unit's cgroup after the
@@ -394,7 +406,7 @@ def revive(quietly: bool, tag: str = "") -> int:
             _sched_log(f"{tag}tray not running: no tray has recorded a display to launch onto")
         return 0
     try:
-        child = relaunch(env)
+        child = relaunch(env, background=True)
     except (UpdateError, OSError) as exc:
         _sched_log(f"{tag}tray not running: launch failed: {exc}")
         return 1
@@ -467,7 +479,7 @@ def run_scheduled() -> int:
     pid = SingleInstance.running_pid()
     if pid:
         try:
-            child = relaunch(_display_env_of(pid))
+            child = relaunch(_display_env_of(pid), background=True)
         except (UpdateError, OSError, subprocess.TimeoutExpired) as exc:
             # relaunch() re-raises OSError (a read-only/full XDG_STATE_HOME on the
             # log open, a missing bash) as UpdateError. The update itself already

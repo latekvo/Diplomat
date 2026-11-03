@@ -1,9 +1,10 @@
-"""Tray applet entry point: QSystemTrayIcon + the popup Panel.
+"""GUI entry point: the main window (``Panel``), the app lifecycle, and a tray icon.
 
-Universal Linux tray via Qt6's StatusNotifierItem/XEmbed support — works under
-XFCE (notification-area / status-notifier plugin), KDE, and GNOME (with an
-AppIndicator extension). The heavy fetch runs on a worker thread; an idle timer
-auto-refreshes so counts are fresh the moment the wrench is clicked.
+Closing the window hides it and the app keeps working in the background; quitting
+is explicit. The tray icon (Qt6's StatusNotifierItem/XEmbed, wherever the desktop
+hosts one) reopens the window and carries the notifications. The heavy fetch runs
+on a worker thread; an idle timer auto-refreshes so counts are fresh whenever the
+window is opened.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import sys
 import threading
 
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QAction, QCursor, QIcon
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QMenu,
@@ -31,9 +32,9 @@ from .singleton import SingleInstance
 from .widgets import glyph_icon
 
 
-def _wrench_icon() -> QIcon:
-    """The tray icon: a monochrome wrench glyph, ink-centred and tinted to match
-    the panel header (matching the macOS SF-Symbol look, never a colour-emoji)."""
+def _app_icon() -> QIcon:
+    """The window and tray icon: a monochrome wrench glyph, ink-centred and tinted
+    to match the header (matching the macOS SF-Symbol look, never a colour-emoji)."""
     return glyph_icon(glyphs.G_APP, 64, "#0A84FF")
 
 
@@ -91,6 +92,7 @@ class DiplomatApp:
         self.app.setQuitOnLastWindowClosed(False)
         self.app.setApplicationName("Diplomat")
         self.app.setOrganizationName("diplomat")
+        self.app.setWindowIcon(_app_icon())
 
         self.store = Store()
         self.panel = Panel(self.store)
@@ -101,15 +103,15 @@ class DiplomatApp:
 
         self._build_tray()
 
-        # Auto-refresh, independent of whether the panel is open.
+        # Auto-refresh, independent of whether the window is open.
         self.timer = QTimer()
         self.timer.setInterval(int(auto_refresh_secs() * 1000))
         self.timer.timeout.connect(self.trigger_refresh)
         self.timer.start()
 
-        # PR auto-fix monitor: poll on a background cadence, independent of the panel
+        # PR auto-fix monitor: poll on a background cadence, independent of the window
         # (matches the macOS monitor). It polls with the monitors switched off too —
-        # what they find is then queued for the panel rather than started.
+        # what they find is then queued rather than started.
         self.autofix_timer = QTimer()
         self.autofix_timer.setInterval(int(autofix_poll_secs() * 1000))
         self.autofix_timer.timeout.connect(self.store.run_autofix_poll_async)
@@ -160,23 +162,22 @@ class DiplomatApp:
         self.store.publish_spawn_terminal()
 
         # Join the LAN mesh if the user opted in, so duty coordination is live the
-        # moment the panel opens; with it off, stop a node left running.
+        # moment the window opens; with it off, stop a node left running.
         self.store.settle_mesh_on_launch()
 
         # Optional prefill (also used for manual UI checks).
         prefill = os.environ.get("DIPLOMAT_PREFILL")
         if prefill:
             self.panel.search.setText(prefill)
-            QTimer.singleShot(150, self.show_panel)
 
     # MARK: tray
 
     def _build_tray(self) -> None:
-        self.tray = QSystemTrayIcon(_wrench_icon())
+        self.tray = QSystemTrayIcon(_app_icon())
         self.tray.setToolTip("Diplomat")
         menu = QMenu()
         act_open = QAction("Open", menu)
-        act_open.triggered.connect(self.show_panel)
+        act_open.triggered.connect(self.show_window)
         act_refresh = QAction("Refresh", menu)
         act_refresh.triggered.connect(self.trigger_refresh)
         act_quit = QAction("Quit", menu)
@@ -196,7 +197,7 @@ class DiplomatApp:
             QSystemTrayIcon.ActivationReason.Trigger,
             QSystemTrayIcon.ActivationReason.MiddleClick,
         ):
-            self.toggle_panel()
+            self.show_window()
 
     def _notify_comms(self, title: str, body: str) -> None:
         self.tray.showMessage(title, body, QSystemTrayIcon.MessageIcon.Information, 8000)
@@ -208,30 +209,14 @@ class DiplomatApp:
         self.store.refresh_comms_feed()
         self.store.comms_changed.emit()
 
-    # MARK: panel show/hide
+    # MARK: window
 
-    def toggle_panel(self) -> None:
-        if self.panel.isVisible():
-            self.panel.hide()
-        else:
-            self.show_panel()
-
-    def show_panel(self) -> None:
-        self._position_panel()
+    def show_window(self) -> None:
+        if self.panel.isMinimized():
+            self.panel.showNormal()
         self.panel.show()
         self.panel.raise_()
         self.panel.activateWindow()
-
-    def _position_panel(self) -> None:
-        screen = self.app.primaryScreen().availableGeometry()
-        pos = QCursor.pos()
-        w, h = self.panel.width(), self.panel.height()
-        x = min(max(pos.x() - w // 2, screen.left()), screen.right() - w)
-        # Prefer opening upward from the cursor (panel usually at screen bottom).
-        y = pos.y() - h
-        if y < screen.top():
-            y = min(pos.y(), screen.bottom() - h)
-        self.panel.move(x, y)
 
     # MARK: data
 
@@ -246,7 +231,10 @@ class DiplomatApp:
         box = QMessageBox(self.panel if self.panel.isVisible() else None)
         box.setWindowTitle("Quit Diplomat?")
         box.setText("Quit Diplomat?")
-        box.setInformativeText("The tray wrench disappears until you launch it again.")
+        box.setInformativeText(
+            "Polling, the monitors and automatic agent dispatch stop until Diplomat is "
+            "launched again, by you or at your next login. Agents already running keep "
+            "going. Closing the window instead keeps Diplomat working in the background.")
         box.setIcon(QMessageBox.Icon.Warning)
         box.setStandardButtons(QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes)
         box.setDefaultButton(QMessageBox.StandardButton.Cancel)
@@ -261,13 +249,14 @@ class DiplomatApp:
         if self._quitting:
             return
         self._quitting = True
-        # Only the operator gets here (the Quit button, Ctrl-C): a newer instance
-        # hands over with SIGTERM, which never runs this.
+        # Only the operator gets here (Quit, Ctrl-C): a newer instance hands over
+        # with SIGTERM, which never runs this.
         selfupdate.mark_operator_quit()
         SingleInstance.release()
         self.tray.hide()
-        # Before the widgets a worker is about to signal go away. The tray is already
-        # hidden, so the pause this can cost is spent on a window nobody can see.
+        self.panel.hide()
+        # Before the widgets a worker is about to signal go away. The window and the
+        # tray icon are already hidden, so the pause this can cost goes unseen.
         self.store.wait_for_background()
         self.app.quit()
 
@@ -282,11 +271,12 @@ class DiplomatApp:
 
 
 def run_app() -> int:
+    # Taken out of the environment so nothing this instance starts inherits it.
+    background = os.environ.pop(selfupdate.BACKGROUND_ENV, None) == "1"
     SingleInstance.acquire_newest_wins()
     selfupdate.clear_operator_quit()
     selfupdate.record_display_env()
     app = DiplomatApp()
-    if not QSystemTrayIcon.isSystemTrayAvailable():
-        # No tray host — still usable: just show the panel.
-        app.show_panel()
+    if not background:
+        app.show_window()
     return app.exec()
