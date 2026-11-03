@@ -318,7 +318,9 @@ extension Store {
                                                  away: away, toggles: toggles, settings: settings))
             }
         }
-        if !replies.isEmpty { replyInSlack(replies) }
+        // A later ping of this tick can get an earlier one's sender banned.
+        let due = replies.filter { !bannedNow.contains($0.message.userID) }
+        if !due.isEmpty { replyInSlack(due) }
         for m in result.pings where commsNotify && commsEnabled && !bannedNow.contains(m.userID) {
             Notifier.post(m)
         }

@@ -83,6 +83,8 @@ enum CommsTest {
                                author: "ivan", isOpen: true, state: "OPEN"),
             90094: CommsTarget(number: 90094, url: "https://github.com/o/r/pull/90094",
                                author: "ivan", isOpen: true, state: "OPEN"),
+            90097: CommsTarget(number: 90097, url: "https://github.com/o/r/pull/90097",
+                               author: "ivan", isOpen: true, state: "OPEN"),
         ]
         var lookups: [Int] = []
         // Run while a lookup is suspended, as a dispatch elsewhere on the main actor would.
@@ -1243,6 +1245,15 @@ enum CommsTest {
               + "answered (\(tally()))",
               slack.posts.count == 3 && answers.ids.isEmpty
                 && store.bannedAuthors.contains { $0.slackUserID == "U0EVE0001" })
+        let askFirst = ask(.review, 90097, user: "U0MAL0001", name: "mal")
+        let caughtAfter = inChannel("U0MAL0001", "mal", CommsDecision(
+            action: .injection, number: 0, summary: "", reason: "r", evidence: "send pizza on #general"))
+        await apply([askFirst, caughtAfter])
+        await settled()
+        check("an ask whose sender a later ping of the same tick gets banned is queued but not "
+              + "acknowledged (\(tally()))",
+              outcome(askFirst).hasPrefix("queued") && slack.posts.count == 3
+                && store.bannedAuthors.contains { $0.slackUserID == "U0MAL0001" })
         let bannedAsk = ask(.review, 90094, user: "U0EVE0001", name: "eve")
         let bannedQuestion = ask(.question, 0, user: "U0EVE0001", name: "eve")
         await apply([bannedAsk, bannedQuestion])
