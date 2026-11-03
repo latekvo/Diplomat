@@ -81,8 +81,8 @@ enum Render {
     /// Snapshot a root view in a live NSWindow (via `cacheDisplay`, no screen-recording
     /// permission needed) instead of `ImageRenderer`. Two callers:
     ///
-    /// `DIPLOMAT_RENDER=app` passes the REAL window root at the narrowest width the app
-    /// window allows — the only mode that draws window-level AppKit chrome, notably the
+    /// `DIPLOMAT_RENDER=app` passes the REAL window root at the width that shows the whole
+    /// panel — the only mode that draws window-level AppKit chrome, notably the
     /// legacy ("Show scroll bars: Always") vertical scroller, which lives INSIDE the
     /// window; the snapshot must show the content's 10pt left margin intact WITH the
     /// scroller. `DIPLOMAT_RENDER_HEIGHT` sets the window's height (default 800).
@@ -123,7 +123,7 @@ enum Render {
     /// The app window's size in the `app` and `live` modes.
     private static var appWindowSize: NSSize {
         let h = ProcessInfo.processInfo.environment["DIPLOMAT_RENDER_HEIGHT"].flatMap(Double.init) ?? 800
-        return NSSize(width: MainRoot.minWindowWidth, height: h)
+        return NSSize(width: MainRoot.fullWidth, height: h)
     }
 
     /// `DIPLOMAT_RENDER=live` — the same real window root as `app`, but **on-screen

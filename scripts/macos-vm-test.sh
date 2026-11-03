@@ -70,7 +70,8 @@ VNC_HOST="$(sed -E 's|.*@([^:]+):.*|\1|' <<<"$VNC_URL")"
 VNC_PORT="$(sed -E 's|.*:([0-9]+)/?$|\1|' <<<"$VNC_URL")"
 
 g() { "$TART" exec "$VM" /bin/bash -lc "$*"; }
-vnc() { "$CACHE/venv/bin/vncdo" -s "$VNC_HOST::$VNC_PORT" -p "$VNC_PASS" "$@"; }
+# The VM's VNC server reads Alt as ⌘: `vnc key alt-w` is ⌘W.
+vnc() { "$CACHE/venv/bin/vncdo" -s "$VNC_HOST::$VNC_PORT" -p "$VNC_PASS" "$@" 2>/dev/null; }
 shot() { vnc capture "$OUT/$1.png"; }
 # Click the first line of text containing $2 on a fresh screenshot named $1.
 click_text() {
@@ -99,10 +100,10 @@ g "pkill -x Diplomat; launchctl bootout gui/\$(id -u)/com.ignacy.diplomat 2>/dev
    defaults write com.ignacy.diplomat didTriggerTerminalAutomation -bool true"
 
 pid() { g "pgrep -x Diplomat | head -1" 2>/dev/null || true; }
-front() { g 'lsappinfo info -only name "$(lsappinfo front)"' | sed -E 's/.*"name"="([^"]*)".*/\1/'; }
+front() { g 'lsappinfo info -only name "$(lsappinfo front)"' | sed -E 's/.*="([^"]*)".*/\1/'; }
 app_type() { g "lsappinfo info -only ApplicationType Diplomat" | sed -E 's/.*="([^"]*)".*/\1/'; }
-# Diplomat's on-screen windows at least as wide as the panel.
-windows() { g "~/winlist" | awk '$2 == "Diplomat" { split($3, s, "x"); if (s[1] >= 1100) print }'; }
+# Diplomat's on-screen windows, leaving out an alert's.
+windows() { g "~/winlist" | awk '$2 == "Diplomat" { split($3, s, "x"); if (s[1] >= 480) print }'; }
 has_window() { [ -n "$(windows)" ]; }
 no_window() { [ -z "$(windows)" ]; }
 front_is() { [ "$(front)" = "$1" ]; }
@@ -113,10 +114,13 @@ gone() { [ -z "$(pid)" ]; }
 same_pid() { [ "$(pid)" = "$1" ]; }
 quit_marked() { g "test -e ~/.diplomat/operator-quit"; }
 
+echo "== the window self-test, on this VM's narrower screen"
+check "DIPLOMAT_WINDOW_TEST passes" g "DIPLOMAT_WINDOW_TEST=1 $BIN"
+
 echo "== an attended launch opens the window and takes focus"
 check "Finder is frontmost to begin with" finder_front
 g "open -n $APP"
-check "a window as wide as the panel comes up" within 20 has_window
+check "a window comes up" within 20 has_window
 check "Diplomat is frontmost" within 5 front_is Diplomat
 check "it is a regular app, with a Dock icon" [ "$(app_type)" = "Foreground" ]
 shot 1-attended
@@ -124,9 +128,9 @@ check "the main panel shows, not Settings" bash -c '! "$0" "$1" "AGENT RUNNER" >
 FIRST="$(pid)"
 
 echo "== the menu bar: Settings, close, reopen"
-vnc key super-comma
+vnc key alt-,
 check "⌘, opens Settings in the window" within 5 settings_shown 2-settings
-vnc key super-w
+vnc key alt-w
 check "⌘W closes the window" within 5 no_window
 check "…and the app keeps running" same_pid "$FIRST"
 shot 3-closed
@@ -134,20 +138,20 @@ g "open $APP"
 check "launching the running app brings the window back" within 10 has_window
 check "…in the same process" same_pid "$FIRST"
 check "…frontmost" within 5 front_is Diplomat
-vnc key super-w
+vnc key alt-w
 check "closed again" within 5 no_window
-vnc key super-0
+vnc key alt-0
 check "Window ▸ Diplomat (⌘0) brings it back too" within 5 has_window
 
 echo "== quitting asks first"
-vnc key super-q
+vnc key alt-q
 sleep 1
 shot 4-quit-alert
 check "⌘Q asks before quitting" "$CACHE/ocr" "$OUT/4-quit-alert.png" "Quit Diplomat?"
 vnc key enter
 sleep 1
 check "Return cancels, the app stays" same_pid "$FIRST"
-vnc key super-q
+vnc key alt-q
 sleep 1
 check "the Quit button is there to click" click_text 4-quit-alert-2 "=Quit"
 check "Quit quits" within 10 gone
@@ -155,7 +159,7 @@ check "…and marks the quit deliberate, so nothing revives it" quit_marked
 
 echo "== an unattended launch takes no focus and opens no window"
 check "Finder is frontmost" finder_front
-g "cat > ~/Library/LaunchAgents/com.ignacy.diplomat.plist <<PL
+g "mkdir -p ~/Library/LaunchAgents && cat > ~/Library/LaunchAgents/com.ignacy.diplomat.plist <<PL
 <?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
 <plist version=\"1.0\"><dict>
@@ -191,6 +195,7 @@ check "Finder stays frontmost" front_is Finder
 shot 6-watchdog
 g "open $APP"
 check "launching it opens the window" within 10 has_window
+check "…frontmost" within 5 front_is Diplomat
 
 echo
 if [ "$FAILED" -eq 0 ]; then echo "vm: all passed  (screenshots: $OUT)"; else echo "vm: FAILED $FAILED  (screenshots: $OUT)"; fi

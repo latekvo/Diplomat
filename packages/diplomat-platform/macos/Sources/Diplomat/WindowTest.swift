@@ -40,9 +40,18 @@ enum WindowTest {
         check("titled Diplomat", w.title == "Diplomat", "got \(w.title)")
         check("not up until shown", !w.isVisible)
         check("an ordinary window level, not floating", w.level == .normal, "\(w.level)")
-        check("never narrower than the panel and a legacy scroller",
-              w.contentMinSize.width >= MainRoot.minWindowWidth,
-              "min \(w.contentMinSize.width) < \(MainRoot.minWindowWidth)")
+        if let screen = NSScreen.main?.visibleFrame {
+            check("the first frame fits the screen",
+                  w.frame.width <= screen.width && w.frame.height <= screen.height,
+                  "\(w.frame.size) on \(screen.size)")
+            check("…and shows the whole panel where the screen has room",
+                  screen.width < MainRoot.fullWidth
+                      || w.contentRect(forFrameRect: w.frame).width >= MainRoot.fullWidth,
+                  "\(w.frame.size)")
+        }
+        check("a narrower window is allowed, the panel scrolling sideways",
+              w.contentMinSize.width < MainRoot.width && w.contentMinSize.width > 0,
+              "min \(w.contentMinSize.width)")
         check("a close keeps it for the next open", !w.isReleasedWhenClosed)
         w.close()
         check("a closed window still has the panel", w.contentViewController != nil && !w.isVisible)

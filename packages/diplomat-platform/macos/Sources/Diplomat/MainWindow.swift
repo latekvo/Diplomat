@@ -30,19 +30,20 @@ final class MainWindow {
         let hosting = NSHostingController(rootView: MainRoot().environmentObject(store))
         // The window's size is the operator's, not the panel's ideal one.
         hosting.sizingOptions = []
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: MainRoot.minWindowWidth, height: 800),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: MainRoot.fullWidth, height: 800),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
         window.contentViewController = hosting
         window.title = "Diplomat"
         window.isReleasedWhenClosed = false
-        window.contentMinSize = NSSize(width: MainRoot.minWindowWidth, height: MainRoot.minHeight)
-        if !window.setFrameUsingName(Self.frameName) {
-            let visible = NSScreen.main?.visibleFrame.height ?? 900
-            window.setContentSize(NSSize(width: MainRoot.minWindowWidth, height: min(visible - 40, 1000)))
+        window.contentMinSize = NSSize(width: MainRoot.minWidth, height: MainRoot.minHeight)
+        // A headless instance neither reads nor records the live app's saved frame.
+        if Headless.active || !window.setFrameUsingName(Self.frameName) {
+            let visible = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
+            window.setContentSize(NSSize(width: min(MainRoot.fullWidth, visible.width),
+                                         height: min(visible.height - 40, 1000)))
             window.center()
         }
-        // A headless instance shares the live app's defaults domain and persists nothing.
         if !Headless.active { window.setFrameAutosaveName(Self.frameName) }
     }
 
@@ -58,7 +59,7 @@ final class MainWindow {
 }
 
 /// The window's content: the two-column panel at its fixed width, centred, scrolling
-/// when the window is shorter than it.
+/// when the window is shorter than it, and sideways when narrower.
 struct MainRoot: View {
     /// Two columns: the left holds the monitoring lists (status, bans, sessions,
     /// devices, activity), the right every interactive surface (search, tool grid,
@@ -66,17 +67,26 @@ struct MainRoot: View {
     static let width: CGFloat = 1120
     /// Width of each column: (width − 12pt column gap − 2×10pt outer padding) / 2.
     static let columnWidth: CGFloat = (width - 12 - 20) / 2
-    /// A legacy ("Show scroll bars: Always") scroller sits inside the window, so the
-    /// narrowest window leaves it a lane beside the panel instead of clipping it.
-    static let minWindowWidth: CGFloat = width
+    /// The window width that shows the whole panel. A legacy ("Show scroll bars:
+    /// Always") scroller sits inside the window, so this leaves it a lane beside the panel.
+    static let fullWidth: CGFloat = width
         + NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+    static let minWidth: CGFloat = 480
     static let minHeight: CGFloat = 360
 
     var body: some View {
-        ScrollView {
-            ContentView()
-                .frame(width: MainRoot.width)
-                .frame(maxWidth: .infinity)
+        GeometryReader { geo in
+            if geo.size.width < MainRoot.fullWidth {
+                ScrollView([.vertical, .horizontal]) {
+                    ContentView().frame(width: MainRoot.width)
+                }
+            } else {
+                ScrollView {
+                    ContentView()
+                        .frame(width: MainRoot.width)
+                        .frame(maxWidth: .infinity)
+                }
+            }
         }
     }
 }

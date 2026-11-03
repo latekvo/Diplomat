@@ -186,8 +186,9 @@ enum SelfUpdate {
     /// headless marker removed: launched by the 06:00 updater or the watchdog with its
     /// marker intact, the instance would be another headless job, not the GUI.
     ///
-    /// `background` is an unattended launch: `open -g` leaves the frontmost app in front
-    /// and `DIPLOMAT_BACKGROUND=1` tells the instance to put no window up.
+    /// `background` is an unattended launch: `DIPLOMAT_BACKGROUND=1` tells the instance to
+    /// put no window up, and `open -g -j` starts it hidden so the frontmost app keeps focus
+    /// (with `-g` alone the instance still ends up the active app).
     ///
     /// The default `app` is beside the macOS package, where `build-app.sh` writes it.
     /// `lister` is one read of `app`'s instances; `RelaunchTest` swaps in a lossier one.
@@ -202,7 +203,7 @@ enum SelfUpdate {
         let requested = Date()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        p.arguments = (background ? ["-n", "-g"] : ["-n"]) + [app.path]
+        p.arguments = (background ? ["-n", "-g", "-j"] : ["-n"]) + [app.path]
         var env = Headless.stripped(ProcessInfo.processInfo.environment)
         if background { env[LaunchMode.backgroundVar] = "1" }
         p.environment = env
