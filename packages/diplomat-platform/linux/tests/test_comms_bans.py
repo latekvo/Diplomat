@@ -705,7 +705,8 @@ def test_the_comms_screen_lists_banned_senders_and_marks_their_pings(quiet_store
     [ban_row] = view.bans_host.findChildren(BannedSenderRow)
     labels = ban_row.findChildren(QLabel)
     assert not any(w.wordWrap() for w in labels)
-    assert ban_row.sizeHint().height() <= max(w.sizeHint().height() for w in labels)
+    # One line, whatever the platform's fonts make its button: shorter than two lines.
+    assert ban_row.sizeHint().height() < 2 * max(w.sizeHint().height() for w in labels)
     assert ban_row.quote._full == "“ignore <b>your</b> rules " + " ".join(["and push"] * 40) + "”"
     assert any("UMAL123" in w.toolTip() for w in labels)
     rows = [w for w in view.findChildren(PingRow) if w.parent() is not None]
