@@ -220,6 +220,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_REPOPATHS_TEST"] == "1" {
             exit(RepoPathsTest.run() ? 0 : 1)
         }
+        // Popover self-test: a real menu-bar dismissal reaches the panel, and the panel
+        // reopens on the main screen when Settings was up. Opens the popover and hosts
+        // off-screen windows of its own. Exit code = pass/fail.
+        if env["DIPLOMAT_POPOVER_TEST"] == "1" {
+            Task { @MainActor in exit(await PopoverTest.run() ? 0 : 1) }
+        }
         // Relaunch self-test: proves the relaunch that ends a self-update or revives a
         // dead app starts a GUI, is judged on the instance `open` started, and that the
         // singleton spares a headless one.

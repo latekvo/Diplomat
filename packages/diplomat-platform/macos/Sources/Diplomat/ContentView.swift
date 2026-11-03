@@ -32,6 +32,9 @@ struct PopoverRoot: View {
     /// live because it can be flipped in System Settings while we run.
     @State private var scrollerStyle = NSScroller.preferredScrollerStyle
 
+    /// The screen the panel opens on (`DIPLOMAT_POPOVER_TEST` opens it elsewhere).
+    var screen: ContentView.PanelScreen = .main
+
     /// Cap the popover at the display's usable height, less a small margin so it never
     /// kisses the menu bar or the Dock. Content beyond this scrolls.
     /// `DIPLOMAT_POPOVER_CAP` forces a small cap so the scrolling state is
@@ -54,7 +57,8 @@ struct PopoverRoot: View {
 
     var body: some View {
         ScrollView {
-            ContentView()
+            ContentView(showSettings: screen == .settings, showTelemetry: screen == .telemetry,
+                        showDevices: screen == .devices, showComms: screen == .comms)
                 .background(
                     GeometryReader { geo in
                         Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
