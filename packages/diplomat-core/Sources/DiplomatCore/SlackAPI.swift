@@ -251,7 +251,7 @@ public enum CommsMatch {
     /// Case-insensitive, with no letter or digit either side of `word`. A `*` in `word`
     /// stands for any run of letters and digits, as in Slack's own search: `argent*`
     /// matches "Argent" and "argentowi", `ignac*` "Ignacy".
-    static func containsWord(_ text: String, _ word: String) -> Bool {
+    public static func containsWord(_ text: String, _ word: String) -> Bool {
         let w = word.trimmingCharacters(in: .whitespaces)
         guard !w.isEmpty else { return false }
         if w.contains("*") { return containsGlob(text, w) }

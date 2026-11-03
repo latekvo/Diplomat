@@ -115,8 +115,6 @@ public enum CommsReplier {
                              answer: ((CommsAnswerer.Question) -> CommsAnswer)? = nil)
         -> CommsReplyResult {
         guard let assets = try? CoreAssets.comms(), r.toggles.replies,
-              r.decision.action != .injection,
-              !r.decision.reason.hasPrefix(CommsWatch.bannedPrefix),
               !r.settings.bannedSenders.contains(r.message.userID),
               let to = destination(for: r.message) else { return CommsReplyResult() }
         let items = CommsLog.fold(CommsLog.read(in: dir))
@@ -244,7 +242,7 @@ public enum CommsReplier {
     /// turn into a mention, a broadcast or a link the project's own prefixes do not start.
     public static func sanitize(_ text: String, settings: CommsSettings,
                                 assets: CoreAssets.CommsModel) -> String {
-        var s = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        var s = text
         func sub(_ pattern: String, _ template: String) {
             guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
             else { return }
@@ -269,7 +267,7 @@ public enum CommsReplier {
                 if !allowed { s.replaceSubrange(r, with: "[link removed]") }
             }
         }
-        s = s.trimmingCharacters(in: .whitespaces)
+        s = s.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         let cap = assets.answer.maxChars
         guard s.count > cap else { return s }
         let cut = s.prefix(cap - 1)
