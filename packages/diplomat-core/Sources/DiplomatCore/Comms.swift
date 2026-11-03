@@ -19,11 +19,15 @@ public struct CommsIdentity: Codable, Equatable, Sendable {
     /// The workspace as `SlackProfile.workspace` names it, not a Slack team id.
     public var teamID: String
     public var handle: String
+    /// The first word of the profile's real name, else its display name: how a reply
+    /// names the operator. Nil for an identity recorded before it was read.
+    public var name: String?
 
-    public init(userID: String, teamID: String, handle: String) {
+    public init(userID: String, teamID: String, handle: String, name: String? = nil) {
         self.userID = userID
         self.teamID = teamID
         self.handle = handle
+        self.name = name
     }
 }
 
@@ -42,10 +46,15 @@ public struct CommsMessage: Codable, Equatable, Sendable {
     public var permalink: String
     public var reasons: [CommsReason]
     public var keyword: String?
+    /// From the sender's profile: what a reply's answer is written for (`CommsAnswerer`)
+    /// and the zone its times are given in. Nil when not read.
+    public var senderTitle: String?
+    public var senderTimezone: String?
 
     public init(id: String, channelID: String, channelName: String, isDM: Bool,
                 userID: String, userName: String, teamID: String, text: String, ts: String,
-                permalink: String, reasons: [CommsReason], keyword: String? = nil) {
+                permalink: String, reasons: [CommsReason], keyword: String? = nil,
+                senderTitle: String? = nil, senderTimezone: String? = nil) {
         self.id = id
         self.channelID = channelID
         self.channelName = channelName
@@ -58,6 +67,8 @@ public struct CommsMessage: Codable, Equatable, Sendable {
         self.permalink = permalink
         self.reasons = reasons
         self.keyword = keyword
+        self.senderTitle = senderTitle
+        self.senderTimezone = senderTimezone
     }
 
     public var sender: String { userName.isEmpty ? userID : userName }
@@ -70,13 +81,16 @@ public enum CommsAction: String, Codable, CaseIterable, Sendable {
     case none, bump, review
     case fixIssue = "fix_issue"
     case investigate
+    /// A question the project's documentation could answer: answered in Slack while the
+    /// operator is away (`CommsReplier`), a ping otherwise.
+    case question
     /// A hijack attempt: the sender is banned (`CommsBan`).
     case injection
 
     public var needsNumber: Bool {
         switch self {
-        case .bump, .review, .fixIssue:          return true
-        case .none, .investigate, .injection:    return false
+        case .bump, .review, .fixIssue:                     return true
+        case .none, .investigate, .question, .injection:    return false
         }
     }
 }
@@ -236,7 +250,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
 
     private struct Slot: Decodable { let message: Int }
 
-    private enum AnswerObject {
+    enum AnswerObject {
         /// Nil for a `result` text that is not a JSON object.
         case object([String: Any]?)
         case failed(CommsDecision)
@@ -244,7 +258,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
 
     /// The answer object in `claude`'s output; a bare object counts when it has `key`, the
     /// shape a stub classifier prints.
-    private static func answerObject(in output: Data, key: String) -> AnswerObject? {
+    static func answerObject(in output: Data, key: String) -> AnswerObject? {
         guard let root = try? JSONSerialization.jsonObject(with: output) else { return nil }
         let result: [String: Any]?
         if let events = root as? [Any] {
@@ -391,26 +405,30 @@ public struct CommsSettings: Codable, Equatable, Sendable {
 }
 
 /// Per-kind switches (`requests` covers reviews and issue fixes); off turns that kind
-/// into a ping alone.
+/// into a ping alone. `replies` is whether Comms writes back in Slack (`CommsReplier`).
 public struct CommsToggles: Codable, Equatable, Sendable {
     public var requests: Bool
     public var bumps: Bool
     public var investigations: Bool
+    public var replies: Bool
 
-    public init(requests: Bool = true, bumps: Bool = true, investigations: Bool = true) {
+    public init(requests: Bool = true, bumps: Bool = true, investigations: Bool = true,
+                replies: Bool = true) {
         self.requests = requests
         self.bumps = bumps
         self.investigations = investigations
+        self.replies = replies
     }
 
-    private enum CodingKeys: String, CodingKey { case requests, bumps, investigations }
+    private enum CodingKeys: String, CodingKey { case requests, bumps, investigations, replies }
 
     /// A missing switch reads as on.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(requests: try c.decodeIfPresent(Bool.self, forKey: .requests) ?? true,
                   bumps: try c.decodeIfPresent(Bool.self, forKey: .bumps) ?? true,
-                  investigations: try c.decodeIfPresent(Bool.self, forKey: .investigations) ?? true)
+                  investigations: try c.decodeIfPresent(Bool.self, forKey: .investigations) ?? true,
+                  replies: try c.decodeIfPresent(Bool.self, forKey: .replies) ?? true)
     }
 }
 
@@ -481,15 +499,15 @@ public enum CommsPlan {
                               toggles: CommsToggles, settings: CommsSettings = CommsSettings(),
                               reportDir: URL) -> CommsEffect {
         switch decision.action {
-        case .none:        return .none
-        case .review:      return toggles.requests ? .review(decision.number) : .none
-        case .fixIssue:    return toggles.requests ? .fixIssue(decision.number) : .none
-        case .bump:        return toggles.bumps ? .bump(decision.number) : .none
+        case .none, .question: return .none
+        case .review:          return toggles.requests ? .review(decision.number) : .none
+        case .fixIssue:        return toggles.requests ? .fixIssue(decision.number) : .none
+        case .bump:            return toggles.bumps ? .bump(decision.number) : .none
         case .investigate:
             guard toggles.investigations else { return .none }
             return .investigate(InvestigateConfig(message: message, decision: decision,
                                                   settings: settings, reportDir: reportDir))
-        case .injection:   return .ban(CommsBan(message: message, decision: decision))
+        case .injection:       return .ban(CommsBan(message: message, decision: decision))
         }
     }
 }

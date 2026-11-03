@@ -17,6 +17,10 @@ import Foundation
 ///   comms-feed    [--limit N]  stdout = the folded [CommsItem], newest first (default 200).
 ///   comms-effect  stdin = {"decision", "message", "toggles", "settings"?}; stdout = the
 ///                 CommsEffect.
+///   comms-reply   stdin = CommsReplyRequest ({"message", "decision", "queued"?, "away",
+///                 "toggles", "settings"}); posts the reply that is due, if any, under
+///                 Claude Code's Slack login; stdout = {"outcome": "sent" | "failed: …" |
+///                 "skipped: …" | null, "text": "…" | null}.
 ///
 /// The tick and the auth reach Slack under Claude Code's own Slack login (`SlackToken`),
 /// which `DIPLOMAT_SLACK_TOKEN` overrides. The tick, the feed and the effect read and write
@@ -89,6 +93,10 @@ enum CommsCommand {
                                   toggles: req.toggles ?? CommsToggles(),
                                   settings: req.settings ?? CommsSettings(),
                                   reportDir: CommsLog.reportsDir()))
+    }
+
+    static func reply(_ input: Data) {
+        emitJSON(CommsReplier.reply(decode(CommsReplyRequest.self, input, "CommsReplyRequest")))
     }
 
     static func investigatePrompt(_ input: Data) -> String {

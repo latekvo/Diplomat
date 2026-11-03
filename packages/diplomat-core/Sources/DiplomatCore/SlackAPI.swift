@@ -47,14 +47,24 @@ public struct SlackProfile: Equatable, Sendable {
     public var organization: String
     public var email: String
     public var isBot: Bool
+    public var realName: String
+    public var displayName: String
+    public var title: String
+    /// An IANA zone, e.g. `Europe/Warsaw`.
+    public var timezone: String
 
     public init(userID: String, username: String = "", organization: String = "",
-                email: String = "", isBot: Bool = false) {
+                email: String = "", isBot: Bool = false, realName: String = "",
+                displayName: String = "", title: String = "", timezone: String = "") {
         self.userID = userID
         self.username = username
         self.organization = organization
         self.email = email
         self.isBot = isBot
+        self.realName = realName
+        self.displayName = displayName
+        self.title = title
+        self.timezone = timezone
     }
 
     /// The user's workspace as far as a profile tells: its organization's name, or the
@@ -69,7 +79,10 @@ public struct SlackProfile: Equatable, Sendable {
     }
 
     public var identity: CommsIdentity {
-        CommsIdentity(userID: userID, teamID: workspace, handle: username)
+        let first = realName.split(separator: " ").first.map(String.init) ?? ""
+        let name = first.isEmpty ? displayName : first
+        return CommsIdentity(userID: userID, teamID: workspace, handle: username,
+                             name: name.isEmpty ? nil : name)
     }
 
     /// The tool prints one `Key: value` line per field.
@@ -85,7 +98,10 @@ public struct SlackProfile: Equatable, Sendable {
         guard let id = fields["User ID"], !id.isEmpty else { return nil }
         return SlackProfile(userID: id, username: fields["Username"] ?? "",
                             organization: fields["Organization Name"] ?? "",
-                            email: fields["Email"] ?? "", isBot: fields["Bot"] == "Yes")
+                            email: fields["Email"] ?? "", isBot: fields["Bot"] == "Yes",
+                            realName: fields["Real Name"] ?? "",
+                            displayName: fields["Display Name"] ?? "",
+                            title: fields["Title"] ?? "", timezone: fields["Timezone"] ?? "")
     }
 }
 
@@ -227,13 +243,18 @@ public enum CommsMatch {
                             userID: match.user,
                             userName: sender.username.isEmpty ? match.displayName : sender.username,
                             teamID: sender.workspace, text: match.text, ts: match.ts,
-                            permalink: match.permalink, reasons: reasons, keyword: keyword)
+                            permalink: match.permalink, reasons: reasons, keyword: keyword,
+                            senderTitle: sender.title.isEmpty ? nil : sender.title,
+                            senderTimezone: sender.timezone.isEmpty ? nil : sender.timezone)
     }
 
-    /// Case-insensitive, with no letter or digit either side of `word`.
+    /// Case-insensitive, with no letter or digit either side of `word`. A `*` in `word`
+    /// stands for any run of letters and digits, as in Slack's own search: `argent*`
+    /// matches "Argent" and "argentowi", `ignac*` "Ignacy".
     static func containsWord(_ text: String, _ word: String) -> Bool {
         let w = word.trimmingCharacters(in: .whitespaces)
         guard !w.isEmpty else { return false }
+        if w.contains("*") { return containsGlob(text, w) }
         var from = text.startIndex
         while let r = text.range(of: w, options: [.caseInsensitive], range: from..<text.endIndex) {
             let before = r.lowerBound == text.startIndex ? nil : text[text.index(before: r.lowerBound)]
@@ -243,6 +264,17 @@ public enum CommsMatch {
             from = text.index(after: r.lowerBound)
         }
         return false
+    }
+
+    private static func containsGlob(_ text: String, _ glob: String) -> Bool {
+        let body = glob.split(separator: "*", omittingEmptySubsequences: false)
+            .map { NSRegularExpression.escapedPattern(for: String($0)) }
+            .joined(separator: "[\\p{L}\\p{N}]*")
+        guard glob.contains(where: { $0.isLetter || $0.isNumber }),
+              let re = try? NSRegularExpression(
+                pattern: "(?<![\\p{L}\\p{N}])" + body + "(?![\\p{L}\\p{N}])",
+                options: [.caseInsensitive]) else { return false }
+        return re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 }
 
@@ -491,6 +523,21 @@ public struct SlackAPI {
         let obj = try toolJSON("slack_search_public_and_private", args)
         guard let text = obj["results"] as? String else { throw SlackError.badResponse }
         return text
+    }
+
+    /// Posts `text` as the token's own user into `channel`, in the thread `threadTS` when
+    /// given; never broadcast to the channel. Only `CommsReplier` calls it, with the
+    /// conversation the message being answered was written in.
+    public func post(channel: String, threadTS: String?, text: String) throws {
+        var args: [String: Any] = ["channel_id": channel, "message": text,
+                                   "reply_broadcast": false, "unfurl_app_links": false]
+        if let threadTS { args["thread_ts"] = threadTS }
+        try open()
+        let result = try rpc("tools/call", ["name": "slack_send_message", "arguments": args])
+        let text = ((result?["content"] as? [Any])?.first as? [String: Any])?["text"] as? String
+        if result?["isError"] as? Bool == true {
+            throw SlackError.api(text ?? "slack_send_message failed")
+        }
     }
 
     /// A tool's one text block, which Slack's tools fill with a JSON object.
