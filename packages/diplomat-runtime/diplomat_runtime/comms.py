@@ -137,10 +137,11 @@ def tick_timeout() -> float:
 
 
 def reply_timeout() -> float:
-    """``comms-reply``'s own bounds: signing in, the away answer's ``claude`` call, and
-    the post under ``slackBudgetSecs``."""
+    """``comms-reply``'s own bounds: signing in, reading the docs and the away answer's
+    ``claude`` call, and the post under ``slackBudgetSecs``."""
     t = tunables()
-    answer = float((t.get("answer") or {}).get("timeoutSecs", 180))
+    a = t.get("answer") or {}
+    answer = float(a.get("timeoutSecs", 180)) + float((a.get("knowledge") or {}).get("fetchSecs", 90))
     slack = float(t.get("slackBudgetSecs", 120)) + _HTTP_GRACE_SECS
     return _sign_in_secs(t) + _LOGIN_SHELL_SECS + answer + slack + _MARGIN_SECS
 

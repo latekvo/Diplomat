@@ -2586,7 +2586,7 @@ private func knowledgeSmoke() {
     var calls: [[String]] = []
     let tree = "README.md\npackages/docs/docs/features/recording.mdx\npackages/docs/docs/cloud/x.md\n"
         + "packages/docs/docs/img.png\nsrc/main.ts\npackages/skills/skills/a/SKILL.md\n"
-    let fetch: CommsKnowledge.Fetch = { args in
+    let fetch: CommsKnowledge.Fetch = { args, _ in
         calls.append(args)
         if args[1].contains("/git/trees/") { return Data(tree.utf8) }
         return Data("doc of \(args[1].components(separatedBy: "/contents/").last ?? "")".utf8)
@@ -2606,10 +2606,29 @@ private func knowledgeSmoke() {
           "within a day the cache answers")
     check((fileMode(file) & 0o777) == 0o600, "the cache is the owner's alone")
     let stale = CommsKnowledge.load(owner: "o", repo: "r", dir: dir, now: now.addingTimeInterval(2 * 86_400),
-                                    fetch: { _ in nil })
+                                    fetch: { _, _ in nil })
     check(stale == docs, "a failed refresh keeps the stale copy")
-    check(CommsKnowledge.load(owner: "x", repo: "y", dir: dir, now: now, fetch: { _ in nil }) == "",
+    check(CommsKnowledge.load(owner: "x", repo: "y", dir: dir, now: now, fetch: { _, _ in nil }) == "",
           "with nothing fetched and nothing cached there is no documentation")
+    // Each gh call takes 40s of a fake clock; the budget is knowledge.fetchSecs.
+    let budget = (try? CoreAssets.comms())?.answer.knowledge.fetchSecs ?? 0
+    var t = now
+    var given: [Double] = []
+    let slow: CommsKnowledge.Fetch = { args, timeout in
+        given.append(timeout)
+        t = t.addingTimeInterval(40)
+        return fetch(args, timeout)
+    }
+    let slowDir = scratchDir("knowledge-slow")
+    let partial = CommsKnowledge.load(owner: "o", repo: "r", dir: slowDir, now: now, clock: { t }, fetch: slow)
+    check(budget == 90 && partial == "" && given == [30, 30, 10]
+            && !FileManager.default.fileExists(atPath: slowDir.appendingPathComponent("knowledge/o__r.md").path),
+          "a read that outruns fetchSecs is dropped, not cached, each call given what is left: \(given)")
+    t = now
+    given = []
+    check(CommsKnowledge.load(owner: "o", repo: "r", dir: dir, now: now.addingTimeInterval(2 * 86_400),
+                              clock: { t }, fetch: slow) == docs,
+          "…and a stale copy stands in for it")
 }
 
 private func answererSmoke() {

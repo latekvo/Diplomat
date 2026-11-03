@@ -395,10 +395,12 @@ public enum CommsAnswerer {
 /// The project's documentation, as the away answer reads it: the repo's Markdown under
 /// `answer.knowledge.paths`, fetched with `gh` and cached in `<dir>/knowledge`.
 public enum CommsKnowledge {
-    public typealias Fetch = (_ args: [String]) -> Data?
+    /// `gh` with these arguments, given at most `timeout` seconds.
+    public typealias Fetch = (_ args: [String], _ timeout: Double) -> Data?
 
     public static func load(owner: String, repo: String, dir: URL = CommsLog.dir,
-                            now: Date = Date(), fetch: Fetch? = nil) -> String {
+                            now: Date = Date(), clock: () -> Date = Date.init,
+                            fetch: Fetch? = nil) -> String {
         guard let k = (try? CoreAssets.comms())?.answer.knowledge else { return "" }
         let folder = dir.appendingPathComponent("knowledge", isDirectory: true)
         let file = folder.appendingPathComponent("\(owner)__\(repo).md")
@@ -408,7 +410,9 @@ public enum CommsKnowledge {
                as? Date, now.timeIntervalSince(at) < k.refreshHours * 3600 {
             return cached
         }
-        guard let fresh = read(owner: owner, repo: repo, k, fetch: fetch ?? gh), !fresh.isEmpty else {
+        let deadline = clock().addingTimeInterval(k.fetchSecs)
+        guard let fresh = read(owner: owner, repo: repo, k, deadline: deadline, clock: clock,
+                               fetch: fetch ?? gh), !fresh.isEmpty else {
             return cached ?? ""
         }
         CommsLog.prepare(dir)
@@ -418,11 +422,17 @@ public enum CommsKnowledge {
         return fresh
     }
 
-    /// Nil when the tree could not be listed.
+    /// Nil when the tree could not be listed or `deadline` passed first: a partial set
+    /// must not be cached as the whole.
     static func read(owner: String, repo: String, _ k: CoreAssets.CommsModel.Answer.Knowledge,
-                     fetch: Fetch) -> String? {
-        guard let tree = fetch(["api", "repos/\(owner)/\(repo)/git/trees/HEAD?recursive=1",
-                                "--jq", ".tree[] | select(.type == \"blob\") | .path"]) else {
+                     deadline: Date, clock: () -> Date, fetch: Fetch) -> String? {
+        func call(_ args: [String]) -> Data?? {
+            let left = deadline.timeIntervalSince(clock())
+            guard left > 0 else { return .none }
+            return .some(fetch(args, min(30, left)))
+        }
+        guard case let tree?? = call(["api", "repos/\(owner)/\(repo)/git/trees/HEAD?recursive=1",
+                                      "--jq", ".tree[] | select(.type == \"blob\") | .path"]) else {
             return nil
         }
         let paths = String(decoding: tree, as: UTF8.self).split(separator: "\n").map(String.init)
@@ -435,8 +445,9 @@ public enum CommsKnowledge {
             .prefix(k.maxFiles)
         var out = "", total = 0
         for path in paths {
-            guard let data = fetch(["api", "repos/\(owner)/\(repo)/contents/\(path)",
-                                    "-H", "Accept: application/vnd.github.raw"]) else { continue }
+            guard let got = call(["api", "repos/\(owner)/\(repo)/contents/\(path)",
+                                  "-H", "Accept: application/vnd.github.raw"]) else { return nil }
+            guard let data = got else { continue }
             let text = String(decoding: data, as: UTF8.self)
             let section = "=== \(path) ===\n\(text.trimmingCharacters(in: .whitespacesAndNewlines))\n\n"
             guard total + section.utf8.count <= k.maxBytes else { break }
@@ -446,10 +457,10 @@ public enum CommsKnowledge {
         return out
     }
 
-    private static func gh(_ args: [String]) -> Data? {
+    private static func gh(_ args: [String], _ timeout: Double) -> Data? {
         guard let exe = try? GH.ghPath(),
               case .exited(0, let out, _) = CommsClassifier.execute(
-                exe, args, input: Data(), timeout: 30) else { return nil }
+                exe, args, input: Data(), timeout: timeout) else { return nil }
         return out
     }
 }

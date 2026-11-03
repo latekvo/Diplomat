@@ -248,6 +248,7 @@ public enum CoreAssets {
                 public let maxFiles: Int
                 public let maxBytes: Int
                 public let refreshHours: Double
+                public let fetchSecs: Double
             }
             public let model: String
             public let timeoutSecs: Double

@@ -361,3 +361,15 @@ def test_the_real_core_posts_one_ack_in_the_messages_thread(slack, no_comms_repl
     lines = [json.loads(line) for line in comms.events_path().read_text().splitlines()]
     assert [(e["kind"], e.get("outcome")) for e in lines] == [
         ("ping", None), ("decision", None), ("reply", "sending"), ("reply", "sent")]
+
+
+def test_a_reply_is_given_every_bound_the_core_holds_itself_to():
+    """Nothing retries a reply killed inside its own bounds, so the limit sums the sign-in,
+    the docs read, the answer's ``claude`` call and the post, plus a margin."""
+    t = comms.tunables()
+    call = t["httpTimeoutSecs"] + 5
+    sign_in = 6 * call + 10 + t["loginRefreshTimeoutSecs"]
+    docs = t["answer"]["knowledge"]["fetchSecs"]
+    answer = t["answer"]["timeoutSecs"]
+    post = t["slackBudgetSecs"] + 5
+    assert comms.reply_timeout() == sign_in + 10 + docs + answer + post + 30
