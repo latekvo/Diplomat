@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launcher for the Linux (Qt6/PySide6) Diplomat tray applet.
+# Launcher for the Linux (Qt6/PySide6) Diplomat app.
 # Runs the package regardless of the current working directory.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

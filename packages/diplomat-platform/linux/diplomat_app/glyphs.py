@@ -24,7 +24,7 @@ CHIP_OFF = "#3A3D42"
 AGENT_LIVE = "#0A84FF"
 
 # --- Chrome glyphs (header, search, section headers) -----------------------
-G_APP = "⚒"      # wrench header / tray icon
+G_APP = "⚒"      # wrench: header, window and tray icon
 G_SEARCH = "⌕"   # reverse-lookup search
 G_DEVICES = "⧉"  # devices section
 G_ACTIVITY = "▤" # activity feed section

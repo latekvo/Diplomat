@@ -2,7 +2,7 @@
 # Install a systemd *user* timer that self-updates the applet daily at 06:00 —
 # the Linux analogue of a launchd StartCalendarInterval. The timer runs the
 # launcher in its headless self-update mode (DIPLOMAT_SELF_UPDATE=1): fetch,
-# merge upstream if behind, rebuild diplomat-core, relaunch a running tray, and
+# merge upstream if behind, rebuild diplomat-core, relaunch a running app, and
 # launch a dead one unless the operator quit it. Persistent=true so a 6AM missed
 # while the machine was off runs at the next boot. Idempotent; safe to re-run.
 set -euo pipefail
@@ -31,13 +31,13 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 # run_scheduled starts the GUI (relaunch(): subprocess.Popen(..., start_new_session=True))
-# to swap a running tray onto the fresh build via acquire_newest_wins, or to bring a dead
-# one back. It runs the tray in a scope of its own (systemd-run --scope) where it can; where
+# to swap a running app onto the fresh build via acquire_newest_wins, or to bring a dead
+# one back. It runs the app in a scope of its own (systemd-run --scope) where it can; where
 # it cannot, setsid()/start_new_session creates a new session but does
 # NOT move the child out of THIS unit's cgroup, so under the default KillMode=control-group
 # systemd SIGTERM/SIGKILLs it the instant this oneshot deactivates — killing the relaunched
-# tray mid-startup and silently defeating the update swap. KillMode=process kills only the
-# (already-exited) main ExecStart process, sparing the detached tray. NOT RemainAfterExit=yes:
+# app mid-startup and silently defeating the update swap. KillMode=process kills only the
+# (already-exited) main ExecStart process, sparing the detached app. NOT RemainAfterExit=yes:
 # that leaves the oneshot 'active (exited)', making the daily timer's \`start\` a no-op.
 KillMode=process
 Environment=DIPLOMAT_SELF_UPDATE=1

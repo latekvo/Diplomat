@@ -211,7 +211,7 @@ def test_run_scheduled_launches_nothing_without_a_recorded_display(repos):
     assert (marker / "built").exists()
     time.sleep(0.5)
     assert not (marker / "relaunched").exists()
-    assert _log()[-1].endswith("tray not running: no tray has recorded a display to launch onto")
+    assert _log()[-1].endswith("app not running: no instance has recorded a display to launch onto")
     assert selfupdate.run_watchdog() == 0
     assert not any(ln.startswith("watchdog:") for ln in _log())  # not every 5 minutes
 
@@ -262,7 +262,7 @@ def test_run_scheduled_launches_a_dead_tray_when_current(recorded_display):
     assert env.get("DISPLAY") == ":7"  # onto the display the dead tray recorded
     assert "DIPLOMAT_SELF_UPDATE" not in env  # a GUI, not another updater
     assert _log()[-2:] == [f"up to date at {_git(_clone, 'rev-parse', '--short', 'HEAD')}",
-                           "tray not running: launched it"]
+                           "app not running: launched it"]
 
 
 def test_run_scheduled_launches_a_dead_tray_after_updating_in_place(recorded_display):
@@ -271,7 +271,7 @@ def test_run_scheduled_launches_a_dead_tray_after_updating_in_place(recorded_dis
     assert selfupdate.run_scheduled() == 0
     assert (marker / "built").exists()
     assert _launched_env(marker).get("DISPLAY") == ":7"
-    assert _log()[-1] == "tray not running: launched it"
+    assert _log()[-1] == "app not running: launched it"
 
 
 @pytest.mark.parametrize("failing", ["offline", "merge refused", "build failed"])
@@ -295,7 +295,7 @@ def test_run_scheduled_launches_a_dead_tray_whatever_the_update_did(
     code = selfupdate.run_scheduled()
     assert code == (1 if failing == "build failed" else 0)
     _launched_env(marker)
-    assert _log()[-1] == "tray not running: launched it"
+    assert _log()[-1] == "app not running: launched it"
 
 
 def test_an_operator_quit_keeps_the_tray_closed(recorded_display):
@@ -306,7 +306,7 @@ def test_an_operator_quit_keeps_the_tray_closed(recorded_display):
     time.sleep(0.5)
     assert not (marker / "relaunched").exists()
     # The daily run says why; the watchdog, every five minutes, stays quiet.
-    assert _log()[-1] == "tray not running: quit by the operator, left closed"
+    assert _log()[-1] == "app not running: quit by the operator, left closed"
     assert not any(ln.startswith("watchdog:") for ln in _log())
 
 
@@ -317,7 +317,7 @@ def test_the_watchdog_launches_a_dead_tray(recorded_display, monkeypatch):
     env = _launched_env(marker)
     assert env.get("DISPLAY") == ":7"
     assert "DIPLOMAT_WATCHDOG" not in env  # a GUI, not another watchdog
-    assert _log() == ["watchdog: tray not running: launched it"]
+    assert _log() == ["watchdog: app not running: launched it"]
 
 
 def test_the_watchdog_leaves_a_running_tray_alone(recorded_display, monkeypatch):
@@ -349,7 +349,7 @@ def test_a_launch_that_fails_is_logged_and_fails_the_run(recorded_display, monke
     monkeypatch.setattr(selfupdate, "relaunch", lambda *a, **k: (_ for _ in ()).throw(
         selfupdate.UpdateError("could not relaunch the applet: [Errno 2] bash")))
     assert selfupdate.run_watchdog() == 1
-    assert _log() == ["watchdog: tray not running: launch failed: "
+    assert _log() == ["watchdog: app not running: launch failed: "
                       "could not relaunch the applet: [Errno 2] bash"]
 
 
@@ -360,7 +360,7 @@ def test_a_launched_applet_that_dies_is_a_failed_launch(recorded_display):
     launcher = clone / "packages" / "diplomat-platform" / "linux" / "diplomat"
     launcher.write_text("#!/usr/bin/env bash\nexit 3\n")
     assert selfupdate.run_watchdog() == 1
-    assert _log() == ["watchdog: tray not running: launch failed: the applet exited 3"]
+    assert _log() == ["watchdog: app not running: launch failed: the applet exited 3"]
 
 
 def test_a_revival_starts_the_app_in_the_background(recorded_display):
@@ -452,7 +452,7 @@ def test_run_scheduled_relaunches_a_running_tray(repos, monkeypatch):
 def test_run_scheduled_reports_a_relaunched_applet_that_dies(repos, monkeypatch):
     """A launcher that cannot start the applet (no PySide6 on its interpreter, a
     checkout that no longer imports) exits at once; that is a failed update, not
-    a "relaunched running tray"."""
+    a "relaunched running app"."""
     origin, clone, marker = repos
     launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
     launcher.write_text("#!/usr/bin/env bash\nexit 3\n")
