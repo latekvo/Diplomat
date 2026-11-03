@@ -32,6 +32,9 @@ struct PopoverRoot: View {
     /// live because it can be flipped in System Settings while we run.
     @State private var scrollerStyle = NSScroller.preferredScrollerStyle
 
+    /// The screen the panel opens on (`DIPLOMAT_POPOVER_TEST` opens it elsewhere).
+    var screen: ContentView.PanelScreen = .main
+
     /// Cap the popover at the display's usable height, less a small margin so it never
     /// kisses the menu bar or the Dock. Content beyond this scrolls.
     /// `DIPLOMAT_POPOVER_CAP` forces a small cap so the scrolling state is
@@ -54,7 +57,8 @@ struct PopoverRoot: View {
 
     var body: some View {
         ScrollView {
-            ContentView()
+            ContentView(showSettings: screen == .settings, showTelemetry: screen == .telemetry,
+                        showDevices: screen == .devices, showComms: screen == .comms)
                 .background(
                     GeometryReader { geo in
                         Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
@@ -217,6 +221,8 @@ enum PopoverPlacement {
 /// any other window sharing the class hides normally.
 enum PopoverFadeOut {
     static let duration: TimeInterval = 0.1
+    /// Posted each time the popover is ordered out.
+    static let didHide = Notification.Name("DiplomatPopoverDidHide")
     /// `NSWindowOrderingMode.out` — the hide case of `orderWindow:relativeTo:`.
     private static let orderOut = 0
     private static var swizzled = Set<ObjectIdentifier>()
@@ -248,6 +254,9 @@ enum PopoverFadeOut {
         let block: @convention(block) (NSWindow, Int, Int) -> Void = { win, place, relativeTo in
             let ours = (objc_getAssociatedObject(win, &isPopoverKey) as? Bool) ?? false
             let fading = (objc_getAssociatedObject(win, &isFadingKey) as? Bool) ?? false
+            if place == orderOut, ours, !fading {
+                NotificationCenter.default.post(name: didHide, object: win)
+            }
             // Only intercept OUR popover's hide, once, while it's actually visible.
             guard place == orderOut, ours, !fading, win.isVisible, win.alphaValue > 0.01 else {
                 callOriginal(win, place, relativeTo)
@@ -367,6 +376,11 @@ struct ContentView: View {
         // An agent starting or finishing takes a slot's row with it; without this the
         // bays pop in and out while the rows around them animate.
         .animation(.easeInOut(duration: 0.18), value: store.freeAutoSlots)
+        .onReceive(NotificationCenter.default.publisher(for: PopoverFadeOut.didHide)) { _ in
+            // Reopening the applet lands on the panel, not on Settings. A modal (the
+            // repo-root folder picker) also hides the popover; that is not a dismissal.
+            if screen == .settings, NSApp.modalWindow == nil { screen = .main }
+        }
         .onChange(of: store.bannedAuthors) { bans in
             // The pending "Unban @X?" confirmation must not outlive the ban itself
             // (un-banned elsewhere / list rewritten) — a stale login would open the

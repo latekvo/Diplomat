@@ -736,35 +736,53 @@ def test_a_provider_set_by_hand_shows_on_the_screens_next_poll(app, monkeypatch)
     assert view.provider_field.text() == "~/by/hand.mjs"
 
 
-def test_idle_limits_set_by_hand_show_on_the_screens_next_poll_and_in_settings(
-        app, monkeypatch):
+def test_idle_limits_set_by_hand_show_on_the_screens_next_poll(app):
     from diplomat_app.devicesview import DevicesView
-    from diplomat_app.panel import Panel
     from diplomat_app.store import Store
 
-    monkeypatch.delenv("DIPLOMAT_RENDER", raising=False)
-    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
-    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
-    store = Store()
-    panel = Panel(store)
-    view = DevicesView(store, live=False)
-    settings = panel.settings_view
-
-    def sliders():
-        return ([s.value() for s, _row in view._idle],
-                [settings._idle_free.value(), settings._idle_leased.value()])
-
-    assert sliders() == ([5, 30], [5, 30])
+    view = DevicesView(Store(), live=False)
+    assert [s.value() for s, _row in view._idle] == [5, 30]
     appconfig.set_int(appconfig.DEVICE_IDLE_FREE_MINUTES, 12)
     appconfig.set_int(appconfig.DEVICE_IDLE_LEASED_MINUTES, 90)
     view._install_timer.timeout.emit()
-    assert sliders() == ([12, 90], [12, 90])
+    assert [s.value() for s, _row in view._idle] == [12, 90]
     assert view._drawn_limit == 90
+    view.deleteLater()
 
-    appconfig.set_int(appconfig.DEVICE_IDLE_LEASED_MINUTES, 120)
-    panel._set_screen("settings")
-    assert sliders()[1] == [12, 120]
-    panel.deleteLater()
+
+@pytest.mark.parametrize("index,key,maximum,step", [
+    (0, "deviceIdleFreeMinutes", 60, 1),
+    (1, "deviceIdleLeasedMinutes", 240, 5),
+])
+def test_an_idle_limit_slider_writes_its_key_and_reads_zero_as_never(
+        app, index, key, maximum, step):
+    """Both limits are read by the device-allocator daemon from the shared config, so
+    the slider has to land there, not in QSettings."""
+    from diplomat_app.devicesview import DevicesView
+    from diplomat_app.store import Store
+
+    view = DevicesView(Store(), live=False)
+    control = view._idle[index][0]
+    assert (control.minimum(), control.maximum(), control._step) == (0, maximum, step)
+    control._slider.setValue(2 * step)
+    assert appconfig.read()[key] == 2 * step
+    assert control.badge() == f"{2 * step} min"
+    control._slider.setValue(0)
+    assert appconfig.read()[key] == 0
+    assert control.badge() == "never"
+    view.deleteLater()
+
+
+def test_the_idle_limit_sliders_open_on_the_stored_values(app):
+    from diplomat_app.devicesview import DevicesView
+    from diplomat_app.store import Store
+
+    appconfig.set_int(appconfig.DEVICE_IDLE_FREE_MINUTES, 12)
+    appconfig.set_int(appconfig.DEVICE_IDLE_LEASED_MINUTES, 0)
+    view = DevicesView(Store(), live=False)
+    (free, _), (leased, _) = view._idle
+    assert free.value() == 12
+    assert leased.badge() == "never"
     view.deleteLater()
 
 
