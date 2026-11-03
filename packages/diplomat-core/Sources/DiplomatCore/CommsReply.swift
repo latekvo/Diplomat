@@ -117,8 +117,8 @@ public enum CommsReplier {
         guard let assets = try? CoreAssets.comms(), r.toggles.replies,
               !r.settings.bannedSenders.contains(r.message.userID),
               let to = destination(for: r.message) else { return CommsReplyResult() }
-        let items = CommsLog.fold(CommsLog.read(in: dir))
-        guard !items.contains(where: { $0.message.id == r.message.id && $0.replyOutcome != nil })
+        // The raw lines, not the fold: rotation can cut a ping whose reply survives.
+        guard !CommsLog.read(in: dir).contains(where: { $0.kind == .reply && $0.id == r.message.id })
         else { return CommsReplyResult() }
         let me = CommsState.load(in: dir).me
         let name = me?.name ?? me.map { $0.handle } ?? ""

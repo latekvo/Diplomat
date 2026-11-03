@@ -2422,6 +2422,16 @@ private func replySmoke() throws {
                                                      away: false),
                                    now: now, dir: dir, api: slack.api)
     check(again == CommsReplyResult() && slack.posts.count == 1, "a message is answered at most once")
+    let unlogged = CommsMessage(id: "C02MHEMLLUT:1793699999.000001", channelID: "C02MHEMLLUT",
+                                channelName: "general", isDM: false, userID: "U0OTHER", userName: "x",
+                                teamID: "T0", text: "review #12", ts: "1793699999.000001",
+                                permalink: "", reasons: [.mention])
+    let twice = CommsReplyRequest(message: unlogged, decision: review,
+                                  queued: CommsQueuedWork(kind: "review", number: 12, ahead: 0, bays: 1),
+                                  away: false)
+    _ = CommsReplier.reply(twice, now: now, dir: dir, api: slack.api)
+    _ = CommsReplier.reply(twice, now: now, dir: dir, api: slack.api)
+    check(slack.posts.count == 2, "…even one whose ping line is gone, as rotation can leave it")
 
     func once(_ name: String, _ m: CommsMessage, _ d: CommsDecision, queued: CommsQueuedWork? = work,
               away: Bool = false, toggles: CommsToggles = CommsToggles(),
