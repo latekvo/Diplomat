@@ -64,11 +64,9 @@ enum Daemon {
         return true
     }
 
-    /// Mark the login agent's start unattended (`DIPLOMAT_BACKGROUND=1`) when its plist
-    /// lacks the mark: one written by an older installer opens the window at every
-    /// login, and the 06:00 update rebuilds the app without re-running the installer.
-    /// launchd reads the plist at the next login. Leaves a missing or unreadable plist
-    /// alone and keeps every other key; returns whether it wrote.
+    /// Adds `DIPLOMAT_BACKGROUND=1` to a login-agent plist an older installer wrote
+    /// without it, which would open the window at every login: the 06:00 update never
+    /// re-runs the installer. Returns whether it wrote.
     @discardableResult
     static func markLoginStartUnattended(plist url: URL = URL(fileURLWithPath: plistPath)) -> Bool {
         guard let data = try? Data(contentsOf: url),
