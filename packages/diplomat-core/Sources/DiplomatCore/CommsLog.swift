@@ -108,22 +108,24 @@ public enum CommsLog {
     }
 
     /// `O_APPEND`, so another writer's line is never overwritten; `write(2)`, so a full
-    /// disk costs the line instead of aborting the process.
-    public static func append(_ event: CommsEvent, in dir: URL = dir) {
-        guard var line = try? encoder.encode(event) else { return }
+    /// disk costs the line instead of aborting the process. False when the line is not
+    /// all on disk.
+    @discardableResult
+    public static func append(_ event: CommsEvent, in dir: URL = dir) -> Bool {
+        guard var line = try? encoder.encode(event) else { return false }
         line.append(UInt8(ascii: "\n"))
         prepare(dir)
         let lock = open(lockURL(in: dir).path, O_RDWR | O_CREAT, 0o600)
-        guard lock >= 0 else { return }
+        guard lock >= 0 else { return false }
         defer { close(lock) }
-        guard flock(lock, LOCK_EX) == 0 else { return }
+        guard flock(lock, LOCK_EX) == 0 else { return false }
         let url = eventsURL(in: dir)
         rotateIfLarge(url)
         let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
-        guard fd >= 0 else { return }
+        guard fd >= 0 else { return false }
         defer { close(fd) }
         fchmod(fd, 0o600)
-        _ = line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+        return line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) } == line.count
     }
 
     /// Whole or not at all, owner-only: a 0600 temp file renamed over `url`.

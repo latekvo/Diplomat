@@ -2504,7 +2504,54 @@ private func replySmoke() throws {
     let empty = once("empty", qm, q, queued: nil, away: true) { _ in
         CommsAnswer(answers: true, text: "<!here> <@U1> ", reason: "ok")
     }
-    check(empty.1.isEmpty, "an answer that sanitizes to nothing is not posted")
+    check(empty.1.isEmpty && empty.0.outcome == "skipped: nothing was left once mentions and links were taken out",
+          "an answer that sanitizes to nothing is not posted, and the log says so: \(empty.0)")
+
+    let ctxDir = scratchDir("reply-context")
+    let earlier = pinged(Posted(ts: "1793699050.000100", text: "we build for Fire TV", channel: "D0123456789"),
+                         reasons: [.dm])
+    let later = pinged(Posted(ts: "1793699150.000100", text: "never mind", channel: "D0123456789"),
+                       reasons: [.dm])
+    for m in [earlier, qm, later] { logPing(m, q, in: ctxDir) }
+    var context: [String] = []
+    _ = CommsReplier.reply(CommsReplyRequest(message: qm, decision: q, away: true), now: now, dir: ctxDir,
+                           api: StubSlack().api) { question in
+        context = question.context.map(\.text)
+        return .declined("x")
+    }
+    check(context == ["we build for Fire TV"], "the answerer sees only what came before the question: \(context)")
+
+    section("comms: a ban that lands while a reply waits")
+    let bans = scratchDir("reply-bans")
+    setenv("DA_BAN_DIR", bans.path, 1)
+    defer { unsetenv("DA_BAN_DIR") }
+    let banFile = bans.appendingPathComponent("banned.json")
+    func ban(_ login: String) {
+        try? Data(#"{"banned": [{"login": "\#(login)", "source": "slack"}]}"#.utf8).write(to: banFile)
+    }
+    ban("slack:" + top.userID.lowercased())
+    let bannedSince = once("banned-since", top, review)
+    check(bannedSince.0 == CommsReplyResult() && bannedSince.1.isEmpty,
+          "a sender on the ban list now, though not in the request's, is not answered")
+    try? FileManager.default.removeItem(at: banFile)
+    let drafting = once("banned-drafting", qm, q, queued: nil, away: true) { _ in
+        ban("slack:" + qm.userID)
+        return CommsAnswer(answers: true, text: "Yes.", reason: "documented")
+    }
+    check(drafting.0.outcome == "skipped: the sender was banned before it went out" && drafting.1.isEmpty,
+          "a sender banned while the answer was drafted is not answered: \(drafting.0)")
+    try? FileManager.default.removeItem(at: banFile)
+
+    let full = scratchDir("reply-full")
+    try? FileManager.default.createDirectory(at: full.appendingPathComponent("events.jsonl"),
+                                             withIntermediateDirectories: true)
+    let fullSlack = StubSlack()
+    let unrecorded = CommsReplier.reply(CommsReplyRequest(message: top, decision: review, queued: work,
+                                                          away: false),
+                                        now: now, dir: full, api: fullSlack.api)
+    check(unrecorded.outcome == "failed: the Comms log could not be written, so nothing was sent"
+            && fullSlack.posts.isEmpty,
+          "a reply the log cannot record is not sent, since nothing would stop the next one: \(unrecorded)")
 
     section("comms: a relay ask cannot move the reply")
     let relay = Posted(ts: "1793699200.000300",
@@ -2533,6 +2580,11 @@ private func replySmoke() throws {
     check(clean("mail me at a@b.co, ask @kasia, <@U123|x> <!channel> <!subteam^S1>")
             == "mail me at a@b.co, ask kasia,",
           "mentions and broadcasts lose their trigger, an email address keeps its @: \(clean("mail me at a@b.co, ask @kasia, <@U123|x> <!channel> <!subteam^S1>"))")
+    check(clean("https://github.com/software-mansion/argent/../../attacker/x") == "[link removed]"
+            && clean("https://github.com/software-mansion/argent/%2E%2E/%2e%2e/attacker/x") == "[link removed]"
+            && clean("https://docs.swmansion.com/argent/docs/fundamentals/installation")
+                == "https://docs.swmansion.com/argent/docs/fundamentals/installation",
+          "a dot segment cannot walk a link out of its prefix; the docs site's links stay")
     check(clean("one\n\ntwo   three") == "one two three", "the answer is one paragraph")
     let long = clean(String(repeating: "word ", count: 400))
     check(long.count <= assets.answer.maxChars && long.hasSuffix("…"), "a long answer is cut at a word")
@@ -2610,6 +2662,11 @@ private func knowledgeSmoke() {
     check(stale == docs, "a failed refresh keeps the stale copy")
     check(CommsKnowledge.load(owner: "x", repo: "y", dir: dir, now: now, fetch: { _, _ in nil }) == "",
           "with nothing fetched and nothing cached there is no documentation")
+    let flaky: CommsKnowledge.Fetch = { args, t in args[1].contains("recording") ? nil : fetch(args, t) }
+    check(CommsKnowledge.load(owner: "o", repo: "r", dir: dir, now: now.addingTimeInterval(3 * 86_400),
+                              fetch: flaky) == docs
+            && (try? String(contentsOf: file, encoding: .utf8)) == docs,
+          "a read missing one file keeps the stale copy, whole")
     // Each gh call takes 40s of a fake clock; the budget is knowledge.fetchSecs.
     let budget = (try? CoreAssets.comms())?.answer.knowledge.fetchSecs ?? 0
     var t = now

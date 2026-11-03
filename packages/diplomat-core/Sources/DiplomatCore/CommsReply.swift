@@ -3,7 +3,7 @@ import Foundation
 /// Work a ping put in the queue, or found there or already under way, as the front-end
 /// that acted on it sees it: what an acknowledgement names and estimates.
 public struct CommsQueuedWork: Codable, Equatable, Sendable {
-    /// `review`, `fix_issue` or `investigate`: a key of `replies.what` and `runSecs`.
+    /// `review`, `fix_issue` or `investigate`: a key of `replies.what` and `replies.runSecs`.
     public var kind: String
     /// The PR or issue; unused for an investigation.
     public var number: Int
@@ -12,17 +12,13 @@ public struct CommsQueuedWork: Codable, Equatable, Sendable {
     public var bays: Int
     /// When its agent started, for work already under way.
     public var startedAt: Date?
-    /// A measured run time for this kind; `replies.runSecs` when nil.
-    public var runSecs: Double?
 
-    public init(kind: String, number: Int, ahead: Int = 0, bays: Int = 1,
-                startedAt: Date? = nil, runSecs: Double? = nil) {
+    public init(kind: String, number: Int, ahead: Int = 0, bays: Int = 1, startedAt: Date? = nil) {
         self.kind = kind
         self.number = number
         self.ahead = ahead
         self.bays = bays
         self.startedAt = startedAt
-        self.runSecs = runSecs
     }
 }
 
@@ -114,8 +110,13 @@ public enum CommsReplier {
                              api: SlackAPI? = nil,
                              answer: ((CommsAnswerer.Question) -> CommsAnswer)? = nil)
         -> CommsReplyResult {
-        guard let assets = try? CoreAssets.comms(), r.toggles.replies,
-              !r.settings.bannedSenders.contains(r.message.userID),
+        // The request's ban list was read when its ping was applied, and a reply can wait
+        // minutes behind others or on its answer: the file is asked again before each step.
+        func barred() -> Bool {
+            r.settings.bannedSenders.contains(r.message.userID)
+                || CommsBan.bannedNow().contains(r.message.userID.uppercased())
+        }
+        guard let assets = try? CoreAssets.comms(), r.toggles.replies, !barred(),
               let to = destination(for: r.message) else { return CommsReplyResult() }
         // The raw lines, not the fold: rotation can cut a ping whose reply survives.
         guard !CommsLog.read(in: dir).contains(where: { $0.kind == .reply && $0.id == r.message.id })
@@ -128,16 +129,21 @@ public enum CommsReplier {
             body = acknowledgement(q, away: r.away, name: who, sender: r.message, now: now,
                                    assets: assets)
         } else if r.decision.action == .question, r.away {
+            var settings = r.settings
+            settings.bannedSenders += CommsBan.bannedNow()
+            let asked = CommsTS.number(r.message.ts) ?? 0
             let question = CommsAnswerer.Question(
                 message: r.message,
-                context: CommsWatch.context(for: [r.message], in: dir, settings: r.settings,
-                                            assets: assets),
+                context: CommsWatch.context(for: [r.message], in: dir, settings: settings,
+                                            assets: assets)
+                    .filter { (CommsTS.number($0.ts) ?? 0) < asked },
                 documentation: CommsKnowledge.load(owner: r.settings.owner, repo: r.settings.repo,
                                                    dir: dir, now: now))
             let a = (answer ?? { CommsAnswerer.run($0, settings: r.settings, name: who) })(question)
             let text = sanitize(a.text, settings: r.settings, assets: assets)
             guard a.answers, !text.isEmpty else {
-                let outcome = "skipped: " + (a.reason.isEmpty ? "no answer" : a.reason)
+                let outcome = "skipped: " + (a.answers ? "nothing was left once mentions and links were taken out"
+                                             : a.reason.isEmpty ? "no answer" : a.reason)
                 CommsLog.append(CommsEvent(kind: .reply, id: r.message.id, outcome: outcome), in: dir)
                 return CommsReplyResult(outcome: outcome)
             }
@@ -146,12 +152,22 @@ public enum CommsReplier {
             return CommsReplyResult()
         }
         let text = assets.replies.prefix + body
-        // Logged first, so no failure after this point sends a second one.
-        CommsLog.append(CommsEvent(kind: .reply, id: r.message.id, outcome: "sending", detail: text),
-                        in: dir)
+        if barred() {
+            let outcome = "skipped: the sender was banned before it went out"
+            CommsLog.append(CommsEvent(kind: .reply, id: r.message.id, outcome: outcome), in: dir)
+            return CommsReplyResult(outcome: outcome)
+        }
+        // On disk first, so no failure after this point sends a second one; unrecorded, a
+        // later tick would find nothing and post it again.
+        guard CommsLog.append(CommsEvent(kind: .reply, id: r.message.id, outcome: "sending",
+                                         detail: text), in: dir) else {
+            return CommsReplyResult(outcome: "failed: the Comms log could not be written, so nothing was sent")
+        }
         let outcome: String
         do {
-            let slack = try api ?? SlackAPI.signIn().api
+            let slack = try api ?? SlackAPI.signIn(refresh: {
+                SlackToken.refresh(timeout: Double(assets.loginRefreshTimeoutSecs))
+            }).api
             slack.deadline = Date().addingTimeInterval(Double(assets.slackBudgetSecs))
             try slack.post(channel: to.channel, threadTS: to.threadTS, text: text)
             outcome = "sent"
@@ -203,11 +219,11 @@ public enum CommsReplier {
         ])
     }
 
-    /// One run of this kind for every full set of bays ahead of it, then its own; work
-    /// under way is due one run after it started, and never sooner than ten minutes on.
+    /// One run of this kind for each set of bays ahead of it, a partial set counting as a
+    /// whole, then its own; work under way is due one run after it started, and never
+    /// sooner than ten minutes on.
     public static func eta(_ q: CommsQueuedWork, now: Date, assets: CoreAssets.CommsModel) -> Date {
-        let run = q.runSecs.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
-            ?? Double(assets.replies.runSecs[q.kind] ?? 2700)
+        let run = Double(assets.replies.runSecs[q.kind] ?? 2700)
         if let started = q.startedAt {
             return max(now.addingTimeInterval(600), started.addingTimeInterval(run))
         }
@@ -260,10 +276,12 @@ public enum CommsReplier {
             for m in re.matches(in: s, range: NSRange(s.startIndex..., in: s)).reversed() {
                 guard let r = Range(m.range, in: s) else { continue }
                 let link = s[r].lowercased()
-                let allowed = prefixes.contains { p in
-                    link == p || link.hasPrefix(p.hasSuffix("/") ? p : p + "/")
-                        || link.hasPrefix(p + "#") || link.hasPrefix(p + "?")
-                }
+                // A dot segment or a backslash can walk a link out from under its prefix.
+                let allowed = !link.contains("/..") && !link.contains("%2e") && !link.contains("\\")
+                    && prefixes.contains { p in
+                        link == p || link.hasPrefix(p.hasSuffix("/") ? p : p + "/")
+                            || link.hasPrefix(p + "#") || link.hasPrefix(p + "?")
+                    }
                 if !allowed { s.replaceSubrange(r, with: "[link removed]") }
             }
         }
@@ -422,7 +440,7 @@ public enum CommsKnowledge {
         return fresh
     }
 
-    /// Nil when the tree could not be listed or `deadline` passed first: a partial set
+    /// Nil unless the tree and every file in it were read before `deadline`: a partial set
     /// must not be cached as the whole.
     static func read(owner: String, repo: String, _ k: CoreAssets.CommsModel.Answer.Knowledge,
                      deadline: Date, clock: () -> Date, fetch: Fetch) -> String? {
@@ -447,7 +465,7 @@ public enum CommsKnowledge {
         for path in paths {
             guard let got = call(["api", "repos/\(owner)/\(repo)/contents/\(path)",
                                   "-H", "Accept: application/vnd.github.raw"]) else { return nil }
-            guard let data = got else { continue }
+            guard let data = got else { return nil }
             let text = String(decoding: data, as: UTF8.self)
             let section = "=== \(path) ===\n\(text.trimmingCharacters(in: .whitespacesAndNewlines))\n\n"
             guard total + section.utf8.count <= k.maxBytes else { break }

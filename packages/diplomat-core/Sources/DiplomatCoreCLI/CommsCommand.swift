@@ -22,9 +22,9 @@ import Foundation
 ///                 Claude Code's Slack login; stdout = {"outcome": "sent" | "failed: …" |
 ///                 "skipped: …" | null, "text": "…" | null}.
 ///
-/// The tick and the auth reach Slack under Claude Code's own Slack login (`SlackToken`),
-/// which `DIPLOMAT_SLACK_TOKEN` overrides. The tick, the feed and the effect read and write
-/// `$DIPLOMAT_COMMS_DIR` (default `~/.diplomat/comms`).
+/// The tick, the auth and the reply reach Slack under Claude Code's own Slack login
+/// (`SlackToken`), which `DIPLOMAT_SLACK_TOKEN` overrides. The tick, the feed, the effect
+/// and the reply read and write `$DIPLOMAT_COMMS_DIR` (default `~/.diplomat/comms`).
 enum CommsCommand {
     static func tick(_ input: Data) {
         let settings = decode(CommsSettings.self, input, "CommsSettings")

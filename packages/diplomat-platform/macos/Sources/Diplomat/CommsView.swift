@@ -337,12 +337,13 @@ private struct PingRow: View {
         }
     }
 
-    /// Nil for no reply, and for a skipped one: that has only its reason, in `details`.
+    /// Nil when no reply was due; a skipped one keeps its reason for `details`.
     private var replyPill: (word: String, tint: Color)? {
         guard let outcome = item.replyOutcome else { return nil }
         if outcome == "sent" { return ("replied", .green) }
-        if outcome == "sending" { return ("replying", .secondary) }
-        if outcome.hasPrefix("failed") { return ("reply failed", .orange) }
+        if outcome == "sending" { return ("replying", .orange) }
+        if outcome.hasPrefix("failed") { return ("reply failed", .red) }
+        if outcome.hasPrefix("skipped") { return ("not answered", .secondary) }
         return nil
     }
 

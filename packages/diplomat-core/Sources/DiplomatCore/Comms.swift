@@ -527,6 +527,24 @@ public struct CommsBan: Codable, Equatable, Sendable {
         login.hasPrefix(loginPrefix) ? String(login.dropFirst(loginPrefix.count)) : nil
     }
 
+    /// The Slack senders on the ban list as it is now: `banned.json` in `$DA_BAN_DIR`,
+    /// else `~/.diplomat/pr-monitor`, as `{"banned": [{"login": …}, …]}`.
+    public static func bannedNow() -> Set<String> {
+        let env = ProcessInfo.processInfo.environment["DA_BAN_DIR"] ?? ""
+        let dir = env.isEmpty
+            ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".diplomat/pr-monitor")
+            : URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("banned.json")),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = obj["banned"] as? [[String: Any]] else { return [] }
+        // The daemon keeps a login as written and matches it ignoring case.
+        return Set(list.compactMap { entry -> String? in
+            guard let login = entry["login"] as? String,
+                  login.lowercased().hasPrefix(loginPrefix) else { return nil }
+            return String(login.dropFirst(loginPrefix.count)).uppercased()
+        })
+    }
+
     public var userID: String
     public var handle: String
     /// `#channel` or `DM`.
