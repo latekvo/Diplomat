@@ -317,7 +317,9 @@ struct WizardSpawnControls: View {
     let terminalTitle: String
     /// Whether this wizard's current inputs produce a session to place at all. A
     /// Review-PRs sweep does not — it queues one review per PR for this machine's own
-    /// task cap to start — so the mesh row has nothing to offer and is left out.
+    /// task cap to start — so the mesh row has nothing to offer and is left out. Nor
+    /// does a run in a repo listed under Settings → OTHER REPOS: a peer would start its
+    /// agent in its own repo root.
     var routable: Bool = true
     let action: () -> Void
 

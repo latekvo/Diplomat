@@ -232,6 +232,8 @@ DIPLOMAT_RELAUNCH_TEST=1 ...                     # self-test: a relaunch is judg
                                                      #   throwaway bundles; exit code = verdict
 DIPLOMAT_REPOPATHS_TEST=1 ...                    # self-test: which checkout the bundle names, from inside
                                                      #   it or from a copy; scratch dirs; exit code = verdict
+DIPLOMAT_POPOVER_TEST=1 ...                      # self-test: a dismissed popover reopens on the panel when
+                                                     #   Settings was up; off-screen windows; exit code = verdict
 
 # The shared core itself is independently buildable & testable (also on Linux):
 swift run DiplomatCoreSmoke                    # loads assets/, runs filter + prompt + golden-file assertions
@@ -326,7 +328,8 @@ packages/
         Comms.swift                Comms (the Slack watcher): its types, the triage answer's validation, what
                                    each answer does, and the investigate prompt (assets/comms.json)
         SlackAPI.swift             Slack's MCP server under Claude Code's login (profiles, search) + who becomes a ping
-        CommsWatch.swift           one watcher tick: search, watermark, the sandboxed `claude -p` classifier
+        CommsWatch.swift           one watcher tick: search, watermark, the triage queue and its batched
+                                   `claude -p` classifier
         CommsLog.swift             ~/.diplomat/comms/events.jsonl, both applets' log, folded for the screen
         LoginShell.swift           locating a CLI through the operator's login shell, past any alias
         Mesh.swift                 mesh model: decodes assets/mesh.json + ~/.diplomat/mesh/state.json, pure placement

@@ -87,6 +87,10 @@ def runner_path(run_id: str) -> Path:
     return run_dir(run_id) / "runner"
 
 
+def directory_path(run_id: str) -> Path:
+    return run_dir(run_id) / "directory"
+
+
 def port_path(run_id: str) -> Path:
     return run_dir(run_id) / "port"
 
@@ -278,6 +282,23 @@ def run_runner(run_id: str) -> str:
     """
     try:
         return runner_path(run_id).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def stage_directory(run_id: str, path: str) -> None:
+    """Record the checkout a run works in, when that is not the repo root. Its session
+    is found by the directory the agent ran in (:func:`probes.agent_sessions`)."""
+    try:
+        directory_path(run_id).write_text(path, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def run_directory(run_id: str) -> str:
+    """The checkout this run works in, or "" for the repo root."""
+    try:
+        return directory_path(run_id).read_text(encoding="utf-8").strip()
     except OSError:
         return ""
 

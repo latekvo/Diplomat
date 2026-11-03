@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from . import conflicts, glyphs, widgets
 from .conflicts import Target
 from .store import Store
-from .wizardbase import SpawnWizard
+from .wizardbase import SpawnWizard, mesh_applicable, mismatch_warning
 
 _TINT = "#32ADE6"  # cyan, matching the macOS Resolve-conflicts card
 
@@ -71,6 +71,7 @@ class ConflictWizardView(SpawnWizard):
             username=self.username.text(),
             me=self.store.effective_me,
             specific_pr=self.specific_pr.text(),
+            local_repos=self.store.local_repos,
         )
 
     def _sync(self) -> None:
@@ -82,14 +83,16 @@ class ConflictWizardView(SpawnWizard):
 
         ref = cfg.pr_ref
         if show_pr and ref.repo_mismatch:
-            owner, repo = cfg.target_repo
-            self.pr_warning.setText(f"That PR isn't in {owner}/{repo}.")
+            self.pr_warning.setText(mismatch_warning("PR", cfg))
             self.pr_warning.setVisible(True)
         else:
             self.pr_warning.setVisible(False)
 
+        self.mesh_row.set_applicable(mesh_applicable(cfg, True))
+
         self._restyle_spawn()
 
     def _label(self) -> str:
-        scope = self._config().specific_pr.strip() or "main"
+        cfg = self._config()
+        scope = cfg.listed_scope or cfg.specific_pr.strip() or "main"
         return f"Resolve conflicts · {scope}"

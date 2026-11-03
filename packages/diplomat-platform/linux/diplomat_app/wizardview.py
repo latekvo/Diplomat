@@ -26,7 +26,7 @@ from diplomat_runtime.prtarget import PRTarget
 from diplomat_runtime.review import SpecificAuthor
 from . import glyphs, widgets
 from .store import Store
-from .wizardbase import SpawnWizard
+from .wizardbase import SpawnWizard, mesh_applicable, mismatch_warning
 
 _TINT = "#FF2D78"  # pink, matching the macOS Review card
 
@@ -186,6 +186,7 @@ class WizardView(SpawnWizard):
             specific_pr=self.specific_pr.text(),
             final_pass=self.final_pass.isChecked(),
             specific_author=self._specific_author,
+            local_repos=self.store.local_repos,
         )
 
     def _sync(self) -> None:
@@ -213,8 +214,7 @@ class WizardView(SpawnWizard):
 
         ref = cfg.pr_ref
         if is_specific and ref.repo_mismatch:
-            owner, repo = cfg.target_repo
-            self.pr_warning.setText(f"That PR isn't in {owner}/{repo}.")
+            self.pr_warning.setText(mismatch_warning("PR", cfg))
             self.pr_warning.setVisible(True)
         else:
             self.pr_warning.setVisible(False)
@@ -231,9 +231,7 @@ class WizardView(SpawnWizard):
         self.soft_approve.setVisible(cfg.can_soft_approve)
         self.final_pass.setVisible(cfg.can_final_pass)
 
-        # Only a single PR is a session this row could place: a sweep opens none,
-        # it queues one review per PR for this machine's own cap to start.
-        self.mesh_row.set_applicable(is_specific)
+        self.mesh_row.set_applicable(mesh_applicable(cfg, is_specific))
 
         self._restyle_spawn()
 
@@ -342,7 +340,7 @@ class WizardView(SpawnWizard):
 
     def _label(self) -> str:
         cfg = self._config()
-        scope = cfg.specific_pr.strip() or "PRs"
+        scope = cfg.listed_scope or cfg.specific_pr.strip() or "PRs"
         return f"Review · {scope} · {cfg.depth}"
 
     def _author_login(self) -> str | None:

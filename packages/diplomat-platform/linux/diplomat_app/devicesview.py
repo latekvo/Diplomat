@@ -230,8 +230,8 @@ class AllocatorControls(QWidget):
 
 
 class _IdleLimitSlider(SliderSetting):
-    """Re-read on ``store.changed`` (Settings and the Devices screen set the same limits)
-    and ``store.device_config_reloaded`` (config.json is also edited by hand)."""
+    """Re-read on ``store.changed`` and ``store.device_config_reloaded`` (config.json is
+    also edited by hand)."""
 
     def __init__(self, store: Store, attr: str, save, *, label: str, maximum: int,
                  step: int) -> None:

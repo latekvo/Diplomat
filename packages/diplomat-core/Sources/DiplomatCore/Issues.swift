@@ -46,6 +46,10 @@ public struct IssueConfig: Codable, Equatable {
     /// filled in per issue by `forIssue` for every other one.
     public var specificIssue: String
 
+    /// The local checkouts besides the configured repo that a pasted link may name
+    /// (Settings → OTHER REPOS). Optional so a queued config stored without it decodes.
+    public var localRepos: [PRRef.LocalRepo]?
+
     /// Skip every issue that already has an assignee — somebody is on it already.
     public var unassignedOnly: Bool
     /// Claim the issue (assign it to me) before starting on it, and hand it back
@@ -96,16 +100,23 @@ public struct IssueConfig: Codable, Equatable {
     /// back out would just be a run that does nothing.
     public var canFilterUnassigned: Bool { !isSingleIssue }
 
-    /// The configured target repo (owner, repo), from the shared core config.
+    /// The repo this run works in: the listed checkout a single-item link named, else
+    /// the configured one. A sweep never reads the single-item field, so text left in it
+    /// can't retarget one.
     public var targetRepo: (owner: String, repo: String) {
-        CoreAssets.repoCoordinates()
+        if isSingleIssue, let local = issueRef.repo { return (local.owner, local.repo) }
+        return CoreAssets.repoCoordinates()
     }
 
+    /// Where the agent works when that is not the repo root: the listed checkout
+    /// `targetRepo` came from, or nil.
+    public var checkout: String? { isSingleIssue ? issueRef.repo?.path : nil }
+
     /// The single-issue field parsed as a number / URL / `owner/repo#n` shorthand,
-    /// checked against the target repo.
+    /// checked against the configured repo, then `localRepos`.
     public var issueRef: PRRef {
-        let (owner, repo) = targetRepo
-        return PRRef.parse(specificIssue, owner: owner, repo: repo, kind: .issues)
+        let (owner, repo) = CoreAssets.repoCoordinates()
+        return PRRef.parse(specificIssue, owner: owner, repo: repo, kind: .issues, also: localRepos ?? [])
     }
 
     public var isValid: Bool {
@@ -148,7 +159,7 @@ public struct IssueConfig: Codable, Equatable {
         let issues = try? CoreAssets.issues()
         let scope = issues?.scope ?? [:]
         let blocks = issues?.blocks ?? [:]
-        let (owner, repo) = CoreAssets.repoCoordinates()
+        let (owner, repo) = targetRepo
 
         func fill(_ s: String) -> String {
             s.replacingOccurrences(of: "{issue}", with: issueRef.numberString)

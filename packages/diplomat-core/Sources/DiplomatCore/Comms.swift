@@ -126,13 +126,15 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         CommsDecision(action: .none, number: 0, summary: "", reason: reason)
     }
 
-    /// This decision, or `none` when it names a number `message` does not contain: as
-    /// `#N`, `/pull/N`, `/issues/N` or `N`, with no letter or digit either side; or when
-    /// it is an `injection` whose evidence the message does not contain, ignoring case and
-    /// runs of whitespace, as sent or as the classifier read it (`CommsText.defang`).
-    /// `CommsWatch.tick` applies it to every answer, so a guessed number never acts and
-    /// nobody is banned for words they did not write.
-    public func checked(against message: CommsMessage) -> CommsDecision {
+    /// This decision, or `none` when it names a number neither `message` nor any of
+    /// `earlier` contains: as `#N`, `/pull/N`, `/issues/N` or `N`, with no letter or digit
+    /// either side; or when it is an `injection` whose evidence `message` itself does not
+    /// contain, ignoring case and runs of whitespace, as sent or as the classifier read it
+    /// (`CommsText.defang`). `CommsWatch.tick` applies it to every answer, passing the
+    /// messages before this one in its conversation (`CommsBatch.earlier`), so a guessed
+    /// number never acts and nobody is banned for words they did not write.
+    public func checked(against message: CommsMessage,
+                        earlier: [CommsMessage] = []) -> CommsDecision {
         let needle = Self.squashed(evidence)
         if action == .injection, ![message.text, CommsText.defang(message.text)].contains(where: {
             Self.squashed($0).localizedCaseInsensitiveContains(needle) }) {
@@ -140,12 +142,13 @@ public struct CommsDecision: Codable, Equatable, Sendable {
                                  reason: "answered injection quoting words the message does "
                                      + "not contain; \(reason)")
         }
-        guard action.needsNumber, !CommsMatch.containsWord(message.text, String(number)) else {
+        guard action.needsNumber, !([message] + earlier).contains(where: {
+            CommsMatch.containsWord($0.text, String(number)) }) else {
             return self
         }
         return CommsDecision(action: .none, number: 0, summary: summary,
-                             reason: "answered \(action.rawValue) #\(number), a number the "
-                                 + "message does not contain; \(reason)")
+                             reason: "answered \(action.rawValue) #\(number), a number neither "
+                                 + "the message nor its conversation contains; \(reason)")
     }
 
     /// Evidence copied from the classifier's stdin carries the fence's `|` on every line;
@@ -197,6 +200,51 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// Nil for output with no answer at all: `CommsClassifier` counts only that, not a
     /// bad answer, as the classifier failing.
     static func answer(in output: Data) -> CommsDecision? {
+        switch answerObject(in: output, key: "action") {
+        case nil:                  return nil
+        case .failed(let d):       return d
+        case .object(let o):       return decode(o)
+        }
+    }
+
+    /// A batch's answers, `count` of them, the nth answering message n + 1: the first
+    /// entry of `decisions` naming it, or a `none` saying it went unanswered. Nil, as for
+    /// `answer(in:)`, for output with no answer at all.
+    static func answers(in output: Data, count: Int) -> [CommsDecision]? {
+        let entries: [Any]
+        switch answerObject(in: output, key: "decisions") {
+        case nil:
+            return nil
+        case .failed(let d):
+            return Array(repeating: d, count: count)
+        case .object(let o):
+            guard let list = o?["decisions"] as? [Any] else {
+                return Array(repeating: .none("the classifier's answer held no decisions list"),
+                             count: count)
+            }
+            entries = list
+        }
+        var out = [CommsDecision?](repeating: nil, count: count)
+        for case let entry as [String: Any] in entries {
+            guard let data = try? JSONSerialization.data(withJSONObject: entry),
+                  let n = (try? JSONDecoder().decode(Slot.self, from: data))?.message,
+                  n >= 1, n <= count, out[n - 1] == nil else { continue }
+            out[n - 1] = decode(entry)
+        }
+        return out.map { $0 ?? .none("the classifier gave this message no answer") }
+    }
+
+    private struct Slot: Decodable { let message: Int }
+
+    private enum AnswerObject {
+        /// Nil for a `result` text that is not a JSON object.
+        case object([String: Any]?)
+        case failed(CommsDecision)
+    }
+
+    /// The answer object in `claude`'s output; a bare object counts when it has `key`, the
+    /// shape a stub classifier prints.
+    private static func answerObject(in output: Data, key: String) -> AnswerObject? {
         guard let root = try? JSONSerialization.jsonObject(with: output) else { return nil }
         let result: [String: Any]?
         if let events = root as? [Any] {
@@ -208,20 +256,25 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         guard let result else { return nil }
         if result["is_error"] as? Bool == true {
             let text = (result["result"] as? String) ?? (result["subtype"] as? String) ?? "?"
-            return .none(CommsClassifier.failurePrefix + "claude reported an error: \(clip(text))")
+            return .failed(.none(CommsClassifier.failurePrefix
+                                 + "claude reported an error: \(clip(text))"))
         }
-        if let structured = result["structured_output"] as? [String: Any],
-           let data = try? JSONSerialization.data(withJSONObject: structured) {
-            return decode(data)
+        if let structured = result["structured_output"] as? [String: Any] {
+            return .object(structured)
         }
         if let text = result["result"] as? String {
-            return decode(Data(unfenced(text).utf8))
+            let parsed = try? JSONSerialization.jsonObject(with: Data(unfenced(text).utf8))
+            return .object(parsed as? [String: Any])
         }
-        // A bare decision object, the shape a stub classifier prints.
-        if result["action"] != nil, let data = try? JSONSerialization.data(withJSONObject: result) {
-            return decode(data)
-        }
+        if result[key] != nil { return .object(result) }
         return nil
+    }
+
+    private static func decode(_ object: [String: Any]?) -> CommsDecision {
+        guard let object, let data = try? JSONSerialization.data(withJSONObject: object) else {
+            return .none("the classifier's answer was not a JSON object")
+        }
+        return decode(data)
     }
 
     private static func decode(_ data: Data) -> CommsDecision {
@@ -252,7 +305,10 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     /// Slack user ids on the ban list (`CommsBan`): their messages are never triaged.
     public var bannedSenders: [String]
     public var model: String
+    /// How many new messages one tick takes, and how many one triage call reads.
     public var maxPerTick: Int
+    /// A queue shorter than `maxPerTick` is triaged once its newest message is this old.
+    public var flushAfterSecs: Int
     public var owner: String
     public var repo: String
     /// The operator's GitHub login; the classifier is told the message was sent to it.
@@ -260,7 +316,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
 
     public init(keywords: [String] = [], senderAllowlist: [String] = [],
                 bannedSenders: [String] = [],
-                model: String? = nil, maxPerTick: Int? = nil,
+                model: String? = nil, maxPerTick: Int? = nil, flushAfterSecs: Int? = nil,
                 owner: String? = nil, repo: String? = nil, login: String = "") {
         let assets = try? CoreAssets.comms()
         let coordinates = CoreAssets.repoCoordinates()
@@ -270,6 +326,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         let m = (model ?? "").trimmingCharacters(in: .whitespaces)
         self.model = m.isEmpty ? (assets?.model ?? "haiku") : m
         self.maxPerTick = max(1, maxPerTick ?? assets?.maxPerTick ?? 8)
+        self.flushAfterSecs = max(0, flushAfterSecs ?? assets?.flushAfterSecs ?? 1800)
         self.owner = owner ?? coordinates.owner
         self.repo = repo ?? coordinates.repo
         self.login = login
@@ -296,7 +353,8 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case keywords, senderAllowlist, bannedSenders, model, maxPerTick, owner, repo, login
+        case keywords, senderAllowlist, bannedSenders, model, maxPerTick, flushAfterSecs, owner,
+             repo, login
         case keywordsRaw, senderAllowlistRaw
     }
 
@@ -312,6 +370,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
                   bannedSenders: try c.decodeIfPresent([String].self, forKey: .bannedSenders) ?? [],
                   model: try c.decodeIfPresent(String.self, forKey: .model),
                   maxPerTick: try c.decodeIfPresent(Int.self, forKey: .maxPerTick),
+                  flushAfterSecs: try c.decodeIfPresent(Int.self, forKey: .flushAfterSecs),
                   owner: try c.decodeIfPresent(String.self, forKey: .owner),
                   repo: try c.decodeIfPresent(String.self, forKey: .repo),
                   login: try c.decodeIfPresent(String.self, forKey: .login) ?? "")
@@ -324,6 +383,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         try c.encode(bannedSenders, forKey: .bannedSenders)
         try c.encode(model, forKey: .model)
         try c.encode(maxPerTick, forKey: .maxPerTick)
+        try c.encode(flushAfterSecs, forKey: .flushAfterSecs)
         try c.encode(owner, forKey: .owner)
         try c.encode(repo, forKey: .repo)
         try c.encode(login, forKey: .login)

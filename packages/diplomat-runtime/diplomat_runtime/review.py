@@ -27,8 +27,9 @@ from dataclasses import dataclass, replace
 from enum import Enum
 
 from . import appconfig, comms, core, runner
-from .configbase import PRSweepConfig
+from .configbase import PRSweepConfig, listed_payload
 from .depths import DepthLadder
+from .prref import LocalRepo
 from .prtarget import PRTarget
 
 
@@ -108,6 +109,8 @@ class ReviewConfig(PRSweepConfig):
     include_drafts: bool = True
     include_ready: bool = True
     specific_pr: str = ""
+    # The checkouts listed in Settings that a pasted link in ``specific_pr`` may name.
+    local_repos: tuple[LocalRepo, ...] = ()
     # The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     final_pass: bool = False
     # Soft-approve: when a review-only PR comes back perfectly clean, submit a COMMENT
@@ -195,12 +198,14 @@ class ReviewConfig(PRSweepConfig):
         Same depth and same action toggles, because they are what the operator chose;
         only the scope changes. The disposition comes from the sweep's own target
         rather than a fresh ``gh`` poll: a sweep already knows whose PRs it asked for,
-        and polling per PR would be one shell-out apiece to re-learn it."""
+        and polling per PR would be one shell-out apiece to re-learn it. No listed
+        checkouts: a bare number never reaches one, so they would only be stored."""
         return replace(
             self,
             target=PRTarget.SPECIFIC,
             specific_pr=str(number),
             specific_author=self.disposition,
+            local_repos=(),
         )
 
     def prompt_payload(self) -> dict:
@@ -224,6 +229,7 @@ class ReviewConfig(PRSweepConfig):
             "finalPass": self.final_pass,
             "softApprove": self.soft_approve,
             "specificAuthor": self.disposition.value,
+            **listed_payload(self.local_repos),
         }
 
     def build_prompt(self) -> str:
@@ -361,7 +367,7 @@ def write_prompt(prompt: str) -> str:
     return path
 
 
-def stage_opencode_session(prompt_file: str) -> str | None:
+def stage_opencode_session(prompt_file: str, checkout: str | None = None) -> str | None:
     """Mint an OpenCode 2.x run's session and stage the two bodies that start it
     (:func:`runner.agent_command`). The id, or ``None`` when the selected runner is not
     OpenCode 2.x — every other spawn stages nothing here.
@@ -371,6 +377,9 @@ def stage_opencode_session(prompt_file: str) -> str | None:
 
     A caller with a run directory binds the id there before spawning
     (:func:`agentregistry.bind_session`); the mesh node has none, and runs it unbound.
+
+    ``checkout`` is the directory the session works in when it is not
+    :func:`repo_path`; see :func:`shell_command`.
     """
     from . import usagescan
 
@@ -381,7 +390,8 @@ def stage_opencode_session(prompt_file: str) -> str | None:
         with open(prompt_file, encoding="utf-8") as fh:
             prompt = fh.read()
         bodies = (runner.opencode_session_body(
-                      session_id, os.path.realpath(repo_path()), runner.model()),
+                      session_id, os.path.realpath(checkout or repo_path()),
+                      runner.model()),
                   runner.opencode_prompt_body(prompt))
         for path, body in zip(runner.opencode_staged(prompt_file), bodies):
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -405,7 +415,8 @@ def user_shell() -> str:
 def shell_command(prompt_file: str, done_path: str | None = None,
                   pid_path: str | None = None, port: int | None = None,
                   settings_file: str | None = None,
-                  opencode_session: str | None = None) -> str:
+                  opencode_session: str | None = None,
+                  checkout: str | None = None) -> str:
     """``cd '<repo>' 2>/dev/null; unset DIPLOMAT_SLACK_TOKEN; <agent>; [{ printf %s $? > done; } 2>/dev/null || :;] exec "$SHELL" -i``
 
     ``<agent>`` is :func:`runner.agent_command` — ``claude "$(cat '<file>')"``, another
@@ -498,8 +509,11 @@ def shell_command(prompt_file: str, done_path: str | None = None,
 
     When the operator configured an agent token, everything after that ``unset`` runs
     behind :func:`token_export`, whose export the agent inherits.
+
+    ``checkout`` replaces :func:`repo_path` as ``<repo>``: a wizard run on a link to
+    one of the other checkouts listed in Settings works in that one.
     """
-    repo = shlex.quote(repo_path())
+    repo = shlex.quote(checkout or repo_path())
     agent_cmd = runner.agent_command(prompt_file, port, settings_file, opencode_session)
     done = (f"{{ printf %s $? > {shlex.quote(done_path)}; }} 2>/dev/null || :; "
             if done_path else "")
@@ -613,7 +627,8 @@ def agent_argv(prompt_file: str, done_path: str | None = None,
                pid_path: str | None = None, port: int | None = None,
                settings_file: str | None = None,
                session: str | None = None,
-               opencode_session: str | None = None) -> list[str]:
+               opencode_session: str | None = None,
+               checkout: str | None = None) -> list[str]:
     """What the terminal is asked to run: the agent under the user's INTERACTIVE
     shell (``-i``, so their rc is sourced and a `claude` alias resolves — a plain
     `bash -c` gets neither), inside a tmux session of its own wherever tmux exists.
@@ -633,7 +648,7 @@ def agent_argv(prompt_file: str, done_path: str | None = None,
     """
     return terminal_argv(
         shell_command(prompt_file, done_path, pid_path, port, settings_file,
-                      opencode_session),
+                      opencode_session, checkout),
         session=session)
 
 
@@ -702,7 +717,8 @@ def spawn_env() -> dict:
 def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = None,
           pid_path: str | None = None, prompt_file: str | None = None,
           port: int | None = None, settings_file: str | None = None,
-          session: str | None = None, opencode_session: str | None = None) -> str:
+          session: str | None = None, opencode_session: str | None = None,
+          checkout: str | None = None) -> str:
     """Stage the prompt, open a new terminal window, run the agent. Returns the
     prompt file path. Fully detached from the applet.
 
@@ -713,13 +729,14 @@ def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = 
     :func:`shell_command`. ``prompt_file`` skips the staging when
     the caller has already written the prompt somewhere it wants to keep it (the run
     directory in :mod:`.agentregistry`). ``session`` names the run's tmux session, so a
-    backstop can close its window without a tty — see :func:`terminal_argv`."""
+    backstop can close its window without a tty — see :func:`terminal_argv`.
+    ``checkout`` is where the agent works when that is not :func:`repo_path`."""
     check_token()
     term = resolved(preferred)
     file = prompt_file or write_prompt(prompt)
     argv = [term.exec_name, *term.prefix,
             *agent_argv(file, done_path, pid_path, port, settings_file, session,
-                        opencode_session)]
+                        opencode_session, checkout)]
     try:
         popen_detached(argv, env=spawn_env())
     except OSError as exc:

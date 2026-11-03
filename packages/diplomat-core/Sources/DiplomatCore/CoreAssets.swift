@@ -196,6 +196,8 @@ public enum CoreAssets {
         public struct Classifier: Decodable {
             public let instructions: String
             public let input: String
+            public let contextLabel: String
+            public let messageLabel: String
         }
         public struct Investigate: Decodable {
             public let intro: String
@@ -208,6 +210,9 @@ public enum CoreAssets {
         public let pollSecs: Int
         public let minPollSecs: Int
         public let maxPerTick: Int
+        public let flushAfterSecs: Int
+        public let contextMessages: Int
+        public let contextHours: Int
         public let indexLagSecs: Int
         public let seenLimit: Int
         public let searchCount: Int
@@ -230,7 +235,8 @@ public enum CoreAssets {
         public internal(set) var schema: String = ""
 
         private enum CodingKeys: String, CodingKey {
-            case pollSecs, minPollSecs, maxPerTick, indexLagSecs, seenLimit, searchCount,
+            case pollSecs, minPollSecs, maxPerTick, flushAfterSecs, contextMessages, contextHours,
+                 indexLagSecs, seenLimit, searchCount,
                  maxSearchPages, catchUpHours, httpTimeoutSecs, loginRefreshSecs,
                  loginRefreshTimeoutSecs, slackBudgetSecs, maxProfileReads, model, classifierTimeoutSecs,
                  maxLogBytes, labelSummaryMax, queries, classifier, investigate

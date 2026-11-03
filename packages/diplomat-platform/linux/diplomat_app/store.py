@@ -36,6 +36,7 @@ from diplomat_runtime import (
     comms,
     core,
     diskfloor,
+    localrepos,
     opencodeapi,
     promptcore,
     review,
@@ -45,6 +46,7 @@ from diplomat_runtime import (
     tmuxwatch,
 )
 from diplomat_runtime.models import API, Filters, Fmt, OpenIssue, OpenPR
+from diplomat_runtime.prref import LocalRepo
 from diplomat_runtime.prtarget import PRTarget
 from . import (
     autofixmonitor,
@@ -259,6 +261,9 @@ class Store(QObject):
     ban_noticed = Signal(str, str)
     # A tick's findings, handed to the Qt thread, where the queue is changed.
     _comms_ticked = Signal(object)
+    # Emitted when the other checkouts listed in Settings change, so the wizards
+    # re-judge a link they are already holding.
+    local_repos_changed = Signal()
 
     # How many agent screens must be read without once showing the CLI's interrupt
     # hint before that is worth reporting. High, because a quiet machine legitimately
@@ -467,6 +472,10 @@ class Store(QObject):
         self._workers_lock = threading.Lock()
 
         self._settings = app_settings()
+        # The checkouts behind `other_repo_paths`, resolved on first read and again
+        # whenever the list is set: each is a `git` call, and the wizards read this on
+        # every keystroke.
+        self._local_checkouts: list[localrepos.Checkout] | None = None
 
         # Re-point a hidden default selection.
         if self.selected in self.hidden_tools:
@@ -579,6 +588,33 @@ class Store(QObject):
     @repo_path_override.setter
     def repo_path_override(self, value: str) -> None:
         appconfig.set_value(appconfig.REPO_ROOT, value)
+
+    @property
+    def other_repo_paths(self) -> list[str]:
+        """The checkouts besides the repo root that a wizard accepts a pasted link to
+        (Settings → OTHER REPOS), as picked.
+
+        In QSettings rather than :mod:`appconfig`: only a wizard press reads it, and a
+        run on one of them is never routed over the mesh, so no node needs it."""
+        return [str(p) for p in (self._settings.value("otherRepoPaths", [], list) or [])]
+
+    @other_repo_paths.setter
+    def other_repo_paths(self, value: list[str]) -> None:
+        self._settings.setValue("otherRepoPaths", list(value))
+        self._local_checkouts = localrepos.resolve(list(value))
+        self.local_repos_changed.emit()
+
+    @property
+    def local_checkouts(self) -> list[localrepos.Checkout]:
+        """:attr:`other_repo_paths`, each with the GitHub repos it answers for."""
+        if self._local_checkouts is None:
+            self._local_checkouts = localrepos.resolve(self.other_repo_paths)
+        return self._local_checkouts
+
+    @property
+    def local_repos(self) -> tuple[LocalRepo, ...]:
+        """Every repo the listed checkouts answer for: the wizards' ``local_repos``."""
+        return localrepos.local_repos(self.local_checkouts)
 
     @property
     def agent_runner(self) -> str:
@@ -1536,7 +1572,10 @@ class Store(QObject):
             outside_allowlist = job.counter == "review_requests" and not (
                 autofix.author_allowed(job.author_login or "", self.review_allowlist)
             )
-            agent_on_pr = bool(job.pr_url) and self._in_flight(job.pr_url)
+            # Keyed on the number, as the claim on ``_dispatching_prs`` above is: a job
+            # with a link and no number is a PR of another checkout, which shares its
+            # numbering with ours only by coincidence.
+            agent_on_pr = job.pr_number is not None and self._in_flight(job.pr_url or "")
             # The disk first: it outranks every other hold on auto work. Measured on
             # the fuller of the two volumes an agent fills: the repo root (its
             # worktree) and ~/.diplomat (the tool caches).
@@ -1661,7 +1700,8 @@ class Store(QObject):
                 try:
                     self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
                                         source, job.ledger_key,
-                                        label=row_label, kind=job.kind)
+                                        label=row_label, kind=job.kind,
+                                        checkout=job.checkout)
                 except review.SpawnError as exc:
                     activity.log(source, "spawn-failed",
                                  f"{job.label} failed to spawn: {exc}")
@@ -1783,7 +1823,7 @@ class Store(QObject):
 
     def _spawn_tracked(self, prompt: str, url: str | None, number: int | None,
                        source: str, ledger_key: str = "", label: str = "",
-                       kind: str = "") -> None:
+                       kind: str = "", checkout: str | None = None) -> None:
         """Register a run, then spawn its agent into it. Raises
         :class:`review.SpawnError` when the run can't be booked or no terminal
         launched; the run is forgotten unless the book refuses that write too.
@@ -1815,6 +1855,9 @@ class Store(QObject):
         run has no server of its own and gets no port: its session is minted and staged
         instead (:func:`review.stage_opencode_session`) and bound to the run before the
         spawn, so the probe asks the per-user service about it from the first tick.
+
+        ``checkout`` is where the agent works when that is not the repo root
+        (:attr:`autofix.AgentJob.checkout`).
         """
         now = time.time()
         try:
@@ -1829,15 +1872,17 @@ class Store(QObject):
             raise review.SpawnError(
                 f"couldn't register the run: {exc.strerror or exc}") from exc
         chosen = agentregistry.stage_runner(record.run_id)
+        if checkout:
+            agentregistry.stage_directory(record.run_id, checkout)
         port = None
-        staged = {}
+        staged = {"checkout": checkout} if checkout else {}
         try:
             if chosen == runner.OPENCODE:
                 session_id = review.stage_opencode_session(
-                    str(agentregistry.prompt_path(record.run_id)))
+                    str(agentregistry.prompt_path(record.run_id)), checkout)
                 if session_id:
                     agentregistry.bind_session(record.run_id, session_id)
-                    staged = {"opencode_session": session_id}
+                    staged["opencode_session"] = session_id
                 else:
                     port = agentregistry.stage_port(record.run_id)
             review.spawn(prompt, self.terminal,
@@ -3346,7 +3391,7 @@ class Store(QObject):
                 plan = self._comms_poll_once()
             except Exception as exc:  # noqa: BLE001 — a tick must never stop the timer
                 plan = {"at": datetime.now().astimezone(), "error": str(exc),
-                        "me": None, "items": []}
+                        "me": None, "pings": [], "items": []}
             finally:
                 self._comms_lock.release()
             self._comms_ticked.emit(plan)
@@ -3367,8 +3412,7 @@ class Store(QObject):
                 effect = comms.effect(decision, message, toggles, settings)
             except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
                 effect = {"kind": "none", "error": str(exc)}
-            entry = {"message": message, "decision": decision, "effect": effect,
-                     "stranded": bool(it.get("stranded"))}
+            entry = {"message": message, "decision": decision, "effect": effect}
             if effect.get("kind") in ("review", "fix_issue"):
                 entry["target"] = self._comms_lookup(effect["kind"],
                                                      int(effect.get("number") or 0))
@@ -3378,7 +3422,7 @@ class Store(QObject):
         with self._comms_feed_lock:
             self._comms_in_flight |= {str(e["message"].get("id", "")) for e in items}
         return {"at": at, "error": result.get("error"), "me": result.get("me"),
-                "items": items, "notices": result["notices"]}
+                "pings": result["pings"], "items": items, "notices": result["notices"]}
 
     def _comms_stranded(self, fresh: list[dict]) -> list[dict]:
         """Twin of ``applyComms``' first pass: a logged ping with no action, oldest first.
@@ -3391,7 +3435,7 @@ class Store(QObject):
             logged = comms.feed()
         except (RuntimeError, promptcore.CoreBinaryMissing, ValueError):
             return []
-        return [{"message": i["message"], "decision": i["decision"], "stranded": True}
+        return [{"message": i["message"], "decision": i["decision"]}
                 for i in reversed(logged)
                 if not i.get("outcome") and i.get("decision")
                 and str(i["message"].get("id", "")) not in skip]
@@ -3426,12 +3470,13 @@ class Store(QObject):
                 "state": str(obj.get("state") or "")}
 
     def _apply_comms_tick(self, plan: dict) -> None:
-        """The Qt-thread half of a tick: publish what it found and act on each ping. A
-        stranded one (:meth:`_comms_stranded`) is not notified.
+        """The Qt-thread half of a tick: publish what it found, notify each new ping, and
+        act on each triaged one.
 
-        A sender on the list now, or banned by an earlier ping of this apply, has
-        nothing else acted on, and no ping of theirs is notified: the ban's own
-        notification says it."""
+        A ping is notified once, in the tick that takes it, once that tick's answers are
+        acted on; its triage, in that tick or a later one, notifies nothing. A sender on
+        the list now, or banned by an earlier ping of this apply, has nothing else acted
+        on, and no ping of theirs is notified: the ban's own notification says it."""
         items = plan.get("items") or []
         try:
             self.comms_last_poll = plan.get("at")
@@ -3452,10 +3497,10 @@ class Store(QObject):
             self.refresh_comms_feed()
             if items or notices:
                 self.refresh_activity()
-                if self.comms_notify and self.comms_enabled:
-                    for entry in items:
-                        if self._comms_notifies(entry):
-                            self.comms_pinged.emit(*self._comms_notification(entry["message"]))
+            if self.comms_notify and self.comms_enabled:
+                for message in plan.get("pings") or []:
+                    if str(message.get("userID") or "") not in banned_now:
+                        self.comms_pinged.emit(*self._comms_notification(message))
         finally:
             with self._comms_feed_lock:
                 self._comms_in_flight -= {str(e["message"].get("id", "")) for e in items}
@@ -3486,15 +3531,6 @@ class Store(QObject):
     def comms_sender(message: dict) -> str:
         """Twin of ``CommsMessage.sender``."""
         return str(message.get("userName") or message.get("userID") or "")
-
-    @staticmethod
-    def _comms_notifies(entry: dict) -> bool:
-        """A banned sender's message is not news, and a ban announces itself
-        (:attr:`ban_noticed`)."""
-        return (not entry.get("stranded")
-                and not entry.get("sender_banned")
-                and not comms.from_banned_sender(entry.get("decision"))
-                and (entry.get("effect") or {}).get("kind") != "ban")
 
     def _comms_notification(self, message: dict) -> tuple[str, str]:
         """Worded as ``CommsNotifier.post`` words it."""

@@ -74,7 +74,7 @@ struct IssueWizardView: View {
     }
 
     private var config: IssueConfig {
-        IssueConfig(
+        var cfg = IssueConfig(
             depth: depth.id,
             target: target,
             username: username,
@@ -85,6 +85,8 @@ struct IssueWizardView: View {
             openPRs: openPRs,
             commentOnIssue: commentOnIssue,
             includeFeatures: includeFeatures)
+        cfg.localRepos = store.localRepos
+        return cfg
     }
 
     var body: some View {
@@ -172,11 +174,9 @@ struct IssueWizardView: View {
         }
     }
 
-    /// A hint under the issue field when a pasted URL points at a different repo.
+    /// A hint under the issue field when a pasted URL points at an unknown repo.
     private var issueWarning: String? {
-        guard config.issueRef.repoMismatch else { return nil }
-        let (owner, repo) = config.targetRepo
-        return "That issue isn't in \(owner)/\(repo)."
+        config.issueRef.mismatchWarning("issue", anyListed: !store.localRepos.isEmpty)
     }
 
     private var blurbRow: some View {
@@ -241,7 +241,7 @@ struct IssueWizardView: View {
                             // Only a named issue is a session the mesh could place: a
                             // sweep opens none, it queues one fix per issue for this
                             // machine's own cap to start.
-                            routable: target == .specific,
+                            routable: target == .specific && config.checkout == nil,
                             action: spawn)
     }
 
@@ -250,8 +250,7 @@ struct IssueWizardView: View {
     /// sweep is queued an issue at a time and each of those rows is labelled by its own
     /// `Store.RequestedWork`.
     private var trackingLabel: String {
-        let n = config.issueRef.number.map { "#\($0)" } ?? "issue"
-        return "Issues · \(n) · \(depth.title)"
+        return "Issues · \(config.issueRef.label ?? "issue") · \(depth.title)"
     }
 
     private func spawn() {
@@ -266,7 +265,7 @@ struct IssueWizardView: View {
         }
         // Mesh path: hand the job to the local node (it picks the executor, with
         // failover) instead of opening a terminal here — mirrors the Linux wizards.
-        if MeshSpawnRow.isLive(store), useMesh {
+        if MeshSpawnRow.isLive(store), useMesh, cfg.checkout == nil {
             meshDispatching = true
             status = "Dispatching over the mesh…"
             AuditLog.log("panel", "issues", "\(trackingLabel) · via mesh")
@@ -288,7 +287,7 @@ struct IssueWizardView: View {
                                  label: trackingLabel, prompt: cfg.buildPrompt(),
                                  prURL: nil, prNumber: nil,
                                  authorLogin: nil, duty: "issues",
-                                 workKey: "", counter: nil)
+                                 workKey: "", counter: nil, directory: cfg.checkout)
         status = "Launching \(term.title)…"
         Task {
             status = statusText(for: await store.dispatchAgent(job, source: .panel),

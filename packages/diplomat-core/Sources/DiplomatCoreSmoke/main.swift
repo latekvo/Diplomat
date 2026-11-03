@@ -198,6 +198,65 @@ check(PRRef.parse("not-a-pr", owner: cfg.owner, repo: cfg.repo).number == nil)
 check(PRRef.parse("+337", owner: cfg.owner, repo: cfg.repo).number == nil)
 check(PRRef.parse("#+337", owner: cfg.owner, repo: cfg.repo).number == nil)
 check(PRRef.parse("٣٣٧", owner: cfg.owner, repo: cfg.repo).number == nil)
+// A link to a listed checkout is accepted and resolves to it; the configured repo
+// outranks a listed one with the same coordinates, and an unlisted repo still mismatches.
+let radon = PRRef.LocalRepo(owner: "software-mansion", repo: "radon", path: "/tmp/radon")
+let twin = PRRef.LocalRepo(owner: cfg.owner, repo: cfg.repo, path: "/tmp/twin")
+let listed = PRRef.parse("https://github.com/Software-Mansion/Radon/pull/291",
+                         owner: cfg.owner, repo: cfg.repo, also: [twin, radon])
+check(listed.number == 291 && listed.isValid && listed.repo == radon)
+check(PRRef.parse("software-mansion/radon#7", owner: cfg.owner, repo: cfg.repo,
+                  also: [radon]).repo == radon)
+check(PRRef.parse("\(cfg.owner)/\(cfg.repo)#9", owner: cfg.owner, repo: cfg.repo,
+                  also: [twin]).repo == nil)
+check(PRRef.parse("https://github.com/other/proj/pull/5", owner: cfg.owner, repo: cfg.repo,
+                  also: [radon]).repoMismatch)
+check(PRRef.parse("291", owner: cfg.owner, repo: cfg.repo, also: [radon]).repo == nil)
+// The configs follow the resolved repo in single-item mode only: a sweep with a listed
+// link left in its field still targets, and works in, the configured repo.
+var radonReview = single("https://github.com/software-mansion/radon/pull/291")
+radonReview.localRepos = [radon]
+check(radonReview.targetRepo == ("software-mansion", "radon") && radonReview.checkout == "/tmp/radon")
+check(radonReview.buildPrompt().contains("software-mansion/radon"))
+check(!radonReview.buildPrompt().contains("\(cfg.owner)/\(cfg.repo)"))
+radonReview.target = .mine
+check(radonReview.targetRepo == (cfg.owner, cfg.repo) && radonReview.checkout == nil)
+var radonIssue = IssueConfig(target: .specific,
+                             specificIssue: "https://github.com/software-mansion/radon/issues/4")
+check(!radonIssue.isValid)
+radonIssue.localRepos = [radon]
+check(radonIssue.isValid && radonIssue.checkout == "/tmp/radon"
+      && radonIssue.buildPrompt().contains("software-mansion/radon"))
+var radonConflict = ConflictConfig(target: .specific,
+                                   specificPR: "https://github.com/software-mansion/radon/pull/291")
+radonConflict.localRepos = [radon]
+check(radonConflict.isValid && radonConflict.checkout == "/tmp/radon"
+      && radonConflict.buildPrompt().contains("software-mansion/radon"))
+// A checkout's GitHub remotes, in every URL form git writes, upstream first.
+for url in ["git@github.com:software-mansion/radon.git", "https://github.com/software-mansion/radon",
+            "https://github.com/software-mansion/radon.git/", "ssh://git@github.com/software-mansion/radon.git",
+            "https://user@github.com/software-mansion/radon.git",
+            "ssh://git@github.com:22/software-mansion/radon.git"] {
+    check(PRRef.LocalRepo.coordinates(remoteURL: url) ?? ("", "") == ("software-mansion", "radon"), url)
+}
+check(PRRef.LocalRepo.coordinates(remoteURL: "git@gitlab.com:software-mansion/radon.git") == nil)
+check(PRRef.LocalRepo.coordinates(remoteURL: "https://github.com.evil.io/a/b") == nil)
+check(PRRef.LocalRepo.coordinates(remoteURL: "/srv/git/radon.git") == nil)
+let remotes = """
+remote.mine.url git@github.com:me/thing.git
+remote.origin.url git@github.com:me/radon.git
+remote.gitlab.url git@gitlab.com:x/y.git
+remote.upstream.url https://github.com/software-mansion/radon.git
+remote.dup.url https://github.com/Software-Mansion/Radon
+"""
+check(PRRef.LocalRepo.entries(path: "/r", remotes: remotes).map(\.slug)
+      == ["software-mansion/radon", "me/radon", "me/thing"])
+check(PRRef.LocalRepo.entries(path: "/r", remotes: "").isEmpty)
+// A queued config stored before the field existed still decodes.
+var stored = try JSONSerialization.jsonObject(with: JSONEncoder().encode(single("337"))) as! [String: Any]
+stored.removeValue(forKey: "localRepos")
+check((try? JSONDecoder().decode(ReviewConfig.self,
+                                 from: JSONSerialization.data(withJSONObject: stored))) != nil)
 print("PR-reference assertions passed")
 
 section("mesh model + snapshot decode")
@@ -2629,6 +2688,11 @@ check(!kt.contains("CASE A") && !kt.contains("CASE B"), "no case branching")
 check(kt.contains("SOMEONE ELSE'S"), "review-only framing")
 check(kt.contains("ABSOLUTELY DO NOT touch their branch"), "reviewOnly block present")
 check(kt.contains("Anything you post on someone else's PR goes in ONE formal GitHub review"), "leaveReviews block present")
+// A reply on an existing thread reacts to what the author said there, never a bare repeat.
+check(kt.contains("A reply that disputes the finding without explaining why"), "an unexplained dispute gets a question")
+check(kt.contains("judge the explanation, not the finding. If it holds, post nothing more"), "an explanation that holds ends the thread")
+check(kt.contains("re-running the same reproduction is not new evidence"), "a repeated repro is not a reply")
+check(!km.contains("judge the explanation"), "a no-reviews prompt carries no thread-reply rules")
 // The lifecycle, step by step: opened PENDING, filled inside, submitted once.
 check(kt.contains("with NO `event` field leaves the review PENDING"), "the review is opened pending")
 check(kt.contains("one pending review per person per PR"), "a leftover pending review is handled")
@@ -2692,6 +2756,7 @@ let ktv = ReviewConfig(depth: "max", target: .specific, me: "latekvo",
                        specificPR: "500", finalPass: true, specificAuthor: .theirs).buildPrompt()
 check(ktv.contains("SOMEONE ELSE'S"), "review-only framing still present with verdict")
 check(ktv.contains("still APPROVE"), "trusted author ⇒ finalPass APPROVE-verdict block present")
+check(ktv.contains("gets a reply on that thread, under the reply rules above") && !ktv.contains("(\"Still present as of <commit_hash>\"), never a fresh comment"), "finalPass defers to the thread-reply rules")
 check(!ktv.contains("Do NOT submit an APPROVE"), "trusted author ⇒ no no-verdict block")
 check(!ktv.contains("Thank you for contributing"), "hard verdict outranks soft-approve")
 check(ktv.contains("COMMENT unless a verdict instruction below explicitly tells you to APPROVE"),
