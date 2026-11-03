@@ -91,7 +91,7 @@ def _version_key(name: str) -> list[int]:
 
 
 def resolve_node() -> str | None:
-    """Find a usable node without depending on a minimal tray PATH."""
+    """Find a usable node without depending on the app's minimal PATH."""
     env = os.environ.get("DIPLOMAT_NODE")
     if env and os.path.exists(env):
         return env
@@ -134,7 +134,7 @@ def ensure_deps() -> bool:
     node = resolve_node()
     if not npm:
         return False
-    # npm's own shebang is `env node`; a minimal tray PATH may lack node, so
+    # npm's own shebang is `env node`; the app's minimal PATH may lack node, so
     # prepend node's directory before shelling out.
     child_env = dict(os.environ)
     if node:

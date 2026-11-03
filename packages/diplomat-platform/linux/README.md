@@ -1,6 +1,6 @@
-# Diplomat — Linux applet (Qt6 / PySide6)
+# Diplomat - Linux app (Qt6 / PySide6)
 
-The Linux port of the macOS menu-bar wrench: a **system-tray applet** with the
+The Linux port of the macOS app: a **regular desktop window** with the
 same dense panel of six `software-mansion/argent` triage tools, reverse lookup,
 the Review-PRs / Fix-issues / Resolve-conflicts / Full-E2E-test wizards, the full autonomous
 monitor stack, a Devices view of the device-allocator pool, the Mesh topology
@@ -18,9 +18,13 @@ has no portable hook for that, so the API-error watcher drives **tmux panes**
 instead. Every SPAWN opens its agent in a tmux session of its own wherever tmux is
 installed, so the watcher reaches them; an agent started any other way is outside it.
 
-Universal across desktops via Qt6's `QSystemTrayIcon` (StatusNotifierItem /
-XEmbed): works on **XFCE** (Notification Area / Status Notifier panel plugin),
-**KDE**, and **GNOME** (with an AppIndicator extension).
+Closing the window hides it and the app keeps working in the background - the
+monitors, the queue and the agents it dispatches; quitting is explicit. Where the
+desktop hosts a system tray (Qt6's `QSystemTrayIcon`, StatusNotifierItem / XEmbed:
+**XFCE**'s Notification Area / Status Notifier plugin, **KDE**, **GNOME** with an
+AppIndicator extension), a tray icon reopens the window and shows the Comms and ban
+notifications. Without one the app runs the same, minus the icon and the
+notifications.
 
 ## Agent tasks
 
@@ -158,38 +162,45 @@ here there are no session rows to sort, so the list starts at that order's *star
 ```bash
 cd linux
 pip install -r requirements.txt
-./diplomat                 # tray applet (left-click the wrench)
+./diplomat                 # opens the window
+DIPLOMAT_BACKGROUND=1 ./diplomat   # starts with no window (what every unattended launch sets)
 ```
 
-Quit from the panel's ⏻ button or the tray right-click menu. `pkill -f "python3? -m diplomat_app"`
+Closing the window keeps the app running; reopen it from the tray icon, the
+application menu, or by running `./diplomat` again (newest-wins replaces the running
+instance). Quit from **File ▸ Quit** (Ctrl+Q), the header's ⏻ button or the tray
+icon's menu. `pkill -f "python3? -m diplomat_app"`
 stops it too, but reads as a crash: with the watchdog installed (below) it is back within 5 minutes.
 
 ## Autostart on login
 
 ```bash
-./install/install-autostart.sh    # XDG autostart .desktop + the update and watchdog timers, starts it now
-./install/uninstall-autostart.sh  # removes all three and stops the app
+./install/install-autostart.sh    # autostart + app-menu .desktop entries, the update and watchdog timers; starts it now
+./install/uninstall-autostart.sh  # removes all of it and stops the app
 ```
 
-Installs `~/.config/autostart/diplomat.desktop` so the wrench reappears every
-login (the cross-desktop analogue of the macOS LaunchAgent).
+Installs `~/.config/autostart/diplomat.desktop` so Diplomat starts at every
+login with its window hidden (`DIPLOMAT_BACKGROUND=1`; the cross-desktop analogue
+of the macOS LaunchAgent), and `~/.local/share/applications/diplomat.desktop`, the
+application-menu entry that opens the window.
 
 It also installs a **systemd user timer** (`diplomat-update.timer`) that fires
 daily at **06:00** and runs the launcher headless (`DIPLOMAT_SELF_UPDATE=1`):
-fetch, merge if behind, rebuild `diplomat-core`, and relaunch a running tray
-onto it - none of it while the checkout's volume is below the
+fetch, merge if behind, rebuild `diplomat-core`, and relaunch a running app
+onto it, window hidden - none of it while the checkout's volume is below the
 [free-disk floor](../../../docs/automation.md#the-free-disk-floor). `Persistent=true`, so a 06:00 missed while the machine was off
 runs at the next boot. Without `systemctl` the install warns and carries on —
 only the schedule is lost, the Settings ▸ UPDATE button still works. Manage it
 alone with `./install/install-autoupdate.sh` / `./install/uninstall-autoupdate.sh`.
 
 A second timer, `diplomat-watchdog.timer`, runs the launcher headless every 5
-minutes (`DIPLOMAT_WATCHDOG=1`) and launches the tray if none is up, onto the
-display the last tray recorded at startup; the 06:00 run does the same. Neither
-brings back a tray you quit yourself (⏻, the tray menu, Ctrl-C): that leaves
+minutes (`DIPLOMAT_WATCHDOG=1`) and launches the app, window hidden, if none is
+up, onto the display the last instance recorded at startup; the 06:00 run does the
+same. Neither brings back an app you quit yourself (File ▸ Quit, ⏻, the tray menu,
+Ctrl-C): that leaves
 `~/.local/state/diplomat/operator-quit`, which the next launch clears. A
-hand-over to a newer tray leaves no mark, and the watchdog only acts when there
-is no tray at all, so it never contends with newest-wins or an update's
+hand-over to a newer instance leaves no mark, and the watchdog only acts when there
+is no instance at all, so it never contends with newest-wins or an update's
 relaunch. Manage it with `./install/install-watchdog.sh` /
 `./install/uninstall-watchdog.sh`.
 
@@ -252,8 +263,8 @@ the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/di
   node/peer status; the mesh itself is managed from the ⬡ Mesh screen.
 - **Update** — bring this checkout up to the latest GitHub commit (merging when
   you have local commits of your own), rebuild the `diplomat-core` binary, and
-  relaunch the tray app in place (the fresh instance replaces the running one,
-  newest-wins).
+  relaunch the app in place with its window open (the fresh instance replaces the
+  running one, newest-wins).
 
 ## Diplomat Mesh (experimental)
 
@@ -302,7 +313,7 @@ DIPLOMAT_PRINT_PROMPT=mine python -m diplomat_app  # assemble a Review prompt (m
                                                        #   issues[-single][-features] → Fix-issues prompt
 
 DIPLOMAT_SELF_UPDATE=1 python -m diplomat_app       # the unattended 06:00 update, run once
-DIPLOMAT_WATCHDOG=1 python -m diplomat_app          # launch the tray if none is up, run once
+DIPLOMAT_WATCHDOG=1 python -m diplomat_app          # launch the app if none is up, run once
 
 # Snapshot a panel state to PNG (no real display required):
 DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
@@ -317,7 +328,7 @@ DIPLOMAT_REFRESH_SECS=30 ./diplomat            # faster auto-refresh, for tuning
 The modes are `diplomat_app/headless.py`'s `MODES`. A variable that asks for one this
 build does not run - a `DIPLOMAT_*` name ending `_TEST`, `_DUMP`, `_SCAN` or `_POLL`
 that is not listed (every macOS self-test), or a flag set to anything but `1` - stops
-the launcher with exit 64 before it can start the tray.
+the launcher with exit 64 before it can start the GUI.
 
 Also overridable: `DIPLOMAT_REPO` (the agents' working dir — outranks Settings ▸
 *Repo root*, whose own default is `~/dev/<repo>`), `DIPLOMAT_CONFIG` (where the
@@ -415,7 +426,7 @@ diplomat_app/
   meshview.py     the ⬡ Mesh topology screen
   telemetryview.py  the Telemetry screen: the bell curves, the rate-limit windows, the backlog series, the token split
   widgets.py      cards, chips, rows
-  panel.py        the popup panel (header, search, grid, results, agent tasks, devices)
+  panel.py        the main window (header, search, grid, results, agent tasks, devices)
   settingsview.py two-pane settings screen
   wizardview.py   Review-PRs wizard
   conflictwizardview.py  Resolve-conflicts wizard
@@ -424,7 +435,7 @@ diplomat_app/
   headless.py     the headless modes, and the refusal of one this build does not run
   singleton.py    newest-wins pidfile
   render.py       headless PNG snapshots (UI checks)
-  app.py          QSystemTrayIcon + lifecycle
+  app.py          lifecycle, background launches, the tray icon
   __main__.py     entry point: headless modes or the GUI
 diplomat        the launcher (what the autostart .desktop execs)
 install/        build-core.sh + the autostart / auto-update (un)installers

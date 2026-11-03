@@ -425,7 +425,7 @@ packages/
         AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares
       install/                 ← build-app + the autostart / auto-update (un)installers (launchd)
       tests/                   ← installers.sh: what those two installers write, run against stubs
-    linux/                     ← Linux Qt6/PySide6 tray applet (see its README)
+    linux/                     ← Linux Qt6/PySide6 desktop app (see its README)
       diplomat_app/            ← what is this front-end's own: screens, wizards, the Store driving
                                  them, its self-update and single-instance guards, and probes.py -
                                  this platform's evidence gatherer, twin of AgentProbes.swift

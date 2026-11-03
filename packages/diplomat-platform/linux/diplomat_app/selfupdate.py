@@ -27,6 +27,12 @@ from diplomat_runtime import diskfloor
 from .singleton import SingleInstance, headless_markers
 
 
+#: Set to ``1`` for an unattended launch (login autostart, the 06:00 update's
+#: relaunch, the watchdog's revival): the app starts with its window hidden and
+#: activates nothing. Not a headless mode - the GUI runs, so newest-wins can end it.
+BACKGROUND_ENV = "DIPLOMAT_BACKGROUND"
+
+
 class UpdateError(RuntimeError):
     """A self-update step failed; str(exc) is the user-facing reason."""
 
@@ -189,17 +195,19 @@ def _state_dir() -> Path:
     )
 
 
-def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
+def relaunch(extra_env: dict[str, str] | None = None, *,
+             background: bool = False) -> subprocess.Popen:
     """Start the updated launcher detached, logging where autostart logs.
 
-    The new instance's newest-wins singleton terminates any GUI tray still
+    The new instance's newest-wins singleton terminates any GUI instance still
     running, so a caller that is one only reports "restarting…" and waits to be
     replaced - after asking :func:`relaunch_failure` whether the child died first.
 
     ``extra_env`` is merged over the current environment for the child — the
     unattended jobs use it to hand the GUI the display env (DISPLAY / Wayland /
-    D-Bus) of the tray it replaces or revives, which a bare systemd service env
-    lacks.
+    D-Bus) of the instance it replaces or revives, which a bare systemd service env
+    lacks. ``background`` (the unattended jobs) starts it with its window hidden;
+    otherwise (the Update button) it opens its window.
     """
     root = repo_root()
     launcher = linux_package(root) / "diplomat"
@@ -207,19 +215,23 @@ def relaunch(extra_env: dict[str, str] | None = None) -> subprocess.Popen:
     env = dict(os.environ)
     # Strip every headless-mode marker: the unattended jobs run with DIPLOMAT_SELF_UPDATE=1
     # or DIPLOMAT_WATCHDOG=1 in their env, and a copied env would make the child re-enter
-    # __main__.main's headless mode and exit instead of launching the GUI tray.
+    # __main__.main's headless mode and exit instead of launching the GUI.
     for marker in headless_markers():
         env.pop(marker, None)
     if extra_env:
         env.update(extra_env)
+    if background:
+        env[BACKGROUND_ENV] = "1"
+    else:
+        env.pop(BACKGROUND_ENV, None)
     argv = ["bash", str(launcher)]
     if _in_service_cgroup() and shutil.which("systemd-run"):
-        # A tray started from a systemd service stays in that unit's cgroup after the
+        # A GUI started from a systemd service stays in that unit's cgroup after the
         # oneshot ends, and systemd warns about it on every later run of the unit -
         # every 5 minutes for the watchdog. A scope of its own takes it out; systemd-run
         # execs the launcher in place, so relaunch_failure still watches the applet.
-        # It reaches the manager by XDG_RUNTIME_DIR, and the tray's may name another,
-        # so it keeps this unit's and hands the tray's on.
+        # It reaches the manager by XDG_RUNTIME_DIR, and the GUI's may name another,
+        # so it keeps this unit's and hands the GUI's on.
         argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect",
                 f"--setenv=XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']}", "--", *argv]
         env["XDG_RUNTIME_DIR"] = os.environ["XDG_RUNTIME_DIR"]
@@ -244,7 +256,7 @@ _CGROUP_FILE = Path("/proc/self/cgroup")
 
 def _in_service_cgroup() -> bool:
     """Whether this process runs in a service of the user's systemd manager, which
-    ``systemd-run --user`` can reach: the unattended jobs' units, or a tray started
+    ``systemd-run --user`` can reach: the unattended jobs' units, or a GUI started
     from an autostart entry systemd runs. A system service (a CI runner) is not one."""
     try:
         cgroup = _CGROUP_FILE.read_text().rstrip()
@@ -258,7 +270,7 @@ def relaunch_failure(child: subprocess.Popen, window: float = 3.0) -> int | None
 
     The launcher execs the applet, so the child's exit is the applet's, or
     systemd-run's where it could not start a scope: any exit inside the window,
-    0 included, is a tray that never took over (a venv without PySide6, a checkout
+    0 included, is an app that never took over (a venv without PySide6, a checkout
     that no longer imports), and it is reported instead of "restarting…" outliving
     the button and "relaunched" being logged over the old build. One still running
     is the applet coming up.
@@ -275,7 +287,7 @@ def relaunch_failure(child: subprocess.Popen, window: float = 3.0) -> int | None
 # MARK: unattended (6AM timer) path
 
 # The display/session vars a relaunched GUI needs but a systemd/launchd service
-# env doesn't carry; we lift them off the running tray's process environment.
+# env doesn't carry; we lift them off the running GUI's process environment.
 _DISPLAY_ENV_KEYS = (
     "DISPLAY",
     "WAYLAND_DISPLAY",
@@ -315,7 +327,7 @@ def _sched_log(message: str) -> None:
         pass
 
 
-# MARK: bringing a dead tray back
+# MARK: bringing a dead app back
 
 
 def _quit_marker() -> Path:
@@ -323,8 +335,8 @@ def _quit_marker() -> Path:
 
 
 def mark_operator_quit() -> None:
-    """Leave the mark that keeps the unattended jobs from bringing the tray back.
-    Set by an operator's quit only; the next tray launch clears it. Mirrors the
+    """Leave the mark that keeps the unattended jobs from bringing the app back.
+    Set by an operator's quit only; the next GUI launch clears it. Mirrors the
     macOS ``OperatorQuit``."""
     from datetime import datetime
 
@@ -351,7 +363,7 @@ def _display_env_file() -> Path:
 
 
 def record_display_env() -> None:
-    """Keep this tray's display env for a revival: once the tray is dead there is
+    """Keep this GUI's display env for a revival: once the GUI is dead there is
     no process left to lift it off, and a service env usually has none. A start with
     no display (from SSH, say) keeps the last one that had one."""
     if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
@@ -375,40 +387,41 @@ def _recorded_display_env() -> dict[str, str]:
 
 
 def revive(quietly: bool, tag: str = "") -> int:
-    """Launch the tray if none is running and the operator did not quit it.
+    """Launch the app, window hidden, if none is running and the operator did not
+    quit it.
 
-    It terminates nothing and acts only on zero trays, so it cannot contend with
-    newest-wins or a relaunch: both start the new tray before the old one goes, so
-    there is always one to see. A launch racing another start ends, through
-    newest-wins, with one tray, and nothing restarts the one it ended.
+    It terminates nothing and acts only on zero instances, so it cannot contend with
+    newest-wins or a relaunch: both start the new instance before the old one goes,
+    so there is always one to see. A launch racing another start ends, through
+    newest-wins, with one instance, and nothing restarts the one it ended.
     """
     if SingleInstance.any_running():
         return 0
     if operator_quit():
         if not quietly:
-            _sched_log(f"{tag}tray not running: quit by the operator, left closed")
+            _sched_log(f"{tag}app not running: quit by the operator, left closed")
         return 0
     env = _recorded_display_env()
     if not (env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")):
         if not quietly:
-            _sched_log(f"{tag}tray not running: no tray has recorded a display to launch onto")
+            _sched_log(f"{tag}app not running: no instance has recorded a display to launch onto")
         return 0
     try:
-        child = relaunch(env)
+        child = relaunch(env, background=True)
     except (UpdateError, OSError) as exc:
-        _sched_log(f"{tag}tray not running: launch failed: {exc}")
+        _sched_log(f"{tag}app not running: launch failed: {exc}")
         return 1
     exited = relaunch_failure(child)
     if exited is not None:
-        _sched_log(f"{tag}tray not running: launch failed: the applet exited {exited}")
+        _sched_log(f"{tag}app not running: launch failed: the applet exited {exited}")
         return 1
-    _sched_log(f"{tag}tray not running: launched it")
+    _sched_log(f"{tag}app not running: launched it")
     return 0
 
 
 def run_watchdog() -> int:
     """The systemd liveness check, every few minutes. Logs only what it did, so a
-    healthy or deliberately closed tray adds nothing to the log it shares with the
+    healthy or deliberately quit app adds nothing to the log it shares with the
     updater."""
     return revive(quietly=True, tag="watchdog: ")
 
@@ -417,14 +430,14 @@ def run_scheduled() -> int:
     """Headless daily update for the 6AM timer. Never raises; returns an exit code.
 
     Fetches, and if the checkout is behind, merges upstream and rebuilds
-    diplomat-core, then relaunches a running tray onto the new build. On every
-    other path a tray that is not running is launched unless the operator quit it
+    diplomat-core, then relaunches a running app onto the new build. On every
+    other path an app that is not running is launched unless the operator quit it
     (``revive``). A conflict or an unreachable origin is logged and left for a
     human rather than retried destructively.
 
     Nothing is fetched, merged or built while the checkout's volume is below the
     free-disk floor (:mod:`diskfloor`): a merge that hits ENOSPC halfway leaves a
-    half-updated checkout, and that checkout is the code the tray runs from.
+    half-updated checkout, and that checkout is the code the app runs from.
     """
     disk = diskfloor.lowest([str(repo_root())])
     if disk is not None and disk.low:
@@ -459,7 +472,7 @@ def run_scheduled() -> int:
         # or bash is missing (OSError) — neither is an UpdateError; catch them or the
         # traceback aborts the headless job instead of logging a build failure.
         _sched_log(f"build failed: {exc}")
-        # The tray runs from the merged checkout with the last diplomat-core that
+        # The app runs from the merged checkout with the last diplomat-core that
         # built, so a failed build still leaves one to bring back.
         revive(quietly=False)
         return 1
@@ -467,7 +480,7 @@ def run_scheduled() -> int:
     pid = SingleInstance.running_pid()
     if pid:
         try:
-            child = relaunch(_display_env_of(pid))
+            child = relaunch(_display_env_of(pid), background=True)
         except (UpdateError, OSError, subprocess.TimeoutExpired) as exc:
             # relaunch() re-raises OSError (a read-only/full XDG_STATE_HOME on the
             # log open, a missing bash) as UpdateError. The update itself already
@@ -478,14 +491,14 @@ def run_scheduled() -> int:
         exited = relaunch_failure(child)
         if exited is not None:
             # Asked again rather than assumed: the applet's newest-wins ends the old
-            # tray before it builds anything, so one that died during construction
-            # has already taken the tray it then failed to replace.
+            # instance before it builds anything, so one that died during construction
+            # has already taken the instance it then failed to replace.
             still = SingleInstance.running_pid()
             _sched_log(f"update built but the relaunched applet exited {exited}; "
                        + (f"pid {still} is still the old build" if still
                           else "no applet is running"))
             return 1
-        _sched_log(f"relaunched running tray (was pid {pid}) onto {commit}")
+        _sched_log(f"relaunched running app (was pid {pid}) onto {commit}")
     else:
         _sched_log(f"updated to {commit} in place")
         return revive(quietly=False)

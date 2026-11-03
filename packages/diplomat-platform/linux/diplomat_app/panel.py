@@ -1,20 +1,21 @@
-"""The popup panel: header, reverse-lookup search, tool grid, results pane.
+"""The main window: header, reverse-lookup search, tool grid, results pane.
 
-The Linux analogue of ContentView.swift, rendered as a frameless top-level
-window shown from the tray. Persistent inputs (search, wizard, settings) are
-built once; only data-dependent areas (grid counts, results list) are rebuilt
-when the Store changes, so typing is never interrupted by a refresh.
+The Linux analogue of ContentView.swift, as a regular decorated top-level window.
+Persistent inputs (search, wizard, settings) are built once; only data-dependent
+areas (grid counts, results list) are rebuilt when the Store changes, so typing is
+never interrupted by a refresh.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenuBar,
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
@@ -69,8 +70,7 @@ _ISSUES_TINT = "#00C7BE"
 _CONFLICT_TINT = "#32ADE6"
 _AUDIT_TINT = "#5856D6"
 
-# Panel width: the two-pane body. Fixed — every screen (Actions, Mesh,
-# Settings) renders at the same size, so switching never moves the window.
+# The window's minimum and default width: what the two-pane body needs.
 _BASE_WIDTH = 1080
 
 
@@ -241,22 +241,17 @@ class Panel(QWidget):
         self._pending_unban: str | None = None
         self._tasks_expanded = True
 
-        self.setWindowFlags(
-            Qt.WindowType.Tool
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-        )
-        # Two-pane layout (matching the macOS popover): a left monitoring column
-        # (devices · activity · bans) beside the right interactive column (search ·
-        # tool grid · results). Widened to give both panes room; height tracks the
-        # screen's safe area (availableGeometry excludes the taskbar/panel).
-        self.setFixedWidth(_BASE_WIDTH)
-        self.setFixedHeight(self._screen_high())
+        # Two-pane layout: a left monitoring column (devices · activity · bans)
+        # beside the right interactive column (search · tool grid · results).
+        self.setWindowTitle("Diplomat")
+        self.setMinimumWidth(_BASE_WIDTH)
+        self.resize(_BASE_WIDTH, self._default_height())
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
 
+        outer.setMenuBar(self._build_menu_bar())
         outer.addLayout(self._build_header())
 
         self.body = QStackedWidget()
@@ -268,10 +263,16 @@ class Panel(QWidget):
         # rather than switching to whatever happens to sit at that number.
         self._screens: dict[str, int] = {}
 
-        # Page: main
+        # Page: main. Scrolled as a whole only when the window is shorter than the
+        # tool grid; taller, it fills the window and the panes scroll on their own.
         self.main_page = QWidget()
         self._build_main_page()
-        self._screens["main"] = self.body.addWidget(self.main_page)
+        main_scroll = QScrollArea()
+        main_scroll.setWidgetResizable(True)
+        main_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        main_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        main_scroll.setWidget(self.main_page)
+        self._screens["main"] = self.body.addWidget(main_scroll)
 
         # Page: devices.
         self.devices_view = DevicesView(store)
@@ -380,14 +381,28 @@ class Panel(QWidget):
         self._update_results()
 
     @staticmethod
-    def _screen_high() -> int:
-        """Panel height: the primary screen's usable height (minus a small margin
-        so it doesn't kiss the edges), floored so it's never uselessly short."""
+    def _default_height() -> int:
+        """The height the window opens at: the primary screen's usable height, less
+        room for the title bar the window manager adds."""
         from PySide6.QtWidgets import QApplication
 
         screen = QApplication.primaryScreen()
         avail = screen.availableGeometry().height() if screen else 800
-        return max(560, avail - 16)
+        return max(400, avail - 64)
+
+    # MARK: menu bar
+
+    def _build_menu_bar(self) -> QMenuBar:
+        bar = QMenuBar(self)
+        file_menu = bar.addMenu("&File")
+        close = file_menu.addAction("&Close Window")
+        close.setShortcut(QKeySequence("Ctrl+W"))
+        close.triggered.connect(self.close)
+        file_menu.addSeparator()
+        quit_ = file_menu.addAction("&Quit")
+        quit_.setShortcut(QKeySequence("Ctrl+Q"))
+        quit_.triggered.connect(self.quit_requested.emit)
+        return bar
 
     # MARK: header
 
@@ -1209,7 +1224,7 @@ class Panel(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802
         # One immediate mesh refresh on show so the mesh screen isn't a
-        # poll-cycle stale when the panel pops open.
+        # poll-cycle stale when the window is shown.
         if self.store.mesh_enabled:
             self.store.refresh_mesh_state()
         # Likewise the free bays: an agent that finished while the panel was hidden
@@ -1226,25 +1241,8 @@ class Panel(QWidget):
 
     # MARK: window behaviour
 
-    def event(self, event) -> bool:  # noqa: N802
-        # Transient dismissal, matching the macOS MenuBarExtra(.window): hide when
-        # the user clicks/focuses outside the whole panel. We only act when focus
-        # has left this application entirely (activeWindow() is None). Our own child
-        # popups — a QComboBox dropdown, the tray context menu, the Quit dialog —
-        # either don't deactivate the panel at all (popups) or leave activeWindow()
-        # pointing at an app-owned window, so an inside interaction never hides us.
-        if event.type() == QEvent.Type.WindowDeactivate:
-            from PySide6.QtWidgets import QApplication
-
-            if QApplication.activeWindow() is None:
-                self.hide()
-        return super().event(event)
-
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        if event.key() == Qt.Key.Key_Escape:
-            if self._screen != "main":
-                self._set_screen("main")
-            else:
-                self.hide()
+        if event.key() == Qt.Key.Key_Escape and self._screen != "main":
+            self._set_screen("main")
             return
         super().keyPressEvent(event)
