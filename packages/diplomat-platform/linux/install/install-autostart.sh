@@ -72,6 +72,6 @@ echo "quit from File ▸ Quit or the ⏻ button."
 # Bring the app back within 5 minutes if it dies (soft-fail, like the update timer).
 # After the start above, so the display a revival launches onto is already recorded.
 if ! "${LINUX_DIR}/install/install-watchdog.sh"; then
-    echo "warning: watchdog timer not installed — an app that dies stays down until" >&2
+    echo "warning: watchdog timer not installed - an app that dies stays down until" >&2
     echo "         the next login." >&2
 fi

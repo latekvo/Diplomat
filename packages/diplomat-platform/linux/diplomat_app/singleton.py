@@ -109,7 +109,7 @@ class SingleInstance:
     @staticmethod
     def acquire_newest_wins() -> None:
         me = os.getpid()
-        # Terminate every older live GUI instance — whatever it's named and
+        # Terminate every older live GUI instance - whatever it's named and
         # whichever pidfile it wrote. A newer one is left alone: it ends this one.
         # The recorded pidfile pid is folded in for the common case (the scan
         # catches it too), but it MUST pass the same identity and age checks: a
