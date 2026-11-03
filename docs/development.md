@@ -232,6 +232,8 @@ DIPLOMAT_RELAUNCH_TEST=1 ...                     # self-test: a relaunch is judg
                                                      #   throwaway bundles; exit code = verdict
 DIPLOMAT_REPOPATHS_TEST=1 ...                    # self-test: which checkout the bundle names, from inside
                                                      #   it or from a copy; scratch dirs; exit code = verdict
+DIPLOMAT_POPOVER_TEST=1 ...                      # self-test: a dismissed popover reopens on the panel when
+                                                     #   Settings was up; off-screen windows; exit code = verdict
 
 # The shared core itself is independently buildable & testable (also on Linux):
 swift run DiplomatCoreSmoke                    # loads assets/, runs filter + prompt + golden-file assertions

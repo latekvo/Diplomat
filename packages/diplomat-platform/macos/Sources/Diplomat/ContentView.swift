@@ -221,7 +221,7 @@ enum PopoverPlacement {
 /// any other window sharing the class hides normally.
 enum PopoverFadeOut {
     static let duration: TimeInterval = 0.1
-    /// Posted each time the popover is dismissed (click-away, the wrench, Esc).
+    /// Posted each time the popover is ordered out.
     static let didHide = Notification.Name("DiplomatPopoverDidHide")
     /// `NSWindowOrderingMode.out` — the hide case of `orderWindow:relativeTo:`.
     private static let orderOut = 0

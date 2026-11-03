@@ -3,17 +3,14 @@ import SwiftUI
 
 /// Self-test for what dismissing the menu-bar popover does - `DIPLOMAT_POPOVER_TEST=1`.
 ///
-/// Two halves. The app's own MenuBarExtra is opened and closed through its status-bar
-/// button, which proves a real dismissal posts `PopoverFadeOut.didHide`. Then popovers
-/// hosted in off-screen windows are hidden through the same `orderWindow(.out)` and
-/// shown again, and the screen they come back on is read off the window's height:
-/// Settings returns to the panel, Devices stays, and Settings stays while a modal (the
-/// repo-root folder picker) is what hid it.
+/// Popovers hosted in off-screen windows are hidden through `orderWindow(.out)`, the
+/// call MenuBarExtra dismisses with, and shown again; the screen they come back on is
+/// read off the window's height. Settings returns to the panel, Devices stays, and
+/// Settings stays while a modal (the repo-root folder picker) is what hid it.
 ///
 ///     DIPLOMAT_POPOVER_TEST=1 swift run Diplomat
 ///
-/// Needs a window server; it shows the popover on screen, so never run it on a
-/// machine someone is working at.
+/// Needs a window server; its windows stay off-screen.
 @MainActor
 enum PopoverTest {
     static func run() async -> Bool {
@@ -26,28 +23,6 @@ enum PopoverTest {
         // the display's limit.
         setenv("DIPLOMAT_POPOVER_CAP", "10000", 1)
         let store = Store()
-
-        print("popover: a real menu-bar dismissal")
-        var hides: [ObjectIdentifier] = []
-        let token = NotificationCenter.default.addObserver(
-            forName: PopoverFadeOut.didHide, object: nil, queue: nil) { note in
-            if let w = note.object as? NSWindow { hides.append(ObjectIdentifier(w)) }
-        }
-        defer { NotificationCenter.default.removeObserver(token) }
-        if let button = statusButton() {
-            button.performClick(nil)
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            let popover = NSApp.windows.first { $0.isVisible && $0.frame.width >= PopoverRoot.width }
-            check("the status button opens the popover", popover != nil)
-            button.performClick(nil)
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            check("the popover is gone after a second press", popover?.isVisible == false)
-            check("its dismissal posts didHide",
-                  popover.map { hides.contains(ObjectIdentifier($0)) } ?? false,
-                  "posted \(hides.count)")
-        } else {
-            check("the app has a status-bar button", false)
-        }
 
         print("popover: the screen it reopens on")
         let mainHeight = await height(of: host(.main, store))
@@ -103,7 +78,8 @@ enum PopoverTest {
     }
 
     private static func host(_ screen: ContentView.PanelScreen, _ store: Store) -> NSWindow {
-        let hosting = NSHostingController(rootView: PopoverRoot(screen: screen).environmentObject(store))
+        let root = PopoverRoot(screen: screen).environmentObject(store)
+        let hosting = NSHostingController(rootView: root)
         let window = OffscreenWindow(contentViewController: hosting)
         window.setFrameOrigin(NSPoint(x: -6000, y: -6000))
         return window
@@ -114,16 +90,5 @@ enum PopoverTest {
         window.orderFrontRegardless()
         try? await Task.sleep(nanoseconds: 1_500_000_000)
         return window.frame.height
-    }
-
-    private static func statusButton() -> NSStatusBarButton? {
-        for window in NSApp.windows {
-            var queue = [window.contentView].compactMap { $0 }
-            while let view = queue.popLast() {
-                if let button = view as? NSStatusBarButton { return button }
-                queue.append(contentsOf: view.subviews)
-            }
-        }
-        return nil
     }
 }

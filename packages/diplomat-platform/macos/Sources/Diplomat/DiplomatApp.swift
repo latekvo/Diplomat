@@ -220,9 +220,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_REPOPATHS_TEST"] == "1" {
             exit(RepoPathsTest.run() ? 0 : 1)
         }
-        // Popover self-test: a real menu-bar dismissal reaches the panel, and the panel
-        // reopens on the main screen when Settings was up. Opens the popover and hosts
-        // off-screen windows of its own. Exit code = pass/fail.
+        // Popover self-test: a dismissed popover reopens on the panel when Settings was
+        // up, and not when a modal hid it. Off-screen windows only. Exit code = pass/fail.
         if env["DIPLOMAT_POPOVER_TEST"] == "1" {
             Task { @MainActor in exit(await PopoverTest.run() ? 0 : 1) }
         }

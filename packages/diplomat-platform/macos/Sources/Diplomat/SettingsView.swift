@@ -10,7 +10,7 @@ import DiplomatCore
 ///
 /// A row is its title and its control. What a setting does is drawn only while the
 /// header's *Explain* switch is on; the line under a row is reserved for live state —
-/// a problem, a test result, an update in progress — so it is never boilerplate.
+/// a problem, a test result, an update in progress.
 struct SettingsView: View {
     @EnvironmentObject var store: Store
     @Binding var isPresented: Bool
@@ -503,9 +503,10 @@ struct SettingsView: View {
     }
 
     private static let reviewAllowlistDetail = """
-        Blank = anyone who requests my review. Commas or spaces between logins; a leading @ is fine. Unlike the switch \
-        above, an excluded request is dropped rather than queued — no agent and no \
-        row — and the Review wizard still reviews anyone. The ban list wins over this.
+        Blank = anyone who requests my review. Commas or spaces between logins; a \
+        leading @ is fine. Unlike the switch above, an excluded request is dropped \
+        rather than queued — no agent and no row — and the Review wizard still reviews \
+        anyone. The ban list wins over this.
         """
 
     /// Free text rather than a chip per login: the list is edited far more rarely than
@@ -589,7 +590,8 @@ struct SettingsView: View {
     /// bounds how many automatic agents run at once, this bounds whether any of them
     /// should start at all.
     private static let autoBudgetDetail = """
-        Wait for a window to refill rather than start what won't fit. Priced from Telemetry → limit per task: against both rate-limit windows under \
+        Wait for a window to refill rather than start what won't fit. Priced from \
+        Telemetry → limit per task: against both rate-limit windows under \
         Claude Code, or — under a runner billed in money — against what one task costs \
         on the model it runs, and what your OpenRouter key and credit balance have \
         left. Higher confidence is stricter. Held work waits in Agent tasks, and \
@@ -712,7 +714,8 @@ struct SettingsView: View {
     }
 
     private static let apiWatchDetail = """
-        A 529 stops an agent dead; this types it back into motion. Watches the terminal sessions an agent is running in — iTerm and Terminal tabs, \
+        A 529 stops an agent dead; this types it back into motion. Watches the \
+        terminal sessions an agent is running in — iTerm and Terminal tabs, \
         and the tmux panes neither of them shows, which is where a Ghostty agent lives — \
         and sends \
         "\(ApiErrorWatcher.continueMessage)" when a Claude API error shows up. A session \
@@ -825,7 +828,8 @@ struct SettingsView: View {
     static func commsErrorPill(_ error: String) -> String { Store.snippet(error, max: 48) }
 
     private static let commsDetail = """
-        DMs, @-mentions and keywords become pings; an ask in one is queued. Searches Slack through Slack's MCP server, signed in as you: messages in your \
+        DMs, @-mentions and keywords become pings; an ask in one is queued. Searches \
+        Slack through Slack's MCP server, signed in as you: messages in your \
         DMs, messages that @-mention you, and messages carrying a keyword, skipping your \
         own, bots' and other workspaces'. Each new one is a ping on the Comms screen, \
         and is triaged by one claude call that has no tools, no MCP servers and no \
