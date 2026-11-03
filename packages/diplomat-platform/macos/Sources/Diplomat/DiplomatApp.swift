@@ -249,6 +249,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_REPOPATHS_TEST"] == "1" {
             exit(RepoPathsTest.run() ? 0 : 1)
         }
+        // Reopen self-test: a window closed on Settings reopens on the panel, one closed
+        // on another screen keeps it. Orders no window in. Exit code = pass/fail.
+        if env["DIPLOMAT_REOPEN_TEST"] == "1" {
+            Task { @MainActor in exit(await ReopenTest.run() ? 0 : 1) }
+        }
         // Relaunch self-test: proves the relaunch that ends a self-update or revives a
         // dead app starts a GUI, is judged on the instance `open` started, and that the
         // singleton spares a headless one.

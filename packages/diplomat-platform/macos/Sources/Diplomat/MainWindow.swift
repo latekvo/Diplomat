@@ -23,11 +23,12 @@ enum LaunchMode {
 final class MainWindow {
     static let frameName = "DiplomatMainWindow"
     static let openSettings = Notification.Name("DiplomatOpenSettings")
+    static let didClose = Notification.Name("DiplomatMainWindowDidClose")
 
     let window: NSWindow
 
-    init(store: Store) {
-        let hosting = NSHostingController(rootView: MainRoot().environmentObject(store))
+    init(store: Store, screen: ContentView.PanelScreen = .main) {
+        let hosting = NSHostingController(rootView: MainRoot(screen: screen).environmentObject(store))
         // The window's size is the operator's, not the panel's ideal one.
         hosting.sizingOptions = []
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: MainRoot.fullWidth, height: 800),
@@ -45,6 +46,10 @@ final class MainWindow {
             window.center()
         }
         if !Headless.active { window.setFrameAutosaveName(Self.frameName) }
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+                                               object: window, queue: .main) { _ in
+            NotificationCenter.default.post(name: MainWindow.didClose, object: nil)
+        }
     }
 
     func show() {
@@ -74,20 +79,28 @@ struct MainRoot: View {
     static let minWidth: CGFloat = 480
     static let minHeight: CGFloat = 360
 
+    /// The screen the window opens on (`DIPLOMAT_REOPEN_TEST` opens it elsewhere).
+    var screen: ContentView.PanelScreen = .main
+
     var body: some View {
         GeometryReader { geo in
             if geo.size.width < MainRoot.fullWidth {
                 ScrollView([.vertical, .horizontal]) {
-                    ContentView().frame(width: MainRoot.width)
+                    panel.frame(width: MainRoot.width)
                 }
             } else {
                 ScrollView {
-                    ContentView()
+                    panel
                         .frame(width: MainRoot.width)
                         .frame(maxWidth: .infinity)
                 }
             }
         }
+    }
+
+    private var panel: ContentView {
+        ContentView(showSettings: screen == .settings, showTelemetry: screen == .telemetry,
+                    showDevices: screen == .devices, showComms: screen == .comms)
     }
 }
 

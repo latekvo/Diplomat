@@ -1022,8 +1022,6 @@ class Panel(QWidget):
         if name == "mesh" and self.store.mesh_enabled:
             # Fresh topology the moment the screen opens (the 2s poll follows).
             self.store.refresh_mesh_state()
-        if name == "settings":
-            self.store.reload_device_config()
         if name == "telemetry":
             # Re-fold on open. The screen is otherwise only repainted when a
             # sample lands (every 15 min), and the monitors append between those.
@@ -1242,6 +1240,10 @@ class Panel(QWidget):
     def hideEvent(self, event) -> None:  # noqa: N802
         # The Devices screen polls the installer only while it is on screen.
         self.devices_view.closed()
+        # Reopening lands on the panel, not on Settings. A minimize is a spontaneous
+        # hide and keeps the screen.
+        if self._screen == "settings" and not event.spontaneous():
+            self._set_screen("main")
         super().hideEvent(event)
 
     # MARK: window behaviour

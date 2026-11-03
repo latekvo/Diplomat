@@ -8,10 +8,9 @@ import DiplomatCore
 /// environment the spawns land in. Everything persists through the Store (UserDefaults,
 /// or the shared `~/.diplomat/config.json` for the knobs another process also reads).
 ///
-/// Each row states what it does in a line; the paragraph behind that line is drawn
-/// only while the header's *Explain* switch is on. The screen was previously all
-/// paragraph — a page of prose with controls embedded in it, unreadable at a glance
-/// and no faster to use on the hundredth visit than the first.
+/// A row is its title and its control. What a setting does is drawn only while the
+/// header's *Explain* switch is on; the line under a row is reserved for live state —
+/// a problem, a test result, an update in progress.
 struct SettingsView: View {
     @EnvironmentObject var store: Store
     @Binding var isPresented: Bool
@@ -19,8 +18,9 @@ struct SettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             headerRow
-            // Two columns, same layout as the main panel: identity + automation
-            // behaviour on the left, appearance + environment on the right.
+            // Two columns, same layout as the main panel: who the agents are and what
+            // they may do on the left; the panel, the watchers and the environment on
+            // the right.
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 10) {
                     identitySection
@@ -29,7 +29,6 @@ struct SettingsView: View {
                     otherReposSection
                     autofixSection
                     limitsSection
-                    commsSection
                 }
                 .frame(width: MainRoot.columnWidth, alignment: .topLeading)
 
@@ -37,6 +36,7 @@ struct SettingsView: View {
                     toolsSection
                     terminalSection
                     apiWatchSection
+                    commsSection
                     allocatorSection
                     meshSection
                     updateSection
@@ -51,7 +51,6 @@ struct SettingsView: View {
             // poll on EVERY Settings open — three GraphQL searches against the shared
             // 5000 pt/hr budget (and potential agent dispatch) from a view-appear
             // hook; the monitor's own cadence + wake trigger keep the rows fresh.
-            store.reloadDeviceConfig()
             await store.refreshAllocatorInstall()
             // Cheap local git fetch/compare — off the UI thread inside the Store.
             store.refreshUpdateStatus()
@@ -107,16 +106,17 @@ struct SettingsView: View {
         return SettingsCard(symbol: "person.crop.circle.fill", title: "IDENTITY",
                             tint: .blue, pill: pill) {
             SettingRow(title: "GitHub username",
-                       summary: override.isEmpty
-                            ? "Blank = whoever `gh` is authenticated as."
-                            : "Overriding the gh-authenticated user.",
-                       detail: "Scopes the “My …” tools and the Review wizard: which PRs "
-                             + "count as mine, and whose reviews the monitors owe.",
+                       detail: SettingsView.identityDetail,
                        stacked: true) {
                 identityField
             }
         }
     }
+
+    private static let identityDetail = """
+        Blank = whoever `gh` is authenticated as. Scopes the “My …” tools and the \
+        Review wizard: which PRs count as mine, and whose reviews the monitors owe.
+        """
 
     private var identityField: some View {
         HStack(spacing: 6) {
@@ -145,13 +145,7 @@ struct SettingsView: View {
         return SettingsCard(symbol: "terminal.fill", title: "AGENT RUNNER", tint: .purple,
                             pill: StatusPill(text: name, tint: .purple)) {
             SettingRow(title: "Which CLI a spawn runs",
-                       summary: runnerSummary,
-                       detail: foreign
-                            ? "Diplomat never holds an API key: \(name) stores its own "
-                            + "credential, and *Connect a provider* opens its login wizard, "
-                            + "which knows every provider in its catalog."
-                            : "SPAWN AGENT picks up whatever flags your shell alias for "
-                            + "`claude` gives it.",
+                       detail: runnerDetail,
                        stacked: true) {
                 Picker("Which CLI a spawn runs", selection: $store.agentRunner) {
                     ForEach(AgentRunner.allCases, id: \.self) { Text($0.label).tag($0) }
@@ -179,11 +173,19 @@ struct SettingsView: View {
         }
     }
 
-    private var runnerSummary: String {
+    private var runnerDetail: String {
+        let key = "Diplomat never holds an API key: \(store.agentRunner.label) stores its "
+            + "own credential, and *Connect a provider* opens its login wizard, which knows "
+            + "every provider in its catalog."
         switch store.agentRunner {
-        case .claude: return "SPAWN AGENT runs `claude`."
-        case .opencode: return "SPAWN AGENT runs `opencode`, on OpenCode's own model and provider."
-        case .hermes: return "SPAWN AGENT runs `hermes chat --tui`, on Hermes' own model and provider."
+        case .claude:
+            return "SPAWN AGENT runs `claude`, with whatever flags your shell alias for it "
+                + "gives it."
+        case .opencode:
+            return "SPAWN AGENT runs `opencode`, on OpenCode's own model and provider. " + key
+        case .hermes:
+            return "SPAWN AGENT runs `hermes chat --tui`, on Hermes' own model and provider. "
+                + key
         }
     }
 
@@ -211,14 +213,11 @@ struct SettingsView: View {
                               tint: ok ? .green : .orange,
                               symbol: ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
         return SettingsCard(symbol: "folder.fill", title: "REPO ROOT", tint: .teal, pill: pill) {
-            // A problem states itself on the face of the card; only the happy path is
-            // short enough to fold into the summary line and its detail.
+            // A problem states itself on the face of the card; the happy path is what
+            // the field already shows, so it waits for Explain.
             SettingRow(title: "Where every spawned agent starts",
-                       summary: repoSummary(state),
-                       detail: ok
-                            ? "Blank = the default path, \(RepoPaths.defaultAgentRepo). "
-                            + "DIPLOMAT_REPO in this app's environment outranks both."
-                            : nil,
+                       summary: ok ? nil : repoSummary(state),
+                       detail: ok ? repoDetail : nil,
                        stacked: true) {
                 repoField
             }
@@ -267,6 +266,11 @@ struct SettingsView: View {
         }
     }
 
+    private var repoDetail: String {
+        repoSummary(.ok) + " Blank = the default path, \(RepoPaths.defaultAgentRepo). "
+            + "DIPLOMAT_REPO in this app's environment outranks both."
+    }
+
     private var repoSlug: String {
         let c = CoreAssets.repoCoordinates()
         return "\(c.owner)/\(c.repo)"
@@ -298,9 +302,7 @@ struct SettingsView: View {
         return SettingsCard(symbol: "folder.badge.plus", title: "OTHER REPOS", tint: .teal,
                             pill: pill) {
             SettingRow(title: "Checkouts the wizards take links to",
-                       summary: "Paste a PR or issue link to one of these and its agent "
-                            + "starts in that checkout, never over the mesh.",
-                       detail: "Each is known by its GitHub remotes, `upstream` first.",
+                       detail: SettingsView.otherReposDetail,
                        stacked: true) {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(Array(store.localRepoPaths.enumerated()), id: \.offset) { i, path in
@@ -316,6 +318,12 @@ struct SettingsView: View {
             }
         }
     }
+
+    private static let otherReposDetail = """
+        Paste a PR or issue link to one of these and its agent starts in that \
+        checkout, never over the mesh. Each is known by its GitHub remotes, \
+        `upstream` first.
+        """
 
     private func otherRepoRow(_ path: String, checkout: LocalRepos.Checkout?,
                               remove: @escaping () -> Void) -> some View {
@@ -394,12 +402,15 @@ struct SettingsView: View {
 
     private var conflictsRow: some View {
         SettingRow(title: "Auto-queue fixes for my PRs",
-                   summary: "Merge conflicts and new review threads.",
-                   detail: "Off, the monitor still lists what it finds under Agent "
-                         + "tasks — queued, for “execute now” only.") {
+                   detail: SettingsView.conflictsDetail) {
             switchControl("Auto-queue fixes for my PRs", $store.prAutofixEnabled)
         }
     }
+
+    private static let conflictsDetail = """
+        Merge conflicts and new review threads. Off, the monitor still lists what it \
+        finds under Agent tasks — queued, for “execute now” only.
+        """
 
     /// Shown while the monitor's polls are failing (gh auth expired, network, GraphQL
     /// errors) — the card's pill flags it, this names the error.
@@ -419,7 +430,6 @@ struct SettingsView: View {
 
     private var reviewRequestsRow: some View {
         SettingRow(title: "Auto-queue reviews that request me",
-                   summary: "Full E2E · max, inline comments — read-only, never their branch.",
                    detail: SettingsView.reviewRequestsDetail) {
             HStack(spacing: 6) {
                 reviewedPill
@@ -430,6 +440,7 @@ struct SettingsView: View {
     }
 
     private static let reviewRequestsDetail = """
+        Full E2E · max, inline comments — read-only, never their branch. \
         A review that never lands (agent died, window closed) is retried. Off, the \
         requests still list under Agent tasks, queued for “execute now” only.
         """
@@ -458,7 +469,6 @@ struct SettingsView: View {
     private var reviewPolicyBlock: some View {
         NestedSettings(tint: .orange) {
             SettingRow(title: "Only these authors",
-                       summary: allowlistSummary,
                        detail: SettingsView.reviewAllowlistDetail,
                        stacked: true) {
                 reviewAllowlistField
@@ -471,36 +481,26 @@ struct SettingsView: View {
     private var reviewVerdictRows: some View {
         Group {
             SettingRow(title: "May approve / request changes",
-                       summary: "Off ⇒ inline comments only; the verdict stays with you.",
-                       detail: "On ⇒ a clean review may submit a verdict, except on the "
+                       detail: "Off ⇒ inline comments only; the verdict stays with you. "
+                             + "On ⇒ a clean review may submit a verdict, except on the "
                              + "classes withheld below.") {
                 switchControl("May approve / request changes", $store.autoApproveEnabled)
             }
             if store.autoApproveEnabled { verdictPolicyBlock }
             SettingRow(title: "Soft-approve clean PRs",
-                       summary: "One “ran the sweep, all clean” COMMENT review — never an APPROVE.",
-                       detail: "Off ⇒ a review that finds nothing says nothing. Independent "
-                             + "of the verdict switch above: a soft approval is a COMMENT "
-                             + "review, not a GitHub approval.") {
+                       detail: "One “ran the sweep, all clean” COMMENT review — never an "
+                             + "APPROVE. Off ⇒ a review that finds nothing says nothing. "
+                             + "Independent of the verdict switch above.") {
                 switchControl("Soft-approve clean PRs", $store.softApproveEnabled)
             }
         }
     }
 
-    /// Resolved before the ViewBuilder sees it, for the reason `autoTaskLimitSummary`
-    /// is: a ternary over string concatenation inside a builder call is what tips this
-    /// file past the type-checker's time limit on a CI runner while still compiling here.
-    private var allowlistSummary: String {
-        let n = store.reviewAllowlist.count
-        guard n > 0 else { return "Blank = anyone who requests my review." }
-        let noun: String = n == 1 ? "author" : "authors"
-        return "\(n) \(noun) — everyone else is left for me."
-    }
-
     private static let reviewAllowlistDetail = """
-        Commas or spaces between logins; a leading @ is fine. Unlike the switch \
-        above, an excluded request is dropped rather than queued — no agent and no \
-        row — and the Review wizard still reviews anyone. The ban list wins over this.
+        Blank = anyone who requests my review. Commas or spaces between logins; a \
+        leading @ is fine. Unlike the switch above, an excluded request is dropped \
+        rather than queued — no agent and no row — and the Review wizard still reviews \
+        anyone. The ban list wins over this.
         """
 
     /// Free text rather than a chip per login: the list is edited far more rarely than
@@ -550,7 +550,6 @@ struct SettingsView: View {
         let lo = AgentDispatchGate.minAutoTaskLimit, hi = AgentDispatchGate.maxAutoTaskLimit
         let badge: String = "\(n) task\(n == 1 ? "" : "s")"
         return SettingRow(title: "Run at most",
-                          summary: SettingsView.autoTaskLimitSummary,
                           detail: SettingsView.autoTaskLimitDetail,
                           stacked: true) {
             SliderSetting(label: "Run at most",
@@ -566,14 +565,12 @@ struct SettingsView: View {
         }
     }
 
-    /// Both long strings are resolved before the ViewBuilder sees them: a concatenation
-    /// or a ternary inside a `Text(...)` in a builder is what tips this file over the
-    /// type-checker's time limit on a CI runner, while still compiling here.
-    private static let autoTaskLimitSummary =
-        "Across both monitors, a PR sweep's reviews, and anything a mesh peer routes here."
-
+    /// Resolved before the ViewBuilder sees it: a concatenation or a ternary inside a
+    /// `Text(...)` in a builder is what tips this file over the type-checker's time
+    /// limit on a CI runner, while still compiling here.
     private static let autoTaskLimitDetail = """
-        The agent a wizard press opens on the spot is outside the cap; a review it \
+        Across both monitors, a PR sweep's reviews, and anything a mesh peer routes \
+        here. The agent a wizard press opens on the spot is outside the cap; a review it \
         queues instead is inside. Work over the cap waits in Agent tasks, in the \
         order you put it, and starts when a bay frees — unless you switch off \
         Auto-execute queue there.
@@ -587,7 +584,8 @@ struct SettingsView: View {
     /// bounds how many automatic agents run at once, this bounds whether any of them
     /// should start at all.
     private static let autoBudgetDetail = """
-        Priced from Telemetry → limit per task: against both rate-limit windows under \
+        Wait for a window to refill rather than start what won't fit. Priced from \
+        Telemetry → limit per task: against both rate-limit windows under \
         Claude Code, or — under a runner billed in money — against what one task costs \
         on the model it runs, and what your OpenRouter key and credit balance have \
         left. Higher confidence is stricter. Held work waits in Agent tasks, and \
@@ -597,7 +595,6 @@ struct SettingsView: View {
     private var autoBudgetBlock: some View {
         VStack(alignment: .leading, spacing: 9) {
             SettingRow(title: "Hold work when the limit runs low",
-                       summary: "Wait for a window to refill rather than start what won't fit.",
                        detail: SettingsView.autoBudgetDetail) {
                 switchControl("Hold work when the limit runs low", $store.autoBudgetGate)
             }
@@ -618,7 +615,7 @@ struct SettingsView: View {
                 .pickerStyle(.segmented).labelsHidden().controlSize(.small)
             }
             SettingRow(title: "Keep in hand until it can be priced",
-                       summary: "Of each rate-limit window, under Claude Code.",
+                       detail: "Of each rate-limit window, under Claude Code.",
                        stacked: true) {
                 SliderSetting(label: "Keep in hand until it can be priced",
                               value: $store.autoBudgetFloorPct,
@@ -632,7 +629,7 @@ struct SettingsView: View {
             // selected: the setting outlives the choice of runner, and a knob that
             // appeared and disappeared as that changed would look like it had been reset.
             SettingRow(title: "Keep on the account until it can be priced",
-                       summary: "Of your OpenRouter balance, under a runner billed in money.",
+                       detail: "Of your OpenRouter balance, under a runner billed in money.",
                        stacked: true) {
                 SliderSetting(label: "Keep on the account until it can be priced",
                               value: $store.autoBudgetReserveUsd,
@@ -652,7 +649,6 @@ struct SettingsView: View {
         return SettingsCard(symbol: "exclamationmark.bubble.fill", title: "STALLED AGENTS",
                             tint: .pink, pill: pill) {
             SettingRow(title: "Auto-continue on API errors",
-                       summary: "A 529 stops an agent dead; this types it back into motion.",
                        detail: SettingsView.apiWatchDetail) {
                 switchControl("Auto-continue on API errors", $store.apiWatchEnabled)
             }
@@ -664,7 +660,6 @@ struct SettingsView: View {
     /// a stalled agent moving again; this is what happens when nothing does.
     private var runDeadlineRow: some View {
         SettingRow(title: SettingsView.runDeadlineTitle,
-                   summary: "Close the window and hand the bay back, even if the agent still looks busy.",
                    detail: SettingsView.runDeadlineDetail) {
             switchControl(SettingsView.runDeadlineTitle, $store.runDeadlineEnabled)
         }
@@ -678,6 +673,7 @@ struct SettingsView: View {
     private static let runDeadlineTitle = "Give up on a task after \(runDeadlineCutoff)"
 
     private static let runDeadlineDetail = """
+        Close the window and hand the bay back, even if the agent still looks busy. \
         Agents report their turn boundaries through hooks staged into each run, and a run \
         whose report never comes — a runner without hooks, settings that would not stage, \
         an agent wedged with its status bar frozen — holds a task-cap bay until you close \
@@ -712,7 +708,8 @@ struct SettingsView: View {
     }
 
     private static let apiWatchDetail = """
-        Watches the terminal sessions an agent is running in — iTerm and Terminal tabs, \
+        A 529 stops an agent dead; this types it back into motion. Watches the \
+        terminal sessions an agent is running in — iTerm and Terminal tabs, \
         and the tmux panes neither of them shows, which is where a Ghostty agent lives — \
         and sends \
         "\(ApiErrorWatcher.continueMessage)" when a Claude API error shows up. A session \
@@ -731,45 +728,43 @@ struct SettingsView: View {
         return SettingsCard(symbol: "bubble.left.and.bubble.right.fill", title: "COMMS (SLACK)",
                             tint: .blue, pill: pill) {
             SettingRow(title: "Watch Slack",
-                       summary: "DMs, @-mentions and keywords become pings; an ask in one is queued.",
                        detail: SettingsView.commsDetail) {
                 switchControl("Watch Slack", $store.commsEnabled)
             }
-            NestedSettings(tint: .blue) {
-                SettingRow(title: "Keywords",
-                           summary: "Commas or new lines between them; one may be a phrase.",
-                           stacked: true) {
-                    commsField("none", $store.commsKeywordsRaw, symbol: "text.magnifyingglass")
-                }
-                SettingRow(title: "Senders", summary: commsSendersSummary, stacked: true) {
-                    commsField("anyone in my workspace", $store.commsSenderAllowlistRaw,
-                               symbol: "person.2.fill")
-                }
-                commsActionsBlock
-                SettingRow(title: "Notify on new pings") {
-                    switchControl("Notify on new pings", $store.commsNotify)
-                }
-                SettingRow(title: "Triage model",
-                           summary: "Blank = \(SettingsView.commsDefaultModel).",
-                           stacked: true) {
-                    commsField(SettingsView.commsDefaultModel, $store.commsModel, symbol: "cpu")
-                }
-                SettingRow(title: "Slack login", summary: store.commsTestResult,
-                           detail: SettingsView.commsLoginDetail) {
-                    commsTestButton
-                }
+            // Like the verdict rows: nothing below acts until the watcher runs.
+            if store.commsEnabled { commsOptions }
+        }
+    }
+
+    private var commsOptions: some View {
+        NestedSettings(tint: .blue) {
+            SettingRow(title: "Keywords",
+                       detail: "Commas or new lines between them; one may be a phrase.",
+                       stacked: true) {
+                commsField("none", $store.commsKeywordsRaw, symbol: "text.magnifyingglass")
+            }
+            SettingRow(title: "Senders",
+                       detail: "Slack handles or user IDs (U…), commas between them; "
+                             + "everyone else is ignored.",
+                       stacked: true) {
+                commsField("anyone in my workspace", $store.commsSenderAllowlistRaw,
+                           symbol: "person.2.fill")
+            }
+            commsActionsBlock
+            SettingRow(title: "Notify on new pings") {
+                switchControl("Notify on new pings", $store.commsNotify)
+            }
+            SettingRow(title: "Triage model", stacked: true) {
+                commsField(SettingsView.commsDefaultModel, $store.commsModel, symbol: "cpu")
+            }
+            SettingRow(title: "Slack login", summary: store.commsTestResult,
+                       detail: SettingsView.commsLoginDetail) {
+                commsTestButton
             }
         }
     }
 
     private static let commsDefaultModel = (try? CoreAssets.comms())?.model ?? "haiku"
-
-    private var commsSendersSummary: String {
-        let n = CommsSettings.allowlist(store.commsSenderAllowlistRaw).count
-        guard n > 0 else { return "Slack handles or user IDs (U…), commas between them." }
-        return n == 1 ? "1 sender; everyone else is ignored."
-            : "\(n) senders; everyone else is ignored."
-    }
 
     private var commsActionsBlock: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -827,7 +822,8 @@ struct SettingsView: View {
     static func commsErrorPill(_ error: String) -> String { Store.snippet(error, max: 48) }
 
     private static let commsDetail = """
-        Searches Slack through Slack's MCP server, signed in as you: messages in your \
+        DMs, @-mentions and keywords become pings; an ask in one is queued. Searches \
+        Slack through Slack's MCP server, signed in as you: messages in your \
         DMs, messages that @-mention you, and messages carrying a keyword, skipping your \
         own, bots' and other workspaces'. Each new one is a ping on the Comms screen, \
         and is triaged by one claude call that has no tools, no MCP servers and no \
@@ -905,12 +901,12 @@ struct SettingsView: View {
         // The brew line only when it would change something: Ghostty is on the machine
         // and the one thing it needs is not.
         let missingTmux = SpawnTerminal.ghostty.isInstalled && !SpawnTerminal.ghostty.isUsable
-        let summary: String = "Ghostty is used when installed, then iTerm, then Terminal. "
-            + "Ghostty runs its agents inside tmux, which is the only way their screens "
-            + "can be read" + (missingTmux ? " — install it with `brew install tmux`." : ".")
+        let summary: String? = missingTmux
+            ? "Ghostty needs tmux to read its agents' screens — `brew install tmux`." : nil
         return SettingsCard(symbol: "macwindow", title: "SPAWN TERMINAL", tint: .brown,
                             pill: StatusPill(text: resolved, tint: .secondary)) {
-            SettingRow(title: "Window SPAWN AGENT opens", summary: summary, stacked: true) {
+            SettingRow(title: "Window SPAWN AGENT opens", summary: summary,
+                       detail: SettingsView.terminalDetail, stacked: true) {
                 Picker("Window SPAWN AGENT opens", selection: $store.terminalChoice) {
                     ForEach(SpawnTerminal.allCases) { term in
                         Text(terminalLabel(term)).tag(term.rawValue)
@@ -921,6 +917,11 @@ struct SettingsView: View {
             }
         }
     }
+
+    private static let terminalDetail = """
+        Ghostty is used when installed, then iTerm, then Terminal. Ghostty runs its \
+        agents inside tmux, which is the only way their screens can be read.
+        """
 
     /// A picker segment: the terminal's name, and why it cannot be picked when it can't.
     /// Built outside the ViewBuilder — a concatenation this shape inside `Text(...)` is
@@ -934,25 +935,27 @@ struct SettingsView: View {
     // MARK: Device allocator (MCP server + skill + rule)
 
     /// Built from the same pieces as the Devices screen's ALLOCATOR card, which adds
-    /// the daemon's own status and the remote device pool.
+    /// the daemon's own status, the idle limits and the remote device pool.
     private var allocatorSection: some View {
         let s = store.allocatorInstall
+        let ready = DeviceAllocator.packageAvailable && DeviceAllocator.nodeAvailable
         return SettingsCard(symbol: "iphone.gen3", title: "DEVICE ALLOCATOR",
                             tint: .cyan, pill: AllocatorUI.pill(s)) {
             SettingRow(title: "Reserve a simulator before using it",
-                       summary: AllocatorUI.summary,
-                       detail: "Installs an MCP server, a skill and an always-on rule. "
-                             + "Reclaims a device when its agent dies or it sits idle "
-                             + "past the limits below.",
+                       summary: ready ? nil : AllocatorUI.summary,
+                       detail: ready ? SettingsView.allocatorDetail : nil,
                        stacked: true) {
                 VStack(alignment: .leading, spacing: 7) {
                     AllocatorMarks(status: s)
                     AllocatorButtons(status: s)
                 }
             }
-            AllocatorIdleLimits()
         }
     }
+
+    private static let allocatorDetail = AllocatorUI.summary + " Installs an MCP server, "
+        + "a skill and an always-on rule. Reclaims a device when its agent dies or it sits "
+        + "idle past the limits on the Devices screen."
 
     // MARK: mesh (LAN P2P duty coordination)
 
@@ -960,8 +963,6 @@ struct SettingsView: View {
         SettingsCard(symbol: "hexagon.fill", title: "MESH (LAN P2P)", tint: .mint,
                      pill: meshPill) {
             SettingRow(title: "Coordinate duties with this LAN",
-                       summary: "Routes reviews, conflict fixes and audits to whichever "
-                              + "machine fits the policy.",
                        detail: SettingsView.meshDetail) {
                 switchControl("Coordinate duties with this LAN", $store.meshEnabled)
             }
@@ -969,7 +970,8 @@ struct SettingsView: View {
     }
 
     private static let meshDetail = """
-        Runs a small peer-to-peer node that discovers the other Diplomat machines on \
+        Routes reviews, conflict fixes and audits to whichever machine fits the \
+        policy. Runs a small peer-to-peer node that discovers the other Diplomat machines on \
         your LAN (UDP beacons); placement is surplus-first by default, token- and \
         platform-aware. Configure the whole mesh from the ⬡ Mesh screen (the ⬡ button \
         in the panel header). Off by default; no node opens on the network until you \
@@ -1036,8 +1038,9 @@ struct SettingsView: View {
         }
     }
 
-    /// The line under the button: what a check found, or what an update is doing.
-    private var updateDetail: String {
+    /// The line under the button: what an update is doing, or what a check found —
+    /// nothing when the pill's "up to date" already says it all.
+    private var updateDetail: String? {
         switch store.updateState ?? .checking {
         case .checking:
             return "comparing with origin…"
@@ -1051,6 +1054,7 @@ struct SettingsView: View {
             if let e = r.error { return e }
             // A diverged checkout still updates — via a merge, not a discard.
             let ahead = r.ahead ?? 0
+            if ahead == 0, (r.behind ?? 0) == 0 { return nil }
             let aheadNote = ahead > 0
                 ? " · \(ahead) local ahead\((r.behind ?? 0) > 0 ? " (will merge)" : "")" : ""
             return "\(r.commit ?? "?") on \(r.branch ?? "?") · upstream \(r.upstream ?? "?")\(aheadNote)"

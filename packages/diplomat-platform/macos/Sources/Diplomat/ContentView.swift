@@ -92,6 +92,10 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: MainWindow.openSettings)) { _ in
             screen = .settings
         }
+        // Reopening the window lands on the panel, not on Settings.
+        .onReceive(NotificationCenter.default.publisher(for: MainWindow.didClose)) { _ in
+            if screen == .settings { screen = .main }
+        }
         .onChange(of: store.bannedAuthors) { bans in
             // The pending "Unban @X?" confirmation must not outlive the ban itself
             // (un-banned elsewhere / list rewritten) — a stale login would open the

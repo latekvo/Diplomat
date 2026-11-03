@@ -244,6 +244,8 @@ DIPLOMAT_REPOPATHS_TEST=1 ...                    # self-test: which checkout the
                                                      #   it or from a copy; scratch dirs; exit code = verdict
 DIPLOMAT_WINDOW_TEST=1 ...                       # self-test: the launch mode and the window's shape, with
                                                      #   no window ordered in; exit code = verdict
+DIPLOMAT_REOPEN_TEST=1 ...                       # self-test: a window closed on Settings reopens on the
+                                                     #   panel; no window ordered in; exit code = verdict
 
 # The shared core itself is independently buildable & testable (also on Linux):
 swift run DiplomatCoreSmoke                    # loads assets/, runs filter + prompt + golden-file assertions

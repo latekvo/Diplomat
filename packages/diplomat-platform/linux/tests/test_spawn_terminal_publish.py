@@ -80,7 +80,7 @@ def test_the_running_applet_publishes_at_launch(monkeypatch):
         def __getattr__(self, name):
             return lambda *args, **kwargs: called.append(name)
 
-    for name in ("QApplication", "Panel", "QTimer"):
+    for name in ("QApplication", "Panel", "QTimer", "_app_icon"):
         monkeypatch.setattr(app_module, name, _Anything())
     monkeypatch.setattr(app_module, "Store", _Store)
     monkeypatch.setattr(app_module.DiplomatApp, "_build_tray", lambda self: None)
