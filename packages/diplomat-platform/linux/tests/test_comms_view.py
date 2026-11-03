@@ -72,6 +72,23 @@ def _buttons(widget) -> list[str]:
     return [b.text() for b in widget.findChildren(QPushButton)]
 
 
+def _elided(widget) -> list[str]:
+    from diplomat_app.widgets import ElidedLabel
+
+    return [w._full for w in widget.findChildren(ElidedLabel)]
+
+
+def _click(widget) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    QTest.mouseClick(widget, Qt.MouseButton.LeftButton)
+
+
+def _open_earlier(view) -> None:
+    view.earlier_btn.click()
+
+
 NOT_SIGNED_IN = ("Claude Code is not signed in to Slack: in Claude Code, run /mcp and "
                  "authenticate the Slack server")
 
@@ -135,21 +152,146 @@ def test_pings_jobs_and_what_is_new(store):
     store.comms_enabled = True
     view = CommsView(store)
 
+    # The read three wait under a closed "Earlier".
     pings = _rows(view, PingRow)
-    assert len(pings) == 5
-    new = ["NEW" in _texts(p) for p in pings]
-    assert new == [True, True, False, False, False]
+    assert [p.unread for p in pings] == [True, True]
+    assert view.earlier_btn.text() == "▸ Earlier · 3"
+    _open_earlier(view)
+    pings = _rows(view, PingRow)
+    assert [p.unread for p in pings] == [True, True, False, False, False]
+    assert [p.dot.text() for p in pings] == ["●", "●", "", "", ""]
+    assert "REVIEW #4" in _texts(pings[0])
+    assert _buttons(pings[0]) == []
+    _click(pings[0])
     assert _buttons(pings[0]) == ["Open in Slack"]
     assert "→ outcome 4" in _texts(pings[0])
-    assert "REVIEW #4" in _texts(pings[0])
     assert view.status.text().startswith("Watching as @operator in T1")
 
     jobs = _rows(view, JobRow)
-    status = {_texts(j)[0]: [t for t in _texts(j) if t.isupper()][0] for j in jobs}
+    status = {j.label._full: [t for t in _texts(j) if t.isupper()][0] for j in jobs}
     assert status == {"Job 3": "QUEUED", "Job 2": "RUNNING", "Job 1": "DONE",
                       "Job 5": "NOT QUEUED"}
-    reports = {_texts(j)[0]: _buttons(j) for j in jobs}
+    reports = {j.label._full: _buttons(j) for j in jobs}
     assert reports == {"Job 3": [], "Job 2": ["Report"], "Job 1": [], "Job 5": []}
+    assert {j.label._full: j.when.text() for j in jobs} == {
+        "Job 3": f"asked {_clock('2026-10-27T10:30:00Z')}",
+        "Job 2": f"started {_clock('2026-10-27T10:21:00Z')}",
+        "Job 1": f"done {_clock('2026-10-27T10:19:00Z')}",
+        "Job 5": f"asked {_clock('2026-10-27T10:05:00Z')}"}
+    assert {j.label._full: j.toolTip() for j in jobs}["Job 1"] == (
+        f"asked {_clock('2026-10-27T10:10:00Z')} · started {_clock('2026-10-27T10:11:00Z')}"
+        f" · done {_clock('2026-10-27T10:19:00Z')}")
+
+
+def _clock(iso: str) -> str:
+    from diplomat_runtime.models import Fmt
+
+    return Fmt.clock(comms.parse_iso(iso))
+
+
+def _one_line(widget) -> bool:
+    """No label in it wraps, and it is no taller than one line of its tallest child."""
+    from PySide6.QtWidgets import QLabel
+
+    labels = widget.findChildren(QLabel)
+    tallest = max(w.sizeHint().height() for w in labels)
+    margins = widget.layout().contentsMargins()
+    return (not any(w.wordWrap() for w in labels)
+            and widget.sizeHint().height() <= tallest + margins.top() + margins.bottom())
+
+
+def test_a_ping_is_one_line_until_a_click_opens_the_rest(store):
+    item = _item(1, "2026-10-27T10:10:00Z", reply="[Diplomat]: Queued a review of #1",
+                 replyOutcome="sent")
+    item["message"]["text"] = "first line\nsecond line\n" + "x " * 400
+    item["decision"]["reason"] = "a direct ask"
+    store.comms_items = [item]
+    store.comms_enabled = True
+    view = CommsView(store)
+    [row] = _rows(view, PingRow)
+    assert _one_line(row)
+    assert row.details is None
+    assert _texts(row) == ["●", "u1", "DM", "REVIEW #1", "", "REPLIED",
+                           _clock("2026-10-27T10:10:00Z")]
+    assert row.text._full == "first line second line " + " ".join(["x"] * 400)
+
+    _click(row)
+    assert row.expanded
+    shown = _texts(row.details)
+    assert shown == ["DM", item["message"]["text"], "sum 1 — a direct ask", "→ outcome 1",
+                     "↩ [Diplomat]: Queued a review of #1"]
+    assert _buttons(row) == ["Open in Slack"]
+
+    # Every store signal rebuilds the list; an opened row stays open.
+    store.comms_changed.emit()
+    [row] = _rows(view, PingRow)
+    assert row.expanded
+    _click(row)
+    assert not row.expanded and row.details.isHidden()
+    store.comms_changed.emit()
+    [row] = _rows(view, PingRow)
+    assert row.details is None
+
+
+def test_read_pings_wait_under_one_closed_earlier(store):
+    store.comms_items = [_item(3, "2026-10-27T10:30:00Z"), _item(2, "2026-10-27T10:20:00Z"),
+                         _item(1, "2026-10-27T10:10:00Z")]
+    store.comms_seen_at = "2026-10-27T10:25:00Z"
+    store.comms_enabled = True
+    view = CommsView(store)
+    assert [r.unread for r in _rows(view, PingRow)] == [True]
+    assert view.earlier_btn.text() == "▸ Earlier · 2"
+    _open_earlier(view)
+    assert view.earlier_btn.text() == "▾ Earlier · 2"
+    assert [r.unread for r in _rows(view, PingRow)] == [True, False, False]
+    assert all(_one_line(r) for r in _rows(view, PingRow))
+    store.comms_changed.emit()
+    assert len(_rows(view, PingRow)) == 3
+    _open_earlier(view)
+    assert len(_rows(view, PingRow)) == 1
+
+    # Opening the screen makes all three read: nothing new, and "Earlier" closed again.
+    _open_earlier(view)
+    view.open()
+    view.open()
+    assert _rows(view, PingRow) == []
+    assert "Nothing new." in _texts(view.pings_host)
+    assert view.earlier_btn.text() == "▸ Earlier · 3"
+
+
+def test_nothing_read_draws_no_earlier(store):
+    store.comms_items = [_item(1, "2026-10-27T10:10:00Z")]
+    view = CommsView(store)
+    assert view.earlier_btn is None
+    assert "Nothing new." not in _texts(view)
+
+
+@pytest.mark.parametrize(("extra", "chip", "detail"), [
+    ({"replyOutcome": "sent", "reply": "[Diplomat]: hi"}, "REPLIED", "↩ [Diplomat]: hi"),
+    ({"replyOutcome": "sending", "reply": "[Diplomat]: hi"}, "REPLYING", "↩ reply sending"),
+    ({"replyOutcome": "failed: channel_not_found", "reply": "[Diplomat]: hi"},
+     "REPLY FAILED", "↩ reply failed: channel_not_found"),
+    ({"replyOutcome": "skipped: the docs are silent"}, "NOT ANSWERED",
+     "↩ reply skipped: the docs are silent"),
+])
+def test_a_reply_is_a_pill_on_the_line_and_its_words_in_the_details(store, extra, chip,
+                                                                     detail):
+    item = _item(1, "2026-10-27T10:10:00Z", **extra)
+    item["decision"] = {"action": "question", "number": 0, "summary": "asks"}
+    store.comms_items = [item]
+    view = CommsView(store)
+    [row] = _rows(view, PingRow)
+    assert [t for t in _texts(row) if t.isupper()] == ["DM", "QUESTION", chip]
+    _click(row)
+    assert _texts(row.details)[-1] == detail
+
+
+def test_a_question_has_its_own_word_and_tint():
+    from diplomat_app.commsview import action_chip
+
+    assert action_chip({"action": "question", "number": 0}) == ("QUESTION", "#AF52DE")
+    assert action_chip({"action": "review", "number": 4})[0] == "REVIEW #4"
+    assert action_chip(None)[0] == "AWAITING TRIAGE"
 
 
 def test_a_ping_still_queued_for_triage_says_so(store):
@@ -161,8 +303,9 @@ def test_a_ping_still_queued_for_triage_says_so(store):
     store.comms_enabled = True
     view = CommsView(store)
     [row] = _rows(view, PingRow)
+    _click(row)
     texts = _texts(row)
-    assert "awaiting triage" in texts
+    assert "AWAITING TRIAGE" in texts
     assert not any(t.startswith(("REVIEW", "NO ACTION", "→")) for t in texts)
 
 
@@ -183,11 +326,14 @@ def test_text_from_slack_or_the_triage_is_never_read_as_markup(store):
     store.comms_identity = {"handle": markup, "teamID": markup}
     store.comms_error = markup
     view = CommsView(store)
+    _click(_rows(view, PingRow)[0])
     shown = [w for w in view.findChildren(QLabel) if markup in w.text()]
-    # sender, channel, keyword chip, text, summary, outcome, job label, status, banner,
-    # and the signed-out card's line
-    assert len(shown) == 10
+    # sender, channel, keyword chip, text, summary, outcome, status, banner, and the
+    # signed-out card's line
+    assert len(shown) == 9
     assert [w.text() for w in shown if w.textFormat() != Qt.TextFormat.PlainText] == []
+    # The line's text and the job's label are painted, never parsed.
+    assert _elided(view).count(markup) == 2
 
 
 def test_the_settings_card_draws_slacks_words_as_typed(app, store, monkeypatch):
@@ -273,9 +419,11 @@ def test_opening_the_screen_marks_everything_seen_but_still_draws_it_new(store):
     assert store.comms_unread == 1
     view.open()
     assert store.comms_unread == 0
-    assert ["NEW" in _texts(p) for p in _rows(view, PingRow)] == [True]
+    assert [p.unread for p in _rows(view, PingRow)] == [True]
     view.open()
-    assert ["NEW" in _texts(p) for p in _rows(view, PingRow)] == [False]
+    assert _rows(view, PingRow) == []
+    _open_earlier(view)
+    assert [p.unread for p in _rows(view, PingRow)] == [False]
 
 
 def test_a_failing_tick_is_a_banner(store):

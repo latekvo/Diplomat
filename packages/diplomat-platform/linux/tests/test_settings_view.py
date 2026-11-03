@@ -328,3 +328,31 @@ def test_other_repos_persist_and_resolve_again_at_start(make_view, tmp_path):
     from diplomat_app.store import Store
 
     assert Store().other_repo_paths == [str(tmp_path / "gone")]
+
+
+def _row_of(control):
+    from diplomat_app.widgets import SettingRow
+
+    row = control.parent()
+    while not isinstance(row, SettingRow):
+        row = row.parent()
+    return row
+
+
+def test_the_reply_switch_sits_with_the_comms_switches_and_writes_through(make_view):
+    from diplomat_app.store import app_settings
+
+    view = make_view()
+    sw = view._sw_comms_replies
+    assert sw.isChecked() is True
+    assert sw.accessibleName() == "Reply in Slack"
+    assert _row_of(sw).parent() is _row_of(view._sw_comms_bumps).parent()
+    assert "locked for 3h" in _row_of(sw)._detail.text()
+    sw.setChecked(False)
+    assert app_settings().value("commsReplies") is False
+    assert view.store.comms_toggles()["replies"] is False
+    assert make_view()._sw_comms_replies.isChecked() is False
+
+
+def test_the_keywords_hint_names_the_wildcard(view):
+    assert "argent*, ignac*" in _row_of(view._comms_keywords)._detail.text()

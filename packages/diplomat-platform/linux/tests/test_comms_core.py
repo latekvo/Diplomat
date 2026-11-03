@@ -256,8 +256,8 @@ def _search(args: dict) -> dict:
 
 class _Slack(BaseHTTPRequestHandler):
     """Slack's MCP server as the core speaks to it: JSON-RPC over POST, ``initialize``
-    opening a session every later request must name in ``Mcp-Session-Id``, and the two
-    tools the watcher calls answering in the server's own text."""
+    opening a session every later request must name in ``Mcp-Session-Id``, and the tools
+    the watcher and the replier call answering in the server's own text."""
 
     messages: list = []
     #: ``(method, params)`` of each request let through.
@@ -299,6 +299,9 @@ class _Slack(BaseHTTPRequestHandler):
         elif (method == "tools/call" and name == "slack_search_public_and_private"
               and args.get("filters", "") in ("", "is:dm")):
             result = {"content": [{"type": "text", "text": json.dumps(_search(args))}]}
+        elif method == "tools/call" and name == "slack_send_message":
+            result = {"content": [{"type": "text", "text": json.dumps(
+                {"ok": True, "ts": "1508284999.000001"})}]}
         else:
             result = {"isError": True, "content": [{
                 "type": "text", "text": "execution_failed: parameter_validation_failed"}]}
@@ -388,7 +391,7 @@ def _first_tick(settings: dict) -> int:
     first = _core("comms-tick", stdin=settings)
     assert first.returncode == 0, first.stderr
     assert json.loads(first.stdout) == {
-        "me": {"userID": "UME", "teamID": "Ours", "handle": "operator"},
+        "me": {"userID": "UME", "teamID": "Ours", "handle": "operator", "name": "The"},
         "pings": [], "items": [], "error": None, "notices": []}
     path = _comms_dir() / "state.json"
     state = json.loads(path.read_text())
