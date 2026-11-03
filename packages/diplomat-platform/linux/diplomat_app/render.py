@@ -55,7 +55,7 @@ def _fixture(store: Store) -> None:
 def _settings_fixture(store: Store, *, explain: bool) -> None:
     """Open Settings on the states its quiet rows never reach: an outstanding
     review count (so the owed-reviews pill draws), a set author allowlist (so the
-    row draws its count rather than the blank placeholder) and auto-approvals on (so
+    field draws a line rather than the blank placeholder) and auto-approvals on (so
     the nested verdict policy is unfolded). ``explain`` turns on the header switch,
     the only state that draws the long-form paragraph under each row.
 

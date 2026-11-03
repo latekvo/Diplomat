@@ -212,13 +212,13 @@ def test_a_setting_the_disk_refuses_says_so(on_volume, monkeypatch):
 def test_an_idle_limit_the_disk_refuses_says_so(on_volume, crashes, which):
     """The allocator's idle limits live in the same shared config as every other
     setting, so a refused write is shown the same way rather than escaping the slot."""
-    from diplomat_app.settingsview import SettingsView
+    from diplomat_app.devicesview import DevicesView
     from diplomat_app.store import Store
 
     QApplication.instance() or QApplication([])
     st = Store()
-    view = SettingsView(st)
-    slider = getattr(view, f"_idle_{which}")
+    view = DevicesView(st, live=False)
+    slider = view._idle[["free", "leased"].index(which)][0]
     before = getattr(st, f"device_idle_{which}_minutes")
     on_volume.fill()
     slider.changed.emit(before + 1)
