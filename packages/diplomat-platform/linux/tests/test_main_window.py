@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from diplomat_app import app as app_module
-from diplomat_app import selfupdate
+from diplomat_app import migrate, selfupdate
 from diplomat_app.app import DiplomatApp
 from diplomat_app.panel import _BASE_WIDTH, Panel
 from diplomat_app.store import Store
@@ -102,6 +102,39 @@ def test_closing_the_window_hides_it_and_it_opens_again(panel, qapp):
     app.panel = panel
     app.show_window()
     assert panel.isVisible()
+
+
+def test_a_minimized_window_polls_nothing_and_catches_up_when_restored(panel, qapp,
+                                                                      monkeypatch):
+    """The 8 s `ps` scan and the 2 s mesh read run only while the window is on screen,
+    and a minimized window is still ``isVisible()``."""
+    calls: list[str] = []
+    monkeypatch.setattr(Store, "mesh_enabled", property(lambda self: True))
+    monkeypatch.setattr(panel.store, "refresh_mesh_state", lambda: calls.append("mesh"))
+    monkeypatch.setattr(panel.store, "refresh_auto_task_count_async",
+                        lambda: calls.append("ps"))
+    panel.show()
+    _settle(qapp)
+    calls.clear()
+    panel._tasks_tick()
+    panel._mesh_tick()
+    assert calls == ["ps", "mesh"]
+
+    calls.clear()
+    panel.setWindowState(Qt.WindowState.WindowMinimized)
+    _settle(qapp)
+    assert panel.isVisible() and panel.isMinimized()
+    panel._tasks_tick()
+    panel._mesh_tick()
+    assert calls == []
+
+    panel.setWindowState(Qt.WindowState.WindowNoState)
+    _settle(qapp)
+    assert calls == ["mesh", "ps"]
+    calls.clear()
+    panel._tasks_tick()
+    panel._mesh_tick()
+    assert calls == ["ps", "mesh"]
 
 
 def test_file_quit_asks_to_quit(panel):
@@ -193,9 +226,9 @@ def _desktop_exec(entry: Path) -> list[str]:
     return line.removeprefix("Exec=").split()
 
 
-def test_the_login_entry_starts_in_the_background_and_the_menu_entry_does_not(tmp_path):
-    """The installer is run against a copy of the package whose launcher and helper
-    scripts are stubs; the ``Exec`` lines it writes are then run as written."""
+def _install(tmp_path: Path):
+    """Run the installer against a copy of the package whose launcher and helper
+    scripts are stubs; the launcher records whether it started in the background."""
     pkg = tmp_path / "linux"
     (pkg / "install").mkdir(parents=True)
     shutil.copy(LINUX / "install" / "install-autostart.sh", pkg / "install")
@@ -220,11 +253,97 @@ def test_the_login_entry_starts_in_the_background_and_the_menu_entry_does_not(tm
     while not record.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
     assert record.read_text().splitlines() == ["bg="]
+    record.unlink()
 
     login = home / ".config" / "autostart" / "diplomat.desktop"
     menu = home / ".local" / "share" / "applications" / "diplomat.desktop"
+    return launcher, env, record, login, menu
+
+
+def test_the_login_entry_starts_in_the_background_and_the_menu_entry_does_not(tmp_path):
+    """The ``Exec`` lines the installer writes are run as written."""
+    _launcher, env, record, login, menu = _install(tmp_path)
     for entry, expected in ((login, "bg=1"), (menu, "bg=")):
-        record.unlink()
         subprocess.run(_desktop_exec(entry), env=env, check=True)
         assert record.read_text().splitlines() == [expected], entry
+        record.unlink()
     assert "X-GNOME-Autostart-enabled=true" in login.read_text()
+
+
+# ---- an install from before unattended starts were hidden ------------------------
+
+_OLD_LOGIN_ENTRY = """[Desktop Entry]
+Type=Application
+Name=Diplomat
+Comment=software-mansion/argent triage tools in the system tray
+Exec={launcher}
+Icon=applications-development
+Terminal=false
+Categories=Development;Utility;
+X-GNOME-Autostart-enabled=true
+"""
+
+
+@pytest.fixture
+def old_install(tmp_path, monkeypatch):
+    """What the installer writes now, then the login entry the earlier installer
+    wrote, and no menu entry - the state an existing machine is in."""
+    launcher, env, record, login, menu = _install(tmp_path)
+    installed = login.read_text(), menu.read_text()
+    login.write_text(_OLD_LOGIN_ENTRY.format(launcher=launcher))
+    menu.unlink()
+    for name in ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"):
+        monkeypatch.setenv(name, env[name])
+    return env, record, login, menu, installed
+
+
+def _exec_line(text: str) -> str:
+    return next(ln for ln in text.splitlines() if ln.startswith("Exec="))
+
+
+def test_startup_brings_an_old_install_to_what_the_installer_writes(old_install):
+    env, record, login, menu, (installed_login, installed_menu) = old_install
+    old = login.read_text()
+    migrate.migrate_autostart_entry()
+
+    # The Exec line is the installer's; every other line, the old Comment included,
+    # is kept.
+    assert _exec_line(login.read_text()) == _exec_line(installed_login)
+    assert login.read_text() == old.replace(_exec_line(old), _exec_line(installed_login))
+    assert menu.read_text() == installed_menu
+    for entry, expected in ((login, "bg=1"), (menu, "bg=")):
+        subprocess.run(_desktop_exec(entry), env=env, check=True)
+        assert record.read_text().splitlines() == [expected], entry
+        record.unlink()
+
+    # Idempotent: a second start rewrites neither file.
+    stamps = [(p.stat().st_ino, p.stat().st_mtime_ns) for p in (login, menu)]
+    migrate.migrate_autostart_entry()
+    assert [(p.stat().st_ino, p.stat().st_mtime_ns) for p in (login, menu)] == stamps
+
+
+def test_startup_leaves_an_existing_menu_entry_alone(old_install):
+    _env, _record, login, menu, _installed = old_install
+    menu.write_text("[Desktop Entry]\nExec=/somewhere/else\n")
+    migrate.migrate_autostart_entry()
+    assert menu.read_text() == "[Desktop Entry]\nExec=/somewhere/else\n"
+    assert "DIPLOMAT_BACKGROUND=1" in _exec_line(login.read_text())
+
+
+def test_startup_creates_no_entry_where_none_is_installed(old_install):
+    _env, _record, login, menu, _installed = old_install
+    login.unlink()
+    migrate.migrate_autostart_entry()
+    assert not login.exists() and not menu.exists()
+
+
+def test_a_login_entry_that_cannot_be_rewritten_never_stops_the_start(old_install):
+    _env, _record, login, menu, _installed = old_install
+    old = login.read_text()
+    login.parent.chmod(0o555)
+    try:
+        migrate.migrate_autostart_entry()
+    finally:
+        login.parent.chmod(0o755)
+    assert login.read_text() == old
+    assert [p.name for p in login.parent.iterdir()] == ["diplomat.desktop"]

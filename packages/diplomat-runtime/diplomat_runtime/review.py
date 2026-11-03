@@ -329,7 +329,7 @@ def popen_detached(target: list[str] | str, *, shell: bool = False,
 
     * **its own session** (``start_new_session``) — the agent outlives the applet
       that spawned it. Without it the child shares the process group and dies with
-      the tray (or with the mesh node), killing a running review mid-flight;
+      the app (or with the mesh node), killing a running review mid-flight;
     * **no inherited stdio** — the applet's stdin/stdout may be a closed pipe, a
       tty it no longer owns, or the journal. A child writing into it blocks on a
       full pipe or scribbles over the parent's own output.

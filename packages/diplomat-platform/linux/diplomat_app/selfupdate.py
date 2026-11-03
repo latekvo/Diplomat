@@ -207,7 +207,8 @@ def relaunch(extra_env: dict[str, str] | None = None, *,
     unattended jobs use it to hand the GUI the display env (DISPLAY / Wayland /
     D-Bus) of the instance it replaces or revives, which a bare systemd service env
     lacks. ``background`` (the unattended jobs) starts it with its window hidden;
-    otherwise (the Update button) it opens its window.
+    otherwise (the Update button) it opens its window, :func:`app.run_app` having
+    taken ``DIPLOMAT_BACKGROUND`` out of this process's environment.
     """
     root = repo_root()
     launcher = linux_package(root) / "diplomat"
@@ -222,8 +223,6 @@ def relaunch(extra_env: dict[str, str] | None = None, *,
         env.update(extra_env)
     if background:
         env[BACKGROUND_ENV] = "1"
-    else:
-        env.pop(BACKGROUND_ENV, None)
     argv = ["bash", str(launcher)]
     if _in_service_cgroup() and shutil.which("systemd-run"):
         # A GUI started from a systemd service stays in that unit's cgroup after the

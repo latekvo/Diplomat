@@ -345,7 +345,7 @@ class Panel(QWidget):
 
         # Poll the device-allocator state file + the shared activity/ban files on a
         # light cadence (cheap file reads), and re-measure the running automatic
-        # agents on the same tick (a `ps` scan, so only while on screen).
+        # agents on the same tick (a `ps` scan, so only while shown and not minimized).
         self._device_timer = QTimer(self)
         self._device_timer.timeout.connect(self.store.refresh_device_state)
         self._device_timer.timeout.connect(self.store.refresh_activity)
@@ -364,10 +364,10 @@ class Panel(QWidget):
         self._duration_timer.start(30000)
 
         # Mesh should feel live: poll the topology snapshot on a tight 2s cadence,
-        # but only while the panel is visible AND the mesh is enabled (the tick
-        # guards both, so a hidden panel or an opted-out user costs nothing). No
-        # add-on, no timer at all — there is nothing the user could switch on that
-        # would give it something to read.
+        # but only while the window is on screen AND the mesh is enabled (the tick
+        # guards both, so a hidden or minimized window or an opted-out user costs
+        # nothing). No add-on, no timer at all — there is nothing the user could
+        # switch on that would give it something to read.
         self._mesh_timer = None
         if szpont.AVAILABLE:
             self._mesh_timer = QTimer(self)
@@ -837,11 +837,11 @@ class Panel(QWidget):
             self.store.run_autofix_poll_async()
 
     def _tasks_tick(self) -> None:
-        """Re-measure the running automatic agents while the panel is on screen, so a
+        """Re-measure the running automatic agents while the window is on screen, so a
         finished agent frees its bay within a tick rather than at the next 3-minute
-        poll. Gated on visibility: nothing else reads the count, and the measurement
-        shells out to `ps`."""
-        if self.isVisible():
+        poll. Gated on :meth:`_on_screen`: nothing else reads the count, and the
+        measurement shells out to `ps`."""
+        if self._on_screen():
             self.store.refresh_auto_task_count_async()
 
     # MARK: activity feed + bans
@@ -1218,17 +1218,22 @@ class Panel(QWidget):
 
     def _mesh_tick(self) -> None:
         """2s poll of the mesh topology — cheap file read, gated so it's free when
-        the panel is hidden or the user hasn't opted into the mesh."""
-        if self.isVisible() and self.store.mesh_enabled:
+        the window is off screen or the user hasn't opted into the mesh."""
+        if self._on_screen() and self.store.mesh_enabled:
             self.store.refresh_mesh_state()
+
+    def _on_screen(self) -> bool:
+        # isVisible() stays True for a minimized window. Restoring one sends the
+        # showEvent below, which catches both ticks up.
+        return self.isVisible() and not self.isMinimized()
 
     def showEvent(self, event) -> None:  # noqa: N802
         # One immediate mesh refresh on show so the mesh screen isn't a
         # poll-cycle stale when the window is shown.
         if self.store.mesh_enabled:
             self.store.refresh_mesh_state()
-        # Likewise the free bays: an agent that finished while the panel was hidden
-        # must not leave its slot drawn as taken until the next tick.
+        # Likewise the free bays: an agent that finished while the window was off
+        # screen must not leave its slot drawn as taken until the next tick.
         self.store.refresh_auto_task_count_async()
         if self._screen == "devices":
             self.devices_view.opened()
