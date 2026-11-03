@@ -310,8 +310,9 @@ enum QuitFlow {
     @MainActor static func confirm() {
         let alert = NSAlert()
         alert.messageText = "Quit Diplomat?"
-        alert.informativeText = "Automatic reviews and fixes stop until you launch it again "
-            + "or next log in."
+        alert.informativeText = "Polling, the monitors and automatic agent dispatch stop until "
+            + "Diplomat is launched again, by you or at your next login. Agents already running "
+            + "keep going. Closing the window instead keeps Diplomat working in the background."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Cancel")   // default — Return cancels
         alert.addButton(withTitle: "Quit")

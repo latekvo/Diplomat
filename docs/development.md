@@ -375,7 +375,7 @@ packages/
                                  has room for another and the limit - window or balance - to afford it
 
   diplomat-platform/           ← the platform wrappers: one UI each over that same core
-    macos/                     ← macOS SwiftUI menu-bar app - thin UI over the core
+    macos/                     ← macOS SwiftUI app - thin UI over the core
       Sources/Diplomat/
         DiplomatApp.swift          @main entry + app + MenuBarExtra + the headless self-test entry points
         Headless.swift             the single "are we a one-shot self-test?" env-var list
