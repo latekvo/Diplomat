@@ -45,6 +45,7 @@
     "comms-error": "comms",
     "comms-recovered": "comms",
     "comms-notice": "comms",
+    "comms-reply": "comms",
     "comms-ban": "bans"
   },
   "fallback": "system"

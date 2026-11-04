@@ -41,6 +41,7 @@ from diplomat_runtime import (
     runner,
     usagescan,
 )
+from diplomat_runtime.models import Fmt
 from . import (
     glyphs,
     szpont,
@@ -1009,7 +1010,8 @@ class SettingsView(QWidget):
             "Keywords", st.comms_keywords_raw, "none",
             lambda t: setattr(self.store, "comms_keywords_raw", t),
             "Commas or new lines between them, so one can be a phrase. Matched as a "
-            "whole word, ignoring case. A DM or an @-mention needs none.")
+            "whole word, ignoring case; a * stands for any letters (argent*, ignac*). "
+            "A DM or an @-mention needs none.")
         self._comms_allow = text_row(
             "Only these senders", st.comms_sender_allowlist_raw, "anyone in your workspace",
             lambda t: setattr(self.store, "comms_sender_allowlist_raw", t),
@@ -1033,6 +1035,13 @@ class SettingsView(QWidget):
             "A reported bug with no PR or issue number queues an agent that reproduces "
             "and researches it and writes a report, which the ✉ screen opens. It never "
             "pushes, opens PRs or issues, comments, or posts to Slack.")
+        self._sw_comms_replies = self._comms_switch(
+            inner, "Reply in Slack", st.comms_replies, "comms_replies",
+            "Work a ping queued, or found already queued or running, gets a reply "
+            "saying when it should be done. Once your session has been locked for "
+            f"{Fmt.duration(comms.away_after_secs())}, a question your repo's documentation "
+            "answers gets that answer. Only ever in the conversation the message was "
+            "written in, and at most once per message.")
         self._sw_comms_notify = self._comms_switch(
             inner, "Notify on new pings", st.comms_notify, "comms_notify",
             "A tray notification per new ping.")

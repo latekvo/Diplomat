@@ -3236,7 +3236,7 @@ check(AuditCategory.of(action: "mesh-dispatch-failed") == .mesh)
 check(AuditCategory.of(action: "mesh-spawn") == .mesh)
 check(AuditCategory.of(action: "mesh-stop") == .mesh, "stopping a node left running is a Mesh row")
 for verb in ["comms-ping", "comms-review", "comms-fix", "comms-bump", "comms-investigate",
-             "comms-error", "comms-recovered", "comms-notice"] {
+             "comms-error", "comms-recovered", "comms-notice", "comms-reply"] {
     check(AuditCategory.of(action: verb) == .comms, "\(verb) is a Comms row")
 }
 check(AuditCategory.displayOrder.firstIndex(of: .comms) == AuditCategory.displayOrder.firstIndex(of: .mesh)! + 1

@@ -517,6 +517,10 @@ final class Store: ObservableObject {
     @Published var commsActInvestigations: Bool {
         didSet { persist(commsActInvestigations, forKey: Keys.commsActInvestigations) }
     }
+    /// `CommsToggles.replies`: whether Comms writes back in Slack.
+    @Published var commsReplies: Bool {
+        didSet { persist(commsReplies, forKey: Keys.commsReplies) }
+    }
     @Published var commsNotify: Bool {
         didSet {
             persist(commsNotify, forKey: Keys.commsNotify)
@@ -530,6 +534,14 @@ final class Store: ObservableObject {
     /// Pings after this are unread.
     @Published var commsSeenAt: Date {
         didSet { persist(commsSeenAt, forKey: Keys.commsSeenAt) }
+    }
+    /// When the session lock that is still on began (`refreshCommsLock`); kept across a
+    /// relaunch so a long lock is not restarted by one.
+    var commsLockedSince: Date? {
+        didSet {
+            guard commsLockedSince != oldValue else { return }
+            persist(commsLockedSince, forKey: Keys.commsLockedSince)
+        }
     }
 
     // MARK: Comms state the screen draws
@@ -552,6 +564,9 @@ final class Store: ObservableObject {
     var commsMonitorTask: Task<Void, Never>?
     var commsPollInFlight = false
     var commsWakeObserver: NSObjectProtocol?
+    var commsLockObservers: [NSObjectProtocol] = []
+    /// The replies of every apply so far, chained so no two run at once.
+    var commsReplying: Task<Void, Never>?
 
     /// Every dispatched agent run the panel draws, in reading order: the sessions this
     /// machine spawned, the work it handed to a mesh node, and any live agent nobody
@@ -682,6 +697,8 @@ final class Store: ObservableObject {
         static let commsActRequests = "commsActRequests"
         static let commsActBumps = "commsActBumps"
         static let commsActInvestigations = "commsActInvestigations"
+        static let commsReplies = "commsReplies"
+        static let commsLockedSince = "commsLockedSince"
         static let commsNotify = "commsNotify"
         static let commsModel = "commsModel"
         static let commsSeenAt = "commsSeenAt"
@@ -844,6 +861,8 @@ final class Store: ObservableObject {
         commsActRequests = defaults.object(forKey: Keys.commsActRequests) as? Bool ?? true
         commsActBumps = defaults.object(forKey: Keys.commsActBumps) as? Bool ?? true
         commsActInvestigations = defaults.object(forKey: Keys.commsActInvestigations) as? Bool ?? true
+        commsReplies = defaults.object(forKey: Keys.commsReplies) as? Bool ?? true
+        commsLockedSince = defaults.object(forKey: Keys.commsLockedSince) as? Date
         commsNotify = defaults.object(forKey: Keys.commsNotify) as? Bool ?? true
         commsModel = defaults.string(forKey: Keys.commsModel) ?? ""
         // Absent, everything already logged reads as seen: an upgrade must not open on a

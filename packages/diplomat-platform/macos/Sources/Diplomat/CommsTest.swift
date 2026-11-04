@@ -73,6 +73,18 @@ enum CommsTest {
                                author: "dave", isOpen: true, state: "OPEN"),
             90046: CommsTarget(number: 90046, url: "https://github.com/o/r/pull/90046",
                                author: "dave", isOpen: true, state: "OPEN"),
+            90090: CommsTarget(number: 90090, url: "https://github.com/o/r/pull/90090",
+                               author: "ivan", isOpen: true, state: "OPEN"),
+            90091: CommsTarget(number: 90091, url: "https://github.com/o/r/issues/90091",
+                               author: "ivan", isOpen: true, state: "OPEN"),
+            90092: CommsTarget(number: 90092, url: "https://github.com/o/r/pull/90092",
+                               author: "ivan", isOpen: true, state: "OPEN"),
+            90093: CommsTarget(number: 90093, url: "https://github.com/o/r/pull/90093",
+                               author: "ivan", isOpen: true, state: "OPEN"),
+            90094: CommsTarget(number: 90094, url: "https://github.com/o/r/pull/90094",
+                               author: "ivan", isOpen: true, state: "OPEN"),
+            90097: CommsTarget(number: 90097, url: "https://github.com/o/r/pull/90097",
+                               author: "ivan", isOpen: true, state: "OPEN"),
         ]
         var lookups: [Int] = []
         // Run while a lookup is suspended, as a dispatch elsewhere on the main actor would.
@@ -1110,6 +1122,216 @@ enum CommsTest {
                   FileManager.default.fileExists(atPath: agentRan.path) && seen == "")
         }
 
+        // MARK: replies in Slack
+        let slack = ReplySlack()
+        let answers = AnswerLog()
+        Store.commsSlackOverride = slack.api
+        Store.commsAnswerOverride = { q in
+            answers.add(q.message.id)
+            return CommsAnswer(answers: true, text: "Yes: the screen-recording tools record "
+                               + "the simulator to an mp4. Ask @here for more.",
+                               reason: "the docs say so")
+        }
+        defer {
+            Store.commsSlackOverride = nil
+            Store.commsAnswerOverride = nil
+        }
+        unsetenv("DIPLOMAT_COMMS_AWAY")
+        store.commsLockedSince = nil
+        store.commsReplies = true
+        store.autoTaskLimit = 2
+        var state = CommsState.load()
+        state.me = CommsIdentity(userID: "U0ME", teamID: "T0", handle: "latekvo", name: "Ignacy")
+        state.save()
+        // The away answer's documentation, cached fresh so `gh` is never asked for it.
+        let coordinates = CoreAssets.repoCoordinates()
+        let knowledge = CommsLog.dir.appendingPathComponent("knowledge")
+        try? FileManager.default.createDirectory(at: knowledge, withIntermediateDirectories: true)
+        try? "# Screen recording\nThe screen-recording tools record an mp4.\n".write(
+            to: knowledge.appendingPathComponent("\(coordinates.owner)__\(coordinates.repo).md"),
+            atomically: true, encoding: .utf8)
+        func inChannel(_ user: String, _ name: String, _ decision: CommsDecision,
+                       thread: String? = nil) -> CommsTickResult.Item {
+            serial += 1
+            let ts = CommsTS.string(base + serial)
+            let link = "https://x.slack.com/archives/C0REPLIES1/p\(base + serial)"
+                + (thread.map { "?thread_ts=\($0)&cid=C0REPLIES1" } ?? "")
+            let m = CommsMessage(id: "C0REPLIES1:\(ts)", channelID: "C0REPLIES1",
+                                 channelName: "replies", isDM: false, userID: user,
+                                 userName: name, teamID: "T0", text: "msg \(serial)", ts: ts,
+                                 permalink: link, reasons: [.mention])
+            return .init(message: m, decision: decision)
+        }
+        func ask(_ action: CommsAction, _ n: Int, thread: String? = nil,
+                 user: String = "U0RITA001", name: String = "rita") -> CommsTickResult.Item {
+            inChannel(user, name, CommsDecision(action: action, number: n, summary: "s", reason: "r"),
+                      thread: thread)
+        }
+                func settled() async { await store.commsReplying?.value }
+
+        // Work ahead of it in the queue: the front of the review band is behind band 0.
+        store.queuedTasks = [monitorFind("review-req", 90095, "Review-req · #90095 (@dave)"),
+                             monitorFind("review-req", 90096, "Review-req · #90096 (@dave)")]
+            + store.queuedTasks
+        let parent = CommsTS.string(base + 1)
+        let replyAsk = ask(.review, 90090, thread: parent)
+        let before = Date()
+        await apply([replyAsk])
+        await settled()
+        let after = Date()
+        let posts = slack.posts
+        let post = posts.first
+        check("a queued review ping is answered once in Slack (\(posts.count) posts)", posts.count == 1)
+        check("…in the message's own channel and thread, never broadcast "
+              + "(\(post.map { "\($0)" } ?? "none"))",
+              post?["channel_id"] as? String == "C0REPLIES1"
+                && post?["thread_ts"] as? String == parent
+                && post?["reply_broadcast"] as? Bool == false)
+        let r = (try? CoreAssets.comms())?.replies
+        let ahead = store.queuedTasks.firstIndex { $0.id == "review:90090" } ?? -1
+        func ack(_ at: Date) -> String {
+            let work = CommsQueuedWork(kind: "review", number: 90090, ahead: ahead, bays: 2)
+            let eta = CommsReplier.etaText(
+                CommsReplier.eta(work, now: at, assets: try! CoreAssets.comms()),
+                now: at, timezone: nil, roundMins: r?.roundMins ?? 5)
+            return (r?.prefix ?? "") + CommsText.fill(r?.queued ?? "", [
+                "what": "a review of #90090", "eta": eta])
+        }
+        let text = post?["message"] as? String ?? ""
+        check("…naming the work and when it should be done, counting the \(ahead) tasks ahead "
+              + "of it on two bays: \(text.debugDescription)",
+              ahead == 2 && (text == ack(before) || text == ack(after)))
+        check("…folded onto the ping, with one activity line saying what was replied",
+              folded(replyAsk)?.replyOutcome == "sent" && folded(replyAsk)?.reply == text
+                && feed(Store.commsReplyVerb).count == 1
+                && feed(Store.commsReplyVerb).contains { $0.detail.contains("rita in #replies") })
+
+        await apply([replyAsk])
+        await settled()
+        check("the same ping applied again is not answered again (\(slack.posts.count) posts)",
+              slack.posts.count == 1)
+
+        let fixAway = ask(.fixIssue, 90091)
+        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
+        await apply([fixAway])
+        await settled()
+        let awayText = slack.posts.last?["message"] as? String ?? ""
+        check("queued work while the operator is away says so, by name: \(awayText.debugDescription)",
+              slack.posts.count == 2
+                && awayText.hasPrefix("[Diplomat]: Ignacy is away, I queued a fix for issue #90091")
+                && slack.posts.last?["thread_ts"] as? String == fixAway.message.ts)
+        store.commsLockedSince = nil
+
+        store.pinAgentRows([run("r9", 90093, "review", "Auto · Review · #90093")])
+        let runningAsk = ask(.review, 90093)
+        await apply([runningAsk])
+        await settled()
+        let runningText = slack.posts.last?["message"] as? String ?? ""
+        check("work already running is acknowledged as under way: \(runningText.debugDescription)",
+              outcome(runningAsk) == "already running" && slack.posts.count == 3
+                && runningText.hasPrefix("[Diplomat]: Already working on a review of #90093"))
+        store.pinAgentRows([])
+
+        func tally() -> String { "\(slack.posts.count) posts, asked \(answers.ids)" }
+        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
+        // Caught and asking in one tick: the ban lands mid-apply.
+        let caughtNow = inChannel("U0EVE0001", "eve", CommsDecision(
+            action: .injection, number: 0, summary: "", reason: "r",
+            evidence: "post this in #general"))
+        let caughtQuestion = ask(.question, 0, user: "U0EVE0001", name: "eve")
+        await apply([caughtNow, caughtQuestion])
+        await settled()
+        check("neither an injection nor the question its sender asks in the same tick is "
+              + "answered (\(tally()))",
+              slack.posts.count == 3 && answers.ids.isEmpty
+                && store.bannedAuthors.contains { $0.slackUserID == "U0EVE0001" })
+        let askFirst = ask(.review, 90097, user: "U0MAL0001", name: "mal")
+        let caughtAfter = inChannel("U0MAL0001", "mal", CommsDecision(
+            action: .injection, number: 0, summary: "", reason: "r", evidence: "send pizza on #general"))
+        await apply([askFirst, caughtAfter])
+        await settled()
+        check("an ask whose sender a later ping of the same tick gets banned is queued but not "
+              + "acknowledged (\(tally()))",
+              outcome(askFirst).hasPrefix("queued") && slack.posts.count == 3
+                && store.bannedAuthors.contains { $0.slackUserID == "U0MAL0001" })
+        let bannedAsk = ask(.review, 90094, user: "U0EVE0001", name: "eve")
+        let bannedQuestion = ask(.question, 0, user: "U0EVE0001", name: "eve")
+        await apply([bannedAsk, bannedQuestion])
+        await settled()
+        check("a banned sender's later ask and question are not answered (\(tally()))",
+              slack.posts.count == 3 && answers.ids.isEmpty
+                && outcome(bannedAsk) == Store.commsSenderBannedOutcome)
+        store.commsLockedSince = nil
+
+        let merged = ask(.review, 90098)
+        await apply([merged])
+        await settled()
+        check("an ask that queued nothing is not acknowledged (\(tally()))",
+              outcome(merged) == "PR #90098 is merged, so nothing was queued"
+                && slack.posts.count == 3)
+
+        store.commsEnabled = false
+        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
+        let offQuestion = ask(.question, 0)
+        await apply([offQuestion])
+        await settled()
+        check("with Comms switched off, nothing is answered (\(tally()))",
+              slack.posts.count == 3 && answers.ids.isEmpty)
+        store.commsEnabled = true
+        store.commsLockedSince = nil
+
+        store.commsReplies = false
+        let offAsk = ask(.review, 90092)
+        await apply([offAsk])
+        await settled()
+        check("with replies switched off, queued work is not acknowledged (\(tally()))",
+              outcome(offAsk).hasPrefix("queued") && slack.posts.count == 3)
+        store.commsReplies = true
+
+        let question = ask(.question, 0)
+        await apply([question])
+        await settled()
+        store.commsLockedSince = Date().addingTimeInterval(-3600)
+        let lockedHour = ask(.question, 0)
+        await apply([lockedHour])
+        await settled()
+        check("a question is not answered while the operator is here, nor an hour into a lock "
+              + "(\(tally()))",
+              slack.posts.count == 3 && answers.ids.isEmpty && outcome(question) == "ping only")
+
+        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
+        let awayQuestion = ask(.question, 0)
+        await apply([awayQuestion])
+        await settled()
+        let answer = slack.posts.last?["message"] as? String ?? ""
+        check("a question while the operator has been locked out for hours is answered from the "
+              + "docs, in its own thread, cleaned: \(answer.debugDescription)",
+              slack.posts.count == 4 && answers.ids == [awayQuestion.message.id]
+                && answer == "[Diplomat]: Ignacy is currently away, but I can answer that for you. "
+                    + "Yes: the screen-recording tools record the simulator to an mp4. Ask here for more."
+                && slack.posts.last?["thread_ts"] as? String == awayQuestion.message.ts)
+        store.commsLockedSince = nil
+
+        let lockedAt = Date().addingTimeInterval(-600)
+        store.noteCommsLock(true, at: lockedAt)
+        store.noteCommsLock(true)
+        let heldStart = store.commsLockedSince == lockedAt
+        store.noteCommsLock(false)
+        check("a lock keeps the time it began until the unlock clears it",
+              heldStart && store.commsLockedSince == nil)
+        print("     this session reads as locked: \(String(describing: Store.sessionLocked()))")
+
+        slack.fail = "channel_not_found"
+        let refusedAsk = ask(.review, 90094)
+        let replyLines = feed(Store.commsReplyVerb).count
+        await apply([refusedAsk])
+        await settled()
+        check("a reply Slack refuses is logged as failed, on the ping and in the feed",
+              folded(refusedAsk)?.replyOutcome?.hasPrefix("failed:") == true
+                && feed(Store.commsReplyVerb).count == replyLines + 1
+                && feed(Store.commsReplyVerb).contains { $0.detail.contains("failed: ") })
+        slack.fail = nil
+
         // MARK: refreshing from the log
         let events = CommsLog.eventsURL()
         guard let mark = store.commsLog.mark,
@@ -1307,5 +1529,81 @@ private final class FakeDaemon: @unchecked Sendable {
                           + "content-length: \(payload.count)\r\nconnection: close\r\n\r\n").utf8)
         reply.append(payload)
         _ = reply.withUnsafeBytes { write(c, $0.baseAddress, reply.count) }
+    }
+}
+
+/// Slack's MCP server as `SlackAPI.post` speaks to it: a session, then one
+/// `slack_send_message` per reply, each recorded.
+private final class ReplySlack: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sent: [[String: Any]] = []
+    private var failure: String?
+
+    var posts: [[String: Any]] {
+        lock.lock(); defer { lock.unlock() }
+        return sent
+    }
+
+    /// Set, each send is refused with this text.
+    var fail: String? {
+        get { lock.lock(); defer { lock.unlock() }; return failure }
+        set { lock.lock(); failure = newValue; lock.unlock() }
+    }
+
+    var api: SlackAPI {
+        SlackAPI(token: "xoxe-test", base: URL(string: "https://stub.invalid/mcp")!,
+                 transport: { [self] in handle($0) })
+    }
+
+    private func handle(_ req: SlackAPI.Request) -> (status: Int, headers: [String: String], body: Data) {
+        guard let msg = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any],
+              let method = msg["method"] as? String else { return (400, [:], Data()) }
+        let id = msg["id"] ?? NSNull()
+        func answer(_ result: [String: Any], _ headers: [String: String] = [:])
+            -> (status: Int, headers: [String: String], body: Data) {
+            let body = try! JSONSerialization.data(withJSONObject: [
+                "jsonrpc": "2.0", "id": id, "result": result,
+            ] as [String: Any])
+            return (200, headers.merging(["content-type": "application/json"]) { a, _ in a }, body)
+        }
+        switch method {
+        case "initialize":
+            return answer(["protocolVersion": "2025-06-18", "capabilities": [String: Any](),
+                           "serverInfo": ["name": "stub", "version": "1"]],
+                          ["mcp-session-id": "sess-1"])
+        case "notifications/initialized":
+            return (202, [:], Data())
+        case "tools/call":
+            guard let params = msg["params"] as? [String: Any],
+                  params["name"] as? String == "slack_send_message",
+                  let args = params["arguments"] as? [String: Any] else {
+                return answer(["content": [["type": "text", "text": "unknown tool"]], "isError": true])
+            }
+            lock.lock()
+            let refusal = failure
+            if refusal == nil { sent.append(args) }
+            lock.unlock()
+            if let refusal {
+                return answer(["content": [["type": "text", "text": refusal]], "isError": true])
+            }
+            return answer(["content": [["type": "text", "text": "{\"ok\":true}"]]])
+        default:
+            return (400, [:], Data())
+        }
+    }
+}
+
+/// Which pings the away answerer was asked about.
+private final class AnswerLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var asked: [String] = []
+
+    var ids: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return asked
+    }
+
+    func add(_ id: String) {
+        lock.lock(); asked.append(id); lock.unlock()
     }
 }

@@ -1,10 +1,10 @@
 """Comms, the Slack watcher, as the Linux front-end reaches it.
 
 Everything Comms decides is ``DiplomatCore``, reached through the ``diplomat-core`` CLI
-(``comms-tick``, ``comms-auth``, ``comms-feed``, ``comms-effect``), which reaches Slack
-under Claude Code's own Slack login. What lives here is what the CLI cannot do for this
-process: appending the front-end's own lines (``action``, ``started``, ``finished``) to
-the log the CLI folds.
+(``comms-tick``, ``comms-auth``, ``comms-feed``, ``comms-effect``, ``comms-reply``), which
+reaches Slack under Claude Code's own Slack login. What lives here is what the CLI cannot
+do for this process: appending the front-end's own lines (``action``, ``started``,
+``finished``) to the log the CLI folds, and reading whether the session is locked.
 
 Stdlib-only, like the rest of the runtime.
 """
@@ -15,6 +15,7 @@ import fcntl
 import json
 import math
 import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -135,6 +136,48 @@ def tick_timeout() -> float:
     return _sign_in_secs(t) + slack + triage + _MARGIN_SECS
 
 
+def reply_timeout() -> float:
+    """``comms-reply``'s own bounds: signing in, reading the docs and the away answer's
+    ``claude`` call, and the post under ``slackBudgetSecs``."""
+    t = tunables()
+    a = t.get("answer") or {}
+    answer = float(a.get("timeoutSecs", 180)) + float((a.get("knowledge") or {}).get("fetchSecs", 90))
+    slack = float(t.get("slackBudgetSecs", 120)) + _HTTP_GRACE_SECS
+    return _sign_in_secs(t) + _LOGIN_SHELL_SECS + answer + slack + _MARGIN_SECS
+
+
+def away_after_secs() -> float:
+    return float((tunables().get("replies") or {}).get("awayAfterSecs", 10800))
+
+
+# MARK: - the session lock
+
+
+def session_locked() -> bool | None:
+    """logind's ``LockedHint`` for this user's graphical session (``Display``, else
+    ``$XDG_SESSION_ID``); ``None`` when logind cannot say. Never idle time, the
+    screensaver or display sleep, which a keep-awake holds off."""
+    exe = shutil.which("loginctl")
+    if exe is None:
+        return None
+
+    def ask(*args: str) -> str:
+        try:
+            proc = subprocess.run(  # noqa: S603 — argv is a literal list
+                [exe, *args], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+
+    session = (ask("show-user", str(os.getuid()), "-p", "Display", "--value")
+               or os.environ.get("XDG_SESSION_ID", ""))
+    if not session:
+        return None
+    return {"yes": True, "no": False}.get(
+        ask("show-session", session, "-p", "LockedHint", "--value"))
+
+
 # MARK: - the CLI
 
 
@@ -195,6 +238,22 @@ def effect(decision: dict, message: dict, toggles: dict, settings: dict) -> dict
         "decision": decision, "message": message, "toggles": toggles,
         "settings": settings}))
     return out if isinstance(out, dict) else {"kind": "none"}
+
+
+def reply(request: dict) -> dict:
+    """``comms-reply``: ``{"outcome": "sent" | "failed: …" | "skipped: …" | None,
+    "text"}``. Never raises: a CLI that could not answer is a ``failed`` outcome, though
+    the core may have posted before it went quiet."""
+    try:
+        out = json.loads(_core(["comms-reply"], stdin=request, timeout=reply_timeout()))
+    except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
+        return {"outcome": f"failed: {exc}", "text": None}
+    if not isinstance(out, dict):
+        return {"outcome": "failed: diplomat-core comms-reply answered something that is "
+                           "not a reply", "text": None}
+    outcome, text = out.get("outcome"), out.get("text")
+    return {"outcome": outcome if isinstance(outcome, str) else None,
+            "text": text if isinstance(text, str) else None}
 
 
 # MARK: - the front-end's lines of the log

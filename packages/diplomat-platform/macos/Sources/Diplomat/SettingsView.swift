@@ -760,7 +760,8 @@ struct SettingsView: View {
     private var commsOptions: some View {
         NestedSettings(tint: .blue) {
             SettingRow(title: "Keywords",
-                       detail: "Commas or new lines between them; one may be a phrase.",
+                       detail: "Commas or new lines between them; one may be a phrase, and * "
+                             + "matches any letters, as in argent*, ignac*.",
                        stacked: true) {
                 commsField("none", $store.commsKeywordsRaw, symbol: "text.magnifyingglass")
             }
@@ -772,6 +773,9 @@ struct SettingsView: View {
                            symbol: "person.2.fill")
             }
             commsActionsBlock
+            SettingRow(title: "Reply in Slack", detail: SettingsView.commsRepliesDetail) {
+                switchControl("Reply in Slack", $store.commsReplies)
+            }
             SettingRow(title: "Notify on new pings") {
                 switchControl("Notify on new pings", $store.commsNotify)
             }
@@ -853,6 +857,16 @@ struct SettingsView: View {
         what is already queued; a reported problem queues an investigation agent that \
         writes a report and never pushes, comments or posts. Everything still waits for \
         a bay and answers to the ban list and the spending budget.
+        """
+
+    private static let commsRepliesDetail = """
+        Replies start with [Diplomat]: and go only to the conversation the message was \
+        written in, in its thread, once per message. A review, fix or investigation a \
+        ping queued (or found queued or running) gets an estimate of when it should be \
+        done. While your Mac has been locked for \
+        \(((try? CoreAssets.comms())?.replies.awayAfterSecs ?? 10800) / 3600) hours, a \
+        question about the project is answered from its documentation when that settles \
+        it plainly, and left alone otherwise.
         """
 
     private static let commsLoginDetail = """
