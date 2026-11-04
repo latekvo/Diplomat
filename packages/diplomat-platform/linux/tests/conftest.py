@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.join(_PACKAGES, "diplomat-runtime"))
 # in the package reports for the rest of the session.
 sys.path.insert(0, os.path.join(_PACKAGES, "szpontnet-core"))
 
-from PySide6.QtCore import QSettings  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, QSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 
@@ -428,19 +428,25 @@ def _reset_probe_cache():
     probes.reset_cache()
 
 
+def drain_qt_widgets(app: QApplication) -> None:
+    """Delete every top-level widget, and with it each child timer.
+
+    ``processEvents`` outside a running loop never delivers ``DeferredDelete``, so
+    the deletions are sent explicitly.
+    """
+    for widget in app.topLevelWidgets():
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 @pytest.fixture(autouse=True)
 def _drain_qt_widgets():
-    """After each test, delete any leftover top-level widgets and drain the
-    event loop, so no QTimer/QObject survives into the next test's event loop.
+    """After each test, delete any leftover top-level widgets, so no QTimer/QObject
+    survives into the next test's event loop.
 
     No-op for the many tests that never build a QApplication.
     """
     yield
     app = QApplication.instance()
-    if app is None:
-        return
-    for widget in app.topLevelWidgets():
-        widget.deleteLater()
-    # Bounded spins to let deleteLater + timer teardown actually run.
-    for _ in range(3):
-        app.processEvents()
+    if app is not None:
+        drain_qt_widgets(app)
