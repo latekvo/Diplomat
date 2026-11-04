@@ -35,6 +35,9 @@ cat > "$PLIST" <<PL
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array><string>$BIN</string></array>
+  <!-- An unattended start: no window, and the frontmost app keeps focus. -->
+  <key>EnvironmentVariables</key>
+  <dict><key>DIPLOMAT_BACKGROUND</key><string>1</string></dict>
   <key>RunAtLoad</key><true/>
   <key>ProcessType</key><string>Interactive</string>
   <!-- ~/Library/Logs, not /tmp: a predictable name in the shared, sticky /tmp can
@@ -59,7 +62,11 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 pkill -x Diplomat 2>/dev/null || true
 sleep 1
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "Loaded. Autostarts on login and is running now (look for the wrench in your menu bar)."
+# That start is unattended (no window), but whoever ran this is at the screen. Wait for
+# the instance, or `open` starts a second one.
+for _ in $(seq 1 40); do pgrep -xq Diplomat && break; sleep 0.25; done
+open "$PKG_DIR/$APP" || true
+echo "Loaded. Autostarts on login and is running now."
 
 # Also schedule the daily 6AM self-update (soft-fail: the manual Update button still
 # works without it; only the unattended schedule needs this agent).

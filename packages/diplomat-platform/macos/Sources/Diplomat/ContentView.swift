@@ -1,342 +1,6 @@
 import SwiftUI
 import AppKit
 import DiplomatCore
-import ObjectiveC
-
-/// Sizes the menu-bar popover to its content, capped at the screen's safe area so it
-/// never spills past the menu bar (top) or the Dock — the "bottom bar" (bottom). The
-/// content lays out at its natural height; once that would exceed the cap the popover
-/// stops growing and the content scrolls instead of running off-screen.
-struct PopoverRoot: View {
-    /// Fixed popover width. Two-column layout: the left column holds the monitoring
-    /// lists (status, bans, sessions, devices, activity), the right every interactive
-    /// surface (search, tool grid, results/lookup, action wizards).
-    static let width: CGFloat = 1120
-    /// Width of each of the two columns: (width − 12pt column gap − 2×10pt outer
-    /// padding) / 2. The old 536 left 16pt of slack, so the columns sat inset from
-    /// the header's edges.
-    static let columnWidth: CGFloat = (width - 12 - 20) / 2
-
-    /// The content's measured natural height. Seeded with a sane default so the very
-    /// first frame isn't zero-height; corrected on the first layout pass.
-    @State private var contentHeight: CGFloat = 600
-
-    /// Usable height of the display the popover currently sits on (`visibleFrame` already
-    /// excludes the menu bar + Dock). Reported by `WindowCenterer` from the window's ACTUAL
-    /// screen — not `NSScreen.main`, which tracks the key-window's screen and can point at
-    /// a taller display than the one the popover opens on, letting the content grow past
-    /// what fits and spill off the bottom.
-    @State private var displayVisibleHeight: CGFloat = NSScreen.main?.visibleFrame.height ?? 800
-
-    /// The user's scroller preference ("Show scroll bars: Always" ⇒ `.legacy`), tracked
-    /// live because it can be flipped in System Settings while we run.
-    @State private var scrollerStyle = NSScroller.preferredScrollerStyle
-
-    /// The screen the panel opens on (`DIPLOMAT_POPOVER_TEST` opens it elsewhere).
-    var screen: ContentView.PanelScreen = .main
-
-    /// Cap the popover at the display's usable height, less a small margin so it never
-    /// kisses the menu bar or the Dock. Content beyond this scrolls.
-    /// `DIPLOMAT_POPOVER_CAP` forces a small cap so the scrolling state is
-    /// reproducible in the `popover` render self-test.
-    private var cap: CGFloat {
-        if let s = ProcessInfo.processInfo.environment["DIPLOMAT_POPOVER_CAP"],
-           let v = Double(s) { return CGFloat(v) }
-        return max(320, displayVisibleHeight - 12)
-    }
-
-    /// Legacy (always-on) scroll bars sit INSIDE the window and steal width from the
-    /// viewport: the fixed 1120pt content then gets centre-clipped ~8pt per side and the
-    /// panel visually loses its left margin. When the content actually scrolls under a
-    /// legacy scroller, widen the window by the scroller's width so the content keeps
-    /// its full lane and the scroller gets its own.
-    private var scrollerInset: CGFloat {
-        guard contentHeight > cap, scrollerStyle == .legacy else { return 0 }
-        return NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
-    }
-
-    var body: some View {
-        ScrollView {
-            ContentView(showSettings: screen == .settings, showTelemetry: screen == .telemetry,
-                        showDevices: screen == .devices, showComms: screen == .comms)
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
-                    }
-                )
-        }
-        .scrollDisabled(contentHeight <= cap)
-        .frame(width: PopoverRoot.width + scrollerInset, height: min(contentHeight, cap))
-        .onPreferenceChange(ContentHeightKey.self) { h in
-            if h > 1, abs(h - contentHeight) > 0.5 { contentHeight = h }
-            // Re-read alongside the height: the init-time read can predate AppKit
-            // having the real preference (it reports .overlay very early in launch).
-            let style = NSScroller.preferredScrollerStyle
-            if style != scrollerStyle { scrollerStyle = style }
-        }
-        .onReceive(NotificationCenter.default.publisher(
-            for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
-            scrollerStyle = NSScroller.preferredScrollerStyle
-        }
-        .background(PopoverWindowController(onDisplayVisibleHeight: { h in
-            if abs(h - displayVisibleHeight) > 0.5 { displayVisibleHeight = h }
-        }))
-    }
-}
-
-/// Horizontally centers the MenuBarExtra popover on the display it opens on. The system
-/// anchors the window under the status item (the wrench), which for this wide (1120px)
-/// popover lands far off to one side on displays where the wrench isn't near the middle.
-///
-/// MenuBarExtra reuses one window and re-anchors it on every open WITHOUT re-running the
-/// SwiftUI view body, so a plain update-driven recentre only fires on the first open.
-/// Instead we grab the hosting window once and, off AppKit notifications that fire on every
-/// show/hide (become/resign-key, occlusion) and resize, we: keep it horizontally centred on
-/// its display, report that display's usable height for the content cap, and fade it in/out
-/// by animating `alphaValue` (the system otherwise shows/hides it instantly).
-private struct PopoverWindowController: NSViewRepresentable {
-    /// Reports the usable height of the display the popover is on, so `PopoverRoot` caps
-    /// its content to what actually fits there.
-    var onDisplayVisibleHeight: (CGFloat) -> Void = { _ in }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    func makeNSView(context: Context) -> NSView {
-        context.coordinator.onDisplayVisibleHeight = onDisplayVisibleHeight
-        let v = NSView(frame: .zero)
-        context.coordinator.attach(to: v)
-        return v
-    }
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.onDisplayVisibleHeight = onDisplayVisibleHeight
-        context.coordinator.center()
-    }
-
-    final class Coordinator {
-        /// Fade-in duration. (Fade-out is driven by `PopoverFadeOut` on the window itself.)
-        static let fadeInDuration = 0.1
-
-        var onDisplayVisibleHeight: (CGFloat) -> Void = { _ in }
-        private weak var view: NSView?
-        private weak var observed: NSWindow?
-        private var tokens: [NSObjectProtocol] = []
-
-        func attach(to view: NSView) {
-            self.view = view
-            hookWindow(retries: 40)
-        }
-
-        /// Wait (a few runloop turns) for the view to land in its window, then observe it.
-        private func hookWindow(retries: Int) {
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                guard let window = self.view?.window else {
-                    if retries > 0 { self.hookWindow(retries: retries - 1) }
-                    return
-                }
-                if self.observed !== window {
-                    self.tokens.forEach(NotificationCenter.default.removeObserver)
-                    self.observed = window
-                    // Own the show/hide look: start transparent so the first appearance fades
-                    // in, and delay the window's own instant hide so we can fade it OUT.
-                    window.animationBehavior = .none
-                    window.alphaValue = 0
-                    PopoverFadeOut.enable(on: window)
-                    // The window is up before it is hooked, so this first open never
-                    // passes through the swizzle.
-                    PopoverFadeOut.logShow(window, duringFadeOut: false)
-                    let nc = NotificationCenter.default
-                    self.tokens = [
-                        // Each open: the popover takes key focus.
-                        nc.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) {
-                            [weak self] _ in self?.onShow()
-                        },
-                        // Show/hide (also covers opens where key focus doesn't change).
-                        nc.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) {
-                            [weak self] _ in self?.onOcclusionChange()
-                        },
-                        // Content-height correction resizes the window; keep it centred.
-                        nc.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) {
-                            [weak self] _ in self?.center()
-                        },
-                    ]
-                }
-                self.onShow()
-            }
-        }
-
-        // MARK: show / hide
-
-        private func onShow() { center(); fadeIn() }
-
-        private func onOcclusionChange() {
-            guard let w = observed else { return }
-            if w.occlusionState.contains(.visible) {
-                onShow()
-            } else {
-                // Fully hidden: reset to transparent so the next open fades in cleanly.
-                w.alphaValue = 0
-            }
-        }
-
-        private func fadeIn() {
-            guard let w = observed, w.alphaValue < 0.99 else { return }
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = Coordinator.fadeInDuration
-                w.animator().alphaValue = 1
-            }
-        }
-
-        // MARK: placement + sizing
-
-        func center() {
-            // Defer so we run AFTER the system has re-anchored + sized the window on show.
-            DispatchQueue.main.async { [weak self] in
-                guard let self,
-                      let window = self.observed ?? self.view?.window,
-                      let screen = window.screen ?? NSScreen.main else { return }
-                // Report the display's usable height so the content caps to what fits here.
-                self.onDisplayVisibleHeight(screen.visibleFrame.height)
-                let targetX = PopoverPlacement.centeredX(screen: screen.frame, windowWidth: window.frame.width)
-                if abs(window.frame.origin.x - targetX) > 0.5 {
-                    window.setFrameOrigin(NSPoint(x: targetX, y: window.frame.origin.y))
-                }
-            }
-        }
-
-        deinit { tokens.forEach(NotificationCenter.default.removeObserver) }
-    }
-}
-
-/// The horizontal placement math, factored out so it's testable without a live window.
-enum PopoverPlacement {
-    /// The x-origin that horizontally centers a `windowWidth`-wide window on `screen`
-    /// (both in global/screen coordinates).
-    static func centeredX(screen: CGRect, windowWidth: CGFloat) -> CGFloat {
-        screen.midX - windowWidth / 2
-    }
-}
-
-/// Gives the MenuBarExtra popover a fade-OUT, and logs each show and hide (`AppLog`).
-/// The system hides the window via `orderOut:`,
-/// instantly, so there's nothing to animate. We swap that method's IMPLEMENTATION (method
-/// swizzle — crucially NOT a class change, so the window's KVO isa stays intact and it can't
-/// crash the way an `object_setClass` reclass does) with one that first animates `alphaValue`
-/// to 0, THEN calls the original `orderOut:`. A per-window flag means only our popover fades;
-/// any other window sharing the class hides normally.
-enum PopoverFadeOut {
-    static let duration: TimeInterval = 0.1
-    /// Posted each time the popover is ordered out.
-    static let didHide = Notification.Name("DiplomatPopoverDidHide")
-    /// `NSWindowOrderingMode.out` — the hide case of `orderWindow:relativeTo:`.
-    private static let orderOut = 0
-    private static var swizzled = Set<ObjectIdentifier>()
-    private static var isPopoverKey: UInt8 = 0
-    private static var isFadingKey: UInt8 = 0
-    private static var hidesKey: UInt8 = 0
-
-    static func enable(on window: NSWindow) {
-        // Tag this exact window; the swizzled method only fades tagged windows.
-        objc_setAssociatedObject(window, &isPopoverKey, true, .OBJC_ASSOCIATION_RETAIN)
-
-        guard let cls: AnyClass = object_getClass(window) else { return }
-        let id = ObjectIdentifier(cls)
-        guard !swizzled.contains(id) else { return }   // one swap per class is enough
-        swizzled.insert(id)
-
-        // MenuBarExtra shows/hides the popover through `orderWindow:relativeTo:` (never
-        // `orderOut:`). `.above` (1) is the show, `.out` (0) the hide — and at hide time the
-        // window is still visible at full alpha, so we fade it to 0 there, then let it order
-        // out. Method swizzle (no `object_setClass`), so the window's KVO isa is untouched.
-        let sel = #selector(NSWindow.order(_:relativeTo:))
-        guard let method = class_getInstanceMethod(cls, sel),
-              let types = method_getTypeEncoding(method) else { return }
-        let originalIMP = method_getImplementation(method)
-        typealias OrderWindow = @convention(c) (NSObject, Selector, Int, Int) -> Void
-        let callOriginal: (NSWindow, Int, Int) -> Void = { win, place, relativeTo in
-            unsafeBitCast(originalIMP, to: OrderWindow.self)(win, sel, place, relativeTo)
-        }
-
-        let block: @convention(block) (NSWindow, Int, Int) -> Void = { win, place, relativeTo in
-            let ours = (objc_getAssociatedObject(win, &isPopoverKey) as? Bool) ?? false
-            let fading = (objc_getAssociatedObject(win, &isFadingKey) as? Bool) ?? false
-            if place != orderOut, ours {
-                callOriginal(win, place, relativeTo)
-                logShow(win, duringFadeOut: fading)
-                return
-            }
-            if place == orderOut, ours, !fading {
-                objc_setAssociatedObject(win, &hidesKey, hides(win) + 1, .OBJC_ASSOCIATION_RETAIN)
-                if !AppLog.exiting { AppLog.log("popover", "hide (was visible=\(win.isVisible ? 1 : 0))") }
-                NotificationCenter.default.post(name: didHide, object: win)
-            }
-            // Only intercept OUR popover's hide, once, while it's actually visible.
-            guard place == orderOut, ours, !fading, win.isVisible, win.alphaValue > 0.01 else {
-                callOriginal(win, place, relativeTo)
-                return
-            }
-            objc_setAssociatedObject(win, &isFadingKey, true, .OBJC_ASSOCIATION_RETAIN)
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = duration
-                win.animator().alphaValue = 0
-            }, completionHandler: {
-                objc_setAssociatedObject(win, &isFadingKey, false, .OBJC_ASSOCIATION_RETAIN)
-                callOriginal(win, place, relativeTo)   // now actually order it out
-            })
-        }
-        let newIMP = imp_implementationWithBlock(block)
-        // Add an override on THIS class only; if it already defines the method, replace it.
-        if !class_addMethod(cls, sel, newIMP, types) {
-            method_setImplementation(class_getInstanceMethod(cls, sel)!, newIMP)
-        }
-    }
-
-    /// How long after an order-in the popover is judged: its 0.1 s fade-in is over by then.
-    static var showSettle: TimeInterval = 0.4
-
-    private static func hides(_ win: NSWindow) -> Int {
-        objc_getAssociatedObject(win, &hidesKey) as? Int ?? 0
-    }
-
-    /// One line per open, once it has settled. A show that is not on screen and opaque by
-    /// then is the "won't open" failure; a show during a fade-out is ordered out again
-    /// when the fade ends, behind SwiftUI's back. One closed again before it settled is
-    /// not judged.
-    static func logShow(_ win: NSWindow, duringFadeOut: Bool) {
-        let orderedIn = win.isVisible
-        let hidesBefore = hides(win)
-        DispatchQueue.main.asyncAfter(deadline: .now() + showSettle) {
-            if hides(win) != hidesBefore {
-                AppLog.log("popover", "show, closed again within \(showSettle)s")
-                return
-            }
-            let ok = win.isVisible && win.occlusionState.contains(.visible) && win.alphaValue >= 0.5
-            AppLog.log("popover", "show \(ok ? "ok" : "FAILED")"
-                + (orderedIn ? "" : " (still invisible right after ordering in)")
-                + (duringFadeOut ? " (during a fade-out)" : "")
-                + " \(describe(win))")
-        }
-    }
-
-    static func describe(_ w: NSWindow) -> String {
-        let f = w.frame
-        return "visible=\(w.isVisible ? 1 : 0) occlusion=\(w.occlusionState.contains(.visible) ? "visible" : "hidden")"
-            + " alpha=\(String(format: "%.2f", w.alphaValue)) key=\(w.isKeyWindow ? 1 : 0)"
-            + " activeSpace=\(w.isOnActiveSpace ? 1 : 0) level=\(w.level.rawValue)"
-            + " behavior=0x\(String(w.collectionBehavior.rawValue, radix: 16))"
-            + " frame=\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))"
-            + " screen=\(w.screen?.localizedName ?? "none")"
-            + " app active=\(NSApp.isActive ? 1 : 0) hidden=\(NSApp.isHidden ? 1 : 0)"
-    }
-}
-
-/// Carries the content's natural height up from a background GeometryReader so
-/// `PopoverRoot` can size the window to it.
-private struct ContentHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
 
 struct ContentView: View {
     @EnvironmentObject var store: Store
@@ -379,10 +43,9 @@ struct ContentView: View {
     @State private var auditExpanded = true
     /// Activity categories the user has toggled OFF via the filter chips. Empty ⇒ show
     /// everything (the default), so a category that only appears later still shows until
-    /// it's explicitly muted. Persisted for the popover's lifetime, reset on relaunch.
+    /// it's explicitly muted. Kept for the window's lifetime, reset on relaunch.
     @State private var mutedAuditCategories: Set<AuditCategory> = []
-    /// The login whose un-ban is awaiting inline confirmation (nil = none). Kept inline
-    /// in the popover rather than an NSAlert, which would open behind the menu-bar window.
+    /// The login whose un-ban is awaiting inline confirmation (nil = none).
     @State private var pendingUnban: String?
     @FocusState private var searchFocused: Bool
 
@@ -411,8 +74,8 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .main:
                 HStack(alignment: .top, spacing: 12) {
-                    leftColumn.frame(width: PopoverRoot.columnWidth, alignment: .top)
-                    rightColumn.frame(width: PopoverRoot.columnWidth, alignment: .top)
+                    leftColumn.frame(width: MainRoot.columnWidth, alignment: .top)
+                    rightColumn.frame(width: MainRoot.columnWidth, alignment: .top)
                 }
             }
         }
@@ -426,10 +89,12 @@ struct ContentView: View {
         // An agent starting or finishing takes a slot's row with it; without this the
         // bays pop in and out while the rows around them animate.
         .animation(.easeInOut(duration: 0.18), value: store.freeAutoSlots)
-        .onReceive(NotificationCenter.default.publisher(for: PopoverFadeOut.didHide)) { _ in
-            // Reopening the applet lands on the panel, not on Settings. A modal (the
-            // repo-root folder picker) also hides the popover; that is not a dismissal.
-            if screen == .settings, NSApp.modalWindow == nil { screen = .main }
+        .onReceive(NotificationCenter.default.publisher(for: MainWindow.openSettings)) { _ in
+            screen = .settings
+        }
+        // Reopening the window lands on the panel, not on Settings.
+        .onReceive(NotificationCenter.default.publisher(for: MainWindow.didClose)) { _ in
+            if screen == .settings { screen = .main }
         }
         .onChange(of: store.bannedAuthors) { bans in
             // The pending "Unban @X?" confirmation must not outlive the ban itself
@@ -611,7 +276,7 @@ struct ContentView: View {
     }
 
     /// Inline "Unban @X?" confirmation shown in place of the ban row when its ✕ is
-    /// clicked — kept inside the popover so it can't open behind the menu-bar window.
+    /// clicked.
     private func unbanConfirmRow(_ ban: BannedAuthor) -> some View {
         let title = ban.isSlack ? "Unban Slack user \(ban.displayName)?" : "Unban \(ban.displayName)?"
         let effect = ban.isSlack ? "Comms will triage their Slack messages again."
@@ -962,7 +627,7 @@ struct ContentView: View {
     }
 
     /// The action wizard (interactive) — right column. Sizes to its own content
-    /// (scrolls: false); PopoverRoot's outer scroll view handles any overflow.
+    /// (scrolls: false); MainRoot's outer scroll view handles any overflow.
     @ViewBuilder
     private var wizardPane: some View {
         switch activeAction {
@@ -1634,7 +1299,7 @@ private struct DeviceRow: View {
         .contentShape(Rectangle())
         .onTapGesture {
             // Off-main: the focus path is one `ps` + up to two synchronous osascript
-            // round-trips — running it in the gesture handler froze the popover
+            // round-trips — running it in the gesture handler froze the panel
             // (its agent-row sibling has always detached for the same reason).
             guard focusable else { return }
             let d = dev, t = tracked

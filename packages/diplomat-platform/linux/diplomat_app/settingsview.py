@@ -1390,7 +1390,7 @@ class SettingsView(QWidget):
             "This applet", btn_row, stacked=True,
             summary="comparing with origin…",
             detail="Pulls the latest applet from GitHub, rebuilds the diplomat-core "
-                   "prompt engine, and relaunches the tray app in place.",
+                   "prompt engine, and relaunches the app in place.",
         ))
         body.addWidget(self._update_row)
         return card

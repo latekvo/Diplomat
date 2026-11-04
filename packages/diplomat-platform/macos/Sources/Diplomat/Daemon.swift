@@ -30,7 +30,7 @@ enum Daemon {
         │ Install as a background daemon? This will:
         │   • build Diplomat.app inside this checkout
         │   • delete any Diplomat.app in /Applications or ~/Applications
-        │   • add a per-user LaunchAgent so the wrench boots on login
+        │   • add a per-user LaunchAgent so it starts on login
         │   • start it now (it replaces this foreground instance)
         │   • ask macOS for permission to control your terminal (SPAWN)
         └──────────────────────────────────────────────────────────────
@@ -62,6 +62,23 @@ enum Daemon {
         }
         proc.waitUntilExit()   // the outer shell returns immediately after backgrounding
         return true
+    }
+
+    /// Adds `DIPLOMAT_BACKGROUND=1` to a login-agent plist an older installer wrote
+    /// without it, which would open the window at every login: the 06:00 update never
+    /// re-runs the installer. Returns whether it wrote.
+    @discardableResult
+    static func markLoginStartUnattended(plist url: URL = URL(fileURLWithPath: plistPath)) -> Bool {
+        guard let data = try? Data(contentsOf: url),
+              var dict = try? PropertyListSerialization.propertyList(from: data, format: nil)
+                  as? [String: Any] else { return false }
+        var env = dict["EnvironmentVariables"] as? [String: String] ?? [:]
+        guard env[LaunchMode.backgroundVar] != "1" else { return false }
+        env[LaunchMode.backgroundVar] = "1"
+        dict["EnvironmentVariables"] = env
+        guard let out = try? PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
+        else { return false }
+        return (try? out.write(to: url, options: .atomic)) != nil
     }
 
     private static func installScriptPath() -> String? {

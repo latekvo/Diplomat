@@ -4,7 +4,7 @@ import AppKit
 ///
 /// Writes into a scratch directory: the line format, rotation, timed work, a busy and a
 /// waiting main-thread hang (the first sampled, the second not), the heartbeat, the
-/// popover's show and hide lines, and the activity feed's mirror.
+/// window's show and close lines, and the activity feed's mirror.
 ///
 ///     DIPLOMAT_APPLOG_TEST=1 swift run Diplomat
 ///
@@ -41,8 +41,8 @@ enum AppLogTest {
               AppLog.writesFile(mode: nil, redirected: false)
                 && AppLog.writesFile(mode: "self_update", redirected: false)
                 && AppLog.writesFile(mode: "watchdog", redirected: false)
-                && !AppLog.writesFile(mode: "popover_test", redirected: false)
-                && AppLog.writesFile(mode: "popover_test", redirected: true))
+                && !AppLog.writesFile(mode: "reopen_test", redirected: false)
+                && AppLog.writesFile(mode: "reopen_test", redirected: true))
         AppLog.dirOverride = nil
         setenv("DIPLOMAT_LOG_DIR", "", 1)
         let emptyRedirects = AppLog.isRedirected
@@ -176,84 +176,78 @@ enum AppLogTest {
         check("and tally the timed work", beats.contains { matches($0, #"busyProbe 1x avg \d+\.\d+s"#) },
               beats.joined(separator: "\n"))
 
-        print("applog: popover")
-        PopoverFadeOut.showSettle = 0.2
-        func lastShow() -> String? { lines().last { $0.contains("] popover show") } }
-        func lastHide() -> String? { lines().last { $0.contains("] popover hide") } }
-        let wedged = WedgedWindow(contentRect: NSRect(x: -4000, y: -4000, width: 10, height: 10),
-                                  styleMask: [.borderless], backing: .buffered, defer: false)
-        PopoverFadeOut.enable(on: wedged)
+        print("applog: window")
+        WindowLog.settle = 0.2
+        func lastShow() -> String? { lines().last { $0.contains("] window show") } }
+        func lastClose() -> String? { lines().last { $0.contains("] window close") } }
+        func testWindow(_ cls: NSWindow.Type, _ rect: NSRect) -> NSWindow {
+            let w = cls.init(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false)
+            w.isReleasedWhenClosed = false
+            WindowLog.track(w)
+            return w
+        }
+        let wedged = testWindow(WedgedWindow.self, NSRect(x: -4000, y: -4000, width: 10, height: 10))
         wedged.order(.above, relativeTo: 0)
+        WindowLog.shown(wedged)
         await pause(0.4)
         check("a show that never reaches the screen is FAILED, with the window's state",
-              matches(lastShow(), #"\] popover show FAILED \(still invisible right after ordering in\) visible=0 occlusion=hidden alpha=\d\.\d\d key=0 activeSpace=\d level=0 behavior=0x[0-9a-f]+ frame=-4000,-4000 10x10 screen=none app active=\d hidden=0$"#),
+              matches(lastShow(), #"\] window show FAILED \(still invisible right after ordering in\) visible=0 occlusion=hidden alpha=\d\.\d\d key=0 activeSpace=\d level=0 behavior=0x[0-9a-f]+ frame=-4000,-4000 10x10 screen=none app active=\d hidden=0$"#),
               lastShow() ?? "no line")
-        wedged.order(.out, relativeTo: 0)
-        check("its hide says it never showed", lastHide()?.hasSuffix("] popover hide (was visible=0)") == true,
-              lastHide() ?? "no line")
+        wedged.close()
+        check("its close says it never showed", lastClose()?.hasSuffix("] window close (was visible=0)") == true,
+              lastClose() ?? "no line")
 
-        let offscreen = ProbeWindow(contentRect: NSRect(x: -4000, y: -4000, width: 2, height: 2),
-                                    styleMask: [.borderless], backing: .buffered, defer: false)
-        PopoverFadeOut.enable(on: offscreen)
+        let offscreen = testWindow(NSWindow.self, NSRect(x: -4000, y: -4000, width: 2, height: 2))
         offscreen.order(.above, relativeTo: 0)
+        WindowLog.shown(offscreen)
         await pause(0.4)
         check("so is one ordered in where nobody can see it",
-              matches(lastShow(), #"\] popover show FAILED visible=1 occlusion=hidden "#), lastShow() ?? "no line")
-        offscreen.order(.out, relativeTo: 0)
+              matches(lastShow(), #"\] window show FAILED visible=1 occlusion=hidden "#), lastShow() ?? "no line")
+        offscreen.close()
 
-        // 2 pt in the corner, never key and click-through, above the Dock as the popover is.
-        let probe = ProbeWindow(contentRect: NSRect(x: 0, y: 0, width: 2, height: 2),
-                                styleMask: [.borderless], backing: .buffered, defer: false)
+        // 2 pt in the corner, never key and click-through.
+        let probe = testWindow(NSWindow.self, NSRect(x: 0, y: 0, width: 2, height: 2))
         probe.ignoresMouseEvents = true
         probe.level = .popUpMenu
-        PopoverFadeOut.enable(on: probe)
         // A locked screen covers every window, so nothing can be seen to land.
         let locked = (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true
         func onScreen(_ name: String, _ cond: Bool, _ detail: String) {
             if locked { print("  skip  \(name) (the screen is locked)") } else { check(name, cond, detail) }
         }
-        probe.alphaValue = 0
-        probe.order(.above, relativeTo: 0)
+        func showProbe(alpha: CGFloat) {
+            probe.alphaValue = alpha
+            probe.order(.above, relativeTo: 0)
+            WindowLog.shown(probe)
+        }
+        showProbe(alpha: 0)
         await pause(0.4)
         onScreen("and one left transparent",
-                 matches(lastShow(), #"\] popover show FAILED visible=1 occlusion=visible alpha=0\.00 "#), lastShow() ?? "no line")
-        probe.order(.out, relativeTo: 0)
+                 matches(lastShow(), #"\] window show FAILED visible=1 occlusion=visible alpha=0\.00 "#), lastShow() ?? "no line")
+        probe.close()
         await pause(0.1)
 
-        probe.alphaValue = 0.6
-        probe.order(.above, relativeTo: 0)
+        showProbe(alpha: 0.6)
         await pause(0.4)
         onScreen("a show that lands is ok",
-                 matches(lastShow(), #"\] popover show ok visible=1 occlusion=visible alpha=0\.60 "#), lastShow() ?? "no line")
-        probe.order(.out, relativeTo: 0)
-        await pause(0.2)
-        check("and its hide says it showed", lastHide()?.hasSuffix("] popover hide (was visible=1)") == true,
-              lastHide() ?? "no line")
+                 matches(lastShow(), #"\] window show ok visible=1 occlusion=visible alpha=0\.60 "#), lastShow() ?? "no line")
+        probe.close()
+        check("and its close says it showed", lastClose()?.hasSuffix("] window close (was visible=1)") == true,
+              lastClose() ?? "no line")
 
-        probe.alphaValue = 0.6
-        probe.order(.above, relativeTo: 0)
+        showProbe(alpha: 0.6)
         await pause(0.05)
-        probe.order(.out, relativeTo: 0)
+        probe.close()
         await pause(0.4)
         check("one closed before it settled is not judged",
-              lastShow()?.hasSuffix("] popover show, closed again within 0.2s") == true, lastShow() ?? "no line")
+              lastShow()?.hasSuffix("] window show, closed again within 0.2s") == true, lastShow() ?? "no line")
 
-        probe.alphaValue = 0.6
-        probe.order(.above, relativeTo: 0)
-        await pause(0.3)
-        probe.order(.out, relativeTo: 0)
-        probe.order(.above, relativeTo: 0)
-        await pause(0.4)
-        check("one ordered in while the last close still fades is FAILED, saying so",
-              matches(lastShow(), #"\] popover show FAILED \(during a fade-out\) visible=0 "#), lastShow() ?? "no line")
-
-        let hidesBefore = lines().filter { $0.contains("] popover hide") }.count
+        let closesBefore = lines().filter { $0.contains("] window close") }.count
         AppLog.exiting = true
         offscreen.order(.above, relativeTo: 0)
-        offscreen.order(.out, relativeTo: 0)
+        offscreen.close()
         AppLog.exiting = false
-        check("a hide while the app quits is not logged",
-              lines().filter { $0.contains("] popover hide") }.count == hidesBefore)
+        check("a close while the app quits is not logged",
+              lines().filter { $0.contains("] window close") }.count == closesBefore)
 
         print("applog: the activity feed")
         AuditLog.log("panel", "probe", "a detail")
@@ -287,14 +281,11 @@ enum AppLogTest {
     /// Keeps the main thread blocked without computing.
     static func blockMain(_ secs: Double) { usleep(UInt32(secs * 1e6)) }
 
-    /// Drops every order-in, as the wedged popover window did: AppKit took the call and
-    /// the window never reached the screen. `dynamic`, so the test's own call goes through
-    /// the Objective-C method table as AppKit's does, where the swizzle sits.
+    /// Drops every order-in, as the wedged popover window of 2026-11-04 did: AppKit took
+    /// the call and the window never reached the screen.
     final class WedgedWindow: NSWindow {
-        override dynamic func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+        override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
             if place == .out { super.order(place, relativeTo: otherWin) }
         }
     }
-
-    final class ProbeWindow: NSWindow {}
 }

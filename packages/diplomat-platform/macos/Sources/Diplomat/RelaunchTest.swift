@@ -17,7 +17,8 @@ import AppKit
 /// `open` passes its own on, so it must carry no headless marker - the
 /// `DIPLOMAT_SELF_UPDATE=1` the 06:00 job runs under and the `DIPLOMAT_WATCHDOG=1` the
 /// watchdog does, set on this process for the relaunch's duration, and this test's own -
-/// while everything else reaches it.
+/// while everything else reaches it. An unattended relaunch (the 06:00 job's, the
+/// watchdog's) must also hand it `DIPLOMAT_BACKGROUND=1`, and the operator's none.
 ///
 /// The 06:00 job outlives that verdict only if the instance it launched spares it, so
 /// the singleton's victims are checked too: they must leave out a headless instance (an
@@ -43,7 +44,7 @@ enum RelaunchTest {
         let scratch = fm.temporaryDirectory.appendingPathComponent("diplomat-relaunch-\(getpid())")
         defer { try? fm.removeItem(at: scratch) }
 
-        /// A menu-bar-only bundle at `<scratch>/<name>.app` whose executable is `script`.
+        /// A Dock-less (`LSUIElement`) bundle at `<scratch>/<name>.app` whose executable is `script`.
         func bundle(_ name: String, executable: String, script: String) -> URL {
             let app = scratch.appendingPathComponent("\(name).app")
             let macos = app.appendingPathComponent("Contents/MacOS")
@@ -70,8 +71,8 @@ enum RelaunchTest {
             reads += 1
             return reads % 2 == 0 ? [] : SelfUpdate.listed(app)
         }
-        func relaunch(_ app: URL) -> String? {
-            do { try SelfUpdate.relaunch(app, lister: lossy) } catch {
+        func relaunch(_ app: URL, background: Bool = false) -> String? {
+            do { try SelfUpdate.relaunch(app, background: background, lister: lossy) } catch {
                 return (error as? LocalizedError)?.errorDescription ?? "\(error)"
             }
             return nil
@@ -88,8 +89,19 @@ enum RelaunchTest {
               "got \(refused ?? "nil")")
 
         let dump = scratch.appendingPathComponent("stays.env").path
-        let stays = bundle("Stays", executable: SingleInstance.execName,
-                           script: "#!/bin/sh\nenv > '\(dump).tmp' && mv '\(dump).tmp' '\(dump)'\nexec sleep 60\n")
+        let dumping = "#!/bin/sh\nenv > '\(dump).tmp' && mv '\(dump).tmp' '\(dump)'\nexec sleep 60\n"
+        let stays = bundle("Stays", executable: SingleInstance.execName, script: dumping)
+        /// The environment the last instance of `stays` wrote down.
+        func handedEnvironment() -> [String: String] {
+            let dumpBy = Date().addingTimeInterval(5)
+            while Date() < dumpBy, !fm.fileExists(atPath: dump) { usleep(50_000) }
+            var handed: [String: String] = [:]
+            for line in ((try? String(contentsOfFile: dump, encoding: .utf8)) ?? "").split(separator: "\n") {
+                guard let eq = line.firstIndex(of: "=") else { continue }
+                handed[String(line[..<eq])] = String(line[line.index(after: eq)...])
+            }
+            return handed
+        }
         defer { for pid in SelfUpdate.running(stays) { kill(pid, SIGKILL) } }
         setenv("DIPLOMAT_SELF_UPDATE", "1", 1)
         setenv("DIPLOMAT_WATCHDOG", "1", 1)
@@ -103,13 +115,7 @@ enum RelaunchTest {
         check("one instance of it is up", staying.count == 1, "pids \(staying)")
 
         print("relaunch: the environment the instance gets")
-        let dumpBy = Date().addingTimeInterval(5)
-        while Date() < dumpBy, !fm.fileExists(atPath: dump) { usleep(50_000) }
-        var handed: [String: String] = [:]
-        for line in ((try? String(contentsOfFile: dump, encoding: .utf8)) ?? "").split(separator: "\n") {
-            guard let eq = line.firstIndex(of: "=") else { continue }
-            handed[String(line[..<eq])] = String(line[line.index(after: eq)...])
-        }
+        let handed = handedEnvironment()
         check("the rest of this process's environment reaches it",
               handed["RELAUNCH_TEST_CANARY"] == "\(getpid())", "got \(handed["RELAUNCH_TEST_CANARY"] ?? "nil")")
         check("no headless marker does: not the updater's, the watchdog's or this test's",
@@ -117,6 +123,9 @@ enum RelaunchTest {
                   && handed["DIPLOMAT_SELF_UPDATE"] == nil && handed["DIPLOMAT_WATCHDOG"] == nil
                   && handed["DIPLOMAT_RELAUNCH_TEST"] == nil,
               "got \(handed.filter { $0.key.hasPrefix("DIPLOMAT_") })")
+        check("an operator's relaunch is no unattended start",
+              !handed.isEmpty && handed[LaunchMode.backgroundVar] == nil,
+              "got \(handed[LaunchMode.backgroundVar] ?? "nil")")
 
         print("singleton: whom a fresh instance would terminate")
         let child = Process()
@@ -178,6 +187,19 @@ enum RelaunchTest {
         gone.waitUntilExit()
         let ghosts = SelfUpdate.running(stays) { _ in [gone.processIdentifier, -1] }
         check("an exited pid and pid -1 are no instance", ghosts.isEmpty, "got \(ghosts)")
+
+        print("relaunch: an unattended one tells the instance so")
+        for pid in SelfUpdate.running(stays) { kill(pid, SIGKILL) }
+        try? fm.removeItem(atPath: dump)
+        fm.createFile(atPath: exec.path, contents: Data(dumping.utf8), attributes: [.posixPermissions: 0o755])
+        let unattended = relaunch(stays, background: true)
+        check("an unattended relaunch comes up", unattended == nil, unattended ?? "")
+        let handedUnattended = handedEnvironment()
+        check("its instance is told it started unattended",
+              handedUnattended[LaunchMode.backgroundVar] == "1",
+              "got \(handedUnattended[LaunchMode.backgroundVar] ?? "nil")")
+        check("…and is still handed no headless marker",
+              !handedUnattended.isEmpty && !Headless.isActive(in: handedUnattended))
 
         if failures.isEmpty { print("relaunch: all passed") }
         else { print("relaunch: FAILED \(failures.count): \(failures.joined(separator: "; "))") }

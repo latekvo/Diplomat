@@ -9,7 +9,7 @@ import Foundation
 /// load-bearing and none of them is visible on screen when it goes missing: skip the
 /// `meshTick()` and the panel keeps rendering pre-edit state, skip the
 /// `meshError` assignment and a *rejected* edit is indistinguishable from an applied one,
-/// run the round-trip on the main actor and the popover freezes for the socket timeout.
+/// run the round-trip on the main actor and the panel freezes for the socket timeout.
 /// So drive the routine with closures that succeed, throw a `MeshCtlError`, and throw
 /// something else — then drive every real command and check the same properties.
 ///

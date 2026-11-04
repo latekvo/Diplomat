@@ -2,7 +2,7 @@
 
 Everything in here is consumed **verbatim** by both front-ends:
 
-- the macOS SwiftUI menu-bar app (`../Sources/DiplomatCore` loads it), and
+- the macOS SwiftUI app (`../Sources/DiplomatCore` loads it), and
 - the Python runtime both front-ends run (`diplomat-runtime/diplomat_runtime/core.py` loads it).
 
 The two UIs differ only in *rendering*. All the triage logic — what to query,

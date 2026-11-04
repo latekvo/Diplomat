@@ -5,7 +5,7 @@ import os
 /// The applet's diagnostic log, `~/Library/Logs/diplomat.log`: what happened, when, and
 /// how long it took. One line per event:
 ///
-///     2026-11-04T16:11:24.023+01:00 [51344] popover show FAILED visible=0 occlusion=hidden ...
+///     2026-11-04T16:11:24.023+01:00 [51344] window show FAILED visible=0 occlusion=hidden ...
 ///
 /// The bracket is the pid, plus the mode for a headless run (`self_update`, `watchdog`).
 /// Every line also goes to the unified log, subsystem `com.ignacy.diplomat`, where it

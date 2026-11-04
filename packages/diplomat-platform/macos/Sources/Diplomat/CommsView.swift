@@ -43,9 +43,9 @@ struct CommsView: View {
             if !items.isEmpty {
                 HStack(alignment: .top, spacing: 12) {
                     pingsColumn(Array(items.prefix(CommsView.maxPings)))
-                        .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
+                        .frame(width: MainRoot.columnWidth, alignment: .topLeading)
                     jobsColumn(jobs)
-                        .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
+                        .frame(width: MainRoot.columnWidth, alignment: .topLeading)
                 }
             }
             Spacer(minLength: 0)

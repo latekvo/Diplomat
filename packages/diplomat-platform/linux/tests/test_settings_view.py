@@ -419,34 +419,28 @@ def panel(app, monkeypatch):
     p.deleteLater()
 
 
-def test_dismissing_the_panel_on_settings_reopens_it_on_the_main_screen(panel):
+def test_closing_the_panel_on_settings_reopens_it_on_the_main_screen(panel):
     panel._set_screen("settings")
-    panel.hide()
+    panel.close()
     assert panel._screen == "main"
     assert panel.body.currentIndex() == panel._screens["main"]
     panel.show()
     assert panel._screen == "main"
 
 
-def test_dismissing_the_panel_on_another_screen_keeps_it(panel):
+def test_closing_the_panel_on_another_screen_keeps_it(panel):
     panel._set_screen("devices")
-    panel.hide()
+    panel.close()
     assert panel._screen == "devices"
 
 
-def test_a_modal_over_settings_hiding_the_panel_is_not_a_dismissal(panel):
-    """The repo-root picker is modal and, as a portal or GTK dialog, another process's
-    window, so the panel loses focus to it and hides."""
-    from PySide6.QtWidgets import QApplication, QDialog
+def test_minimizing_the_panel_on_settings_keeps_it(panel):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
 
     panel._set_screen("settings")
-    picker = QDialog()
-    picker.setModal(True)
-    picker.show()
-    try:
-        assert QApplication.activeModalWidget() is picker
-        panel.hide()
-        assert panel._screen == "settings"
-    finally:
-        picker.close()
-        picker.deleteLater()
+    panel.setWindowState(Qt.WindowState.WindowMinimized)
+    for _ in range(3):
+        QApplication.processEvents()
+    assert panel.isMinimized()
+    assert panel._screen == "settings"

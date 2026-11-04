@@ -2272,7 +2272,7 @@ final class Store: ObservableObject {
     }
     /// Remove a ban (the UI's un-ban button) and refresh. The daemon round-trip
     /// (curl over the unix socket, up to 5s against a wedged daemon) runs off-main
-    /// so the popover can't freeze. When the daemon handled the unban it also wrote
+    /// so the panel can't freeze. When the daemon handled the unban it also wrote
     /// the audit entry - don't double-log.
     func unban(_ login: String) {
         Task { [weak self] in
@@ -3941,7 +3941,7 @@ final class Store: ObservableObject {
     ///
     /// A run on a peer has neither and dismisses rather than pretending. If both fail the
     /// window is gone, so the tick is re-run to drop the dead row immediately rather than
-    /// leaving it to linger. The AppleScript runs off the main thread so the popover
+    /// leaving it to linger. The AppleScript runs off the main thread so the panel
     /// never hitches.
     func activate(_ row: AgentRow) async -> FocusOutcome {
         guard row.isFocusable else { return .dismissed }
@@ -4178,7 +4178,7 @@ final class Store: ObservableObject {
                 self?.updateState = .updating(step: "building the app at \(commit)…")
                 try await Task.detached(priority: .userInitiated) { try SelfUpdate.rebuild() }.value
                 self?.updateState = .updating(step: "relaunching…")
-                try await Task.detached(priority: .userInitiated) { try SelfUpdate.relaunch() }.value
+                try await Task.detached(priority: .userInitiated) { try SelfUpdate.relaunch(background: false) }.value
                 self?.updateState = .restarting(commit: commit)
             } catch {
                 self?.updateState = .failed((error as? LocalizedError)?.errorDescription ?? "\(error)")

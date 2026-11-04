@@ -956,8 +956,8 @@ enum Notifier {
         center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
     }
 
-    /// Shows notifications while the popover is open: an accessory app is active exactly
-    /// then, and macOS drops an active app's notifications by default.
+    /// Shows notifications while Diplomat is the active app, whose notifications macOS
+    /// otherwise drops.
     private final class Presenter: NSObject, UNUserNotificationCenterDelegate {
         static let shared = Presenter()
 

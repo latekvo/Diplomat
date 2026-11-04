@@ -1,12 +1,13 @@
-"""Entry point: headless self-tests (no display needed) or the Qt6 tray applet.
+"""Entry point: headless self-tests (no display needed) or the Qt6 app.
 
-    python -m diplomat_app                      # launch the tray applet
+    python -m diplomat_app                      # launch the app, window open
+    DIPLOMAT_BACKGROUND=1 python -m diplomat_app  # launch it with no window
     DIPLOMAT_DUMP=1 python -m diplomat_app  # headless pipeline dump
     DIPLOMAT_LOOKUP=337 python -m diplomat_app
     DIPLOMAT_PRINT_PROMPT=mine python -m diplomat_app   # mine|user|single,
                                                         # issues…, conflicts…, audit…
     DIPLOMAT_SELF_UPDATE=1 python -m diplomat_app       # headless 6AM update
-    DIPLOMAT_WATCHDOG=1 python -m diplomat_app          # launch the tray if it died
+    DIPLOMAT_WATCHDOG=1 python -m diplomat_app          # launch the app if it died
     DIPLOMAT_AGENTS=1 python -m diplomat_app            # why each agent reads as it does
     DIPLOMAT_COMMS_POLL=1 python -m diplomat_app        # one Slack tick, nothing applied
 """
@@ -79,9 +80,10 @@ def main() -> int:
     # No headless mode requested → launch the GUI. Migrate the pre-rename mesh
     # identity (~/.argent/mesh → ~/.diplomat/mesh) before the node comes up, so a
     # rename never regenerates this node's keypair and breaks fleet-wide trust.
-    from .migrate import migrate_legacy_state_dir
+    from .migrate import migrate_autostart_entry, migrate_legacy_state_dir
 
     migrate_legacy_state_dir()
+    migrate_autostart_entry()
 
     from .app import run_app
 

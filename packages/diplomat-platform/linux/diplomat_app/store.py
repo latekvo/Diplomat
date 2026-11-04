@@ -1208,10 +1208,10 @@ class Store(QObject):
         self.refresh_token_budget()
         # Settle the agents before anything reads them. This is the one pass that runs
         # whatever the operator is looking at: the panel's own tick is gated on the
-        # panel being VISIBLE, and this is a tray applet whose panel is shut most of
+        # window being VISIBLE, and this is an app whose window is shut most of
         # the time — so with retirement only on that tick, a finished agent's record
         # was never dropped, its bay never came back, its PR stayed deduped and its
-        # cost never reached the ledger, on exactly the machines that leave the tray
+        # cost never reached the ledger, on exactly the machines that leave the app
         # alone. (Seen live: three runs, panel closed, nothing retiring.)
         with self._settle_lock:
             self._settle_and_signal()
@@ -2267,7 +2267,7 @@ class Store(QObject):
         ``(queued, already, error)`` through ``done``.
 
         On a thread because it assembles a prompt per item, and each of those is a
-        ``diplomat-core`` subprocess: fifty of them on the UI thread is a frozen tray
+        ``diplomat-core`` subprocess: fifty of them on the UI thread is a frozen window
         for as long as it takes. ``done`` is called from the worker, so a Qt caller
         marshals it back itself (the wizards emit a signal)."""
         fan_out = (self.request_issue_sweep if isinstance(cfg, issues.IssueConfig)

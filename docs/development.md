@@ -50,7 +50,7 @@ and does everything below for you.)
 
 ```bash
 cd ~/dev/diplomat/packages/diplomat-platform/macos
-swift run Diplomat    # launches the menu-bar app (no Dock icon)
+swift run Diplomat    # launches the app and opens its window
 ```
 
 > The app is its own Swift package; the shared core is the one next door
@@ -58,7 +58,9 @@ swift run Diplomat    # launches the menu-bar app (no Dock icon)
 > self-test and the `diplomat-core` prompt CLI the Linux front-end shells out to.
 > The core holds more than one executable, so name the target there.
 
-Quit from the panel's ⏻ button. `pkill Diplomat` leaves no operator-quit marker, so
+Quit with ⌘Q or the panel's ⏻ button, which ask first, or the Dock icon's Quit, which
+does not; closing the window leaves the app running, and a
+click on its Dock icon (or Window ▸ Diplomat, ⌘0) brings the window back. `pkill Diplomat` leaves no operator-quit marker, so
 the [watchdog](#autostart-on-login), if installed, relaunches the app within five minutes.
 
 **On Linux?** See [`packages/diplomat-platform/linux/README.md`](../packages/diplomat-platform/linux/README.md)
@@ -72,7 +74,7 @@ as a login daemon:
 │ Install as a background daemon? This will:
 │   • build Diplomat.app inside this checkout
 │   • delete any Diplomat.app in /Applications or ~/Applications
-│   • add a per-user LaunchAgent so the wrench boots on login
+│   • add a per-user LaunchAgent so it starts on login
 │   • start it now (it replaces this foreground instance)
 │   • ask macOS for permission to control your terminal (SPAWN)
 └──────────────────────────────────────────────────────────────
@@ -85,14 +87,14 @@ newest-wins singleton). The prompt is skipped when launched non-interactively
 chosen terminal once so macOS shows the *"control <terminal>"* permission prompt
 up front, instead of on your first SPAWN.
 
-### Double-clickable applet (recommended)
+### Double-clickable app (recommended)
 
 Everything in this section runs from the macOS package,
 `packages/diplomat-platform/macos` - the bundle is built beside it, not at the
 repo root.
 
 ```bash
-./install/build-app.sh     # produces ./Diplomat.app (menu-bar-only, no Dock icon)
+./install/build-app.sh     # produces ./Diplomat.app
 open ./Diplomat.app
 ```
 
@@ -108,7 +110,7 @@ deletes a copy there, and **Update** rebuilds only the bundle in the checkout.
 ```
 
 Installs a per-user LaunchAgent at `~/Library/LaunchAgents/com.ignacy.diplomat.plist`
-(`RunAtLoad`), so the wrench reappears on every login. launchd starts the bundle where
+(`RunAtLoad`), so the app starts on every login. launchd starts the bundle where
 `build-app.sh` writes it, `packages/diplomat-platform/macos/Diplomat.app`, so the
 instance that greets you at login is the one **Update** rebuilds; nothing is copied to
 `/Applications`.
@@ -129,13 +131,20 @@ neither. It's the unattended twin of the Settings **Update** button, and it logs
 A **third**, `com.ignacy.diplomat.watchdog`, runs the binary headless every 5 minutes
 (`DIPLOMAT_WATCHDOG=1`, `StartInterval`) and launches the app if no instance is up -
 after a crash, a force-quit, a kill or a failed update. The 06:00 run does the same.
-Neither brings back an app you quit yourself (the ⏻ button, `osascript … quit`,
-Activity Monitor's Quit): that leaves `~/.diplomat/operator-quit`, which the next
+Neither brings back an app you quit yourself (⌘Q, the ⏻ button, the Dock's Quit,
+`osascript … quit`, Activity Monitor's Quit): that leaves `~/.diplomat/operator-quit`, which the next
 launch clears. A hand-over to a newer instance leaves no mark, and the watchdog only
 acts when there is no instance at all, so it never contends with the newest-wins
 singleton or an update's relaunch. It launches the bundle the updater builds, and logs
 what it launched to the same file. Manage it with `./install/install-watchdog.sh` /
 `./install/uninstall-watchdog.sh`.
+
+Those three starts - login, the 06:00 relaunch and the watchdog's - are unattended:
+each passes `DIPLOMAT_BACKGROUND=1`, so the app comes up with no window and leaves the
+frontmost app in front. Click the Dock icon to open the window. Any other launch (Finder,
+`open`, **Update**, `szpont`, `install-autostart.sh`) opens it. The watchdog's check
+answers before AppKit starts, so it never registers as an app. A login agent an
+older installer wrote, without `DIPLOMAT_BACKGROUND`, gets it at the next GUI launch.
 
 ### Logs
 
@@ -146,7 +155,7 @@ line per event: `<local time> [<pid>] <category> <message>`.
 |---|---|
 | `app` | launch (binary, its modification time, parent), each quit request and who sent it, exit, the singleton ending an older instance |
 | `system` | sleep and wake, displays asleep, awake or rearranged, screen lock and unlock, Space switches |
-| `popover` | each open, judged 0.4 s later: `show ok`, or `show FAILED` with the window's state when it is not on screen, covered or still transparent. Then each close |
+| `window` | each open, judged 0.4 s later: `show ok`, or `show FAILED` with the window's state when it is not on screen, covered or still transparent. Then each close |
 | `hang` | the main thread answering 0.5 s or more late: how long, whether it was computing or waiting, the polls in flight while it was late. One still going at 2 s gets its own line and a `sample` into `~/Library/Logs/diplomat-hangs/` (at most one per 10 minutes, newest 20 kept) |
 | `timing` | a poll that took 10 s or more |
 | `alive` | every 15 minutes: uptime, memory, hangs (and one still going on), each poll's count, average and worst, what is in flight |
@@ -208,15 +217,16 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   scratch dir); comms-panel; comms-badge (the main panel with
                                                      #   unread pings); comms-empty (no Slack login yet);
                                                      #   settings-comms-error (the Comms card's failing pill)
-                                                     #   popover (REAL NSWindow snapshot incl. the legacy
-                                                     #   scroller - pair with DIPLOMAT_POPOVER_CAP=400
-                                                     #   to force the scrolling state)
+                                                     #   app (the REAL window root at the width that shows
+                                                     #   the whole panel, incl. the legacy scroller lane;
+                                                     #   DIPLOMAT_RENDER_HEIGHT sets
+                                                     #   the window height, default 800)
                                                      #   window-<state> (any state above through a real
                                                      #   window: ImageRenderer draws no AppKit control, so
                                                      #   window-settings is the only faithful Settings shot)
                                                      # DIPLOMAT_RENDER_THEME=light|dark snapshots the other
                                                      #   appearance without switching the machine over
-                                                     #   live (the real popover ON-SCREEN, left running, to
+                                                     #   live (the real window ON-SCREEN, left running, to
                                                      #   drive the queue's drag + execute now with a mouse;
                                                      #   its queued rows resolve in-flight, so no spawn)
 DIPLOMAT_TRACK_TEST=1    ...                     # E2E of session tracking via a real throwaway terminal
@@ -254,11 +264,13 @@ DIPLOMAT_RELAUNCH_TEST=1 ...                     # self-test: a relaunch is judg
                                                      #   throwaway bundles; exit code = verdict
 DIPLOMAT_REPOPATHS_TEST=1 ...                    # self-test: which checkout the bundle names, from inside
                                                      #   it or from a copy; scratch dirs; exit code = verdict
-DIPLOMAT_POPOVER_TEST=1 ...                      # self-test: a dismissed popover reopens on the panel when
-                                                     #   Settings was up; off-screen windows; exit code = verdict
+DIPLOMAT_WINDOW_TEST=1 ...                       # self-test: the launch mode and the window's shape, with
+                                                     #   no window ordered in; exit code = verdict
+DIPLOMAT_REOPEN_TEST=1 ...                       # self-test: a window closed on Settings reopens on the
+                                                     #   panel; no window ordered in; exit code = verdict
 DIPLOMAT_APPLOG_TEST=1 ...                       # self-test: the diagnostic log's lines and rotation, a busy
-                                                     #   and a waiting hang and the sample, the popover's show
-                                                     #   lines; scratch dir; exit code = verdict
+                                                     #   and a waiting hang and the sample, the window's show
+                                                     #   and close lines; scratch dir; exit code = verdict
 
 # The shared core itself is independently buildable & testable (also on Linux):
 swift run DiplomatCoreSmoke                    # loads assets/, runs filter + prompt + golden-file assertions
@@ -268,6 +280,22 @@ DIPLOMAT_GOLDEN_WRITE=1 swift run DiplomatCoreSmoke  # regenerate assets/golden-
 
 The `SETTINGS_DUMP` / `RENDER` checks read UserDefaults, so run them through the
 `.app` bundle's binary (it shares the GUI's `com.ignacy.diplomat` domain).
+
+### GUI checks run in a VM
+
+Anything that shows a window, takes focus or clicks runs in a macOS VM, never on the
+machine you are working on. `scripts/macos-vm-test.sh` builds the bundle from the
+checkout, boots a [tart](https://tart.run) VM headless (cloned on first use, ~25 GB),
+and drives the real app there through the VM's own VNC server: an attended launch
+opens the window and takes focus, ⌘, opens Settings, ⌘W leaves the app running, a
+second launch or ⌘0 brings the window back, ⌘Q asks first, an
+unattended start (the login agent, the watchdog) opens no window and leaves the
+frontmost app in front.
+Its exit code is the verdict, and it keeps a screenshot per step:
+
+```bash
+scripts/macos-vm-test.sh            # KEEP_VM=1 leaves the VM up afterwards
+```
 
 Cadences and paths are overridable too, for tuning: `DIPLOMAT_AUTOFIX_SECS`,
 `DIPLOMAT_APIWATCH_SECS`, `DIPLOMAT_PROC_POLL_SECS` (min 2s), `DIPLOMAT_MESH_POLL_SECS`,
@@ -379,9 +407,10 @@ packages/
                                  has room for another and the limit - window or balance - to afford it
 
   diplomat-platform/           ← the platform wrappers: one UI each over that same core
-    macos/                     ← macOS SwiftUI menu-bar app - thin UI over the core
+    macos/                     ← macOS SwiftUI app - thin UI over the core
       Sources/Diplomat/
-        DiplomatApp.swift          @main entry + app + MenuBarExtra + the headless self-test entry points
+        DiplomatApp.swift          @main entry + app delegate + menu commands + quit flow + the headless self-test entry points
+        MainWindow.swift           the one AppKit-owned window, its SwiftUI root, LaunchMode (unattended starts), the Dock icon
         Headless.swift             the single "are we a one-shot self-test?" env-var list
         ContentView.swift          two-column panel (left: monitoring lists, right: grid + wizards/results)
         Components.swift           shared UI atoms (cards, chips, badges)
@@ -432,7 +461,7 @@ packages/
         AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares
       install/                 ← build-app + the autostart / auto-update (un)installers (launchd)
       tests/                   ← installers.sh: what those two installers write, run against stubs
-    linux/                     ← Linux Qt6/PySide6 tray applet (see its README)
+    linux/                     ← Linux Qt6/PySide6 desktop app (see its README)
       diplomat_app/            ← what is this front-end's own: screens, wizards, the Store driving
                                  them, its self-update and single-instance guards, and probes.py -
                                  this platform's evidence gatherer, twin of AgentProbes.swift
