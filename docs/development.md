@@ -395,7 +395,7 @@ packages/
         TelemetryView.swift        the Telemetry screen: the bell curve, the rate-limit windows, the backlog and finished-work series, the token split
         TelemetryLog.swift         writes/reads ~/.diplomat/pr-monitor/telemetry.jsonl (append-only, rotated)
         UsageScan.swift            Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
-        Quota.swift                the OAuth usage probe - what is left of the 5-hour and 7-day windows
+        Quota.swift                the OAuth usage probe - what is left of the 7-day window
         Spend.swift                the OpenRouter balance probe - dollars left on the key cap and the credits
         AutoBudget.swift           ledger + probe + knobs -> may another automatic task start here?
         SelfUpdate.swift           fetch/merge upstream, rebuild, relaunch (Update button + the 06:00 run)

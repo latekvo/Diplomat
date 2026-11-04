@@ -67,7 +67,7 @@ diplomat_runtime/
   activity.py     the unified audit feed (audit.jsonl) + its category taxonomy
   telemetry.py    the append-only telemetry ledger + the arithmetic over it (twin of Telemetry.swift)
   usagescan.py    Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
-  quota.py        the OAuth usage probe — what is left of the 5-hour and 7-day windows
+  quota.py        the OAuth usage probe — what is left of the 7-day window
   atomicjson.py   write-then-rename, for the files two processes share
   jsoninput.py    JSON as JSONSerialization reads it, for the run book and the ledger
                   (JSONInput.swift's twin)
