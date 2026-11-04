@@ -375,14 +375,15 @@ class MeshNode:
         self.epoch = time.time()
         # Cached automatic token-budget read (refreshed on its own loop, so neither
         # the hot `info` path nor the 2s snapshot tick touches the filesystem/network).
-        # See _token_loop / _TOKEN_REFRESH_SECS. session/week are the REAL
-        # remaining fractions per rate-limit window (None on the heuristic fallback).
+        # See _token_loop / _TOKEN_REFRESH_SECS. week is the REAL remaining fraction
+        # of the 7-day rate-limit window (None on the heuristic fallback); session
+        # fills the advert's tokensSessionPct slot, which no window feeds.
         self._token_state = "ok"
         self._token_frac = 1.0
         self._token_session: float | None = None
         self._token_week: float | None = None
-        # Burn-down ratio across those real windows — budget left over clock left
-        # until they reset. The figure dispatch ranks on; None on the heuristic
+        # Burn-down ratio on that real window — budget left over clock left until
+        # it resets. The figure dispatch ranks on; None on the heuristic
         # fallback, where the local bookkeeping window is paced instead.
         self._token_pace: float | None = None
         self.tcp_port = 0  # bound in start()
@@ -556,12 +557,12 @@ class MeshNode:
         return override if override in ("ok", "low", "out") else self._token_state
 
     def _real_quota_frac(self) -> float | None:
-        """The REAL remaining fraction of the binding rate-limit window (min of
-        the 5-hour session and 7-day week) when the OAuth probe is live, else
-        None (heuristic fallback). Caps the advertised ``stats.quotaLeft`` so
-        dispatch surplus reflects the account's true room — a node with 2% of
-        its session left must not out-rank peers on bookkeeping alone."""
-        return self._token_frac if self._token_session is not None else None
+        """The REAL remaining fraction of the 7-day rate-limit window when the
+        OAuth probe is live, else None (heuristic fallback). Caps the advertised
+        ``stats.quotaLeft`` so dispatch surplus reflects the account's true room —
+        a node with 2% of its week left must not out-rank peers on bookkeeping
+        alone."""
+        return self._token_frac if self._token_week is not None else None
 
     def _gossiped_tokens(self) -> tuple:
         """What peers currently know of our token budget, at wire granularity —
@@ -3917,7 +3918,7 @@ class MeshNode:
         consoles and load balancing stay current.
 
         Its own task rather than a branch of :meth:`_snapshot_loop`: the quota probe
-        insists through a refusal (`usage.windows`) and can take minutes, and the
+        insists through a refusal (`usage.week_window`) and can take minutes, and the
         snapshot loop is what keeps `state.json` — every peer row, every claim, the
         whole of what a front-end reads — current on a two-second beat.
         """

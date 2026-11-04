@@ -1,13 +1,15 @@
 """Token-budget signal: real Anthropic quota when reachable, local logs as fallback.
 
 Primary source — the **OAuth usage endpoint** (the same data Claude Code's
-``/usage`` screen shows): utilization percentages for the account's real
-rate-limit windows, the 5-hour session and the 7-day week. The probe reads the
-Claude Code OAuth access tokens (``~/.claude/.credentials.json``, and the macOS
-Keychain item ``Claude Code-credentials``), GETs the endpoint, and converts each
-window's utilization into a remaining fraction. The endpoint answers out of one
-small per-account bucket every Claude Code session on the machine also spends, so
-a reading is sampled rarely and insisted on when it is (see
+``/usage`` screen shows): the utilization of the account's real rate-limit
+window, the 7-day week. The probe reads the Claude Code OAuth access tokens
+(``~/.claude/.credentials.json``, and the macOS Keychain item
+``Claude Code-credentials``), GETs the endpoint, and converts the week's
+utilization into a remaining fraction. The payload's ``five_hour`` slot is not
+read: the account has no 5-hour limit, and the endpoint answers it with ``null``.
+The endpoint answers out of one small per-account bucket every Claude Code
+session on the machine also spends, so a reading is sampled rarely and insisted
+on when it is (see
 :data:`_PROBE_TTL_SECS`), and a last-good read outlives the failures in between.
 ``SZPONTNET_OAUTH_PROBE=0`` disables the probe entirely (the tests run offline and
 deterministic).
@@ -80,12 +82,11 @@ _PROBE_RETRY_SECS = 300.0
 # row is the endpoint being gone.
 _PROBE_KEEP_SECS = 1800.0
 
-# Nominal lengths of the account's real rate-limit windows. The endpoint reports
-# each window's utilization and the instant it resets, but not how long it runs —
+# Nominal length of the account's real rate-limit window. The endpoint reports
+# the window's utilization and the instant it resets, but not how long it runs —
 # and pace needs the length to know what share of the window's clock is left.
-# These are fixed by the plan (a "5-hour session", a "7-day week"), not operator
-# knobs, so they live here rather than in accounts.* config.
-_SESSION_WINDOW_SECS = 5.0 * _HOUR_SECS
+# It is fixed by the plan (a "7-day week"), not an operator knob, so it lives
+# here rather than in accounts.* config.
 _WEEK_WINDOW_SECS = 7.0 * _DAY_SECS
 
 # Pace is unbounded as a window nears its reset (budget left over a vanishing
@@ -94,7 +95,7 @@ _WEEK_WINDOW_SECS = 7.0 * _DAY_SECS
 # ranking key finite when a reset instant has already passed.
 PACE_CAP = 10.0
 
-_probe_cache: dict = {"attempt": 0.0, "good": 0.0, "session": None, "week": None}
+_probe_cache: dict = {"attempt": 0.0, "good": 0.0, "week": None}
 
 
 @dataclass(frozen=True)
@@ -158,7 +159,7 @@ def probe_enabled() -> bool:
 
 def _reset_probe_cache() -> None:
     """Test hook: forget any cached probe result."""
-    _probe_cache.update(attempt=0.0, good=0.0, session=None, week=None)
+    _probe_cache.update(attempt=0.0, good=0.0, week=None)
 
 
 def claude_dir() -> Path:
@@ -275,22 +276,21 @@ def _attempt(now: float) -> bool:
     _probe_cache["attempt"] = now
     for token in _oauth_tokens():
         payload = _fetch_usage_payload(token)
-        session = _window((payload or {}).get("five_hour"), _SESSION_WINDOW_SECS)
-        if session is None:
+        week = _window((payload or {}).get("seven_day"), _WEEK_WINDOW_SECS)
+        if week is None:
             continue
         _probe_cache["good"] = now
-        _probe_cache["session"] = session
-        _probe_cache["week"] = _window(payload.get("seven_day"), _WEEK_WINDOW_SECS)
+        _probe_cache["week"] = week
         return True
     return False
 
 
-def windows(*, insist: bool = False, stopping: threading.Event | None = None,
-            ) -> tuple[QuotaWindow | None, QuotaWindow | None]:
-    """(session, week) as REAL rate-limit windows — remaining budget *and* the
-    instant each resets, so callers can compare nodes on pace rather than on raw
-    remaining percentages. (None, None) when unavailable: probe disabled, no
-    credentials, or offline past the keep window.
+def week_window(*, insist: bool = False, stopping: threading.Event | None = None,
+                ) -> QuotaWindow | None:
+    """The account's REAL 7-day rate-limit window — remaining budget *and* the
+    instant it resets, so callers can compare nodes on pace rather than on raw
+    remaining percentages. None when unavailable: probe disabled, no credentials,
+    or offline past the keep window.
 
     ``insist`` keeps trying (:data:`_INSIST_ATTEMPTS`) rather than settling for one
     refusal, so the call BLOCKS for up to two and a half minutes. It is for the
@@ -304,9 +304,9 @@ def windows(*, insist: bool = False, stopping: threading.Event | None = None,
     interpreter joins the thread itself on the way out regardless.
     """
     if not probe_enabled():
-        return None, None
+        return None
     now = time.monotonic()
-    interval = _PROBE_TTL_SECS if _probe_cache["session"] is not None else _PROBE_RETRY_SECS
+    interval = _PROBE_TTL_SECS if _probe_cache["week"] is not None else _PROBE_RETRY_SECS
     if now - _probe_cache["attempt"] >= interval or _probe_cache["attempt"] == 0.0:
         # No token is the one failure retrying cannot fix.
         if not _attempt(now) and insist and _oauth_tokens():
@@ -314,35 +314,20 @@ def windows(*, insist: bool = False, stopping: threading.Event | None = None,
                 if _wait(_INSIST_WAIT_SECS, stopping) or _attempt(time.monotonic()):
                     break
         now = time.monotonic()
-    if _probe_cache["session"] is not None and now - _probe_cache["good"] > _PROBE_KEEP_SECS:
-        _probe_cache["session"] = _probe_cache["week"] = None  # stale beyond trust
-    return _probe_cache["session"], _probe_cache["week"]
+    if _probe_cache["week"] is not None and now - _probe_cache["good"] > _PROBE_KEEP_SECS:
+        _probe_cache["week"] = None  # stale beyond trust
+    return _probe_cache["week"]
 
 
-def quota_left() -> tuple[float | None, float | None]:
-    """(session_frac_left, week_frac_left) from the account's REAL rate-limit
-    windows (5-hour session, 7-day week). (None, None) when unavailable.
+def quota_left() -> float | None:
+    """The remaining fraction of the account's REAL 7-day window; None when
+    unavailable.
 
-    Raw fractions, for display only — never compare these across nodes, since a
+    A raw fraction, for display only — never compare it across nodes, since a
     fraction means nothing without the time left to spend it (see
     :meth:`QuotaWindow.pace`, which is what routing ranks on)."""
-    session, week = windows()
-    return (session.frac_left if session else None,
-            week.frac_left if week else None)
-
-
-def binding_pace(session: QuotaWindow | None, week: QuotaWindow | None,
-                 now: float | None = None) -> float | None:
-    """The tighter burn-down ratio across the account's real windows, or None when
-    neither is known.
-
-    The minimum, for the same reason the binding *fraction* is a minimum: both
-    windows gate the next job, so a node is only as flush as its most rationed
-    one. An account 3× ahead on the week but behind on the session cannot absorb
-    work right now, and must not out-rank a peer that can."""
-    now = time.time() if now is None else now
-    paces = [w.pace(now) for w in (session, week) if w is not None]
-    return min(paces) if paces else None
+    week = week_window()
+    return week.frac_left if week else None
 
 
 # MARK: - fallback heuristic (local transcript consumption)
@@ -454,24 +439,25 @@ def state_from_fraction(frac: float) -> str:
 def token_state(plan: str, now: float | None = None, *, insist: bool = False,
                 stopping: threading.Event | None = None,
                 ) -> tuple[str, float, float | None, float | None, float | None]:
-    """(ok|low|out, binding_fraction, session_frac, week_frac, pace) for this machine.
+    """(ok|low|out, fraction, session_frac, week_frac, pace) for this machine.
 
-    Prefers the account's REAL quota (OAuth usage endpoint; the binding fraction
-    is the tighter of the session/week windows). Falls back to the local log
-    heuristic — then session/week/pace are None, marking the fraction an estimate.
+    Prefers the account's REAL quota (OAuth usage endpoint; the fraction is the
+    7-day window's). Falls back to the local log heuristic — then week/pace are
+    None, marking the fraction an estimate. ``session_frac`` is always None: it
+    fills the advert's ``tokensSessionPct`` slot, which the protocol keeps though
+    no rate-limit window feeds it.
 
     The coarse state stays keyed to the raw *fraction*, deliberately: ok/low/out
     answers "can this node run a job at all", which is an absolute question about
     budget on hand. ``pace`` answers the separate, relative question of whether it
     should be *preferred* — that is what routing ranks on.
 
-    ``insist`` and ``stopping`` are handed to :func:`windows`; the first decides how
-    long this blocks, the second cuts it short."""
-    session, week = windows(insist=insist, stopping=stopping)
-    if session is not None:
-        fracs = [w.frac_left for w in (session, week) if w is not None]
-        frac = min(fracs)
-        return (state_from_fraction(frac), frac, session.frac_left,
-                week.frac_left if week else None, binding_pace(session, week, now))
+    ``insist`` and ``stopping`` are handed to :func:`week_window`; the first decides
+    how long this blocks, the second cuts it short."""
+    week = week_window(insist=insist, stopping=stopping)
+    if week is not None:
+        now = time.time() if now is None else now
+        return (state_from_fraction(week.frac_left), week.frac_left, None,
+                week.frac_left, week.pace(now))
     frac = fraction_remaining(plan, now)
     return state_from_fraction(frac), frac, None, None, None

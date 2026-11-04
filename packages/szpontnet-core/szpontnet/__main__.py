@@ -184,11 +184,9 @@ def _print_status() -> int:
 
     def _tokens(info: dict) -> str:
         auto = "auto" if info.get("tokensAuto") else "pinned"
-        sess, week = info.get("tokensSessionPct"), info.get("tokensWeekPct")
-        if isinstance(sess, (int, float)):
-            left = f"5h {round(sess * 100)}%"
-            if isinstance(week, (int, float)):
-                left += f" wk {round(week * 100)}%"
+        week = info.get("tokensWeekPct")
+        if isinstance(week, (int, float)):
+            left = f"wk {round(week * 100)}%"
         else:  # heuristic estimate (no real quota probe on that node)
             left = f"≈{round(float(info.get('tokensPct', 1.0)) * 100)}%"
         return f"{info.get('tokens')} {left} ({auto})"

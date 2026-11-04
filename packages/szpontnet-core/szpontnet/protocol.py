@@ -256,13 +256,14 @@ class NodeInfo:
     tokens_auto: bool = True
     # Fraction of the token budget still remaining (1.0 = fresh, 0.0 = out), so
     # the console shows a live "quota NN%" for every node, not just self. The
-    # binding value: min(session, week) when the real probe answers, else the
-    # local heuristic estimate.
+    # 7-day window's fraction when the real probe answers, else the local
+    # heuristic estimate.
     tokens_pct: float = 1.0
-    # Real remaining-quota fractions per rate-limit window (5-hour session,
-    # 7-day week) when the node's OAuth usage probe has them. None when the node
-    # is on the heuristic fallback — then OMITTED from the wire (additive fields,
-    # like pubkey/stats, so older builds interop unchanged).
+    # Real remaining-quota fractions per rate-limit window when the node's OAuth
+    # usage probe has them. None when the node is on the heuristic fallback —
+    # then OMITTED from the wire (additive fields, like pubkey/stats, so older
+    # builds interop unchanged). The session slot is a 5-hour window the provider
+    # does not report, so a current node always leaves it None.
     tokens_session_pct: float | None = None
     tokens_week_pct: float | None = None
     tcp_port: int = 0

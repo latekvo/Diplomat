@@ -426,13 +426,12 @@ amount is not comparable across nodes (see [Surplus](#surplus)) - it feeds the l
 > (`plan`, `quotaLeft`, `usageAvg`, `usage`) to inject or correct the accounting.
 > When the node's **real quota probe** is live (the OAuth usage endpoint behind
 > the `tokens` auto-state), the advertised `quotaLeft` is additionally **capped
-> by the binding rate-limit window**:
-> `quotaLeft ≤ capacity × min(session_left, week_left)`, so the displayed figure
+> by the 7-day rate-limit window**:
+> `quotaLeft ≤ capacity × week_left`, so the displayed figure
 > never overstates the room the account actually has. Heuristic fallback estimates
 > do not cap (they can read 0 for heavy users and would wrongly zero a fresh node's
-> displayed quota). The "tightest window binds" reasoning that used to protect the
-> ranking now lives in [surplus](#surplus) itself, which paces the *tighter* of the
-> session and week windows. The *mechanism* - track, advertise, rank, decline - is
+> displayed quota). What protects the ranking is [surplus](#surplus) itself, which
+> paces that window against its reset. The *mechanism* - track, advertise, rank, decline - is
 > what this chapter specifies, and it degrades safely when the inputs are neutral.
 
 ### Surplus
@@ -462,19 +461,18 @@ two nodes backwards:
 Ranking on the raw remaining amount gets **both** cases backwards - it hoards the
 account that is about to reset and hammers the one that must stretch.
 
-**The binding window is the tighter of the two.** An account has a 5-hour session
-window and a 7-day week window, each with its own pace; a node's surplus is the
-**minimum** of the two. Both gate the next job, so a node is only as flush as its
-most-rationed window - an account 3× ahead on the week but behind on the session
-cannot absorb work right now, and must not out-rank a peer that can.
+**The window paced is the 7-day week**, the one rate-limit window the provider
+reports. Were an account gated by several windows, its surplus would be the
+**minimum** of their paces: each gates the next job, so a node is only as flush as
+its most-rationed window.
 
 Surplus is **capped at `10.0`** (`PACE_CAP`): past ~10× the line a node is simply
 "use it or lose it" and finer distinctions there are noise. A window whose reset is
 already due (or overdue) paces at the cap - its whole balance is free; an
 **exhausted** window (no budget left) paces at `0`, however close its reset.
 
-Each node computes its **own** surplus, because only it holds the real reset instants
-the [OAuth usage endpoint](05-resources.md#tokens) reports for the two windows -
+Each node computes its **own** surplus, because only it holds the real reset instant
+the [OAuth usage endpoint](05-resources.md#tokens) reports for the week window -
 pacing a peer's numbers here would compare wall-clocks across machines whose clocks
 disagree. When the probe is unavailable it paces its local bookkeeping window
 instead, so an offline node still advertises a comparable figure. The value rides in

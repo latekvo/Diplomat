@@ -89,8 +89,7 @@ below). The keys:
   of the binding rate-limit window's clock still ahead, so `1.0` is exactly on pace,
   above is flush, below is rationing. **This is the field routing ranks on.** It is a
   *relative* measure, capped at `10.0`; the owning node computes it from the real
-  reset instants of its 5-hour session and 7-day week windows (the tighter binds) and
-  advertises the result. Full definition in
+  reset instant of its 7-day week window and advertises the result. Full definition in
   [11 - surplus](11-trust-and-balancing.md#surplus).
 - **`usageAvg`** (number, **display-only**) - a **21-day exponential rolling average**
   of token usage, in plan-relative capacity units per day. It decays with a ~21-day

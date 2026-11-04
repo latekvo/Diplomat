@@ -134,11 +134,11 @@ class NodeStats:
                   now: float | None = None) -> dict:
         """The gossiped view — what rides on NodeInfo.stats.
 
-        ``pace`` is the account's REAL burn-down ratio across its rate-limit
-        windows (the tighter of the 5-hour session and 7-day week) when the OAuth
-        quota probe is live, else None. It becomes the advertised ``surplus``,
-        the figure peers rank on; without it the local bookkeeping window is
-        paced instead, so an offline node still advertises a comparable number.
+        ``pace`` is the account's REAL burn-down ratio on its 7-day rate-limit
+        window when the OAuth quota probe is live, else None. It becomes the
+        advertised ``surplus``, the figure peers rank on; without it the local
+        bookkeeping window is paced instead, so an offline node still advertises
+        a comparable number.
 
         ``real_frac`` is the matching remaining *fraction*, and still caps the
         advertised ``quotaLeft``: that field is retained for display and for

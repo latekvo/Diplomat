@@ -84,8 +84,8 @@ The resource advertisement for one node. Appears inside `hello` and `node`, and
 | `tokens` | string | no (`"ok"`) | **effective** budget state: `"ok"`/`"low"`/`"out"` - see [05](05-resources.md#tokens). |
 | `tokensAuto` | bool | no (`true`) | whether `tokens` is auto-derived from real usage (vs a manual pin). Display hint. |
 | `tokensPct` | float | no (`1.0`) | fraction of the heuristic token ceiling remaining (`0.0`-`1.0`), for a live "NN%" readout. |
-| `tokensSessionPct` | float | no (omitted) | real remaining-quota fraction (`0.0`-`1.0`) of the **5-hour session** rate-limit window, from the node's OAuth usage probe. Additive/optional; omitted when unprobed (heuristic fallback). |
-| `tokensWeekPct` | float | no (omitted) | real remaining-quota fraction (`0.0`-`1.0`) of the **7-day week** rate-limit window, from the node's OAuth usage probe. Additive/optional; omitted when unprobed. The binding (smaller) of the two windows drives the effective `ok`/`low`/`out` token state. |
+| `tokensSessionPct` | float | no (omitted) | real remaining-quota fraction (`0.0`-`1.0`) of a **5-hour session** rate-limit window. Additive/optional. The provider reports no such window, so a node omits it; a receiver still accepts it. |
+| `tokensWeekPct` | float | no (omitted) | real remaining-quota fraction (`0.0`-`1.0`) of the **7-day week** rate-limit window, from the node's OAuth usage probe. Additive/optional; omitted when unprobed (heuristic fallback). It drives the effective `ok`/`low`/`out` token state. |
 | `tcpPort` | int | no (`0`) | the node's TCP listen port. |
 | `epoch` | float | no (`0`) | incarnation stamp; increases each process (re)start. |
 | `seq` | int | no (`0`) | per-incarnation update counter. |
