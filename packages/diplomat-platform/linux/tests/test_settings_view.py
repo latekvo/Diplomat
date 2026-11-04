@@ -328,7 +328,11 @@ def test_the_reply_switch_sits_with_the_comms_switches_and_writes_through(make_v
 
 
 def test_the_keywords_hint_names_the_wildcard(view):
-    assert "argent*, ignac*" in _row_of(view._comms_keywords)._detail.text()
+    assert "a * ending a word" in _row_of(view._comms_keywords)._detail.text()
+
+
+def test_the_keywords_field_shows_the_format_while_empty(view):
+    assert view._comms_keywords.placeholderText() == "deploy, release train, argent*"
 
 
 def test_a_healthy_screen_draws_no_line_under_any_row(make_view, monkeypatch, tmp_path):
