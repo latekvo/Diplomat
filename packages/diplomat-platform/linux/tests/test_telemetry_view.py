@@ -138,9 +138,10 @@ def test_the_share_of_the_limit_is_shown_once_the_window_has_a_price(store):
     _seed()
     view = _view(store)
     text = "\n".join(_labels(view))
-    assert "of the 5-hour window, per task" in text
-    assert "5-hour window priced at" in text, "the coverage line hid the calibration"
-    assert "7-day window at" in text, "the coverage line quoted one window of two"
+    assert "of the 7-day window, per task" in text
+    assert "2.0% of the 5-hour window" in text, "the covered tasks lost their 5-hour share"
+    assert "7-day window priced at" in text, "the coverage line hid the calibration"
+    assert "5-hour window at" in text, "the coverage line quoted one window of two"
     assert "95% CI" in text
 
 
@@ -174,7 +175,6 @@ def test_the_spread_measures_each_window_separately(store):
     assert len(lines) == 2, "a window was drawn without figures of its own"
     assert lines[0].startswith("◼ 5-hour  2.0%"), "50.5k of a 2.5M window"
     assert lines[1].startswith("◼ 7-day  0.20%"), "the same 50.5k of a 25M week"
-    assert "0.20% of the 7-day window" in "\n".join(_labels(view))
 
 
 def test_a_week_the_samples_never_priced_says_so_instead_of_drawing_zero(store):
@@ -187,7 +187,8 @@ def test_a_week_the_samples_never_priced_says_so_instead_of_drawing_zero(store):
     assert len(lines) == 1 and lines[0].startswith("◼ 5-hour")
     text = "\n".join(_labels(view))
     assert "The 7-day window has no price yet" in text
-    assert "of the 7-day window" not in text, "a figure was printed for it anyway"
+    assert "of the 7-day window, per task" not in text, "a figure was printed for it anyway"
+    assert "tokens per task" in text
 
 
 def test_a_session_the_samples_never_priced_still_draws_the_week(store):
@@ -205,11 +206,35 @@ def test_a_session_the_samples_never_priced_still_draws_the_week(store):
     assert _TINT["spreadWeek"] in colours, "the priced window was not drawn"
     assert _TINT["spreadSession"] not in colours
     text = "\n".join(_labels(view))
-    # The headline is still the 5-hour window's, and it has no price — so it falls
-    # back to raw tokens rather than borrowing the week's percentage.
-    assert "tokens per task" in text
-    assert "of the 5-hour window, per task" not in text
+    assert "of the 7-day window, per task" in text
+    assert "of the 5-hour window" not in text, "an unpriced window was quoted"
     assert "The 7-day window has no price yet" not in text
+
+
+def test_work_started_after_the_last_5_hour_reading_is_priced_on_the_week_alone(store):
+    """The 5-hour window is priced from history, and that price outlives the
+    readings it came from. Tasks started after the last of them carry a weekly
+    share and no 5-hour one, so the card leads with the week and never quotes a
+    5-hour figure for them."""
+    now = time.time()
+    for ago, session, week, tok in ((10, 1.0, 1.0, 0.0), (9, 0.8, 0.98, 500_000.0),
+                                    (3, None, 0.96, 1_000_000.0),
+                                    (2, None, 0.94, 1_500_000.0)):
+        sample = {"at": now - ago * 3600, "ev": "sample", "weekLeft": week,
+                  "repoTokens": tok, "otherTokens": 0.0}
+        if session is not None:
+            sample["sessionLeft"] = session
+        telemetry.append(sample)
+    _seed(samples=False)  # eight tasks, started six hours ago
+    view = _view(store)
+    lines = _spread_lines(view)
+    assert len(lines) == 1 and lines[0].startswith("◼ 7-day  0.20%"), lines
+    labels = _labels(view)
+    assert "0.20%" in labels, "the headline is not the week's share"
+    text = "\n".join(labels)
+    assert "of the 7-day window, per task" in text
+    assert "of the 5-hour window" not in text
+    assert _TINT["spreadSession"] not in _chart_colours(view)
 
 
 def test_without_two_quota_readings_it_reports_tokens_not_a_percentage(store):
@@ -222,25 +247,62 @@ def test_without_two_quota_readings_it_reports_tokens_not_a_percentage(store):
     text = "\n".join(_labels(view))
     assert "tokens per task" in text
     assert "needs two quota readings" in text
-    assert "of the 5-hour window, per task" not in text
-    assert "5-hour window priced at" not in text
-    assert "7-day window at" not in text
+    assert "of the 7-day window, per task" not in text
+    assert "7-day window priced at" not in text
+    assert "5-hour window at" not in text
 
 
-def test_the_rate_limit_card_shows_the_latest_reading_of_each_window(store):
+def test_the_rate_limit_card_leads_with_the_week(store):
     """The quota percentages are measured, not derived — the probe reports them
     every sample — so this card is the one that stays truthful on a machine whose
-    window was never priced."""
+    window was never priced. The probe reports the 7-day window alone, so that is
+    what is left now; an older 5-hour reading in the range keeps its key, and a
+    sample carrying no 5-hour reading is not a gap."""
     now = time.time()
     telemetry.append({"at": now - 1800, "ev": "sample", "sessionLeft": 0.60,
                       "weekLeft": 0.95, "repoTokens": 1000.0, "otherTokens": 1000.0})
-    telemetry.append({"at": now - 300, "ev": "sample", "sessionLeft": 0.42,
+    telemetry.append({"at": now - 300, "ev": "sample",
                       "weekLeft": 0.91, "repoTokens": 2000.0, "otherTokens": 2000.0})
     telemetry._reset_cache()
-    view = _view(store)
-    text = "\n".join(_labels(view))
-    assert "5-hour 42.0%" in text
-    assert "7-day 91.0%" in text
+    labels = _labels(_view(store))
+    assert "91.0%" in labels, "the headline is not the week left"
+    assert "◼ 7-day 91.0%" in labels
+    assert "◼ 5-hour" in labels, "the 5-hour reading in the range lost its key"
+    assert not any("missing" in t for t in labels), (
+        "a sample without a 5-hour reading was counted as a missing one"
+    )
+
+
+def test_a_range_without_5_hour_readings_keys_only_the_week(store):
+    """Nothing draws a 5-hour fill here, so a key entry for one would name a series
+    the chart does not have."""
+    now = time.time()
+    for ago, week in ((1800, 0.95), (300, 0.91)):
+        telemetry.append({"at": now - ago, "ev": "sample", "weekLeft": week,
+                          "repoTokens": 1000.0, "otherTokens": 1000.0})
+    telemetry._reset_cache()
+    labels = _labels(_view(store))
+    assert "◼ 7-day 91.0%" in labels
+    assert not any(t.startswith("◼ 5-hour") for t in labels), labels
+
+
+def test_the_render_fixture_shows_5_hour_history_and_a_weekly_only_present(store):
+    """The ``telemetry`` render is how the screen is eyeballed, so its ledger has to
+    hold both eras: 5-hour readings that stop partway, and work after them that only
+    the week prices. Only the ledger is seeded here; the render entry point itself
+    sweeps the host's agent registry."""
+    from diplomat_app import render
+
+    render._telemetry_ledger_fixture()
+    now = time.time()
+    s = telemetry.summarize(telemetry.load(), now=now, days=14, steps=56,
+                            bin_count=20, z=1.96, bucket_hours=12)
+    last_session = max(q.at for q in s.quota if q.session_pct is not None)
+    assert now - 4 * 86400 < last_session < now - 3 * 86400
+    assert s.week_left_pct is not None, "the present has no weekly headline"
+    assert 0 < s.per_task.count < s.per_task_week.count, (
+        "the render draws no task past the last 5-hour reading"
+    )
 
 
 def test_a_silent_probe_keeps_the_last_reading_it_did_take(store):
@@ -255,7 +317,7 @@ def test_a_silent_probe_keeps_the_last_reading_it_did_take(store):
     telemetry._reset_cache()
     view = _view(store)
     text = "\n".join(_labels(view))
-    assert "5-hour 42.0%" in text
+    assert "7-day 91.0%" in text
     assert "1 reading missing" in text
 
 

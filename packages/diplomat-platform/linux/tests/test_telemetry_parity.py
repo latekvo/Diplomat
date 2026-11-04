@@ -81,6 +81,10 @@ def _ledger_lines() -> list[str]:
          "repoTokens": 4_200_000.0, "otherTokens": 1_800_000.0},
         {"at": NOW - 2 * DAY, "ev": "sample", "sessionLeft": 0.2, "weekLeft": 0.8,
          "repoTokens": 5_000_000.0, "otherTokens": 2_000_000.0},
+        # No `sessionLeft` key at all, as the probe writes every sample: the one
+        # above is the last 5-hour reading, and #94 below starts after it.
+        {"at": NOW - 1.5 * DAY, "ev": "sample", "weekLeft": 0.75,
+         "repoTokens": 5_500_000.0, "otherTokens": 2_200_000.0},
         # The NEWEST sample carries no quota reading (the probe was offline, or
         # Claude Code was logged out). Deliberately last: the "what is left right
         # now" figures must fall back to the newest reading that carried a value,
@@ -275,6 +279,16 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 3 * DAY + 1500, "ev": "done", "key": "review:h/o/r#95@ww",
          "tokens": 1e308, "runner": "claude"},
     ]
+    # Started after the last 5-hour reading: the window's price outlives those
+    # readings, so both sides must give this task a weekly share and no 5-hour one.
+    events += [
+        {"at": NOW - 1.4 * DAY, "ev": "queued", "key": "review:h/o/r#94@vv",
+         "duty": "review", "pr": 94},
+        {"at": NOW - 1.4 * DAY + 100, "ev": "started", "key": "review:h/o/r#94@vv",
+         "remote": False, "attempt": 1},
+        {"at": NOW - 1.4 * DAY + 1500, "ev": "done", "key": "review:h/o/r#94@vv",
+         "tokens": 150_000.0, "runner": "claude"},
+    ]
 
     lines = [json.dumps(e, sort_keys=True) for e in events]
     # Junk both sides must skip identically: not JSON, JSON that isn't an object,
@@ -360,10 +374,11 @@ def test_the_fixture_exercises_every_figure(both):
     assert p["perTask"]["ciHigh"] > p["perTask"]["ciLow"], "degenerate interval"
     assert any(b["count"] for b in p["perTask"]["bins"]), "empty histogram"
     assert any(v > 0 for v in p["perTask"]["curve"]), "flat fitted normal"
-    # The second histogram on the same chart: the same tasks against the other window,
-    # measured from that window's own calibration and binned on the shared axis.
-    assert p["perTaskWeek"]["count"] == p["perTask"]["count"], (
-        "the two windows priced different populations"
+    # The second histogram on the same chart: the tasks against the other window,
+    # measured from that window's own calibration and binned on the shared axis. It
+    # holds one more — #94, started after the last 5-hour reading.
+    assert p["perTaskWeek"]["count"] == p["perTask"]["count"] + 1, (
+        "the 5-hour window priced a task started after its last reading"
     )
     assert (p["perTaskWeek"]["bins"][-1]["upper"]
             == p["perTask"]["bins"][-1]["upper"]), (
@@ -396,9 +411,9 @@ def test_the_fixture_exercises_every_figure(both):
         "the fixture has no probe-offline gap, so an implementation that dropped the "
         "gap (or interpolated across it) would pass"
     )
-    assert p["sessionLeftPct"] is None and p["weekLeftPct"] is None, (
-        "the fixture's newest reading that CARRIED a value is two days old, and the "
-        "headline carries no age — past the freshness bound both platforms must "
+    assert p["weekLeftPct"] is None, (
+        "the fixture's newest reading that CARRIED a value is a day and a half old, "
+        "and the headline carries no age — past the freshness bound both platforms must "
         "decline to answer rather than print it as what is left right now"
     )
     assert any(q["sessionPct"] is not None for q in p["quota"]), (
@@ -482,7 +497,10 @@ def test_a_foreign_runners_task_is_priced_but_never_charged_to_the_window(both):
                if t not in foreign and t["key"] != "review:h/o/r#95@ww"]
     assert sorted(t["tokens"] for t in foreign
                   if t["runner"] == "opencode") == [8_000_000, 9_000_000]
-    assert p["perTask"]["count"] == len(counted), (
+    # #94 started after the last 5-hour reading, so only the week prices it.
+    covered = [t for t in counted if t["key"] != "review:h/o/r#94@vv"]
+    assert len(covered) == len(counted) - 1
+    assert p["perTask"]["count"] == len(covered), (
         "the window's percentages counted a task billed to another provider"
     )
     assert p["perTaskWeek"]["count"] == len(counted), (

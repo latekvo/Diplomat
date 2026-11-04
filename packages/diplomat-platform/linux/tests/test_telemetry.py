@@ -263,15 +263,15 @@ def test_sampling_is_paced_by_the_ledger_not_by_the_caller(ledger):
 
 
 def _quota_headline(ledger, readings, *, now):
-    """``(session, week)`` as the card would print them, from ``(age_secs, session,
-    week)`` triples."""
+    """The week left as the card would print it, from ``(age_secs, session, week)``
+    triples."""
     for ago, session, week in readings:
         telemetry.append({"at": now - ago, "ev": "sample", "sessionLeft": session,
                           "weekLeft": week, "repoTokens": 0, "otherTokens": 0})
     telemetry._reset_cache()
     s = telemetry.summarize(telemetry.load(), now=now, days=7, steps=8,
                             bin_count=4, z=1.96, bucket_hours=4)
-    return s.session_left_pct, s.week_left_pct
+    return s.week_left_pct
 
 
 def test_a_probe_that_missed_a_few_rounds_keeps_the_figure_it_did_measure(ledger):
@@ -281,14 +281,14 @@ def test_a_probe_that_missed_a_few_rounds_keeps_the_figure_it_did_measure(ledger
     assert _quota_headline(ledger, [
         (telemetry.QUOTA_FRESH_SECS - 60, 0.42, 0.80),
         (0.0, None, None),
-    ], now=now) == (42.0, 80.0)
+    ], now=now) == 80.0
 
 
 def test_a_reading_older_than_the_chart_bridges_stops_being_the_headline(ledger):
     """The card's percentage says what is left RIGHT NOW and carries no age. Once the
     probe has been silent longer than the chart will draw through, the newest reading
-    describes a window that has since moved — on a 5-hour window, one that may have
-    reset outright — so the honest answer is no answer.
+    describes a window that has since moved — possibly one that has reset outright —
+    so the honest answer is no answer.
 
     This is the failure that hid a dead credential for six days: the probe went blind,
     every sample after it carried nulls, and the card went on printing the last live
@@ -298,7 +298,7 @@ def test_a_reading_older_than_the_chart_bridges_stops_being_the_headline(ledger)
     assert _quota_headline(ledger, [
         (telemetry.QUOTA_FRESH_SECS + 60, 0.42, 0.80),
         (0.0, None, None),
-    ], now=now) == (None, None)
+    ], now=now) is None
 
 
 def test_the_headline_blanks_on_the_lookback_that_still_charts_the_reading(ledger):
@@ -314,7 +314,7 @@ def test_the_headline_blanks_on_the_lookback_that_still_charts_the_reading(ledge
     s = telemetry.summarize(telemetry.load(), now=now, days=7, steps=8,
                             bin_count=4, z=1.96, bucket_hours=4)
     assert [q.session_pct for q in s.quota] == [42.0], "the chart lost its reading"
-    assert (s.session_left_pct, s.week_left_pct) == (None, None)
+    assert s.week_left_pct is None
 
 
 def test_a_completion_with_no_matching_transcript_is_still_recorded(ledger):
@@ -951,9 +951,11 @@ _WINDOWS_NOW = 1_785_000_000.0
 
 def _both_windows(*, week_moves: bool = True, session_moves: bool = True,
                   tokens: tuple[float, ...] = (80_000.0, 100_000.0, 120_000.0),
-                  ) -> telemetry.Ledger:
+                  late: tuple[float, ...] = ()) -> telemetry.Ledger:
     """A ledger that prices each window from its own readings, plus a finished local
-    task per entry of ``tokens`` to lay against them.
+    task per entry of ``tokens`` to lay against them. Those start at the instant of
+    the last 5-hour reading, the newest start a 5-hour share is priced for; each
+    entry of ``late`` is a task started after it, behind a weekly-only sample.
 
     200k tokens buy 10% of the 5-hour window and 2% of the week, so the two come out
     worth 2M and 10M tokens and a 100k task is exactly 5% of one and 1% of the other
@@ -975,6 +977,18 @@ def _both_windows(*, week_moves: bool = True, session_moves: bool = True,
     ]
     for i, tok in enumerate(tokens):
         key = f"review:h/o/r#{i}@sha{i}"
+        lines += [
+            json.dumps({"at": _WINDOWS_NOW - 6300, "ev": "started", "key": key,
+                        "remote": False, "attempt": 1}),
+            json.dumps({"at": _WINDOWS_NOW - 3000, "ev": "done", "key": key,
+                        "tokens": tok}),
+        ]
+    if late:
+        lines.append(json.dumps({"at": _WINDOWS_NOW - 5400, "ev": "sample",
+                                 "weekLeft": 0.98 if week_moves else 1.0,
+                                 "repoTokens": 200_000.0, "otherTokens": 0.0}))
+    for i, tok in enumerate(late):
+        key = f"review:h/o/r#{100 + i}@late{i}"
         lines += [
             json.dumps({"at": _WINDOWS_NOW - 3600, "ev": "started", "key": key,
                         "remote": False, "attempt": 1}),
@@ -1038,6 +1052,18 @@ def test_the_5_hour_window_can_be_the_one_the_samples_cannot_price():
     # 120k of a 10M week, and nothing from the empty series to widen it: the span is
     # the largest share either window was actually measured at.
     assert s.per_task_week.bins[-1].upper == pytest.approx(1.2)
+
+
+def test_the_5_hour_window_prices_only_the_work_its_readings_covered():
+    """Its price is measured from history and would outlive the readings it came
+    from, so a task started after the last of them has no 5-hour share — only a
+    weekly one. One started at that very reading still has both."""
+    s = _windows_summary(late=(300_000.0,))
+    assert s.session_limit_tokens == pytest.approx(2_000_000.0)
+    assert s.per_task.count == 3, "a task the 5-hour readings never covered was priced"
+    assert s.per_task.mean == pytest.approx(5.0)
+    assert s.per_task_week.count == 4
+    assert s.per_task_week.mean == pytest.approx(1.5)  # 0.8 + 1 + 1.2 + 3, over 4
 
 
 def test_a_span_widens_a_histogram_past_its_own_largest_value():

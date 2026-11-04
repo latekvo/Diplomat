@@ -37,9 +37,11 @@ remaining quota fractions and this machine's cumulative Claude token counters,
 split monitored-repo vs everything else.
 
 The quota fractions are a measurement, and the screen draws them as one
-(:func:`quota_series`): both rate-limit windows over the lookback, resets and
-all. They do double duty as the thing that makes *tokens* comparable to a limit —
-Anthropic publishes a utilization percentage and never a token budget, so the
+(:func:`quota_series`): every rate-limit window a reading carries, over the
+lookback, resets and all. The probe reports the 7-day window alone;
+``sessionLeft`` (the 5-hour window) survives only on older samples, which the
+screen keeps drawing as history. They do double duty as the thing that makes
+*tokens* comparable to a limit — Anthropic publishes a utilization percentage and never a token budget, so the
 pair (quota consumed, tokens spent) over an interval is the only honest way to
 price the window in tokens; see :func:`calibrate`.
 
@@ -458,7 +460,7 @@ class Task:
 
         Only Claude Code's do; every other runner is billed by whichever provider it
         is logged into. So a foreign task is worth a token count of its own and is
-        worth nothing at all as a share of a five-hour window it never drew on — and
+        worth nothing at all as a share of a quota window it never drew on — and
         left in, it would drag that share down for every task beside it."""
         from . import runner as agentrunner
 
@@ -876,9 +878,10 @@ def finished_series(tasks: list[Task], *, now: float, days: float,
 @dataclass(frozen=True)
 class QuotaPoint:
     at: float
-    #: Percent of the 5-hour window left, or None when that reading is missing —
-    #: the probe was offline, or Claude Code was logged out. None is NOT zero, and
-    #: a chart must break its line rather than draw a plunge to the floor.
+    #: Percent of each window left, or None when that reading is missing — the
+    #: probe was offline, Claude Code was logged out, or (for the 5-hour window) the
+    #: sample postdates its readings. None is NOT zero, and a chart must break its
+    #: line rather than draw a plunge to the floor.
     session_pct: float | None
     week_pct: float | None
 
@@ -888,9 +891,9 @@ def quota_series(samples: list[Sample], *, now: float,
     """The quota readings inside the range, oldest first.
 
     Unlike :func:`pending_series` this is NOT resampled onto a fixed grid: these
-    are measurements, taken every :data:`SAMPLE_INTERVAL_SECS`, and the 5-hour
-    window's sawtooth is the shape worth seeing. Interpolating it onto evenly
-    spaced instants would smooth away the resets that give it its meaning.
+    are measurements, taken every :data:`SAMPLE_INTERVAL_SECS`, and a window's
+    resets are the shape worth seeing. Interpolating them onto evenly spaced
+    instants would smooth away what gives the readings their meaning.
     """
     start = now - days * 86400
     return [
@@ -981,20 +984,21 @@ def token_split(samples: list[Sample]) -> tuple[float, float]:
 
 @dataclass(frozen=True)
 class Summary:
-    #: Tokens per 100% of the 5-hour session window, and of the 7-day week. None
-    #: until enough samples exist to price the window, in which case every
-    #: percentage is empty rather than guessed: Anthropic's limits are dynamic and
+    #: Tokens per 100% of the 5-hour session window (priced from the older samples
+    #: that carry it), and of the 7-day week. None until enough samples exist to
+    #: price the window, in which case every percentage is empty rather than guessed: Anthropic's limits are dynamic and
     #: account-specific, so a hardcoded ceiling would be a made-up number wearing a
     #: real one's clothes.
     session_limit_tokens: float | None = None
     week_limit_tokens: float | None = None
 
-    #: What a task costs as a share of the 5-hour window, and the same tasks as a
-    #: share of the 7-day one. Two distributions rather than one and a ratio: each
-    #: window is priced from its own quota readings (:func:`calibrate`), so either can
-    #: be measurable while the other is not, and the screen draws them on one axis —
-    #: which of the two humps sits further right is the ceiling that runs out first.
-    #: They share bin edges, so a bin means the same slice of the axis on both.
+    #: What a task costs as a share of the 5-hour window, and as a share of the
+    #: 7-day one. Two distributions rather than one and a ratio: each window is
+    #: priced from its own quota readings (:func:`calibrate`), so either can be
+    #: measurable while the other is not. The 5-hour one holds only tasks that
+    #: started no later than the last sample carrying a reading of it. The screen
+    #: draws both on one axis and they share bin edges, so a bin means the same slice
+    #: of the axis on both.
     per_task: Distribution = field(default_factory=Distribution)
     per_task_week: Distribution = field(default_factory=Distribution)
     #: Mean RAW tokens per task. Independent of the quota probe, so it is what the
@@ -1017,10 +1021,9 @@ class Summary:
     run_samples: int = 0
     wait_samples: int = 0
 
-    #: Every quota reading in the range, plus the latest of each window — what is
-    #: left right now, which is the number the reader checks first.
+    #: Every quota reading in the range, plus the latest of the 7-day window — what
+    #: is left right now, which is the number the reader checks first.
     quota: tuple[QuotaPoint, ...] = ()
-    session_left_pct: float | None = None
     week_left_pct: float | None = None
 
     #: Task lifespans that began in the range, drawn as start/finish markers over the
@@ -1093,11 +1096,16 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
     # Two lists, because the two figures ask different questions: what a task cost is
     # a token count whoever billed it, while a share of a window is the account's and
     # only its own tasks may be measured against it.
-    charged = [t.tokens for t in priced if t.anthropic]
-    pct = _shares(charged, session_limit)
-    pct_week = _shares(charged, week_limit)
-    # One axis for both histograms, so the distance between the humps is readable as
-    # what it is: how much more of a 5-hour window a task eats than of a week.
+    charged = [t for t in priced if t.anthropic]
+    # The 5-hour price outlives the readings it came from, so a task started after
+    # the last of them would be priced against a window that was no longer being
+    # measured.
+    session_until = next((s.at for s in reversed(ledger.samples)
+                          if s.session_left is not None), -math.inf)
+    pct = _shares([t.tokens for t in charged if t.started_at <= session_until],
+                  session_limit)
+    pct_week = _shares([t.tokens for t in charged], week_limit)
+    # One axis for both histograms, so the same task lands in the same bin on each.
     span = max(max(pct, default=0.0), max(pct_week, default=0.0))
 
     # The dollar half of the same question. Restricted to the model that ran most
@@ -1138,9 +1146,6 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
         # The last reading that CARRIED a value, not the last sample — but no older
         # than :data:`QUOTA_FRESH_SECS`. The card prints this as what is left now and
         # never says how old it is, so past that bound no number beats a stale one.
-        session_left_pct=next((q.session_pct for q in reversed(quota)
-                               if q.session_pct is not None
-                               and now - q.at <= QUOTA_FRESH_SECS), None),
         week_left_pct=next((q.week_pct for q in reversed(quota)
                             if q.week_pct is not None
                             and now - q.at <= QUOTA_FRESH_SECS), None),
@@ -1309,7 +1314,6 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
         "quota": [{"at": _r(q.at), "sessionPct": _opt(q.session_pct),
                    "weekPct": _opt(q.week_pct)}
                   for q in summary.quota],
-        "sessionLeftPct": _opt(summary.session_left_pct),
         "weekLeftPct": _opt(summary.week_left_pct),
         "taskSpans": [{"started": _r(sp.started), "done": _opt(sp.done),
                        "startedPct": _opt(sp.started_pct),

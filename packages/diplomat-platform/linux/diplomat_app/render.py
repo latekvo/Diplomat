@@ -385,8 +385,8 @@ def _telemetry_scratch() -> None:
 
 def _telemetry_ledger_fixture() -> None:
     """A synthetic telemetry ledger so the ◫ Telemetry screen can be eyeballed:
-    a fortnight of quota samples burning down and refilling on the 5-hour cycle,
-    and forty-odd finished auto-tasks with a realistic right-skewed spread of
+    a fortnight of quota samples, the first eleven days of them also carrying the
+    5-hour window burning down and refilling on its cycle, and forty-odd finished auto-tasks with a realistic right-skewed spread of
     costs — most cheap, a few expensive — plus a handful still owed.
 
     Written through the real recorder into the real ledger path, which the render
@@ -436,10 +436,15 @@ def _telemetry_ledger_fixture() -> None:
         # machine has ever recorded. The window is spent through them all the same.
         outage = now - 6 * day < at < now - 5.5 * day
         answered = not outage and rng.random() > 0.08
-        telemetry.append({"at": at, "ev": "sample",
-                          "sessionLeft": round(session_left, 4) if answered else None,
-                          "weekLeft": round(week_left, 4) if answered else None,
-                          "repoTokens": repo, "otherTokens": other})
+        sample = {"at": at, "ev": "sample",
+                  "weekLeft": round(week_left, 4) if answered else None,
+                  "repoTokens": repo, "otherTokens": other}
+        # The last three days are written as the probe writes every sample, with no
+        # 5-hour reading at all, so the screen shows that window's history and the
+        # weekly-only present side by side.
+        if at < now - 3 * day:
+            sample["sessionLeft"] = round(session_left, 4) if answered else None
+        telemetry.append(sample)
         at += 900.0
 
     kinds = [("review", "review"), ("review-reply", "review"), ("conflicts", "conflicts")]

@@ -2466,11 +2466,13 @@ section("telemetry")
 let tNow = 1_785_000_000.0
 let tLines = [
     // Two intervals price the window: 25% of it bought 2.5M tokens, so it is worth
-    // 10M. The third spans a RESET (more left than before), which prices nothing.
+    // 10M. The third spans a RESET (more left than before), which prices nothing, and
+    // ends after every local task below has started, so the 5-hour readings cover
+    // them all.
     #"{"at": 1784900000, "ev": "sample", "sessionLeft": 1.0, "weekLeft": 1.0, "repoTokens": 0, "otherTokens": 0}"#,
     #"{"at": 1784903600, "ev": "sample", "sessionLeft": 0.85, "weekLeft": 0.99, "repoTokens": 1000000, "otherTokens": 500000}"#,
     #"{"at": 1784907200, "ev": "sample", "sessionLeft": 0.75, "weekLeft": 0.98, "repoTokens": 1600000, "otherTokens": 900000}"#,
-    #"{"at": 1784910800, "ev": "sample", "sessionLeft": 1.0, "weekLeft": 0.97, "repoTokens": 1800000, "otherTokens": 1000000}"#,
+    #"{"at": 1784932000, "ev": "sample", "sessionLeft": 1.0, "weekLeft": 0.97, "repoTokens": 1800000, "otherTokens": 1000000}"#,
     #"{"at": 1784920000, "ev": "queued", "key": "review:h/o/r#1@aa", "duty": "review", "pr": 1}"#,
     #"{"at": 1784920600, "ev": "started", "key": "review:h/o/r#1@aa", "remote": false, "attempt": 1}"#,
     // A retry appends a second `started`; first-wins keeps the measured wait honest.
@@ -2524,10 +2526,10 @@ check(summary.repoTokens == 1_800_000 && summary.otherTokens == 1_000_000)
 check(summary.quota.count == 4, "a quota reading was dropped or invented")
 check(summary.quota.map(\.sessionPct) == [100, 85, 75, 100],
       "the readings moved off the instants they were measured at")
-// The fixture's newest reading is a day old, and the headline carries no age: a
-// figure that stale is a claim about a window that has since moved, so the card
-// declines to make it. The chart still draws the reading where it was taken.
-check(summary.sessionLeftPct == nil && summary.weekLeftPct == nil,
+// The fixture's newest reading is most of a day old, and the headline carries no
+// age: a figure that stale is a claim about a window that has since moved, so the
+// card declines to make it. The chart still draws the reading where it was taken.
+check(summary.weekLeftPct == nil,
       "a day-old reading was printed as what is left right now")
 check(Telemetry.duration(0, samples: 0) == "—", "no samples must not read as instant")
 check(Telemetry.duration(90) == "1m 30s")
@@ -2618,35 +2620,52 @@ check(sessionBlindSummary.perTaskWeek.count == 1,
       "the week went unpriced with the 5-hour window rather than on its own readings")
 // A missing reading is not a window at zero: it stays a hole in the series.
 let blind = Telemetry.fold(lines: tLines + [
-    #"{"at": 1784914400, "ev": "sample", "sessionLeft": null, "weekLeft": null, "repoTokens": 1800000, "otherTokens": 1000000}"#,
+    #"{"at": 1784933600, "ev": "sample", "sessionLeft": null, "weekLeft": null, "repoTokens": 1800000, "otherTokens": 1000000}"#,
 ])
 let blindSummary = Telemetry.summarize(blind, now: tNow, days: 14, steps: 56,
                                        binCount: 12, z: 1.96, bucketHours: 12)
 check(blindSummary.quota.count == 5, "a blind sample is still a sample taken")
 check(blindSummary.quota.last?.sessionPct == nil, "a gap was filled in")
+// The 5-hour price is measured from history and outlives the readings it came from,
+// so it prices only work they covered: a task started at the last sample carrying a
+// 5-hour reading has a share of it, one started after has a weekly share alone.
+let afterSession = Telemetry.fold(lines: tLines + [
+    #"{"at": 1784940000, "ev": "sample", "weekLeft": 0.96, "repoTokens": 2100000, "otherTokens": 1200000}"#,
+    #"{"at": 1784932000, "ev": "started", "key": "review:h/o/r#6@ff", "remote": false, "attempt": 1}"#,
+    #"{"at": 1784933000, "ev": "done", "key": "review:h/o/r#6@ff", "tokens": 300000}"#,
+    #"{"at": 1784941000, "ev": "started", "key": "review:h/o/r#7@gg", "remote": false, "attempt": 1}"#,
+    #"{"at": 1784942000, "ev": "done", "key": "review:h/o/r#7@gg", "tokens": 400000}"#,
+])
+let afterSummary = Telemetry.summarize(afterSession, now: tNow, days: 14, steps: 56,
+                                       binCount: 12, z: 1.96, bucketHours: 12)
+check(afterSummary.sessionLimitTokens == 10_000_000)
+check(afterSummary.perTask.count == 2 && afterSummary.perTask.mean == 4,
+      "the 5-hour window priced a task started after its last reading, or dropped "
+      + "one started at it")
+check(afterSummary.perTaskWeek.count == 3, "the week dropped a task it still measures")
 
 // How long a reading stays an answer to "what is left right now". Either side of
 // the bound, on a ledger whose newest sample is a probe that could not answer —
 // the shape every failure here takes, since the probe keeps sampling once blind.
 let fresh = Telemetry.quotaFreshSecs
 check(fresh > 0, "the freshness bound must come off the shared model, not nowhere")
-func headline(lastGoodAgo: Double) -> (Double?, Double?) {
+func headline(lastGoodAgo: Double) -> Double? {
     let led = Telemetry.fold(lines: [
         #"{"at": \#(tNow - lastGoodAgo), "ev": "sample", "sessionLeft": 0.42, "weekLeft": 0.8, "repoTokens": 0, "otherTokens": 0}"#,
         #"{"at": \#(tNow), "ev": "sample", "sessionLeft": null, "weekLeft": null, "repoTokens": 0, "otherTokens": 0}"#,
     ])
     let sum = Telemetry.summarize(led, now: tNow, days: 7, steps: 8, binCount: 4,
                                   z: 1.96, bucketHours: 4)
-    return (sum.sessionLeftPct, sum.weekLeftPct)
+    return sum.weekLeftPct
 }
 // A gap shorter than the chart draws through: the reading is minutes old and still
 // answers, so blanking it would lose a figure measured perfectly well.
-check(headline(lastGoodAgo: fresh - 60) == (42, 80),
+check(headline(lastGoodAgo: fresh - 60) == 80,
       "a probe that missed a few rounds blanked the figure it did measure")
 // Past it, no answer. This is the failure that hid a dead credential for six days:
 // the probe went blind, every later sample carried nulls, and the card went on
 // printing the last live reading as the current one on every lookback offered.
-check(headline(lastGoodAgo: fresh + 60) == (nil, nil),
+check(headline(lastGoodAgo: fresh + 60) == nil,
       "a reading the chart will not bridge was still printed as the current one")
 print("telemetry assertions passed")
 

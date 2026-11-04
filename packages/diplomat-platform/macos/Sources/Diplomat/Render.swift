@@ -371,8 +371,9 @@ enum Render {
     }
 
     /// A synthetic telemetry ledger so the Telemetry screen can be eyeballed: a
-    /// fortnight of quota samples burning down and refilling on the 5-hour cycle, and
-    /// forty-odd finished auto-tasks with a realistic right-skewed spread of costs —
+    /// fortnight of quota samples, the first eleven days of them also carrying the
+    /// 5-hour window burning down and refilling on its cycle, and forty-odd finished
+    /// auto-tasks with a realistic right-skewed spread of costs —
     /// most cheap, a few expensive — plus a handful still owed.
     ///
     /// Written through the real recorder into the real ledger path, first redirected
@@ -423,12 +424,18 @@ enum Render {
             // all the same.
             let outage = at > now - 6 * day && at < now - 5.5 * day
             let answered = !outage && rng.uniform(0, 1) > 0.08
-            TelemetryLog.append(["at": at, "ev": "sample",
-                                 "sessionLeft": answered
-                                     ? (sessionLeft * 10_000).rounded() / 10_000 : NSNull(),
-                                 "weekLeft": answered
-                                     ? (weekLeft * 10_000).rounded() / 10_000 : NSNull(),
-                                 "repoTokens": repo, "otherTokens": other])
+            var sample: [String: Any] = ["at": at, "ev": "sample",
+                                         "weekLeft": answered
+                                             ? (weekLeft * 10_000).rounded() / 10_000 : NSNull(),
+                                         "repoTokens": repo, "otherTokens": other]
+            // The last three days are written as the probe writes every sample, with
+            // no 5-hour reading at all, so the screen shows that window's history and
+            // the weekly-only present side by side.
+            if at < now - 3 * day {
+                sample["sessionLeft"] = answered
+                    ? (sessionLeft * 10_000).rounded() / 10_000 : NSNull()
+            }
+            TelemetryLog.append(sample)
             at += 900
         }
 
