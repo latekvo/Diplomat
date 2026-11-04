@@ -18,6 +18,10 @@ struct SettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             headerRow
+            if store.configSaveFailed {
+                Text(AllocatorUI.saveError).font(.system(size: 10)).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             // Two columns, same layout as the main panel: who the agents are and what
             // they may do on the left; the panel, the watchers and the environment on
             // the right.

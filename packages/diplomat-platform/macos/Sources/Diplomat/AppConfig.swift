@@ -200,18 +200,20 @@ enum AppConfig {
     }
 
     /// `set` for a flag.
-    static func setBool(_ key: String, _ value: Bool) {
+    @discardableResult
+    static func setBool(_ key: String, _ value: Bool) -> Bool {
         var obj = read()
         obj[key] = value
-        write(obj)
+        return write(obj)
     }
 
     /// `set` for a fractional number (the budget floor is a percentage the UI offers
     /// in half-steps).
-    static func setDouble(_ key: String, _ value: Double) {
+    @discardableResult
+    static func setDouble(_ key: String, _ value: Double) -> Bool {
         var obj = read()
         obj[key] = value
-        write(obj)
+        return write(obj)
     }
 
     /// How long a run this device executes may go on before the resolver calls it over

@@ -131,7 +131,8 @@ A **third**, `com.ignacy.diplomat.watchdog`, runs the binary headless every 5 mi
 after a crash, a force-quit, a kill or a failed update. The 06:00 run does the same.
 Neither brings back an app you quit yourself (the ⏻ button, `osascript … quit`,
 Activity Monitor's Quit): that leaves `~/.diplomat/operator-quit`, which the next
-launch clears. A hand-over to a newer instance leaves no mark, and the watchdog only
+launch clears. Each launch also sets 1 MiB aside beside it (`operator-quit.reserve`),
+which a quit gives up when a full disk refuses the mark itself. A hand-over to a newer instance leaves no mark, and the watchdog only
 acts when there is no instance at all, so it never contends with the newest-wins
 singleton or an update's relaunch. It launches the bundle the updater builds, and logs
 what it launched to the same file. Manage it with `./install/install-watchdog.sh` /
@@ -186,6 +187,7 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   scratch dir); comms-panel; comms-badge (the main panel with
                                                      #   unread pings); comms-empty (no Slack login yet);
                                                      #   settings-comms-error (the Comms card's failing pill)
+                                                     #   settings-unsaved (a change config.json refused)
                                                      #   popover (REAL NSWindow snapshot incl. the legacy
                                                      #   scroller - pair with DIPLOMAT_POPOVER_CAP=400
                                                      #   to force the scrolling state)

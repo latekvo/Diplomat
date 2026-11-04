@@ -417,6 +417,71 @@ enum LowDiskTest {
         check("the next launch clears the mark", !OperatorQuit.isMarked)
         check("…and the watchdog brings a dead app back", watchdogLaunches() == 1)
 
+        // MARK: settings
+
+        setenv("DIPLOMAT_CONFIG", vol.appendingPathComponent("config.json").path, 1)
+        store.writesConfig = true
+        store.autoTaskLimit = 2
+        store.autoBudgetGate = true
+        store.agentModel = "model-a"
+        check("with room a setting lands", AppConfig.autoTaskLimit == 2 && !store.configSaveFailed)
+        check("fill for the settings", filledFull())
+        store.autoTaskLimit = 3
+        store.autoBudgetGate = false
+        store.agentModel = "model-b"
+        check("a setting the full volume refuses says so", store.configSaveFailed)
+        check("…and reads back what the file holds, as the mesh node behind it does",
+              store.autoTaskLimit == 2 && AppConfig.autoTaskLimit == 2 && store.autoBudgetGate
+                && store.agentModel == "model-a",
+              "\(store.autoTaskLimit) \(store.autoBudgetGate) \(store.agentModel)")
+        store.terminalChoice = store.terminalChoice == SpawnTerminal.terminal.rawValue
+            ? SpawnTerminal.ghostty.rawValue : SpawnTerminal.terminal.rawValue
+        let published = { AppConfig.string(AppConfig.spawnTerminalKey) }
+        check("the terminal handed to the allocator daemon is not on the full volume",
+              published().isEmpty, published())
+        check("drain for the settings", volume("drain") == 0)
+        store.autoTaskLimit = 3
+        check("with room the change lands, and the warning goes",
+              store.autoTaskLimit == 3 && AppConfig.autoTaskLimit == 3 && !store.configSaveFailed)
+        // With no login the poll stops before GitHub, past where it publishes.
+        setenv("DIPLOMAT_GH", "/usr/bin/false", 1)
+        store.usernameOverride = ""
+        await store.runAutofixPollOnce()
+        check("…and the next poll hands the daemon the terminal",
+              published() == AgentSpawner.resolved(store.terminal).rawValue, published())
+        store.writesConfig = false
+        setenv("DIPLOMAT_CONFIG", scratch.appendingPathComponent("config.json").path, 1)
+
+        // MARK: an un-ban
+
+        // No daemon socket, so the list is rewritten here.
+        setenv("DA_BASE_DIR", scratch.appendingPathComponent("allocator").path, 1)
+        setenv("DA_BAN_DIR", vol.path, 1)
+        try? Data(#"{"banned":[{"login":"lowdisk-x"}]}"#.utf8).write(to: BanList.fileURL)
+        func unbanLines() -> Int {
+            AuditLog.read().filter { $0.action == "unban" && $0.detail.contains("@lowdisk-x") }.count
+        }
+        func unbanned() async -> String? {
+            store.error = nil
+            store.unban("lowdisk-x")
+            for _ in 0..<50 where store.error == nil && unbanLines() == 0 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            return store.error
+        }
+        check("fill for the un-ban", filledFull())
+        let refusal = await unbanned()
+        check("an un-ban the full volume refuses says why",
+              refusal == "Could not un-ban @lowdisk-x: could not write \(BanList.fileURL.path)",
+              refusal ?? "no error")
+        check("…logs nothing, and the ban holds",
+              unbanLines() == 0 && BanList.isBanned("lowdisk-x", in: BanList.read()))
+        check("drain for the un-ban", volume("drain") == 0)
+        let lifted = await unbanned()
+        check("with room it lifts the ban, and logs it once",
+              lifted == nil && !BanList.isBanned("lowdisk-x", in: BanList.read())
+                && unbanLines() == 1, lifted ?? "")
+
         print(pass ? "\nLOWDISK TEST OK" : "\nLOWDISK TEST FAILED")
         return pass
     }

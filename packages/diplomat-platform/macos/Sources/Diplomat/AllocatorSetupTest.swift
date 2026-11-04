@@ -357,7 +357,7 @@ enum AllocatorSetupTest {
 
         // ---- the idle limits, which config.json holds too ----
 
-        store.writesDeviceConfig = true
+        store.writesConfig = true
         try? #"{"deviceIdleLeasedMinutes":90,"deviceIdleFreeMinutes":7}"#
             .write(to: AppConfig.url, atomically: true, encoding: .utf8)
         store.reloadDeviceConfig()
@@ -375,7 +375,7 @@ enum AllocatorSetupTest {
         setenv("DIPLOMAT_CONFIG", scratch.appendingPathComponent("config.json").path, 1)
         store.deviceIdleLeasedMinutes = 45
         check("…until a change lands", !store.deviceIdleSaveFailed && AppConfig.deviceIdleLeasedMinutes == 45)
-        store.writesDeviceConfig = false
+        store.writesConfig = false
 
         // ---- the remote card over a snapshot from a daemon with no remote pool ----
 
