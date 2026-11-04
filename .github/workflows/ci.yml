@@ -22,11 +22,14 @@ jobs:
   # core (library, CLI and smoke binary) and the SwiftUI app that depends on it.
   # The smoke binary then asserts the shared core logic (filters, prompt assembly,
   # PR-reference parsing, conflict prompts).
+  # Xcode 16.0 is Swift 6.0, the oldest compiler a hosted macOS image still ships: one
+  # older cannot read the image's SDK, so nothing here builds the app with Swift 5.x.
   swift-macos:
     name: Swift (macOS) · build + core smoke
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
+      - run: sudo xcode-select -s /Applications/Xcode_16.app
       - run: swift --version
       - name: Build the shared core
         working-directory: packages/diplomat-core
@@ -125,8 +128,8 @@ jobs:
       # run book and config scratch, as QUEUE_TEST does. COMMS_TEST hands composed
       # Slack ticks to the real effect application with GitHub stood in for, and keeps
       # its feed, Comms log, run book and config scratch; nothing it queues is drained.
-      # POPOVER_TEST hosts the panel in off-screen windows; the Settings and Devices
-      # screens it opens run only their read-only allocator, update and mesh checks.
+      # POPOVER_TEST hosts the panel in off-screen windows, re-run on a scratch home and
+      # no checkout, so the checks its Settings and Devices screens run find nothing.
       #
       # DIPLOMAT_TRACK_TEST and DIPLOMAT_SPAWN_FOCUS_TEST are the two that stay out,
       # and not by oversight: both drive real throwaway terminal windows and need a
