@@ -147,11 +147,9 @@ def test_an_unpinned_opencode_is_named_by_its_config_over_its_picker():
     assert tag_prefix("GPT 5.2") in review_prompt()
 
 
-def test_an_unpinned_opencode_2x_is_not_named_by_a_picker_its_service_ignores(tmp_path,
-                                                                           monkeypatch):
-    """2.x starts a session on the config ``model``, else the first model it has; the
-    TUI picker's recents are never consulted. Naming the run after them would put a
-    model that never ran on a public comment."""
+def test_an_unpinned_opencode_2x_is_named_by_its_pickers_last_model(tmp_path, monkeypatch):
+    """The 2.x service never reads the picker's recents, so an unpinned spawn names
+    their head in its session (test_opencode_v2.py): the run is on that model, as on 1.x."""
     exe = tmp_path / "bin" / "opencode"
     exe.parent.mkdir()
     exe.write_text('#!/bin/sh\n[ "$1" = --version ] && echo "opencode v2.0.18"\n',
@@ -160,36 +158,7 @@ def test_an_unpinned_opencode_2x_is_not_named_by_a_picker_its_service_ignores(tm
     monkeypatch.setenv("PATH", f"{exe.parent}:/usr/bin:/bin")
     appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
     opencode_state('{"recent": [{"providerID": "ollama-cloud", "modelID": "glm-5.2"}]}')
-    prompt = review_prompt()
-    assert PLAIN in prompt
-    assert "GLM 5.2" not in prompt
-
-
-def test_the_core_names_the_model_by_the_major_the_applet_found(tmp_path, monkeypatch):
-    """The applet resolves ``opencode`` through the user's shell, the core would find a
-    different one on its own ``PATH``. The spawn runs what the shell finds, so the tag
-    must follow the applet's answer, not a second lookup of the core's."""
-    rc_bin = tmp_path / "rc-bin"
-    rc_bin.mkdir()
-    (rc_bin / "opencode").write_text(
-        '#!/bin/sh\n[ "$1" = --version ] && echo "opencode v2.0.18"\n', encoding="utf-8")
-    (rc_bin / "opencode").chmod(0o755)
-    path_bin = tmp_path / "path-bin"
-    path_bin.mkdir()
-    (path_bin / "opencode").write_text(
-        '#!/bin/sh\n[ "$1" = --version ] && echo "1.18.33"\n', encoding="utf-8")
-    (path_bin / "opencode").chmod(0o755)
-    rcshell = tmp_path / "rcshell"
-    rcshell.write_text(f"#!/bin/sh\nexport PATH={rc_bin}:$PATH\nexec /bin/sh \"$@\"\n",
-                       encoding="utf-8")
-    rcshell.chmod(0o755)
-    monkeypatch.setenv("DIPLOMAT_SHELL", str(rcshell))
-    monkeypatch.setenv("PATH", f"{path_bin}:/usr/bin:/bin")
-    appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
-    opencode_state('{"recent": [{"providerID": "ollama-cloud", "modelID": "glm-5.2"}]}')
-    prompt = review_prompt()
-    assert PLAIN in prompt
-    assert "GLM 5.2" not in prompt
+    assert tag_prefix("GLM 5.2") in review_prompt()
 
 
 def test_a_model_whose_name_is_not_in_its_id_is_named_from_the_asset():
