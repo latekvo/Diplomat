@@ -1007,10 +1007,11 @@ class SettingsView(QWidget):
             return field
 
         self._comms_keywords = text_row(
-            "Keywords", st.comms_keywords_raw, "none",
+            "Keywords", st.comms_keywords_raw, "deploy, release train, argent*",
             lambda t: setattr(self.store, "comms_keywords_raw", t),
             "Commas or new lines between them, so one can be a phrase. Matched as a "
-            "whole word, ignoring case; a * stands for any letters (argent*, ignac*). "
+            "whole word, ignoring case; a * ending a word matches any letters after it "
+            "(argent*), and Slack expands no * anywhere else. "
             "A DM or an @-mention needs none.")
         self._comms_allow = text_row(
             "Only these senders", st.comms_sender_allowlist_raw, "anyone in your workspace",

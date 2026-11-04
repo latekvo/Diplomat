@@ -760,10 +760,12 @@ struct SettingsView: View {
     private var commsOptions: some View {
         NestedSettings(tint: .blue) {
             SettingRow(title: "Keywords",
-                       detail: "Commas or new lines between them; one may be a phrase, and * "
-                             + "matches any letters, as in argent*, ignac*.",
+                       detail: "Commas or new lines between them; one may be a phrase. A * "
+                             + "ending a word matches any letters after it, as in argent*; "
+                             + "Slack expands no * anywhere else.",
                        stacked: true) {
-                commsField("none", $store.commsKeywordsRaw, symbol: "text.magnifyingglass")
+                commsField("deploy, release train, argent*", $store.commsKeywordsRaw,
+                           symbol: "text.magnifyingglass")
             }
             SettingRow(title: "Senders",
                        detail: "Slack handles or user IDs (U…), commas between them; "
