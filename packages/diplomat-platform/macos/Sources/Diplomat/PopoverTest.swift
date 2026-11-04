@@ -11,14 +11,26 @@ import SwiftUI
 ///     DIPLOMAT_POPOVER_TEST=1 swift run Diplomat
 ///
 /// Needs a window server; its windows stay off-screen.
+///
+/// The heights are those of whatever the panel holds, so the test re-runs itself on
+/// empty state: a scratch home for every file it reads and every tool it shells, no
+/// checkout, and a process name whose defaults domain is empty.
 @MainActor
 enum PopoverTest {
+    private static let hermeticName = "DiplomatPopoverTest"
+
     static func run() async -> Bool {
+        guard ProcessInfo.processInfo.processName == hermeticName else { return rerunHermetic() }
         var failures: [String] = []
         func check(_ name: String, _ cond: Bool, _ detail: String = "") {
             if cond { print("  ok    \(name)") }
             else { print("  FAIL  \(name) \(detail)"); failures.append(name) }
         }
+        let domain = UserDefaults.standard.persistentDomain(forName: ProcessInfo.processInfo.processName) ?? [:]
+        let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".diplomat")
+        check("the panel is built from none of this machine's state",
+              domain.isEmpty && !FileManager.default.fileExists(atPath: home.path),
+              "\(domain.count) settings, \(home.path)")
         // Uncapped, so a screen's height is its content's and two screens never tie at
         // the display's limit.
         setenv("DIPLOMAT_POPOVER_CAP", "10000", 1)
@@ -68,6 +80,32 @@ enum PopoverTest {
 
         print(failures.isEmpty ? "popover: all passed" : "popover: \(failures.count) FAILED")
         return failures.isEmpty
+    }
+
+    private static func rerunHermetic() -> Bool {
+        let fm = FileManager.default
+        let scratch = fm.temporaryDirectory.appendingPathComponent("diplomat-popover-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: scratch) }
+        let child = Process()
+        child.executableURL = scratch.appendingPathComponent(hermeticName)
+        var env = ProcessInfo.processInfo.environment
+        env["CFFIXED_USER_HOME"] = scratch.path  // Foundation's home
+        env["HOME"] = scratch.path  // a child's
+        env["GH_CONFIG_DIR"] = scratch.appendingPathComponent("gh").path
+        env["DIPLOMAT_SELF_REPO"] = "/nonexistent"
+        env["GH_TOKEN"] = nil
+        env["GITHUB_TOKEN"] = nil
+        child.environment = env
+        do {
+            try fm.createDirectory(at: scratch, withIntermediateDirectories: true)
+            try fm.createSymbolicLink(at: child.executableURL!, withDestinationURL: Bundle.main.executableURL!)
+            try child.run()
+        } catch {
+            print("popover: could not start on empty state: \(error)")
+            return false
+        }
+        child.waitUntilExit()
+        return child.terminationStatus == 0
     }
 
     /// Never dragged back on screen by AppKit, unlike a plain window.
