@@ -34,7 +34,7 @@ enum AppConfig {
     static let autoBudgetGateKey = "autoBudgetGate"
     /// How sure the gate must be that a task fits, as a percentage.
     static let autoBudgetConfidenceKey = "autoBudgetConfidence"
-    /// Share of each window to keep in hand while the ledger cannot price a task.
+    /// Share of the 7-day window to keep in hand while the ledger cannot price a task.
     static let autoBudgetFloorPctKey = "autoBudgetFloorPct"
     /// The same, in dollars, for an account billed in money.
     static let autoBudgetReserveUsdKey = "autoBudgetReserveUsd"
@@ -238,7 +238,7 @@ enum AppConfig {
                 fallback: AgentDispatchGate.defaultBudgetConfidence))
     }
 
-    /// The share of each rate-limit window to keep in hand while the ledger is too
+    /// The share of the 7-day rate-limit window to keep in hand while the ledger is too
     /// thin to price a task.
     static var autoBudgetFloorPct: Double {
         AgentDispatchGate.clampBudgetFloorPct(

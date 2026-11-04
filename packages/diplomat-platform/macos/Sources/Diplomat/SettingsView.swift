@@ -636,7 +636,7 @@ struct SettingsView: View {
                 .pickerStyle(.segmented).labelsHidden().controlSize(.small)
             }
             SettingRow(title: "Keep in hand until it can be priced",
-                       detail: "Of each rate-limit window, under Claude Code.",
+                       detail: "Of the 7-day rate-limit window, under Claude Code.",
                        stacked: true) {
                 SliderSetting(label: "Keep in hand until it can be priced",
                               value: $store.autoBudgetFloorPct,

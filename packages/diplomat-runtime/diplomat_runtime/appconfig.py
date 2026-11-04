@@ -216,7 +216,7 @@ def auto_budget_confidence() -> int:
 
 
 def auto_budget_floor_pct() -> float:
-    """The share of each rate-limit window to keep in hand while the ledger is too
+    """The share of the 7-day rate-limit window to keep in hand while the ledger is too
     thin to price a task."""
     return autofix.clamp_budget_floor_pct(
         get_float(AUTO_BUDGET_FLOOR_PCT, autofix.DEFAULT_BUDGET_FLOOR_PCT)

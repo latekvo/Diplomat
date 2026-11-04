@@ -736,7 +736,7 @@ class SettingsView(QWidget):
         self._budget_floor.changed.connect(self._on_budget_floor_changed)
         knobs.addWidget(self._track(SettingRow(
             "Keep in hand until it can be priced", self._budget_floor, stacked=True,
-            detail="Of each rate-limit window, under Claude Code.",
+            detail="Of the 7-day rate-limit window, under Claude Code.",
         )))
 
         # The same knob in the other currency. Both are shown whichever runner is
