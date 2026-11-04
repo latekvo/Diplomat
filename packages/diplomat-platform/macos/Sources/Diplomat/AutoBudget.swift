@@ -13,8 +13,8 @@ import DiplomatCore
 ///
 /// **Which currency.** What an agent spends depends on what runs it, so the runner
 /// picks the ceilings and the unit both sides of the comparison are in: Claude Code
-/// draws on the Anthropic 7-day rate-limit window, published only as a percentage; every other
-/// runner is billed in money by whichever provider it is logged into. Neither reading
+/// draws on the Anthropic 7-day rate-limit window, published only as a percentage;
+/// every other runner is billed in money by whichever provider it is logged into. Neither reading
 /// substitutes for the other — a Hermes task held against a Claude window is gated on a
 /// limit it never touches, and a machine not logged into Claude Code at all would have
 /// no gate whatsoever.
@@ -76,9 +76,9 @@ enum AutoBudget {
     /// nothing in flight; so does a run whose own record is missing, which is where the
     /// answer came from before there was one.
     ///
-    /// Which ceilings there are is the currency split `decide` makes — the Anthropic window
-    /// for Claude Code, money for everything else — so two runs under different money
-    /// runners ask about one balance, the one this machine is configured to spend. A
+    /// Which ceilings there are is the currency split `decide` makes — the Anthropic
+    /// window for Claude Code, money for everything else — so two runs under different
+    /// money runners ask about one balance, the one this machine is configured to spend. A
     /// ceiling this account does not have (an uncapped OpenRouter key) or that would not
     /// read is skipped rather than guessed; every one that did read has to be above zero,
     /// because whichever runs out first is the one that parks the agents.
@@ -106,7 +106,7 @@ enum AutoBudget {
     /// thing that makes it auditable is that "Limit per task" as the screen opens is
     /// the figure it was priced from. `steps`/`binCount`/`bucketHours` are floors —
     /// the series, the histogram and the finished-work buckets are the screen's, and
-    /// only the distributions' moments and the two calibrations are read here.
+    /// only the weekly distribution's moments are read here.
     private static func summary() -> (Telemetry.Summary, Int)? {
         guard let model = try? CoreAssets.telemetry() else { return nil }
         let days = Double(model.defaultRangeDays)

@@ -199,7 +199,7 @@ def run_deadline() -> float | None:
 
 def auto_budget_gate() -> bool:
     """Whether automatic work is held back when there is too little left to afford
-    it — of the rate-limit windows, or of the money an account billed in money has
+    it — of the rate-limit window, or of the money an account billed in money has
     (Settings → PR AUTO-FIX). Lives here, not in a front-end's own store, for the
     reason the task cap does: a mesh node spends this machine's limit on work the
     applet never sees, and the two must not disagree about whether that limit is

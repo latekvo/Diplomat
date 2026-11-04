@@ -559,9 +559,9 @@ public enum Telemetry {
     public struct Summary: Equatable {
         /// Tokens per 100% of the 5-hour session window (priced from the older
         /// samples that carry it), and of the 7-day week. Nil until enough samples
-        /// exist to price the window, in which case every percentage below is empty rather than guessed: Anthropic's limits are
-        /// dynamic and account-specific, so a hardcoded ceiling would be a made-up
-        /// number wearing a real one's clothes.
+        /// exist to price the window, in which case every percentage below is empty
+        /// rather than guessed: Anthropic's limits are dynamic and account-specific, so
+        /// a hardcoded ceiling would be a made-up number wearing a real one's clothes.
         public let sessionLimitTokens: Double?
         public let weekLimitTokens: Double?
 

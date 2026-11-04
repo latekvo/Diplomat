@@ -707,8 +707,8 @@ class SettingsView(QWidget):
         body.addWidget(self._track(SettingRow(
             "Hold work when the limit runs low", self._sw_budget,
             detail="Wait for a window to refill rather than start what won't fit. "
-                   "Priced from Telemetry → limit per task: against both rate-limit "
-                   "windows under Claude Code, or — under a runner billed in money — "
+                   "Priced from Telemetry → limit per task: against the 7-day rate-limit "
+                   "window under Claude Code, or — under a runner billed in money — "
                    "against what one task costs on the model it runs, and what your "
                    "OpenRouter key and credit balance have left. Higher confidence is "
                    "stricter. Held work waits in Agent tasks, and “execute now” "

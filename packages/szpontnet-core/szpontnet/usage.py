@@ -438,14 +438,12 @@ def state_from_fraction(frac: float) -> str:
 
 def token_state(plan: str, now: float | None = None, *, insist: bool = False,
                 stopping: threading.Event | None = None,
-                ) -> tuple[str, float, float | None, float | None, float | None]:
-    """(ok|low|out, fraction, session_frac, week_frac, pace) for this machine.
+                ) -> tuple[str, float, float | None, float | None]:
+    """(ok|low|out, fraction, week_frac, pace) for this machine.
 
     Prefers the account's REAL quota (OAuth usage endpoint; the fraction is the
     7-day window's). Falls back to the local log heuristic — then week/pace are
-    None, marking the fraction an estimate. ``session_frac`` is always None: it
-    fills the advert's ``tokensSessionPct`` slot, which the protocol keeps though
-    no rate-limit window feeds it.
+    None, marking the fraction an estimate.
 
     The coarse state stays keyed to the raw *fraction*, deliberately: ok/low/out
     answers "can this node run a job at all", which is an absolute question about
@@ -457,7 +455,7 @@ def token_state(plan: str, now: float | None = None, *, insist: bool = False,
     week = week_window(insist=insist, stopping=stopping)
     if week is not None:
         now = time.time() if now is None else now
-        return (state_from_fraction(week.frac_left), week.frac_left, None,
+        return (state_from_fraction(week.frac_left), week.frac_left,
                 week.frac_left, week.pace(now))
     frac = fraction_remaining(plan, now)
-    return state_from_fraction(frac), frac, None, None, None
+    return state_from_fraction(frac), frac, None, None

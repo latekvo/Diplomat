@@ -224,7 +224,7 @@ enum AppConfig {
         bool(runDeadlineKey, fallback: true) ? AgentState.runDeadline : nil
     }
 
-    /// Whether automatic work is held back when the rate-limit windows are too low to
+    /// Whether automatic work is held back when the rate-limit window is too low to
     /// afford it. Lives here, not in UserDefaults, for the reason the task cap does: a
     /// mesh node spends this machine's limit on work this app never sees, and the two
     /// must not disagree about whether that limit is being watched.

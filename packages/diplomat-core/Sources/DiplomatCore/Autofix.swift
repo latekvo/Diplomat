@@ -150,7 +150,7 @@ public enum AgentDispatchGate {
         /// This device already runs its cap of concurrent automatic agents
         /// (auto only). Deferred, not dropped — see `decide`.
         case atCapacity
-        /// Too little of the rate-limit windows is left to cover another automatic
+        /// Too little of the rate-limit window is left to cover another automatic
         /// task (auto only). Deferred, not dropped — see `decide`.
         case unaffordable
         /// The disk agents write to is below its free-space floor (auto only).

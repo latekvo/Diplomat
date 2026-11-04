@@ -376,11 +376,9 @@ class MeshNode:
         # Cached automatic token-budget read (refreshed on its own loop, so neither
         # the hot `info` path nor the 2s snapshot tick touches the filesystem/network).
         # See _token_loop / _TOKEN_REFRESH_SECS. week is the REAL remaining fraction
-        # of the 7-day rate-limit window (None on the heuristic fallback); session
-        # fills the advert's tokensSessionPct slot, which no window feeds.
+        # of the 7-day rate-limit window (None on the heuristic fallback).
         self._token_state = "ok"
         self._token_frac = 1.0
-        self._token_session: float | None = None
         self._token_week: float | None = None
         # Burn-down ratio on that real window — budget left over clock left until
         # it resets. The figure dispatch ranks on; None on the heuristic
@@ -512,7 +510,6 @@ class MeshNode:
             strength_auto=self.local.strength_auto,
             tokens_auto=(self.local.tokens == "auto"),
             tokens_pct=self._token_frac,
-            tokens_session_pct=self._token_session,
             tokens_week_pct=self._token_week,
             tcp_port=self.tcp_port,
             epoch=self.epoch,
@@ -575,7 +572,7 @@ class MeshNode:
         pace = (None if self._token_pace is None
                 else protocol.surplus_bucket(self._token_pace))
         return (self.current_tokens(), r(self._token_frac),
-                r(self._token_session), r(self._token_week), pace)
+                r(self._token_week), pace)
 
     async def _refresh_tokens(self, *, insist: bool = False) -> bool:
         """Re-probe the token budget (real quota endpoint, else local-log heuristic)
@@ -591,15 +588,14 @@ class MeshNode:
         a rough fraction for a real absence."""
         before = self._gossiped_tokens()
         try:
-            state, frac, session, week, pace = await asyncio.to_thread(
+            state, frac, week, pace = await asyncio.to_thread(
                 usage.token_state, self.stats.plan, insist=insist,
                 stopping=self._probe_stopping)
         except Exception:  # noqa: BLE001 — a broken probe must never take the node down
             state, frac = self._token_state, self._token_frac
-            session, week = self._token_session, self._token_week
-            pace = self._token_pace
+            week, pace = self._token_week, self._token_pace
         self._token_state, self._token_frac = state, frac
-        self._token_session, self._token_week = session, week
+        self._token_week = week
         self._token_pace = pace
         return self._gossiped_tokens() != before
 

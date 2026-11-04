@@ -606,7 +606,7 @@ struct SettingsView: View {
     /// should start at all.
     private static let autoBudgetDetail = """
         Wait for a window to refill rather than start what won't fit. Priced from \
-        Telemetry → limit per task: against both rate-limit windows under \
+        Telemetry → limit per task: against the 7-day rate-limit window under \
         Claude Code, or — under a runner billed in money — against what one task costs \
         on the model it runs, and what your OpenRouter key and credit balance have \
         left. Higher confidence is stricter. Held work waits in Agent tasks, and \

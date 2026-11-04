@@ -256,8 +256,8 @@ def test_token_state_reports_the_live_week_not_the_heuristic(refusals, monkeypat
     refusals(0)
     monkeypatch.setattr(usage, "_fetch_usage_payload", lambda _t: _WEEK_ONLY)
     now = _WEEK_RESETS_AT - 3.5 * 86400.0  # half the week's clock left
-    state, frac, session, week, pace = usage.token_state("pro", now=now)
-    assert (state, frac, session, week) == ("ok", 0.68, None, 0.68)
+    state, frac, week, pace = usage.token_state("pro", now=now)
+    assert (state, frac, week) == ("ok", 0.68, 0.68)
     assert abs(pace - 1.36) < 1e-9
 
 
@@ -282,7 +282,7 @@ def _probe_recording(calls: list[bool], block: threading.Event | None = None):
             # Sits there as an insisting probe does, and gives up when the node stops
             # — so the node's own teardown is not what a test ends up measuring.
             stopping.wait(_STALL_SECS)
-        return "ok", 1.0, None, None, 1.0
+        return "ok", 1.0, None, 1.0
 
     return token_state
 
@@ -292,7 +292,7 @@ def test_a_live_week_caps_the_advertised_quota(simnet):
     10% of its week left a node advertises a tenth of its capacity, not the full
     bookkeeping balance."""
     async def scenario():
-        node = (await simnet.node("a", quota=("low", 0.1, None, 0.1, 0.2))).node
+        node = (await simnet.node("a", quota=("low", 0.1, 0.1, 0.2))).node
         info = node.info
         assert info.tokens_week_pct == 0.1 and info.tokens_session_pct is None
         assert info.stats["quotaLeft"] == round(node.stats.capacity() * 0.1, 4)
@@ -362,7 +362,7 @@ def test_stopping_a_node_lets_go_of_a_probe_mid_schedule(simnet, monkeypatch):
             stalled.set()
             if stopping.wait(_STALL_SECS):   # False when it timed out un-stopped
                 released.set()
-        return "ok", 1.0, None, None, 1.0
+        return "ok", 1.0, None, 1.0
 
     monkeypatch.setattr(usage, "token_state", token_state)
 

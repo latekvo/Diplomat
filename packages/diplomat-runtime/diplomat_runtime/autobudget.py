@@ -131,8 +131,8 @@ def _summary():
     process, and the one thing that makes it auditable is that "Limit per task" as
     the screen opens is the figure it was priced from.
     ``steps``/``bin_count``/``bucket_hours`` are floors — the series, the histogram
-    and the finished-work buckets are the screen's, and only the distributions'
-    moments and the two calibrations are read here.
+    and the finished-work buckets are the screen's, and only the weekly
+    distribution's moments are read here.
     """
     from . import telemetry
 

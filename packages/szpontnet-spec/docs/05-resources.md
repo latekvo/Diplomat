@@ -63,11 +63,10 @@ Tokens is the one resource a node is expected to update *frequently* as its budg
 changes; a node MAY flip itself to `"out"` when it hits a limit and back to `"ok"`
 when the budget resets, and the mesh reacts within a gossip round.
 
-**Auto-derivation.** There is no provider API for remaining quota, so a node derives
-this state from its **own measured consumption**: it sums the tokens spent over a
-trailing window (`accounts.usageWindowHours`, default 5h - matching the provider's
-rolling-limit cadence) from the local agent's usage logs, and compares that to a
-heuristic per-plan ceiling `plan.weight × accounts.tokensPerWeight`. The fraction
+**Auto-derivation.** When the usage probe cannot answer, a node derives this state
+from its **own measured consumption**: it sums the tokens spent over a trailing
+window (`accounts.usageWindowHours`, default 5h) from the local agent's usage logs,
+and compares that to a heuristic per-plan ceiling `plan.weight × accounts.tokensPerWeight`. The fraction
 remaining `1 − used/ceiling` maps to the state: `≥ accounts.lowThreshold` → `"ok"`,
 `> 0` → `"low"`, `≤ 0` → `"out"`. A node advertises `tokensAuto` (bool, whether the
 state is auto-derived vs pinned) and `tokensPct` (the fraction remaining, `0.0`-`1.0`)

@@ -240,7 +240,7 @@ the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/di
   keep in hand while the ledger cannot price one yet - a share of a window (default
   **20%**) under Claude Code, or dollars on the account (default **$1.00**) under a
   runner billed in money, once a task has been charged here in the last 14 days. Priced from the same per-task figure the Telemetry screen
-  shows, against both rate-limit windows or both of the OpenRouter ceilings. Held work waits under [Agent tasks](#agent-tasks) and
+  shows, against the 7-day rate-limit window or both of the OpenRouter ceilings. Held work waits under [Agent tasks](#agent-tasks) and
   starts when a window refills or the balance is topped up; *execute now* overrides
   it, a wizard spawn that
   opens a terminal on the spot is never gated, and nothing is held at all while the

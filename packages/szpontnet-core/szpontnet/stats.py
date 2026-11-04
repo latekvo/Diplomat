@@ -18,10 +18,10 @@ budget. Three quantities are advertised on the node's
   window rolls every ``quotaWindowDays`` and resets what's been used. Absolute
   token quotas are deliberately not modelled — Anthropic's limits are dynamic.
   Retained for display; when the node's REAL quota probe is live (usage.py) it is
-  additionally capped by the binding rate-limit window — see
+  additionally capped by the 7-day rate-limit window — see
   :meth:`NodeStats.advertise`.
 - **surplus** — the burn-down ratio routing actually ranks on. From the real
-  probe's per-window reset instants when live, else the local bookkeeping window
+  probe's weekly reset instant when live, else the local bookkeeping window
   paced against its own roll (:meth:`NodeStats.local_window`).
 
 State persists to ``<state dir>/stats.json`` (machine-local; only the derived

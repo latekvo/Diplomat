@@ -2771,8 +2771,8 @@ class Store(QObject):
     def _note_blind_budget_gate(self) -> None:
         """Say out loud when the budget gate has nothing left to gate on.
 
-        What is left of the rate-limit windows comes from one probe, and
-        ``budget_decide`` SKIPS a ceiling it cannot read — with neither window readable
+        What is left of the rate-limit window comes from one probe, and
+        ``budget_decide`` SKIPS a ceiling it cannot read — with the window unreadable
         every task is affordable. So a probe that stops answering does not fail the
         gate closed or loudly: it stops gating, while the toggle still reads on and
         nothing else looks wrong. A stale ``.credentials.json`` did exactly that here
@@ -2791,7 +2791,7 @@ class Store(QObject):
             return
         self._quota_warned = True
         activity.log("auto", "warn",
-                     f"Asked what is left of the rate-limit windows {rounds} times "
+                     f"Asked what is left of the rate-limit window {rounds} times "
                      f"without one answer — the automatic budget is gating on nothing, "
                      f"and auto work will dispatch whatever the limits have left")
         self.refresh_activity()

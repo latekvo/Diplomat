@@ -92,8 +92,7 @@ enum QuotaTest {
                   ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
               ])
 
-        // The endpoint's answer since the 5-hour window went away. Keying the reading
-        // on `five_hour` read every one of these as no reading at all.
+        // The endpoint answers `five_hour: null`; the reading must not depend on it.
         check("a usage payload with no 5-hour window is still a reading",
               Quota.weekFraction(["five_hour": NSNull(),
                                   "seven_day": ["utilization": 32.0]]) == 0.68)

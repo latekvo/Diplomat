@@ -41,9 +41,10 @@ The quota fractions are a measurement, and the screen draws them as one
 lookback, resets and all. The probe reports the 7-day window alone;
 ``sessionLeft`` (the 5-hour window) survives only on older samples, which the
 screen keeps drawing as history. They do double duty as the thing that makes
-*tokens* comparable to a limit — Anthropic publishes a utilization percentage and never a token budget, so the
-pair (quota consumed, tokens spent) over an interval is the only honest way to
-price the window in tokens; see :func:`calibrate`.
+*tokens* comparable to a limit — Anthropic publishes a utilization percentage
+and never a token budget, so the pair (quota consumed, tokens spent) over an
+interval is the only honest way to price the window in tokens; see
+:func:`calibrate`.
 
 The math half is a byte-for-byte twin of the Swift: ``diplomat-core telemetry``
 prints the same figures and ``tests/test_telemetry_parity.py`` diffs the two.
@@ -986,9 +987,9 @@ def token_split(samples: list[Sample]) -> tuple[float, float]:
 class Summary:
     #: Tokens per 100% of the 5-hour session window (priced from the older samples
     #: that carry it), and of the 7-day week. None until enough samples exist to
-    #: price the window, in which case every percentage is empty rather than guessed: Anthropic's limits are dynamic and
-    #: account-specific, so a hardcoded ceiling would be a made-up number wearing a
-    #: real one's clothes.
+    #: price the window, in which case every percentage is empty rather than
+    #: guessed: Anthropic's limits are dynamic and account-specific, so a hardcoded
+    #: ceiling would be a made-up number wearing a real one's clothes.
     session_limit_tokens: float | None = None
     week_limit_tokens: float | None = None
 

@@ -914,13 +914,13 @@ def test_node_advert_wires_real_probe_pace_into_stats(tmp_path, monkeypatch):
     node = _fresh_node(tmp_path, monkeypatch)
     node.stats = stats.apply_stat_attrs(node.stats, {"plan": "max-20x"})
     node._token_state, node._token_frac = "low", 0.02
-    node._token_session, node._token_week = 0.02, 0.8
+    node._token_week = 0.02
     node._token_pace = 0.04
     assert node.info.stats["surplus"] == 0.04
     assert node.info.stats["quotaLeft"] == 0.4  # fraction still caps the display field
     # Heuristic fallback (no real reading): the local window is paced instead, and
     # a node that has booked nothing sits exactly on the line.
-    node._token_session = node._token_week = node._token_pace = None
+    node._token_week = node._token_pace = None
     assert node.info.stats["surplus"] == 1.0
     assert node.info.stats["quotaLeft"] == 20.0
 
@@ -1057,8 +1057,8 @@ def test_token_state_prefers_real_quota_over_heuristic(monkeypatch):
     now = 1_000_000.0
     week = usage.QuotaWindow(0.27, now + 3.5 * 86400, 7 * 86400.0)    # half the clock left
     monkeypatch.setattr(usage, "week_window", lambda **_: week)
-    state, frac, sess, wk, pace = usage.token_state("pro", now=now)
-    assert (sess, wk) == (None, 0.27)
+    state, frac, wk, pace = usage.token_state("pro", now=now)
+    assert wk == 0.27
     assert frac == 0.27
     assert state == "low"            # 0.27 < lowThreshold 0.34
     assert abs(pace - 0.54) < 1e-9   # 0.27 left over half the clock
@@ -1068,11 +1068,11 @@ def test_token_state_falls_back_to_heuristic_when_probe_dark(tmp_path, monkeypat
     from szpontnet import usage
     monkeypatch.setenv("HOME", str(tmp_path))  # empty logs → fresh heuristic
     monkeypatch.setattr(usage, "week_window", lambda **_: None)
-    state, frac, sess, week, pace = usage.token_state("pro")
+    state, frac, week, pace = usage.token_state("pro")
     assert (state, frac) == ("ok", 1.0)
-    # All three None mark the fraction an estimate; with no reset instants there
-    # is nothing to pace against, so the node paces its bookkeeping window instead.
-    assert sess is None and week is None and pace is None
+    # Both None mark the fraction an estimate; with no reset instant there is
+    # nothing to pace against, so the node paces its bookkeeping window instead.
+    assert week is None and pace is None
 
 
 def test_quota_left_parses_utilization_and_caches(monkeypatch):

@@ -1151,9 +1151,7 @@ def test_a_body_that_is_not_a_window_prices_nothing():
 
 
 def test_a_payload_without_a_5_hour_window_is_still_a_reading():
-    """The endpoint's answer once the 5-hour window went away. A reading keyed on
-    ``five_hour`` read every one of these as no reading at all, and the ledger went
-    blind."""
+    """The endpoint answers ``five_hour: null``; the reading must not depend on it."""
     assert quota._week_fraction({"five_hour": None, "seven_day": {"utilization": 32.0}}) == 0.68
     assert quota._week_fraction({"five_hour": {"utilization": 10}, "seven_day": None}) is None
     assert quota._week_fraction(None) is None
