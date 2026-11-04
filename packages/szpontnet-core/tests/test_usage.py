@@ -261,6 +261,29 @@ def test_token_state_reports_the_live_week_not_the_heuristic(refusals, monkeypat
     assert abs(pace - 1.36) < 1e-9
 
 
+def _transcript_turns(claude_dir, turns: list[tuple[float, int]]) -> None:
+    """One Claude Code transcript holding ``(epoch, input tokens)`` turns."""
+    proj = claude_dir / "projects" / "demo"
+    proj.mkdir(parents=True, exist_ok=True)
+    (proj / "s.jsonl").write_text("".join(
+        json.dumps({"timestamp": datetime.fromtimestamp(at, timezone.utc).isoformat(),
+                    "message": {"usage": {"input_tokens": tok}}}) + "\n"
+        for at, tok in turns), encoding="utf-8")
+
+
+def test_the_heuristic_measures_the_week_the_probe_reads(monkeypatch, tmp_path):
+    """The account's only limit is the 7-day week, so with the probe dark a burst
+    worth more than a 5-hour slice of the plan is not 'out', and a week of steady
+    spend past the plan's weekly ceiling is."""
+    monkeypatch.setenv("SZPONTNET_CLAUDE_DIR", str(tmp_path))
+    monkeypatch.setattr(usage, "week_window", lambda **_: None)
+    now = time.time()
+    _transcript_turns(tmp_path, [(now - 3600, 10_000_000)])
+    assert usage.token_state("pro", now=now)[0] == "ok"
+    _transcript_turns(tmp_path, [(now - d * 86400, 15_000_000) for d in range(1, 7)])
+    assert usage.token_state("pro", now=now)[0] == "out"
+
+
 # MARK: - the node's own loop
 
 
