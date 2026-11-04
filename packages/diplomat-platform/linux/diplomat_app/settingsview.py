@@ -1039,10 +1039,22 @@ class SettingsView(QWidget):
         self._sw_comms_replies = self._comms_switch(
             inner, "Reply in Slack", st.comms_replies, "comms_replies",
             "Work a ping queued, or found already queued or running, gets a reply "
-            "saying when it should be done. Once your session has been locked for "
-            f"{Fmt.duration(comms.away_after_secs())}, a question your repo's documentation "
-            "answers gets that answer. Only ever in the conversation the message was "
-            "written in, and at most once per message.")
+            "saying when it should be done. While you are away, a question your repo's "
+            "documentation answers gets that answer. Only ever in the conversation the "
+            "message was written in, and at most once per message.")
+        _, step, most = comms.away_after_secs()
+        self._comms_away = SliderSetting(
+            label="Away after", minimum=step, maximum=most, step=step,
+            min_label=Fmt.duration(step), max_label=Fmt.duration(most), tint=_BLUE,
+        )
+        self._comms_away.set_badge_text(Fmt.duration)
+        self._comms_away.set_value(st.comms_away_after_secs)
+        self._comms_away.changed.connect(
+            lambda secs: setattr(self.store, "comms_away_after_secs", secs))
+        inner.addWidget(self._track(SettingRow(
+            "Away after", self._comms_away, stacked=True,
+            detail="How long your session must have been locked before Comms answers "
+                   "questions for you.")))
         self._sw_comms_notify = self._comms_switch(
             inner, "Notify on new pings", st.comms_notify, "comms_notify",
             "A tray notification per new ping.")

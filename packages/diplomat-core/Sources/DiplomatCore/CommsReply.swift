@@ -29,7 +29,7 @@ public struct CommsReplyRequest: Codable, Sendable {
     public var decision: CommsDecision
     /// Set only when the ping's work is queued or running.
     public var queued: CommsQueuedWork?
-    /// The operator's session has been locked for `replies.awayAfterSecs` (`CommsAway`).
+    /// The operator's session has been locked for their away setting (`CommsAway`).
     public var away: Bool
     public var toggles: CommsToggles
     public var settings: CommsSettings
@@ -79,7 +79,7 @@ public struct CommsReplyResult: Codable, Equatable, Sendable {
     }
 }
 
-/// Whether the operator is away: their session locked for `replies.awayAfterSecs`. The
+/// Whether the operator is away: their session locked for `afterSecs`, their setting. The
 /// front-ends read the lock (macOS `CGSSessionScreenIsLocked` and the lock
 /// notifications, Linux logind's `LockedHint`), never idle time or display sleep, which
 /// a `caffeinate` holds off.
@@ -93,11 +93,10 @@ public enum CommsAway {
         }
     }
 
-    public static func isAway(lockedSince: Date?, now: Date = Date()) -> Bool {
+    public static func isAway(lockedSince: Date?, afterSecs: Int, now: Date = Date()) -> Bool {
         if let forced = override { return forced }
-        guard let since = lockedSince,
-              let secs = (try? CoreAssets.comms())?.replies.awayAfterSecs else { return false }
-        return now.timeIntervalSince(since) >= Double(secs)
+        guard let since = lockedSince else { return false }
+        return now.timeIntervalSince(since) >= Double(afterSecs)
     }
 }
 

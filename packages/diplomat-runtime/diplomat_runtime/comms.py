@@ -146,8 +146,11 @@ def reply_timeout() -> float:
     return _sign_in_secs(t) + _LOGIN_SHELL_SECS + answer + slack + _MARGIN_SECS
 
 
-def away_after_secs() -> float:
-    return float((tunables().get("replies") or {}).get("awayAfterSecs", 10800))
+def away_after_secs() -> tuple[int, int, int]:
+    """``replies.awayAfter*``: the default, the step it is set in, and its most."""
+    r = tunables().get("replies") or {}
+    return (int(r.get("awayAfterSecs", 10800)), int(r.get("awayAfterStepSecs", 900)),
+            int(r.get("awayAfterMaxSecs", 43200)))
 
 
 # MARK: - the session lock

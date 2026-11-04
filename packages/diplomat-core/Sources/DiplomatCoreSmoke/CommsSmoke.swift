@@ -2600,10 +2600,17 @@ private func replySmoke() throws {
           "times round up, in the sender's zone, as today, tomorrow or a date")
     check(CommsReplier.etaText(now, now: now, timezone: "America/New_York", roundMins: 5) == "05:00 today",
           "a sender in New York reads their own clock")
-    check(CommsAway.isAway(lockedSince: now.addingTimeInterval(-3 * 3600), now: now)
-          && !CommsAway.isAway(lockedSince: now.addingTimeInterval(-3 * 3600 + 60), now: now)
-          && !CommsAway.isAway(lockedSince: nil, now: now),
-          "away is a session locked for three hours, and nothing short of it")
+    check(CommsAway.isAway(lockedSince: now.addingTimeInterval(-3 * 3600), afterSecs: 3 * 3600, now: now)
+          && !CommsAway.isAway(lockedSince: now.addingTimeInterval(-3 * 3600 + 60), afterSecs: 3 * 3600,
+                               now: now)
+          && CommsAway.isAway(lockedSince: now.addingTimeInterval(-900), afterSecs: 900, now: now)
+          && !CommsAway.isAway(lockedSince: nil, afterSecs: 900, now: now),
+          "away is a session locked for the operator's setting, and nothing short of it")
+    check(assets.replies.awayAfterSecs == 10800 && assets.replies.awayAfterStepSecs == 900
+          && assets.replies.awayAfterMaxSecs == 43200
+          && assets.replies.awayAfterSecs % assets.replies.awayAfterStepSecs == 0
+          && assets.replies.awayAfterMaxSecs % assets.replies.awayAfterStepSecs == 0,
+          "away defaults to three hours, set in quarter hours up to twelve")
 }
 
 private func wildcardSmoke() {

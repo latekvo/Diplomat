@@ -231,6 +231,8 @@ public enum CoreAssets {
         public struct Replies: Decodable {
             public let prefix: String
             public let awayAfterSecs: Int
+            public let awayAfterStepSecs: Int
+            public let awayAfterMaxSecs: Int
             public let roundMins: Int
             /// Keyed by `CommsQueuedWork.kind`.
             public let runSecs: [String: Int]

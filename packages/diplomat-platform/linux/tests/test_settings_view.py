@@ -320,11 +320,27 @@ def test_the_reply_switch_sits_with_the_comms_switches_and_writes_through(make_v
     assert sw.isChecked() is True
     assert sw.accessibleName() == "Reply in Slack"
     assert _row_of(sw).parent() is _row_of(view._sw_comms_bumps).parent()
-    assert "locked for 3h" in _row_of(sw)._detail.text()
+    assert "While you are away" in _row_of(sw)._detail.text()
     sw.setChecked(False)
     assert app_settings().value("commsReplies") is False
     assert view.store.comms_toggles()["replies"] is False
     assert make_view()._sw_comms_replies.isChecked() is False
+
+
+def test_the_away_slider_steps_in_quarter_hours_and_writes_through(make_view):
+    from diplomat_app.store import app_settings
+
+    view = make_view()
+    slider = view._comms_away
+    assert _row_of(slider).parent() is _row_of(view._sw_comms_replies).parent()
+    assert slider._slider.accessibleName() == "Away after"
+    assert (slider.minimum(), slider.maximum(), slider.value()) == (900, 43200, 10800)
+    assert slider.badge() == "3h"
+    slider._slider.setValue(4400)
+    assert slider.value() == 4500 and slider.badge() == "1h 15m"
+    assert app_settings().value("commsAwayAfterSecs") == 4500
+    assert view.store.comms_away_after_secs == 4500
+    assert make_view()._comms_away.value() == 4500
 
 
 def test_the_keywords_hint_names_the_wildcard(view):
