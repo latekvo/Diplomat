@@ -70,7 +70,8 @@ def _python(records, evidence, now=T0, limit=LIMIT,
 
     def verdict(s: A.Resolution) -> dict:
         return {"state": s.state, "reason": s.reason, "wedged": s.wedged,
-                "expired": s.expired, "unfindable": s.unfindable, "lapsed": s.lapsed}
+                "expired": s.expired, "unfindable": s.unfindable, "lapsed": s.lapsed,
+                "reported": s.reported}
 
     return {
         "rows": [{"runId": r.run_id, **verdict(s)} for r, s in t.rows],

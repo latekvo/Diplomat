@@ -826,6 +826,7 @@ enum Dump {
                     case .skipInFlight: recon = "reconcile→in-flight"
                     case .skipBanned: recon = "reconcile→banned"
                     case .skipCoolingDown(let s): recon = "reconcile→cooldown(\(Int(s))s)"
+                    case .skipConcluded: recon = "reconcile→concluded"
                     }
                 } else { recon = "addressed" }
                 print("  #\(r.number)  owe=\(r.oweReview ? "YES" : "no")  \(recon)  "

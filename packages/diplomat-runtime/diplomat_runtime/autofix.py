@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # MARK: - Snapshot + fingerprint
 
@@ -115,6 +115,10 @@ class ReviewAttempt:
     requested_at: str  # ISO8601 stamp, or the sentinel "unresolved"/"conflicting"
     last_dispatched_at: float  # epoch seconds
     attempts: int
+    #: When a run for this request ended on its agent's own word that the turn was over
+    #: (:attr:`agentstate.Resolution.reported`). It finished, so whatever it left on the
+    #: PR - nothing included - is its answer, and the request is not retried.
+    concluded_at: float | None = None
 
 
 def decide(
@@ -127,8 +131,9 @@ def decide(
     """Whether to (re)dispatch an agent for a PR (mirrors ReviewReconcile.decide).
 
     Returns ``(action, value)`` where action is one of ``"banned"``,
-    ``"in_flight"``, ``"cooling"`` (value = seconds remaining) or ``"dispatch"``
-    (value = attempt number, ``1`` for the first).
+    ``"in_flight"``, ``"cooling"`` (value = seconds remaining), ``"concluded"`` (a run
+    for this very request finished on its own word and it is still owed: it chose to
+    post nothing) or ``"dispatch"`` (value = attempt number, ``1`` for the first).
     """
     if banned:
         return ("banned", 0.0)
@@ -138,6 +143,8 @@ def decide(
         return ("dispatch", 1)
     elapsed = now_ts - prior.last_dispatched_at
     if prior.requested_at == stamp:
+        if prior.concluded_at is not None:
+            return ("concluded", 0.0)
         delay = retry_delay(prior.attempts)
         if elapsed < delay:
             return ("cooling", delay - elapsed)
@@ -146,6 +153,37 @@ def decide(
     if elapsed < RE_REQUEST_COOLDOWN:
         return ("cooling", RE_REQUEST_COOLDOWN - elapsed)
     return ("dispatch", 1)
+
+
+def concluded(retired, verdicts: dict) -> set[int]:
+    """The review requests whose run ended on its agent's own word: retired runs
+    dispatched for a review requested of me (:data:`WORK_REVIEW_REQ`) whose verdict is
+    ``reported``. A run that died, failed, was reaped or ran on a peer says nothing
+    about whether it meant to post, so its request stays on the retry ladder. Twin of
+    ``ReviewReconcile.concluded``."""
+    return {r.pr_number for r in retired
+            if r.ledger_key.startswith(WORK_REVIEW_REQ + ":")
+            and r.pr_number is not None
+            and getattr(verdicts.get(r.run_id), "reported", False)}
+
+
+def conclude(attempts: dict, prs: set[int], now_ts: float) -> dict:
+    """``attempts`` with each of ``prs``' records stamped concluded, keyed by PR
+    number as the review-request monitor keys them."""
+    return {k: (replace(a, concluded_at=now_ts) if k in {str(p) for p in prs} else a)
+            for k, a in attempts.items()}
+
+
+def retained(attempts: dict, owed: dict, now_ts: float) -> dict:
+    """The records worth keeping after a poll. Each is kept until it ages past the
+    backoff ceiling, not the moment the review lands: a force-push dismisses my review
+    (briefly un-owing it) then re-requests, and the record is what lets
+    :data:`RE_REQUEST_COOLDOWN` read that as churn. A concluded record is kept for as
+    long as that same request is still owed (``owed``: PR key -> stamp), because
+    dropping it re-dispatches the request. Twin of ``ReviewReconcile.retained``."""
+    return {k: a for k, a in attempts.items()
+            if now_ts - a.last_dispatched_at < RETRY_MAX_BACKOFF
+            or (a.concluded_at is not None and owed.get(k) == a.requested_at)}
 
 
 # MARK: - Review request (mirrors AutofixMonitor.ReviewRequest)

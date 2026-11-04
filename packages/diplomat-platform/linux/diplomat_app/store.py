@@ -1429,7 +1429,7 @@ class Store(QObject):
         now = time.time()
         banned = bans.read()
         key = "reviewReqAttempts"
-        attempts = self._load_attempts(key)
+        prior = self._load_attempts(key)
         # An author outside the allowlist is dropped here rather than carried down as a
         # decision the way a ban is, because there is nothing further to say about them:
         # the ledger, the backoff ladder and the "owed" count all describe work this
@@ -1448,31 +1448,34 @@ class Store(QObject):
             autofix.ledger_key(autofix.WORK_REVIEW_REQ, r.url, r.head_sha): r.number
             for r in owed if not bans.is_banned(r.author, banned)
         })
+        dispatched: dict[str, autofix.ReviewAttempt] = {}
+        concluded: set[int] = set()
         for r in owed:
             k = str(r.number)
             stamp = r.stamp
             action, val = autofix.decide(
-                attempts.get(k),
+                prior.get(k),
                 stamp,
                 self._in_flight(r.url),
                 bans.is_banned(r.author, banned),
                 now,
             )
+            if action == "concluded":
+                concluded.add(r.number)
             if action == "dispatch" and self._dispatch_review_request(r, int(val)):
-                attempts[k] = autofix.ReviewAttempt(stamp, now, int(val))
-        # Prune records older than the retry ceiling (a request that's long gone).
-        self._save_attempts(
-            key,
-            {
-                k: v
-                for k, v in attempts.items()
-                if now - v.last_dispatched_at < autofix.RETRY_MAX_BACKOFF
-            },
-        )
+                dispatched[k] = autofix.ReviewAttempt(stamp, now, int(val))
+        # Onto the records as they stand now, not as this pass read them: the panel's tick
+        # can conclude a request, or the queue record a dispatch, meanwhile. Aged-out
+        # records are dropped so the store can't grow unbounded and a real future
+        # re-request is fresh (:func:`autofix.retained`).
+        self._save_attempts(key, autofix.retained(
+            {**self._load_attempts(key), **dispatched},
+            {str(r.number): r.stamp for r in owed}, now))
         self.unaddressed_reviews = sum(
             1
             for r in owed
             if not self._in_flight(r.url) and not bans.is_banned(r.author, banned)
+            and r.number not in concluded
         )
 
     # MARK: monitor dispatch + tracking
@@ -2976,6 +2979,10 @@ class Store(QObject):
         # logged and priced twice.
         if not self._write_book(lambda: agentregistry.forget({r.run_id for r in gone})):
             return
+        concluded = autofix.concluded(gone, t.states)
+        if concluded:
+            key = "reviewReqAttempts"
+            self._save_attempts(key, autofix.conclude(self._load_attempts(key), concluded, now))
         # Logged with the evidence that ended it, because forgetting deletes every trace
         # a run leaves: the record, the directory and the prompt all go, and a retirement
         # that turns out to be wrong is then a row that was simply not there any more.
@@ -3192,10 +3199,12 @@ class Store(QObject):
         out: dict[str, autofix.ReviewAttempt] = {}
         for k, v in (obj or {}).items():
             try:
+                concluded = v.get("concludedAt")
                 out[k] = autofix.ReviewAttempt(
                     requested_at=v.get("requestedAt", ""),
                     last_dispatched_at=float(v.get("lastDispatchedAt", 0.0)),
                     attempts=int(v.get("attempts", 1)),
+                    concluded_at=None if concluded is None else float(concluded),
                 )
             except (ValueError, AttributeError):
                 continue
@@ -3207,6 +3216,7 @@ class Store(QObject):
                 "requestedAt": a.requested_at,
                 "lastDispatchedAt": a.last_dispatched_at,
                 "attempts": a.attempts,
+                **({} if a.concluded_at is None else {"concludedAt": a.concluded_at}),
             }
             for k, a in attempts.items()
         }
