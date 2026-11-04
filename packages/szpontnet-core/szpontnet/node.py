@@ -1985,8 +1985,8 @@ class MeshNode:
                     self._forget_claims(pid)  # its origination leases lapse with it
             # Reliable foreign-result delivery + expiry ride the same tick: re-send
             # any unacked job-result whose retry is due, hand on returned results
-            # the disk refused, hold late foreign executors to their acceptance (reminder → extension or ban), and
-            # reap stale bookkeeping.
+            # the disk refused, hold late foreign executors to their acceptance
+            # (reminder → extension or ban), and reap stale bookkeeping.
             self._retry_pending_results()
             self._retry_unstaged_results()
             self._check_foreign_deadlines()
