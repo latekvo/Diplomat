@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // mode (see `Headless` for the single env-var list shared with Store) so a
         // dump/lookup run can't kill the live menu-bar app.
         if !Headless.active {
+            AppLog.startSession()
             SingleInstance.terminateOthers()
             OperatorQuit.clear()
 
@@ -220,6 +221,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_REPOPATHS_TEST"] == "1" {
             exit(RepoPathsTest.run() ? 0 : 1)
         }
+        // Diagnostic-log self-test: the line format, rotation, timed work, a busy and a
+        // waiting main-thread hang with its sample, and the popover's show lines, all in
+        // a scratch log directory. Exit code = pass/fail.
+        if env["DIPLOMAT_APPLOG_TEST"] == "1" {
+            Task { @MainActor in exit(await AppLogTest.run() ? 0 : 1) }
+        }
         // Popover self-test: a dismissed popover reopens on the panel when Settings was
         // up, and not when a modal hid it. Off-screen windows only. Exit code = pass/fail.
         if env["DIPLOMAT_POPOVER_TEST"] == "1" {
@@ -258,12 +265,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let endsSession = event?.attributeDescriptor(forKeyword: kAEQuitReason) != nil
                 || event?.paramDescriptor(forKeyword: kAEQuitReason) != nil
                 || fromName == "loginwindow"
-            if OperatorQuit.isDeliberate(senderIsDiplomat: from.map { _ in fromName == SingleInstance.execName },
-                                         endsSession: endsSession) {
-                OperatorQuit.mark()
-            }
+            let deliberate = OperatorQuit.isDeliberate(
+                senderIsDiplomat: from.map { _ in fromName == SingleInstance.execName }, endsSession: endsSession)
+            AppLog.log("app", "quit asked by \(from.map { "\(fromName ?? "?") (\($0))" } ?? "this app")"
+                + (endsSession ? ", ending the session" : "") + (deliberate ? ", the operator's" : ""))
+            if deliberate { OperatorQuit.mark() }
         }
         return .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        AppLog.exiting = true
+        if !Headless.active { AppLog.log("app", "exit") }
     }
 }
 
@@ -379,6 +392,7 @@ enum SingleInstance {
     }
 
     private static func log(_ msg: String) {
+        AppLog.log("app", "singleton: \(msg)")
         try? FileHandle.standardError.write(contentsOf: Data("Diplomat singleton: \(msg)\n".utf8))
     }
 }

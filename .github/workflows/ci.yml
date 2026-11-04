@@ -177,6 +177,7 @@ jobs:
           DIPLOMAT_WATCHDOG_TEST=1 swift run Diplomat
           DIPLOMAT_REPOPATHS_TEST=1 swift run Diplomat
           DIPLOMAT_POPOVER_TEST=1 swift run Diplomat
+          DIPLOMAT_APPLOG_TEST=1 swift run Diplomat
           DIPLOMAT_RELAUNCH_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
           DIPLOMAT_COMMS_TEST=1 swift run Diplomat

@@ -1112,7 +1112,9 @@ final class Store: ObservableObject {
         }
     }
 
-    func refresh() async {
+    func refresh() async { await AppLog.timed("refresh") { await load() } }
+
+    private func load() async {
         isLoading = true
         error = nil
         do {
@@ -1870,7 +1872,7 @@ final class Store: ObservableObject {
         guard autofixMonitorTask == nil else { return }
         autofixMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.runAutofixPollOnce()
+                await AppLog.timed("autofixPoll") { await self?.runAutofixPollOnce() }
                 let ns = UInt64(Store.autofixPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
@@ -3758,7 +3760,7 @@ final class Store: ObservableObject {
         guard apiWatchTask == nil else { return }
         apiWatchTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.runApiErrorScanOnce()
+                await AppLog.timed("apiErrorScan") { await self?.runApiErrorScanOnce() }
                 let ns = UInt64(Store.apiWatchInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
@@ -3858,11 +3860,13 @@ final class Store: ObservableObject {
         guard processPollTask == nil else { return }
         processPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refreshAutoTaskCount()
-                await self?.refreshDeviceState()
-                self?.refreshBanList()
-                self?.refreshAudit()
-                self?.runTelemetrySampleOnce()
+                await AppLog.timed("processPoll") {
+                    await self?.refreshAutoTaskCount()
+                    await self?.refreshDeviceState()
+                    self?.refreshBanList()
+                    self?.refreshAudit()
+                    self?.runTelemetrySampleOnce()
+                }
                 let ns = UInt64(Store.processPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
@@ -3966,7 +3970,7 @@ final class Store: ObservableObject {
         guard meshPollTask == nil else { return }
         meshPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.meshTick()
+                await AppLog.timed("meshTick") { await self?.meshTick() }
                 let ns = UInt64(Store.meshPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }

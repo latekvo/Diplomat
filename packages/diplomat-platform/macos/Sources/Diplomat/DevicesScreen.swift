@@ -51,8 +51,10 @@ struct DevicesScreen: View {
             guard live, onScreen else { return }
             // `daemonRunning` comes from `--check` alone, which no poll runs.
             while !Task.isCancelled {
-                store.reloadDeviceConfig()
-                await store.refreshAllocatorInstall()
+                await AppLog.timed("devicesPoll") {
+                    store.reloadDeviceConfig()
+                    await store.refreshAllocatorInstall()
+                }
                 try? await Task.sleep(nanoseconds: pollNanoseconds)
             }
         }
