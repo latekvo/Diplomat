@@ -191,6 +191,8 @@ def test_a_setting_the_disk_refuses_says_so(on_volume, monkeypatch):
     from diplomat_app.store import Store
 
     QApplication.instance() or QApplication([])
+    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
     st = Store()
     view = SettingsView(st)
     before = appconfig.auto_budget_gate()
