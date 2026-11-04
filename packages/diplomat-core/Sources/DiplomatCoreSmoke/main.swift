@@ -702,12 +702,12 @@ func writeOpenCode(_ name: String, _ json: String) throws {
 func writeOpenCodeState(_ json: String) throws {
     try json.write(to: openCodeState.appendingPathComponent("model.json"), atomically: true, encoding: .utf8)
 }
-// The fixture names the OpenCode major, or a 2.x install on this machine would change
-// every 1.x check below.
-func detectModel(service: Bool = false) -> String {
+func detectModel() -> String {
     AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig,
-                      openCodeConfig: openCodeConfig, openCodeState: openCodeState,
-                      openCodeIsService: { service })
+                      openCodeConfig: openCodeConfig, openCodeState: openCodeState)
+}
+func sessionModel() -> String {
+    AgentModel.openCodeSessionModel(configDir: openCodeConfig, stateDir: openCodeState)
 }
 func writeTranscript(_ name: String, _ body: String, ageSecs: Double) throws {
     let url = sessions.appendingPathComponent(name)
@@ -775,43 +775,22 @@ try writeOpenCodeState("""
 """)
 check(detectModel() == "Opus 5",
       "the head of the recent list is the model OpenCode's picker restores")
-// The 2.x service never reads the picker's recents.
-check(detectModel(service: true) == "",
-      "an unpinned 2.x run with no config model names no model, never the picker's last")
-// DIPLOMAT_OPENCODE_MAJOR is the Linux runtime's answer. Anything but exactly `1` or `2`
-// asks the binary, here through a shell and a PATH that find none, so 1.x. Not the
-// system PATH: a distro package puts a real `opencode` in /usr/bin.
-do {
-    let emptyShell = modelFixture.appendingPathComponent("noshell")
-    FileManager.default.createFile(atPath: emptyShell.path,
-                                   contents: Data("#!/bin/sh\nexit 0\n".utf8),
-                                   attributes: [.posixPermissions: 0o755])
-    let emptyBin = modelFixture.appendingPathComponent("empty-bin")
-    try FileManager.default.createDirectory(at: emptyBin, withIntermediateDirectories: true)
-    let overrides = ["DIPLOMAT_CONFIG": configFile.path, "DIPLOMAT_CLAUDE_DIR": claudeHome.path,
-                     "DIPLOMAT_HERMES_CONFIG": hermesConfig.path,
-                     "DIPLOMAT_OPENCODE_CONFIG_DIR": openCodeConfig.path,
-                     "DIPLOMAT_OPENCODE_STATE_DIR": openCodeState.path,
-                     "SHELL": emptyShell.path, "PATH": emptyBin.path]
-    let prior = overrides.keys.map { ($0, ProcessInfo.processInfo.environment[$0]) }
-    for (key, value) in overrides { setenv(key, value, 1) }
-    defer {
-        for (key, value) in prior {
-            if let value { setenv(key, value, 1) } else { unsetenv(key) }
-        }
-        unsetenv("DIPLOMAT_OPENCODE_MAJOR")
-    }
-    func detectedWith(_ major: String?) -> String {
-        if let major { setenv("DIPLOMAT_OPENCODE_MAJOR", major, 1) } else { unsetenv("DIPLOMAT_OPENCODE_MAJOR") }
-        return AgentModel.detected()
-    }
-    check(detectedWith("2") == "", "DIPLOMAT_OPENCODE_MAJOR=2 is a 2.x install")
-    check(detectedWith("1") == "Opus 5", "DIPLOMAT_OPENCODE_MAJOR=1 is a 1.x install")
-    for other in [nil, "", "2.0", " 2"] {
-        check(detectedWith(other) == "Opus 5",
-              "DIPLOMAT_OPENCODE_MAJOR=\(other ?? "(unset)") asks the binary, and there is none")
-    }
-}
+// The 2.x service never reads them, so an unpinned 2.x spawn names that head itself, and
+// the tag names the model the run is on whichever major runs it.
+check(sessionModel() == "anthropic/claude-opus-5",
+      "an unpinned 2.x session starts on the picker's last model, not the service's first")
+try writeOpenCodeState("""
+{"recent": [{"providerID": "anthropic", "modelID": "claude-opus-5"}],
+ "variant": {"anthropic/claude-opus-5": "high", "openai/gpt-5.2": "low"}}
+""")
+check(sessionModel() == "anthropic/claude-opus-5#high",
+      "with the variant the picker last chose for that model")
+check(detectModel() == "Opus 5", "a variant qualifies the model the tag names")
+try writeOpenCodeState("""
+{"recent": [{"providerID": "anthropic", "modelID": "claude-opus-5"}],
+ "variant": {"anthropic/claude-opus-5": "default"}}
+""")
+check(sessionModel() == "anthropic/claude-opus-5", "the picker's `default` variant is no variant")
 // A head written without its model must fall through to the entry behind it rather than
 // blanking a tag that entry can still fill.
 try writeOpenCodeState("""
@@ -822,12 +801,8 @@ check(detectModel() == "GLM 5.2", "an entry that names no model is walked past, 
 // started with no `-m` is on that one whatever was used last.
 try writeOpenCode("config.json", "{\"model\": \"openai/gpt-5.2\"}")
 check(detectModel() == "GPT 5.2", "the config's model is what OpenCode resolves before its recent list")
-var majorAsked = 0
-check(AgentModel.detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig,
-                        openCodeConfig: openCodeConfig, openCodeState: openCodeState,
-                        openCodeIsService: { majorAsked += 1; return true }) == "GPT 5.2"
-        && majorAsked == 0,
-      "a config model names a 2.x run too, without asking the binary which major it is")
+check(sessionModel() == "",
+      "a config model is the service's own to apply, so a 2.x session names none")
 // …and the three global files merge in OpenCode's own order, later winning.
 try writeOpenCode("opencode.json", "{\"model\": \"qwen/qwen-3.8-max\"}")
 check(detectModel() == "Qwen 3.8 Max", "opencode.json is merged over config.json")
@@ -846,7 +821,7 @@ try writeConfig("{\"agentRunner\": \"opencode\", \"agentModel\": \"google/gemini
 check(detectModel() == "Gemini 3.1 Pro Preview", "`-m` beats everything OpenCode would have picked")
 // A 2.x pin may carry a `#variant`.
 try writeConfig("{\"agentRunner\": \"opencode\", \"agentModel\": \"openai/gpt-5.2#high\"}")
-check(detectModel(service: true) == "GPT 5.2", "a pinned variant is still the model it qualifies")
+check(detectModel() == "GPT 5.2", "a pinned variant is still the model it qualifies")
 try FileManager.default.removeItem(at: openCodeConfig)
 try FileManager.default.createDirectory(at: openCodeConfig, withIntermediateDirectories: true)
 try writeOpenCodeState("{}")
@@ -1125,6 +1100,34 @@ check(OpenCodeAPI.serviceState(session: info(["created": 1.0, "idle": 2.0]),
 check(OpenCodeAPI.serviceState(session: info(["idle": "soon"]), active: nobody,
                                sessionID: "ses_a")?.busy == true,
       "a stamp that is not a time is not a stamp")
+// How the stamped turn ended: shapes as 2.2.5 answers them, against a refusing provider.
+func ended(_ outcome: String?) -> [String: Any] {
+    var data: [String: Any] = ["id": "ses_a", "time": ["created": 1.0, "busy": 1.5, "idle": 2.0]]
+    data["outcome"] = outcome
+    return ["data": data]
+}
+check(OpenCodeAPI.serviceState(session: ended("failed"), active: nobody, sessionID: "ses_a")
+        == AgentState.SessionState(busy: false, failure: ""),
+      "a turn its runner says failed is a failure")
+for other in ["succeeded", "interrupted", nil] {
+    check(OpenCodeAPI.serviceState(session: ended(other), active: nobody, sessionID: "ses_a")
+            == AgentState.SessionState(busy: false),
+          "an outcome of \(other ?? "(none)") is no failure")
+}
+check(OpenCodeAPI.serviceState(session: ended("failed"), active: runningA, sessionID: "ses_a")
+        == AgentState.SessionState(busy: true),
+      "a turn running now is not the earlier one that failed")
+check(OpenCodeAPI.serviceLastMessagePath(sessionID: "ses_a")
+        == "/api/session/ses_a/message?limit=1&order=desc")
+check(OpenCodeAPI.failureMessage(["data": [["type": "idle", "outcome": "failed",
+                                             "error": ["type": "provider.quota",
+                                                       "message": "Insufficient account funds",
+                                                       "status": 402]]]])
+        == "Insufficient account funds")
+for said in [nil, ["data": []], ["data": [["type": "assistant", "error": ["message": "x"]]]],
+             ["data": [["type": "idle", "outcome": "failed"]]]] as [Any?] {
+    check(OpenCodeAPI.failureMessage(said) == "", "\(String(describing: said)) says nothing went wrong")
+}
 let serviceGarbage: [Any?] = [nil, [String: Any](), ["data": "x"], "<html>", [["data": [:]]],
                          ["_tag": "SessionNotFoundError"]]
 for bad in serviceGarbage {
@@ -1167,15 +1170,6 @@ for line in [
 ] {
     check(OpenCodeAPI.attachedSession(line) == nil, "“\(line)” attaches to no 2.x session")
 }
-
-// Which major `diplomat-core` assumes when its caller already knows.
-check(OpenCodeCLI.majorOverride(["DIPLOMAT_OPENCODE_MAJOR": "2"]) == true)
-check(OpenCodeCLI.majorOverride(["DIPLOMAT_OPENCODE_MAJOR": "1"]) == false)
-for other in ["", "3", " 2", "2.0", "v2", "01"] {
-    check(OpenCodeCLI.majorOverride(["DIPLOMAT_OPENCODE_MAJOR": other]) == nil,
-          "“\(other)” is no major, so the binary is asked")
-}
-check(OpenCodeCLI.majorOverride([:]) == nil)
 
 extension OpenCodeCLI.Resolution { var fields: [String?] { [path, stateHome] } }
 // The resolver: one login shell, an interactive one inside it, and a probe that prints
@@ -1284,38 +1278,6 @@ do {
     versioned("1.4.3")
     check(!OpenCodeCLI.isService(binary: versionedPath) && asked() == 2,
           "a binary rewritten in place is asked again")
-
-    // A prompt is built on the macOS main actor, so the tag's model reads the major an
-    // earlier call found rather than asking the shell again once a resolution has aged.
-    let shellAsked = fx.appendingPathComponent("shell-asked")
-    executable("countshell", "#!/bin/sh\necho x >> '\(shellAsked.path)'\n"
-                             + "export PATH=\"$(cat '\(pick.path)'):$PATH\"\nexec /bin/sh \"$@\"\n")
-    setenv("SHELL", fx.appendingPathComponent("countshell").path, 1)
-    try? FileManager.default.removeItem(at: fx.appendingPathComponent("c"))
-    install("d")
-    let stale = Date().addingTimeInterval(-OpenCodeCLI.resolveTTL - 1)
-    check(OpenCodeCLI.binary(now: stale) == "\(fx.path)/d/opencode"
-            && OpenCodeCLI.isService(binary: "\(fx.path)/d/opencode"),
-          "an aged resolution of a 2.x install")
-    try? FileManager.default.removeItem(at: shellAsked)
-    let tagConfig = fx.appendingPathComponent("tag-config.json")
-    let tagState = fx.appendingPathComponent("tag-state", isDirectory: true)
-    try? FileManager.default.createDirectory(at: tagState, withIntermediateDirectories: true)
-    try? "{\"agentRunner\": \"opencode\"}".write(to: tagConfig, atomically: true, encoding: .utf8)
-    try? "{\"recent\": [{\"providerID\": \"anthropic\", \"modelID\": \"claude-opus-5\"}]}"
-        .write(to: tagState.appendingPathComponent("model.json"), atomically: true, encoding: .utf8)
-    let tagEnv = ["DIPLOMAT_CONFIG": tagConfig.path,
-                  "DIPLOMAT_OPENCODE_CONFIG_DIR": fx.appendingPathComponent("tag-none").path,
-                  "DIPLOMAT_OPENCODE_STATE_DIR": tagState.path]
-    let priorTagEnv = tagEnv.keys.map { ($0, ProcessInfo.processInfo.environment[$0]) }
-    for (key, value) in tagEnv { setenv(key, value, 1) }
-    defer {
-        for (key, value) in priorTagEnv {
-            if let value { setenv(key, value, 1) } else { unsetenv(key) }
-        }
-    }
-    check(AgentModel.detected() == "" && !FileManager.default.fileExists(atPath: shellAsked.path),
-          "the tag reads the major already found, without running the shell")
 }
 print("opencode 2.x service assertions passed")
 
@@ -3059,6 +3021,57 @@ check(ReviewReconcile.decide(prior: a1, stamp: "newer-stamp", inFlight: false, b
 let aOld = ReviewAttempt(requestedAt: "s", lastDispatchedAt: t0.addingTimeInterval(-2 * 60 * 60), attempts: 1)
 check(ReviewReconcile.decide(prior: aOld, stamp: "newer-stamp", inFlight: false, banned: false, now: t0)
         == .dispatch(attemptNumber: 1), "re-request past cooldown ⇒ fresh dispatch")
+// A run that finished on its own word and posted nothing (soft-approve off on a clean PR,
+// or my own draft found on it) answered the request: it is never re-dispatched, however
+// long the backoff — while a run that died is still retried.
+let concludedRec = ReviewAttempt(requestedAt: "s", lastDispatchedAt: t0.addingTimeInterval(-6 * 60),
+                                 attempts: 1, concludedAt: t0.addingTimeInterval(-60))
+check(ReviewReconcile.decide(prior: concludedRec, stamp: "s", inFlight: false, banned: false, now: t0)
+        == .skipConcluded, "a concluded request is not retried")
+check(ReviewReconcile.decide(prior: concludedRec, stamp: "newer-stamp", inFlight: false, banned: false,
+                             now: t0.addingTimeInterval(2 * 60 * 60))
+        == .dispatch(attemptNumber: 1), "…but a genuine re-request of it is a fresh one")
+do {
+    let at = t0.timeIntervalSince1970
+    func run(_ id: String, kind: String, pr: Int) -> AgentState.RunRecord {
+        AgentState.RunRecord(runID: id, dispatchedAt: at - 600, prNumber: pr, kind: "review",
+                             ledgerKey: "\(kind):github.com/o/r#\(pr)@abc", pid: 7000 + pr, tty: "ttys0\(pr)")
+    }
+    let runs = [run("idle", kind: AutofixMesh.kindReviewReq, pr: 11),
+                run("ended", kind: AutofixMesh.kindReviewReq, pr: 12),
+                run("gone", kind: AutofixMesh.kindReviewReq, pr: 13),
+                run("reply", kind: AutofixMesh.kindReviewReply, pr: 14),
+                run("session", kind: AutofixMesh.kindReviewReq, pr: 15),
+                run("refused", kind: AutofixMesh.kindReviewReq, pr: 16)]
+    let alive = Dictionary(uniqueKeysWithValues: [15, 16].map {
+        (7000 + $0, AgentState.ProcInfo(tty: "ttys0\($0)", elapsed: 600, isAgent: true))
+    })
+    let verdicts = AgentState.resolve(records: runs, evidence: AgentState.Evidence(
+        processes: .present(alive), sentinels: .present([]), tails: .present([:]),
+        claims: .present([]), mergedPRs: .present([]),
+        sessions: .present(["session": AgentState.SessionState(busy: false),
+                            "refused": AgentState.SessionState(busy: false, failure: "402")]),
+        activity: .present(["idle": AgentState.TurnReport(verb: .idle, at: at - 5),
+                            "ended": AgentState.TurnReport(verb: .ended, at: at - 5),
+                            "reply": AgentState.TurnReport(verb: .idle, at: at - 5)])), now: at)
+    check(ReviewReconcile.concluded(runs, verdicts: verdicts) == [11, 15],
+          "only a review-request run its own runner reported over concludes, got "
+          + "\(ReviewReconcile.concluded(runs, verdicts: verdicts).sorted())")
+    // A turn its provider refused did none of the work: the run failed, and says why.
+    check(verdicts["refused"]?.state == .failed
+            && verdicts["refused"]?.reason.hasSuffix("its runner reported the turn failed: 402") == true,
+          "a refused turn is a failure, got \(String(describing: verdicts["refused"]))")
+    check(verdicts["session"]?.state == .finished, "a session that went idle well finished")
+    let book = ["11": a1old, "13": a1old]
+    let stamped = ReviewReconcile.conclude(book, prs: [11, 15], at: t0)
+    check(stamped["11"]?.concludedAt == t0 && stamped["13"]?.concludedAt == nil && stamped["15"] == nil,
+          "a conclusion stamps the record it answers and invents none")
+    let late = t0.addingTimeInterval(ReviewReconcile.retryMaxBackoff + 60)
+    check(ReviewReconcile.retained(stamped, owed: ["11": "s", "13": "s"], now: late).keys.sorted() == ["11"],
+          "a concluded record outlives the backoff ceiling while its request is still owed")
+    check(ReviewReconcile.retained(stamped, owed: ["11": "newer-stamp"], now: late).isEmpty,
+          "…and is dropped once that request is no longer the one owed")
+}
 print("review reconcile assertions passed")
 
 // ---- Agent activity (running vs awaiting input) ----

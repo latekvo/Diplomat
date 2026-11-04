@@ -17,6 +17,7 @@ import Foundation
 //   diplomat-core comms-feed        [--limit N]      # the Comms screen's rows
 //   diplomat-core comms-effect      < request.json   # what a triaged ping makes a front-end do
 //   diplomat-core comms-reply       < request.json   # Comms' reply in Slack, if one is due
+//   diplomat-core opencode-session-model             # what an unpinned 2.x spawn names
 //
 // build-prompt: the JSON config's "kind" field ("review" | "conflicts" | "audit" |
 // "issues" | "investigate") selects the builder; remaining fields mirror the Swift
@@ -77,11 +78,13 @@ func specificAuthor(_ s: String?) -> SpecificAuthor {
 let args = CommandLine.arguments
 guard args.count >= 2,
       ["build-prompt", "tool-data", "telemetry", "agent-state", "agent-registry",
-       "comms-tick", "comms-auth", "comms-feed", "comms-effect", "comms-reply"].contains(args[1]) else {
+       "comms-tick", "comms-auth", "comms-feed", "comms-effect", "comms-reply",
+       "opencode-session-model"].contains(args[1]) else {
     die("usage: diplomat-core (build-prompt | tool-data | telemetry | agent-state"
         + " | agent-registry | comms-tick | comms-effect | comms-reply)  (JSON on stdin)"
         + "\n       diplomat-core comms-feed [--limit N]"
-        + "\n       diplomat-core comms-auth", 1)
+        + "\n       diplomat-core comms-auth"
+        + "\n       diplomat-core opencode-session-model", 1)
 }
 
 // These read no stdin, so a caller leaving it attached to a terminal must not hang them.
@@ -91,6 +94,10 @@ if args[1] == "comms-feed" {
 }
 if args[1] == "comms-auth" {
     CommsCommand.auth()
+    exit(0)
+}
+if args[1] == "opencode-session-model" {
+    emit(Data(AgentModel.openCodeSessionModel().utf8))
     exit(0)
 }
 

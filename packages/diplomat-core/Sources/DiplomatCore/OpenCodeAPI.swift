@@ -270,8 +270,8 @@ public enum OpenCodeAPI {
         ["action": "*", "resource": "*", "effect": "allow"],
     ]
 
-    /// The body `opencode api session.create` is handed for a spawn. Unpinned, the service
-    /// starts on its config's model, which is the one the tag names (`AgentModel`).
+    /// The body `opencode api session.create` is handed for a spawn. With no `model`, the
+    /// service starts on its config's.
     public static func sessionBody(id: String, directory: String,
                                    model: String) -> [String: Any] {
         var body: [String: Any] = ["id": id, "location": ["directory": directory],
@@ -374,6 +374,10 @@ public enum OpenCodeAPI {
     /// steps (2.0.18, polled at 50 ms). Out of it, idle only once `time.idle` is stamped:
     /// a session whose first turn has not ended, including before the prompt starts one,
     /// has finished nothing, and calling it idle would retire an agent seconds after launch.
+    ///
+    /// An idle session's `outcome` is how its last turn ended (`succeeded`, `failed` or
+    /// `interrupted`, 2.2.5); `failed` - a provider that refused it, say - is a `failure`
+    /// whose text `failureMessage` reads, since the session does not carry it.
     public static func serviceState(session: Any?, active: Any?,
                                     sessionID: String) -> AgentState.SessionState? {
         guard let info = (session as? [String: Any])?["data"] as? [String: Any],
@@ -381,6 +385,23 @@ public enum OpenCodeAPI {
         else { return nil }
         if running[sessionID] != nil { return AgentState.SessionState(busy: true) }
         let time = info["time"] as? [String: Any] ?? [:]
-        return AgentState.SessionState(busy: (time["idle"] as? NSNumber) == nil)
+        guard time["idle"] as? NSNumber != nil else { return AgentState.SessionState(busy: true) }
+        return AgentState.SessionState(
+            busy: false, failure: info["outcome"] as? String == "failed" ? "" : nil)
+    }
+
+    /// The service's path for a session's newest message, alone.
+    public static func serviceLastMessagePath(sessionID: String) -> String? {
+        servicePath(sessionID: sessionID, suffix: "/message?limit=1&order=desc")
+    }
+
+    /// What a failed turn's closing `idle` message says went wrong, from
+    /// `serviceLastMessagePath`'s whole decoded answer; "" when it says nothing.
+    public static func failureMessage(_ response: Any?) -> String {
+        guard let last = ((response as? [String: Any])?["data"] as? [[String: Any]])?.first,
+              last["type"] as? String == "idle",
+              let message = (last["error"] as? [String: Any])?["message"] as? String
+        else { return "" }
+        return message.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
