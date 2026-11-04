@@ -208,8 +208,7 @@ enum MeshStrayTest {
         name(pid: reusedPid, port: closedPort(), id: "n-a")
         check("a pid the OS handed to another process is left alone",
               await store.stopStrayMeshNode() == .none && reused.isRunning)
-        // Started after the snapshot's last write, that process is no node at all, so
-        // the launcher starts one rather than trusting it.
+        // Started after the snapshot's last write, that process is no node.
         let lastWrite = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3600))
         let recycled = MeshSnapshot.decode(Data(
             #"{"pid": \#(reusedPid), "updatedAt": "\#(lastWrite)"}"#.utf8))
