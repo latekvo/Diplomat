@@ -2593,6 +2593,23 @@ check(overflowedSummary.perTask.count == 1 && overflowedSummary.perTaskWeek.coun
       "an overflowed share must be dropped, not binned")
 check(overflowedSummary.perTask.mean == 5, "the overflowed share moved the mean")
 check(overflowedSummary.perTaskTokensMean > 1e300, "the count itself was dropped as a cost")
+// The reading moves in whole 1% steps, so a flat interval's tokens belong to the step
+// a later one shows; a reset and spending at 0% left price nothing. Twin of
+// test_telemetry.py's flat-interval and reset/exhausted tests.
+func weekSamples(_ readings: [(Double, Double)]) -> [Telemetry.Sample] {
+    Telemetry.fold(lines: readings.enumerated().map { i, r in
+        #"{"at": \#(900 * i), "ev": "sample", "weekLeft": \#(r.0), "repoTokens": \#(r.1), "otherTokens": 0}"#
+    }).samples
+}
+check(Telemetry.calibrate(weekSamples([(0.50, 0), (0.50, 200_000), (0.50, 400_000),
+                                       (0.49, 600_000)]), session: false)
+        .map { abs($0 - 60_000_000) < 1 } == true,
+      "a flat interval's tokens were dropped from the window's price")
+check(Telemetry.calibrate(weekSamples([(0.02, 0), (0.01, 100_000), (0.0, 200_000),
+                                       (0.0, 900_000), (1.0, 5_000_000), (0.99, 5_100_000),
+                                       (1.0, 6_000_000)]), session: false)
+        .map { abs($0 - 10_000_000) < 1 } == true,
+      "a reset or an exhausted window's tokens were priced")
 // A ledger with no quota readings can count tokens but cannot honestly turn them
 // into a share of a window — the screen shows tokens and says so.
 let unpriced = Telemetry.fold(lines: tLines.filter { !$0.contains("\"sample\"") })

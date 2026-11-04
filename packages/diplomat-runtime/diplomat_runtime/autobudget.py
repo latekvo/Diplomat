@@ -123,8 +123,9 @@ def tokens_left(runners: Iterable[str] = ()) -> bool | None:
     return all(r > 0 for r in known)
 
 
-def _summary():
-    """The ledger, summarized the way the Telemetry screen summarizes it.
+def _summary(usd_runner: str = ""):
+    """The ledger, summarized the way the Telemetry screen summarizes it, with its
+    money priced from ``usd_runner``'s bills alone.
 
     The screen's DEFAULT lookback, not its longest and not whatever range the
     operator last flipped it to: the gate is a background decision in another
@@ -141,7 +142,7 @@ def _summary():
     return telemetry.summarize(
         telemetry.load(), now=time.time(), days=days,
         steps=2, bin_count=1, z=float(model["confidence"]["z"]),
-        bucket_hours=24 * days,
+        bucket_hours=24 * days, usd_runner=usd_runner,
     ), int(model["minSample"])
 
 
@@ -200,20 +201,21 @@ def _decide_money() -> autofix.Budget:
     equally: it is the ceiling that refills on its own, and naming it tells the
     operator to wait rather than to go and top the account up.
 
-    **A ledger with no billed task at all decides nothing.** The reserve exists to
-    hold work back while a machine that spends money has not yet been measured, and
-    applying it to a machine that spends none — a runner pointed at a local model, or
-    one Diplomat cannot price — would hold that machine's work against an account it
-    never draws on, purely because a key for that account is on disk. So the standing
-    reserve engages only once something has actually been charged here; before that
-    this is the same fail-open a silent probe gets, and the task cap is still in
+    **A ledger with no task billed under the selected runner decides nothing.** The
+    reserve exists to hold work back while a machine that spends money has not yet
+    been measured, and applying it to a machine that spends none — a runner pointed
+    at a local model, or one Diplomat cannot price — would hold that machine's work
+    against an account it never draws on, purely because a key for that account is
+    on disk, or because another runner was billed here before. So the standing
+    reserve engages only once this runner has actually been charged here; before
+    that this is the same fail-open a silent probe gets, and the task cap is still in
     front of it.
     """
-    from . import appconfig, core, spend
+    from . import appconfig, core, runner, spend
 
     cost = None
     try:
-        summary, min_sample = _summary()
+        summary, min_sample = _summary(runner.selected())
         d = summary.per_task_usd
         if d.count == 0:
             return autofix.Budget(affordable=True, unit=autofix.UNIT_USD)

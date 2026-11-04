@@ -261,10 +261,12 @@ public enum Telemetry {
     /// which is what you want — a 30-second interval's rounding error should not
     /// count as much as an hour's.
     ///
-    /// Intervals are skipped when the window RESET between the two samples (quota
-    /// went up, so `dUtil <= 0`) or when nothing was spent, since neither prices
-    /// anything. Returns nil when no interval survives — the screen then falls back
-    /// to the caller's heuristic ceiling and says the figure is an estimate.
+    /// A flat interval (`dUtil == 0`) still counts its tokens: the reading moves in
+    /// whole 1% steps, so most intervals of a slow window read flat, and the step their
+    /// spending eventually produces lands on a later interval. Skipped are an interval
+    /// the window RESET across (`dUtil < 0`), one spent at an exhausted window, and one
+    /// where nothing was spent. Returns nil when no interval survives — the screen then
+    /// falls back to the caller's heuristic ceiling and says the figure is an estimate.
     public static func calibrate(_ samples: [Sample], session: Bool) -> Double? {
         var tokens = 0.0, util = 0.0
         for i in 1..<max(samples.count, 1) {
@@ -272,7 +274,7 @@ public enum Telemetry {
             guard let left0 = session ? a.sessionLeft : a.weekLeft,
                   let left1 = session ? b.sessionLeft : b.weekLeft else { continue }
             let dUtil = left0 - left1
-            guard dUtil > 0 else { continue }
+            guard dUtil >= 0, left0 > 0 else { continue }
             let dTokens = (b.repoTokens + b.otherTokens) - (a.repoTokens + a.otherTokens)
             guard dTokens > 0 else { continue }   // also drops a counter reset
             tokens += dTokens
@@ -643,9 +645,12 @@ public enum Telemetry {
 
     /// Reduce a folded ledger to everything the screen shows. `now` is injected so
     /// the two implementations — and the tests — agree on where the range ends.
+    ///
+    /// `usdRunner` names the runner whose bills `Summary.perTaskUsd` is priced from;
+    /// empty takes every runner's.
     public static func summarize(_ ledger: Ledger, now: Double, days: Double,
                                  steps: Int, binCount: Int, z: Double,
-                                 bucketHours: Double) -> Summary {
+                                 bucketHours: Double, usdRunner: String = "") -> Summary {
         let start = now - days * 86_400
         // The token counters are cumulative, so what the range spent is the rise
         // since the last reading taken BEFORE it opened. Starting from the first
@@ -701,8 +706,11 @@ public enum Telemetry {
         // charged at, and dropping them narrows the sample until the new model has a
         // history of its own — which holds work to the standing reserve meanwhile, the
         // conservative direction of the two. Ties go to the first seen, as they do in
-        // the Python twin.
-        let billed = local.filter { ($0.usd ?? 0) > 0 }
+        // the Python twin. Another runner's bills price nothing: it is logged into its
+        // own provider, or into none.
+        let billed = local.filter {
+            ($0.usd ?? 0) > 0 && (usdRunner.isEmpty || $0.runner == usdRunner)
+        }
         var latest: Task?
         for task in billed {
             guard let best = latest else { latest = task; continue }
