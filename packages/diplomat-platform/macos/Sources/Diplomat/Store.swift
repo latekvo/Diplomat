@@ -521,6 +521,10 @@ final class Store: ObservableObject {
     @Published var commsReplies: Bool {
         didSet { persist(commsReplies, forKey: Keys.commsReplies) }
     }
+    /// How long the session must have been locked to count as away (`CommsAway`).
+    @Published var commsAwayAfterSecs: Int {
+        didSet { persist(commsAwayAfterSecs, forKey: Keys.commsAwayAfterSecs) }
+    }
     @Published var commsNotify: Bool {
         didSet {
             persist(commsNotify, forKey: Keys.commsNotify)
@@ -698,6 +702,7 @@ final class Store: ObservableObject {
         static let commsActBumps = "commsActBumps"
         static let commsActInvestigations = "commsActInvestigations"
         static let commsReplies = "commsReplies"
+        static let commsAwayAfterSecs = "commsAwayAfterSecs"
         static let commsLockedSince = "commsLockedSince"
         static let commsNotify = "commsNotify"
         static let commsModel = "commsModel"
@@ -862,6 +867,8 @@ final class Store: ObservableObject {
         commsActBumps = defaults.object(forKey: Keys.commsActBumps) as? Bool ?? true
         commsActInvestigations = defaults.object(forKey: Keys.commsActInvestigations) as? Bool ?? true
         commsReplies = defaults.object(forKey: Keys.commsReplies) as? Bool ?? true
+        commsAwayAfterSecs = defaults.object(forKey: Keys.commsAwayAfterSecs) as? Int
+            ?? (try? CoreAssets.comms())?.replies.awayAfterSecs ?? 10800
         commsLockedSince = defaults.object(forKey: Keys.commsLockedSince) as? Date
         commsNotify = defaults.object(forKey: Keys.commsNotify) as? Bool ?? true
         commsModel = defaults.string(forKey: Keys.commsModel) ?? ""

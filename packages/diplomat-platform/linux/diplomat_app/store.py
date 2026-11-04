@@ -1044,6 +1044,15 @@ class Store(QObject):
         self._settings.setValue("commsReplies", bool(value))
 
     @property
+    def comms_away_after_secs(self) -> int:
+        """How long the session must have been locked to count as away."""
+        return self._settings.value("commsAwayAfterSecs", comms.away_after_secs()[0], int)
+
+    @comms_away_after_secs.setter
+    def comms_away_after_secs(self, value: int) -> None:
+        self._settings.setValue("commsAwayAfterSecs", int(value))
+
+    @property
     def comms_notify(self) -> bool:
         return self._settings.value("commsNotify", True, bool)
 
@@ -3392,7 +3401,7 @@ class Store(QObject):
             self.comms_locked_since = comms.iso(now)
 
     def comms_away(self, now: datetime | None = None) -> bool:
-        """Locked for ``replies.awayAfterSecs``; ``DIPLOMAT_COMMS_AWAY=1|0`` forces it
+        """Locked for ``comms_away_after_secs``; ``DIPLOMAT_COMMS_AWAY=1|0`` forces it
         (``CommsAway.override``)."""
         forced = os.environ.get("DIPLOMAT_COMMS_AWAY")
         if forced in ("1", "0"):
@@ -3401,7 +3410,7 @@ class Store(QObject):
         if not self._comms_locked or since is None:
             return False
         now = now or datetime.now().astimezone()
-        return (now - since).total_seconds() >= comms.away_after_secs()
+        return (now - since).total_seconds() >= self.comms_away_after_secs
 
     @property
     def comms_unread(self) -> int:

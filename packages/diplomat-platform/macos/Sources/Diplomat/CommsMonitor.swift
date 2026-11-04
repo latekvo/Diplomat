@@ -200,7 +200,7 @@ extension Store {
 
     var commsAway: Bool {
         refreshCommsLock()
-        return CommsAway.isAway(lockedSince: commsLockedSince)
+        return CommsAway.isAway(lockedSince: commsLockedSince, afterSecs: commsAwayAfterSecs)
     }
 
     /// Overlap-guarded: the timer, a wake and the enable switch can each kick a tick while

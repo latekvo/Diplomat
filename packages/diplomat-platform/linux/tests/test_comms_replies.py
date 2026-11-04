@@ -100,7 +100,8 @@ def test_no_loginctl_is_unknown(tmp_path, monkeypatch, no_session_probe):
 
 
 def test_away_is_locked_for_three_hours_and_survives_a_restart(store):  # noqa: F811
-    assert comms.away_after_secs() == 3 * 3600
+    assert comms.away_after_secs() == (3 * 3600, 15 * 60, 12 * 3600)
+    assert store.comms_away_after_secs == 3 * 3600
     store.note_session_lock(True, now=T0)
     assert store.comms_locked_since == comms.iso(T0)
     assert not store.comms_away(now=T0 + timedelta(hours=2, minutes=59))
@@ -127,6 +128,20 @@ def test_away_is_locked_for_three_hours_and_survives_a_restart(store):  # noqa: 
     again.note_session_lock(True, now=T0 + timedelta(hours=9))
     assert again.comms_locked_since == comms.iso(T0 + timedelta(hours=9))
     assert not again.comms_away(now=T0 + timedelta(hours=10))
+
+
+def test_away_is_the_operators_setting_and_survives_a_restart(store):  # noqa: F811
+    store.comms_away_after_secs = 15 * 60
+    store.note_session_lock(True, now=T0)
+    assert not store.comms_away(now=T0 + timedelta(minutes=14, seconds=59))
+    assert store.comms_away(now=T0 + timedelta(minutes=15))
+    assert app_settings().value("commsAwayAfterSecs") == 15 * 60
+    again = Store()
+    assert again.comms_away_after_secs == 15 * 60
+    again.comms_away_after_secs = 5 * 3600
+    again.note_session_lock(True, now=T0)
+    assert not again.comms_away(now=T0 + timedelta(hours=4, minutes=59))
+    assert again.comms_away(now=T0 + timedelta(hours=5))
 
 
 def test_locked_with_nothing_recorded_starts_the_clock_now(store):  # noqa: F811

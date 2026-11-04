@@ -1139,6 +1139,7 @@ enum CommsTest {
         unsetenv("DIPLOMAT_COMMS_AWAY")
         store.commsLockedSince = nil
         store.commsReplies = true
+        store.commsAwayAfterSecs = 3 * 3600
         store.autoTaskLimit = 2
         var state = CommsState.load()
         state.me = CommsIdentity(userID: "U0ME", teamID: "T0", handle: "latekvo", name: "Ignacy")
@@ -1212,7 +1213,11 @@ enum CommsTest {
               slack.posts.count == 1)
 
         let fixAway = ask(.fixIssue, 90091)
-        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
+        store.commsLockedSince = Date().addingTimeInterval(-20 * 60)
+        let awayAtDefault = store.commsAway
+        store.commsAwayAfterSecs = 15 * 60
+        check("a lock of 20 minutes is away under a 15-minute setting, not under three hours",
+              !awayAtDefault && store.commsAway)
         await apply([fixAway])
         await settled()
         let awayText = slack.posts.last?["message"] as? String ?? ""
@@ -1221,6 +1226,7 @@ enum CommsTest {
                 && awayText.hasPrefix("[Diplomat]: Ignacy is away, I queued a fix for issue #90091")
                 && slack.posts.last?["thread_ts"] as? String == fixAway.message.ts)
         store.commsLockedSince = nil
+        store.commsAwayAfterSecs = 3 * 3600
 
         store.pinAgentRows([run("r9", 90093, "review", "Auto · Review · #90093")])
         let runningAsk = ask(.review, 90093)

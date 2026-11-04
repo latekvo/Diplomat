@@ -778,6 +778,7 @@ struct SettingsView: View {
             SettingRow(title: "Reply in Slack", detail: SettingsView.commsRepliesDetail) {
                 switchControl("Reply in Slack", $store.commsReplies)
             }
+            commsAwayRow
             SettingRow(title: "Notify on new pings") {
                 switchControl("Notify on new pings", $store.commsNotify)
             }
@@ -865,11 +866,33 @@ struct SettingsView: View {
         Replies start with [Diplomat]: and go only to the conversation the message was \
         written in, in its thread, once per message. A review, fix or investigation a \
         ping queued (or found queued or running) gets an estimate of when it should be \
-        done. While your Mac has been locked for \
-        \(((try? CoreAssets.comms())?.replies.awayAfterSecs ?? 10800) / 3600) hours, a \
-        question about the project is answered from its documentation when that settles \
-        it plainly, and left alone otherwise.
+        done. While you are away, a question about the project is answered from its \
+        documentation when that settles it plainly, and left alone otherwise.
         """
+
+    private static let commsAwayDetail =
+        "How long your Mac must have been locked before Comms answers questions for you."
+    private static let commsAwayStep = (try? CoreAssets.comms())?.replies.awayAfterStepSecs ?? 900
+    private static let commsAwayMax = (try? CoreAssets.comms())?.replies.awayAfterMaxSecs ?? 43200
+
+    private var commsAwayRow: some View {
+        let lo = SettingsView.commsAwayStep, hi = SettingsView.commsAwayMax
+        return SettingRow(title: "Away after",
+                          detail: SettingsView.commsAwayDetail,
+                          stacked: true) {
+            SliderSetting(label: "Away after",
+                          value: Binding(
+                              get: { Double(store.commsAwayAfterSecs) },
+                              set: { store.commsAwayAfterSecs = Int($0.rounded()) }
+                          ),
+                          range: Double(lo)...Double(hi),
+                          step: Double(lo),
+                          badge: Fmt.duration(TimeInterval(store.commsAwayAfterSecs)),
+                          minLabel: Fmt.duration(TimeInterval(lo)),
+                          maxLabel: Fmt.duration(TimeInterval(hi)),
+                          tint: .blue)
+        }
+    }
 
     private static let commsLoginDetail = """
         Comms borrows the login Claude Code holds for Slack's MCP server, read on each \
