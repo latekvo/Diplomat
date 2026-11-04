@@ -90,7 +90,8 @@ enum AppLogTest {
         print("applog: main-thread hangs")
         let watch = HangWatch.shared
         watch.threshold = 0.3
-        watch.sampleAfter = 0.8
+        // Wide margins: a ping can go out up to one interval (plus timer slack) into a hang.
+        watch.sampleAfter = 1.5
         watch.sampleSeconds = 1
         watch.keepSamples = 3
         watch.heartbeat = 1
@@ -113,7 +114,7 @@ enum AppLogTest {
         await pause(0.5)
 
         let beforeShort = lines().count
-        await AppLog.timed("shortProbe") { spinMain(0.6) }
+        await AppLog.timed("shortProbe") { spinMain(1.0) }
         await pause(0.5)
         let short = lines().dropFirst(beforeShort).first { $0.contains("main thread blocked") }
         check("a short hang names the work that was in flight while it was late, ended since",
@@ -154,7 +155,7 @@ enum AppLogTest {
               "\(sampleFiles())")
 
         let beforeWait = lines().count
-        await AppLog.timed("waitProbe") { blockMain(2.0) }
+        await AppLog.timed("waitProbe") { blockMain(3.0) }
         await pause(0.5)
         let afterWait = Array(lines().dropFirst(beforeWait))
         let waiting = afterWait.first { $0.contains("main thread blocked") }
