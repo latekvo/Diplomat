@@ -308,10 +308,11 @@ it as `GH_TOKEN`, which `gh` ranks above its own login. The agent's `git` over H
 to github.com gets it too, from `gh auth git-credential`, instead of any credential
 helper you configured (macOS git ships `osxkeychain`, which holds your broad login).
 The token itself is never in an AppleScript, an argv `ps` can show, a prompt file or
-the activity feed; the feed marks each run started on it with `· agent GH token`. A
-token that cannot be read (missing item, empty file) starts nothing rather than
-falling back to the broad login: the spawn fails, and the work stays owed. Remove the
-key to go back.
+the activity feed; the feed marks each run started on it with `· agent GH token`.
+Whitespace in the item or file (a trailing space or CRLF from a paste) is dropped. A
+token that cannot be read (a missing item, one empty or blank, a missing or blank file)
+starts nothing rather than falling back to the broad login: the spawn fails, and the
+work stays owed. Remove the key to go back.
 
 What it does not cover: `git` over SSH still pushes with your SSH keys, and a
 `GH_TOKEN` or `GIT_CONFIG_COUNT` your shell rc exports replaces this one, because the
