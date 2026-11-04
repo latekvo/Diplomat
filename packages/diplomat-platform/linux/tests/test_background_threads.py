@@ -205,9 +205,13 @@ def test_a_render_leaves_no_worker_running(monkeypatch, tmp_path):
 
     from PySide6.QtWidgets import QApplication
 
-    from diplomat_app import deviceallocator, render, selfupdate
+    from diplomat_app import deviceallocator, probes, render, selfupdate
+    from diplomat_runtime import appconfig
 
     QApplication.instance() or QApplication([])
+    # The panel's fixture pins both for the rest of its process.
+    monkeypatch.setattr(appconfig, "auto_task_limit", appconfig.auto_task_limit)
+    monkeypatch.setattr(probes, "gather", probes.gather)
     hold = threading.Event()
     monkeypatch.setattr(selfupdate, "check", lambda: hold.wait() and {})
     monkeypatch.setattr(deviceallocator, "check", lambda: hold.wait() and None)
