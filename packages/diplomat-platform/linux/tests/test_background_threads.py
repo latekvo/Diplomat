@@ -195,3 +195,41 @@ def test_a_worker_mid_stderr_write_does_not_abort_the_process(tmp_path):
             f"run {attempt} died ({done.returncode}):\n"
             + noise.read_text(encoding="utf-8", errors="replace")[-2000:]
         )
+
+
+def test_a_render_leaves_no_worker_running(monkeypatch, tmp_path):
+    """``DIPLOMAT_RENDER`` ends the process as soon as the PNG is written, so a worker
+    still running then is the abort above (#187). A fixture render shells none of the
+    host's checks, and waits out the workers it does start."""
+    import threading
+
+    from PySide6.QtWidgets import QApplication
+
+    from diplomat_app import deviceallocator, render, selfupdate
+
+    QApplication.instance() or QApplication([])
+    hold = threading.Event()
+    monkeypatch.setattr(selfupdate, "check", lambda: hold.wait() and {})
+    monkeypatch.setattr(deviceallocator, "check", lambda: hold.wait() and None)
+    count = Store.refresh_auto_task_count
+
+    def slow_count(self) -> None:
+        time.sleep(0.5)
+        count(self)
+
+    monkeypatch.setattr(Store, "refresh_auto_task_count", slow_count)
+    started = []
+    start = Store.start_background
+
+    def record(self, work, name=None):
+        started.append(start(self, work, name))
+        return started[-1]
+
+    monkeypatch.setattr(Store, "start_background", record)
+    monkeypatch.setattr(render, "_agents_scratch_dir", None)
+    try:
+        assert render.run("panel", str(tmp_path / "panel.png")) == 0
+        assert started
+        assert [t.name for t in started if t.is_alive()] == []
+    finally:
+        hold.set()
