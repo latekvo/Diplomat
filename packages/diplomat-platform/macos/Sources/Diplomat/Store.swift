@@ -1937,6 +1937,10 @@ final class Store: ObservableObject {
             pollErrorThisCycle = "GitHub login unknown — is `gh` installed and authenticated?"
         } else {
             let (owner, repo) = coreRepo
+            // Off the main thread, so every prompt this cycle builds on it (each queued
+            // task's, every poll) names the model from memory instead of walking Claude
+            // Code's transcripts once per prompt.
+            await Task.detached(priority: .utility) { AgentModel.detectedAfresh() }.value
             // One fetch of my PRs per cycle, taken before anything acts on it: the
             // drain re-checks the waiting queue against it and the reconcilers below
             // diff from the same list. Fetching it here rather than inside the monitor

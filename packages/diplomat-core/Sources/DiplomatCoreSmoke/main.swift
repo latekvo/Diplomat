@@ -728,6 +728,26 @@ check(detectModel() == "Opus 5")
 try writeTranscript("newest.jsonl", "{\"type\":\"user\",\"message\":{\"role\":\"user\"}}\n", ageSecs: 1)
 check(detectModel() == "Opus 5",
       "the newest transcript with a model in it, not merely the newest transcript")
+// `detected()` remembers what Claude Code last ran, since every queued task's prompt is
+// rebuilt on every poll and the walk costs seconds on a busy machine; the poll re-reads
+// it off the main thread with `detectedAfresh()`.
+do {
+    let memoEnv = ["DIPLOMAT_CONFIG": configFile.path, "DIPLOMAT_CLAUDE_DIR": claudeHome.path]
+    let priorMemoEnv = memoEnv.keys.map { ($0, ProcessInfo.processInfo.environment[$0]) }
+    for (key, value) in memoEnv { setenv(key, value, 1) }
+    defer {
+        for (key, value) in priorMemoEnv {
+            if let value { setenv(key, value, 1) } else { unsetenv(key) }
+        }
+        try? FileManager.default.removeItem(at: sessions.appendingPathComponent("memo.jsonl"))
+    }
+    check(AgentModel.detectedAfresh() == "Opus 5", "detectedAfresh reads the transcripts")
+    try writeTranscript("memo.jsonl", "{\"message\":{\"model\":\"claude-sonnet-5\"}}\n", ageSecs: 0)
+    check(AgentModel.detected() == "Opus 5",
+          "detected() answers from what was last read, without walking the transcripts again")
+    check(AgentModel.detectedAfresh() == "Sonnet 5", "detectedAfresh reads them again")
+    check(AgentModel.detected() == "Sonnet 5", "and detected() answers with what that read")
+}
 // A model pinned in Settings belongs to the OTHER runners: `AgentRunner.claude`'s
 // command carries no model flag, so claiming it here would attribute a model that
 // never ran.
