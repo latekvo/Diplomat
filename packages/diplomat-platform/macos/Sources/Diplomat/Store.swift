@@ -1769,8 +1769,8 @@ final class Store: ObservableObject {
 
     /// Say out loud when the budget gate has nothing left to gate on.
     ///
-    /// What is left of the rate-limit windows comes from one probe, and `budgetDecide`
-    /// SKIPS a ceiling it cannot read — with neither window readable every task is
+    /// What is left of the rate-limit window comes from one probe, and `budgetDecide`
+    /// SKIPS a ceiling it cannot read — with the window unreadable every task is
     /// affordable. So a probe that stops answering does not fail the gate closed or
     /// loudly: it stops gating, while the toggle still reads on and nothing else looks
     /// wrong. A stale `.credentials.json` did exactly that here for four days, ending
@@ -1785,7 +1785,7 @@ final class Store: ObservableObject {
               AutoBudget.enabled else { return }
         quotaWarned = true
         AuditLog.log("auto", "warn",
-                     "Asked what is left of the rate-limit windows \(rounds) times "
+                     "Asked what is left of the rate-limit window \(rounds) times "
                      + "without one answer — the automatic budget is gating on nothing, "
                      + "and auto work will dispatch whatever the limits have left")
         refreshAudit()
@@ -3896,7 +3896,7 @@ final class Store: ObservableObject {
     /// this more often than the sample interval is free.
     ///
     /// The worker is launched rather than awaited: its probe insists
-    /// (`Quota.fractionsLeft`), and the poll loop this rides has agent rows and device
+    /// (`Quota.weekLeft`), and the poll loop this rides has agent rows and device
     /// state to refresh every few seconds. It runs on a plain background queue rather
     /// than as a `Task`, because insisting means waiting out the endpoint's bucket —
     /// minutes of blocking, which must not sit on one of the cooperative pool's few
@@ -3905,9 +3905,9 @@ final class Store: ObservableObject {
         guard !takingTelemetrySample, TelemetryLog.sampleDue() else { return }
         takingTelemetrySample = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let quota = Quota.fractionsLeft(insist: true)
+            let weekLeft = Quota.weekLeft(insist: true)
             let totals = UsageScan.totals()
-            TelemetryLog.sample(sessionLeft: quota.session, weekLeft: quota.week,
+            TelemetryLog.sample(weekLeft: weekLeft,
                                 repoTokens: totals.repo, otherTokens: totals.other)
             let store = self
             Task { @MainActor in store?.finishTelemetrySample() }

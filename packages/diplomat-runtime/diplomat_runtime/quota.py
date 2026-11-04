@@ -1,9 +1,9 @@
-"""How much of the Claude rate-limit windows is left — the other half of the
+"""How much of the Claude 7-day rate-limit window is left — the other half of the
 telemetry sample.
 
 A GET against the OAuth usage endpoint (the same data Claude Code's ``/usage``
 screen shows) using the OAuth access token Claude Code already holds, converted
-to the fraction of each window still unspent. The endpoint's budget is per account
+to the fraction of the window still unspent. The endpoint's budget is per account
 and every Claude Code session on the machine spends it, so a caller that can
 afford to wait retries the refusals (``insist``). That, paired with the token
 counters from :mod:`usagescan`, is what lets the Telemetry screen say a task cost
@@ -57,8 +57,8 @@ _RETRY_SECS = 10.0
 _INSIST_ATTEMPTS = 5
 _INSIST_WAIT_SECS = 30.0
 
-#: (last attempt, last good, session fraction, week fraction).
-_cache: dict = {"attempt": 0.0, "good": 0.0, "session": None, "week": None}
+#: (last attempt, last good, week fraction).
+_cache: dict = {"attempt": 0.0, "good": 0.0, "week": None}
 #: How many probe rounds have been made, and how many came back with a reading.
 #: ``autofix.budget_decide`` SKIPS a ceiling with no reading and calls one with none
 #: affordable, so a probe that stops answering does not gate less — it stops gating,
@@ -77,7 +77,7 @@ def probe_enabled() -> bool:
 
 def _reset_cache() -> None:
     """Test hook: forget any cached reading, and any memory of having probed."""
-    _cache.update(attempt=0.0, good=0.0, session=None, week=None)
+    _cache.update(attempt=0.0, good=0.0, week=None)
     _probes.update(rounds=0, readings=0)
 
 
@@ -170,6 +170,12 @@ def _fraction_left(window: object) -> float | None:
     return round(max(0.0, min(1.0, 1.0 - float(util) / 100.0)), 4)
 
 
+def _week_fraction(payload: object) -> float | None:
+    """The reading in one usage payload. Only ``seven_day``: the endpoint answers
+    ``five_hour: null``, so a reading keyed on it is never taken."""
+    return _fraction_left(payload.get("seven_day")) if isinstance(payload, dict) else None
+
+
 def _attempt(now: float) -> bool:
     """One round of the probe, folded into the cache. True when it came back with a
     reading.
@@ -185,22 +191,19 @@ def _attempt(now: float) -> bool:
         return False   # nothing to ask with: not a round, and not a refusal
     _probes["rounds"] += 1
     for token in tokens:
-        payload = _fetch(token)
-        session = _fraction_left((payload or {}).get("five_hour"))
-        if session is None:
+        week = _week_fraction(_fetch(token))
+        if week is None:
             continue
         _cache["good"] = now
-        _cache["session"] = session
-        _cache["week"] = _fraction_left(payload.get("seven_day"))
+        _cache["week"] = week
         _probes["readings"] += 1
         return True
     return False
 
 
-def fractions_left(*, insist: bool = False) -> tuple[float | None, float | None]:
-    """``(session, week)`` — the unspent fraction of the 5-hour and 7-day windows,
-    or ``(None, None)`` when unavailable (probe disabled, no credentials, or
-    offline past the keep window). Never raises.
+def week_left(*, insist: bool = False) -> float | None:
+    """The unspent fraction of the 7-day window, or None when unavailable (probe
+    disabled, no credentials, or offline past the keep window). Never raises.
 
     ``insist`` keeps trying (:data:`_INSIST_ATTEMPTS`) rather than settling for one
     refused attempt, so the call blocks for up to two and a half minutes. It is for a
@@ -210,9 +213,9 @@ def fractions_left(*, insist: bool = False) -> tuple[float | None, float | None]
     now beats a fresh one after the agent should have started.
     """
     if not probe_enabled():
-        return None, None
+        return None
     now = time.monotonic()
-    interval = _TTL_SECS if _cache["session"] is not None else _RETRY_SECS
+    interval = _TTL_SECS if _cache["week"] is not None else _RETRY_SECS
     if _cache["attempt"] == 0.0 or now - _cache["attempt"] >= interval:
         # No token is the one failure retrying cannot fix.
         if not _attempt(now) and insist and _oauth_tokens():
@@ -221,6 +224,6 @@ def fractions_left(*, insist: bool = False) -> tuple[float | None, float | None]
                 if _attempt(time.monotonic()):
                     break
         now = time.monotonic()
-    if _cache["session"] is not None and now - _cache["good"] > _KEEP_SECS:
-        _cache["session"] = _cache["week"] = None  # stale beyond trust
-    return _cache["session"], _cache["week"]
+    if _cache["week"] is not None and now - _cache["good"] > _KEEP_SECS:
+        _cache["week"] = None  # stale beyond trust
+    return _cache["week"]

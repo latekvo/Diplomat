@@ -5,22 +5,23 @@ question the monitors otherwise leave open: *what is all this costing, and is it
 keeping up?* Nine figures, over a lookback you pick (**7d / 14d / 30d / 60d**,
 default 14):
 
-- **Limit per task** - the share of one 5-hour rate-limit window an auto-task
+- **Limit per task** - the share of the 7-day rate-limit window an auto-task
   consumes on average, plus a **bell curve** of how that is distributed, with a 95%
   confidence interval on the mean drawn behind it (the histogram is the spread of
-  the tasks; the band is how well the *average* is known, and is much narrower). The
-  same tasks are drawn a second time against the **7-day** window - red bars for the
-  5-hour one, yellow for the week, grouped inside shared bins on one axis, each with
-  its own fitted normal, interval and mean rule. Both windows are priced from their
-  own quota readings, so either can be measurable while the other is not, and which
-  of the two humps sits further right is the ceiling that runs out first.
-- **Rate limit left** - what the usage probe measured to be left of each window,
-  drawn where it was sampled rather than resampled onto a grid: the 5-hour one saws
-  (it refills on its own cycle), the 7-day one is the slower ceiling. The axis is
-  pinned to 0-100% rather than scaled to the data, so "we never dropped below 60%"
-  and a week of exhaustion cannot come out as the same picture. A missing reading is
-  a probe that could not answer, not an empty window, so the line breaks across one
-  instead of diving to the floor and back.
+  the tasks; the band is how well the *average* is known, and is much narrower).
+  Tasks the ledger's **5-hour** readings covered - those started no later than the
+  last sample carrying one - are drawn a second time against that window: red bars
+  for the 5-hour one, yellow for the week, grouped inside shared bins on one axis,
+  each with its own fitted normal, interval and mean rule. Each window is priced
+  from its own quota readings, so either can be measurable while the other is not.
+- **Rate limit left** - what the usage probe measured to be left of the 7-day
+  window, drawn where it was sampled rather than resampled onto a grid. The usage
+  endpoint reports the week alone; older ledger samples also carry the 5-hour
+  window, which is drawn as a sawtooth fill beneath the line wherever the range
+  holds such readings. The axis is pinned to 0-100% rather than scaled to the data,
+  so "we never dropped below 60%" and a week of exhaustion cannot come out as the
+  same picture. A missing reading is a probe that could not answer, not an empty
+  window, so the line breaks across one instead of diving to the floor and back.
 - **Owed work** over time - work the monitors had found but nobody had started yet,
   auto-reviews and conflict fixes stacked into one area on a count axis. Stacked
   because both queue for the same executors, with reviews taking a free slot first:
@@ -90,18 +91,20 @@ Two gatherers fill in what GitHub doesn't know:
   probe is; `DIPLOMAT_SPEND_PROBE=0` turns it off and `DIPLOMAT_HERMES_ENV` moves
   where the key is read from.
 
-The probe reports **what is left of each window** on every sample, and that reading is
-what *rate limit left* draws - measured, not derived. What Anthropic never publishes is
-a **token budget**, and the budget is dynamic - so the figure that cannot be looked up
-is the *per-task* share, "4% of the window". The 5-hour window is instead **priced from
-what actually happened**: over an interval the
-account spent `Δutil` of its window while this machine logged `Δtokens`, so the window
-is worth `Δtokens / Δutil`, summed across every interval that didn't span a reset. Until
-two quota readings exist there is no price, and the screen says so and shows raw tokens
-per task rather than inventing a percentage. The 7-day window is priced the same way
-from its own readings. It moves slowly, so it takes longer to measure - and until it
-has a price the screen leaves its series off rather than rescaling the 5-hour figure
-into it. Work placed on a **mesh peer** spends that peer's quota, so it counts as
+The probe reports **what is left of the 7-day window** on every sample, and that
+reading is what *rate limit left* draws - measured, not derived. What Anthropic never
+publishes is a **token budget**, and the budget is dynamic - so the figure that cannot
+be looked up is the *per-task* share, "0.2% of the window". The window is instead
+**priced from what actually happened**: over an interval the account spent `Δutil` of
+its window while this machine logged `Δtokens`, so the window is worth
+`Δtokens / Δutil`, summed across every interval that didn't span a reset. Until two
+quota readings exist there is no price, and the screen says so and shows raw tokens
+per task rather than inventing a percentage. The week moves slowly, so it takes a
+while to measure, and until it has a price the screen leaves its series off rather
+than rescaling another figure into it. The 5-hour window is priced the same way from
+the older samples that carry it, and that price is applied only to tasks started no
+later than the last of them - a task after it has no 5-hour share. Work placed on a
+**mesh peer** spends that peer's quota, so it counts as
 started and is kept out of the cost and run-time figures.
 
 The arithmetic is shared: [`Telemetry.swift`](../packages/diplomat-core/Sources/DiplomatCore/Telemetry.swift)

@@ -707,8 +707,8 @@ class SettingsView(QWidget):
         body.addWidget(self._track(SettingRow(
             "Hold work when the limit runs low", self._sw_budget,
             detail="Wait for a window to refill rather than start what won't fit. "
-                   "Priced from Telemetry → limit per task: against both rate-limit "
-                   "windows under Claude Code, or — under a runner billed in money — "
+                   "Priced from Telemetry → limit per task: against the 7-day rate-limit "
+                   "window under Claude Code, or — under a runner billed in money — "
                    "against what one task costs on the model it runs, and what your "
                    "OpenRouter key and credit balance have left. Higher confidence is "
                    "stricter. Held work waits in Agent tasks, and “execute now” "
@@ -736,7 +736,7 @@ class SettingsView(QWidget):
         self._budget_floor.changed.connect(self._on_budget_floor_changed)
         knobs.addWidget(self._track(SettingRow(
             "Keep in hand until it can be priced", self._budget_floor, stacked=True,
-            detail="Of each rate-limit window, under Claude Code.",
+            detail="Of the 7-day rate-limit window, under Claude Code.",
         )))
 
         # The same knob in the other currency. Both are shown whichever runner is

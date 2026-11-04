@@ -238,11 +238,11 @@ halfway leaves a half-updated checkout.
 
 The cap bounds how many automatic agents run at once. The budget bounds whether any
 of them should start at all - because a machine can have three empty bays and 4% of
-its 5-hour window left, and spending that on an auto-review is how you find the
+its weekly window left, and spending that on an auto-review is how you find the
 limit gone the next time you sit down to work.
 
 What a task costs is measured, not guessed. The Telemetry ledger already prices
-every finished agent as a share of the window it was spent from (*Limit per task*),
+every finished agent as a share of the 7-day window (*Limit per task*),
 so the question has a statistical answer - and the one worth asking is about the
 **next** task, not the average one. Half of all tasks cost more than the mean, and
 the distribution is right-skewed (most small, a few enormous), so a gate set at the
@@ -257,12 +257,9 @@ substitute for each other - a Hermes task held against a Claude window is gated 
 limit it never touches, and a machine not logged into Claude Code at all would have
 no gate whatsoever.
 
-- **Claude Code** spends Anthropic **rate-limit windows**, which that account
-  publishes only as a percentage. Both windows gate - a task has to fit inside what
-  is left of the 5-hour one *and* the 7-day one, since either can be the one that
-  runs out. Each window is bounded from its own distribution - the same pair the
-  Telemetry screen draws - so a window the ledger cannot price yet leaves the other
-  one gated on what was actually measured.
+- **Claude Code** spends the Anthropic 7-day **rate-limit window**, which that
+  account publishes only as a percentage. A task has to fit inside what is left of
+  it, bounded from the same distribution the Telemetry screen draws.
 - **Hermes** (and any other runner billed by a provider) spends **money**. Hermes
   prices each of its own sessions against the model it ran on, so the ledger carries
   what the task cost in dollars and which model's rates it was charged at - and the

@@ -116,10 +116,8 @@ enum TelemetryLog {
         append(event)
     }
 
-    static func sample(sessionLeft: Double?, weekLeft: Double?,
-                       repoTokens: Double, otherTokens: Double) {
+    static func sample(weekLeft: Double?, repoTokens: Double, otherTokens: Double) {
         append(["at": Date().timeIntervalSince1970, "ev": "sample",
-                "sessionLeft": sessionLeft as Any? ?? NSNull(),
                 "weekLeft": weekLeft as Any? ?? NSNull(),
                 "repoTokens": repoTokens, "otherTokens": otherTokens])
     }

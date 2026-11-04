@@ -341,11 +341,10 @@ check(snap.pid == 4242 && snap.tcpPort == 40878, "snapshot header")
 check(snap.selfNode?.platform == "macos" && snap.selfNode?.tier == 2, "self node")
 // The console fields (strength auto, auto token %, real uptime, trust) decode.
 check(snap.selfNode?.strengthAuto == true && snap.selfNode?.tokensPct == 0.81, "self console fields")
-// The real per-window quota percentages (OAuth usage probe) decode on both shapes.
-check(snap.selfNode?.tokensSessionPct == 0.81 && snap.selfNode?.tokensWeekPct == 0.55,
-      "self session/week quota decode")
-check(snap.peers[0].tokensSessionPct == 0.2 && snap.peers[0].tokensWeekPct == 0.4,
-      "peer session/week quota decode")
+// The real weekly quota percentage (OAuth usage probe) decodes on both shapes, and
+// an older peer's 5-hour field beside it is ignored.
+check(snap.selfNode?.tokensWeekPct == 0.55, "self week quota decode")
+check(snap.peers[0].tokensWeekPct == 0.4, "peer week quota decode")
 check(snap.peers[0].strengthAuto == false && snap.peers[0].uptimeSecs == 187.0, "peer strength/uptime")
 check(snap.peers[0].trust == "personal" && snap.peers[0].verified == true, "peer trust decode")
 // The ban-list mirror (foreign accountability, szpontnet-spec/docs/13): who this node
@@ -381,13 +380,13 @@ let snap2 = MeshSnapshot.decode("""
  "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
 """.data(using: .utf8)!)
 check(snap == snap2, "snapshot equality ignores lastSeenSecsAgo/uptime/raw-fraction drift")
-// A session-window percentage move IS a meaningful change — the quota indicator
+// A week-window percentage move IS a meaningful change — the quota indicator
 // must repaint when the probe reports a new integer percent.
 let snap3 = MeshSnapshot.decode("""
 {"pid":4242,"tcpPort":40878,"linking":0,
  "self":{"id":"aaa","name":"here","platform":"macos","tier":2,"tokens":"ok",
          "strengthAuto":true,"tokensAuto":true,"tokensPct":0.81,"uptimeSecs":930.0,
-         "tokensSessionPct":0.63,"tokensWeekPct":0.55},
+         "tokensSessionPct":0.81,"tokensWeekPct":0.48},
  "peers":[{"id":"bbb","name":"lin","platform":"linux","tier":4,"tokens":"low",
            "link":"up","addr":"192.168.1.9:40878","lastSeenSecsAgo":1.4,"sees":["aaa"],
            "strengthAuto":false,"tokensAuto":true,"tokensPct":0.2,"uptimeSecs":187.0,
@@ -398,7 +397,7 @@ let snap3 = MeshSnapshot.decode("""
             "bannedAt":1784057240.5,"jobId":"b1c2"}],
  "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
 """.data(using: .utf8)!)
-check(snap != snap3, "a session-quota percent move is a meaningful change")
+check(snap != snap3, "a week-quota percent move is a meaningful change")
 // The discoverability banner keys on the node's OWN diagnosis: `beaconBlockReason`
 // travels beside `beaconBlocked` so the UI shows a Local-Network gate vs a genuinely
 // downed network, not a fixed "allow Python" guess. An older node predating the field
@@ -450,8 +449,8 @@ check(!legacySnap.peers[0].verified && legacySnap.peers[0].trust == "personal"
       && legacySnap.peers[0].surplus == MeshStats.neutralSurplus, "pre-trust peer defaults")
 check(legacySnap.selfNode?.surplus == MeshStats.neutralSurplus && legacySnap.selfNode?.stats == nil,
       "no stats ⇒ neutral surplus (on the burn-down line, 1.0)")
-check(legacySnap.selfNode?.tokensSessionPct == nil && legacySnap.peers[0].tokensWeekPct == nil,
-      "pre-probe snapshots ⇒ nil session/week quota (UI falls back to ≈estimate)")
+check(legacySnap.selfNode?.tokensWeekPct == nil && legacySnap.peers[0].tokensWeekPct == nil,
+      "pre-probe snapshots ⇒ nil week quota (UI falls back to ≈estimate)")
 check(legacySnap.trusted.isEmpty, "no published allowlist ⇒ empty")
 // A trust flip IS a meaningful change (unlike lastSeenSecsAgo/uptime drift) — the
 // poll must republish when a peer's verdict moves.
@@ -1803,23 +1802,23 @@ if let bound = AgentDispatchGate.taskCostBound(mean: 2, sd: 1, count: 4,
     check(false, "a priced ledger must yield a bound")
 }
 
-// Both windows gate, the tighter one answers, and no reading at all is no opinion.
-// The ceilings are listed in the order `AutoBudget.decide` lists them, which is what
-// fixes the tie-break.
-func windows(_ sessionLeft: Double?, _ weekLeft: Double?,
-             _ sessionCost: Double?, _ weekCost: Double?) -> [(String, Double?, Double?)] {
-    [(AgentDispatchGate.windowSession, sessionLeft, sessionCost),
+// Every ceiling gates, the tighter one answers, and no reading at all is no opinion.
+// The ceilings' order fixes the tie-break.
+let windowFirst = "first"
+func windows(_ firstLeft: Double?, _ weekLeft: Double?,
+             _ firstCost: Double?, _ weekCost: Double?) -> [(String, Double?, Double?)] {
+    [(windowFirst, firstLeft, firstCost),
      (AgentDispatchGate.windowWeek, weekLeft, weekCost)]
 }
 check(AgentDispatchGate.budgetDecide(windows(50, 50, 10, 2), floor: 20).affordable,
       "room in both windows proceeds")
 let broke = AgentDispatchGate.budgetDecide(windows(5, 50, 10, 2), floor: 20)
-check(!broke.affordable && broke.window == AgentDispatchGate.windowSession
+check(!broke.affordable && broke.window == windowFirst
       && broke.measured && broke.left == 5 && broke.needed == 10,
-      "the 5-hour window refuses, and says what it had against what was needed")
+      "the first window refuses, and says what it had against what was needed")
 let weekBroke = AgentDispatchGate.budgetDecide(windows(90, 1, 10, 2), floor: 20)
 check(!weekBroke.affordable && weekBroke.window == AgentDispatchGate.windowWeek,
-      "a full 5-hour window does not buy a spent weekly one")
+      "a full first window does not buy a spent weekly one")
 let floored = AgentDispatchGate.budgetDecide(windows(15, nil, nil, nil), floor: 20)
 check(!floored.affordable && !floored.measured && floored.needed == 20,
       "an unpriced ledger holds the floor instead")
@@ -1832,7 +1831,7 @@ check(noReading.affordable && noReading.window.isEmpty,
 check(AgentDispatchGate.budgetDecide([], floor: 20).affordable,
       "…and no ceilings at all is the same silence, not an error")
 let tie = AgentDispatchGate.budgetDecide(windows(30, 30, 10, 10), floor: 20)
-check(tie.window == AgentDispatchGate.windowSession, "session wins an exact tie")
+check(tie.window == windowFirst, "the first-listed ceiling wins an exact tie")
 check(tie.unit == AgentDispatchGate.unitPct, "a rate limit decides in percentages")
 
 // The same arithmetic in the other currency. Nothing in the gate may assume a
@@ -2467,11 +2466,13 @@ section("telemetry")
 let tNow = 1_785_000_000.0
 let tLines = [
     // Two intervals price the window: 25% of it bought 2.5M tokens, so it is worth
-    // 10M. The third spans a RESET (more left than before), which prices nothing.
+    // 10M. The third spans a RESET (more left than before), which prices nothing, and
+    // ends after every local task below has started, so the 5-hour readings cover
+    // them all.
     #"{"at": 1784900000, "ev": "sample", "sessionLeft": 1.0, "weekLeft": 1.0, "repoTokens": 0, "otherTokens": 0}"#,
     #"{"at": 1784903600, "ev": "sample", "sessionLeft": 0.85, "weekLeft": 0.99, "repoTokens": 1000000, "otherTokens": 500000}"#,
     #"{"at": 1784907200, "ev": "sample", "sessionLeft": 0.75, "weekLeft": 0.98, "repoTokens": 1600000, "otherTokens": 900000}"#,
-    #"{"at": 1784910800, "ev": "sample", "sessionLeft": 1.0, "weekLeft": 0.97, "repoTokens": 1800000, "otherTokens": 1000000}"#,
+    #"{"at": 1784932000, "ev": "sample", "sessionLeft": 1.0, "weekLeft": 0.97, "repoTokens": 1800000, "otherTokens": 1000000}"#,
     #"{"at": 1784920000, "ev": "queued", "key": "review:h/o/r#1@aa", "duty": "review", "pr": 1}"#,
     #"{"at": 1784920600, "ev": "started", "key": "review:h/o/r#1@aa", "remote": false, "attempt": 1}"#,
     // A retry appends a second `started`; first-wins keeps the measured wait honest.
@@ -2525,10 +2526,10 @@ check(summary.repoTokens == 1_800_000 && summary.otherTokens == 1_000_000)
 check(summary.quota.count == 4, "a quota reading was dropped or invented")
 check(summary.quota.map(\.sessionPct) == [100, 85, 75, 100],
       "the readings moved off the instants they were measured at")
-// The fixture's newest reading is a day old, and the headline carries no age: a
-// figure that stale is a claim about a window that has since moved, so the card
-// declines to make it. The chart still draws the reading where it was taken.
-check(summary.sessionLeftPct == nil && summary.weekLeftPct == nil,
+// The fixture's newest reading is most of a day old, and the headline carries no
+// age: a figure that stale is a claim about a window that has since moved, so the
+// card declines to make it. The chart still draws the reading where it was taken.
+check(summary.weekLeftPct == nil,
       "a day-old reading was printed as what is left right now")
 check(Telemetry.duration(0, samples: 0) == "—", "no samples must not read as instant")
 check(Telemetry.duration(90) == "1m 30s")
@@ -2619,35 +2620,52 @@ check(sessionBlindSummary.perTaskWeek.count == 1,
       "the week went unpriced with the 5-hour window rather than on its own readings")
 // A missing reading is not a window at zero: it stays a hole in the series.
 let blind = Telemetry.fold(lines: tLines + [
-    #"{"at": 1784914400, "ev": "sample", "sessionLeft": null, "weekLeft": null, "repoTokens": 1800000, "otherTokens": 1000000}"#,
+    #"{"at": 1784933600, "ev": "sample", "sessionLeft": null, "weekLeft": null, "repoTokens": 1800000, "otherTokens": 1000000}"#,
 ])
 let blindSummary = Telemetry.summarize(blind, now: tNow, days: 14, steps: 56,
                                        binCount: 12, z: 1.96, bucketHours: 12)
 check(blindSummary.quota.count == 5, "a blind sample is still a sample taken")
 check(blindSummary.quota.last?.sessionPct == nil, "a gap was filled in")
+// The 5-hour price is measured from history and outlives the readings it came from,
+// so it prices only work they covered: a task started at the last sample carrying a
+// 5-hour reading has a share of it, one started after has a weekly share alone.
+let afterSession = Telemetry.fold(lines: tLines + [
+    #"{"at": 1784940000, "ev": "sample", "weekLeft": 0.96, "repoTokens": 2100000, "otherTokens": 1200000}"#,
+    #"{"at": 1784932000, "ev": "started", "key": "review:h/o/r#6@ff", "remote": false, "attempt": 1}"#,
+    #"{"at": 1784933000, "ev": "done", "key": "review:h/o/r#6@ff", "tokens": 300000}"#,
+    #"{"at": 1784941000, "ev": "started", "key": "review:h/o/r#7@gg", "remote": false, "attempt": 1}"#,
+    #"{"at": 1784942000, "ev": "done", "key": "review:h/o/r#7@gg", "tokens": 400000}"#,
+])
+let afterSummary = Telemetry.summarize(afterSession, now: tNow, days: 14, steps: 56,
+                                       binCount: 12, z: 1.96, bucketHours: 12)
+check(afterSummary.sessionLimitTokens == 10_000_000)
+check(afterSummary.perTask.count == 2 && afterSummary.perTask.mean == 4,
+      "the 5-hour window priced a task started after its last reading, or dropped "
+      + "one started at it")
+check(afterSummary.perTaskWeek.count == 3, "the week dropped a task it still measures")
 
 // How long a reading stays an answer to "what is left right now". Either side of
 // the bound, on a ledger whose newest sample is a probe that could not answer —
 // the shape every failure here takes, since the probe keeps sampling once blind.
 let fresh = Telemetry.quotaFreshSecs
 check(fresh > 0, "the freshness bound must come off the shared model, not nowhere")
-func headline(lastGoodAgo: Double) -> (Double?, Double?) {
+func headline(lastGoodAgo: Double) -> Double? {
     let led = Telemetry.fold(lines: [
         #"{"at": \#(tNow - lastGoodAgo), "ev": "sample", "sessionLeft": 0.42, "weekLeft": 0.8, "repoTokens": 0, "otherTokens": 0}"#,
         #"{"at": \#(tNow), "ev": "sample", "sessionLeft": null, "weekLeft": null, "repoTokens": 0, "otherTokens": 0}"#,
     ])
     let sum = Telemetry.summarize(led, now: tNow, days: 7, steps: 8, binCount: 4,
                                   z: 1.96, bucketHours: 4)
-    return (sum.sessionLeftPct, sum.weekLeftPct)
+    return sum.weekLeftPct
 }
 // A gap shorter than the chart draws through: the reading is minutes old and still
 // answers, so blanking it would lose a figure measured perfectly well.
-check(headline(lastGoodAgo: fresh - 60) == (42, 80),
+check(headline(lastGoodAgo: fresh - 60) == 80,
       "a probe that missed a few rounds blanked the figure it did measure")
 // Past it, no answer. This is the failure that hid a dead credential for six days:
 // the probe went blind, every later sample carried nulls, and the card went on
 // printing the last live reading as the current one on every lookback offered.
-check(headline(lastGoodAgo: fresh + 60) == (nil, nil),
+check(headline(lastGoodAgo: fresh + 60) == nil,
       "a reading the chart will not bridge was still printed as the current one")
 print("telemetry assertions passed")
 

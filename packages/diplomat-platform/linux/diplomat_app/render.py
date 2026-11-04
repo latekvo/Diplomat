@@ -385,8 +385,8 @@ def _telemetry_scratch() -> None:
 
 def _telemetry_ledger_fixture() -> None:
     """A synthetic telemetry ledger so the ◫ Telemetry screen can be eyeballed:
-    a fortnight of quota samples burning down and refilling on the 5-hour cycle,
-    and forty-odd finished auto-tasks with a realistic right-skewed spread of
+    a fortnight of quota samples, the first eleven days of them also carrying the
+    5-hour window burning down and refilling on its cycle, and forty-odd finished auto-tasks with a realistic right-skewed spread of
     costs — most cheap, a few expensive — plus a handful still owed.
 
     Written through the real recorder into the real ledger path, which the render
@@ -436,10 +436,15 @@ def _telemetry_ledger_fixture() -> None:
         # machine has ever recorded. The window is spent through them all the same.
         outage = now - 6 * day < at < now - 5.5 * day
         answered = not outage and rng.random() > 0.08
-        telemetry.append({"at": at, "ev": "sample",
-                          "sessionLeft": round(session_left, 4) if answered else None,
-                          "weekLeft": round(week_left, 4) if answered else None,
-                          "repoTokens": repo, "otherTokens": other})
+        sample = {"at": at, "ev": "sample",
+                  "weekLeft": round(week_left, 4) if answered else None,
+                  "repoTokens": repo, "otherTokens": other}
+        # The last three days are written as the probe writes every sample, with no
+        # 5-hour reading at all, so the screen shows that window's history and the
+        # weekly-only present side by side.
+        if at < now - 3 * day:
+            sample["sessionLeft"] = round(session_left, 4) if answered else None
+        telemetry.append(sample)
         at += 900.0
 
     kinds = [("review", "review"), ("review-reply", "review"), ("conflicts", "conflicts")]
@@ -494,7 +499,7 @@ def _mesh_fixture(store: Store) -> None:
             "id": self_id, "name": "softoobox", "platform": "linux",
             "tier": 4, "tokens": "ok", "tcpPort": 40878, "epoch": 1, "seq": 12,
             "tokensAuto": True, "tokensPct": 0.64,
-            "tokensSessionPct": 0.64, "tokensWeekPct": 0.73,
+            "tokensWeekPct": 0.73,
             "sees": [peer_ok], "dutiesEnabled": {}, "v": 1,
         },
         "peers": [
@@ -502,7 +507,7 @@ def _mesh_fixture(store: Store) -> None:
             {"id": peer_ok, "name": "mbp-strong", "platform": "macos",
              "tier": 1, "tokens": "ok", "tcpPort": 40879, "epoch": 1, "seq": 20,
              "tokensAuto": False, "tokensPct": 0.31,
-             "tokensSessionPct": 0.31, "tokensWeekPct": 0.55,
+             "tokensWeekPct": 0.55,
              "sees": [self_id], "dutiesEnabled": {}, "v": 1,
              "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
              "transport": "lan", "wan": "iroh"},

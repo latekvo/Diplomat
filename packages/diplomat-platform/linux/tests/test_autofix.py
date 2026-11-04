@@ -1560,29 +1560,31 @@ def test_task_cost_bound_is_a_prediction_interval_not_one_on_the_mean():
     assert autofix.task_cost_bound(2.0, float("nan"), 9, z=z, min_sample=2) is None
 
 
-def _windows(session_left, week_left, session_cost, week_cost):
-    """The two rate-limit windows, in the order :func:`autobudget._decide_claude`
-    lists them — which is what fixes the tie-break below."""
-    return [(autofix.WINDOW_SESSION, session_left, session_cost),
+_FIRST = "first"
+
+
+def _windows(first_left, week_left, first_cost, week_cost):
+    """Two ceilings; their order is what fixes the tie-break below."""
+    return [(_FIRST, first_left, first_cost),
             (autofix.WINDOW_WEEK, week_left, week_cost)]
 
 
 def test_budget_decide_gates_on_whichever_window_is_tighter():
-    def decide(session_left, week_left, session_cost, week_cost, floor=20.0):
+    def decide(first_left, week_left, first_cost, week_cost, floor=20.0):
         return autofix.budget_decide(
-            _windows(session_left, week_left, session_cost, week_cost), floor)
+            _windows(first_left, week_left, first_cost, week_cost), floor)
 
     assert decide(50.0, 50.0, 10.0, 2.0).affordable
     broke = decide(5.0, 50.0, 10.0, 2.0)
     assert not broke.affordable
-    assert broke.window == autofix.WINDOW_SESSION
+    assert broke.window == _FIRST
     assert (broke.left, broke.needed, broke.measured) == (5.0, 10.0, True)
-    # A full 5-hour window does not buy a spent weekly one.
+    # A full first window does not buy a spent weekly one.
     week_broke = decide(90.0, 1.0, 10.0, 2.0)
     assert not week_broke.affordable
     assert week_broke.window == autofix.WINDOW_WEEK
     # An exact tie is decided the same way every time, so a log line is stable.
-    assert decide(30.0, 30.0, 10.0, 10.0).window == autofix.WINDOW_SESSION
+    assert decide(30.0, 30.0, 10.0, 10.0).window == _FIRST
 
 
 def test_an_unpriced_ledger_falls_back_to_the_floor():
@@ -1591,7 +1593,7 @@ def test_an_unpriced_ledger_falls_back_to_the_floor():
     assert not floored.measured
     assert floored.needed == 20.0
     assert autofix.budget_decide(_windows(25.0, None, None, None), 20.0).affordable
-    # Priced against the 5-hour window but not the weekly one: each window answers
+    # Priced against the first window but not the weekly one: each window answers
     # with what it has, rather than one blanking the other.
     mixed = autofix.budget_decide(_windows(50.0, 10.0, 8.0, None), 20.0)
     assert not mixed.affordable

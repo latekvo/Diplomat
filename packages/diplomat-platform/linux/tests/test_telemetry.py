@@ -255,22 +255,23 @@ def test_sampling_is_paced_by_the_ledger_not_by_the_caller(ledger):
     """An applet that restarts every few minutes must not sample every launch — the
     pacing is the last sample's own timestamp."""
     assert telemetry.sample_due(), "an empty ledger should take its first sample"
-    telemetry.record_sample(0.5, 0.9, 1000.0, 500.0)
+    telemetry.record_sample(0.9, 1000.0, 500.0)
+    assert "sessionLeft" not in json.loads(telemetry.read_lines()[-1])
     telemetry._reset_cache()
     assert not telemetry.sample_due()
     assert telemetry.sample_due(time.time() + telemetry.SAMPLE_INTERVAL_SECS + 1)
 
 
 def _quota_headline(ledger, readings, *, now):
-    """``(session, week)`` as the card would print them, from ``(age_secs, session,
-    week)`` triples."""
+    """The week left as the card would print it, from ``(age_secs, session, week)``
+    triples."""
     for ago, session, week in readings:
         telemetry.append({"at": now - ago, "ev": "sample", "sessionLeft": session,
                           "weekLeft": week, "repoTokens": 0, "otherTokens": 0})
     telemetry._reset_cache()
     s = telemetry.summarize(telemetry.load(), now=now, days=7, steps=8,
                             bin_count=4, z=1.96, bucket_hours=4)
-    return s.session_left_pct, s.week_left_pct
+    return s.week_left_pct
 
 
 def test_a_probe_that_missed_a_few_rounds_keeps_the_figure_it_did_measure(ledger):
@@ -280,14 +281,14 @@ def test_a_probe_that_missed_a_few_rounds_keeps_the_figure_it_did_measure(ledger
     assert _quota_headline(ledger, [
         (telemetry.QUOTA_FRESH_SECS - 60, 0.42, 0.80),
         (0.0, None, None),
-    ], now=now) == (42.0, 80.0)
+    ], now=now) == 80.0
 
 
 def test_a_reading_older_than_the_chart_bridges_stops_being_the_headline(ledger):
     """The card's percentage says what is left RIGHT NOW and carries no age. Once the
     probe has been silent longer than the chart will draw through, the newest reading
-    describes a window that has since moved — on a 5-hour window, one that may have
-    reset outright — so the honest answer is no answer.
+    describes a window that has since moved — possibly one that has reset outright —
+    so the honest answer is no answer.
 
     This is the failure that hid a dead credential for six days: the probe went blind,
     every sample after it carried nulls, and the card went on printing the last live
@@ -297,7 +298,7 @@ def test_a_reading_older_than_the_chart_bridges_stops_being_the_headline(ledger)
     assert _quota_headline(ledger, [
         (telemetry.QUOTA_FRESH_SECS + 60, 0.42, 0.80),
         (0.0, None, None),
-    ], now=now) == (None, None)
+    ], now=now) is None
 
 
 def test_the_headline_blanks_on_the_lookback_that_still_charts_the_reading(ledger):
@@ -313,7 +314,7 @@ def test_the_headline_blanks_on_the_lookback_that_still_charts_the_reading(ledge
     s = telemetry.summarize(telemetry.load(), now=now, days=7, steps=8,
                             bin_count=4, z=1.96, bucket_hours=4)
     assert [q.session_pct for q in s.quota] == [42.0], "the chart lost its reading"
-    assert (s.session_left_pct, s.week_left_pct) == (None, None)
+    assert s.week_left_pct is None
 
 
 def test_a_completion_with_no_matching_transcript_is_still_recorded(ledger):
@@ -950,9 +951,11 @@ _WINDOWS_NOW = 1_785_000_000.0
 
 def _both_windows(*, week_moves: bool = True, session_moves: bool = True,
                   tokens: tuple[float, ...] = (80_000.0, 100_000.0, 120_000.0),
-                  ) -> telemetry.Ledger:
+                  late: tuple[float, ...] = ()) -> telemetry.Ledger:
     """A ledger that prices each window from its own readings, plus a finished local
-    task per entry of ``tokens`` to lay against them.
+    task per entry of ``tokens`` to lay against them. Those start at the instant of
+    the last 5-hour reading, the newest start a 5-hour share is priced for; each
+    entry of ``late`` is a task started after it, behind a weekly-only sample.
 
     200k tokens buy 10% of the 5-hour window and 2% of the week, so the two come out
     worth 2M and 10M tokens and a 100k task is exactly 5% of one and 1% of the other
@@ -974,6 +977,18 @@ def _both_windows(*, week_moves: bool = True, session_moves: bool = True,
     ]
     for i, tok in enumerate(tokens):
         key = f"review:h/o/r#{i}@sha{i}"
+        lines += [
+            json.dumps({"at": _WINDOWS_NOW - 6300, "ev": "started", "key": key,
+                        "remote": False, "attempt": 1}),
+            json.dumps({"at": _WINDOWS_NOW - 3000, "ev": "done", "key": key,
+                        "tokens": tok}),
+        ]
+    if late:
+        lines.append(json.dumps({"at": _WINDOWS_NOW - 5400, "ev": "sample",
+                                 "weekLeft": 0.98 if week_moves else 1.0,
+                                 "repoTokens": 200_000.0, "otherTokens": 0.0}))
+    for i, tok in enumerate(late):
+        key = f"review:h/o/r#{100 + i}@late{i}"
         lines += [
             json.dumps({"at": _WINDOWS_NOW - 3600, "ev": "started", "key": key,
                         "remote": False, "attempt": 1}),
@@ -1039,6 +1054,18 @@ def test_the_5_hour_window_can_be_the_one_the_samples_cannot_price():
     assert s.per_task_week.bins[-1].upper == pytest.approx(1.2)
 
 
+def test_the_5_hour_window_prices_only_the_work_its_readings_covered():
+    """Its price is measured from history and would outlive the readings it came
+    from, so a task started after the last of them has no 5-hour share — only a
+    weekly one. One started at that very reading still has both."""
+    s = _windows_summary(late=(300_000.0,))
+    assert s.session_limit_tokens == pytest.approx(2_000_000.0)
+    assert s.per_task.count == 3, "a task the 5-hour readings never covered was priced"
+    assert s.per_task.mean == pytest.approx(5.0)
+    assert s.per_task_week.count == 4
+    assert s.per_task_week.mean == pytest.approx(1.5)  # 0.8 + 1 + 1.2 + 3, over 4
+
+
 def test_a_span_widens_a_histogram_past_its_own_largest_value():
     """What lets the two share an axis. The observations are unchanged — only the
     top edge moves, so `max` still reports what was actually measured."""
@@ -1085,21 +1112,21 @@ def test_the_probe_makes_no_request_when_it_is_switched_off(monkeypatch):
     monkeypatch.setattr(quota, "_oauth_tokens", lambda: ["oat-test"])
     monkeypatch.setattr(quota, "_fetch", lambda _token: pytest.fail(
         "the probe reached the endpoint with DIPLOMAT_QUOTA_PROBE=0"))
-    assert quota.fractions_left() == (None, None)
+    assert quota.week_left() is None
 
 
 def test_the_probe_answers_when_it_is_switched_on(monkeypatch):
     """The control for the test above: same call, only the switch flipped. Without
-    it, a `fractions_left` that always returned (None, None) would pass."""
+    it, a `week_left` that always returned None would pass."""
     monkeypatch.setenv("DIPLOMAT_QUOTA_PROBE", "1")
     # The credentials too, not just the request: a runner with no ~/.claude has no
     # token to spend, and this test is about the switch rather than about being
     # logged in.
     monkeypatch.setattr(quota, "_oauth_tokens", lambda: ["oat-test"])
     monkeypatch.setattr(quota, "_fetch", lambda _token: {
-        "five_hour": {"utilization": 40}, "seven_day": {"utilization": 10}})
+        "five_hour": None, "seven_day": {"utilization": 10}})
     quota._reset_cache()
-    assert quota.fractions_left() == (0.6, 0.9)
+    assert quota.week_left() == 0.9
 
 
 @pytest.mark.parametrize("util, left", [
@@ -1123,6 +1150,13 @@ def test_a_body_that_is_not_a_window_prices_nothing():
     assert quota._fraction_left({"utilization": True}) is None
 
 
+def test_a_payload_without_a_5_hour_window_is_still_a_reading():
+    """The endpoint answers ``five_hour: null``; the reading must not depend on it."""
+    assert quota._week_fraction({"five_hour": None, "seven_day": {"utilization": 32.0}}) == 0.68
+    assert quota._week_fraction({"five_hour": {"utilization": 10}, "seven_day": None}) is None
+    assert quota._week_fraction(None) is None
+
+
 # MARK: - Insisting
 
 
@@ -1144,8 +1178,7 @@ def refusals(monkeypatch):
             log.append(len(log))
             if len(log) <= n:
                 return None
-            return {"five_hour": {"utilization": 40},
-                    "seven_day": {"utilization": 10}}
+            return {"five_hour": None, "seven_day": {"utilization": 10}}
 
         monkeypatch.setattr(quota, "_fetch", fetch)
         return log
@@ -1158,7 +1191,7 @@ def test_one_refusal_costs_an_insisting_probe_an_attempt_not_the_reading(refusal
     Claude Code session on the machine, so a refusal is routine. Settling for it
     leaves a hole in the ledger and a break in the quota chart."""
     log = refusals(2)
-    assert quota.fractions_left(insist=True) == (0.6, 0.9)
+    assert quota.week_left(insist=True) == 0.9
     assert len(log) == 3
 
 
@@ -1167,7 +1200,7 @@ def test_a_probe_that_is_not_insisting_takes_the_one_attempt(refusals):
     deciding to spawn an agent and spawning it, where two and a half minutes of
     retries would cost more than the stale reading it already has."""
     log = refusals(2)
-    assert quota.fractions_left() == (None, None)
+    assert quota.week_left() is None
     assert len(log) == 1
 
 
@@ -1175,7 +1208,7 @@ def test_an_insisting_probe_gives_up_after_its_last_attempt(refusals):
     """An endpoint that refuses everything must end the sample, not hold the worker
     (and, on macOS, the process poll behind it) indefinitely."""
     log = refusals(999)
-    assert quota.fractions_left(insist=True) == (None, None)
+    assert quota.week_left(insist=True) is None
     assert len(log) == quota._INSIST_ATTEMPTS + 1
 
 
@@ -1185,7 +1218,7 @@ def test_a_logged_out_machine_is_not_worth_insisting_to(refusals, monkeypatch):
     quarter of an hour, for nothing."""
     log = refusals(999)
     monkeypatch.setattr(quota, "_oauth_tokens", lambda: [])
-    assert quota.fractions_left(insist=True) == (None, None)
+    assert quota.week_left(insist=True) is None
     assert len(log) == 0
 
 
@@ -1193,8 +1226,8 @@ def test_an_insisting_probe_reads_the_cache_before_it_spends_an_attempt(refusals
     """The TTL still rules: a reading seconds old is answered from the cache, so an
     open panel cannot turn into a burst of requests against the shared bucket."""
     log = refusals(0)
-    assert quota.fractions_left(insist=True) == (0.6, 0.9)
-    assert quota.fractions_left(insist=True) == (0.6, 0.9)
+    assert quota.week_left(insist=True) == 0.9
+    assert quota.week_left(insist=True) == 0.9
     assert len(log) == 1
 
 
@@ -1229,8 +1262,7 @@ def credentials(monkeypatch, tmp_path):
             log.append(token)
             if token not in live:
                 return None
-            return {"five_hour": {"utilization": 40},
-                    "seven_day": {"utilization": 10}}
+            return {"five_hour": None, "seven_day": {"utilization": 10}}
 
         monkeypatch.setattr(quota, "_fetch", fetch)
         return log
@@ -1247,7 +1279,7 @@ def test_a_stale_credentials_file_falls_through_to_the_live_keychain(credentials
     into an exhausted weekly window."""
     log = credentials(file_token="oat-stale", keychain_token="oat-live",
                       live={"oat-live"})
-    assert quota.fractions_left() == (0.6, 0.9)
+    assert quota.week_left() == 0.9
     assert log == ["oat-stale", "oat-live"]
 
 
@@ -1256,7 +1288,7 @@ def test_the_first_credential_that_answers_ends_the_probe(credentials):
     whose first source is live pays for exactly one, as before."""
     log = credentials(file_token="oat-live", keychain_token="oat-other",
                       live={"oat-live", "oat-other"})
-    assert quota.fractions_left() == (0.6, 0.9)
+    assert quota.week_left() == 0.9
     assert log == ["oat-live"]
 
 
@@ -1265,7 +1297,7 @@ def test_one_credential_in_two_places_is_presented_once(credentials):
     second identical request would spend the shared per-account bucket for an answer
     that cannot differ."""
     log = credentials(file_token="oat-same", keychain_token="oat-same", live=set())
-    assert quota.fractions_left() == (None, None)
+    assert quota.week_left() is None
     assert log == ["oat-same"]
 
 
@@ -1275,7 +1307,7 @@ def test_every_credential_refused_is_still_no_reading(credentials):
     number nothing measured."""
     log = credentials(file_token="oat-stale", keychain_token="oat-also-stale",
                       live=set())
-    assert quota.fractions_left() == (None, None)
+    assert quota.week_left() is None
     assert log == ["oat-stale", "oat-also-stale"]
 
 
@@ -1294,7 +1326,7 @@ def test_the_keychain_is_asked_under_claude_codes_own_account(credentials, monke
         return Done()
 
     monkeypatch.setattr(quota.subprocess, "run", run)
-    assert quota.fractions_left() == (0.6, 0.9)
+    assert quota.week_left() == 0.9
     assert log == ["oat-live"]
 
 
@@ -1323,7 +1355,7 @@ def test_a_probe_round_is_counted_whether_or_not_it_answers(credentials):
     nothing else on the machine looks wrong. Counting is the only thing that says so."""
     credentials(file_token="oat-stale", keychain_token=None, live=set())
     assert quota.probe_stats() == (0, 0)
-    assert quota.fractions_left() == (None, None)
+    assert quota.week_left() is None
     assert quota.probe_stats() == (1, 0)
 
 
@@ -1331,7 +1363,7 @@ def test_a_round_that_answers_on_its_second_credential_still_counts_once(credent
     """A round is the question asked, not the requests it took to get an answer — two
     GETs for one reading must not read as a probe that answers half the time."""
     credentials(file_token="oat-stale", keychain_token="oat-live", live={"oat-live"})
-    assert quota.fractions_left() == (0.6, 0.9)
+    assert quota.week_left() == 0.9
     assert quota.probe_stats() == (1, 1)
 
 
@@ -1340,5 +1372,5 @@ def test_a_logged_out_machine_never_rounds(credentials):
     that asked and was refused — that is the reading the warning acts on, and it names
     a cause a logged-out machine does not have."""
     credentials(file_token=None, keychain_token=None, live=set())
-    assert quota.fractions_left() == (None, None)
+    assert quota.week_left() is None
     assert quota.probe_stats() == (0, 0)

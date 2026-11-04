@@ -65,7 +65,6 @@ enum TelemetryCommand {
             "runSamples": s.runSamples, "waitSamples": s.waitSamples,
             "quota": s.quota.map { ["at": r($0.at), "sessionPct": opt($0.sessionPct),
                                     "weekPct": opt($0.weekPct)] },
-            "sessionLeftPct": opt(s.sessionLeftPct),
             "weekLeftPct": opt(s.weekLeftPct),
             "taskSpans": s.taskSpans.map { ["started": r($0.started),
                                             "done": opt($0.done),

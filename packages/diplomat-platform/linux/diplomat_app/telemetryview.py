@@ -5,10 +5,12 @@ screens: Actions · Mesh · Comms · **Telemetry** · Settings. It reads
 ``~/.diplomat/pr-monitor/telemetry.jsonl``, folds it through the shared
 arithmetic, and draws nine figures:
 
-* what share of the 5-hour rate-limit window one auto-task consumes, on average;
-* how that share is distributed against BOTH rate-limit windows, as two histograms
-  on one axis, each with a fitted normal and a confidence interval on its mean;
-* what the probe measured to be left of each rate-limit window, over the lookback;
+* what share of the 7-day rate-limit window one auto-task consumes, on average;
+* how that share is distributed, as a histogram with a fitted normal and a
+  confidence interval on its mean — beside the same for the 5-hour window, for
+  tasks the ledger's 5-hour readings covered;
+* what the probe measured to be left of the 7-day window over the lookback, over
+  whatever 5-hour readings the range holds;
 * how many auto-reviews were owed but unstarted, over the lookback;
 * the same for auto-fixes;
 * how many tasks finished in each equal bucket of the lookback;
@@ -125,11 +127,9 @@ class SpreadChart(QWidget):
     rate-limit window, the fitted normal over each, and the confidence interval on
     each mean as a shaded band.
 
-    Both windows on one x axis, because the whole question the card answers is
-    *which ceiling this work is really spending against* — and that is the distance
-    between the two humps. A task is a large slice of a 5-hour window and a sliver
-    of a week, so the weekly series sits far to the left; the axis is honest about
-    that rather than giving each series a scale of its own.
+    Both windows on one x axis rather than a scale each: a task is a large slice of
+    a 5-hour window and a sliver of a week, so the weekly series sits far to the
+    left, and a shared axis keeps that distance honest.
 
     The bars are grouped inside each bin, red then yellow, rather than stacked or
     overlaid: near zero the two series share bins, and a translucent overlay there
@@ -449,7 +449,7 @@ _BRIDGE_SECS = telemetry.QUOTA_FRESH_SECS
 
 
 class QuotaChart(QWidget):
-    """Both rate-limit windows over the lookback, on a fixed 0-100% axis.
+    """The rate-limit windows over the lookback, on a fixed 0-100% axis.
 
     Nothing here is derived: these are the readings the OAuth usage probe returned,
     drawn where they were taken. The axis is pinned to 0-100 rather than scaled to
@@ -457,8 +457,9 @@ class QuotaChart(QWidget):
     give, and an auto-scaled one would show that week and a week of exhaustion as
     the same picture.
 
-    The 5-hour window is drawn as a fill (it saws — it refills on its own cycle, so
-    the shape matters more than any one value) and the 7-day as a line over it.
+    The 7-day window is a line; wherever the range holds 5-hour readings, that
+    window is a fill beneath it (it saws — it refilled on its own cycle, so the shape
+    matters more than any one value).
     """
 
     def __init__(self) -> None:
@@ -796,9 +797,10 @@ class TelemetryView(QWidget):
     # MARK: cards
 
     def _card_head(self, layout, metric_id: str, value: str, *,
-                   caption: str | None = None) -> None:
+                   caption: str | None = None, value_tint: str | None = None) -> None:
         """A card's heading row: tinted glyph, title, the headline number on the
-        right — the one shape all four cards share."""
+        right — the one shape all four cards share. ``value_tint`` colours the
+        number as the series it quotes when that is not the card's own."""
         row = QHBoxLayout()
         row.setSpacing(6)
         row.addWidget(GlyphLabel(_glyph(metric_id), 15, _tint(metric_id), font_px=13))
@@ -808,7 +810,7 @@ class TelemetryView(QWidget):
         row.addStretch(1)
         big = QLabel(value)
         big.setStyleSheet(
-            f"color: {_tint(metric_id)}; font-weight: 700; font-size: 17px;"
+            f"color: {value_tint or _tint(metric_id)}; font-weight: 700; font-size: 17px;"
         )
         row.addWidget(big)
         layout.addLayout(row)
@@ -822,17 +824,16 @@ class TelemetryView(QWidget):
         _clear_layout(self.cost_col)
         d = s.per_task
         week = s.per_task_week
-        priced = s.session_limit_tokens is not None and d.count > 0
 
-        if priced:
-            headline = telemetry.percent(d.mean)
-            caption = (f"of the 5-hour window, per task · median "
-                       f"{telemetry.percent(d.median)}")
-            if week.count:
-                caption += f" · {telemetry.percent(week.mean)} of the 7-day window"
-        elif d.count == 0 and s.per_task_tokens_mean > 0:
+        if week.count:
+            headline = telemetry.percent(week.mean)
+            caption = (f"of the 7-day window, per task · median "
+                       f"{telemetry.percent(week.median)}")
+            if d.count:
+                caption += f" · {telemetry.percent(d.mean)} of the 5-hour window"
+        elif s.per_task_tokens_mean > 0:
             headline = telemetry.tokens(s.per_task_tokens_mean)
-            caption = ("tokens per task. The share of the 5-hour window is Claude "
+            caption = ("tokens per task. The share of the 7-day window is Claude "
                        "Code's own — it counts only tasks that ran on it, and needs "
                        "two quota readings from the OAuth usage probe.")
         else:
@@ -840,11 +841,8 @@ class TelemetryView(QWidget):
             caption = "No finished auto-task in this range yet."
         self._card_head(self.cost_col, "limitPerTask", headline, caption=caption)
 
-        # Whichever windows the ledger priced — not always the 5-hour one, which
-        # resets on its own cycle, so a ledger whose samples straddle a reset prices
-        # only the week. The dispatch gate holds work against that weekly figure
-        # (:func:`autobudget._costs`), so drawing nothing here would read "unpriced"
-        # over a measurement.
+        # Whichever windows the ledger priced: the 5-hour series holds only tasks its
+        # readings covered, and the week can be unpriced while it is not.
         series = [(dist, mid) for dist, mid in
                   ((d, "spreadSession"), (week, "spreadWeek")) if dist.count]
         if not series:
@@ -868,14 +866,14 @@ class TelemetryView(QWidget):
 
         if not week.count:
             unpriced = QLabel(
-                "The 7-day window has no price yet — it moves slowly, so it takes "
-                "longer than the 5-hour one to measure a task against."
+                "The 7-day window has no price yet — it moves slowly, so it takes a "
+                "longer run of quota readings to measure a task against."
             )
             unpriced.setWordWrap(True)
             unpriced.setStyleSheet(muted(9))
             self.cost_col.addWidget(unpriced)
 
-        # Both series hold the same tasks, so whichever was priced is the sample.
+        # The week holds every task the 5-hour series does, so the larger is the sample.
         shown = max(d.count, week.count)
         if shown < self._min_sample:
             warn = QLabel(
@@ -893,14 +891,13 @@ class TelemetryView(QWidget):
 
     def _rebuild_quota(self, s: telemetry.Summary, now: float) -> None:
         """The one figure on this screen that is measured rather than derived: what
-        the usage probe says is left of each rate-limit window, drawn as it was
-        sampled."""
+        the usage probe says is left of the 7-day window, drawn as it was sampled,
+        over any 5-hour readings the range holds."""
         _clear_layout(self.quota_col)
-        left = s.session_left_pct
-        self._card_head(
-            self.quota_col, "quotaLeft",
-            telemetry.percent(left) if left is not None else "—",
-            caption=_blurb("quotaLeft"))
+        week = s.week_left_pct
+        week_text = telemetry.percent(week) if week is not None else "—"
+        self._card_head(self.quota_col, "quotaLeft", week_text,
+                        caption=_blurb("quotaLeft"), value_tint=_tint("quotaWeek"))
         if not s.quota:
             hint = QLabel(
                 "No quota readings in this range. The probe uses the OAuth token "
@@ -918,19 +915,15 @@ class TelemetryView(QWidget):
             self.quota_col.addWidget(chart)
             chart.set_series(s.quota, self._days, now, s.task_spans)
 
-        week = s.week_left_pct
-        self.quota_col.addLayout(_legend([
-            (_tint("quotaLeft"),
-             f"5-hour {telemetry.percent(left) if left is not None else '—'}"),
-            (_tint("quotaWeek"),
-             f"{_title('quotaWeek')} "
-             + (telemetry.percent(week) if week is not None else "—")),
-        ]))
+        key = [(_tint("quotaWeek"), f"{_title('quotaWeek')} {week_text}")]
+        if any(q.session_pct is not None for q in s.quota):
+            key.append((_tint("quotaLeft"), "5-hour"))
+        self.quota_col.addLayout(_legend(key))
 
         # A gap is the probe failing to answer, not the window emptying. The chart
         # draws through a short one and breaks across a long one; saying how many
         # keeps a blind stretch from reading as a quiet one.
-        gaps = sum(1 for q in s.quota if q.session_pct is None)
+        gaps = sum(1 for q in s.quota if q.week_pct is None)
         if gaps:
             note = QLabel(
                 f"{gaps} reading{'' if gaps == 1 else 's'} missing of "
@@ -1048,14 +1041,15 @@ class TelemetryView(QWidget):
         parts: list[str] = []
         if s.first_sample_at:
             parts.append(f"quota readings since {_day_label(s.first_sample_at)}")
-        if s.session_limit_tokens:
-            parts.append(
-                f"5-hour window priced at ≈{telemetry.tokens(s.session_limit_tokens)} "
-                "tokens, measured"
-            )
         if s.week_limit_tokens:
             parts.append(
-                f"7-day window at ≈{telemetry.tokens(s.week_limit_tokens)} tokens"
+                f"7-day window priced at ≈{telemetry.tokens(s.week_limit_tokens)} "
+                "tokens, measured"
+            )
+        if s.session_limit_tokens:
+            parts.append(
+                f"5-hour window at ≈{telemetry.tokens(s.session_limit_tokens)} "
+                "tokens, from its past readings"
             )
         if s.unattributed_count:
             parts.append(

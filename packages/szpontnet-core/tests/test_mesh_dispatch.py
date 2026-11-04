@@ -59,9 +59,9 @@ def test_work_flows_to_the_node_with_the_most_spare_quota(simnet):
     """Surplus-first is the load balancer. It ranks on pace — budget left over
     clock left — so the machine that can most afford the work gets it."""
     async def scenario():
-        a = await simnet.node("a", quota=("ok", 1.0, None, None, 0.4))  # rationing
-        b = await simnet.node("b", quota=("ok", 1.0, None, None, 3.0))  # flush
-        c = await simnet.node("c", quota=("ok", 1.0, None, None, 1.0))  # on pace
+        a = await simnet.node("a", quota=("ok", 1.0, None, 0.4))  # rationing
+        b = await simnet.node("b", quota=("ok", 1.0, None, 3.0))  # flush
+        c = await simnet.node("c", quota=("ok", 1.0, None, 1.0))  # on pace
         await simnet.linked(a, b, c)
         await simnet.until(lambda: a.node.peers[b.id].info.surplus() == 3.0, 3.0,
                            "the flush node's surplus never reached its peers")
@@ -76,8 +76,8 @@ def test_work_flows_to_the_node_with_the_most_spare_quota(simnet):
 
 def test_a_node_out_of_tokens_is_not_a_target(simnet):
     async def scenario():
-        a = await simnet.node("a", quota=("ok", 1.0, None, None, 0.1))
-        b = await simnet.node("b", quota=("out", 0.0, None, None, 9.0))
+        a = await simnet.node("a", quota=("ok", 1.0, None, 0.1))
+        b = await simnet.node("b", quota=("out", 0.0, None, 9.0))
         await simnet.linked(a, b)
         await simnet.until(lambda: a.node.peers[b.id].info.tokens == "out", 3.0,
                            "the exhausted node never advertised it")
@@ -105,8 +105,8 @@ def test_a_slot_fails_over_to_the_next_candidate(simnet):
     willing to run and the most spare quota in the mesh, and only turns out to
     have no way to run the job when it is actually asked."""
     async def scenario():
-        a = await simnet.node("a", quota=("ok", 1.0, None, None, 0.5))
-        b = await simnet.node("b", quota=("ok", 1.0, None, None, 5.0))
+        a = await simnet.node("a", quota=("ok", 1.0, None, 0.5))
+        b = await simnet.node("b", quota=("ok", 1.0, None, 5.0))
         b.runner_error = "no runner on this machine"
         await simnet.linked(a, b)
         await simnet.until(lambda: a.node.peers[b.id].info.surplus() == 5.0, 3.0,

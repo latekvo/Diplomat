@@ -906,16 +906,13 @@ class MeshView(QWidget):
 
     def _quota_row(self, node: dict) -> QHBoxLayout:
         """Read-only quota indicator (separate from the token-budget input): the
-        effective state's glyph + color, and the real remaining percentages per
-        rate-limit window (5-hour session · 7-day week) when the node's probe has
-        them — else the local '≈NN%' estimate. 'pinned' flags a manual override."""
+        effective state's glyph + color, and the real remaining percentage of the
+        7-day rate-limit window when the node's probe has it — else the local
+        '≈NN%' estimate. 'pinned' flags a manual override."""
         tokens = node.get("tokens", "ok")
-        sess, week = node.get("tokensSessionPct"), node.get("tokensWeekPct")
-        if isinstance(sess, (int, float)):
-            left = f"5h {round(sess * 100)}%"
-            if isinstance(week, (int, float)):
-                left += f" · wk {round(week * 100)}%"
-            left += " left"
+        week = node.get("tokensWeekPct")
+        if isinstance(week, (int, float)):
+            left = f"wk {round(week * 100)}% left"
         elif isinstance(node.get("tokensPct"), (int, float)):
             left = f"≈{round(node['tokensPct'] * 100)}% left"
         else:
@@ -931,10 +928,10 @@ class MeshView(QWidget):
         val = QLabel(f"{_TOKEN_GLYPH.get(tokens, '●')} {left}")
         val.setStyleSheet(f"color: {color}; font-size: 9px; font-weight: 700;")
         val.setToolTip(
-            "Remaining Claude quota — the account's real rate-limit windows "
-            "(5-hour session · 7-day week) via the OAuth usage probe; '≈' marks a "
-            "local estimate (probe unavailable). 'pinned' = a manual override is in "
-            "effect and the mesh routes on it."
+            "Remaining Claude quota — the account's real 7-day rate-limit window "
+            "via the OAuth usage probe; '≈' marks a local estimate (probe "
+            "unavailable). 'pinned' = a manual override is in effect and the mesh "
+            "routes on it."
         )
         row.addWidget(val)
         row.addStretch(1)

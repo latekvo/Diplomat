@@ -161,7 +161,7 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   hand while the ledger cannot price a task yet - a share of a window (**default
   20%**) under Claude Code, or dollars on the account (**default $1.00**) under a
   runner billed in money, once a task has been charged here in the last 14 days. Priced from the same per-task figure the
-  [Telemetry](telemetry.md) screen shows, against both rate-limit windows or against
+  [Telemetry](telemetry.md) screen shows, against the 7-day rate-limit window or against
   both of the OpenRouter ceilings. Held work waits under [Agent tasks](panel.md#agent-tasks)
   and starts when a window refills or the balance is topped up; *execute now*
   overrides it, a wizard spawn that

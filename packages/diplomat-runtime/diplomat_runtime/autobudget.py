@@ -16,8 +16,8 @@ assembles these inputs itself.
 
 **Which currency.** What an agent spends depends on what runs it, so the runner
 picks the ceilings and the unit both sides of the comparison are in
-(:func:`_decide_uncached`): Claude Code draws on Anthropic rate-limit windows,
-published only as a percentage; every other runner is billed in money by whichever
+(:func:`_decide_uncached`): Claude Code draws on the Anthropic 7-day rate-limit
+window, published only as a percentage; every other runner is billed in money by whichever
 provider it is logged into. Neither reading substitutes for the other — a Hermes
 task held against a Claude window is gated on a limit it never touches, and a
 machine not logged into Claude Code at all would have no gate whatsoever.
@@ -87,15 +87,15 @@ def tokens_left(runners: Iterable[str] = ()) -> bool | None:
     ``runners`` is which agent CLI each run this reading is about was STARTED under
     (:func:`agentregistry.run_runner`), not the one the next spawn would use. The
     difference is the whole reason it is a parameter. An operator whose Anthropic
-    windows run dry watches their agents park, and switching runner is exactly what a
+    window runs dry watches their agents park, and switching runner is exactly what a
     person does next — at which point the selected runner's funded balance reads
-    "plenty" and arms the deadline against the very runs the exhausted windows parked.
+    "plenty" and arms the deadline against the very runs the exhausted window parked.
     Empty falls back to the selection, for a caller with no book to hand over and for a
     machine with nothing in flight; so does a run whose own record is missing, which is
     where the answer came from before there was one.
 
-    Which ceilings there are is the currency split :func:`decide` makes — Anthropic
-    windows for Claude Code, money for everything else — so two runs under different
+    Which ceilings there are is the currency split :func:`decide` makes — the Anthropic
+    window for Claude Code, money for everything else — so two runs under different
     money runners ask about one balance, the one this machine is configured to spend.
     A ceiling this account does not have (an uncapped OpenRouter key) or that would not
     read is skipped rather than guessed; every one that did read has to be above zero,
@@ -111,7 +111,7 @@ def tokens_left(runners: Iterable[str] = ()) -> bool | None:
         chosen = runner.selected()
         asked = {r or chosen for r in runners} or {chosen}
         if runner.CLAUDE in asked:
-            readings.extend(quota.fractions_left())
+            readings.append(quota.week_left())
         if asked - {runner.CLAUDE}:
             balance = spend.balance()
             readings.extend((balance.key_left, balance.credit_left))
@@ -131,8 +131,8 @@ def _summary():
     process, and the one thing that makes it auditable is that "Limit per task" as
     the screen opens is the figure it was priced from.
     ``steps``/``bin_count``/``bucket_hours`` are floors — the series, the histogram
-    and the finished-work buckets are the screen's, and only the distributions'
-    moments and the two calibrations are read here.
+    and the finished-work buckets are the screen's, and only the weekly
+    distribution's moments are read here.
     """
     from . import telemetry
 
@@ -153,12 +153,12 @@ def _decide_uncached() -> autofix.Budget:
 
 
 def _decide_claude() -> autofix.Budget:
-    """The verdict for a machine spending Anthropic rate-limit windows.
+    """The verdict for a machine spending the Anthropic 7-day rate-limit window.
 
-    Priced against both windows the same way the Telemetry screen prices them: the
-    ledger's finished-and-locally-run tasks, each as a share of the window it was
-    spent from, give a mean and a spread per window, and the upper prediction bound
-    on those is what one more task is required to fit inside.
+    Priced the same way the Telemetry screen prices it: the ledger's
+    finished-and-locally-run tasks, each as a share of the window, give a mean and a
+    spread, and the upper prediction bound on those is what one more task is required
+    to fit inside.
 
     What is LEFT comes from the probe rather than from the ledger's last sample:
     samples are written every 15 minutes, and a gate reading one of those would let
@@ -167,23 +167,21 @@ def _decide_claude() -> autofix.Budget:
     from . import appconfig, core, quota
 
     try:
-        session_left, week_left = quota.fractions_left()
+        week_left = quota.week_left()
     except Exception:  # noqa: BLE001 — a probe failure must never take a dispatch down
-        session_left = week_left = None
+        week_left = None
 
-    session_cost = week_cost = None
+    week_cost = None
     try:
         summary, min_sample = _summary()
-        session_cost, week_cost = _costs(
+        week_cost = _cost(
             summary, z=autofix.budget_z(appconfig.auto_budget_confidence()),
             min_sample=min_sample)
     except (core.CoreError, OSError, KeyError, IndexError, TypeError, ValueError):
         pass  # no price for a task — the floor answers instead
 
     return autofix.budget_decide(
-        [(autofix.WINDOW_SESSION,
-          None if session_left is None else 100.0 * session_left, session_cost),
-         (autofix.WINDOW_WEEK,
+        [(autofix.WINDOW_WEEK,
           None if week_left is None else 100.0 * week_left, week_cost)],
         floor=appconfig.auto_budget_floor_pct(), unit=autofix.UNIT_PCT)
 
@@ -194,7 +192,7 @@ def _decide_money() -> autofix.Budget:
     The same statistic in the other currency: the ledger's finished tasks, each at
     what the provider charged for it, bound the cost of one more, and what is left is
     what the account has on each of its two ceilings (:mod:`spend`). Both are dollars
-    already, so unlike the windows above neither needs converting into the other's
+    already, so unlike the window above neither needs converting into the other's
     terms — and the same task cost gates both, since a dollar spent is a dollar off
     each of them.
 
@@ -240,26 +238,17 @@ def _decide_money() -> autofix.Budget:
         floor=appconfig.auto_budget_reserve_usd(), unit=autofix.UNIT_USD)
 
 
-def _costs(summary, *, z: float, min_sample: int) -> tuple[float | None, float | None]:
-    """``(session, week)`` upper bounds on what one more task costs, each as a
-    percentage of its own window, or None where the ledger cannot price that window.
-
-    One bound per window from that window's own distribution — the same pair the
-    Telemetry screen draws. Each is priced from its own quota readings, so a week the
-    samples cannot price leaves the 5-hour gate measured, and the reverse.
-    """
-    return (
-        autofix.task_cost_bound(summary.per_task.mean, summary.per_task.sd,
-                                summary.per_task.count, z=z, min_sample=min_sample),
-        autofix.task_cost_bound(summary.per_task_week.mean, summary.per_task_week.sd,
-                                summary.per_task_week.count, z=z,
-                                min_sample=min_sample),
-    )
+def _cost(summary, *, z: float, min_sample: int) -> float | None:
+    """The upper bound on what one more task costs as a percentage of the 7-day
+    window, from the distribution the Telemetry screen draws, or None where the
+    ledger cannot price it."""
+    week = summary.per_task_week
+    return autofix.task_cost_bound(week.mean, week.sd, week.count, z=z,
+                                   min_sample=min_sample)
 
 
 #: What each ceiling is called in the one line the feed prints about it.
 _CEILINGS = {
-    autofix.WINDOW_SESSION: "5-hour rate limit",
     autofix.WINDOW_WEEK: "7-day rate limit",
     autofix.WINDOW_KEY: "OpenRouter key limit",
     autofix.WINDOW_CREDITS: "OpenRouter credit balance",

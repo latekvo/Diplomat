@@ -375,14 +375,13 @@ class MeshNode:
         self.epoch = time.time()
         # Cached automatic token-budget read (refreshed on its own loop, so neither
         # the hot `info` path nor the 2s snapshot tick touches the filesystem/network).
-        # See _token_loop / _TOKEN_REFRESH_SECS. session/week are the REAL
-        # remaining fractions per rate-limit window (None on the heuristic fallback).
+        # See _token_loop / _TOKEN_REFRESH_SECS. week is the REAL remaining fraction
+        # of the 7-day rate-limit window (None on the heuristic fallback).
         self._token_state = "ok"
         self._token_frac = 1.0
-        self._token_session: float | None = None
         self._token_week: float | None = None
-        # Burn-down ratio across those real windows — budget left over clock left
-        # until they reset. The figure dispatch ranks on; None on the heuristic
+        # Burn-down ratio on that real window — budget left over clock left until
+        # it resets. The figure dispatch ranks on; None on the heuristic
         # fallback, where the local bookkeeping window is paced instead.
         self._token_pace: float | None = None
         self.tcp_port = 0  # bound in start()
@@ -511,7 +510,6 @@ class MeshNode:
             strength_auto=self.local.strength_auto,
             tokens_auto=(self.local.tokens == "auto"),
             tokens_pct=self._token_frac,
-            tokens_session_pct=self._token_session,
             tokens_week_pct=self._token_week,
             tcp_port=self.tcp_port,
             epoch=self.epoch,
@@ -556,12 +554,12 @@ class MeshNode:
         return override if override in ("ok", "low", "out") else self._token_state
 
     def _real_quota_frac(self) -> float | None:
-        """The REAL remaining fraction of the binding rate-limit window (min of
-        the 5-hour session and 7-day week) when the OAuth probe is live, else
-        None (heuristic fallback). Caps the advertised ``stats.quotaLeft`` so
-        dispatch surplus reflects the account's true room — a node with 2% of
-        its session left must not out-rank peers on bookkeeping alone."""
-        return self._token_frac if self._token_session is not None else None
+        """The REAL remaining fraction of the 7-day rate-limit window when the
+        OAuth probe is live, else None (heuristic fallback). Caps the advertised
+        ``stats.quotaLeft`` so dispatch surplus reflects the account's true room —
+        a node with 2% of its week left must not out-rank peers on bookkeeping
+        alone."""
+        return self._token_frac if self._token_week is not None else None
 
     def _gossiped_tokens(self) -> tuple:
         """What peers currently know of our token budget, at wire granularity —
@@ -574,7 +572,7 @@ class MeshNode:
         pace = (None if self._token_pace is None
                 else protocol.surplus_bucket(self._token_pace))
         return (self.current_tokens(), r(self._token_frac),
-                r(self._token_session), r(self._token_week), pace)
+                r(self._token_week), pace)
 
     async def _refresh_tokens(self, *, insist: bool = False) -> bool:
         """Re-probe the token budget (real quota endpoint, else local-log heuristic)
@@ -590,15 +588,14 @@ class MeshNode:
         a rough fraction for a real absence."""
         before = self._gossiped_tokens()
         try:
-            state, frac, session, week, pace = await asyncio.to_thread(
+            state, frac, week, pace = await asyncio.to_thread(
                 usage.token_state, self.stats.plan, insist=insist,
                 stopping=self._probe_stopping)
         except Exception:  # noqa: BLE001 — a broken probe must never take the node down
             state, frac = self._token_state, self._token_frac
-            session, week = self._token_session, self._token_week
-            pace = self._token_pace
+            week, pace = self._token_week, self._token_pace
         self._token_state, self._token_frac = state, frac
-        self._token_session, self._token_week = session, week
+        self._token_week = week
         self._token_pace = pace
         return self._gossiped_tokens() != before
 
@@ -3917,7 +3914,7 @@ class MeshNode:
         consoles and load balancing stay current.
 
         Its own task rather than a branch of :meth:`_snapshot_loop`: the quota probe
-        insists through a refusal (`usage.windows`) and can take minutes, and the
+        insists through a refusal (`usage.week_window`) and can take minutes, and the
         snapshot loop is what keeps `state.json` — every peer row, every claim, the
         whole of what a front-end reads — current on a two-second beat.
         """

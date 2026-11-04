@@ -464,7 +464,6 @@ struct MeshView: View {
         let strengthAuto = peer?.strengthAuto ?? node?.strengthAuto ?? true
         let tokensAuto = peer?.tokensAuto ?? node?.tokensAuto ?? true
         let tokensPct = peer?.tokensPct ?? node?.tokensPct ?? 1.0
-        let sessionPct = peer != nil ? peer?.tokensSessionPct : node?.tokensSessionPct
         let weekPct = peer != nil ? peer?.tokensWeekPct : node?.tokensWeekPct
         return VStack(alignment: .leading, spacing: 4) {
             nodeHeaderRow(name: name, platform: platform, peer: peer)
@@ -476,7 +475,7 @@ struct MeshView: View {
                 tokenEditor(nodeID: id, tokens: tokens, auto: tokensAuto)
                 Spacer(minLength: 0)
             }
-            quotaRow(tokens: tokens, sessionPct: sessionPct, weekPct: weekPct,
+            quotaRow(tokens: tokens, weekPct: weekPct,
                      legacyPct: tokensPct, auto: tokensAuto)
             if let peer {
                 edgeRow(peer)
@@ -561,17 +560,15 @@ struct MeshView: View {
     }
 
     /// Read-only quota indicator, deliberately separate from the token-budget input:
-    /// the effective state's color, and the real remaining percentages per rate-limit
-    /// window (5-hour session · 7-day week) when the node's probe has them — else the
-    /// local '≈NN%' estimate. 'pinned' flags a manual override.
-    private func quotaRow(tokens: String, sessionPct: Double?, weekPct: Double?,
+    /// the effective state's color, and the real remaining percentage of the 7-day
+    /// rate-limit window when the node's probe has it — else the local '≈NN%'
+    /// estimate. 'pinned' flags a manual override.
+    private func quotaRow(tokens: String, weekPct: Double?,
                           legacyPct: Double, auto: Bool) -> some View {
         let meta = tokenMeta(tokens)
         var left: String
-        if let s = sessionPct {
-            left = "5h \(clampedInt((s * 100).rounded()))%"
-            if let w = weekPct { left += " · wk \(clampedInt((w * 100).rounded()))%" }
-            left += " left"
+        if let w = weekPct {
+            left = "wk \(clampedInt((w * 100).rounded()))% left"
         } else {
             left = "≈\(clampedInt((legacyPct * 100).rounded()))% left"
         }
@@ -582,8 +579,8 @@ struct MeshView: View {
             Text(left).font(.system(size: 9, weight: .bold)).foregroundStyle(meta.color)
             Spacer(minLength: 0)
         }
-        .help("Remaining Claude quota — the account's real rate-limit windows (5-hour "
-              + "session · 7-day week) via the OAuth usage probe; '≈' marks a local "
+        .help("Remaining Claude quota — the account's real 7-day rate-limit window "
+              + "via the OAuth usage probe; '≈' marks a local "
               + "estimate (probe unavailable). 'pinned' = a manual override is in effect "
               + "and the mesh routes on it.")
     }

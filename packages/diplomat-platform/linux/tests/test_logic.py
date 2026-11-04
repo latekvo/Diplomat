@@ -688,9 +688,9 @@ if __name__ == "__main__":
 def test_a_budget_gate_with_nothing_to_gate_on_says_so(monkeypatch):
     """The failure that has no other symptom.
 
-    What is left of the rate-limit windows comes from one probe, and
-    ``autofix.budget_decide`` SKIPS a ceiling it cannot read — a call where neither
-    window has a reading is affordable. So a probe that stops answering does not fail
+    What is left of the rate-limit window comes from one probe, and
+    ``autofix.budget_decide`` SKIPS a ceiling it cannot read — a call where the
+    window has no reading is affordable. So a probe that stops answering does not fail
     the gate closed or loudly: it quietly stops gating while the toggle still reads on.
     That ran for four days here on a stale credentials file, and ended in a night of
     agents dispatched into an exhausted weekly window.

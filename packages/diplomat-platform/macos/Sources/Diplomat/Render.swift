@@ -371,8 +371,9 @@ enum Render {
     }
 
     /// A synthetic telemetry ledger so the Telemetry screen can be eyeballed: a
-    /// fortnight of quota samples burning down and refilling on the 5-hour cycle, and
-    /// forty-odd finished auto-tasks with a realistic right-skewed spread of costs —
+    /// fortnight of quota samples, the first eleven days of them also carrying the
+    /// 5-hour window burning down and refilling on its cycle, and forty-odd finished
+    /// auto-tasks with a realistic right-skewed spread of costs —
     /// most cheap, a few expensive — plus a handful still owed.
     ///
     /// Written through the real recorder into the real ledger path, first redirected
@@ -423,12 +424,18 @@ enum Render {
             // all the same.
             let outage = at > now - 6 * day && at < now - 5.5 * day
             let answered = !outage && rng.uniform(0, 1) > 0.08
-            TelemetryLog.append(["at": at, "ev": "sample",
-                                 "sessionLeft": answered
-                                     ? (sessionLeft * 10_000).rounded() / 10_000 : NSNull(),
-                                 "weekLeft": answered
-                                     ? (weekLeft * 10_000).rounded() / 10_000 : NSNull(),
-                                 "repoTokens": repo, "otherTokens": other])
+            var sample: [String: Any] = ["at": at, "ev": "sample",
+                                         "weekLeft": answered
+                                             ? (weekLeft * 10_000).rounded() / 10_000 : NSNull(),
+                                         "repoTokens": repo, "otherTokens": other]
+            // The last three days are written as the probe writes every sample, with
+            // no 5-hour reading at all, so the screen shows that window's history and
+            // the weekly-only present side by side.
+            if at < now - 3 * day {
+                sample["sessionLeft"] = answered
+                    ? (sessionLeft * 10_000).rounded() / 10_000 : NSNull()
+            }
+            TelemetryLog.append(sample)
             at += 900
         }
 
@@ -699,14 +706,14 @@ enum Render {
          "self": {"id": "\(selfID)", "name": "mbp", "platform": "macos", "tier": 2,
                   "tokens": "ok", "sees": ["\(peerOK)"],
                   "tokensAuto": true, "tokensPct": 0.64,
-                  "tokensSessionPct": 0.64, "tokensWeekPct": 0.73,
+                  "tokensWeekPct": 0.73,
                   "fingerprint": "aa11bb22cc33dd44",
                   "stats": {"plan": "max-5x", "usageAvg": 0.6, "quotaLeft": 4.4}},
          "peers": [
            {"id": "\(peerOK)", "name": "softoobox", "platform": "linux", "tier": 4,
             "tokens": "ok", "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
             "tokensAuto": false, "tokensPct": 0.31,
-            "tokensSessionPct": 0.31, "tokensWeekPct": 0.55,
+            "tokensWeekPct": 0.55,
             "sees": ["\(selfID)"], "verified": true, "fingerprint": "ee55ff66aa77bb88",
             "trust": "personal", "surplus": 0.75, "transport": "lan", "wan": "iroh",
             "stats": {"plan": "pro", "usageAvg": 0.25, "quotaLeft": 1.0, "surplus": 0.75}},

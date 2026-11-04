@@ -2771,8 +2771,8 @@ class Store(QObject):
     def _note_blind_budget_gate(self) -> None:
         """Say out loud when the budget gate has nothing left to gate on.
 
-        What is left of the rate-limit windows comes from one probe, and
-        ``budget_decide`` SKIPS a ceiling it cannot read — with neither window readable
+        What is left of the rate-limit window comes from one probe, and
+        ``budget_decide`` SKIPS a ceiling it cannot read — with the window unreadable
         every task is affordable. So a probe that stops answering does not fail the
         gate closed or loudly: it stops gating, while the toggle still reads on and
         nothing else looks wrong. A stale ``.credentials.json`` did exactly that here
@@ -2791,7 +2791,7 @@ class Store(QObject):
             return
         self._quota_warned = True
         activity.log("auto", "warn",
-                     f"Asked what is left of the rate-limit windows {rounds} times "
+                     f"Asked what is left of the rate-limit window {rounds} times "
                      f"without one answer — the automatic budget is gating on nothing, "
                      f"and auto work will dispatch whatever the limits have left")
         self.refresh_activity()
@@ -3215,7 +3215,7 @@ class Store(QObject):
         unbroken sample series regardless. :func:`telemetry.sample_due` does the pacing, so calling
         this more often than the sample interval is free.
 
-        The quota probe insists (:func:`quota.fractions_left`), so a worker can outlive
+        The quota probe insists (:func:`quota.week_left`), so a worker can outlive
         the gap between turns — and until it writes, :func:`telemetry.sample_due` still
         says a sample is owed. The lock is what keeps that from becoming several.
         """
@@ -3229,11 +3229,11 @@ class Store(QObject):
 
             try:
                 try:
-                    session, week = quota.fractions_left(insist=True)
+                    week = quota.week_left(insist=True)
                     totals = usagescan.totals()
                 except OSError:
                     return  # an unreadable ~/.claude costs this sample, nothing else
-                telemetry.record_sample(session, week, totals.repo, totals.other)
+                telemetry.record_sample(week, totals.repo, totals.other)
             finally:
                 # Held until the sample is on disk: released a moment earlier, the
                 # next turn would find `sample_due` still true and take a second one.

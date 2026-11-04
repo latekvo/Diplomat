@@ -92,6 +92,14 @@ enum QuotaTest {
                   ["find-generic-password", "-s", "Claude Code-credentials", "-w"],
               ])
 
+        // The endpoint answers `five_hour: null`; the reading must not depend on it.
+        check("a usage payload with no 5-hour window is still a reading",
+              Quota.weekFraction(["five_hour": NSNull(),
+                                  "seven_day": ["utilization": 32.0]]) == 0.68)
+        check("a payload with no 7-day window is no reading",
+              Quota.weekFraction(["five_hour": ["utilization": 10.0],
+                                  "seven_day": NSNull()]) == nil)
+
         print("\nQUOTA TEST \(pass ? "OK" : "FAILED")")
         return pass
     }

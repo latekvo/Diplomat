@@ -259,3 +259,28 @@ def test_a_lan_only_machine_is_not_told_off_once_per_peer(make_view):
         tor={"enabled": False, "ready": False, "address": None}))
     assert not [t for t in _edge_texts(view) if t.startswith("⚠")]
     assert [t for t in _edge_texts(view) if "this network only" in t]
+
+
+# ---- quota ---------------------------------------------------------------
+
+
+def _quota_text(view, node: dict) -> str:
+    from PySide6.QtWidgets import QLabel
+
+    row = view._quota_row(node)
+    return [row.itemAt(i).widget().text() for i in range(row.count())
+            if isinstance(row.itemAt(i).widget(), QLabel)][-1]
+
+
+def test_a_node_reading_its_week_shows_the_real_figure_not_an_estimate(make_view):
+    """What a node advertises: the week alone, with no 5-hour field."""
+    build, _calls = make_view
+    view = build(_snapshot())
+    text = _quota_text(view, {"tokens": "ok", "tokensPct": 0.67, "tokensWeekPct": 0.67})
+    assert text.endswith("wk 67% left") and "≈" not in text
+
+
+def test_a_node_without_a_reading_shows_the_estimate(make_view):
+    build, _calls = make_view
+    view = build(_snapshot())
+    assert _quota_text(view, {"tokens": "ok", "tokensPct": 0.4}).endswith("≈40% left")
