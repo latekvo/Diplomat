@@ -262,11 +262,10 @@ public enum Telemetry {
     /// count as much as an hour's.
     ///
     /// A flat interval (`dUtil == 0`) still counts its tokens: the reading moves in
-    /// whole 1% steps, so most intervals of a slow window read flat, and the step their
-    /// spending eventually produces lands on a later interval. Skipped are an interval
-    /// the window RESET across (`dUtil < 0`), one spent at an exhausted window, and one
-    /// where nothing was spent. Returns nil when no interval survives — the screen then
-    /// falls back to the caller's heuristic ceiling and says the figure is an estimate.
+    /// whole 1% steps, so their spending shows in a later step. Skipped are a RESET
+    /// (`dUtil < 0`), an exhausted window, and an interval that spent nothing. Returns
+    /// nil when no interval survives — the screen then falls back to the caller's
+    /// heuristic ceiling and says the figure is an estimate.
     public static func calibrate(_ samples: [Sample], session: Bool) -> Double? {
         var tokens = 0.0, util = 0.0
         for i in 1..<max(samples.count, 1) {

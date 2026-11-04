@@ -311,9 +311,8 @@ def record_completion(key: str, prompt: str, started_at: float,
     skipped, so the run/wait times still count it and the screen can say how many
     finished tasks it could not price.
 
-    A run attributed at zero tokens and no charge is not recorded at all: its agent
-    never answered — interrupted, refused, or retired before its first reply — so it
-    finished nothing, and its entry stays open.
+    A run attributed at zero tokens and no charge is not recorded: its agent never
+    answered, so it finished nothing and its entry stays open.
     """
     from . import hermesstore, runner, usagescan
 
@@ -675,12 +674,10 @@ def calibrate(samples: list[Sample], *, session: bool) -> float | None:
     rounding error should not count as much as an hour's.
 
     A flat interval (``d_util == 0``) still counts its tokens: the reading moves in
-    whole 1% steps, so most intervals of a slow window read flat, and the step their
-    spending eventually produces lands on a later interval. Skipped are an interval
-    the window RESET across (``d_util < 0``), one spent at an exhausted window, and
-    one where nothing was spent. Returns None when no interval survives — the caller
-    then falls back to the heuristic ceiling and the screen says the figure is an
-    estimate.
+    whole 1% steps, so their spending shows in a later step. Skipped are a RESET
+    (``d_util < 0``), an exhausted window, and an interval that spent nothing.
+    Returns None when no interval survives — the caller then falls back to the
+    heuristic ceiling and the screen says the figure is an estimate.
     """
     tokens = 0.0
     util = 0.0
