@@ -48,6 +48,12 @@ def _commit_all(repo: Path, msg: str) -> None:
     )
 
 
+#: A stub launcher's first line: the probe a merge must pass (``selfupdate._probe``)
+#: imports the unattended jobs and exits 0, which a stub that stands for a tray
+#: failing to come up still does.
+_PROBE_PASSES = '[ "${DIPLOMAT_UPDATE_PROBE:-}" = 1 ] && exit 0\n'
+
+
 def _make_origin(tmp_path: Path) -> Path:
     """A fake upstream whose build/launch scripts just drop marker files."""
     origin = tmp_path / "origin"
@@ -60,7 +66,7 @@ def _make_origin(tmp_path: Path) -> Path:
     # stays up, as a launcher that exits inside the relaunch's watch window is a
     # failed relaunch; the pid it records is what the fixture ends.
     (linux_pkg / "diplomat").write_text(
-        "#!/usr/bin/env bash\n"
+        "#!/usr/bin/env bash\n" + _PROBE_PASSES +
         "env > \"$MARKER_DIR/env.tmp\" && mv \"$MARKER_DIR/env.tmp\" \"$MARKER_DIR/env\"\n"
         "echo $$ > \"$MARKER_DIR/pid.tmp\" && mv \"$MARKER_DIR/pid.tmp\" \"$MARKER_DIR/relaunched\"\n"
         "exec sleep 10\n"
@@ -398,6 +404,69 @@ def test_a_quit_leaves_the_mark_and_the_next_launch_clears_it(monkeypatch):
     assert selfupdate._recorded_display_env().get("WAYLAND_DISPLAY") == "wayland-3"
 
 
+def _break_origin(origin: Path) -> None:
+    """Push a launcher nothing starts from, the way a bad PYTHONPATH breaks it."""
+    launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
+    launcher.write_text("#!/usr/bin/env bash\n"
+                        "echo 'python3: No module named diplomat_app' >&2\nexit 1\n")
+    _commit_all(origin, "broken launcher")
+
+
+def test_an_update_the_jobs_cannot_start_from_is_rolled_back(repos):
+    """The jobs run from the checkout they update: kept, a commit they cannot start
+    from would leave nothing to pull the fix."""
+    origin, clone, marker = repos
+    before = _git(clone, "rev-parse", "HEAD")
+    _break_origin(origin)
+    broken = _git(origin, "rev-parse", "HEAD")
+
+    selfupdate.run_scheduled()
+    assert _git(clone, "rev-parse", "HEAD") == before
+    assert _git(clone, "status", "--porcelain") == ""
+    assert not (marker / "built").exists()
+    assert _log()[1] == (f"skip: {broken[:7]} cannot start the updater (exit 1: python3: "
+                         f"No module named diplomat_app) - rolled back to {before[:7]}")
+
+    # Upstream unchanged: nothing is merged and undone again.
+    selfupdate.run_scheduled()
+    assert _log()[-2] == f"skip: {broken[:7]} could not start the updater; " \
+                         "waiting for a fix upstream"
+    assert _git(clone, "rev-parse", "HEAD") == before
+
+    # The fix upstream is pulled.
+    launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
+    launcher.write_text(_git(origin, "show", f"{before}:packages/diplomat-platform/linux/diplomat")
+                        + "\n")
+    _commit_all(origin, "fix")
+    assert selfupdate.run_scheduled() == 0
+    assert _git(clone, "rev-parse", "HEAD") == _git(origin, "rev-parse", "HEAD")
+    assert (marker / "built").exists()
+
+
+def test_the_update_button_rolls_back_a_commit_the_jobs_cannot_start_from(repos):
+    origin, clone, _marker = repos
+    before = _git(clone, "rev-parse", "HEAD")
+    _break_origin(origin)
+    with pytest.raises(selfupdate.UpdateError, match="cannot start the updater"):
+        selfupdate.pull()
+    assert _git(clone, "rev-parse", "HEAD") == before
+
+
+def test_the_probe_runs_the_jobs_imports_and_nothing_else(tmp_path):
+    """``DIPLOMAT_UPDATE_PROBE=1`` through the real launcher: it exits 0 having
+    imported the unattended jobs, without updating, reviving or starting a tray."""
+    root = Path(__file__).resolve().parents[4]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("DIPLOMAT_")}
+    env.update(HOME=str(tmp_path), XDG_STATE_HOME=str(tmp_path / "state"),
+               XDG_RUNTIME_DIR=str(tmp_path / "run"))
+    assert selfupdate._probe(root) == ""
+    env["DIPLOMAT_UPDATE_PROBE"] = "1"
+    proc = subprocess.run(["bash", str(selfupdate.linux_package(root) / "diplomat")],
+                          env=env, capture_output=True, text=True, timeout=120)
+    assert (proc.returncode, proc.stdout, proc.stderr) == (0, "", "")
+    assert not (tmp_path / "state").exists()
+
+
 def test_run_scheduled_relaunches_a_running_tray(repos, monkeypatch):
     origin, clone, marker = repos
     _advance_origin(origin)
@@ -424,7 +493,7 @@ def test_run_scheduled_reports_a_relaunched_applet_that_dies(repos, monkeypatch)
     a "relaunched running tray"."""
     origin, clone, marker = repos
     launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
-    launcher.write_text("#!/usr/bin/env bash\nexit 3\n")
+    launcher.write_text("#!/usr/bin/env bash\n" + _PROBE_PASSES + "exit 3\n")
     _advance_origin(origin)  # the pull brings the broken launcher over
     from diplomat_app import singleton
     from diplomat_app.singleton import _pidfile
@@ -442,7 +511,7 @@ def test_run_scheduled_reports_a_relaunched_applet_that_exits_cleanly(repos, mon
     crashed did. A clean exit is a failed swap, not a hand-off."""
     origin, clone, marker = repos
     launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
-    launcher.write_text("#!/usr/bin/env bash\nexit 0\n")
+    launcher.write_text("#!/usr/bin/env bash\n" + _PROBE_PASSES + "exit 0\n")
     _advance_origin(origin)
     from diplomat_app import singleton
     from diplomat_app.singleton import _pidfile
@@ -470,8 +539,8 @@ def test_run_scheduled_names_no_tray_when_the_relaunched_applet_ended_it(
         capture_output=True, text=True, check=True).stdout)
     (marker / "tray").write_text(str(tray))
     launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
-    launcher.write_text('#!/usr/bin/env bash\nkill -TERM "$(cat "$MARKER_DIR/tray")"\n'
-                        'sleep 0.5\nexit 3\n')
+    launcher.write_text('#!/usr/bin/env bash\n' + _PROBE_PASSES +
+                        'kill -TERM "$(cat "$MARKER_DIR/tray")"\nsleep 0.5\nexit 3\n')
     _advance_origin(origin)
     from diplomat_app import singleton
     from diplomat_app.singleton import _pidfile
@@ -766,7 +835,7 @@ def test_update_button_reports_a_relaunched_applet_that_dies(repos):
     "restarting…" outliving a handover that never comes."""
     origin, clone, marker = repos
     launcher = origin / "packages" / "diplomat-platform" / "linux" / "diplomat"
-    launcher.write_text("#!/usr/bin/env bash\nexit 3\n")
+    launcher.write_text("#!/usr/bin/env bash\n" + _PROBE_PASSES + "exit 3\n")
     _advance_origin(origin)
     qapp, store, view = _settings_view()
 

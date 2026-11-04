@@ -179,7 +179,10 @@ daily at **06:00** and runs the launcher headless (`DIPLOMAT_SELF_UPDATE=1`):
 fetch, merge if behind, rebuild `diplomat-core`, and relaunch a running tray
 onto it - none of it while the checkout's volume is below the
 [free-disk floor](../../../docs/automation.md#the-free-disk-floor). `Persistent=true`, so a 06:00 missed while the machine was off
-runs at the next boot. Without `systemctl` the install warns and carries on —
+runs at the next boot. A merge the launcher cannot start the two jobs from (a
+broken `PYTHONPATH`, a module that no longer imports) is rolled back before
+anything is built, and that upstream is skipped until it moves, so the fix still
+reaches the checkout. Without `systemctl` the install warns and carries on —
 only the schedule is lost, the Settings ▸ UPDATE button still works. Manage it
 alone with `./install/install-autoupdate.sh` / `./install/uninstall-autoupdate.sh`.
 
@@ -307,6 +310,7 @@ DIPLOMAT_PRINT_PROMPT=mine python -m diplomat_app  # assemble a Review prompt (m
 
 DIPLOMAT_SELF_UPDATE=1 python -m diplomat_app       # the unattended 06:00 update, run once
 DIPLOMAT_WATCHDOG=1 python -m diplomat_app          # launch the tray if none is up, run once
+DIPLOMAT_UPDATE_PROBE=1 python -m diplomat_app      # import those two and exit 0 (the merge check)
 
 # Snapshot a panel state to PNG (no real display required):
 DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \

@@ -71,7 +71,7 @@ enum Headless {
     private static let modeSuffixes = ["_TEST", "_DUMP", "_SCAN", "_POLL"]
 
     /// The Linux applet's modes that have no macOS twin and none of those suffixes.
-    private static let linuxOnlyModes: Set<String> = ["DIPLOMAT_AGENTS"]
+    private static let linuxOnlyModes: Set<String> = ["DIPLOMAT_AGENTS", "DIPLOMAT_UPDATE_PROBE"]
 
     /// Whether a variable is one a caller sets to ask for a one-shot run.
     private static func looksLikeMode(_ name: String) -> Bool {
