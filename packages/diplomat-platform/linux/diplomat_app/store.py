@@ -2971,7 +2971,7 @@ class Store(QObject):
         # its review. Decided here, while the sentinel `forget` deletes is still there.
         audited = [(r.label or r.run_id, r.source, r.pr_url, r.dispatched_at)
                    for r in gone
-                   if r.kind == "review" and r.pr_url and r.runs_here
+                   if reviewaudit.checked_on_retire(r)
                    and (getattr(t.states.get(r.run_id), "state", None) == agentstate.FINISHED
                         or agentregistry.finished_at(r.run_id) is not None)]
         # Before anything is said or priced, because a run the book still holds is

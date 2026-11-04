@@ -2876,6 +2876,19 @@ do {
           "a split on my own PR is not judged")
     check(findings([review("PENDING"), review(threads: 1), review(threads: 2)])
           == [pending, "posted its findings as 2 separate reviews instead of one"], "both together")
+    // One machine checks each run: the store the runs it spawned, a node the ones it ran.
+    let url7 = "https://github.com/acme/widgets/pull/7"
+    func retiring(kind: String = "review", url: String = url7,
+                  placement: AgentState.Placement = .local) -> AgentState.RunRecord {
+        AgentState.RunRecord(runID: "r", dispatchedAt: since, prNumber: 7, prURL: url, kind: kind,
+                             placement: placement)
+    }
+    check(ReviewAudit.checkedOnRetire(retiring()), "the store checks a review it spawned")
+    check(!ReviewAudit.checkedOnRetire(retiring(placement: .meshPeer))
+            && !ReviewAudit.checkedOnRetire(retiring(placement: .meshHere)),
+          "and leaves one the mesh placed to the node that ran it, even here")
+    check(!ReviewAudit.checkedOnRetire(retiring(kind: "conflicts")) && !ReviewAudit.checkedOnRetire(retiring(url: "")),
+          "a review run, on a PR")
     check(ReviewAudit.coordinates("https://github.com/acme/widgets/pull/7/").map { "\($0)" }
           == "(owner: \"acme\", repo: \"widgets\", number: 7)", "a PR URL's coordinates")
     for notPR in ["https://github.com/acme/widgets/issues/7", "https://ghe.example.com/acme/widgets/pull/7",

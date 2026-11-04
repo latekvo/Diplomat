@@ -37,10 +37,10 @@ out of the box. The five things it *cannot* answer for itself — which duties t
 deployment routes, where a node's state lives, where its events go, what "running a
 job" means on this machine, whether that work is already under way here, and how
 much of it this machine will run at once — it asks of a **host**
-([`szpontnet/host.py`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-core/szpontnet/host.py)). Every one has a working default, so a
-node with no host runs the canonical model, keeps its state in `~/.szpontnet`,
-discards its log, declines work it has no runner for, and accepts work without
-limit.
+([`szpontnet/host.py`](https://github.com/latekvo/Diplomat/blob/main/packages/szpontnet-core/szpontnet/host.py)), and it tells the host when a job it ran has
+finished. Every one has a working default, so a node with no host runs the
+canonical model, keeps its state in `~/.szpontnet`, discards its log, declines work
+it has no runner for, accepts work without limit, and checks nothing after a job.
 
 Diplomat is one such host
 ([`diplomat-runtime/diplomat_runtime/szponthost.py`](https://github.com/latekvo/Diplomat/blob/main/packages/diplomat-runtime/diplomat_runtime/szponthost.py)) and

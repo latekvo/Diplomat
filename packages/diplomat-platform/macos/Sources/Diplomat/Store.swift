@@ -1548,7 +1548,7 @@ final class Store: ObservableObject {
         // Only a run whose agent is done: a merge retires one that may still be filling
         // its review. Decided here, while the sentinel `forget` deletes is still there.
         let audited = gone
-            .filter { $0.kind == "review" && !$0.prURL.isEmpty && $0.runsHere
+            .filter { ReviewAudit.checkedOnRetire($0)
                 && (t.states[$0.runID]?.state == .finished || AgentRegistry.finishedAt($0.runID) != nil) }
             .map { (label: $0.label.isEmpty ? $0.runID : $0.label, source: $0.source,
                     url: $0.prURL, since: $0.dispatchedAt) }

@@ -196,7 +196,10 @@ def _retire(monkeypatch, records, failed=(), me="alice", answer=None, merged=(),
     return asked, warns
 
 
-def test_only_a_review_run_that_ran_here_is_checked(monkeypatch):
+def test_only_a_review_run_this_applet_spawned_is_checked(monkeypatch):
+    """A run the mesh placed, even back here, is the node's to check
+    (`test_a_finished_mesh_review_is_checked_by_the_node_that_ran_it`): checked here
+    too, one placed here would be reported twice."""
     records = [
         _run("ok"),
         _run("conflicts", kind="conflicts"),
@@ -206,7 +209,50 @@ def test_only_a_review_run_that_ran_here_is_checked(monkeypatch):
         _run("mesh-here", placement=agentstate.PLACEMENT_MESH_HERE),
     ]
     asked, _ = _retire(monkeypatch, records, failed={"never-ran"})
-    assert asked == [(URL, "alice", SINCE), (URL, "alice", SINCE)]
+    assert asked == [(URL, "alice", SINCE)]
+
+
+# MARK: - the node checks the runs it placed
+
+
+def _finished(monkeypatch, work_key, answer=None, login="carol"):
+    from diplomat_runtime import models, szponthost
+
+    asked = []
+
+    def audit(url, who, since):
+        asked.append((url, who, since))
+        if isinstance(answer, Exception):
+            raise answer
+        return answer or []
+
+    monkeypatch.setattr(reviewaudit, "audit", audit)
+    monkeypatch.setattr(models.API, "fetch_viewer_login", staticmethod(lambda: login))
+    szponthost.DiplomatHost().job_finished(work_key, SINCE)
+    return asked, [(e.source, e.detail) for e in activity.read() if e.action == "warn"]
+
+
+@pytest.mark.parametrize("kind", ["review", "review-reply"])
+def test_a_finished_mesh_review_is_checked_by_the_node_that_ran_it(monkeypatch, kind):
+    """The executor's login is the one that left the review, PENDING or not; the
+    dispatcher's cannot see it, and the applet beside the node has the agent only as
+    an untracked row with no PR."""
+    asked, warns = _finished(monkeypatch, f"{kind}:github.com/acme/widgets#7@abc123",
+                             answer=["left its review PENDING"])
+    assert asked == [(URL, "carol", SINCE)]
+    assert warns == [("mesh", "Mesh review · acme/widgets#7 left its review PENDING")]
+
+
+def test_the_node_checks_nothing_but_reviews(monkeypatch):
+    for key in ("conflicts:github.com/acme/widgets#7@abc123", "", "render:job"):
+        assert _finished(monkeypatch, key) == ([], [])
+
+
+def test_a_check_the_node_could_not_run_says_so(monkeypatch):
+    _, warns = _finished(monkeypatch, "review:github.com/acme/widgets#7@abc123",
+                         answer=gh.GHError("gh exited 1: boom"))
+    assert warns == [("mesh", "Mesh review · acme/widgets#7 could not check its review: "
+                              "gh exited 1: boom")]
 
 
 def test_a_run_retired_by_its_merge_is_checked_only_once_its_agent_is_done(monkeypatch):
