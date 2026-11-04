@@ -59,8 +59,7 @@ final class HangWatch: @unchecked Sendable {
         let now = AppLog.uptime
         if let beat = heartbeat, now - lastBeat >= beat { logHeartbeat(now) }
         if let sent = pingSent {
-            // The work in flight while main is late, not once it has caught up and the
-            // work that held it may be over. Any hang long enough to log spans a tick.
+            // Snapshot now: by the time main answers, the work that held it may be over.
             if lateWork == nil { lateWork = AppLog.inFlight() }
             if !reported, now - sent >= sampleAfter {
                 reported = true
