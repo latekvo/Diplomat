@@ -7,10 +7,12 @@ import DiplomatCore
 /// `~/.diplomat/pr-monitor/telemetry.jsonl`, folds it through the shared arithmetic
 /// (`DiplomatCore.Telemetry`), and draws nine figures:
 ///
-/// * what share of the 5-hour rate-limit window one auto-task consumes, on average;
-/// * how that share is distributed against BOTH rate-limit windows, as two histograms
-///   on one axis, each with a fitted normal and a confidence interval on its mean;
-/// * what the probe measured to be left of each rate-limit window, over the lookback;
+/// * what share of the 7-day rate-limit window one auto-task consumes, on average;
+/// * how that share is distributed, as a histogram with a fitted normal and a
+///   confidence interval on its mean — beside the same for the 5-hour window, for
+///   tasks the ledger's 5-hour readings covered;
+/// * what the probe measured to be left of the 7-day window over the lookback, over
+///   whatever 5-hour readings the range holds;
 /// * how many auto-reviews were owed but unstarted, over the lookback;
 /// * the same for auto-fixes;
 /// * how many tasks finished in each equal bucket of the lookback;
@@ -140,8 +142,10 @@ struct TelemetryView: View {
     // MARK: - Cards
 
     /// A card's heading row: tinted symbol, title, the headline number on the right —
-    /// the one shape all four cards share.
-    private func cardHead(_ id: String, _ value: String) -> some View {
+    /// the one shape all four cards share. `valueTint` colours the number as the
+    /// series it quotes when that is not the card's own.
+    private func cardHead(_ id: String, _ value: String,
+                          valueTint: Color? = nil) -> some View {
         HStack(spacing: 6) {
             Image(systemName: symbol(id)).font(.system(size: 10, weight: .bold))
                 .foregroundStyle(tint(id))
@@ -149,7 +153,7 @@ struct TelemetryView: View {
                 .foregroundStyle(.secondary).kerning(1)
             Spacer(minLength: 4)
             Text(value).font(.system(size: 17, weight: .bold).monospacedDigit())
-                .foregroundStyle(tint(id))
+                .foregroundStyle(valueTint ?? tint(id))
         }
     }
 
@@ -178,38 +182,32 @@ struct TelemetryView: View {
     private func costCard(_ s: Telemetry.Summary) -> some View {
         let d = s.perTask
         let week = s.perTaskWeek
-        let priced = s.sessionLimitTokens != nil && d.count > 0
         // Built outside the ViewBuilder: a chain of ternaries over concatenated
         // strings inside `Text(...)` blows past SwiftUI's type-check budget.
         let headline: String = {
-            if priced { return Telemetry.percent(d.mean) }
-            if d.count == 0 && s.perTaskTokensMean > 0 {
-                return Telemetry.tokens(s.perTaskTokensMean)
-            }
+            if week.count > 0 { return Telemetry.percent(week.mean) }
+            if s.perTaskTokensMean > 0 { return Telemetry.tokens(s.perTaskTokensMean) }
             return "—"
         }()
         let caption: String = {
-            if priced {
-                let head = "of the 5-hour window, per task · median "
-                    + Telemetry.percent(d.median)
-                return week.count > 0
-                    ? head + " · \(Telemetry.percent(week.mean)) of the 7-day window"
+            if week.count > 0 {
+                let head = "of the 7-day window, per task · median "
+                    + Telemetry.percent(week.median)
+                return d.count > 0
+                    ? head + " · \(Telemetry.percent(d.mean)) of the 5-hour window"
                     : head
             }
-            if d.count == 0 && s.perTaskTokensMean > 0 {
-                return "tokens per task. The share of the 5-hour window is Claude "
+            if s.perTaskTokensMean > 0 {
+                return "tokens per task. The share of the 7-day window is Claude "
                     + "Code's own — it counts only tasks that ran on it, and needs "
                     + "two quota readings from the OAuth usage probe."
             }
             return "No finished auto-task in this range yet."
         }()
-        // Whichever windows the ledger priced — not always the 5-hour one, which
-        // resets on its own cycle, so a ledger whose samples straddle a reset prices
-        // only the week. The dispatch gate holds work against that weekly figure
-        // (`AutoBudget.costs`), so drawing nothing here would read "unpriced" over a
-        // measurement.
+        // Whichever windows the ledger priced: the 5-hour series holds only tasks
+        // its readings covered, and the week can be unpriced while it is not.
         let lines = spreadLines(d, week)
-        // Both series hold the same tasks, so whichever was priced is the sample.
+        // The week holds every task the 5-hour series does, so the larger is the sample.
         let shown = Swift.max(d.count, week.count)
         VStack(alignment: .leading, spacing: 6) {
             cardHead("limitPerTask", headline)
@@ -225,7 +223,8 @@ struct TelemetryView: View {
                 }
                 if week.count == 0 {
                     note("The 7-day window has no price yet — it moves slowly, so it "
-                         + "takes longer than the 5-hour one to measure a task against.")
+                         + "takes a longer run of quota readings to measure a task "
+                         + "against.")
                 }
                 if shown < (model?.minSample ?? 5) {
                     Text("Only \(shown) finished task\(shown == 1 ? "" : "s") — the "
@@ -241,16 +240,19 @@ struct TelemetryView: View {
     }
 
     /// The one card here that is measured rather than derived: what the OAuth usage
-    /// probe says is left of each rate-limit window, drawn where it was sampled. It
-    /// stays truthful on a machine whose window was never priced, which is exactly
-    /// when `costCard` cannot show a percentage at all.
+    /// probe says is left of the 7-day window, drawn where it was sampled, over any
+    /// 5-hour readings the range holds. It stays truthful on a machine whose window
+    /// was never priced, which is exactly when `costCard` cannot show a percentage.
     @ViewBuilder
     private func quotaCard(_ s: Telemetry.Summary, now: Double) -> some View {
-        let sessionText = s.sessionLeftPct.map { Telemetry.percent($0) } ?? "—"
         let weekText = s.weekLeftPct.map { Telemetry.percent($0) } ?? "—"
-        let gaps = s.quota.filter { $0.sessionPct == nil }.count
+        let gaps = s.quota.filter { $0.weekPct == nil }.count
+        let weekKey: (Color, String) = (tint("quotaWeek"), "\(title("quotaWeek")) \(weekText)")
+        let hasSession: Bool = s.quota.contains { $0.sessionPct != nil }
+        let key: [(Color, String)] = hasSession
+            ? [weekKey, (tint("quotaLeft"), "5-hour")] : [weekKey]
         VStack(alignment: .leading, spacing: 6) {
-            cardHead("quotaLeft", sessionText)
+            cardHead("quotaLeft", weekText, valueTint: tint("quotaWeek"))
             note(blurb("quotaLeft"))
             if s.quota.isEmpty {
                 note("No quota readings in this range. The probe uses the OAuth token "
@@ -264,8 +266,7 @@ struct TelemetryView: View {
                                weekTint: tint("quotaWeek"), spans: s.taskSpans)
                         .frame(height: 120)
                 }
-                legend([(tint("quotaLeft"), "5-hour \(sessionText)"),
-                        (tint("quotaWeek"), "\(title("quotaWeek")) \(weekText)")])
+                legend(key)
                 // A gap is the probe failing to answer, not the window emptying. The
                 // chart draws through a short one and breaks across a long one; saying
                 // how many keeps a blind stretch from reading as a quiet one.
@@ -378,11 +379,11 @@ struct TelemetryView: View {
         if let first = s.firstSampleAt {
             parts.append("quota readings since \(dayLabel(first))")
         }
-        if let limit = s.sessionLimitTokens {
-            parts.append("5-hour window priced at ≈\(Telemetry.tokens(limit)) tokens, measured")
-        }
         if let limit = s.weekLimitTokens {
-            parts.append("7-day window at ≈\(Telemetry.tokens(limit)) tokens")
+            parts.append("7-day window priced at ≈\(Telemetry.tokens(limit)) tokens, measured")
+        }
+        if let limit = s.sessionLimitTokens {
+            parts.append("5-hour window at ≈\(Telemetry.tokens(limit)) tokens, from its past readings")
         }
         if s.unattributedCount > 0 {
             parts.append("\(s.unattributedCount) finished task"
@@ -401,11 +402,9 @@ struct TelemetryView: View {
 /// rate-limit window, the fitted normal over each, and the confidence interval on each
 /// mean as a shaded band.
 ///
-/// Both windows on one x axis, because the whole question the card answers is *which
-/// ceiling this work is really spending against* — and that is the distance between the
-/// two humps. A task is a large slice of a 5-hour window and a sliver of a week, so the
-/// weekly series sits far to the left; the axis is honest about that rather than giving
-/// each series a scale of its own.
+/// Both windows on one x axis rather than a scale each: a task is a large slice of a
+/// 5-hour window and a sliver of a week, so the weekly series sits far to the left, and
+/// a shared axis keeps that distance honest.
 ///
 /// The bars are grouped inside each bin, red then yellow, rather than stacked or
 /// overlaid: near zero the two series share bins, and a translucent overlay there would
@@ -668,7 +667,7 @@ private struct FinishedChart: View {
     }
 }
 
-/// Both rate-limit windows over the lookback, on a fixed 0-100% axis.
+/// The rate-limit windows over the lookback, on a fixed 0-100% axis.
 ///
 /// Nothing here is derived: these are the readings the OAuth usage probe returned,
 /// drawn where they were taken. The axis is pinned to 0-100 rather than scaled to the
@@ -676,8 +675,9 @@ private struct FinishedChart: View {
 /// and an auto-scaled one would show that week and a week of exhaustion as the same
 /// picture.
 ///
-/// The 5-hour window is drawn as a fill (it saws — it refills on its own cycle, so the
-/// shape matters more than any one value) and the 7-day as a line over it.
+/// The 7-day window is a line; wherever the range holds 5-hour readings, that window is
+/// a fill beneath it (it saws — it refilled on its own cycle, so the shape matters more
+/// than any one value).
 private struct QuotaChart: View {
     let points: [Telemetry.QuotaPoint]
     /// The lookback the axis spans, and the instant it ends at. The axis is the

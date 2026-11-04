@@ -7,7 +7,7 @@
   "_gatheringComment": "A poll runs every 3 minutes, which is far finer than any chart here needs and would grow the ledger by ~70KB a day. One sample every 15 minutes still leaves ~1300 usable intervals across a fortnight to price the rate-limit window from, and keeps two months of history under a megabyte. retainDays MUST be at least the longest range above, or the screen would offer a lookback the ledger no longer covers; the file is rewritten to that horizon once it passes maxLedgerBytes.",
   "sampleIntervalSecs": 900,
   "retainDays": 60,
-  "_quotaFreshnessComment": "quotaFreshSamples = how many missed samples a quota reading survives before it stops being an answer to \"what is left right now\" \u2014 the silence the chart draws through, and the age past which the headline reads \"\u2014\". One number for both, or a broken line ends up captioned with a figure. Four intervals is an hour: enough to span a 5-hour window's reset instant but never a whole rise and fall, and on a machine whose probe is answering it never fires at all.",
+  "_quotaFreshnessComment": "quotaFreshSamples = how many missed samples a quota reading survives before it stops being an answer to \"what is left right now\" \u2014 the silence the chart draws through, and the age past which the headline reads \"\u2014\". One number for both, or a broken line ends up captioned with a figure. Four intervals is an hour: enough to ride out a few missed polls, and on a machine whose probe is answering it never fires at all.",
   "quotaFreshSamples": 4,
   "maxLedgerBytes": 4194304,
 
@@ -20,7 +20,7 @@
   ],
   "defaultRangeDays": 14,
 
-  "_seriesComment": "steps = how many instants the pending-over-time series is sampled at across the whole range (evenly spaced, the last one being 'now'); bins = histogram buckets for the per-task spread. Both are fixed so the two platforms draw the same chart from the same ledger. The spread is TWO histograms — the same tasks against the 5-hour window and against the 7-day one — sharing one set of bin edges, so a bin is the same slice of the x axis for both and the two can be read against each other.",
+  "_seriesComment": "steps = how many instants the pending-over-time series is sampled at across the whole range (evenly spaced, the last one being 'now'); bins = histogram buckets for the per-task spread. Both are fixed so the two platforms draw the same chart from the same ledger. The spread is up to TWO histograms — tasks against the 7-day window, and those the ledger's 5-hour readings covered against the 5-hour one — sharing one set of bin edges, so a bin is the same slice of the x axis for both and the two can be read against each other.",
   "series": { "steps": 56, "bins": 20 },
 
   "_confidenceComment": "A normal-approximation interval on the MEAN (z x sd / sqrt(n)), not a prediction interval for one task — the shaded band answers 'where does the average sit', which is what a budget is planned against. z is the two-sided normal quantile for the level.",
@@ -33,7 +33,7 @@
     {
       "id": "limitPerTask",
       "title": "Limit per task",
-      "blurb": "Mean share of the 5-hour rate-limit window one auto-task consumes.",
+      "blurb": "Mean share of the 7-day rate-limit window one auto-task consumes.",
       "unit": "percent",
       "emoji": "📊",
       "linuxGlyph": "◴",
@@ -41,10 +41,10 @@
       "colorHex": "#FF9500"
     },
     {
-      "_comment": "The card, which charts BOTH windows at once — the same tasks priced against each — so it is named for both. The two entries below are the SERIES: their titles name the two windows in the figures printed under the chart, and their colours the bars. A task is a big slice of a 5-hour window and a sliver of a week, so the two humps sit far apart on the shared axis; that distance IS the finding, and it is which ceiling the work is really spending against.",
+      "_comment": "The card, which charts both windows at once — tasks priced against each — so it is named for both. The two entries below are the SERIES: their titles name the two windows in the figures printed under the chart, and their colours the bars. The 5-hour series holds only tasks started while the ledger still had readings of that window. A task is a big slice of a 5-hour window and a sliver of a week, so the two humps sit far apart on the shared axis.",
       "id": "limitSpread",
       "title": "Spread",
-      "blurb": "The same tasks priced against both rate-limit windows, each as a histogram with a confidence interval on its mean. Whichever hump sits further right is the ceiling that runs out first.",
+      "blurb": "Tasks priced against each rate-limit window, as a histogram with a confidence interval on its mean. The 5-hour series counts only tasks started while the ledger still had readings of that window.",
       "unit": "percent",
       "emoji": "🔔",
       "linuxGlyph": "◠",
@@ -54,7 +54,7 @@
     {
       "id": "spreadSession",
       "title": "5-hour",
-      "blurb": "Share of the 5-hour rate-limit window one auto-task consumes.",
+      "blurb": "Share of the 5-hour rate-limit window an auto-task consumed, for tasks its readings covered.",
       "unit": "percent",
       "emoji": "🔴",
       "linuxGlyph": "◼",
@@ -72,10 +72,10 @@
       "colorHex": "#FFCC00"
     },
     {
-      "_comment": "Not derived from anything: the OAuth usage probe reports what is left of each rate-limit window, every sample, and this is that reading drawn as it was measured. The percentages elsewhere on the screen are per-TASK, which needs the window priced in tokens first (see calibrate) — this one does not.",
+      "_comment": "Not derived from anything: the OAuth usage probe reports what is left of the 7-day rate-limit window, every sample, and this is that reading drawn as it was measured, over the 5-hour readings older samples carry. The headline is the 7-day figure, and this tint is both the card's and the 5-hour fill's. The percentages elsewhere on the screen are per-TASK, which needs the window priced in tokens first (see calibrate) — this one does not.",
       "id": "quotaLeft",
       "title": "Rate limit left",
-      "blurb": "What is left of each rate-limit window, as measured every sample. The 5-hour window saws — it refills on its own cycle; the 7-day one is the slower ceiling.",
+      "blurb": "What is left of the 7-day rate-limit window, as measured every sample. The shaded fill is the 5-hour window, wherever the ledger holds readings of it; the usage probe reports the week alone.",
       "unit": "percent",
       "emoji": "\ud83d\udd0b",
       "linuxGlyph": "\u25d4",
@@ -85,7 +85,7 @@
     {
       "id": "quotaWeek",
       "title": "7-day",
-      "blurb": "The weekly window, the slower of the two ceilings.",
+      "blurb": "The weekly rate-limit window.",
       "unit": "percent",
       "emoji": "\ud83d\udcc5",
       "linuxGlyph": "\u25d1",

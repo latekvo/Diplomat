@@ -65,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // mode (see `Headless` for the single env-var list shared with Store) so a
         // dump/lookup run can't kill the live app.
         if !Headless.active {
+            AppLog.startSession()
             SingleInstance.terminateOthers()
             OperatorQuit.clear()
             Daemon.markLoginStartUnattended()
@@ -249,6 +250,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_REPOPATHS_TEST"] == "1" {
             exit(RepoPathsTest.run() ? 0 : 1)
         }
+        // Diagnostic-log self-test: the line format, rotation, timed work, a busy and a
+        // waiting main-thread hang with its sample, and the window's show and close lines,
+        // all in a scratch log directory. Exit code = pass/fail.
+        if env["DIPLOMAT_APPLOG_TEST"] == "1" {
+            Task { @MainActor in exit(await AppLogTest.run() ? 0 : 1) }
+        }
         // Reopen self-test: a window closed on Settings reopens on the panel, one closed
         // on another screen keeps it. Orders no window in. Exit code = pass/fail.
         if env["DIPLOMAT_REOPEN_TEST"] == "1" {
@@ -302,12 +309,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let endsSession = event?.attributeDescriptor(forKeyword: kAEQuitReason) != nil
                 || event?.paramDescriptor(forKeyword: kAEQuitReason) != nil
                 || fromName == "loginwindow"
-            if OperatorQuit.isDeliberate(senderIsDiplomat: from.map { _ in fromName == SingleInstance.execName },
-                                         endsSession: endsSession) {
-                OperatorQuit.mark()
-            }
+            let deliberate = OperatorQuit.isDeliberate(
+                senderIsDiplomat: from.map { _ in fromName == SingleInstance.execName }, endsSession: endsSession)
+            AppLog.log("app", "quit asked by \(from.map { "\(fromName ?? "?") (\($0))" } ?? "this app")"
+                + (endsSession ? ", ending the session" : "") + (deliberate ? ", the operator's" : ""))
+            if deliberate { OperatorQuit.mark() }
         }
         return .terminateNow
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        AppLog.exiting = true
+        if !Headless.active { AppLog.log("app", "exit") }
     }
 }
 
@@ -426,6 +439,7 @@ enum SingleInstance {
     }
 
     private static func log(_ msg: String) {
+        AppLog.log("app", "singleton: \(msg)")
         try? FileHandle.standardError.write(contentsOf: Data("Diplomat singleton: \(msg)\n".utf8))
     }
 }
@@ -897,6 +911,24 @@ enum Dump {
                                markReady: false, leaveReviews: true, replyToReviews: false,
                                specificPR: String(sample), finalPass: sampleVerdict,
                                specificAuthor: .theirs).buildPrompt())
+
+            // New community issues: the scan the monitor runs, against a mark a week back
+            // (a live mark is the newest issue, which would show nothing).
+            let open = try await API.fetchOpenIssues()
+            let weekAgo = Date().addingTimeInterval(-7 * 86400)
+            let scan = Filters.newCommunityIssues(open, since: weekAgo, now: Date())
+            print("\n== new community issues: \(scan.fresh.count) of \(open.count) open issue(s) "
+                + "filed since \(weekAgo) would be queued ==")
+            for i in open where i.createdAt > weekAgo {
+                let queued = scan.fresh.contains { $0.number == i.number }
+                print("  #\(i.number)  \(queued ? "QUEUE" : "skip ")  @\(i.author)[\(i.authorAssociation)]  "
+                    + "assignees=\(i.assignees.count) teamReplied=\(i.memberResponded)  \(i.title.prefix(40))")
+            }
+            print("→ next mark: \(scan.since)")
+            if let first = scan.fresh.first {
+                print("\n----- COMMUNITY FIX prompt (#\(first.number)) -----")
+                print(IssueConfig(target: .contributors, me: me).forIssue(first.number).buildPrompt())
+            }
 
             // Mesh coordination: every machine scans and routes each find through
             // claim-gated DISPATCH to the best-surplus node (szpontnet-spec/docs/12) —

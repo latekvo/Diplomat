@@ -498,7 +498,15 @@ public enum CommsWatch {
         ]
         for keyword in settings.keywords {
             let k = keyword.replacingOccurrences(of: "\"", with: "")
-            searches.append(("matches of \"\(k)\"", queries.keyword.filled(["keyword": k])))
+            // Slack expands a `*` only outside quotes, so a glob goes word by word.
+            let query = k.contains("*")
+                ? CoreAssets.CommsModel.Query(
+                    keywords: k.split(separator: " ").flatMap {
+                        queries.wildcard.filled(["keyword": String($0)]).keywords
+                    },
+                    filters: queries.wildcard.filters)
+                : queries.keyword.filled(["keyword": k])
+            searches.append(("matches of \"\(k)\"", query))
         }
         var found: [String: SlackMatch] = [:]
         var gaps: [String: Int] = [:]

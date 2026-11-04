@@ -234,6 +234,30 @@ class Filters:
             return []
         return [i for i in in_scope if not i.assignees] if unassigned_only else in_scope
 
+    @staticmethod
+    def new_community_issues(issues: list[OpenIssue], since: datetime | None,
+                             now: datetime) -> tuple[list[OpenIssue], datetime]:
+        """The community issues filed after ``since`` that nobody has picked up yet,
+        oldest first, and the mark the next scan starts from: the newest
+        ``created_at`` seen, by anyone (Swift: ``Filters.newCommunityIssues``).
+
+        Each issue is offered by exactly one scan, because the mark moves past it
+        whatever happens next. An issue the fix skips (a feature request, a bug it
+        cannot reproduce) leaves the issue as it found it, and a level-triggered rule
+        would queue it again on every poll.
+
+        ``since`` is ``None`` on the first scan, which offers nothing and only sets the
+        mark. Switching the monitor on never queues the backlog; a Fix-issues sweep
+        covers that. The mark is GitHub's own clock (``created_at``); ``now`` is used
+        only when there is no open issue to read it from."""
+        newest = max((i.created_at for i in issues), default=None)
+        if since is None:
+            return [], newest or now
+        fresh = sorted((i for i in issues
+                        if i.created_at > since and i.is_external and not i.is_addressed),
+                       key=lambda i: i.created_at)
+        return fresh, max(since, newest or since)
+
 
 # MARK: - Tiny formatting helpers
 

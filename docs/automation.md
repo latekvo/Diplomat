@@ -4,7 +4,7 @@ The monitors that dispatch agents without being asked, the task cap, how a run i
 
 ## Autonomous monitors
 
-The applets don't just render lists - they act on them. Three background
+The applets don't just render lists - they act on them. Four background
 monitors ship **ON by default** (opt out in Settings). Know what that means
 before running it: they **spawn real terminal windows** running agents,
 and the auto-fix agents **push to your PR branches**. Those background windows
@@ -37,6 +37,18 @@ nudge opens no window at all - it types into a session that already exists.)
   speaks for this monitor alone - conflicts, my own review threads, a sweep and a
   wizard press are untouched by it, so the Review wizard still reviews anyone. The
   ban wins where both apply.
+- **New community issues** - on each poll, reads the repo's newest open issues and
+  queues a [Fix-issues](actions.md#fix-issues) fix (default depth, bugs only, a draft PR
+  and a comment on the issue) for each one filed from outside the org (author
+  association other than `MEMBER` / `OWNER`) that nobody is assigned to and nobody on the
+  team (`MEMBER` / `OWNER` / `COLLABORATOR`) has commented on. The fix claims the issue, reproduces it, and fixes it only if it
+  reproduces. Only issues filed after the monitor's first scan count: the mark is the
+  newest `createdAt` it has seen, so switching it on never queues the backlog, and each
+  issue is queued once whatever the fix makes of it - one it skips is not retried. The
+  fixes wait in the issue-fix band of the queue as cancellable asks, like a sweep's.
+  Switched off, it queues nothing and forgets its mark, so issues filed meanwhile are
+  left for a sweep. Banned authors are skipped. With a mesh up, every machine running
+  it queues the same issue; the assignee claim is what keeps a second fix off it.
 - **Claude API-error watcher** - Claude Code runs only; the banners it matches are
   Claude Code's, and an OpenCode or Hermes agent that errors reads as a finished
   turn instead - its runner says so, so the run is retired, its bay and its PR are
@@ -75,11 +87,11 @@ immediate poll on wake/enable, not from a tight loop. Both cadences are
 overridable for tuning (`DIPLOMAT_AUTOFIX_SECS`, floor 60s on macOS / 30s on
 Linux; `DIPLOMAT_APIWATCH_SECS`, floor 5s).
 
-**At most 2 automatic agents run at once** (Settings; 1-16). Both monitors above
+**At most 2 automatic agents run at once** (Settings; 1-16). The two PR monitors above
 are level-triggered over everything GitHub currently owes, so one poll of a busy
 day would otherwise dispatch every pending unit in a single pass - a terminal
 window and an agent session per conflicted PR and per owed review, all at the
-same moment. The cap is the *machine's*, not a monitor's: it spans both monitors,
+same moment. The cap is the *machine's*, not a monitor's: it spans every monitor,
 the work a sweep queues, and any work a mesh peer routes here, and it counts
 agents that are really running (`ps`, so it survives an applet restart) rather than
 a tally that can drift. The agent a wizard press opens on the spot is outside it
@@ -226,11 +238,11 @@ halfway leaves a half-updated checkout.
 
 The cap bounds how many automatic agents run at once. The budget bounds whether any
 of them should start at all - because a machine can have three empty bays and 4% of
-its 5-hour window left, and spending that on an auto-review is how you find the
+its weekly window left, and spending that on an auto-review is how you find the
 limit gone the next time you sit down to work.
 
 What a task costs is measured, not guessed. The Telemetry ledger already prices
-every finished agent as a share of the window it was spent from (*Limit per task*),
+every finished agent as a share of the 7-day window (*Limit per task*),
 so the question has a statistical answer - and the one worth asking is about the
 **next** task, not the average one. Half of all tasks cost more than the mean, and
 the distribution is right-skewed (most small, a few enormous), so a gate set at the
@@ -245,12 +257,9 @@ substitute for each other - a Hermes task held against a Claude window is gated 
 limit it never touches, and a machine not logged into Claude Code at all would have
 no gate whatsoever.
 
-- **Claude Code** spends Anthropic **rate-limit windows**, which that account
-  publishes only as a percentage. Both windows gate - a task has to fit inside what
-  is left of the 5-hour one *and* the 7-day one, since either can be the one that
-  runs out. Each window is bounded from its own distribution - the same pair the
-  Telemetry screen draws - so a window the ledger cannot price yet leaves the other
-  one gated on what was actually measured.
+- **Claude Code** spends the Anthropic 7-day **rate-limit window**, which that
+  account publishes only as a percentage. A task has to fit inside what is left of
+  it, bounded from the same distribution the Telemetry screen draws.
 - **Hermes** (and any other runner billed by a provider) spends **money**. Hermes
   prices each of its own sessions against the model it ran on, so the ledger carries
   what the task cost in dollars and which model's rates it was charged at - and the

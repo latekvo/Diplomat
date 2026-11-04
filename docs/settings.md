@@ -143,8 +143,12 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   with its three withhold-the-verdict suppressors (SKILL / installer / community), and
   **Soft-approve clean PRs** (a thank-you COMMENT review, never an APPROVE; independent
   of the verdict switch).
+- **Fix new community issues** - the [new-community-issue
+  monitor](automation.md#autonomous-monitors) (**default on**). Unlike the two toggles above,
+  switched off it queues nothing, and issues filed while it is off are left for a
+  [Fix-issues](actions.md#fix-issues) sweep.
 - **Run at most N automatic tasks at a time** - this machine's hard cap on
-  concurrent automatic agents (**default 2**, range 1-16), across both monitors,
+  concurrent automatic agents (**default 2**, range 1-16), across every monitor,
   the work a sweep queues, and any work a mesh peer routes here. The agent a
   wizard press opens on the spot is never capped and doesn't count against it; work
   over the cap is deferred to the next poll, not dropped. Like the repo root and for
@@ -157,7 +161,7 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   hand while the ledger cannot price a task yet - a share of a window (**default
   20%**) under Claude Code, or dollars on the account (**default $1.00**) under a
   runner billed in money, once a task has been charged here in the last 14 days. Priced from the same per-task figure the
-  [Telemetry](telemetry.md) screen shows, against both rate-limit windows or against
+  [Telemetry](telemetry.md) screen shows, against the 7-day rate-limit window or against
   both of the OpenRouter ceilings. Held work waits under [Agent tasks](panel.md#agent-tasks)
   and starts when a window refills or the balance is topped up; *execute now*
   overrides it, a wizard spawn that

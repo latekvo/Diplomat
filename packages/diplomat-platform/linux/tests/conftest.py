@@ -115,18 +115,22 @@ def outside_a_user_service(tmp_path, monkeypatch):
     yield
 
 
-@pytest.fixture(autouse=True)
-def no_github_reads(monkeypatch):
+@pytest.fixture(scope="session", autouse=True)
+def no_github_reads():
     """Fail loudly instead of shelling out to the real ``gh``.
 
     Every GitHub read in the applet funnels through :func:`gh.run`, and a test that
     reaches it is a test whose answer depends on the operator's own PRs, their auth,
     and the network — green here, red on a runner with no ``GH_TOKEN``, and slow and
     rate-limit-consuming in both. It is easy to reach by accident: one poll drives
-    BOTH monitors, so stubbing one monitor's fetch leaves the other's live.
+    every monitor, so stubbing one monitor's fetch leaves the others' live.
 
     Tests that mean to exercise a fetch stub ``autofixmonitor.fetch_*`` (or
     ``models.API``) themselves; this is the backstop for the ones that don't.
+
+    Session-wide and never undone: a poll a test started on a daemon thread outlives
+    it, and ``gh.graphql`` swallows this refusal and retries 0.8 s later, by when a
+    per-test patch is gone.
     """
     from diplomat_runtime import gh
 
@@ -134,11 +138,10 @@ def no_github_reads(monkeypatch):
         raise AssertionError(
             f"a test reached the real `gh` ({' '.join(args[:2])}…) — stub the fetch "
             "it goes through (autofixmonitor.fetch_snapshots / fetch_review_requests "
-            "/ fetch_closed_prs)"
+            "/ fetch_closed_prs / fetch_open_issues)"
         )
 
-    monkeypatch.setattr(gh, "run", refuse)
-    yield
+    gh.run = refuse
 
 
 @pytest.fixture(autouse=True)
@@ -156,6 +159,18 @@ def nothing_closed(monkeypatch):
 
     real = autofixmonitor.fetch_closed_prs
     monkeypatch.setattr(autofixmonitor, "fetch_closed_prs", lambda *a, **k: set())
+    yield real
+
+
+@pytest.fixture(autouse=True)
+def no_open_issues(monkeypatch):
+    """Answer the new-community-issue monitor's read with an empty repo, and yield the
+    real function. Unstubbed it would reach ``gh`` on every poll and stand the cycle
+    down as a failed fetch; a test about that monitor stubs the issues itself."""
+    from diplomat_app import autofixmonitor
+
+    real = autofixmonitor.fetch_open_issues
+    monkeypatch.setattr(autofixmonitor, "fetch_open_issues", lambda: [])
     yield real
 
 
@@ -335,6 +350,31 @@ def isolated_comms_dir(tmp_path, monkeypatch):
     monkeypatch.delenv("DIPLOMAT_SLACK_TOKEN", raising=False)
     monkeypatch.setenv("DIPLOMAT_CLAUDE", str(tmp_path / "no-claude"))
     yield
+
+
+@pytest.fixture(autouse=True)
+def no_comms_replies(monkeypatch):
+    """Answer every ``comms-reply`` with "no reply due", and yield the real function.
+
+    A tick that queues work hands its ping to the reply worker, which would otherwise run
+    the real core on a background thread and append ``reply`` lines to the log a test is
+    reading."""
+    from diplomat_runtime import comms
+
+    real = comms.reply
+    monkeypatch.setattr(comms, "reply", lambda request: {"outcome": None, "text": None})
+    yield real
+
+
+@pytest.fixture(autouse=True)
+def no_session_probe(monkeypatch):
+    """Read the session lock as unknown, and yield the real probe: the host's logind
+    must not decide whether a test is away."""
+    from diplomat_runtime import comms
+
+    real = comms.session_locked
+    monkeypatch.setattr(comms, "session_locked", lambda: None)
+    yield real
 
 
 @pytest.fixture(autouse=True)

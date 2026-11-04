@@ -46,6 +46,7 @@ final class MainWindow {
             window.center()
         }
         if !Headless.active { window.setFrameAutosaveName(Self.frameName) }
+        WindowLog.track(window)
         NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
                                                object: window, queue: .main) { _ in
             NotificationCenter.default.post(name: MainWindow.didClose, object: nil)
@@ -55,11 +56,59 @@ final class MainWindow {
     func show() {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        WindowLog.shown(window)
     }
 
     func showSettings() {
         show()
         NotificationCenter.default.post(name: Self.openSettings, object: nil)
+    }
+}
+
+/// Logs each open of a window once it has settled, and each close (`AppLog`). A show
+/// not on screen and opaque by then is the "won't open" failure.
+enum WindowLog {
+    static var settle: TimeInterval = 0.4
+    private static var closesKey: UInt8 = 0
+
+    private static func closes(_ win: NSWindow) -> Int {
+        objc_getAssociatedObject(win, &closesKey) as? Int ?? 0
+    }
+
+    static func track(_ win: NSWindow) {
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+                                               object: win, queue: .main) { note in
+            guard let win = note.object as? NSWindow else { return }
+            objc_setAssociatedObject(win, &closesKey, closes(win) + 1, .OBJC_ASSOCIATION_RETAIN)
+            if !AppLog.exiting { AppLog.log("window", "close (was visible=\(win.isVisible ? 1 : 0))") }
+        }
+    }
+
+    /// Call right after ordering `win` in. One closed again before it settled is not judged.
+    static func shown(_ win: NSWindow) {
+        let orderedIn = win.isVisible
+        let closesBefore = closes(win)
+        DispatchQueue.main.asyncAfter(deadline: .now() + settle) {
+            if closes(win) != closesBefore {
+                AppLog.log("window", "show, closed again within \(settle)s")
+                return
+            }
+            let ok = win.isVisible && win.occlusionState.contains(.visible) && win.alphaValue >= 0.5
+            AppLog.log("window", "show \(ok ? "ok" : "FAILED")"
+                + (orderedIn ? "" : " (still invisible right after ordering in)")
+                + " \(describe(win))")
+        }
+    }
+
+    static func describe(_ w: NSWindow) -> String {
+        let f = w.frame
+        return "visible=\(w.isVisible ? 1 : 0) occlusion=\(w.occlusionState.contains(.visible) ? "visible" : "hidden")"
+            + " alpha=\(String(format: "%.2f", w.alphaValue)) key=\(w.isKeyWindow ? 1 : 0)"
+            + " activeSpace=\(w.isOnActiveSpace ? 1 : 0) level=\(w.level.rawValue)"
+            + " behavior=0x\(String(w.collectionBehavior.rawValue, radix: 16))"
+            + " frame=\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))"
+            + " screen=\(w.screen?.localizedName ?? "none")"
+            + " app active=\(NSApp.isActive ? 1 : 0) hidden=\(NSApp.isHidden ? 1 : 0)"
     }
 }
 

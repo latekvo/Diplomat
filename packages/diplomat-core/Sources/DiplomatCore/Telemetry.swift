@@ -30,10 +30,13 @@ import Foundation
 /// everything else.
 ///
 /// The quota fractions are a measurement, and the screen draws them as one
-/// (`quotaSeries`): both rate-limit windows over the lookback, resets and all. They
-/// do double duty as the thing that makes *tokens* comparable to a limit — the pair
-/// (quota consumed, tokens spent) over an interval prices the window in tokens, and
-/// a task's own token count then converts to a share of it. See `calibrate`.
+/// (`quotaSeries`): every rate-limit window a reading carries, over the lookback,
+/// resets and all. The probe reports the 7-day window alone; `sessionLeft` (the
+/// 5-hour window) survives only on older samples, which the screen keeps drawing as
+/// history. They do double duty as the thing that makes *tokens* comparable to a
+/// limit — the pair (quota consumed, tokens spent) over an interval prices the
+/// window in tokens, and a task's own token count then converts to a share of it.
+/// See `calibrate`.
 ///
 /// Pure and `Foundation`-only, so it builds on Linux and is driven by
 /// `diplomat-core telemetry` — which is how `test_telemetry_parity.py` diffs it
@@ -75,7 +78,7 @@ public enum Telemetry {
         ///
         /// Only Claude Code's do; every other runner is billed by whichever provider it
         /// is logged into. So a foreign task is worth a token count of its own and is
-        /// worth nothing at all as a share of a five-hour window it never drew on — and
+        /// worth nothing at all as a share of a quota window it never drew on — and
         /// left in, it would drag that share down for every task beside it.
         public var anthropic: Bool {
             runner.isEmpty || runner == AgentRunner.claude.rawValue
@@ -108,8 +111,9 @@ public enum Telemetry {
     /// which every consumer here treats as a segment boundary rather than a delta.
     public struct Sample: Equatable {
         public let at: Double
-        /// Fraction of the 5-hour session window still unspent, 1 = untouched. Nil
-        /// when the OAuth quota probe had nothing to say.
+        /// Fraction of the 5-hour session window still unspent, 1 = untouched. Only
+        /// older samples carry it; nil on every sample since, and whenever the OAuth
+        /// quota probe had nothing to say.
         public let sessionLeft: Double?
         public let weekLeft: Double?
         public let repoTokens: Double
@@ -462,9 +466,10 @@ public enum Telemetry {
     /// One quota reading: what fraction of each rate-limit window was still unspent.
     public struct QuotaPoint: Equatable {
         public let at: Double
-        /// Percent of the 5-hour window left, or nil when that reading is missing —
-        /// the probe was offline, or Claude Code was logged out. Nil is NOT zero, and
-        /// a chart must break its line rather than draw a plunge to the floor.
+        /// Percent of each window left, or nil when that reading is missing — the
+        /// probe was offline, Claude Code was logged out, or (for the 5-hour window)
+        /// the sample postdates its readings. Nil is NOT zero, and a chart must break
+        /// its line rather than draw a plunge to the floor.
         public let sessionPct: Double?
         public let weekPct: Double?
     }
@@ -472,9 +477,9 @@ public enum Telemetry {
     /// The quota readings inside the range, oldest first.
     ///
     /// Unlike the pending series this is NOT resampled onto a fixed grid: these are
-    /// measurements, taken every `sampleIntervalSecs`, and the 5-hour window's
-    /// sawtooth is the shape worth seeing. Interpolating it onto 56 evenly spaced
-    /// instants would smooth away the resets that give it its meaning.
+    /// measurements, taken every `sampleIntervalSecs`, and a window's resets are the
+    /// shape worth seeing. Interpolating them onto 56 evenly spaced instants would
+    /// smooth away what gives the readings their meaning.
     public static func quotaSeries(_ samples: [Sample], now: Double,
                                    days: Double) -> [QuotaPoint] {
         let start = now - days * 86_400
@@ -552,21 +557,21 @@ public enum Telemetry {
     // MARK: - The whole screen, in one value
 
     public struct Summary: Equatable {
-        /// Tokens per 100% of the 5-hour session window, and of the 7-day week.
-        /// Nil until enough samples exist to price the window, in which case every
-        /// percentage below is empty rather than guessed: Anthropic's limits are
-        /// dynamic and account-specific, so a hardcoded ceiling would be a made-up
-        /// number wearing a real one's clothes.
+        /// Tokens per 100% of the 5-hour session window (priced from the older
+        /// samples that carry it), and of the 7-day week. Nil until enough samples
+        /// exist to price the window, in which case every percentage below is empty
+        /// rather than guessed: Anthropic's limits are dynamic and account-specific, so
+        /// a hardcoded ceiling would be a made-up number wearing a real one's clothes.
         public let sessionLimitTokens: Double?
         public let weekLimitTokens: Double?
 
-        /// What a task costs as a share of the 5-hour window, and the same tasks as
-        /// a share of the 7-day one, both in percent. Two distributions rather than
-        /// one and a ratio: each window is priced from its own quota readings
-        /// (`calibrate`), so either can be measurable while the other is not, and the
-        /// screen draws them on one axis — whichever hump sits further right is the
-        /// ceiling that runs out first. They share bin edges, so a bin means the same
-        /// slice of the axis on both.
+        /// What a task costs as a share of the 5-hour window, and as a share of the
+        /// 7-day one, both in percent. Two distributions rather than one and a ratio:
+        /// each window is priced from its own quota readings (`calibrate`), so either
+        /// can be measurable while the other is not. The 5-hour one holds only tasks
+        /// that started no later than the last sample carrying a reading of it. The
+        /// screen draws both on one axis and they share bin edges, so a bin means the
+        /// same slice of the axis on both.
         public let perTask: Distribution
         public let perTaskWeek: Distribution
         /// Mean RAW tokens per task. Independent of the quota probe, so it is what
@@ -589,10 +594,9 @@ public enum Telemetry {
         public let runSamples: Int
         public let waitSamples: Int
 
-        /// Every quota reading in the range, plus the latest of each window — what
-        /// is left right now, which is the number the reader checks first.
+        /// Every quota reading in the range, plus the latest of the 7-day window —
+        /// what is left right now, which is the number the reader checks first.
         public let quota: [QuotaPoint]
-        public let sessionLeftPct: Double?
         public let weekLeftPct: Double?
 
         /// Task lifespans that began in the range, drawn as start/finish markers over
@@ -678,11 +682,17 @@ public enum Telemetry {
         // Two lists, because the two figures ask different questions: what a task cost
         // is a token count whoever billed it, while a share of a window is the
         // account's and only its own tasks may be measured against it.
-        let charged = priced.filter(\.anthropic).compactMap(\.tokens)
-        let pct = shares(charged, limit: sessionLimit)
-        let pctWeek = shares(charged, limit: weekLimit)
-        // One axis for both histograms, so the distance between the humps is readable
-        // as what it is: how much more of a 5-hour window a task eats than of a week.
+        let charged = priced.filter(\.anthropic)
+        // The 5-hour price outlives the readings it came from, so a task started
+        // after the last of them would be priced against a window that was no longer
+        // being measured.
+        let sessionUntil = ledger.samples.last(where: { $0.sessionLeft != nil })?.at
+            ?? -.infinity
+        let pct = shares(charged.filter { ($0.startedAt ?? .infinity) <= sessionUntil }
+                            .compactMap(\.tokens),
+                         limit: sessionLimit)
+        let pctWeek = shares(charged.compactMap(\.tokens), limit: weekLimit)
+        // One axis for both histograms, so the same task lands in the same bin on each.
         let span = Swift.max(pct.max() ?? 0, pctWeek.max() ?? 0)
 
         // The dollar half of the same question. Restricted to the model that ran most
@@ -727,8 +737,6 @@ public enum Telemetry {
             // older than `quotaFreshSecs`. The card prints this as what is left now
             // and never says how old it is, so past that bound no number beats a
             // stale one.
-            sessionLeftPct: quota.last(where: {
-                $0.sessionPct != nil && now - $0.at <= fresh })?.sessionPct,
             weekLeftPct: quota.last(where: {
                 $0.weekPct != nil && now - $0.at <= fresh })?.weekPct,
             taskSpans: taskSpanSeries(ledger.tasks, now: now, days: days, quota: quota),

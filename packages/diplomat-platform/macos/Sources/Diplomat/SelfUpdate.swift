@@ -393,6 +393,7 @@ enum SelfUpdate {
 
     /// Append a timestamped line to the auto-update log (best-effort).
     static func schedLog(_ message: String) {
+        AppLog.log("update", message)
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs")
         let url = dir.appendingPathComponent("diplomat-autoupdate.log")

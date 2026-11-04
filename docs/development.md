@@ -146,6 +146,28 @@ frontmost app in front. Click the Dock icon to open the window. Any other launch
 answers before AppKit starts, so it never registers as an app. A login agent an
 older installer wrote, without `DIPLOMAT_BACKGROUND`, gets it at the next GUI launch.
 
+### Logs
+
+`~/Library/Logs/diplomat.log` records what the app did, when, and how long it took, one
+line per event: `<local time> [<pid>] <category> <message>`.
+
+| Category | Lines |
+|---|---|
+| `app` | launch (binary, its modification time, parent), each quit request and who sent it, exit, the singleton ending an older instance |
+| `system` | sleep and wake, displays asleep, awake or rearranged, screen lock and unlock, Space switches |
+| `window` | each open, judged 0.4 s later: `show ok`, or `show FAILED` with the window's state when it is not on screen, covered or still transparent. Then each close |
+| `hang` | the main thread answering 0.5 s or more late: how long, whether it was computing or waiting, the polls in flight while it was late. One still going at 2 s gets its own line and a `sample` into `~/Library/Logs/diplomat-hangs/` (at most one per 10 minutes, newest 20 kept) |
+| `timing` | a poll that took 10 s or more |
+| `alive` | every 15 minutes: uptime, memory, hangs (and one still going on), each poll's count, average and worst, what is in flight |
+| `activity` | the lines this app adds to the activity feed (the daemon's and agents' appear only in `audit.jsonl`) |
+| `update` | the 06:00 updater and the watchdog, as in `diplomat-autoupdate.log` |
+
+At 8 MB the file moves to `diplomat.log.1`. Every line also goes to the unified log,
+where it sits beside WindowServer's and AppKit's own:
+`log show --predicate 'subsystem == "com.ignacy.diplomat"' --last 1h`. Other headless
+runs (self-tests, renders, dumps) write only there, unless `DIPLOMAT_LOG_DIR` names a
+directory for the file.
+
 ### Headless self-test
 
 Every mode runs the real pipeline once, prints, and exits - none of them start
@@ -246,6 +268,9 @@ DIPLOMAT_WINDOW_TEST=1 ...                       # self-test: the launch mode an
                                                      #   no window ordered in; exit code = verdict
 DIPLOMAT_REOPEN_TEST=1 ...                       # self-test: a window closed on Settings reopens on the
                                                      #   panel; no window ordered in; exit code = verdict
+DIPLOMAT_APPLOG_TEST=1 ...                       # self-test: the diagnostic log's lines and rotation, a busy
+                                                     #   and a waiting hang and the sample, the window's show
+                                                     #   and close lines; scratch dir; exit code = verdict
 
 # The shared core itself is independently buildable & testable (also on Linux):
 swift run DiplomatCoreSmoke                    # loads assets/, runs filter + prompt + golden-file assertions
@@ -424,10 +449,13 @@ packages/
         TelemetryView.swift        the Telemetry screen: the bell curve, the rate-limit windows, the backlog and finished-work series, the token split
         TelemetryLog.swift         writes/reads ~/.diplomat/pr-monitor/telemetry.jsonl (append-only, rotated)
         UsageScan.swift            Claude Code transcript scanner: repo-vs-other tokens, per-task attribution
-        Quota.swift                the OAuth usage probe - what is left of the 5-hour and 7-day windows
+        Quota.swift                the OAuth usage probe - what is left of the 7-day window
         Spend.swift                the OpenRouter balance probe - dollars left on the key cap and the credits
         AutoBudget.swift           ledger + probe + knobs -> may another automatic task start here?
         SelfUpdate.swift           fetch/merge upstream, rebuild, relaunch (Update button + the 06:00 run)
+        AppLog.swift               the diagnostic log (~/Library/Logs/diplomat.log), timed polls, the session's system events
+        HangWatch.swift            the main-thread hang watch, its samples, the 15-minute heartbeat
+        AppLogTest.swift           self-test of both (DIPLOMAT_APPLOG_TEST)
         RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → the checkout the bundle sits in → the one it recorded → ~/dev/diplomat),
                                    the sibling packages it reaches for, and the agents' repo root
         AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares

@@ -150,7 +150,7 @@ public enum AgentDispatchGate {
         /// This device already runs its cap of concurrent automatic agents
         /// (auto only). Deferred, not dropped — see `decide`.
         case atCapacity
-        /// Too little of the rate-limit windows is left to cover another automatic
+        /// Too little of the rate-limit window is left to cover another automatic
         /// task (auto only). Deferred, not dropped — see `decide`.
         case unaffordable
         /// The disk agents write to is below its free-space floor (auto only).
@@ -267,7 +267,7 @@ public enum AgentDispatchGate {
     //
     // The cap above bounds how many automatic agents run at once; this bounds
     // whether any of them should start at all. A machine can have three empty bays
-    // and 4% of its 5-hour window left, and spending that on an auto-review is how
+    // and 4% of its weekly window left, and spending that on an auto-review is how
     // the operator finds the limit gone the next time they sit down to work.
     //
     // There are two currencies, because there are two ways an agent is paid for.
@@ -278,8 +278,8 @@ public enum AgentDispatchGate {
     // the caller says which currency both are in.
     //
     // What a task costs is a measurement, not a guess: the telemetry ledger prices
-    // every finished agent — against the window it was spent from
-    // (`Telemetry.summarize` → `perTask`), or, for a runner billed in money, at what
+    // every finished agent — against the 7-day window
+    // (`Telemetry.summarize` → `perTaskWeek`), or, for a runner billed in money, at what
     // the provider charged for the model it ran on (`perTaskUsd`). So the question
     // "can we afford one more" has a statistical answer — and the one worth asking is
     // about the NEXT task, not about the average one. Half of all tasks cost more
@@ -323,8 +323,7 @@ public enum AgentDispatchGate {
     /// own minimum is configured.
     public static let minBudgetSamples = 2
 
-    public static let windowSession = "session"   // the 5-hour rate-limit window
-    public static let windowWeek = "week"         // the 7-day one
+    public static let windowWeek = "week"         // the 7-day rate-limit window
     public static let windowKey = "orKey"         // the OpenRouter key's own spend cap
     public static let windowCredits = "orCredits" // the OpenRouter credit balance
 
@@ -423,10 +422,9 @@ public enum AgentDispatchGate {
     /// `windows` is the ceilings this machine's work is spent against, each as
     /// `(name, left, cost-of-one-task)` in a single unit — percentages of a rate limit
     /// for a Claude Code machine, dollars for one billed by an OpenRouter account.
-    /// Every one of them gates, because any can be the one that runs out: the 5-hour
-    /// window is what stops work this afternoon and the 7-day window is the ceiling a
-    /// busy week walks into, exactly as a key's cap is what stops work this week and
-    /// the credit balance is what stops it altogether. A task has to fit inside what
+    /// Every one of them gates, because any can be the one that runs out: a key's cap
+    /// is what stops work this week and the credit balance is what stops it
+    /// altogether. A task has to fit inside what
     /// is left of each.
     ///
     /// A ceiling with no cost measurement falls back to `floor` — "keep this much in

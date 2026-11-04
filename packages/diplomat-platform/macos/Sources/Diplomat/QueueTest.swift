@@ -620,6 +620,45 @@ enum QueueTest {
         store.issues = []
         store.prs = []
 
+        // 15b. The new-community-issue monitor queues each outsider's issue filed after
+        //      its mark once, as the same ask a sweep of the community leaves.
+        let filedBase = Date()
+        func filed(_ number: Int, _ assoc: String = "NONE", minutes: Double = 1,
+                   author: String = "") -> OpenIssue {
+            let at = filedBase.addingTimeInterval(minutes * 60)
+            return OpenIssue(number: number, title: "issue \(number)",
+                             url: "https://github.com/software-mansion/argent/issues/\(number)",
+                             author: author.isEmpty ? "outsider\(number)" : author,
+                             authorAssociation: assoc, createdAt: at, updatedAt: at,
+                             commentCount: 0, assignees: [], labels: [],
+                             memberResponded: false)
+        }
+        store.communityIssuesEnabled = true
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0)])
+        check("the first community scan queues none of the backlog",
+              store.requestedWork.isEmpty)
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)])
+        check("an outsider's issue filed after it is queued as a fix of that one issue",
+              store.requestedWork.map(\.key) == ["issues:71"]
+                  && store.requestedWork.first?.author == "outsider71"
+                  && store.queuedTasks.map(\.job.label) == ["Issues · #71 · deep"]
+                  && store.queuedTasks.first?.job.prompt.contains("issue #71") == true)
+        check("…which re-checks its issue when its turn comes, as a swept fix does",
+              store.queuedTasks.first?.job.prompt.contains("CAME OUT OF A SWEEP") == true)
+        store.cancelRequestedWork("issues:71")
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)])
+        check("…and only once, even after its ask is gone", store.requestedWork.isEmpty)
+        store.communityIssuesEnabled = false
+        store.communityIssuesEnabled = true
+        store.queueCommunityIssues([filed(72, minutes: 2)])
+        check("switched off and on, the next scan queues what was filed meanwhile not at all",
+              store.requestedWork.isEmpty)
+        store.queueCommunityIssues([filed(72, minutes: 2), filed(73, minutes: 3)])
+        check("…and what is filed after it as before",
+              store.requestedWork.map(\.key) == ["issues:73"])
+        store.requestedWork = []
+        store.queuedTasks = []
+
         // 16. Settles do not overlap: the tick is a suspension point, and a settle
         //     arriving across it would retire the same finished run again. The display
         //     refresh yields to one under way; every other caller waits for it. The

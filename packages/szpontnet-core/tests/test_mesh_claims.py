@@ -446,8 +446,8 @@ def test_the_executor_claims_the_key_and_frees_it_when_its_agent_ends(simnet):
     by the completion sentinel — so a crashed review becomes re-runnable rather
     than permanently suppressed."""
     async def scenario():
-        a = await simnet.node("a", quota=("ok", 1.0, None, None, 0.5))
-        b = await simnet.node("b", quota=("ok", 1.0, None, None, 5.0))
+        a = await simnet.node("a", quota=("ok", 1.0, None, 0.5))
+        b = await simnet.node("b", quota=("ok", 1.0, None, 5.0))
         await simnet.linked(a, b)
         await simnet.until(lambda: a.node.peers[b.id].info.surplus() == 5.0, 3.0,
                            "B's surplus never arrived")

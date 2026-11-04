@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -39,8 +40,7 @@ def refusals(monkeypatch):
             log.append(token)
             if len(log) <= n:
                 return None
-            return {"five_hour": {"utilization": 40},
-                    "seven_day": {"utilization": 10}}
+            return {"five_hour": None, "seven_day": {"utilization": 40}}
 
         monkeypatch.setattr(usage, "_fetch_usage_payload", fetch)
         return log
@@ -59,8 +59,8 @@ def test_one_refusal_costs_an_insisting_probe_an_attempt_not_the_reading(refusal
     an empty refresh puts the node back on the rough local-log heuristic — the
     signal peers rank on, dropped for the whole cadence over a busy minute."""
     log = refusals(2)
-    session, _week = usage.windows(insist=True)
-    assert session is not None and session.frac_left == 0.6
+    week = usage.week_window(insist=True)
+    assert week is not None and week.frac_left == 0.6
     assert len(log) == 3
 
 
@@ -69,7 +69,7 @@ def test_a_probe_that_is_not_insisting_takes_the_one_attempt(refusals):
     waits on it, so minutes of retries would trade a rough fraction for a node that
     is not on the mesh at all yet."""
     log = refusals(2)
-    assert usage.windows() == (None, None)
+    assert usage.week_window() is None
     assert len(log) == 1
 
 
@@ -77,7 +77,7 @@ def test_an_insisting_probe_gives_up_after_its_last_attempt(refusals):
     """An endpoint refusing everything has to end the refresh, not hold the worker
     thread — and the loop behind it — indefinitely."""
     log = refusals(999)
-    assert usage.windows(insist=True) == (None, None)
+    assert usage.week_window(insist=True) is None
     assert len(log) == usage._INSIST_ATTEMPTS + 1
 
 
@@ -88,7 +88,7 @@ def test_a_logged_out_machine_is_not_worth_insisting_to(refusals, monkeypatch):
     monkeypatch.setattr(usage, "_oauth_tokens", lambda: [])
     waits: list[float] = []
     monkeypatch.setattr(usage.time, "sleep", waits.append)
-    assert usage.windows(insist=True) == (None, None)
+    assert usage.week_window(insist=True) is None
     assert waits == [], "the insist schedule was sat out with nothing to ask with"
     assert log == [], "a request was sent without a credential to send it under"
 
@@ -106,12 +106,12 @@ def test_a_refused_credential_is_not_the_last_word(refusals, monkeypatch):
 
     def fetch(token):
         log.append(token)
-        return None if token == "stale" else {"five_hour": {"utilization": 40},
-                                              "seven_day": {"utilization": 10}}
+        return None if token == "stale" else {"five_hour": None,
+                                              "seven_day": {"utilization": 40}}
 
     monkeypatch.setattr(usage, "_fetch_usage_payload", fetch)
-    session, week = usage.windows()
-    assert session is not None and session.frac_left == 0.6
+    week = usage.week_window()
+    assert week is not None and week.frac_left == 0.6
     assert log == ["stale", "live"], "the refused credential ended the round"
 
 
@@ -170,7 +170,7 @@ def test_a_credential_that_answers_costs_the_round_nothing_extra(refusals):
     is shared with every Claude Code session on the box, so a round that already has
     its reading must not spend a second request proving the point."""
     log = refusals(0)
-    usage.windows()
+    usage.week_window()
     assert log == ["oat-test"]
 
 
@@ -179,10 +179,24 @@ def test_a_reading_inside_the_ttl_is_answered_from_the_cache(refusals):
     more often than the probe samples, so every tick but the one past the TTL has to
     cost nothing — insisting or not."""
     log = refusals(0)
-    assert usage.windows(insist=True)[0].frac_left == 0.6
-    assert usage.windows(insist=True)[0].frac_left == 0.6
-    assert usage.windows()[0].frac_left == 0.6
+    assert usage.week_window(insist=True).frac_left == 0.6
+    assert usage.week_window(insist=True).frac_left == 0.6
+    assert usage.week_window().frac_left == 0.6
     assert len(log) == 1
+
+
+def test_a_reading_past_the_keep_window_is_dropped(refusals, monkeypatch):
+    """A last-good read answers through failures for a while, then gives way to the
+    heuristic rather than quoting an hour-old figure as what is left now."""
+    clock = [1000.0]
+    monkeypatch.setattr(usage.time, "monotonic", lambda: clock[0])
+    log = refusals(0)
+    assert usage.week_window().frac_left == 0.6
+    monkeypatch.setattr(usage, "_fetch_usage_payload", lambda t: log.append(t))
+    clock[0] += usage._PROBE_TTL_SECS
+    assert usage.week_window().frac_left == 0.6, "one refused refresh lost the reading"
+    clock[0] += usage._PROBE_KEEP_SECS
+    assert usage.week_window() is None
 
 
 def test_a_stop_lands_inside_a_wait_rather_than_after_it(refusals, monkeypatch):
@@ -197,9 +211,54 @@ def test_a_stop_lands_inside_a_wait_rather_than_after_it(refusals, monkeypatch):
     threading.Timer(0.2, stopping.set).start()
 
     started = time.monotonic()
-    assert usage.windows(insist=True, stopping=stopping) == (None, None)
+    assert usage.week_window(insist=True, stopping=stopping) is None
     assert time.monotonic() - started < 5.0, "the stop waited out the attempt it was in"
     assert len(log) == 1, "attempts kept going after the stop"
+
+
+# MARK: - what the endpoint answers
+
+
+#: The endpoint's answer for an account with no 5-hour limit, as measured on
+#: 2026-11-04.
+_WEEK_ONLY = {
+    "five_hour": None,
+    "seven_day": {"utilization": 32.0,
+                  "resets_at": "2026-11-10T07:00:00.345916+00:00"},
+}
+_WEEK_RESETS_AT = datetime(2026, 11, 10, 7, 0, 0, 345916, tzinfo=timezone.utc).timestamp()
+
+
+def test_the_week_alone_is_a_reading(refusals, monkeypatch):
+    refusals(0)
+    monkeypatch.setattr(usage, "_fetch_usage_payload", lambda _t: _WEEK_ONLY)
+    week = usage.week_window()
+    assert week is not None
+    assert week.frac_left == 0.68
+    assert week.resets_at == _WEEK_RESETS_AT
+    assert week.length_secs == 7 * 86400.0
+
+
+def test_a_payload_without_a_week_is_no_reading(refusals, monkeypatch):
+    """The 5-hour slot is never read, so a payload carrying only that is silence."""
+    refusals(0)
+    monkeypatch.setattr(usage, "_fetch_usage_payload",
+                        lambda _t: {"five_hour": {"utilization": 40}, "seven_day": None})
+    assert usage.week_window() is None
+
+
+def test_token_state_reports_the_live_week_not_the_heuristic(refusals, monkeypatch,
+                                                             tmp_path):
+    """The account's real quota is what the node routes on whenever the endpoint
+    answers. The heuristic, over an empty transcript dir, would read a full 1.0 with
+    no week and no pace."""
+    monkeypatch.setenv("SZPONTNET_CLAUDE_DIR", str(tmp_path))
+    refusals(0)
+    monkeypatch.setattr(usage, "_fetch_usage_payload", lambda _t: _WEEK_ONLY)
+    now = _WEEK_RESETS_AT - 3.5 * 86400.0  # half the week's clock left
+    state, frac, week, pace = usage.token_state("pro", now=now)
+    assert (state, frac, week) == ("ok", 0.68, 0.68)
+    assert abs(pace - 1.36) < 1e-9
 
 
 # MARK: - the node's own loop
@@ -223,9 +282,22 @@ def _probe_recording(calls: list[bool], block: threading.Event | None = None):
             # Sits there as an insisting probe does, and gives up when the node stops
             # — so the node's own teardown is not what a test ends up measuring.
             stopping.wait(_STALL_SECS)
-        return "ok", 1.0, None, None, 1.0
+        return "ok", 1.0, None, 1.0
 
     return token_state
+
+
+def test_a_live_week_caps_the_advertised_quota(simnet):
+    """The advert's ``quotaLeft`` must not overstate the room the account has: with
+    10% of its week left a node advertises a tenth of its capacity, not the full
+    bookkeeping balance."""
+    async def scenario():
+        node = (await simnet.node("a", quota=("low", 0.1, 0.1, 0.2))).node
+        info = node.info
+        assert info.tokens_week_pct == 0.1 and info.tokens_session_pct is None
+        assert info.stats["quotaLeft"] == round(node.stats.capacity() * 0.1, 4)
+
+    simnet.run(scenario())
 
 
 def test_the_seed_asks_once_and_the_loop_behind_it_insists(simnet, monkeypatch):
@@ -290,7 +362,7 @@ def test_stopping_a_node_lets_go_of_a_probe_mid_schedule(simnet, monkeypatch):
             stalled.set()
             if stopping.wait(_STALL_SECS):   # False when it timed out un-stopped
                 released.set()
-        return "ok", 1.0, None, None, 1.0
+        return "ok", 1.0, None, 1.0
 
     monkeypatch.setattr(usage, "token_state", token_state)
 

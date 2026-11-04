@@ -171,6 +171,24 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Whether to queue a reproduce-and-fix of every issue the community files from
+    /// here on. Persisted; kicks a poll on enable. Off, nothing is queued and the mark
+    /// is dropped, so switching it back on starts from that moment
+    /// (`queueCommunityIssues`).
+    @Published var communityIssuesEnabled: Bool {
+        didSet {
+            persist(communityIssuesEnabled, forKey: Keys.communityIssuesEnabled)
+            if !communityIssuesEnabled { communityIssuesSince = nil }
+            if communityIssuesEnabled && !oldValue && !Headless.active { Task { await runAutofixPollOnce() } }
+        }
+    }
+
+    /// Where the next community-issue scan starts (`Filters.newCommunityIssues`); nil
+    /// until the first scan sets it.
+    private var communityIssuesSince: Date? {
+        didSet { persist(communityIssuesSince, forKey: Keys.communityIssuesSince) }
+    }
+
     /// The logins the auto-review monitor is limited to, as the operator typed them.
     /// Blank ⇒ every author, which is what an applet that was never told otherwise
     /// does. Stored raw because this is a text field: parsing on the way in would
@@ -499,6 +517,14 @@ final class Store: ObservableObject {
     @Published var commsActInvestigations: Bool {
         didSet { persist(commsActInvestigations, forKey: Keys.commsActInvestigations) }
     }
+    /// `CommsToggles.replies`: whether Comms writes back in Slack.
+    @Published var commsReplies: Bool {
+        didSet { persist(commsReplies, forKey: Keys.commsReplies) }
+    }
+    /// How long the session must have been locked to count as away (`CommsAway`).
+    @Published var commsAwayAfterSecs: Int {
+        didSet { persist(commsAwayAfterSecs, forKey: Keys.commsAwayAfterSecs) }
+    }
     @Published var commsNotify: Bool {
         didSet {
             persist(commsNotify, forKey: Keys.commsNotify)
@@ -512,6 +538,14 @@ final class Store: ObservableObject {
     /// Pings after this are unread.
     @Published var commsSeenAt: Date {
         didSet { persist(commsSeenAt, forKey: Keys.commsSeenAt) }
+    }
+    /// When the session lock that is still on began (`refreshCommsLock`); kept across a
+    /// relaunch so a long lock is not restarted by one.
+    var commsLockedSince: Date? {
+        didSet {
+            guard commsLockedSince != oldValue else { return }
+            persist(commsLockedSince, forKey: Keys.commsLockedSince)
+        }
     }
 
     // MARK: Comms state the screen draws
@@ -534,6 +568,9 @@ final class Store: ObservableObject {
     var commsMonitorTask: Task<Void, Never>?
     var commsPollInFlight = false
     var commsWakeObserver: NSObjectProtocol?
+    var commsLockObservers: [NSObjectProtocol] = []
+    /// The replies of every apply so far, chained so no two run at once.
+    var commsReplying: Task<Void, Never>?
 
     /// Every dispatched agent run the panel draws, in reading order: the sessions this
     /// machine spawned, the work it handed to a mesh node, and any live agent nobody
@@ -638,6 +675,8 @@ final class Store: ObservableObject {
         static let autofixReviews = "autofixReviewsHandled"
         static let reviewRequestsEnabled = "reviewRequestsEnabled"
         static let reviewAllowlistRaw = "reviewAllowlistRaw"
+        static let communityIssuesEnabled = "communityIssuesEnabled"
+        static let communityIssuesSince = "communityIssuesSince"
         static let reviewReqAttempts = "reviewReqAttempts"
         static let myReviewAttempts = "myReviewAttempts"
         static let reviewRequestsHandled = "reviewRequestsHandled"
@@ -662,6 +701,9 @@ final class Store: ObservableObject {
         static let commsActRequests = "commsActRequests"
         static let commsActBumps = "commsActBumps"
         static let commsActInvestigations = "commsActInvestigations"
+        static let commsReplies = "commsReplies"
+        static let commsAwayAfterSecs = "commsAwayAfterSecs"
+        static let commsLockedSince = "commsLockedSince"
         static let commsNotify = "commsNotify"
         static let commsModel = "commsModel"
         static let commsSeenAt = "commsSeenAt"
@@ -799,6 +841,8 @@ final class Store: ObservableObject {
         prAutofixEnabled = defaults.object(forKey: Keys.prAutofixEnabled) as? Bool ?? true
         reviewRequestsEnabled = defaults.object(forKey: Keys.reviewRequestsEnabled) as? Bool ?? true
         reviewAllowlistRaw = defaults.string(forKey: Keys.reviewAllowlistRaw) ?? ""
+        communityIssuesEnabled = defaults.object(forKey: Keys.communityIssuesEnabled) as? Bool ?? true
+        communityIssuesSince = defaults.object(forKey: Keys.communityIssuesSince) as? Date
         queueAutoRun = defaults.object(forKey: Keys.queueAutoRun) as? Bool ?? true
         // Auto-approvals OFF by default — an auto-review never submits a verdict on my
         // behalf until I explicitly opt in.
@@ -822,6 +866,10 @@ final class Store: ObservableObject {
         commsActRequests = defaults.object(forKey: Keys.commsActRequests) as? Bool ?? true
         commsActBumps = defaults.object(forKey: Keys.commsActBumps) as? Bool ?? true
         commsActInvestigations = defaults.object(forKey: Keys.commsActInvestigations) as? Bool ?? true
+        commsReplies = defaults.object(forKey: Keys.commsReplies) as? Bool ?? true
+        commsAwayAfterSecs = defaults.object(forKey: Keys.commsAwayAfterSecs) as? Int
+            ?? (try? CoreAssets.comms())?.replies.awayAfterSecs ?? 10800
+        commsLockedSince = defaults.object(forKey: Keys.commsLockedSince) as? Date
         commsNotify = defaults.object(forKey: Keys.commsNotify) as? Bool ?? true
         commsModel = defaults.string(forKey: Keys.commsModel) ?? ""
         // Absent, everything already logged reads as seen: an upgrade must not open on a
@@ -1064,7 +1112,9 @@ final class Store: ObservableObject {
         }
     }
 
-    func refresh() async {
+    func refresh() async { await AppLog.timed("refresh") { await load() } }
+
+    private func load() async {
         isLoading = true
         error = nil
         do {
@@ -1728,8 +1778,8 @@ final class Store: ObservableObject {
 
     /// Say out loud when the budget gate has nothing left to gate on.
     ///
-    /// What is left of the rate-limit windows comes from one probe, and `budgetDecide`
-    /// SKIPS a ceiling it cannot read — with neither window readable every task is
+    /// What is left of the rate-limit window comes from one probe, and `budgetDecide`
+    /// SKIPS a ceiling it cannot read — with the window unreadable every task is
     /// affordable. So a probe that stops answering does not fail the gate closed or
     /// loudly: it stops gating, while the toggle still reads on and nothing else looks
     /// wrong. A stale `.credentials.json` did exactly that here for four days, ending
@@ -1744,7 +1794,7 @@ final class Store: ObservableObject {
               AutoBudget.enabled else { return }
         quotaWarned = true
         AuditLog.log("auto", "warn",
-                     "Asked what is left of the rate-limit windows \(rounds) times "
+                     "Asked what is left of the rate-limit window \(rounds) times "
                      + "without one answer — the automatic budget is gating on nothing, "
                      + "and auto work will dispatch whatever the limits have left")
         refreshAudit()
@@ -1822,7 +1872,7 @@ final class Store: ObservableObject {
         guard autofixMonitorTask == nil else { return }
         autofixMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.runAutofixPollOnce()
+                await AppLog.timed("autofixPoll") { await self?.runAutofixPollOnce() }
                 let ns = UInt64(Store.autofixPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
@@ -1869,7 +1919,7 @@ final class Store: ObservableObject {
     /// agent for each PR that just gained a conflict or new review work. No-op until
     /// our login is known.
     ///
-    /// Both monitors poll on every cycle, switched on or off. A switched-off one
+    /// Both PR monitors poll on every cycle, switched on or off. A switched-off one
     /// still finds what it would have done and queues it (`isPaused`) — the panel is
     /// where the operator sees what their PRs owe, and that question does not go away
     /// with the toggle that answers it automatically. Nothing of a paused monitor's is
@@ -1919,6 +1969,7 @@ final class Store: ObservableObject {
             stagedQueue = []
             if let snaps { await pollMyPRs(snaps: snaps) }
             await pollReviewRequests(owner: owner, repo: repo)
+            await pollCommunityIssues()
             // Last, so the monitors' finds keep the places they were found in: the
             // operator's own sweep bands behind them anyway, and a fifty-item ask
             // offered first would otherwise decide the arrangement of a queue it is
@@ -2071,6 +2122,44 @@ final class Store: ObservableObject {
     }
     private func saveMyConflictAttempts(_ map: [String: ReviewAttempt]) {
         persistJSON(map, forKey: Keys.myConflictAttempts)
+    }
+
+    private func pollCommunityIssues() async {
+        guard communityIssuesEnabled else { return }
+        do {
+            queueCommunityIssues(try await API.fetchOpenIssues())
+        } catch {
+            notePollFailure(error)
+        }
+    }
+
+    /// Queue one fix for each issue the community filed since the last scan of
+    /// `found`, the repo's open issues.
+    ///
+    /// Queued as an ask, the same row a Fix-issues sweep of the community leaves,
+    /// because nothing on GitHub would re-offer it: the mark moves past each issue once
+    /// (`Filters.newCommunityIssues`). So it is offered until it is dispatched, can be
+    /// cancelled, and re-reads its issue when its turn comes.
+    ///
+    /// Not private: the queue self-test drives it with a fixture fetch.
+    func queueCommunityIssues(_ found: [OpenIssue]) {
+        let scan = Filters.newCommunityIssues(found, since: communityIssuesSince, now: Date())
+        let banned = BanList.read()
+        for issue in scan.fresh {
+            let who = "Issue #\(issue.number) by @\(issue.author)"
+            if BanList.isBanned(issue.author, in: banned) {
+                AuditLog.log("auto", "ban-skip", "\(who) — author is banned, not queued")
+                continue
+            }
+            let cfg = IssueConfig(target: .contributors, me: effectiveMe)
+            if requestOne(RequestedWork(number: issue.number, url: issue.url,
+                                        author: issue.author,
+                                        config: .issues(cfg.forIssue(issue.number)))) {
+                AuditLog.log("auto", "community-issue", "\(who) — fix queued")
+            }
+        }
+        communityIssuesSince = scan.since
+        if !scan.fresh.isEmpty { refreshAudit() }
     }
 
     /// PRs that request MY review: dispatch the most-comprehensive review whenever I OWE
@@ -3671,7 +3760,7 @@ final class Store: ObservableObject {
         guard apiWatchTask == nil else { return }
         apiWatchTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.runApiErrorScanOnce()
+                await AppLog.timed("apiErrorScan") { await self?.runApiErrorScanOnce() }
                 let ns = UInt64(Store.apiWatchInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
@@ -3771,11 +3860,13 @@ final class Store: ObservableObject {
         guard processPollTask == nil else { return }
         processPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refreshAutoTaskCount()
-                await self?.refreshDeviceState()
-                self?.refreshBanList()
-                self?.refreshAudit()
-                self?.runTelemetrySampleOnce()
+                await AppLog.timed("processPoll") {
+                    await self?.refreshAutoTaskCount()
+                    await self?.refreshDeviceState()
+                    self?.refreshBanList()
+                    self?.refreshAudit()
+                    self?.runTelemetrySampleOnce()
+                }
                 let ns = UInt64(Store.processPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
@@ -3816,7 +3907,7 @@ final class Store: ObservableObject {
     /// this more often than the sample interval is free.
     ///
     /// The worker is launched rather than awaited: its probe insists
-    /// (`Quota.fractionsLeft`), and the poll loop this rides has agent rows and device
+    /// (`Quota.weekLeft`), and the poll loop this rides has agent rows and device
     /// state to refresh every few seconds. It runs on a plain background queue rather
     /// than as a `Task`, because insisting means waiting out the endpoint's bucket —
     /// minutes of blocking, which must not sit on one of the cooperative pool's few
@@ -3825,9 +3916,9 @@ final class Store: ObservableObject {
         guard !takingTelemetrySample, TelemetryLog.sampleDue() else { return }
         takingTelemetrySample = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let quota = Quota.fractionsLeft(insist: true)
+            let weekLeft = Quota.weekLeft(insist: true)
             let totals = UsageScan.totals()
-            TelemetryLog.sample(sessionLeft: quota.session, weekLeft: quota.week,
+            TelemetryLog.sample(weekLeft: weekLeft,
                                 repoTokens: totals.repo, otherTokens: totals.other)
             let store = self
             Task { @MainActor in store?.finishTelemetrySample() }
@@ -3879,7 +3970,7 @@ final class Store: ObservableObject {
         guard meshPollTask == nil else { return }
         meshPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.meshTick()
+                await AppLog.timed("meshTick") { await self?.meshTick() }
                 let ns = UInt64(Store.meshPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }

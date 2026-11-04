@@ -1,9 +1,9 @@
 """The Comms screen — what the Slack watcher has seen, and what came of it.
 
 Draws the folded Comms log (``Store.comms_items``, from ``diplomat-core comms-feed``)
-as **Pings** (every message that reached the operator, newest first) and **Jobs**
-(every ping that queued work, and how far it has got). The macOS twin
-``CommsView.swift`` draws the same fold.
+as **Pings** (every message that reached the operator, newest first, one line each,
+the read ones under a closed "Earlier" disclosure) and **Jobs** (every ping that queued
+work, and how far it has got). The macOS twin ``CommsView.swift`` draws the same fold.
 """
 
 from __future__ import annotations
@@ -11,8 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QPalette
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -26,11 +27,17 @@ from diplomat_runtime import comms
 from diplomat_runtime.models import Fmt
 from . import bans, glyphs
 from .store import Store
-from .widgets import GlyphLabel, muted, plain_tooltip, tint_bg
+from .widgets import ElidedLabel, GlyphLabel, muted, plain_tooltip, tint_bg
 
 #: assets/audit-categories.json → comms.colorHex.
 TINT = "#007AFF"
 _RED, _GREEN, _ORANGE, _GREY = "#FF3B30", "#34C759", "#FF9500", glyphs.MUTED
+_PURPLE = "#AF52DE"
+
+
+def _text_color() -> str:
+    """ElidedLabel paints with an explicit pen, which the theme does not reach."""
+    return QApplication.palette().color(QPalette.ColorRole.WindowText).name()
 
 def _card() -> tuple[QFrame, QVBoxLayout]:
     """Not ``widgets.card_host``: its unscoped stylesheet paints the fill behind every
@@ -126,10 +133,60 @@ def job_status(item: dict, waiting: set[str]) -> str:
     return "queued" if item.get("queueKey") in waiting else "not queued"
 
 
+def action_chip(decision: dict | None) -> tuple[str, str]:
+    """The triage's pill on a ping: its word (and number) and tint."""
+    if not decision:
+        return "AWAITING TRIAGE", _GREY
+    action = str(decision.get("action", "none"))
+    word = _ACTION_WORD.get(action, action)
+    if decision.get("number"):
+        word += f" #{decision['number']}"
+    return word.upper(), {"none": _GREY, "injection": _RED, "question": _PURPLE}.get(
+        action, _GREEN)
+
+
+def reply_chip(item: dict) -> tuple[str, str] | None:
+    """What came of Comms' reply in Slack, if one was due (``replyOutcome``)."""
+    outcome = str(item.get("replyOutcome") or "")
+    if outcome == "sent":
+        return "REPLIED", _GREEN
+    if outcome == "sending":
+        return "REPLYING", _ORANGE
+    if outcome.startswith("failed"):
+        return "REPLY FAILED", _RED
+    if outcome.startswith("skipped"):
+        return "NOT ANSWERED", _GREY
+    return None
+
+
+def _flat(text: str) -> str:
+    return " ".join(str(text).split())
+
+
+def _small_button(text: str, on_click) -> QPushButton:
+    btn = QPushButton(text)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.setStyleSheet("font-size: 9px; padding: 1px 6px;")
+    btn.clicked.connect(lambda _=False: on_click())
+    return btn
+
+
 class PingRow(QFrame):
-    def __init__(self, item: dict, *, unread: bool, mark: str | None = None) -> None:
+    """One line: unread dot, sender, place, the triage's pill, the text cut to fit,
+    the reply's pill and the time. A click opens the rest under it."""
+
+    #: (message id, now expanded)
+    toggled = Signal(str, bool)
+
+    def __init__(self, item: dict, *, unread: bool, mark: str | None = None,
+                 expanded: bool = False) -> None:
         super().__init__()
+        self.item = item
+        self.unread = unread
+        self.mark = mark
+        self.details: QWidget | None = None
         self.setObjectName("pingRow")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         fill = tint_bg(TINT, 0.12) if unread else "rgba(128,128,128,0.05)"
         edge = _RED if mark else TINT if unread else "transparent"
         self.setStyleSheet(
@@ -137,75 +194,100 @@ class PingRow(QFrame):
             f" border-left: 3px solid {edge}; }}"
         )
         message = item.get("message") or {}
-        col = QVBoxLayout(self)
-        col.setContentsMargins(8, 6, 8, 6)
-        col.setSpacing(4)
+        self._col = QVBoxLayout(self)
+        self._col.setContentsMargins(6, 3, 6, 3)
+        self._col.setSpacing(4)
+
+        line = QHBoxLayout()
+        line.setSpacing(6)
+        self.dot = QLabel("●" if unread else "")
+        self.dot.setFixedWidth(8)
+        self.dot.setStyleSheet(f"color: {TINT}; font-size: 8px;")
+        line.addWidget(self.dot)
+        who = _plain(Store.comms_sender(message))
+        who.setStyleSheet("font-weight: 700; font-size: 10px;")
+        line.addWidget(who)
+        where = _plain(Store.comms_place(message))
+        where.setStyleSheet(muted(9))
+        line.addWidget(where)
+        line.addWidget(_chip(*action_chip(item.get("decision"))))
+        if mark:
+            line.addWidget(_chip(f"{glyphs.G_BAN} {mark}", _RED))
+        self.text = ElidedLabel(_flat(message.get("text", "")), 10, _text_color())
+        line.addWidget(self.text, 1)
+        reply = reply_chip(item)
+        if reply:
+            line.addWidget(_chip(*reply))
+        clock = QLabel(_clock(item.get("at")))
+        clock.setStyleSheet(muted(9, mono=True))
+        line.addWidget(clock)
+        self._col.addLayout(line)
+        if expanded:
+            self.set_expanded(True)
+
+    @property
+    def expanded(self) -> bool:
+        return self.details is not None and not self.details.isHidden()
+
+    def set_expanded(self, on: bool) -> None:
+        """Built on the first open: a feed holds up to 200 pings."""
+        if on and self.details is None:
+            self.details = self._build_details()
+            self._col.addWidget(self.details)
+        if self.details is not None:
+            self.details.setVisible(on)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.set_expanded(not self.expanded)
+            self.toggled.emit(str((self.item.get("message") or {}).get("id", "")),
+                              self.expanded)
+        super().mouseReleaseEvent(event)
+
+    def _build_details(self) -> QWidget:
+        item, message = self.item, self.item.get("message") or {}
+        host = QWidget()
+        col = QVBoxLayout(host)
+        col.setContentsMargins(14, 0, 0, 2)
+        col.setSpacing(3)
+
+        def line(text: str, style: str) -> None:
+            label = _plain(text)
+            label.setWordWrap(True)
+            label.setStyleSheet(style)
+            col.addWidget(label)
 
         head = QHBoxLayout()
         head.setSpacing(6)
-        who = _plain(Store.comms_sender(message))
-        who.setStyleSheet("font-weight: 700; font-size: 11px;")
-        head.addWidget(who)
-        where = _plain(Store.comms_place(message))
-        where.setStyleSheet(muted(10))
-        head.addWidget(where)
         for chip in reason_chips(message):
             head.addWidget(_chip(chip, TINT))
-        if mark:
-            head.addWidget(_chip(f"{glyphs.G_BAN} {mark}", _RED))
         head.addStretch(1)
-        if unread:
-            head.addWidget(_chip("NEW", TINT))
-        clock = QLabel(_clock(item.get("at")))
-        clock.setStyleSheet(muted(9, mono=True))
-        head.addWidget(clock)
-        col.addLayout(head)
-
-        text = _plain(str(message.get("text", "")))
-        text.setWordWrap(True)
-        text.setStyleSheet("font-size: 10px;")
-        # Three lines, as on macOS: a pasted stack trace must not push every other ping
-        # off the screen.
-        line = text.fontMetrics().lineSpacing()
-        text.setMaximumHeight(line * 3 + 2)
-        col.addWidget(text)
-
-        foot = QHBoxLayout()
-        foot.setSpacing(6)
-        decision = item.get("decision")
-        if decision:
-            action = str(decision.get("action", "none"))
-            word = _ACTION_WORD.get(action, action)
-            if decision.get("number"):
-                word += f" #{decision['number']}"
-            tint = {"none": _GREY, "injection": _RED}.get(action, _GREEN)
-            foot.addWidget(_chip(word.upper(), tint))
-            summary = _plain(str(decision.get("summary") or decision.get("reason") or ""))
-            summary.setStyleSheet(muted(9))
-            summary.setWordWrap(True)
-            foot.addWidget(summary, 1)
-        else:
-            pending = QLabel("awaiting triage")
-            pending.setStyleSheet(muted(9))
-            foot.addWidget(pending, 1)
         permalink = str(message.get("permalink") or "")
         if permalink:
-            open_btn = QPushButton("Open in Slack")
-            open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            open_btn.setStyleSheet("font-size: 9px; padding: 2px 6px;")
-            open_btn.clicked.connect(
-                lambda _=False, url=permalink: QDesktopServices.openUrl(QUrl(url)))
-            foot.addWidget(open_btn, 0, Qt.AlignmentFlag.AlignTop)
-        col.addLayout(foot)
-
+            head.addWidget(_small_button(
+                "Open in Slack", lambda url=permalink: QDesktopServices.openUrl(QUrl(url))))
+        col.addLayout(head)
+        line(str(message.get("text", "")), "font-size: 10px;")
+        decision = item.get("decision")
+        if decision:
+            why = " — ".join(t for t in (str(decision.get("summary") or ""),
+                                         str(decision.get("reason") or "")) if t)
+            if why:
+                line(why, muted(9))
         if item.get("outcome"):
-            outcome = _plain(f"→ {item['outcome']}")
-            outcome.setWordWrap(True)
-            outcome.setStyleSheet(muted(9))
-            col.addWidget(outcome)
+            line(f"→ {item['outcome']}", muted(9))
+        reply, outcome = item.get("reply"), str(item.get("replyOutcome") or "")
+        if reply:
+            line(f"↩ {reply}", "font-size: 9px;")
+        if outcome and outcome != "sent":
+            line(f"↩ reply {outcome}", muted(9))
+        return host
 
 
 class JobRow(QFrame):
+    """One line: the job, its latest time (every time in the tooltip), the report of an
+    investigation, and its status."""
+
     _STATUS_TINT = {"done": _GREEN, "running": glyphs.AGENT_LIVE, "queued": _ORANGE,
                     "not queued": _GREY}
 
@@ -214,80 +296,61 @@ class JobRow(QFrame):
         self.setObjectName("jobRow")
         self.setStyleSheet("#jobRow { background-color: rgba(128,128,128,0.05);"
                            " border-radius: 6px; }")
-        col = QVBoxLayout(self)
-        col.setContentsMargins(8, 6, 8, 6)
-        col.setSpacing(3)
-
-        head = QHBoxLayout()
-        head.setSpacing(6)
-        label = _plain(str(item.get("label") or item.get("queueKey") or ""))
-        label.setWordWrap(True)
-        label.setStyleSheet("font-size: 10px; font-weight: 600;")
-        head.addWidget(label, 1)
-        head.addWidget(_chip(status.upper(), self._STATUS_TINT.get(status, _GREY)),
-                       0, Qt.AlignmentFlag.AlignTop)
-        col.addLayout(head)
+        line = QHBoxLayout(self)
+        line.setContentsMargins(8, 3, 8, 3)
+        line.setSpacing(6)
+        self.label = ElidedLabel(str(item.get("label") or item.get("queueKey") or ""),
+                                 10, _text_color())
+        line.addWidget(self.label, 1)
 
         times = [f"asked {_clock(item.get('at'))}"]
         if item.get("startedAt"):
             times.append(f"started {_clock(item['startedAt'])}")
         if item.get("finishedAt"):
             times.append(f"done {_clock(item['finishedAt'])}")
-        foot = QHBoxLayout()
-        when = QLabel(" · ".join(times))
-        when.setStyleSheet(muted(9, mono=True))
-        foot.addWidget(when, 1)
+        self.when = QLabel(times[-1])
+        self.when.setStyleSheet(muted(9, mono=True))
+        self.setToolTip(" · ".join(times))
+        line.addWidget(self.when)
         report = report_path(item)
         if report is not None:
-            btn = QPushButton("Report")
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet("font-size: 9px; padding: 2px 6px;")
-            btn.clicked.connect(
-                lambda _=False, p=str(report): QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
-            foot.addWidget(btn)
-        col.addLayout(foot)
+            line.addWidget(_small_button(
+                "Report",
+                lambda p=str(report): QDesktopServices.openUrl(QUrl.fromLocalFile(p))))
+        line.addWidget(_chip(status.upper(), self._STATUS_TINT.get(status, _GREY)))
 
 
 class BannedSenderRow(QFrame):
-    """One banned Slack sender: who, when, the words that did it, and the message."""
+    """One line per banned Slack sender: who, where, when, and the words that did it,
+    cut to fit (whole in the tooltip)."""
 
     def __init__(self, ban: bans.BannedAuthor) -> None:
         super().__init__()
-        col = QVBoxLayout(self)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(2)
-        head = QHBoxLayout()
-        head.setSpacing(6)
-        head.addWidget(GlyphLabel(glyphs.G_BAN, 14, _RED, font_px=12))
+        line = QHBoxLayout(self)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(6)
+        line.addWidget(GlyphLabel(glyphs.G_BAN, 14, _RED, font_px=12))
         who = _plain(ban.name)
         who.setStyleSheet("font-weight: 700; font-size: 10px;")
-        head.addWidget(who)
-        uid = _plain(str(ban.slack_id))
-        uid.setStyleSheet(muted(9, mono=True))
-        head.addWidget(uid)
+        who.setToolTip(plain_tooltip(str(ban.slack_id)))
+        line.addWidget(who)
         if ban.place:
             place = _plain(ban.place)
             place.setStyleSheet(muted(9))
-            head.addWidget(place)
+            line.addWidget(place)
         when = _plain(bans.when_text(ban))
         when.setStyleSheet(muted(9))
-        head.addWidget(when, 1)
+        line.addWidget(when)
+        why = ban.evidence or ban.reason or ""
+        self.quote = ElidedLabel(f"“{_flat(why)}”" if ban.evidence else _flat(why), 9,
+                                 _text_color())
+        if why:
+            self.quote.setToolTip(plain_tooltip(why))
+        line.addWidget(self.quote, 1)
         url = bans.place_url(ban)
         if url:
-            btn = QPushButton("Open in Slack")
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet("font-size: 9px; padding: 2px 6px;")
-            btn.clicked.connect(lambda _=False, u=url: QDesktopServices.openUrl(QUrl(u)))
-            head.addWidget(btn)
-        col.addLayout(head)
-        why = ban.evidence or ban.reason or ""
-        if why:
-            quote = _plain(f"“{' '.join(why.split())}”" if ban.evidence else why)
-            quote.setWordWrap(True)
-            quote.setStyleSheet("font-size: 9px; padding-left: 20px;")
-            quote.setMaximumHeight(quote.fontMetrics().lineSpacing() * 2 + 2)
-            quote.setToolTip(plain_tooltip(why))
-            col.addWidget(quote)
+            line.addWidget(_small_button(
+                "Open in Slack", lambda u=url: QDesktopServices.openUrl(QUrl(u))))
 
 
 class CommsView(QWidget):
@@ -300,6 +363,10 @@ class CommsView(QWidget):
         #: `commsSeenAt` as of opening, which decides the rows drawn as new: opening
         #: moves the setting itself.
         self._seen_before = store.comms_seen_at
+        #: Survive the rebuild every store signal causes; each opening starts closed.
+        self._expanded: set[str] = set()
+        self._earlier_open = False
+        self.earlier_btn: QPushButton | None = None
 
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
@@ -389,6 +456,8 @@ class CommsView(QWidget):
 
     def open(self) -> None:
         self._seen_before = self.store.comms_seen_at
+        self._expanded.clear()
+        self._earlier_open = False
         self.store.mark_comms_seen()
         self.rebuild()
 
@@ -426,12 +495,12 @@ class CommsView(QWidget):
         _clear(self.bans_col)
         self.bans_host.setVisible(bool(senders))
         if senders:
-            self.bans_col.addLayout(self._section_head("BANNED SENDERS", len(senders)))
-            note = QLabel("Prompt injection: their messages are never triaged. "
-                          "Un-ban in the panel's Banned list.")
+            head = self._section_head("BANNED SENDERS", len(senders))
+            note = QLabel("prompt injection: never triaged · un-ban in the panel's "
+                          "Banned list")
             note.setStyleSheet(muted(9))
-            note.setWordWrap(True)
-            self.bans_col.addWidget(note)
+            head.addWidget(note)
+            self.bans_col.addLayout(head)
             for b in senders:
                 self.bans_col.addWidget(BannedSenderRow(b))
 
@@ -442,11 +511,30 @@ class CommsView(QWidget):
             none.setStyleSheet(muted(10))
             none.setWordWrap(True)
             self.pings_col.addWidget(none)
-        for item in items:
+        def is_unread(item: dict) -> bool:
             at = comms.parse_iso(str(item.get("at", "")))
-            unread = seen is None or (at is not None and at > seen)
-            self.pings_col.addWidget(PingRow(item, unread=unread,
-                                             mark=ban_mark(item)))
+            return seen is None or (at is not None and at > seen)
+
+        unread = [i for i in items if is_unread(i)]
+        read = [i for i in items if not is_unread(i)]
+        for item in unread:
+            self.pings_col.addWidget(self._ping_row(item, unread=True))
+        self.earlier_btn = None
+        if read:
+            if not unread:
+                none = QLabel("Nothing new.")
+                none.setStyleSheet(muted(10))
+                self.pings_col.addWidget(none)
+            self.earlier_btn = QPushButton(
+                f"{'▾' if self._earlier_open else '▸'} Earlier · {len(read)}")
+            self.earlier_btn.setFlat(True)
+            self.earlier_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.earlier_btn.setStyleSheet(muted(10, bold=True) + " text-align: left;")
+            self.earlier_btn.clicked.connect(self._toggle_earlier)
+            self.pings_col.addWidget(self.earlier_btn)
+            if self._earlier_open:
+                for item in read:
+                    self.pings_col.addWidget(self._ping_row(item, unread=False))
 
         jobs = [i for i in items if i.get("queueKey")]
         waiting = ({t.id for t in self.store.queued_tasks}
@@ -459,6 +547,20 @@ class CommsView(QWidget):
             self.jobs_col.addWidget(none)
         for item in jobs:
             self.jobs_col.addWidget(JobRow(item, job_status(item, waiting)))
+
+    def _ping_row(self, item: dict, *, unread: bool) -> PingRow:
+        msg_id = str((item.get("message") or {}).get("id", ""))
+        row = PingRow(item, unread=unread, mark=ban_mark(item),
+                      expanded=msg_id in self._expanded)
+        row.toggled.connect(self._note_expanded)
+        return row
+
+    def _note_expanded(self, msg_id: str, on: bool) -> None:
+        (self._expanded.add if on else self._expanded.discard)(msg_id)
+
+    def _toggle_earlier(self) -> None:
+        self._earlier_open = not self._earlier_open
+        self.rebuild()
 
     @staticmethod
     def _section_head(title: str, count: int) -> QHBoxLayout:

@@ -367,12 +367,13 @@ struct SettingsView: View {
             pollErrorRow
             reviewRequestsRow
             reviewPolicyBlock
+            communityIssuesRow
         }
     }
 
     /// How much automatic work this machine may run, and whether it can afford to. Its
     /// own card, beside the monitors rather than under them: both rows bound *every*
-    /// automatic agent — the two monitors above and anything a mesh peer routes here.
+    /// automatic agent — the monitors above and anything a mesh peer routes here.
     private var limitsSection: some View {
         let n = store.autoTaskLimit
         return SettingsCard(symbol: "speedometer", title: "LIMITS", tint: .orange,
@@ -387,6 +388,7 @@ struct SettingsView: View {
     /// stale, and nothing dispatched.
     private var autofixPill: StatusPill {
         let on = store.prAutofixEnabled || store.reviewRequestsEnabled
+            || store.communityIssuesEnabled
         if !on { return StatusPill(text: "manual", tint: .secondary, symbol: "hand.raised") }
         if store.autofixPollError != nil {
             return StatusPill(text: "polls failing", tint: .red,
@@ -438,6 +440,20 @@ struct SettingsView: View {
             }
         }
     }
+
+    private var communityIssuesRow: some View {
+        SettingRow(title: "Fix new community issues",
+                   detail: SettingsView.communityIssuesDetail) {
+            switchControl("Fix new community issues", $store.communityIssuesEnabled)
+        }
+    }
+
+    private static let communityIssuesDetail = """
+        Reproduce each issue filed from outside the org, and fix it if it reproduces. \
+        Issues filed from the moment it is on; the backlog is a Fix-issues sweep's. \
+        Each is a cancellable fix under Agent tasks. Off, nothing is queued, and issues \
+        filed meanwhile are left for a sweep.
+        """
 
     private static let reviewRequestsDetail = """
         Full E2E · max, inline comments — read-only, never their branch. \
@@ -542,9 +558,9 @@ struct SettingsView: View {
         }
     }
 
-    /// The device-wide ceiling on concurrent automatic agents. Under both monitors
-    /// because it governs both — a poll of either can find any number of pending units
-    /// at once, and this is what keeps them from all opening at the same moment.
+    /// The device-wide ceiling on concurrent automatic agents. It governs every
+    /// monitor — a poll of any can find any number of pending units at once, and this
+    /// is what keeps them from all opening at the same moment.
     private var autoTaskLimitRow: some View {
         let n = store.autoTaskLimit
         let lo = AgentDispatchGate.minAutoTaskLimit, hi = AgentDispatchGate.maxAutoTaskLimit
@@ -569,7 +585,7 @@ struct SettingsView: View {
     /// `Text(...)` in a builder is what tips this file over the type-checker's time
     /// limit on a CI runner, while still compiling here.
     private static let autoTaskLimitDetail = """
-        Across both monitors, a PR sweep's reviews, and anything a mesh peer routes \
+        Across every monitor, a PR sweep's reviews, and anything a mesh peer routes \
         here. The agent a wizard press opens on the spot is outside the cap; a review it \
         queues instead is inside. Work over the cap waits in Agent tasks, in the \
         order you put it, and starts when a bay frees — unless you switch off \
@@ -585,7 +601,7 @@ struct SettingsView: View {
     /// should start at all.
     private static let autoBudgetDetail = """
         Wait for a window to refill rather than start what won't fit. Priced from \
-        Telemetry → limit per task: against both rate-limit windows under \
+        Telemetry → limit per task: against the 7-day rate-limit window under \
         Claude Code, or — under a runner billed in money — against what one task costs \
         on the model it runs, and what your OpenRouter key and credit balance have \
         left. Higher confidence is stricter. Held work waits in Agent tasks, and \
@@ -615,7 +631,7 @@ struct SettingsView: View {
                 .pickerStyle(.segmented).labelsHidden().controlSize(.small)
             }
             SettingRow(title: "Keep in hand until it can be priced",
-                       detail: "Of each rate-limit window, under Claude Code.",
+                       detail: "Of the 7-day rate-limit window, under Claude Code.",
                        stacked: true) {
                 SliderSetting(label: "Keep in hand until it can be priced",
                               value: $store.autoBudgetFloorPct,
@@ -739,9 +755,12 @@ struct SettingsView: View {
     private var commsOptions: some View {
         NestedSettings(tint: .blue) {
             SettingRow(title: "Keywords",
-                       detail: "Commas or new lines between them; one may be a phrase.",
+                       detail: "Commas or new lines between them; one may be a phrase. A * "
+                             + "ending a word matches any letters after it, as in argent*; "
+                             + "Slack expands no * anywhere else.",
                        stacked: true) {
-                commsField("none", $store.commsKeywordsRaw, symbol: "text.magnifyingglass")
+                commsField("deploy, release train, argent*", $store.commsKeywordsRaw,
+                           symbol: "text.magnifyingglass")
             }
             SettingRow(title: "Senders",
                        detail: "Slack handles or user IDs (U…), commas between them; "
@@ -751,6 +770,10 @@ struct SettingsView: View {
                            symbol: "person.2.fill")
             }
             commsActionsBlock
+            SettingRow(title: "Reply in Slack", detail: SettingsView.commsRepliesDetail) {
+                switchControl("Reply in Slack", $store.commsReplies)
+            }
+            commsAwayRow
             SettingRow(title: "Notify on new pings") {
                 switchControl("Notify on new pings", $store.commsNotify)
             }
@@ -833,6 +856,38 @@ struct SettingsView: View {
         writes a report and never pushes, comments or posts. Everything still waits for \
         a bay and answers to the ban list and the spending budget.
         """
+
+    private static let commsRepliesDetail = """
+        Replies start with [Diplomat]: and go only to the conversation the message was \
+        written in, in its thread, once per message. A review, fix or investigation a \
+        ping queued (or found queued or running) gets an estimate of when it should be \
+        done. While you are away, a question about the project is answered from its \
+        documentation when that settles it plainly, and left alone otherwise.
+        """
+
+    private static let commsAwayDetail =
+        "How long your Mac must have been locked before Comms answers questions for you."
+    private static let commsAwayStep = (try? CoreAssets.comms())?.replies.awayAfterStepSecs ?? 900
+    private static let commsAwayMax = (try? CoreAssets.comms())?.replies.awayAfterMaxSecs ?? 43200
+
+    private var commsAwayRow: some View {
+        let lo = SettingsView.commsAwayStep, hi = SettingsView.commsAwayMax
+        return SettingRow(title: "Away after",
+                          detail: SettingsView.commsAwayDetail,
+                          stacked: true) {
+            SliderSetting(label: "Away after",
+                          value: Binding(
+                              get: { Double(store.commsAwayAfterSecs) },
+                              set: { store.commsAwayAfterSecs = Int($0.rounded()) }
+                          ),
+                          range: Double(lo)...Double(hi),
+                          step: Double(lo),
+                          badge: Fmt.duration(TimeInterval(store.commsAwayAfterSecs)),
+                          minLabel: Fmt.duration(TimeInterval(lo)),
+                          maxLabel: Fmt.duration(TimeInterval(hi)),
+                          tint: .blue)
+        }
+    }
 
     private static let commsLoginDetail = """
         Comms borrows the login Claude Code holds for Slack's MCP server, read on each \

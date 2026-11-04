@@ -105,7 +105,7 @@ _ACTION_GLYPH: dict[str, str] = {
     "mesh-spawn": "↘",
     "comms-ping": "✉", "comms-review": "☑", "comms-fix": "⊙", "comms-bump": "↑",
     "comms-investigate": "⌕", "comms-error": "△", "comms-recovered": "✓",
-    "comms-notice": "△",
+    "comms-notice": "△", "comms-reply": "↩",
 }
 
 

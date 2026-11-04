@@ -8,6 +8,9 @@ import Foundation
 /// - `action`   + `outcome`, `queueKey`?, `label`?  — the front-end, once it has acted
 /// - `started`  + `label`                           — the front-end, when the ask's agent spawned
 /// - `finished` + `label`                           — the front-end, when that run left the agent list
+/// - `reply`    + `outcome`, `detail`?              — `CommsReplier`: `sending` with the text before it
+///                                                    posts, then `sent` or `failed: …`; `skipped: …`
+///                                                    for an away question it would not answer
 /// - `error`    + `detail`                          — the tick, on going from a good tick to a failing
 ///                                                    one, and for messages it skipped unread
 ///
@@ -15,7 +18,7 @@ import Foundation
 /// appended to a 0600 file while holding `CommsLog.lockURL`.
 public struct CommsEvent: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
-        case ping, decision, action, started, finished, error
+        case ping, decision, action, started, finished, error, reply
     }
 
     public var at: Date
@@ -52,6 +55,10 @@ public struct CommsItem: Codable, Equatable, Sendable {
     public var label: String?
     public var startedAt: Date?
     public var finishedAt: Date?
+    /// The text Comms wrote back in Slack, and the last `reply` line's outcome; `reply`
+    /// is nil for a skipped one.
+    public var reply: String?
+    public var replyOutcome: String?
     /// When the ping was recorded.
     public var at: Date
 
@@ -101,22 +108,24 @@ public enum CommsLog {
     }
 
     /// `O_APPEND`, so another writer's line is never overwritten; `write(2)`, so a full
-    /// disk costs the line instead of aborting the process.
-    public static func append(_ event: CommsEvent, in dir: URL = dir) {
-        guard var line = try? encoder.encode(event) else { return }
+    /// disk costs the line instead of aborting the process. False when the line is not
+    /// all on disk.
+    @discardableResult
+    public static func append(_ event: CommsEvent, in dir: URL = dir) -> Bool {
+        guard var line = try? encoder.encode(event) else { return false }
         line.append(UInt8(ascii: "\n"))
         prepare(dir)
         let lock = open(lockURL(in: dir).path, O_RDWR | O_CREAT, 0o600)
-        guard lock >= 0 else { return }
+        guard lock >= 0 else { return false }
         defer { close(lock) }
-        guard flock(lock, LOCK_EX) == 0 else { return }
+        guard flock(lock, LOCK_EX) == 0 else { return false }
         let url = eventsURL(in: dir)
         rotateIfLarge(url)
         let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
-        guard fd >= 0 else { return }
+        guard fd >= 0 else { return false }
         defer { close(fd) }
         fchmod(fd, 0o600)
-        _ = line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+        return line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) } == line.count
     }
 
     /// Whole or not at all, owner-only: a 0600 temp file renamed over `url`.
@@ -161,6 +170,9 @@ public enum CommsLog {
                 if let l = e.label { items[e.id]?.item.label = l }
             case .finished:
                 items[e.id]?.item.finishedAt = e.at
+            case .reply:
+                items[e.id]?.item.replyOutcome = e.outcome
+                if let d = e.detail { items[e.id]?.item.reply = d }
             case .error:
                 break
             }

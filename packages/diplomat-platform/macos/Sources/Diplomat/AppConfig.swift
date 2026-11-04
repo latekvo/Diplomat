@@ -34,7 +34,7 @@ enum AppConfig {
     static let autoBudgetGateKey = "autoBudgetGate"
     /// How sure the gate must be that a task fits, as a percentage.
     static let autoBudgetConfidenceKey = "autoBudgetConfidence"
-    /// Share of each window to keep in hand while the ledger cannot price a task.
+    /// Share of the 7-day window to keep in hand while the ledger cannot price a task.
     static let autoBudgetFloorPctKey = "autoBudgetFloorPct"
     /// The same, in dollars, for an account billed in money.
     static let autoBudgetReserveUsdKey = "autoBudgetReserveUsd"
@@ -224,7 +224,7 @@ enum AppConfig {
         bool(runDeadlineKey, fallback: true) ? AgentState.runDeadline : nil
     }
 
-    /// Whether automatic work is held back when the rate-limit windows are too low to
+    /// Whether automatic work is held back when the rate-limit window is too low to
     /// afford it. Lives here, not in UserDefaults, for the reason the task cap does: a
     /// mesh node spends this machine's limit on work this app never sees, and the two
     /// must not disagree about whether that limit is being watched.
@@ -238,7 +238,7 @@ enum AppConfig {
                 fallback: AgentDispatchGate.defaultBudgetConfidence))
     }
 
-    /// The share of each rate-limit window to keep in hand while the ledger is too
+    /// The share of the 7-day rate-limit window to keep in hand while the ledger is too
     /// thin to price a task.
     static var autoBudgetFloorPct: Double {
         AgentDispatchGate.clampBudgetFloorPct(

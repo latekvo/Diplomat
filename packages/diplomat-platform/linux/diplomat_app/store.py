@@ -261,6 +261,8 @@ class Store(QObject):
     ban_noticed = Signal(str, str)
     # A tick's findings, handed to the Qt thread, where the queue is changed.
     _comms_ticked = Signal(object)
+    # `comms-reply`'s answers: [(request, result)], back on the Qt thread.
+    _comms_replied = Signal(object)
     # Emitted when the other checkouts listed in Settings change, so the wizards
     # re-judge a link they are already holding.
     local_repos_changed = Signal()
@@ -466,6 +468,13 @@ class Store(QObject):
         # (:meth:`_comms_kept_adopted`).
         self._comms_adopted: dict[str, autofix.QueuedTask] = {}
         self._comms_ticked.connect(self._apply_comms_tick)
+        # Replies go one at a time: two in flight could both read the log before
+        # either wrote its `reply` line, and answer one message twice.
+        self._comms_reply_lock = threading.Lock()
+        self._comms_replied.connect(self._on_comms_replied)
+        # The last tick's `comms.session_locked`: None until one has asked, or when
+        # logind could not say.
+        self._comms_locked: bool | None = None
 
         # Pruned on every start — a Store outlives thousands of polls.
         self._workers: list[threading.Thread] = []
@@ -699,6 +708,20 @@ class Store(QObject):
     @review_requests_enabled.setter
     def review_requests_enabled(self, value: bool) -> None:
         self._settings.setValue("reviewRequestsEnabled", bool(value))
+
+    @property
+    def community_issues_enabled(self) -> bool:
+        """Queue a reproduce-and-fix of every issue the community files from here on.
+        On by default (matches macOS). Off, nothing is queued and the mark is
+        dropped, so switching it back on starts from that moment rather than
+        queueing what was filed meanwhile (:meth:`_poll_community_issues`)."""
+        return self._settings.value("communityIssuesEnabled", True, bool)
+
+    @community_issues_enabled.setter
+    def community_issues_enabled(self, value: bool) -> None:
+        self._settings.setValue("communityIssuesEnabled", bool(value))
+        if not value:
+            self._settings.remove("communityIssuesSince")
 
     @property
     def review_allowlist_raw(self) -> str:
@@ -1012,6 +1035,24 @@ class Store(QObject):
         self._settings.setValue("commsActInvestigations", bool(value))
 
     @property
+    def comms_replies(self) -> bool:
+        """Acknowledge queued work in Slack, and answer a question while away."""
+        return self._settings.value("commsReplies", True, bool)
+
+    @comms_replies.setter
+    def comms_replies(self, value: bool) -> None:
+        self._settings.setValue("commsReplies", bool(value))
+
+    @property
+    def comms_away_after_secs(self) -> int:
+        """How long the session must have been locked to count as away."""
+        return self._settings.value("commsAwayAfterSecs", comms.away_after_secs()[0], int)
+
+    @comms_away_after_secs.setter
+    def comms_away_after_secs(self, value: int) -> None:
+        self._settings.setValue("commsAwayAfterSecs", int(value))
+
+    @property
     def comms_notify(self) -> bool:
         return self._settings.value("commsNotify", True, bool)
 
@@ -1036,6 +1077,19 @@ class Store(QObject):
     @comms_seen_at.setter
     def comms_seen_at(self, value: str) -> None:
         self._settings.setValue("commsSeenAt", str(value))
+
+    @property
+    def comms_locked_since(self) -> str:
+        """ISO 8601 of the first tick that found the session locked, "" while it is
+        not; kept across a restart mid-lock."""
+        return str(self._settings.value("commsLockedSince", "", str) or "")
+
+    @comms_locked_since.setter
+    def comms_locked_since(self, value: str) -> None:
+        if value:
+            self._settings.setValue("commsLockedSince", str(value))
+        else:
+            self._settings.remove("commsLockedSince")
 
     # MARK: derived settings
 
@@ -1203,11 +1257,12 @@ class Store(QObject):
                 # succeeds, since the refusal that staged them wrote no attempt
                 # record.
                 self._staged_queue = []
-                # Both monitors run whatever their toggles say; a switched-off one
+                # Both PR monitors run whatever their toggles say; a switched-off one
                 # queues what it finds instead of dispatching it (see is_paused).
                 if snaps is not None:
                     self._poll_my_prs(snaps)
                 self._poll_review_requests(owner, repo)
+                self._poll_community_issues()
                 # Last, so the monitors' finds keep the places they were found in:
                 # the operator's own sweep bands behind them anyway, and a fifty-item
                 # ask offered first would otherwise decide the arrangement of a queue
@@ -1325,6 +1380,43 @@ class Store(QObject):
                 )
         keep = {str(s.number) for s in snaps if s.mergeable != "MERGEABLE"}
         self._save_attempts(key, {k: v for k, v in attempts.items() if k in keep})
+
+    def _poll_community_issues(self) -> None:
+        """Queue one fix for each issue the community filed since the last scan.
+
+        Queued as an ask, the same row a Fix-issues sweep of the community leaves,
+        because nothing on GitHub would re-offer it: the mark moves past each issue
+        once (:meth:`Filters.new_community_issues`). So it is offered until it is
+        dispatched, can be cancelled, and re-reads its issue when its turn comes."""
+        if not self.community_issues_enabled:
+            return
+        try:
+            found = autofixmonitor.fetch_open_issues()
+        except Exception as exc:  # noqa: BLE001
+            self._note_poll_failure(exc)
+            return
+        try:
+            since = datetime.fromisoformat(
+                self._settings.value("communityIssuesSince", "", str))
+        except ValueError:
+            # Unset or unreadable: re-baseline rather than fail every poll from here on.
+            since = None
+        fresh, mark = Filters.new_community_issues(
+            found, since, datetime.now().astimezone())
+        banned = bans.read()
+        for issue in fresh:
+            who = f"Issue #{issue.number} by @{issue.author}"
+            if bans.is_banned(issue.author, banned):
+                activity.log("auto", "ban-skip", f"{who} - author is banned, not queued")
+                continue
+            cfg = issues.IssueConfig(target=issues.Target.CONTRIBUTORS,
+                                     me=self.effective_me)
+            queued, _ = self._request([autofix.RequestedWork(
+                number=issue.number, url=issue.url, author=issue.author,
+                config=cfg.for_issue(issue.number).prompt_payload())])
+            if queued:
+                activity.log("auto", "community-issue", f"{who} - fix queued")
+        self._settings.setValue("communityIssuesSince", mark.isoformat())
 
     def _poll_review_requests(self, owner: str, repo: str) -> None:
         try:
@@ -2688,8 +2780,8 @@ class Store(QObject):
     def _note_blind_budget_gate(self) -> None:
         """Say out loud when the budget gate has nothing left to gate on.
 
-        What is left of the rate-limit windows comes from one probe, and
-        ``budget_decide`` SKIPS a ceiling it cannot read — with neither window readable
+        What is left of the rate-limit window comes from one probe, and
+        ``budget_decide`` SKIPS a ceiling it cannot read — with the window unreadable
         every task is affordable. So a probe that stops answering does not fail the
         gate closed or loudly: it stops gating, while the toggle still reads on and
         nothing else looks wrong. A stale ``.credentials.json`` did exactly that here
@@ -2708,7 +2800,7 @@ class Store(QObject):
             return
         self._quota_warned = True
         activity.log("auto", "warn",
-                     f"Asked what is left of the rate-limit windows {rounds} times "
+                     f"Asked what is left of the rate-limit window {rounds} times "
                      f"without one answer — the automatic budget is gating on nothing, "
                      f"and auto work will dispatch whatever the limits have left")
         self.refresh_activity()
@@ -3132,7 +3224,7 @@ class Store(QObject):
         unbroken sample series regardless. :func:`telemetry.sample_due` does the pacing, so calling
         this more often than the sample interval is free.
 
-        The quota probe insists (:func:`quota.fractions_left`), so a worker can outlive
+        The quota probe insists (:func:`quota.week_left`), so a worker can outlive
         the gap between turns — and until it writes, :func:`telemetry.sample_due` still
         says a sample is owed. The lock is what keeps that from becoming several.
         """
@@ -3146,11 +3238,11 @@ class Store(QObject):
 
             try:
                 try:
-                    session, week = quota.fractions_left(insist=True)
+                    week = quota.week_left(insist=True)
                     totals = usagescan.totals()
                 except OSError:
                     return  # an unreadable ~/.claude costs this sample, nothing else
-                telemetry.record_sample(session, week, totals.repo, totals.other)
+                telemetry.record_sample(week, totals.repo, totals.other)
             finally:
                 # Held until the sample is on disk: released a moment earlier, the
                 # next turn would find `sample_due` still true and take a second one.
@@ -3296,7 +3388,29 @@ class Store(QObject):
 
     def comms_toggles(self) -> dict:
         return {"requests": self.comms_act_requests, "bumps": self.comms_act_bumps,
-                "investigations": self.comms_act_investigations}
+                "investigations": self.comms_act_investigations,
+                "replies": self.comms_replies}
+
+    def note_session_lock(self, locked: bool | None,
+                          now: datetime | None = None) -> None:
+        """A lock that logind could not read leaves the record alone."""
+        self._comms_locked = locked
+        if locked is False:
+            self.comms_locked_since = ""
+        elif locked and not comms.parse_iso(self.comms_locked_since):
+            self.comms_locked_since = comms.iso(now)
+
+    def comms_away(self, now: datetime | None = None) -> bool:
+        """Locked for ``comms_away_after_secs``; ``DIPLOMAT_COMMS_AWAY=1|0`` forces it
+        (``CommsAway.override``)."""
+        forced = os.environ.get("DIPLOMAT_COMMS_AWAY")
+        if forced in ("1", "0"):
+            return forced == "1"
+        since = comms.parse_iso(self.comms_locked_since)
+        if not self._comms_locked or since is None:
+            return False
+        now = now or datetime.now().astimezone()
+        return (now - since).total_seconds() >= self.comms_away_after_secs
 
     @property
     def comms_unread(self) -> int:
@@ -3339,7 +3453,7 @@ class Store(QObject):
                 plan = self._comms_poll_once()
             except Exception as exc:  # noqa: BLE001 — a tick must never stop the timer
                 plan = {"at": datetime.now().astimezone(), "error": str(exc),
-                        "me": None, "pings": [], "items": []}
+                        "me": None, "pings": [], "items": [], "locked": None}
             finally:
                 self._comms_lock.release()
             self._comms_ticked.emit(plan)
@@ -3370,7 +3484,8 @@ class Store(QObject):
         with self._comms_feed_lock:
             self._comms_in_flight |= {str(e["message"].get("id", "")) for e in items}
         return {"at": at, "error": result.get("error"), "me": result.get("me"),
-                "pings": result["pings"], "items": items, "notices": result["notices"]}
+                "pings": result["pings"], "items": items, "notices": result["notices"],
+                "locked": comms.session_locked()}
 
     def _comms_stranded(self, fresh: list[dict]) -> list[dict]:
         """Twin of ``applyComms``' first pass: a logged ping with no action, oldest first.
@@ -3431,10 +3546,12 @@ class Store(QObject):
             if plan.get("me"):
                 self.comms_identity = plan["me"]
             self._settle_comms_error(plan.get("error"))
+            self.note_session_lock(plan.get("locked"))
             notices = plan.get("notices") or []
             for notice in notices:
                 activity.log("auto", "comms-notice", notice)
             banned_now = set(bans.slack_ids(bans.read()))
+            replies = []
             for entry in items:
                 entry["sender_banned"] = (
                     str(entry["message"].get("userID") or "") in banned_now)
@@ -3442,7 +3559,15 @@ class Store(QObject):
                 reported = entry.get("reported") or {}
                 if (entry.get("effect") or {}).get("kind") == "ban" and not reported.get("error"):
                     banned_now.add(str(entry["effect"]["ban"].get("userID") or ""))
+                request = self._comms_reply_request(entry)
+                if request is not None:
+                    replies.append(request)
             self.refresh_comms_feed()
+            # After the loop: a later message of this tick can ban an earlier one's sender.
+            replies = [r for r in replies
+                       if str(r["message"].get("userID") or "") not in banned_now]
+            if replies:
+                self._send_comms_replies(replies)
             if items or notices:
                 self.refresh_activity()
             if self.comms_notify and self.comms_enabled:
@@ -3452,6 +3577,55 @@ class Store(QObject):
         finally:
             with self._comms_feed_lock:
                 self._comms_in_flight -= {str(e["message"].get("id", "")) for e in items}
+        self.comms_changed.emit()
+
+    def _comms_reply_request(self, entry: dict) -> dict | None:
+        """The ``CommsReplyRequest`` for an applied ping, or ``None`` when no reply can
+        be due: queued work is acknowledged, a question answered while away. The core
+        holds the switch, the ban list and at-most-once again (``CommsReplier.reply``)."""
+        decision = entry.get("decision") or {}
+        if not self.comms_enabled or not self.comms_replies:
+            return None
+        request = {"message": entry["message"], "decision": decision,
+                   "away": self.comms_away(), "toggles": self.comms_toggles(),
+                   "settings": self.comms_settings_payload()}
+        effect = entry.get("effect") or {}
+        key = entry.get("queue_key")
+        if effect.get("kind") in ("review", "fix_issue", "investigate") and key:
+            ids = [t.id for t in self.queued_tasks]
+            queued = {"kind": effect["kind"], "number": int(entry.get("work_number") or 0),
+                      "ahead": ids.index(key) if key in ids else 0,
+                      "bays": self.auto_task_limit}
+            running = entry.get("running")
+            if running is not None:
+                started = self._comms_dispatched(running) or datetime.now().astimezone()
+                queued["startedAt"] = comms.iso(started)
+            return {**request, "queued": queued}
+        return request if decision.get("action") == "question" else None
+
+    def _send_comms_replies(self, requests: list[dict]) -> None:
+        def work() -> None:
+            with self._comms_reply_lock:
+                done = [(r, comms.reply(r)) for r in requests]
+            self._comms_replied.emit(done)
+
+        self.start_background(work, name="comms-reply")
+
+    def _on_comms_replied(self, done: list) -> None:
+        logged = False
+        for request, result in done:
+            outcome = str(result.get("outcome") or "")
+            if outcome != "sent" and not outcome.startswith("failed:"):
+                continue
+            message = request["message"]
+            to = f"{self.comms_sender(message)} in {self.comms_place(message)}"
+            activity.log("auto", "comms-reply",
+                         f"Replied to {to}: {self.comms_snippet(result.get('text') or '', 160)}"
+                         if outcome == "sent" else f"Reply to {to} {outcome}")
+            logged = True
+        self.refresh_comms_feed()
+        if logged:
+            self.refresh_activity()
         self.comms_changed.emit()
 
     def _settle_comms_error(self, error: str | None) -> None:
@@ -3490,9 +3664,10 @@ class Store(QObject):
 
         ``entry`` is ``{message, decision, effect}``, plus ``target``
         (:meth:`_comms_lookup`) for a review or a fix, and ``sender_banned`` for a sender
-        on the ban list (:meth:`_apply_comms_tick`). Every ping ends in exactly one
-        `action` line, even from a tick landing after Comms was switched off: the core
-        has already logged its pings."""
+        on the ban list (:meth:`_apply_comms_tick`); it gains ``queue_key``, ``running``
+        and ``work_number`` for :meth:`_comms_reply_request`. Every ping ends in exactly
+        one `action` line, even from a tick landing after Comms was switched off: the
+        core has already logged its pings."""
         message, effect = entry["message"], entry.get("effect") or {"kind": "none"}
         msg_id = str(message.get("id", ""))
         where, sender = self.comms_place(message), self.comms_sender(message)
@@ -3553,6 +3728,7 @@ class Store(QObject):
                 twin = None if running else next(
                     (t for t in self.starting_tasks if t.id in twins),
                     next((t for t in self.queued_tasks if t.id in twins), None))
+                entry["work_number"] = work.number
                 if running is not None:
                     outcome, key, label = "already running", work.key, running.label
                 elif twin is not None:
@@ -3569,6 +3745,7 @@ class Store(QObject):
                     else:
                         outcome += (" queued" if fresh else " was already queued") + suffix
                         key, label = work.key, work.label
+            entry["queue_key"], entry["running"] = key, running
             if key is not None and running is None:
                 owners = self._comms_owned.get(key, frozenset()) | {msg_id}
                 self._comms_owned = {**self._comms_owned, key: owners}

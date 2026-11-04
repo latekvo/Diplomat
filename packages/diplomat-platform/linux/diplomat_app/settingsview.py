@@ -41,6 +41,7 @@ from diplomat_runtime import (
     runner,
     usagescan,
 )
+from diplomat_runtime.models import Fmt
 from . import (
     glyphs,
     szpont,
@@ -596,6 +597,17 @@ class SettingsView(QWidget):
         )))
         approve.addWidget(self._verdict_rows)
         body.addWidget(approve_nest)
+
+        self._sw_community = SwitchToggle(_ORANGE)
+        self._sw_community.setChecked(self.store.community_issues_enabled)
+        self._sw_community.toggled.connect(self._on_community_toggled)
+        body.addWidget(self._track(SettingRow(
+            "Fix new community issues", self._sw_community,
+            detail="Reproduce each issue filed from outside the org, and fix it if it "
+                   "reproduces. Issues filed from the moment it is on; the backlog is a "
+                   "Fix-issues sweep's. Each is a cancellable fix under Agent tasks. Off, "
+                   "nothing is queued, and issues filed meanwhile are left for a sweep.",
+        )))
         return card
 
     def _allowlist_row(self) -> QWidget:
@@ -662,7 +674,7 @@ class SettingsView(QWidget):
     def _limits_card(self) -> QWidget:
         """How much automatic work this machine may run, and whether it can afford
         it. Its own card, beside the monitors rather than under them: both rows
-        bound *every* automatic agent — the two monitors and anything a mesh peer
+        bound *every* automatic agent — the monitors and anything a mesh peer
         routes here."""
         card, body, self._limits_pill = settings_card(glyphs.G_LIMITS, "LIMITS", _ORANGE)
 
@@ -681,7 +693,7 @@ class SettingsView(QWidget):
         self._auto_limit.changed.connect(self._on_auto_limit_changed)
         body.addWidget(self._track(SettingRow(
             "Run at most", self._auto_limit, stacked=True,
-            detail="Across both monitors, a PR sweep's reviews, and anything a mesh "
+            detail="Across every monitor, a PR sweep's reviews, and anything a mesh "
                    "peer routes here. The agent a wizard press opens on the spot is "
                    "outside the cap; a review it queues instead is inside. Work over "
                    "the cap waits in "
@@ -695,8 +707,8 @@ class SettingsView(QWidget):
         body.addWidget(self._track(SettingRow(
             "Hold work when the limit runs low", self._sw_budget,
             detail="Wait for a window to refill rather than start what won't fit. "
-                   "Priced from Telemetry → limit per task: against both rate-limit "
-                   "windows under Claude Code, or — under a runner billed in money — "
+                   "Priced from Telemetry → limit per task: against the 7-day rate-limit "
+                   "window under Claude Code, or — under a runner billed in money — "
                    "against what one task costs on the model it runs, and what your "
                    "OpenRouter key and credit balance have left. Higher confidence is "
                    "stricter. Held work waits in Agent tasks, and “execute now” "
@@ -724,7 +736,7 @@ class SettingsView(QWidget):
         self._budget_floor.changed.connect(self._on_budget_floor_changed)
         knobs.addWidget(self._track(SettingRow(
             "Keep in hand until it can be priced", self._budget_floor, stacked=True,
-            detail="Of each rate-limit window, under Claude Code.",
+            detail="Of the 7-day rate-limit window, under Claude Code.",
         )))
 
         # The same knob in the other currency. Both are shown whichever runner is
@@ -793,6 +805,13 @@ class SettingsView(QWidget):
         if on:
             self.store.run_autofix_poll_async()
 
+    def _on_community_toggled(self, on: bool) -> None:
+        self.store.community_issues_enabled = on
+        self.store.changed.emit()
+        self._refresh_autofix_ui()
+        if on:
+            self.store.run_autofix_poll_async()
+
     def _on_auto_approve_toggled(self, on: bool) -> None:
         self.store.auto_approve_enabled = on
         self.store.changed.emit()
@@ -816,7 +835,7 @@ class SettingsView(QWidget):
         st = self.store.autofix_status
         live = bool(st) and (time.time() - st.get("updatedAt", 0)) < 15 * 60
 
-        if not (autofix_on or review_on):
+        if not (autofix_on or review_on or self.store.community_issues_enabled):
             self._autofix_pill.set_state("manual", _GREY)
         elif err:
             self._autofix_pill.set_state("polls failing", _RED)
@@ -988,10 +1007,12 @@ class SettingsView(QWidget):
             return field
 
         self._comms_keywords = text_row(
-            "Keywords", st.comms_keywords_raw, "none",
+            "Keywords", st.comms_keywords_raw, "deploy, release train, argent*",
             lambda t: setattr(self.store, "comms_keywords_raw", t),
             "Commas or new lines between them, so one can be a phrase. Matched as a "
-            "whole word, ignoring case. A DM or an @-mention needs none.")
+            "whole word, ignoring case; a * ending a word matches any letters after it "
+            "(argent*), and Slack expands no * anywhere else. "
+            "A DM or an @-mention needs none.")
         self._comms_allow = text_row(
             "Only these senders", st.comms_sender_allowlist_raw, "anyone in your workspace",
             lambda t: setattr(self.store, "comms_sender_allowlist_raw", t),
@@ -1015,6 +1036,25 @@ class SettingsView(QWidget):
             "A reported bug with no PR or issue number queues an agent that reproduces "
             "and researches it and writes a report, which the ✉ screen opens. It never "
             "pushes, opens PRs or issues, comments, or posts to Slack.")
+        self._sw_comms_replies = self._comms_switch(
+            inner, "Reply in Slack", st.comms_replies, "comms_replies",
+            "Work a ping queued, or found already queued or running, gets a reply "
+            "saying when it should be done. While you are away, a question your repo's "
+            "documentation answers gets that answer. Only ever in the conversation the "
+            "message was written in, and at most once per message.")
+        _, step, most = comms.away_after_secs()
+        self._comms_away = SliderSetting(
+            label="Away after", minimum=step, maximum=most, step=step,
+            min_label=Fmt.duration(step), max_label=Fmt.duration(most), tint=_BLUE,
+        )
+        self._comms_away.set_badge_text(Fmt.duration)
+        self._comms_away.set_value(st.comms_away_after_secs)
+        self._comms_away.changed.connect(
+            lambda secs: setattr(self.store, "comms_away_after_secs", secs))
+        inner.addWidget(self._track(SettingRow(
+            "Away after", self._comms_away, stacked=True,
+            detail="How long your session must have been locked before Comms answers "
+                   "questions for you.")))
         self._sw_comms_notify = self._comms_switch(
             inner, "Notify on new pings", st.comms_notify, "comms_notify",
             "A tray notification per new ping.")

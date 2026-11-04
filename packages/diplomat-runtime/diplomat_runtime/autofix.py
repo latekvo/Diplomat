@@ -557,7 +557,7 @@ def running_auto_tasks(
 #
 # The cap above bounds how many automatic agents run at once; this bounds whether
 # any of them should start at all. A machine can have three empty bays and 4% of
-# its 5-hour window left, and spending that on an auto-review is how the operator
+# its weekly window left, and spending that on an auto-review is how the operator
 # finds the limit gone the next time they sit down to work.
 #
 # There are two currencies, because there are two ways an agent is paid for. Claude
@@ -568,8 +568,8 @@ def running_auto_tasks(
 # both are in.
 #
 # What a task costs is a measurement, not a guess: the telemetry ledger prices
-# every finished agent — against the window it was spent from (telemetry.summarize
-# → `per_task`), or, for a runner billed in money, at what the provider charged for
+# every finished agent — against the 7-day window (telemetry.summarize
+# → `per_task_week`), or, for a runner billed in money, at what the provider charged for
 # the model it ran on (`per_task_usd`). So the question "can we afford one more" has
 # a statistical answer — and the one worth asking is about the NEXT task, not about
 # the average one. Half of all tasks cost more than the mean, and the distribution
@@ -610,8 +610,7 @@ MAX_BUDGET_RESERVE_USD = 100.0
 #: minimum is configured.
 MIN_BUDGET_SAMPLES = 2
 
-WINDOW_SESSION = "session"  # the 5-hour rate-limit window
-WINDOW_WEEK = "week"  # the 7-day one
+WINDOW_WEEK = "week"  # the 7-day rate-limit window
 WINDOW_KEY = "orKey"  # the OpenRouter API key's own spend cap
 WINDOW_CREDITS = "orCredits"  # the OpenRouter account's credit balance
 
@@ -707,10 +706,8 @@ def budget_decide(windows: list[tuple[str, float | None, float | None]],
     ``windows`` is the ceilings this machine's work is spent against, each as
     ``(name, left, cost-of-one-task)`` in a single unit — percentages of a rate limit
     for a Claude Code machine, dollars for one billed by an OpenRouter account. Every
-    one of them gates, because any can be the one that runs out: the 5-hour window is
-    what stops work this afternoon and the 7-day window is the ceiling a busy week
-    walks into, exactly as a key's cap is what stops work this week and the credit
-    balance is what stops it altogether. A task has to fit inside what is left of
+    one of them gates, because any can be the one that runs out: a key's cap is what
+    stops work this week and the credit balance is what stops it altogether. A task has to fit inside what is left of
     each.
 
     A ceiling with no cost measurement falls back to ``floor`` — "keep this much in

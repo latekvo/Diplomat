@@ -13,8 +13,8 @@ import DiplomatCore
 ///
 /// **Which currency.** What an agent spends depends on what runs it, so the runner
 /// picks the ceilings and the unit both sides of the comparison are in: Claude Code
-/// draws on Anthropic rate-limit windows, published only as a percentage; every other
-/// runner is billed in money by whichever provider it is logged into. Neither reading
+/// draws on the Anthropic 7-day rate-limit window, published only as a percentage;
+/// every other runner is billed in money by whichever provider it is logged into. Neither reading
 /// substitutes for the other — a Hermes task held against a Claude window is gated on a
 /// limit it never touches, and a machine not logged into Claude Code at all would have
 /// no gate whatsoever.
@@ -68,17 +68,17 @@ enum AutoBudget {
     ///
     /// `runners` is which agent CLI each run this reading is about was STARTED under
     /// (`AgentRegistry.runRunner`), not the one the next spawn would use. The difference
-    /// is the whole reason it is a parameter. An operator whose Anthropic windows run dry
+    /// is the whole reason it is a parameter. An operator whose Anthropic window runs dry
     /// watches their agents park, and switching runner is exactly what a person does next
     /// — at which point the selected runner's funded balance reads "plenty" and arms the
-    /// deadline against the very runs the exhausted windows parked. Empty falls back to
+    /// deadline against the very runs the exhausted window parked. Empty falls back to
     /// the selection, for a caller with no book to hand over and for a machine with
     /// nothing in flight; so does a run whose own record is missing, which is where the
     /// answer came from before there was one.
     ///
-    /// Which ceilings there are is the currency split `decide` makes — Anthropic windows
-    /// for Claude Code, money for everything else — so two runs under different money
-    /// runners ask about one balance, the one this machine is configured to spend. A
+    /// Which ceilings there are is the currency split `decide` makes — the Anthropic
+    /// window for Claude Code, money for everything else — so two runs under different
+    /// money runners ask about one balance, the one this machine is configured to spend. A
     /// ceiling this account does not have (an uncapped OpenRouter key) or that would not
     /// read is skipped rather than guessed; every one that did read has to be above zero,
     /// because whichever runs out first is the one that parks the agents.
@@ -88,8 +88,7 @@ enum AutoBudget {
         let about = asked.isEmpty ? [chosen] : asked
         var readings: [Double?] = []
         if about.contains(AgentRunner.claude.rawValue) {
-            let (session, week) = Quota.fractionsLeft()
-            readings += [session, week]
+            readings.append(Quota.weekLeft())
         }
         if !about.subtracting([AgentRunner.claude.rawValue]).isEmpty {
             let balance = Spend.balance()
@@ -107,7 +106,7 @@ enum AutoBudget {
     /// thing that makes it auditable is that "Limit per task" as the screen opens is
     /// the figure it was priced from. `steps`/`binCount`/`bucketHours` are floors —
     /// the series, the histogram and the finished-work buckets are the screen's, and
-    /// only the distributions' moments and the two calibrations are read here.
+    /// only the weekly distribution's moments are read here.
     private static func summary() -> (Telemetry.Summary, Int)? {
         guard let model = try? CoreAssets.telemetry() else { return nil }
         let days = Double(model.defaultRangeDays)
@@ -118,28 +117,25 @@ enum AutoBudget {
                 model.minSample)
     }
 
-    /// The verdict for a machine spending Anthropic rate-limit windows.
+    /// The verdict for a machine spending the Anthropic 7-day rate-limit window.
     ///
-    /// Priced against both windows the same way the Telemetry screen prices them: the
-    /// ledger's finished-and-locally-run tasks, each as a share of the window it was
-    /// spent from, give a mean and a spread per window, and the upper prediction bound
-    /// on those is what one more task is required to fit inside.
+    /// Priced the same way the Telemetry screen prices it: the ledger's
+    /// finished-and-locally-run tasks, each as a share of the window, give a mean and a
+    /// spread, and the upper prediction bound on those is what one more task is required
+    /// to fit inside.
     ///
     /// What is LEFT comes from the probe rather than from the ledger's last sample:
     /// samples are written every 15 minutes, and a gate reading one of those would let
     /// a quarter-hour of spending — several agents' worth — go unnoticed.
     private static func decideClaude() -> AgentDispatchGate.Budget {
-        let (sessionLeft, weekLeft) = Quota.fractionsLeft()
-        var sessionCost: Double?
+        let weekLeft = Quota.weekLeft()
         var weekCost: Double?
         if let (s, minSample) = summary() {
-            (sessionCost, weekCost) = costs(
-                s, z: AgentDispatchGate.budgetZ(AppConfig.autoBudgetConfidence),
-                minSample: minSample)
+            weekCost = cost(s, z: AgentDispatchGate.budgetZ(AppConfig.autoBudgetConfidence),
+                            minSample: minSample)
         }
         return AgentDispatchGate.budgetDecide(
-            [(AgentDispatchGate.windowSession, sessionLeft.map { 100 * $0 }, sessionCost),
-             (AgentDispatchGate.windowWeek, weekLeft.map { 100 * $0 }, weekCost)],
+            [(AgentDispatchGate.windowWeek, weekLeft.map { 100 * $0 }, weekCost)],
             floor: AppConfig.autoBudgetFloorPct, unit: AgentDispatchGate.unitPct)
     }
 
@@ -148,7 +144,7 @@ enum AutoBudget {
     /// The same statistic in the other currency: the ledger's finished tasks, each at
     /// what the provider charged for it, bound the cost of one more, and what is left
     /// is what the account has on each of its two ceilings (`Spend`). Both are dollars
-    /// already, so unlike the windows above neither needs converting into the other's
+    /// already, so unlike the window above neither needs converting into the other's
     /// terms — and the same task cost gates both, since a dollar spent is a dollar off
     /// each of them.
     ///
@@ -183,24 +179,17 @@ enum AutoBudget {
             floor: AppConfig.autoBudgetReserveUsd, unit: AgentDispatchGate.unitUsd)
     }
 
-    /// `(session, week)` upper bounds on what one more task costs, each as a percentage
-    /// of its own window, or nil where the ledger cannot price that window.
-    ///
-    /// One bound per window from that window's own distribution — the same pair the
-    /// Telemetry screen draws. Each is priced from its own quota readings, so a week
-    /// the samples cannot price leaves the 5-hour gate measured, and the reverse.
-    static func costs(_ summary: Telemetry.Summary, z: Double,
-                      minSample: Int) -> (Double?, Double?) {
-        let s = summary.perTask, w = summary.perTaskWeek
-        return (AgentDispatchGate.taskCostBound(mean: s.mean, sd: s.sd, count: s.count,
-                                                z: z, minSample: minSample),
-                AgentDispatchGate.taskCostBound(mean: w.mean, sd: w.sd, count: w.count,
-                                                z: z, minSample: minSample))
+    /// The upper bound on what one more task costs as a percentage of the 7-day
+    /// window, from the distribution the Telemetry screen draws, or nil where the
+    /// ledger cannot price it.
+    static func cost(_ summary: Telemetry.Summary, z: Double, minSample: Int) -> Double? {
+        let w = summary.perTaskWeek
+        return AgentDispatchGate.taskCostBound(mean: w.mean, sd: w.sd, count: w.count,
+                                               z: z, minSample: minSample)
     }
 
     /// What each ceiling is called in the one line the feed prints about it.
     private static let ceilings = [
-        AgentDispatchGate.windowSession: "5-hour rate limit",
         AgentDispatchGate.windowWeek: "7-day rate limit",
         AgentDispatchGate.windowKey: "OpenRouter key limit",
         AgentDispatchGate.windowCredits: "OpenRouter credit balance",

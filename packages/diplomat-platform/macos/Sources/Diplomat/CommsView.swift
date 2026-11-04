@@ -14,8 +14,20 @@ struct CommsView: View {
     /// The seen mark as of opening, which moves the Store's to now: highlighting against
     /// this keeps what was new on arrival drawn as new for the visit.
     @State private var openedSeenAt: Date?
+    /// Pings drawn whole, by message id.
+    @State private var expanded: Set<String>
+    /// Whether the pings read before this visit are listed.
+    @State private var earlierOpen: Bool
 
     private static let maxPings = 40
+
+    /// Seeded only by the headless renders.
+    init(isPresented: Binding<Bool>, seedExpanded: Set<String> = [],
+         seedEarlierOpen: Bool = false) {
+        _isPresented = isPresented
+        _expanded = State(initialValue: seedExpanded)
+        _earlierOpen = State(initialValue: seedEarlierOpen)
+    }
 
     var body: some View {
         let items = store.commsItems
@@ -100,7 +112,7 @@ struct CommsView: View {
     // MARK: - Banned senders
 
     private func bannedStrip(_ bans: [BannedAuthor]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
                 Image(systemName: "hand.raised.fill").font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.red)
@@ -119,32 +131,66 @@ struct CommsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .cardChrome(fill: Color.red.opacity(0.08), padding: 8)
+        .cardChrome(fill: Color.red.opacity(0.08), padding: 6)
     }
 
     // MARK: - Pings
 
+    /// Pings new on this visit first, then the rest behind one "Earlier" line.
     private func pingsColumn(_ items: [CommsItem]) -> some View {
         let since = openedSeenAt ?? store.commsSeenAt
-        let unread = items.filter { $0.at > since }.count
-        return VStack(alignment: .leading, spacing: 6) {
-            columnTitle("PINGS", count: store.commsItems.count,
-                        caption: unread > 0 ? "\(unread) new" : nil)
-            ForEach(items, id: \.message.id) { item in
-                PingRow(item: item, unread: item.at > since, me: store.commsIdentity)
+        let unread = items.filter { $0.at > since }
+        let read = items.filter { $0.at <= since }
+        let caption: String? = unread.isEmpty ? nil : "\(unread.count) new"
+        return VStack(alignment: .leading, spacing: 3) {
+            columnTitle("PINGS", count: store.commsItems.count, caption: caption)
+            ForEach(unread, id: \.message.id) { item in
+                pingRow(item, unread: true)
+            }
+            if !read.isEmpty {
+                earlierLine(read.count)
+                if earlierOpen {
+                    ForEach(read, id: \.message.id) { item in
+                        pingRow(item, unread: false)
+                    }
+                }
             }
         }
+    }
+
+    private func pingRow(_ item: CommsItem, unread: Bool) -> some View {
+        let id = item.message.id
+        return PingRow(item: item, unread: unread, me: store.commsIdentity,
+                       expanded: expanded.contains(id)) {
+            if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+        }
+    }
+
+    private func earlierLine(_ count: Int) -> some View {
+        let chevron = earlierOpen ? "chevron.down" : "chevron.right"
+        return HStack(spacing: 5) {
+            Image(systemName: chevron).font(.system(size: 8, weight: .bold))
+                .frame(width: 8)
+            Text("Earlier").font(.system(size: 10, weight: .semibold))
+            Text("· \(count)").font(.system(size: 10).monospacedDigit())
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 5).padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onTapGesture { earlierOpen.toggle() }
+        .accessibilityAddTraits(.isButton)
     }
 
     // MARK: - Jobs
 
     private func jobsColumn(_ jobs: [CommsItem]) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 3) {
             columnTitle("JOBS", count: jobs.count, caption: nil)
             if jobs.isEmpty {
                 Text("Nothing a ping asked for is queued yet.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .cardChrome()
+                    .cardChrome(padding: 5)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             ForEach(jobs, id: \.message.id) { item in
@@ -179,58 +225,86 @@ struct CommsView: View {
     }
 }
 
+/// One line: who, where, what triage made of it, the message, any reply, when. Tapped,
+/// it unfolds into the whole message, the decision, the outcome and the reply.
 private struct PingRow: View {
     let item: CommsItem
     let unread: Bool
     let me: CommsIdentity?
+    let expanded: Bool
+    let toggle: () -> Void
 
     var body: some View {
         let m = item.message
+        let fill: Color = banned ? Color.red.opacity(0.10)
+            : (unread ? Color.blue.opacity(0.13) : Color.gray.opacity(0.07))
+        return VStack(alignment: .leading, spacing: 5) {
+            line
+            if expanded { details(m) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardChrome(fill: fill, padding: 5)
+    }
+
+    private var line: some View {
+        let m = item.message
+        let flat = Store.snippet(readableText, max: 400)
+        let reply = replyPill
+        return HStack(spacing: 5) {
+            Circle().fill(unread ? Color.blue : Color.clear).frame(width: 6, height: 6)
+            Text(m.sender).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                .fixedSize()
+            Text(m.place).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                .fixedSize()
+            StatusPill(text: actionWord, tint: actionTint).fixedSize()
+            if banned {
+                StatusPill(text: "BANNED", tint: .red, symbol: "hand.raised.fill").fixedSize()
+            }
+            Text(flat).font(.system(size: 11)).lineLimit(1).truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(-1)
+            if let reply {
+                StatusPill(text: reply.word, tint: reply.tint,
+                           symbol: "arrowshape.turn.up.left.fill")
+                    .fixedSize()
+                    .help(item.reply ?? reply.word)
+            }
+            Text(Fmt.clock(item.at)).font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(.secondary).fixedSize()
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: toggle)
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private func details(_ m: CommsMessage) -> some View {
         let decision = decisionText
-        let text = readableText
+        let outcome = item.outcome ?? "not acted on yet"
+        let replyLine = replyDetail
         return VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 5) {
-                if unread {
-                    Circle().fill(Color.blue).frame(width: 6, height: 6)
-                }
-                Text(m.sender).font(.system(size: 11, weight: .semibold))
-                // A DM says so in its reason chip.
-                if !m.isDM {
-                    Text(m.place).font(.system(size: 10)).foregroundStyle(.secondary)
-                }
+            Text(readableText).font(.system(size: 11))
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
                 ForEach(reasonChips, id: \.self) { chip in
                     StatusPill(text: chip, tint: .blue)
                 }
-                Spacer(minLength: 4)
-                Text(Fmt.clock(item.at)).font(.system(size: 9).monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            Text(text).font(.system(size: 11)).lineLimit(3)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                StatusPill(text: actionWord, tint: actionTint)
                 Text(decision).font(.system(size: 10)).foregroundStyle(.secondary)
-                    .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if banned {
-                    StatusPill(text: "BANNED", tint: .red, symbol: "hand.raised.fill")
-                }
-                Text(item.outcome ?? "not acted on yet").font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+            Text(outcome).font(.system(size: 10)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let replyLine {
+                Text(replyLine).font(.system(size: 10))
                     .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 4)
-                if let url = URL(string: m.permalink), !m.permalink.isEmpty {
-                    Button("Open in Slack") { NSWorkspace.shared.open(url) }
-                        .buttonStyle(.link).font(.system(size: 10))
-                }
+                    .textSelection(.enabled)
+            }
+            if let url = URL(string: m.permalink), !m.permalink.isEmpty {
+                Button("Open in Slack") { NSWorkspace.shared.open(url) }
+                    .buttonStyle(.link).font(.system(size: 10))
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardChrome(fill: banned ? Color.red.opacity(0.10)
-                        : (unread ? Color.blue.opacity(0.13) : Color.gray.opacity(0.07)))
+        .padding(.leading, 11)
     }
 
     private var fromBannedSender: Bool {
@@ -263,6 +337,23 @@ private struct PingRow: View {
         }
     }
 
+    /// Nil when no reply was due; a skipped one keeps its reason for `details`.
+    private var replyPill: (word: String, tint: Color)? {
+        guard let outcome = item.replyOutcome else { return nil }
+        if outcome == "sent" { return ("replied", .green) }
+        if outcome == "sending" { return ("replying", .orange) }
+        if outcome.hasPrefix("failed") { return ("reply failed", .red) }
+        if outcome.hasPrefix("skipped") { return ("not answered", .secondary) }
+        return nil
+    }
+
+    private var replyDetail: String? {
+        guard let outcome = item.replyOutcome else { return nil }
+        guard let text = item.reply, !text.isEmpty else { return "No reply: " + outcome }
+        let head = outcome == "sent" ? "Replied: " : "Reply (" + outcome + "): "
+        return head + text
+    }
+
     private var actionWord: String {
         guard let d = item.decision else { return "triaging" }
         if fromBannedSender { return "banned sender" }
@@ -272,6 +363,7 @@ private struct PingRow: View {
         case .review:      return "review #\(d.number)"
         case .fixIssue:    return "fix #\(d.number)"
         case .investigate: return "investigate"
+        case .question:    return "question"
         case .injection:   return "injection"
         }
     }
@@ -283,6 +375,7 @@ private struct PingRow: View {
         case .review?:      return .purple
         case .fixIssue?:    return .green
         case .investigate?: return .teal
+        case .question?:    return .indigo
         case .injection?:   return .red
         case .none?, nil:   return .secondary
         }
@@ -307,27 +400,27 @@ private struct BannedSenderRow: View {
         let when = ban.ago()
         let absolute = ban.atDate.map(BannedAuthor.absolute) ?? "unknown time"
         let evidence = (ban.evidence ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let quoted = evidence.isEmpty ? "" : "\"" + Store.snippet(evidence, max: 300) + "\""
         let link = ban.whereURL
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(ban.displayName).font(.system(size: 11, weight: .semibold))
-                Text(id).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
-                if let place {
-                    Text(place).font(.system(size: 10)).foregroundStyle(.secondary)
-                }
-                Text("banned \(when)").font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.red)
-                    .help("Banned \(absolute)")
-                Spacer(minLength: 4)
-                if let link {
-                    Button("Open in Slack") { NSWorkspace.shared.open(link) }
-                        .buttonStyle(.link).font(.system(size: 10))
-                }
+        return HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Text(ban.displayName).font(.system(size: 11, weight: .semibold)).fixedSize()
+            Text(id).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                .fixedSize()
+            if let place {
+                Text(place).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize()
             }
-            if !evidence.isEmpty {
-                Text("\"\(evidence)\"").font(.system(size: 10)).lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .help(evidence)
+            Text("banned \(when)").font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.red)
+                .fixedSize()
+                .help("Banned \(absolute)")
+            Text(quoted).font(.system(size: 10)).lineLimit(1).truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(-1)
+                .help(evidence)
+            if let link {
+                Button("Open in Slack") { NSWorkspace.shared.open(link) }
+                    .buttonStyle(.link).font(.system(size: 10))
+                    .fixedSize()
             }
         }
     }
@@ -362,25 +455,20 @@ private struct JobRow: View {
     var body: some View {
         let report = reportURL
         let times = timesText
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(item.label ?? item.queueKey ?? "").font(.system(size: 11, weight: .semibold))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 4)
-                StatusPill(text: status.word, tint: status.tint)
-            }
-            HStack(spacing: 6) {
-                Text(times).font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
-                Spacer(minLength: 4)
-                if let report {
-                    Button("Report") { NSWorkspace.shared.open(report) }
-                        .controlSize(.small)
-                }
+        return HStack(spacing: 6) {
+            Text(item.label ?? item.queueKey ?? "").font(.system(size: 11, weight: .semibold))
+                .lineLimit(1).truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            StatusPill(text: status.word, tint: status.tint).fixedSize()
+            if let report {
+                Button("Report") { NSWorkspace.shared.open(report) }
+                    .buttonStyle(.link).font(.system(size: 10))
+                    .fixedSize()
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .cardChrome()
+        .cardChrome(padding: 5)
+        .help(times)
     }
 
     private var timesText: String {

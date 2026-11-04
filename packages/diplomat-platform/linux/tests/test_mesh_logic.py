@@ -872,30 +872,21 @@ def test_advertise_quota_left_capped_by_real_binding_window(tmp_path, monkeypatc
     assert st.advertise(real_frac=1.5)["quotaLeft"] == 20.0
 
 
-def test_surplus_first_avoids_host_with_drained_binding_window(tmp_path, monkeypatch):
-    # The regression: a Max 20× host with 2% of its 5-hour session left (but 80%
-    # of its week) must NOT win dispatch — it would run out mid-task. The session
-    # window binds, and pacing it against its own near-term reset keeps it low.
+def test_surplus_first_avoids_host_with_drained_week(tmp_path, monkeypatch):
+    # A Max 20× host with 2% of its week left half-way through it must NOT win
+    # dispatch over a smaller plan on pace — its bigger plan is no room at all.
     monkeypatch.setenv("SZPONTNET_DIR", str(tmp_path))
     now = 1_000_000.0
     big = stats.apply_stat_attrs(stats.load(now=now), {"plan": "max-20x"}, now=now)
-    session = usage.QuotaWindow(0.02, now + 2.5 * 3600, 5 * 3600.0)  # 2%, half a window
-    week = usage.QuotaWindow(0.8, now + 3.5 * 86400, 7 * 86400.0)    # 80%, half a window
-    pace = usage.binding_pace(session, week, now=now)
-    assert abs(pace - 0.04) < 1e-9  # the session (0.02/0.5) binds, not the week (1.6)
+    week = usage.QuotaWindow(0.02, now + 3.5 * 86400, 7 * 86400.0)  # 2%, half a window
+    pace = week.pace(now)
+    assert abs(pace - 0.04) < 1e-9
     drained = NodeInfo(id="big", name="big", platform="linux", tier=1, tokens="low",
-                       tokens_pct=0.02, tokens_session_pct=0.02, tokens_week_pct=0.8,
+                       tokens_pct=0.02, tokens_week_pct=0.02,
                        stats=big.advertise(real_frac=0.02, pace=pace, now=now))
     fresh = _snode("fresh", "max-5x", surplus=_pace(0.5, days_to_reset=3.5))  # 1.0
     slots = assign.slot_candidates("review", [drained, fresh], strategy="surplus-first")
     assert slots == [("any", ["fresh", "big"])]
-    # Had only the WEEK been consulted the same host would look flush (1.6) and
-    # wrongly win — which is why the binding pace is a minimum across windows.
-    from dataclasses import replace
-    week_only = replace(drained,
-                        stats=big.advertise(pace=week.pace(now), now=now))
-    slots = assign.slot_candidates("review", [week_only, fresh], strategy="surplus-first")
-    assert slots[0][1][0] == "big"
 
 
 def test_advertised_surplus_paces_the_local_window_when_the_probe_is_dark(
@@ -923,13 +914,13 @@ def test_node_advert_wires_real_probe_pace_into_stats(tmp_path, monkeypatch):
     node = _fresh_node(tmp_path, monkeypatch)
     node.stats = stats.apply_stat_attrs(node.stats, {"plan": "max-20x"})
     node._token_state, node._token_frac = "low", 0.02
-    node._token_session, node._token_week = 0.02, 0.8
+    node._token_week = 0.02
     node._token_pace = 0.04
     assert node.info.stats["surplus"] == 0.04
     assert node.info.stats["quotaLeft"] == 0.4  # fraction still caps the display field
     # Heuristic fallback (no real reading): the local window is paced instead, and
     # a node that has booked nothing sits exactly on the line.
-    node._token_session = node._token_week = node._token_pace = None
+    node._token_week = node._token_pace = None
     assert node.info.stats["surplus"] == 1.0
     assert node.info.stats["quotaLeft"] == 20.0
 
@@ -1061,44 +1052,41 @@ def test_token_state_thresholds(monkeypatch):
 
 def test_token_state_prefers_real_quota_over_heuristic(monkeypatch):
     """When the OAuth probe answers, the state comes from the account's REAL
-    windows — the tighter (binding) one — and both fractions are surfaced."""
+    7-day window, and its fraction is surfaced."""
     from szpontnet import usage
     now = 1_000_000.0
-    session = usage.QuotaWindow(0.64, now + 2.5 * 3600, 5 * 3600.0)   # half the clock left
     week = usage.QuotaWindow(0.27, now + 3.5 * 86400, 7 * 86400.0)    # half the clock left
-    monkeypatch.setattr(usage, "windows", lambda **_: (session, week))
-    state, frac, sess, wk, pace = usage.token_state("pro", now=now)
-    assert (sess, wk) == (0.64, 0.27)
-    assert frac == 0.27              # the week window binds
+    monkeypatch.setattr(usage, "week_window", lambda **_: week)
+    state, frac, wk, pace = usage.token_state("pro", now=now)
+    assert wk == 0.27
+    assert frac == 0.27
     assert state == "low"            # 0.27 < lowThreshold 0.34
-    # Pace is the tighter burn-down ratio: the week at 0.27/0.5 = 0.54 binds over
-    # the session at 0.64/0.5 = 1.28.
-    assert abs(pace - 0.54) < 1e-9
+    assert abs(pace - 0.54) < 1e-9   # 0.27 left over half the clock
 
 
 def test_token_state_falls_back_to_heuristic_when_probe_dark(tmp_path, monkeypatch):
     from szpontnet import usage
     monkeypatch.setenv("HOME", str(tmp_path))  # empty logs → fresh heuristic
-    monkeypatch.setattr(usage, "windows", lambda **_: (None, None))
-    state, frac, sess, week, pace = usage.token_state("pro")
+    monkeypatch.setattr(usage, "week_window", lambda **_: None)
+    state, frac, week, pace = usage.token_state("pro")
     assert (state, frac) == ("ok", 1.0)
-    # All three None mark the fraction an estimate; with no reset instants there
-    # is nothing to pace against, so the node paces its bookkeeping window instead.
-    assert sess is None and week is None and pace is None
+    # Both None mark the fraction an estimate; with no reset instant there is
+    # nothing to pace against, so the node paces its bookkeeping window instead.
+    assert week is None and pace is None
 
 
 def test_quota_left_parses_utilization_and_caches(monkeypatch):
     from szpontnet import usage
     monkeypatch.delenv("SZPONTNET_OAUTH_PROBE", raising=False)
     calls = []
-    payload = {"five_hour": {"utilization": 36.0}, "seven_day": {"utilization": 27}}
+    payload = {"five_hour": None, "seven_day": {"utilization": 27}}
     monkeypatch.setattr(usage, "_oauth_tokens", lambda: ["oat-test"])
     monkeypatch.setattr(usage, "_fetch_usage_payload",
                         lambda _token: calls.append(1) or payload)
     usage._reset_probe_cache()
     try:
-        assert usage.quota_left() == (0.64, 0.73)
-        assert usage.quota_left() == (0.64, 0.73)  # within TTL → served from cache
+        assert usage.quota_left() == 0.73
+        assert usage.quota_left() == 0.73  # within TTL → served from cache
         assert len(calls) == 1
         # A malformed window (or an over-100 utilization) degrades per-field, never raises.
         assert usage._window({"utilization": 250}, 100.0).frac_left == 0.0
@@ -1108,14 +1096,13 @@ def test_quota_left_parses_utilization_and_caches(monkeypatch):
         usage._reset_probe_cache()  # never leak a fake probe result to other tests
 
 
-def test_probe_reads_the_reset_instant_each_window_reports(monkeypatch):
+def test_probe_reads_the_reset_instant_the_week_reports(monkeypatch):
     """The endpoint's ``resets_at`` is what makes surplus relative — without it
     there is no clock to divide the remaining budget by."""
     from szpontnet import usage
     monkeypatch.delenv("SZPONTNET_OAUTH_PROBE", raising=False)
     payload = {
-        "five_hour": {"utilization": 36.0,
-                      "resets_at": "2026-07-20T19:09:59.816900+00:00"},
+        "five_hour": None,
         "seven_day": {"utilization": 27,
                       "resets_at": "2026-07-21T06:59:59.816926+00:00"},
     }
@@ -1123,15 +1110,12 @@ def test_probe_reads_the_reset_instant_each_window_reports(monkeypatch):
     monkeypatch.setattr(usage, "_fetch_usage_payload", lambda _token: payload)
     usage._reset_probe_cache()
     try:
-        session, week = usage.windows()
-        assert session.frac_left == 0.64 and week.frac_left == 0.73
-        assert session.length_secs == 5 * 3600.0
+        week = usage.week_window()
+        assert week.frac_left == 0.73
         assert week.length_secs == 7 * 86400.0
-        # Parsed as real instants, not dropped on the floor (the pre-fix behaviour).
         from datetime import datetime, timezone
-        assert session.resets_at == datetime(2026, 7, 20, 19, 9, 59, 816900,
-                                             tzinfo=timezone.utc).timestamp()
-        assert week.resets_at > session.resets_at
+        assert week.resets_at == datetime(2026, 7, 21, 6, 59, 59, 816926,
+                                          tzinfo=timezone.utc).timestamp()
     finally:
         usage._reset_probe_cache()
 
@@ -1156,7 +1140,7 @@ def test_quota_probe_disabled_by_env(monkeypatch):
     monkeypatch.setenv("SZPONTNET_OAUTH_PROBE", "0")
     monkeypatch.setattr(usage, "_fetch_usage_payload", _boom)
     usage._reset_probe_cache()
-    assert usage.quota_left() == (None, None)
+    assert usage.quota_left() is None
 
 
 # MARK: identity — auto-detect + manual pin + token override

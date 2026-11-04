@@ -50,7 +50,7 @@ public enum GH {
     /// Where gh is looked for before the login shell is asked.
     public static let candidatePaths = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"]
 
-    private static func ghPath() throws -> String {
+    static func ghPath() throws -> String {
         // Read per call, never cached: an override taken back is gone.
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_GH"], !env.isEmpty { return env }
         pathLock.lock()

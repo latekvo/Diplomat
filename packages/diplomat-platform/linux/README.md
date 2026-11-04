@@ -232,8 +232,12 @@ the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/di
   polling and keeps listing what it finds under [Agent tasks](#agent-tasks); what
   stops is the automatic start — which is why the allowlist stays editable while it
   is off, alone in that nest, since it is what decides which requests get listed.
+- **Fix new community issues** — the [new-community-issue
+  monitor](../../../docs/automation.md#autonomous-monitors) (default **ON**). Unlike the two
+  toggles above, switched off it queues nothing, and issues filed while it is off
+  are left for a Fix-issues sweep.
 - **Run at most N automatic tasks at a time** — this machine's hard cap on
-  concurrent automatic agents (default **2**, range 1–16), spanning both monitors
+  concurrent automatic agents (default **2**, range 1–16), spanning every monitor
   above, the reviews a PR sweep queues, and any work a mesh peer routes here. The
   agent a wizard press opens on the spot is never capped and doesn't count against
   it; work over the cap is not dropped — it waits in the [Agent tasks](#agent-tasks)
@@ -247,7 +251,7 @@ the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/di
   keep in hand while the ledger cannot price one yet - a share of a window (default
   **20%**) under Claude Code, or dollars on the account (default **$1.00**) under a
   runner billed in money, once a task has been charged here in the last 14 days. Priced from the same per-task figure the Telemetry screen
-  shows, against both rate-limit windows or both of the OpenRouter ceilings. Held work waits under [Agent tasks](#agent-tasks) and
+  shows, against the 7-day rate-limit window or both of the OpenRouter ceilings. Held work waits under [Agent tasks](#agent-tasks) and
   starts when a window refills or the balance is topped up; *execute now* overrides
   it, a wizard spawn that
   opens a terminal on the spot is never gated, and nothing is held at all while the

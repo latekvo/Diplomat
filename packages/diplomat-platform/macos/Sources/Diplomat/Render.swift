@@ -243,9 +243,13 @@ enum Render {
         case let s where s.hasPrefix("comms"):
             // "comms-panel" draws the screen inside the whole panel (header button, screen
             // swap); "comms-badge" the main panel under the unread badge, which the open
-            // screen clears; "comms-empty" a machine whose Claude Code has no Slack login.
+            // screen clears; "comms-empty" a machine whose Claude Code has no Slack login;
+            // "comms-open" two pings unfolded and the earlier ones listed.
             let _ = seedComms(store, empty: s.contains("empty"))
-            if s.contains("panel") {
+            if s.contains("open") {
+                CommsView(isPresented: .constant(true), seedExpanded: commsUnfolded,
+                          seedEarlierOpen: true)
+            } else if s.contains("panel") {
                 ContentView(showComms: true)
             } else if s.contains("badge") {
                 ContentView().frame(height: 580)
@@ -376,8 +380,9 @@ enum Render {
     }
 
     /// A synthetic telemetry ledger so the Telemetry screen can be eyeballed: a
-    /// fortnight of quota samples burning down and refilling on the 5-hour cycle, and
-    /// forty-odd finished auto-tasks with a realistic right-skewed spread of costs —
+    /// fortnight of quota samples, the first eleven days of them also carrying the
+    /// 5-hour window burning down and refilling on its cycle, and forty-odd finished
+    /// auto-tasks with a realistic right-skewed spread of costs —
     /// most cheap, a few expensive — plus a handful still owed.
     ///
     /// Written through the real recorder into the real ledger path, first redirected
@@ -428,12 +433,18 @@ enum Render {
             // all the same.
             let outage = at > now - 6 * day && at < now - 5.5 * day
             let answered = !outage && rng.uniform(0, 1) > 0.08
-            TelemetryLog.append(["at": at, "ev": "sample",
-                                 "sessionLeft": answered
-                                     ? (sessionLeft * 10_000).rounded() / 10_000 : NSNull(),
-                                 "weekLeft": answered
-                                     ? (weekLeft * 10_000).rounded() / 10_000 : NSNull(),
-                                 "repoTokens": repo, "otherTokens": other])
+            var sample: [String: Any] = ["at": at, "ev": "sample",
+                                         "weekLeft": answered
+                                             ? (weekLeft * 10_000).rounded() / 10_000 : NSNull(),
+                                         "repoTokens": repo, "otherTokens": other]
+            // The last three days are written as the probe writes every sample, with
+            // no 5-hour reading at all, so the screen shows that window's history and
+            // the weekly-only present side by side.
+            if at < now - 3 * day {
+                sample["sessionLeft"] = answered
+                    ? (sessionLeft * 10_000).rounded() / 10_000 : NSNull()
+            }
+            TelemetryLog.append(sample)
             at += 900
         }
 
@@ -479,6 +490,9 @@ enum Render {
         store.commsError = SlackError.unauthorized.errorDescription
         return true
     }
+
+    /// The pings "comms-open" draws unfolded.
+    private static var commsUnfolded: Set<String> = []
 
     /// Written through the real `CommsLog.append` into a scratch `DIPLOMAT_COMMS_DIR`
     /// (`CommsLog.dir` reads it per call) and folded by the real `refreshComms`: seeding
@@ -535,7 +549,34 @@ enum Render {
         let reports = CommsLog.reportsDir()
         let settings = CommsSettings(login: me.handle)
 
-        // Oldest first, as a tick writes them.
+        func replied(_ m: CommsMessage, minutesAgo: Double, _ outcome: String, _ text: String?) {
+            CommsLog.append(CommsEvent(at: now.addingTimeInterval(-minutesAgo * 60), kind: .reply,
+                                       id: m.id, outcome: outcome, detail: text))
+        }
+
+        // Oldest first, as a tick writes them: a day of chatter, all read.
+        let chatter: [(String, String, String)] = [
+            ("henry", "", "are we still on for the sync at 3?"),
+            ("ivy", "argent-dev", "nice work on the device allocator, it just works now"),
+            ("jack", "", "can you send me the slides from yesterday"),
+            ("kim", "diplomat", "diplomat released 0.110 overnight, fyi"),
+            ("leo", "", "lunch?"),
+            ("mia", "mobile", "the new simulator image is on the shared drive"),
+            ("nick", "", "ok thanks, that answers it"),
+            ("olga", "argent-dev", "argent docs build is green again"),
+            ("pete", "", "ping me when you're back"),
+            ("quinn", "infra", "CI runners are being rotated tonight"),
+            ("rosa", "", "👍"),
+            ("sam", "diplomat", "someone mentioned diplomat in the all-hands, nice"),
+        ]
+        for (i, c) in chatter.enumerated() {
+            let ago = Double(1500 - i * 90)
+            let m = message(ago, c.0, c.1, c.1.isEmpty ? [.dm] : [.keyword], c.2,
+                            keyword: c.1.isEmpty ? nil : "diplomat")
+            log(m, minutesAgo: ago,
+                CommsDecision(action: .none, number: 0, summary: "", reason: "Chat; nothing is asked."),
+                outcome: "ping only")
+        }
         let leak = message(300, "grace", "diplomat", [.keyword],
                            "after the mesh e2e suite finishes there are still szpontnet nodes "
                            + "running on loopback ports, is that expected?", keyword: "szpontnet")
@@ -558,6 +599,8 @@ enum Render {
                           reason: "Asks for issue #431 to be fixed."),
             outcome: "queued, at the front of its band", key: "issues:431",
             label: "Issues · #431 · deep", started: 186, finished: 140)
+        replied(flaky, minutesAgo: 190, "failed: Slack refused it (channel_not_found)",
+                "[Diplomat]: Queued a fix for issue #431, should be done by 17:50 today (±1h).")
 
         let closed = message(120, "frank", "infra", [.mention],
                              "<@\(me.userID)> please review #77 when you get a moment")
@@ -590,6 +633,8 @@ enum Render {
                                          reportDir: reports)
         log(crash, minutesAgo: 11, crashAsk, outcome: "queued",
             key: "investigate:\(crashCfg.number)", label: crashCfg.label, started: 9)
+        replied(crash, minutesAgo: 11, "sent",
+                "[Diplomat]: Queued an investigation of this, should be done by 19:05 today (±1h).")
 
         // A hijack attempt the triage caught, and the same sender's next message, which
         // is never triaged.
@@ -621,6 +666,20 @@ enum Render {
                           reason: "Asks for a review of PR #512."),
             outcome: "queued, at the front of its band", key: "review:512",
             label: "Review · #512 · deep")
+        replied(review, minutesAgo: 3, "sent",
+                "[Diplomat]: Queued a review of #512, should be done by 19:15 today (±1h).")
+
+        let question = message(2, "kasia", "argent-vega", [.keyword],
+                               "does argent support screen recording on Fire TV?", keyword: "argent*")
+        log(question, minutesAgo: 2,
+            CommsDecision(action: .question, number: 0, summary: "Screen recording on Fire TV",
+                          reason: "A usage question the docs could answer."),
+            outcome: "ping only")
+        replied(question, minutesAgo: 2, "sent",
+                "[Diplomat]: Ignacy is currently away, but I can answer that for you. Not yet: "
+                    + "screen recording covers the iOS simulator and Android emulator; on Vega "
+                    + "use screenshots instead.")
+        commsUnfolded = [question.id, flaky.id]
 
         CommsLog.append(CommsEvent(at: now.addingTimeInterval(-60), kind: .error, id: "",
                                    detail: "Slack rate-limited the watcher (retry after 30s)"))
@@ -656,14 +715,14 @@ enum Render {
          "self": {"id": "\(selfID)", "name": "mbp", "platform": "macos", "tier": 2,
                   "tokens": "ok", "sees": ["\(peerOK)"],
                   "tokensAuto": true, "tokensPct": 0.64,
-                  "tokensSessionPct": 0.64, "tokensWeekPct": 0.73,
+                  "tokensWeekPct": 0.73,
                   "fingerprint": "aa11bb22cc33dd44",
                   "stats": {"plan": "max-5x", "usageAvg": 0.6, "quotaLeft": 4.4}},
          "peers": [
            {"id": "\(peerOK)", "name": "softoobox", "platform": "linux", "tier": 4,
             "tokens": "ok", "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
             "tokensAuto": false, "tokensPct": 0.31,
-            "tokensSessionPct": 0.31, "tokensWeekPct": 0.55,
+            "tokensWeekPct": 0.55,
             "sees": ["\(selfID)"], "verified": true, "fingerprint": "ee55ff66aa77bb88",
             "trust": "personal", "surplus": 0.75, "transport": "lan", "wan": "iroh",
             "stats": {"plan": "pro", "usageAvg": 0.25, "quotaLeft": 1.0, "surplus": 0.75}},
@@ -855,6 +914,7 @@ enum Render {
         store.reviewRequestsHandled = 7
         store.unaddressedReviews = 2
         store.autoApproveEnabled = true   // show the master toggle ON + its nested suppressors
+        store.communityIssuesEnabled = true
         store.settingsExplain = explain
     }
 

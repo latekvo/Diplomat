@@ -389,9 +389,9 @@ class SimNode:
     # (`_loopback_send_ok`), so a test using this should pin that too.
     beacon_send_errno: int | None = None
     # What the patched quota probe answers for this node:
-    # ``(state, fraction, session, week, pace)``. ``pace`` is the surplus that
+    # ``(state, fraction, week, pace)``. ``pace`` is the surplus that
     # surplus-first dispatch ranks on.
-    quota: tuple = ("ok", 1.0, None, None, 1.0)
+    quota: tuple = ("ok", 1.0, None, 1.0)
     # Personal jobs the host runner was asked to run here: (prompt, done_path).
     jobs: list = field(default_factory=list)
     # Set to a reason to make this machine unable to take a personal job — the
@@ -623,7 +623,7 @@ class SimNet:
     def _token_state(self, _plan, _now=None, **_):
         """The quota probe, answered per node instead of from this machine."""
         sim = CURRENT.get()
-        return sim.quota if sim is not None else ("ok", 1.0, None, None, 1.0)
+        return sim.quota if sim is not None else ("ok", 1.0, None, 1.0)
 
     async def _start_server(self, handler, _host, port, **_kw) -> _Server:
         sim = CURRENT.get()
