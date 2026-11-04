@@ -3215,7 +3215,7 @@ class Store(QObject):
         unbroken sample series regardless. :func:`telemetry.sample_due` does the pacing, so calling
         this more often than the sample interval is free.
 
-        The quota probe insists (:func:`quota.fractions_left`), so a worker can outlive
+        The quota probe insists (:func:`quota.week_left`), so a worker can outlive
         the gap between turns — and until it writes, :func:`telemetry.sample_due` still
         says a sample is owed. The lock is what keeps that from becoming several.
         """
@@ -3229,11 +3229,11 @@ class Store(QObject):
 
             try:
                 try:
-                    session, week = quota.fractions_left(insist=True)
+                    week = quota.week_left(insist=True)
                     totals = usagescan.totals()
                 except OSError:
                     return  # an unreadable ~/.claude costs this sample, nothing else
-                telemetry.record_sample(session, week, totals.repo, totals.other)
+                telemetry.record_sample(week, totals.repo, totals.other)
             finally:
                 # Held until the sample is on disk: released a moment earlier, the
                 # next turn would find `sample_due` still true and take a second one.

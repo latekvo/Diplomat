@@ -420,10 +420,9 @@ def _with_unwritten() -> Ledger:
     return fold(read_lines() + held) if held else load()
 
 
-def record_sample(session_left: float | None, week_left: float | None,
-                  repo_tokens: float, other_tokens: float) -> None:
-    append({"at": time.time(), "ev": "sample",
-            "sessionLeft": session_left, "weekLeft": week_left,
+def record_sample(week_left: float | None, repo_tokens: float,
+                  other_tokens: float) -> None:
+    append({"at": time.time(), "ev": "sample", "weekLeft": week_left,
             "repoTokens": repo_tokens, "otherTokens": other_tokens})
 
 

@@ -1803,23 +1803,23 @@ if let bound = AgentDispatchGate.taskCostBound(mean: 2, sd: 1, count: 4,
     check(false, "a priced ledger must yield a bound")
 }
 
-// Both windows gate, the tighter one answers, and no reading at all is no opinion.
-// The ceilings are listed in the order `AutoBudget.decide` lists them, which is what
-// fixes the tie-break.
-func windows(_ sessionLeft: Double?, _ weekLeft: Double?,
-             _ sessionCost: Double?, _ weekCost: Double?) -> [(String, Double?, Double?)] {
-    [(AgentDispatchGate.windowSession, sessionLeft, sessionCost),
+// Every ceiling gates, the tighter one answers, and no reading at all is no opinion.
+// The ceilings' order fixes the tie-break.
+let windowFirst = "first"
+func windows(_ firstLeft: Double?, _ weekLeft: Double?,
+             _ firstCost: Double?, _ weekCost: Double?) -> [(String, Double?, Double?)] {
+    [(windowFirst, firstLeft, firstCost),
      (AgentDispatchGate.windowWeek, weekLeft, weekCost)]
 }
 check(AgentDispatchGate.budgetDecide(windows(50, 50, 10, 2), floor: 20).affordable,
       "room in both windows proceeds")
 let broke = AgentDispatchGate.budgetDecide(windows(5, 50, 10, 2), floor: 20)
-check(!broke.affordable && broke.window == AgentDispatchGate.windowSession
+check(!broke.affordable && broke.window == windowFirst
       && broke.measured && broke.left == 5 && broke.needed == 10,
-      "the 5-hour window refuses, and says what it had against what was needed")
+      "the first window refuses, and says what it had against what was needed")
 let weekBroke = AgentDispatchGate.budgetDecide(windows(90, 1, 10, 2), floor: 20)
 check(!weekBroke.affordable && weekBroke.window == AgentDispatchGate.windowWeek,
-      "a full 5-hour window does not buy a spent weekly one")
+      "a full first window does not buy a spent weekly one")
 let floored = AgentDispatchGate.budgetDecide(windows(15, nil, nil, nil), floor: 20)
 check(!floored.affordable && !floored.measured && floored.needed == 20,
       "an unpriced ledger holds the floor instead")
@@ -1832,7 +1832,7 @@ check(noReading.affordable && noReading.window.isEmpty,
 check(AgentDispatchGate.budgetDecide([], floor: 20).affordable,
       "…and no ceilings at all is the same silence, not an error")
 let tie = AgentDispatchGate.budgetDecide(windows(30, 30, 10, 10), floor: 20)
-check(tie.window == AgentDispatchGate.windowSession, "session wins an exact tie")
+check(tie.window == windowFirst, "the first-listed ceiling wins an exact tie")
 check(tie.unit == AgentDispatchGate.unitPct, "a rate limit decides in percentages")
 
 // The same arithmetic in the other currency. Nothing in the gate may assume a

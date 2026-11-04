@@ -21,13 +21,10 @@ from test_autofix import _spawn_recorder, store  # noqa: F401 — the shared
 # Store fixture and spawn stub, reused rather than rebuilt: a second copy would
 # be a second set of probe stubs to keep in step with the real one.
 
-# One task's tokens, and a pair of samples that price the windows from them. The
+# One task's tokens, and a pair of samples that price the window from them. The
 # window is worth `tokens / d_util`, so the numbers below are chosen to make the
-# per-task percentages exact rather than approximately right:
-#   session: 200_000 tokens spent for 0.10 of the window -> 2_000_000 per window
-#   week:    200_000 tokens spent for 0.02 of the window -> 10_000_000 per window
-# A 100_000-token task is therefore 5% of a session and 1% of a week.
-_SESSION_LIMIT = 2_000_000.0
+# per-task percentages exact rather than approximately right: 200_000 tokens spent
+# for 0.02 of the week -> 10_000_000 per window, so a 100_000-token task is 1%.
 _WEEK_LIMIT = 10_000_000.0
 
 
@@ -46,23 +43,14 @@ def _fresh():
     yield
 
 
-def _price_the_windows(at: float) -> None:
+def _price_the_week(at: float) -> None:
     """Two samples spanning one interval, which is what :func:`telemetry.calibrate`
-    needs to say what a window is worth in tokens."""
-    telemetry.append({"at": at, "ev": "sample", "sessionLeft": 0.9, "weekLeft": 0.9,
+    needs to say what the window is worth in tokens — in the shape the sampler
+    writes, with no 5-hour reading."""
+    telemetry.append({"at": at, "ev": "sample", "weekLeft": 0.9,
                       "repoTokens": 0.0, "otherTokens": 0.0})
-    telemetry.append({"at": at + 900, "ev": "sample", "sessionLeft": 0.8,
-                      "weekLeft": 0.88, "repoTokens": 200_000.0, "otherTokens": 0.0})
-
-
-def _price_only_the_week(at: float) -> None:
-    """The same interval with the 5-hour reading RISING across it — a ledger whose
-    samples straddle one of that window's resets. It prices nothing; the week, which
-    only ever falls, prices exactly as :func:`_price_the_windows` does."""
-    telemetry.append({"at": at, "ev": "sample", "sessionLeft": 0.8, "weekLeft": 0.9,
-                      "repoTokens": 0.0, "otherTokens": 0.0})
-    telemetry.append({"at": at + 900, "ev": "sample", "sessionLeft": 0.9,
-                      "weekLeft": 0.88, "repoTokens": 200_000.0, "otherTokens": 0.0})
+    telemetry.append({"at": at + 900, "ev": "sample", "weekLeft": 0.88,
+                      "repoTokens": 200_000.0, "otherTokens": 0.0})
 
 
 def _finished_tasks(at: float, tokens: list[float]) -> None:
@@ -75,14 +63,14 @@ def _finished_tasks(at: float, tokens: list[float]) -> None:
         telemetry.append({"at": at + 60, "ev": "done", "key": key, "tokens": tok})
 
 
-def _probe(monkeypatch, session, week):
-    """What the OAuth usage probe reports is left, as fractions."""
-    monkeypatch.setattr("diplomat_runtime.quota.fractions_left", lambda: (session, week))
+def _probe(monkeypatch, week):
+    """What the OAuth usage probe reports is left of the week, as a fraction."""
+    monkeypatch.setattr("diplomat_runtime.quota.week_left", lambda: week)
 
 
 def _ledger_with_priced_tasks(monkeypatch, tokens: list[float]) -> None:
     now = time.time()
-    _price_the_windows(now - 7200)
+    _price_the_week(now - 7200)
     _finished_tasks(now - 3600, tokens)
     telemetry._reset_cache()
     autobudget._reset_cache()
@@ -91,7 +79,7 @@ def _ledger_with_priced_tasks(monkeypatch, tokens: list[float]) -> None:
 # MARK: - Pricing
 
 
-def test_the_windows_are_priced_from_the_same_samples_the_screen_uses(monkeypatch):
+def test_the_week_is_priced_from_the_same_samples_the_screen_uses(monkeypatch):
     """A sanity anchor for every expected percentage below: if calibration moved,
     these tests would be asserting against a differently-priced window and the
     failure would look like a gate bug."""
@@ -101,17 +89,12 @@ def test_the_windows_are_priced_from_the_same_samples_the_screen_uses(monkeypatc
         telemetry.load(), now=time.time(), days=float(model["defaultRangeDays"]),
         steps=2, bin_count=1, z=1.96, bucket_hours=24,
     )
-    assert summary.session_limit_tokens == pytest.approx(_SESSION_LIMIT)
     assert summary.week_limit_tokens == pytest.approx(_WEEK_LIMIT)
-    assert summary.per_task.count == 6
-    assert summary.per_task.mean == pytest.approx(5.0)  # 100k of a 2M window
+    assert summary.per_task_week.count == 6
+    assert summary.per_task_week.mean == pytest.approx(1.0)  # 100k of a 10M window
 
 
-def test_each_window_is_bounded_from_its_own_distribution(monkeypatch):
-    """Two bounds from two distributions, each priced from its own quota readings.
-    Where both windows are priced the pair still agrees with a rescale — a task is a
-    fixed number of tokens and only the divisor differs — which is what the figures
-    below pin. Either window standing alone is the three tests after this one."""
+def test_the_cost_is_the_prediction_bound_not_the_mean(monkeypatch):
     _ledger_with_priced_tasks(monkeypatch, [80_000.0, 100_000.0, 120_000.0,
                                             90_000.0, 110_000.0])
     model = telemetry.model()
@@ -119,18 +102,13 @@ def test_each_window_is_bounded_from_its_own_distribution(monkeypatch):
         telemetry.load(), now=time.time(), days=float(model["defaultRangeDays"]),
         steps=2, bin_count=1, z=1.96, bucket_hours=24,
     )
-    session, week = autobudget._costs(summary, z=autofix.budget_z(95), min_sample=5)
-    assert session is not None and week is not None
-    assert week == pytest.approx(session * _SESSION_LIMIT / _WEEK_LIMIT)
-    assert week == pytest.approx(session / 5)  # the week is 5x the session window
-    # And it really is the prediction bound, not the mean: the mean is 5%.
-    assert session > 5.0
+    cost = autobudget._cost(summary, z=autofix.budget_z(95), min_sample=5)
+    assert cost is not None and cost > 1.0  # the mean is 1%
 
 
-def test_a_week_the_ledger_cannot_price_leaves_the_session_measured(monkeypatch):
-    """Every quota sample carries a weekly reading that may be missing while the
-    5-hour one is fine. The window that IS priced must still gate on its own
-    figure rather than both falling back to the floor together."""
+def test_a_week_the_ledger_cannot_price_has_no_cost(monkeypatch):
+    """Samples whose weekly reading is missing price nothing, whatever else they
+    carry, so the floor answers instead."""
     now = time.time()
     telemetry.append({"at": now - 7200, "ev": "sample", "sessionLeft": 0.9,
                       "weekLeft": None, "repoTokens": 0.0, "otherTokens": 0.0})
@@ -144,20 +122,17 @@ def test_a_week_the_ledger_cannot_price_leaves_the_session_measured(monkeypatch)
         telemetry.load(), now=time.time(), days=float(model["defaultRangeDays"]),
         steps=2, bin_count=1, z=1.96, bucket_hours=24,
     )
-    session, week = autobudget._costs(summary, z=autofix.budget_z(95), min_sample=5)
-    assert session is not None
-    assert week is None
+    assert autobudget._cost(summary, z=autofix.budget_z(95), min_sample=5) is None
 
 
-def test_a_session_the_ledger_cannot_price_leaves_the_week_measured(monkeypatch):
-    """The other direction, and the one a rescale cannot answer: the week is priced
-    and the 5-hour window is not, so the weekly gate runs on what was measured
-    instead of falling to the floor beside the window that could not be.
-
-    Both readings come from one probe call, so this is not a missing weekly reading
-    — it is a 5-hour window that went up between every pair of samples there is."""
+def test_a_ledger_still_carrying_5_hour_readings_prices_the_week_alone(monkeypatch):
+    """Rows written while the 5-hour window existed carry its reading too, here
+    rising across a reset. The week is priced from its own readings regardless."""
     now = time.time()
-    _price_only_the_week(now - 7200)
+    telemetry.append({"at": now - 7200, "ev": "sample", "sessionLeft": 0.8,
+                      "weekLeft": 0.9, "repoTokens": 0.0, "otherTokens": 0.0})
+    telemetry.append({"at": now - 6300, "ev": "sample", "sessionLeft": 0.9,
+                      "weekLeft": 0.88, "repoTokens": 200_000.0, "otherTokens": 0.0})
     _finished_tasks(now - 3600, [100_000.0] * 6)
     telemetry._reset_cache()
 
@@ -166,43 +141,8 @@ def test_a_session_the_ledger_cannot_price_leaves_the_week_measured(monkeypatch)
         telemetry.load(), now=time.time(), days=float(model["defaultRangeDays"]),
         steps=2, bin_count=1, z=1.96, bucket_hours=24,
     )
-    assert summary.session_limit_tokens is None
-    assert summary.week_limit_tokens == pytest.approx(_WEEK_LIMIT)
-
-    session, week = autobudget._costs(summary, z=autofix.budget_z(95), min_sample=5)
-    assert session is None
-    assert week == pytest.approx(1.0), "100k of a 10M week, and no spread to inflate it"
-
-
-def test_the_week_gates_on_its_own_bound_with_the_session_unpriced(monkeypatch):
-    """The same ledger, assembled: what the operator is held to is the week's
-    measured 1%, not the 20% the floor would have kept in hand — and the feed says
-    "measured" rather than quoting a reserve."""
-    now = time.time()
-    _price_only_the_week(now - 7200)
-    _finished_tasks(now - 3600, [100_000.0] * 6)
-    telemetry._reset_cache()
-    autobudget._reset_cache()
-    # Both windows are roomy, but the week is held to its measured 1% and the
-    # 5-hour one to the 20% floor — so the LESS full window is the affordable one,
-    # and which of the two is named is what proves they are gated apart.
-    _probe(monkeypatch, session=0.25, week=0.50)
-
-    budget = autobudget.decide()
-
-    assert budget.window == autofix.WINDOW_SESSION
-    assert not budget.measured
-    assert budget.needed == pytest.approx(autofix.DEFAULT_BUDGET_FLOOR_PCT)
-
-    autobudget._reset_cache()
-    _probe(monkeypatch, session=0.95, week=0.005)  # the week is now the tighter one
-
-    budget = autobudget.decide()
-
-    assert budget.window == autofix.WINDOW_WEEK
-    assert budget.measured, "the week was priced — it is not the standing floor"
-    assert budget.needed == pytest.approx(1.0)
-    assert not budget.affordable
+    cost = autobudget._cost(summary, z=autofix.budget_z(95), min_sample=5)
+    assert cost == pytest.approx(1.0), "100k of a 10M week, and no spread to inflate it"
 
 
 # MARK: - The assembled verdict
@@ -210,22 +150,22 @@ def test_the_week_gates_on_its_own_bound_with_the_session_unpriced(monkeypatch):
 
 def test_a_priced_ledger_refuses_a_window_that_cannot_cover_a_task(monkeypatch):
     _ledger_with_priced_tasks(monkeypatch, _SPREAD)
-    _probe(monkeypatch, session=0.02, week=0.9)  # 2% of the 5-hour window left
+    _probe(monkeypatch, week=0.005)  # half a percent of the week left
 
     budget = autobudget.decide()
 
     assert not budget.affordable
-    assert budget.window == autofix.WINDOW_SESSION
+    assert budget.window == autofix.WINDOW_WEEK
     assert budget.measured, "the ledger priced this — it is not the standing floor"
-    assert budget.left == pytest.approx(2.0)
-    # The mean task is 5% of the window (100k of 2M); what is REQUIRED is above
+    assert budget.left == pytest.approx(0.5)
+    # The mean task is 1% of the window (100k of 10M); what is REQUIRED is above
     # that, because half of all tasks cost more than the mean.
-    assert budget.needed > 5.0
+    assert budget.needed > 1.0
 
 
 def test_the_same_ledger_proceeds_once_the_window_has_refilled(monkeypatch):
     _ledger_with_priced_tasks(monkeypatch, _SPREAD)
-    _probe(monkeypatch, session=0.95, week=0.9)
+    _probe(monkeypatch, week=0.9)
 
     assert autobudget.decide().affordable
 
@@ -235,19 +175,19 @@ def test_a_ledger_of_identical_tasks_asks_for_exactly_the_mean(monkeypatch):
     more. It is the `sqrt(1 + 1/n)` factor that would otherwise make a machine with
     perfectly predictable tasks refuse work it can plainly afford."""
     _ledger_with_priced_tasks(monkeypatch, [100_000.0] * 8)
-    _probe(monkeypatch, session=0.06, week=0.9)
+    _probe(monkeypatch, week=0.012)
 
     budget = autobudget.decide()
 
     assert budget.affordable and budget.measured
-    assert budget.needed == pytest.approx(5.0)
+    assert budget.needed == pytest.approx(1.0)
 
 
 def test_a_thin_ledger_holds_the_configured_floor(monkeypatch):
     """The default answer on a machine that has not finished enough auto-tasks to
-    price one: keep 20% of each window in hand."""
+    price one: keep 20% of the window in hand."""
     _ledger_with_priced_tasks(monkeypatch, [100_000.0])  # one task is not a spread
-    _probe(monkeypatch, session=0.15, week=0.9)
+    _probe(monkeypatch, week=0.15)
 
     budget = autobudget.decide()
 
@@ -257,13 +197,13 @@ def test_a_thin_ledger_holds_the_configured_floor(monkeypatch):
     assert budget.left == pytest.approx(15.0)
 
     autobudget._reset_cache()
-    _probe(monkeypatch, session=0.25, week=0.9)
+    _probe(monkeypatch, week=0.25)
     assert autobudget.decide().affordable
 
 
 def test_an_empty_ledger_still_answers_on_the_floor(monkeypatch):
     """Nothing recorded at all — a fresh install — is the thin case, not a crash."""
-    _probe(monkeypatch, session=0.05, week=0.9)
+    _probe(monkeypatch, week=0.05)
 
     budget = autobudget.decide()
 
@@ -275,7 +215,7 @@ def test_a_probe_that_cannot_answer_never_holds_work_back(monkeypatch):
     default, and a documented configuration) nothing is measured and nothing is
     gated."""
     _ledger_with_priced_tasks(monkeypatch, _SPREAD)
-    _probe(monkeypatch, session=None, week=None)
+    _probe(monkeypatch, week=None)
 
     assert autobudget.decide().affordable
 
@@ -285,7 +225,7 @@ def test_a_probe_that_cannot_answer_never_holds_work_back(monkeypatch):
     def boom():
         raise OSError("network unreachable")
 
-    monkeypatch.setattr("diplomat_runtime.quota.fractions_left", boom)
+    monkeypatch.setattr("diplomat_runtime.quota.week_left", boom)
     assert autobudget.decide().affordable
 
 
@@ -295,7 +235,7 @@ def test_a_corrupt_ledger_degrades_to_the_floor_rather_than_raising(monkeypatch)
     telemetry.ledger_path().parent.mkdir(parents=True, exist_ok=True)
     telemetry.ledger_path().write_text("{not json at all\n" * 5, encoding="utf-8")
     telemetry._reset_cache()
-    _probe(monkeypatch, session=0.5, week=0.9)
+    _probe(monkeypatch, week=0.5)
 
     budget = autobudget.decide()
 
@@ -312,7 +252,7 @@ def test_the_confidence_knob_moves_the_bound(monkeypatch):
         steps=2, bin_count=1, z=1.96, bucket_hours=24,
     )
     bounds = [
-        autobudget._costs(summary, z=autofix.budget_z(level), min_sample=5)[0]
+        autobudget._cost(summary, z=autofix.budget_z(level), min_sample=5)
         for level in (50, 80, 95, 99)
     ]
     assert bounds == sorted(bounds)
@@ -320,7 +260,7 @@ def test_the_confidence_knob_moves_the_bound(monkeypatch):
 
 
 def test_the_floor_knob_is_read_from_the_shared_config(monkeypatch):
-    _probe(monkeypatch, session=0.30, week=0.9)
+    _probe(monkeypatch, week=0.30)
     assert autobudget.decide().affordable  # 30% clears the default 20% floor
 
     appconfig.set_float(appconfig.AUTO_BUDGET_FLOOR_PCT, 50.0)
@@ -341,9 +281,9 @@ def test_one_answer_is_reused_across_a_poll_that_asks_repeatedly(monkeypatch):
 
     def counted():
         calls.append(1)
-        return (0.9, 0.9)
+        return 0.9
 
-    monkeypatch.setattr("diplomat_runtime.quota.fractions_left", counted)
+    monkeypatch.setattr("diplomat_runtime.quota.week_left", counted)
 
     now = time.time()
     for _ in range(8):
@@ -357,10 +297,10 @@ def test_one_answer_is_reused_across_a_poll_that_asks_repeatedly(monkeypatch):
 
 
 def test_the_shortfall_line_says_which_window_and_against_what():
-    measured = autofix.Budget(affordable=False, window=autofix.WINDOW_SESSION,
+    measured = autofix.Budget(affordable=False, window=autofix.WINDOW_WEEK,
                               left=3.5, needed=12.0, measured=True)
     line = autobudget.shortfall(measured)
-    assert "5-hour" in line and "3.5%" in line and "12.0%" in line
+    assert "7-day" in line and "3.5%" in line and "12.0%" in line
     assert "a task needs" in line
 
     floored = autofix.Budget(affordable=False, window=autofix.WINDOW_WEEK,
@@ -425,7 +365,7 @@ def test_a_hermes_machine_is_priced_in_dollars_not_window_shares(monkeypatch):
     say, even when that probe is answering."""
     _hermes(monkeypatch)
     _billed_tasks(time.time() - 3600, _USD_SPREAD)
-    _probe(monkeypatch, session=0.01, week=0.01)  # a spent Claude window…
+    _probe(monkeypatch, week=0.0001)  # a spent Claude window…
     _balance(monkeypatch, key_left=16.85, credit_left=17.03)
 
     budget = autobudget.decide()
@@ -588,7 +528,7 @@ def test_the_claude_runner_still_decides_in_window_shares(monkeypatch):
     """The other half of the fork, and the regression that would be silent: a Claude
     Code machine must not start reading an OpenRouter balance it does not spend."""
     _ledger_with_priced_tasks(monkeypatch, _SPREAD)
-    _probe(monkeypatch, session=0.02, week=0.9)
+    _probe(monkeypatch, week=0.005)
 
     def never():
         raise AssertionError("the Claude path must not probe OpenRouter")
@@ -599,7 +539,7 @@ def test_the_claude_runner_still_decides_in_window_shares(monkeypatch):
 
     assert not budget.affordable
     assert budget.unit == autofix.UNIT_PCT
-    assert budget.window == autofix.WINDOW_SESSION
+    assert budget.window == autofix.WINDOW_WEEK
 
 
 # MARK: - What it stops
@@ -620,9 +560,9 @@ def _job(number=9, counter="review_requests", action="review"):
 
 @pytest.fixture
 def broke(monkeypatch):
-    """A machine with a priced ledger and almost none of its 5-hour window left."""
+    """A machine with a priced ledger and almost none of its weekly window left."""
     _ledger_with_priced_tasks(monkeypatch, _SPREAD)
-    _probe(monkeypatch, session=0.01, week=0.9)
+    _probe(monkeypatch, week=0.005)
 
 
 def test_an_auto_dispatch_is_deferred_and_queued(store, monkeypatch, broke):
@@ -728,16 +668,16 @@ def test_the_feed_gets_one_line_per_episode_and_another_when_it_clears(
 
     lines = [e for e in activity.read() if e.action == "no-budget"]
     assert len(lines) == 1
-    assert "5-hour rate limit left" in lines[0].detail
+    assert "7-day rate limit left" in lines[0].detail
 
     # The window refills: the next dispatch proceeds AND re-arms the notice, so the
     # next episode gets a line of its own instead of being swallowed.
     autobudget._reset_cache()
-    _probe(monkeypatch, session=0.95, week=0.9)
+    _probe(monkeypatch, week=0.9)
     assert store.dispatch_agent(_job(number=4), autofix.SOURCE_AUTO) == "spawned"
 
     autobudget._reset_cache()
-    _probe(monkeypatch, session=0.01, week=0.9)
+    _probe(monkeypatch, week=0.005)
     store.dispatch_agent(_job(number=5), autofix.SOURCE_AUTO)
     assert len([e for e in activity.read() if e.action == "no-budget"]) == 2
 
@@ -760,7 +700,7 @@ def test_a_mesh_peers_job_is_taken_when_the_window_has_room(monkeypatch):
     from diplomat_runtime.szponthost import DiplomatHost
 
     _ledger_with_priced_tasks(monkeypatch, _SPREAD)
-    _probe(monkeypatch, session=0.95, week=0.9)
+    _probe(monkeypatch, week=0.9)
     monkeypatch.setattr("diplomat_runtime.szponthost._ps_dump", lambda: "")
     monkeypatch.setattr("diplomat_runtime.tmuxwatch.pane_tails_for_ttys", lambda ttys: {})
 
@@ -807,26 +747,19 @@ def test_a_hand_edited_number_is_not_read_as_a_flag():
 
 
 def test_tokens_left_asks_the_window_a_claude_machine_spends(monkeypatch):
-    _probe(monkeypatch, session=0.4, week=0.9)
+    _probe(monkeypatch, week=0.4)
     assert autobudget.tokens_left() is True
 
 
-def test_an_exhausted_window_leaves_no_tokens_even_beside_a_full_one(monkeypatch):
-    """Whichever ceiling runs out first is the one that parks the agents, so every
-    reading that came back has to be above zero — not the best of them."""
-    _probe(monkeypatch, session=0.0, week=0.9)
+def test_an_exhausted_window_leaves_no_tokens(monkeypatch):
+    _probe(monkeypatch, week=0.0)
     assert autobudget.tokens_left() is False
-
-
-def test_a_window_that_would_not_read_is_skipped_rather_than_guessed(monkeypatch):
-    _probe(monkeypatch, session=None, week=0.5)
-    assert autobudget.tokens_left() is True
 
 
 def test_no_reading_at_all_is_an_unknown_not_a_yes(monkeypatch):
     """THE degradation. The dispatch gate fails open here; this one must not, or a
     box with the probe switched off gives up on every run it has at four hours."""
-    _probe(monkeypatch, session=None, week=None)
+    _probe(monkeypatch, week=None)
     assert autobudget.tokens_left() is None
 
 
@@ -834,7 +767,7 @@ def test_a_probe_that_raises_is_an_unknown_too(monkeypatch):
     def boom():
         raise OSError("no network")
 
-    monkeypatch.setattr("diplomat_runtime.quota.fractions_left", boom)
+    monkeypatch.setattr("diplomat_runtime.quota.week_left", boom)
     assert autobudget.tokens_left() is None
 
 
@@ -842,7 +775,7 @@ def test_a_money_machine_is_asked_about_money_not_about_windows(monkeypatch):
     """The same currency split `decide` makes. A Hermes box holds no Anthropic
     window, so a full one there must not wave its runs past the deadline."""
     _hermes(monkeypatch)
-    _probe(monkeypatch, session=0.9, week=0.9)
+    _probe(monkeypatch, week=0.9)
     _balance(monkeypatch, key_left=0.0, credit_left=5.0)
     assert autobudget.tokens_left() is False
 
@@ -858,7 +791,7 @@ def test_a_run_is_asked_about_in_the_currency_it_was_started_under(monkeypatch):
     they change runner to keep working — and nothing about the parked runs changed, so
     the reading that gates the deadline must still be the exhausted window's."""
     _hermes(monkeypatch)
-    _probe(monkeypatch, session=0.0, week=0.0)
+    _probe(monkeypatch, week=0.0)
     _balance(monkeypatch, key_left=None, credit_left=42.0)
 
     assert autobudget.tokens_left() is True, "the selection alone reads plenty"
@@ -870,7 +803,7 @@ def test_a_dry_account_parks_every_run_on_the_machine_not_only_its_own(monkeypat
     join: whichever ceiling ran out is parking agents on this box, and the deadline
     must not retire any of them for being old while it is."""
     _hermes(monkeypatch)
-    _probe(monkeypatch, session=0.0, week=0.9)
+    _probe(monkeypatch, week=0.0)
     _balance(monkeypatch, key_left=None, credit_left=42.0)
 
     assert autobudget.tokens_left(["hermes"]) is True
@@ -886,7 +819,7 @@ def test_a_run_whose_own_runner_was_never_recorded_falls_back_to_the_selection(
     Dropped instead of stood in for, its currency is simply left out of the join, and a
     run whose account is empty reads as one with room."""
     _hermes(monkeypatch)
-    _probe(monkeypatch, session=0.9, week=0.9)
+    _probe(monkeypatch, week=0.9)
     _balance(monkeypatch, key_left=None, credit_left=0.0)
 
     assert autobudget.tokens_left([""]) is False, "the selection's own dry balance"
@@ -899,7 +832,7 @@ def test_a_machine_with_nothing_in_flight_still_answers_from_its_selection(monke
     """No runs means no run's currency, and the reading is taken anyway: the probe
     runs on the poll whether or not the book is empty, and an empty ask that read
     nothing at all would report "no limit this machine can read"."""
-    _probe(monkeypatch, session=0.4, week=0.9)
+    _probe(monkeypatch, week=0.4)
     assert autobudget.tokens_left([]) is True
     assert autobudget.tokens_left() is True
 

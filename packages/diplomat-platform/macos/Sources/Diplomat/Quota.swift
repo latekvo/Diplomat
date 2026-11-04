@@ -1,11 +1,11 @@
 import Foundation
 
-/// How much of the Claude rate-limit windows is left — the other half of the
+/// How much of the Claude 7-day rate-limit window is left — the other half of the
 /// telemetry sample, and the macOS twin of the shared runtime's `quota.py`.
 ///
 /// A GET against the OAuth usage endpoint (the same data Claude Code's `/usage`
 /// screen shows) using the OAuth access token Claude Code already holds, converted
-/// to the fraction of each window still unspent. The endpoint's budget is per account
+/// to the fraction of the window still unspent. The endpoint's budget is per account
 /// and every Claude Code session on the machine spends it, so a caller that can afford
 /// to wait retries the refusals (`insist`). That, paired with the token
 /// counters from `UsageScan`, is what lets the Telemetry screen say a task cost a
@@ -56,7 +56,6 @@ enum Quota {
     private struct Cache {
         var attempt: TimeInterval = 0
         var good: TimeInterval = 0
-        var session: Double?
         var week: Double?
     }
     private static var cache = Cache()
@@ -205,6 +204,12 @@ enum Quota {
         return (left * 10_000).rounded() / 10_000
     }
 
+    /// The reading in one usage payload. Only `seven_day`: the endpoint answers
+    /// `five_hour: null`, so a reading keyed on it is never taken.
+    static func weekFraction(_ payload: [String: Any]?) -> Double? {
+        fractionLeft(payload?["seven_day"])
+    }
+
     /// One round of the probe, folded into the cache. True when it came back with a
     /// reading. Called with `lock` held.
     ///
@@ -221,20 +226,17 @@ enum Quota {
         if tokens.isEmpty { return false }
         probeRounds += 1
         for token in tokens {
-            let payload = fetch(token)
-            guard let session = fractionLeft(payload?["five_hour"]) else { continue }
+            guard let week = weekFraction(fetch(token)) else { continue }
             cache.good = now
-            cache.session = session
-            cache.week = fractionLeft(payload?["seven_day"])
+            cache.week = week
             probeReadings += 1
             return true
         }
         return false
     }
 
-    /// `(session, week)` — the unspent fraction of the 5-hour and 7-day windows, or
-    /// `(nil, nil)` when unavailable (probe disabled, no credentials, or offline past
-    /// the keep window). Never throws.
+    /// The unspent fraction of the 7-day window, or nil when unavailable (probe
+    /// disabled, no credentials, or offline past the keep window). Never throws.
     ///
     /// `insist` keeps trying (`insistAttempts`) rather than settling for one refused
     /// attempt, so the call blocks for up to two and a half minutes. It is for a caller
@@ -242,12 +244,12 @@ enum Quota {
     /// gets one turn every 15 minutes and leaves a hole in the ledger if it comes back
     /// empty. A caller gating a dispatch takes the single attempt: a stale reading now
     /// beats a fresh one after the agent should have started.
-    static func fractionsLeft(insist: Bool = false) -> (session: Double?, week: Double?) {
-        guard probeEnabled else { return (nil, nil) }
+    static func weekLeft(insist: Bool = false) -> Double? {
+        guard probeEnabled else { return nil }
         lock.lock()
         defer { lock.unlock() }
         var now = Date().timeIntervalSinceReferenceDate
-        let interval = cache.session != nil ? ttlSecs : retrySecs
+        let interval = cache.week != nil ? ttlSecs : retrySecs
         if cache.attempt == 0 || now - cache.attempt >= interval {
             // No token is the one failure retrying cannot fix.
             if !attempt(now), insist, !oauthTokens().isEmpty {
@@ -263,11 +265,10 @@ enum Quota {
             }
             now = Date().timeIntervalSinceReferenceDate
         }
-        if cache.session != nil, now - cache.good > keepSecs {
-            cache.session = nil   // stale beyond trust
-            cache.week = nil
+        if cache.week != nil, now - cache.good > keepSecs {
+            cache.week = nil   // stale beyond trust
         }
-        return (cache.session, cache.week)
+        return cache.week
     }
 
     /// Self-test hook: forget any cached reading, and any memory of having probed.

@@ -3896,7 +3896,7 @@ final class Store: ObservableObject {
     /// this more often than the sample interval is free.
     ///
     /// The worker is launched rather than awaited: its probe insists
-    /// (`Quota.fractionsLeft`), and the poll loop this rides has agent rows and device
+    /// (`Quota.weekLeft`), and the poll loop this rides has agent rows and device
     /// state to refresh every few seconds. It runs on a plain background queue rather
     /// than as a `Task`, because insisting means waiting out the endpoint's bucket —
     /// minutes of blocking, which must not sit on one of the cooperative pool's few
@@ -3905,9 +3905,9 @@ final class Store: ObservableObject {
         guard !takingTelemetrySample, TelemetryLog.sampleDue() else { return }
         takingTelemetrySample = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let quota = Quota.fractionsLeft(insist: true)
+            let weekLeft = Quota.weekLeft(insist: true)
             let totals = UsageScan.totals()
-            TelemetryLog.sample(sessionLeft: quota.session, weekLeft: quota.week,
+            TelemetryLog.sample(weekLeft: weekLeft,
                                 repoTokens: totals.repo, otherTokens: totals.other)
             let store = self
             Task { @MainActor in store?.finishTelemetrySample() }
