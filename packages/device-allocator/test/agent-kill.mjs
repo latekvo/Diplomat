@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { killDaemonsUnder, onInterrupt } from './lib/interrupt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MCP = path.join(__dirname, '..', 'src', 'mcp.js');
@@ -34,6 +35,7 @@ const child = spawn(process.execPath, [MCP], {
     DA_KILL_PID_OVERRIDE: String(sleeper.pid), // kill the sleeper, not this test
   },
 });
+onInterrupt(() => { child.kill('SIGKILL'); killDaemonsUnder(BASE); });
 
 const pending = new Map();
 let buf = '';

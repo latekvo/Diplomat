@@ -8,12 +8,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { killDaemonsUnder, onInterrupt } from './lib/interrupt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_JS = path.join(__dirname, '..', 'src', 'install.js');
 
 // /tmp, not os.tmpdir(): macOS's per-user tmpdir pushes the socket past the length limit.
 const BASE = fs.mkdtempSync('/tmp/dae.');
+onInterrupt(() => killDaemonsUnder(BASE));
 const HOME = path.join(BASE, 'home');
 const SOCKET = path.join(BASE, 'daemon.sock');
 const FAKE = path.join(BASE, 'fake.json');

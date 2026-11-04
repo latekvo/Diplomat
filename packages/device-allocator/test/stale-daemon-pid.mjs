@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { daemonsUnder, killDaemonsUnder, onInterrupt } from './lib/interrupt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INSTALL_JS = path.join(__dirname, '..', 'src', 'install.js');
@@ -50,20 +51,14 @@ const discoveryPid = () => { try { return JSON.parse(fs.readFileSync(DISCOVERY, 
 function staleDiscovery(pid, startedAt, identity) {
   fs.writeFileSync(DISCOVERY, JSON.stringify({ pid, identity, startedAt: startedAt.toISOString(), socket: SOCKET, version: 1 }));
 }
-// A process's environment, as words: Linux /proc, else (macOS) after the command in ps -E.
-function environ(pid) {
-  try { return fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0'); } catch {}
-  try { return execFileSync('ps', ['-E', '-ww', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).split(/\s+/); }
-  catch { return []; }
-}
-function daemons() {
-  let pids;
-  try { pids = execFileSync('pgrep', ['-f', DAEMON_JS], { encoding: 'utf8' }).trim().split('\n').map(Number); }
-  catch { return []; }
-  return pids.filter((pid) => environ(pid).includes(`DA_BASE_DIR=${BASE}`));
-}
+const daemons = () => daemonsUnder(BASE);
 
 const children = [];
+const cleanup = () => {
+  for (const c of children) { try { c.kill('SIGKILL'); } catch {} }
+  killDaemonsUnder(BASE);
+};
+onInterrupt(cleanup);
 function victim(cmd, args) {
   const child = spawn(cmd, args, { stdio: 'ignore' });
   children.push(child);
@@ -139,8 +134,7 @@ try {
 
   console.log(`\nstale-daemon-pid: ${passed} passed`);
 } finally {
-  for (const c of children) { try { c.kill('SIGKILL'); } catch {} }
-  for (const pid of daemons()) { try { process.kill(pid, 'SIGCONT'); process.kill(pid, 'SIGKILL'); } catch {} }
+  cleanup();
   await sleep(300);
   fs.rmSync(BASE, { recursive: true, force: true });
 }

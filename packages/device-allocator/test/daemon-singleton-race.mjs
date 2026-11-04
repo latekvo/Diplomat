@@ -12,6 +12,7 @@ import path from 'node:path';
 import http from 'node:http';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { killDaemonsUnder, onInterrupt } from './lib/interrupt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DAEMON = path.join(__dirname, '..', 'src', 'daemon.js');
@@ -53,6 +54,7 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
 try {
   for (let round = 0; round < ROUNDS; round++) {
     const BASE = fs.mkdtempSync(path.join(os.tmpdir(), `da-race-${round}-`));
+    onInterrupt(() => killDaemonsUnder(BASE));
     fs.writeFileSync(path.join(BASE, 'fake.json'), '[]');
 
     // Plant a STALE socket: bring one daemon up, then SIGKILL it (no clean unlink) so the

@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { killDaemonsUnder, onInterrupt } from './lib/interrupt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MCP = path.join(__dirname, '..', 'src', 'mcp.js');
@@ -25,6 +26,7 @@ const child = spawn(process.execPath, [MCP], {
   stdio: ['pipe', 'pipe', 'inherit'],
   env: { ...process.env, DA_BASE_DIR: BASE, DA_FAKE_DEVICES: FAKE, DA_NO_SPAWN: '1' },
 });
+onInterrupt(() => { child.kill('SIGKILL'); killDaemonsUnder(BASE); });
 
 const pending = new Map();
 let buf = '';

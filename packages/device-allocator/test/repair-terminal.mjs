@@ -91,7 +91,8 @@ console.log('ok   resolution + Linux argv');
 // macOS drives Ghostty through osascript; Linux runs the terminal's own argv.
 const MAC = process.platform === 'darwin';
 const OPENER = MAC ? 'osascript' : 'konsole';
-fake(OPENER, `printf '%s\\n' "$@" > '${RECORD}'`);
+// Renamed into place, as the record is read the moment it exists.
+fake(OPENER, `printf '%s\\n' "$@" > '${RECORD}.tmp' && mv '${RECORD}.tmp' '${RECORD}'`);
 setTerminal(MAC ? 'ghostty' : 'konsole');
 const r = repair('ios:FIRST');
 assert.ok(await waitFor(RECORD), `${OPENER} was never invoked`);
