@@ -13,7 +13,8 @@ import os
 /// `log show --predicate 'subsystem == "com.ignacy.diplomat"' --last 1h`.
 ///
 /// Past `maxBytes` the file moves to `diplomat.log.1`, replacing the one before. A
-/// self-test or render writes only the unified log unless it redirects the file.
+/// headless run other than the 06:00 updater and the watchdog (a self-test, render or
+/// dump) writes only the unified log unless it redirects the file.
 enum AppLog {
     static let subsystem = "com.ignacy.diplomat"
 
@@ -22,11 +23,15 @@ enum AppLog {
 
     static var dir: URL {
         if let dirOverride { return dirOverride }
-        if let d = ProcessInfo.processInfo.environment["DIPLOMAT_LOG_DIR"], !d.isEmpty {
-            return URL(fileURLWithPath: d)
-        }
+        if let envDir { return URL(fileURLWithPath: envDir) }
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs")
     }
+    private static var envDir: String? {
+        ProcessInfo.processInfo.environment["DIPLOMAT_LOG_DIR"].flatMap { $0.isEmpty ? nil : $0 }
+    }
+    /// Whether the file goes somewhere other than `~/Library/Logs`; an empty
+    /// `DIPLOMAT_LOG_DIR` does not count.
+    static var isRedirected: Bool { dirOverride != nil || envDir != nil }
     static var url: URL { dir.appendingPathComponent("diplomat.log") }
     static var maxBytes = 8 << 20
 
@@ -40,8 +45,7 @@ enum AppLog {
     private static let tag = mode.map { "\(getpid()) \($0)" } ?? "\(getpid())"
 
     private static var writesFile: Bool {
-        writesFile(mode: mode,
-                   redirected: dirOverride != nil || ProcessInfo.processInfo.environment["DIPLOMAT_LOG_DIR"] != nil)
+        writesFile(mode: mode, redirected: isRedirected)
     }
 
     /// The live app and the two unattended jobs write the file; a self-test or render
@@ -77,9 +81,12 @@ enum AppLog {
         }
         guard fd >= 0 else { return }
         var st = stat()
+        var atPath = stat()
         if fstat(fd, &st) == 0, Int(st.st_size) + data.count > maxBytes {
             close(fd)
-            rename(path, path + ".1")
+            // Another process may have rotated since this one opened: renaming its fresh
+            // file over `.1` would throw away the full one there.
+            if stat(path, &atPath) == 0, atPath.st_ino == st.st_ino { rename(path, path + ".1") }
             fd = openLog()
             guard fd >= 0 else { return }
         }
@@ -156,13 +163,17 @@ enum AppLog {
 
     private static var observers: [NSObjectProtocol] = []
 
+    /// Set once the app is quitting, when AppKit orders every window out on its way down.
+    /// Main thread only.
+    static var exiting = false
+
     /// The live app's launch line, its system-event lines and the hang watch. GUI only.
     @MainActor static func startSession() {
         let exe = Bundle.main.executablePath ?? CommandLine.arguments[0]
-        let built = (try? FileManager.default.attributesOfItem(atPath: exe)[.modificationDate] as? Date)
+        let modified = (try? FileManager.default.attributesOfItem(atPath: exe)[.modificationDate] as? Date)
             .map { stamp.string(from: $0) } ?? "?"
         let parent = SingleInstance.executableName(getppid()) ?? "?"
-        log("app", "launch \(exe) built \(built), macOS \(ProcessInfo.processInfo.operatingSystemVersionString), "
+        log("app", "launch \(exe) modified \(modified), macOS \(ProcessInfo.processInfo.operatingSystemVersionString), "
             + "parent \(parent) (\(getppid()))")
 
         let ws = NSWorkspace.shared.notificationCenter

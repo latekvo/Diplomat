@@ -144,19 +144,20 @@ line per event: `<local time> [<pid>] <category> <message>`.
 
 | Category | Lines |
 |---|---|
-| `app` | launch (binary, its build time, parent), each quit request and who sent it, exit, the singleton ending an older instance |
+| `app` | launch (binary, its modification time, parent), each quit request and who sent it, exit, the singleton ending an older instance |
 | `system` | sleep and wake, displays asleep, awake or rearranged, screen lock and unlock, Space switches |
-| `popover` | each open, judged 0.4 s later (`show ok`, or `show FAILED` with the window's state), and each close |
-| `hang` | the main thread answering 0.5 s or more late: how long, whether it was computing or waiting, the polls in flight. One still going at 2 s is sampled into `~/Library/Logs/diplomat-hangs/` (at most one per 10 minutes, newest 20 kept) |
+| `popover` | each open, judged 0.4 s later: `show ok`, or `show FAILED` with the window's state when it is not on screen, covered or still transparent. Then each close |
+| `hang` | the main thread answering 0.5 s or more late: how long, whether it was computing or waiting, the polls in flight while it was late. One still going at 2 s gets its own line and a `sample` into `~/Library/Logs/diplomat-hangs/` (at most one per 10 minutes, newest 20 kept) |
 | `timing` | a poll that took 10 s or more |
-| `alive` | every 15 minutes: uptime, memory, hangs, each poll's count, average and worst, what is in flight |
-| `activity` | the activity feed's own lines |
+| `alive` | every 15 minutes: uptime, memory, hangs (and one still going on), each poll's count, average and worst, what is in flight |
+| `activity` | the lines this app adds to the activity feed (the daemon's and agents' appear only in `audit.jsonl`) |
 | `update` | the 06:00 updater and the watchdog, as in `diplomat-autoupdate.log` |
 
 At 8 MB the file moves to `diplomat.log.1`. Every line also goes to the unified log,
 where it sits beside WindowServer's and AppKit's own:
-`log show --predicate 'subsystem == "com.ignacy.diplomat"' --last 1h`. Self-tests and
-renders write only there, unless `DIPLOMAT_LOG_DIR` names a directory for the file.
+`log show --predicate 'subsystem == "com.ignacy.diplomat"' --last 1h`. Other headless
+runs (self-tests, renders, dumps) write only there, unless `DIPLOMAT_LOG_DIR` names a
+directory for the file.
 
 ### Headless self-test
 

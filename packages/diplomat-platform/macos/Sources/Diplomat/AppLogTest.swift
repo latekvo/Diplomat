@@ -43,6 +43,15 @@ enum AppLogTest {
                 && AppLog.writesFile(mode: "watchdog", redirected: false)
                 && !AppLog.writesFile(mode: "popover_test", redirected: false)
                 && AppLog.writesFile(mode: "popover_test", redirected: true))
+        AppLog.dirOverride = nil
+        setenv("DIPLOMAT_LOG_DIR", "", 1)
+        let emptyRedirects = AppLog.isRedirected
+        setenv("DIPLOMAT_LOG_DIR", scratch.path, 1)
+        let setRedirects = AppLog.isRedirected
+        unsetenv("DIPLOMAT_LOG_DIR")
+        AppLog.dirOverride = scratch
+        check("an empty DIPLOMAT_LOG_DIR leaves the file where it is, and is not a redirect",
+              !emptyRedirects && setRedirects)
 
         print("applog: rotation")
         let cap = AppLog.maxBytes
@@ -83,11 +92,36 @@ enum AppLogTest {
         watch.threshold = 0.3
         watch.sampleAfter = 0.8
         watch.sampleSeconds = 1
+        watch.keepSamples = 3
         watch.heartbeat = 1
-        watch.start()
+        try? fm.createDirectory(at: watch.sampleDir, withIntermediateDirectories: true)
+        for i in 1...4 {
+            fm.createFile(atPath: watch.sampleDir.appendingPathComponent("2000-01-01T00-00-0\(i)-1.txt").path,
+                          contents: Data())
+        }
+        func sampleFiles() -> [String] {
+            ((try? fm.contentsOfDirectory(atPath: watch.sampleDir.path)) ?? []).sorted()
+        }
+        func realSamples() -> [String] { sampleFiles().filter { !$0.hasPrefix("2000-") } }
+        AppLog.startSession()
+        let session = lines()
+        check("a session opens with the launch line",
+              session.contains { matches($0, #"\] app launch /.+ modified \d{4}-.+, macOS .+, parent .+ \(\d+\)$"#) },
+              session.suffix(3).joined(separator: "\n"))
+        check("and the displays", session.contains { matches($0, #"\] system displays: .+ primary"#) },
+              session.suffix(3).joined(separator: "\n"))
         await pause(0.5)
+
+        let beforeShort = lines().count
+        await AppLog.timed("shortProbe") { spinMain(0.6) }
+        await pause(0.5)
+        let short = lines().dropFirst(beforeShort).first { $0.contains("main thread blocked") }
+        check("a short hang names the work that was in flight while it was late, ended since",
+              short?.contains("; in flight: shortProbe ") == true, short ?? "no line")
+
         let before = lines().count
-        await AppLog.timed("busyProbe") { spinMain(2.0) }
+        var spun = 0.0
+        await AppLog.timed("busyProbe") { spun = spinMain(until: { realSamples().count == 1 }, atMost: 20) }
         await pause(0.5)
         let afterBusy = Array(lines().dropFirst(before))
         let ongoing = afterBusy.first { $0.contains("unresponsive") }
@@ -98,18 +132,26 @@ enum AppLogTest {
         check("and sampled", samplePath?.hasPrefix(watch.sampleDir.path) == true, ongoing ?? "")
         let busy = afterBusy.first { $0.contains("main thread blocked") }
         let busySecs = busy.flatMap { Double($0.components(separatedBy: "blocked ").last?.prefix(4) ?? "") }
-        check("its end gives the length", busySecs.map { $0 >= 1.7 && $0 < 2.6 } == true, busy ?? "no line")
+        check("its end gives the length, up to one interval short",
+              busySecs.map { $0 > spun - watch.interval - 0.15 && $0 <= spun + 0.15 } == true,
+              "\(busy ?? "no line"); spun \(spun)")
         check("and tells it was the main thread computing", busy?.contains("(busy on the main thread)") == true,
               busy ?? "")
         check("and names the sample", busy.map { samplePath != nil && $0.hasSuffix("; sample \(samplePath!)") } == true,
               busy ?? "")
+        check("a heartbeat during it says a hang is going on",
+              afterBusy.contains { matches($0, #"\] alive up .*, one going on for \d"#) },
+              afterBusy.filter { $0.contains("alive") }.joined(separator: "\n"))
         var stacks = ""
         for _ in 0..<60 where !stacks.contains("Call graph") {
-            await pause(0.5)
             stacks = samplePath.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) } ?? ""
+            if !stacks.contains("Call graph") { await pause(0.5) }
         }
         check("the sample holds the main thread's stack in the hang", stacks.contains("spinMain"),
               "\(stacks.count) bytes")
+        check("only the newest keepSamples samples are kept",
+              sampleFiles().count == 3 && sampleFiles().prefix(2) == ["2000-01-01T00-00-03-1.txt", "2000-01-01T00-00-04-1.txt"],
+              "\(sampleFiles())")
 
         let beforeWait = lines().count
         await AppLog.timed("waitProbe") { blockMain(2.0) }
@@ -119,62 +161,98 @@ enum AppLogTest {
         check("a hang spent waiting is told apart", waiting?.contains("(waiting, not computing)") == true,
               waiting ?? "no line")
         let stillWaiting = afterWait.first { $0.contains("unresponsive") }
-        let samples = (try? fm.contentsOfDirectory(atPath: watch.sampleDir.path)) ?? []
         check("one sample per sampleEvery", stillWaiting?.contains("in flight: waitProbe ") == true
               && stillWaiting?.contains("sampling") == false && waiting?.contains("sample") == false
-              && samples.count == 1,
-              "\(stillWaiting ?? "no line"); \(samples)")
+              && realSamples().count == 1,
+              "\(stillWaiting ?? "no line"); \(sampleFiles())")
 
         await pause(1.3)
         let beats = lines().filter { $0.contains("] alive up ") }
         let hangCount = beats.compactMap { line -> Int? in
             line.range(of: #"hangs \d+"#, options: .regularExpression).flatMap { Int(line[$0].dropFirst(6)) }
         }.reduce(0, +)
-        check("heartbeats count both hangs", hangCount == 2, beats.joined(separator: "\n"))
-        check("and tally the timed work", beats.contains { matches($0, #"busyProbe 1x avg [12]\.\d\ds"#) },
+        check("heartbeats count all three hangs", hangCount == 3, beats.joined(separator: "\n"))
+        check("and tally the timed work", beats.contains { matches($0, #"busyProbe 1x avg \d+\.\d+s"#) },
               beats.joined(separator: "\n"))
 
         print("applog: popover")
         PopoverFadeOut.showSettle = 0.2
+        func lastShow() -> String? { lines().last { $0.contains("] popover show") } }
+        func lastHide() -> String? { lines().last { $0.contains("] popover hide") } }
         let wedged = WedgedWindow(contentRect: NSRect(x: -4000, y: -4000, width: 10, height: 10),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
         PopoverFadeOut.enable(on: wedged)
         wedged.order(.above, relativeTo: 0)
         await pause(0.4)
-        let failed = lines().last { $0.contains("] popover show") }
         check("a show that never reaches the screen is FAILED, with the window's state",
-              matches(failed, #"\] popover show FAILED \(still invisible right after ordering in\) visible=0 occlusion=hidden alpha=\d\.\d\d key=0 activeSpace=\d level=0 behavior=0x[0-9a-f]+ frame=-4000,-4000 10x10 screen=none app active=\d hidden=0$"#),
-              failed ?? "no line")
+              matches(lastShow(), #"\] popover show FAILED \(still invisible right after ordering in\) visible=0 occlusion=hidden alpha=\d\.\d\d key=0 activeSpace=\d level=0 behavior=0x[0-9a-f]+ frame=-4000,-4000 10x10 screen=none app active=\d hidden=0$"#),
+              lastShow() ?? "no line")
         wedged.order(.out, relativeTo: 0)
-        let wedgedHide = lines().last { $0.contains("] popover hide") }
-        check("its hide says it never showed", wedgedHide?.hasSuffix("] popover hide (was visible=0)") == true,
-              wedgedHide ?? "no line")
+        check("its hide says it never showed", lastHide()?.hasSuffix("] popover hide (was visible=0)") == true,
+              lastHide() ?? "no line")
 
         let offscreen = ProbeWindow(contentRect: NSRect(x: -4000, y: -4000, width: 2, height: 2),
                                     styleMask: [.borderless], backing: .buffered, defer: false)
         PopoverFadeOut.enable(on: offscreen)
         offscreen.order(.above, relativeTo: 0)
         await pause(0.4)
-        let unseen = lines().last { $0.contains("] popover show") }
         check("so is one ordered in where nobody can see it",
-              matches(unseen, #"\] popover show FAILED visible=1 occlusion=hidden "#), unseen ?? "no line")
+              matches(lastShow(), #"\] popover show FAILED visible=1 occlusion=hidden "#), lastShow() ?? "no line")
         offscreen.order(.out, relativeTo: 0)
 
+        // 2 pt in the corner, never key and click-through, above the Dock as the popover is.
         let probe = ProbeWindow(contentRect: NSRect(x: 0, y: 0, width: 2, height: 2),
                                 styleMask: [.borderless], backing: .buffered, defer: false)
-        probe.alphaValue = 0
         probe.ignoresMouseEvents = true
+        probe.level = .popUpMenu
         PopoverFadeOut.enable(on: probe)
+        // A locked screen covers every window, so nothing can be seen to land.
+        let locked = (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true
+        func onScreen(_ name: String, _ cond: Bool, _ detail: String) {
+            if locked { print("  skip  \(name) (the screen is locked)") } else { check(name, cond, detail) }
+        }
+        probe.alphaValue = 0
         probe.order(.above, relativeTo: 0)
         await pause(0.4)
-        let shown = lines().last { $0.contains("] popover show") }
-        check("a show that lands is ok", matches(shown, #"\] popover show ok visible=1 occlusion=visible "#),
-              shown ?? "no line")
+        onScreen("and one left transparent",
+                 matches(lastShow(), #"\] popover show FAILED visible=1 occlusion=visible alpha=0\.00 "#), lastShow() ?? "no line")
         probe.order(.out, relativeTo: 0)
         await pause(0.1)
-        let probeHide = lines().last { $0.contains("] popover hide") }
-        check("and its hide says it showed", probeHide?.hasSuffix("] popover hide (was visible=1)") == true,
-              probeHide ?? "no line")
+
+        probe.alphaValue = 0.6
+        probe.order(.above, relativeTo: 0)
+        await pause(0.4)
+        onScreen("a show that lands is ok",
+                 matches(lastShow(), #"\] popover show ok visible=1 occlusion=visible alpha=0\.60 "#), lastShow() ?? "no line")
+        probe.order(.out, relativeTo: 0)
+        await pause(0.2)
+        check("and its hide says it showed", lastHide()?.hasSuffix("] popover hide (was visible=1)") == true,
+              lastHide() ?? "no line")
+
+        probe.alphaValue = 0.6
+        probe.order(.above, relativeTo: 0)
+        await pause(0.05)
+        probe.order(.out, relativeTo: 0)
+        await pause(0.4)
+        check("one closed before it settled is not judged",
+              lastShow()?.hasSuffix("] popover show, closed again within 0.2s") == true, lastShow() ?? "no line")
+
+        probe.alphaValue = 0.6
+        probe.order(.above, relativeTo: 0)
+        await pause(0.3)
+        probe.order(.out, relativeTo: 0)
+        probe.order(.above, relativeTo: 0)
+        await pause(0.4)
+        check("one ordered in while the last close still fades is FAILED, saying so",
+              matches(lastShow(), #"\] popover show FAILED \(during a fade-out\) visible=0 "#), lastShow() ?? "no line")
+
+        let hidesBefore = lines().filter { $0.contains("] popover hide") }.count
+        AppLog.exiting = true
+        offscreen.order(.above, relativeTo: 0)
+        offscreen.order(.out, relativeTo: 0)
+        AppLog.exiting = false
+        check("a hide while the app quits is not logged",
+              lines().filter { $0.contains("] popover hide") }.count == hidesBefore)
 
         print("applog: the activity feed")
         AuditLog.log("panel", "probe", "a detail")
@@ -192,6 +270,17 @@ enum AppLogTest {
         var x = 0.0
         while AppLog.uptime < end { x += sin(x) }
         if x.isNaN { print(x) }
+    }
+
+    /// Keeps the main thread computing until `done` (asked every 50 ms) or `atMost`
+    /// seconds, and returns how long it ran.
+    static func spinMain(until done: () -> Bool, atMost: Double) -> Double {
+        let start = AppLog.uptime
+        while AppLog.uptime - start < atMost {
+            spinMain(0.05)
+            if done() { break }
+        }
+        return AppLog.uptime - start
     }
 
     /// Keeps the main thread blocked without computing.

@@ -275,6 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        AppLog.exiting = true
         if !Headless.active { AppLog.log("app", "exit") }
     }
 }

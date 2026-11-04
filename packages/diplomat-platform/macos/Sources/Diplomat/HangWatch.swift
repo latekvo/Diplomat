@@ -4,10 +4,12 @@ import Foundation
 /// Watches the main thread from a background queue: a ping is queued onto main every
 /// `interval`, and one answered `threshold` or more late is logged as a hang, with how
 /// much CPU the main thread burned meanwhile (busy computing, or waiting on a lock, an
-/// Apple event or a subprocess) and what `AppLog.timed` work was in flight. A hang still
-/// going after `sampleAfter` is logged then too, and `/usr/bin/sample` captures the
-/// stacks into `diplomat-hangs/` beside the log - at most one per `sampleEvery`, newest
-/// `keepSamples` kept. Every `heartbeat` a line sums up the period, so a quiet log
+/// Apple event or a subprocess) and what `AppLog.timed` work was in flight while it was
+/// late. A hang still going after `sampleAfter` is logged then too, and `/usr/bin/sample`
+/// captures the stacks into `diplomat-hangs/` beside the log - at most one per
+/// `sampleEvery`, newest `keepSamples` kept. A sample shows only what ran while it did,
+/// so one of a hang that ends as it attaches shows the main thread idle. Every
+/// `heartbeat` a line sums up the period, a hang still going included, so a quiet log
 /// still shows the app was alive and watched.
 ///
 /// A hang reads up to `interval` short: its ping may be queued after it began. Times are
@@ -31,6 +33,7 @@ final class HangWatch: @unchecked Sendable {
     // Confined to `queue`.
     private var pingSent: Double?
     private var cpuAtPing: Double?
+    private var lateWork: String?
     private var reported = false
     private var sampleFile: String?
     private var lastSample = -Double.infinity
@@ -56,6 +59,9 @@ final class HangWatch: @unchecked Sendable {
         let now = AppLog.uptime
         if let beat = heartbeat, now - lastBeat >= beat { logHeartbeat(now) }
         if let sent = pingSent {
+            // The work in flight while main is late, not once it has caught up and the
+            // work that held it may be over. Any hang long enough to log spans a tick.
+            if lateWork == nil { lateWork = AppLog.inFlight() }
             if !reported, now - sent >= sampleAfter {
                 reported = true
                 sampleFile = takeSample(now)
@@ -75,7 +81,7 @@ final class HangWatch: @unchecked Sendable {
 
     private func answered(at: Double) {
         guard let sent = pingSent else { return }
-        defer { pingSent = nil; reported = false; sampleFile = nil }
+        defer { pingSent = nil; reported = false; sampleFile = nil; lateWork = nil }
         let blocked = at - sent
         guard blocked >= threshold else { return }
         hangs += 1
@@ -87,7 +93,7 @@ final class HangWatch: @unchecked Sendable {
                 : cpu <= blocked * 0.2 ? "waiting, not computing" : "partly busy"
             line += ", main cpu \(AppLog.duration(cpu)) (\(kind))"
         }
-        if !reported { line += "; in flight: \(AppLog.inFlight())" }
+        if !reported { line += "; in flight: \(lateWork ?? AppLog.inFlight())" }
         if let sampleFile { line += "; sample \(sampleFile)" }
         AppLog.log("hang", line)
     }
@@ -128,7 +134,9 @@ final class HangWatch: @unchecked Sendable {
             return nil
         }
         lastSample = now
-        let old = ((try? fm.contentsOfDirectory(atPath: sampleDir.path)) ?? []).sorted().dropLast(keepSamples)
+        // `sample` writes its file only when it is done, so it is not listed yet.
+        let old = ((try? fm.contentsOfDirectory(atPath: sampleDir.path)) ?? []).sorted()
+            .dropLast(max(0, keepSamples - 1))
         for name in old { try? fm.removeItem(at: sampleDir.appendingPathComponent(name)) }
         return file
     }
@@ -140,6 +148,7 @@ final class HangWatch: @unchecked Sendable {
         }.joined(separator: ", ")
         AppLog.log("alive", "up \(AppLog.duration(now - started)), memory \(footprintMB())MB, "
             + "hangs \(hangs)" + (hangs > 0 ? " (worst \(AppLog.duration(worst)))" : "")
+            + (pingSent.map { now - $0 >= threshold ? ", one going on for \(AppLog.duration(now - $0))" : "" } ?? "")
             + "; timing: \(timing.isEmpty ? "none" : timing); in flight: \(AppLog.inFlight())")
         hangs = 0
         worst = 0

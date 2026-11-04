@@ -1107,12 +1107,14 @@ final class Store: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: ns)
                 if Task.isCancelled { break }
-                await AppLog.timed("refresh") { await self?.refresh() }
+                await self?.refresh()
             }
         }
     }
 
-    func refresh() async {
+    func refresh() async { await AppLog.timed("refresh") { await load() } }
+
+    private func load() async {
         isLoading = true
         error = nil
         do {

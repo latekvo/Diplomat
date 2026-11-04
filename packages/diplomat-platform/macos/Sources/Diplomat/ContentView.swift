@@ -141,6 +141,9 @@ private struct PopoverWindowController: NSViewRepresentable {
                     window.animationBehavior = .none
                     window.alphaValue = 0
                     PopoverFadeOut.enable(on: window)
+                    // The window is up before it is hooked, so this first open never
+                    // passes through the swizzle.
+                    PopoverFadeOut.logShow(window, duringFadeOut: false)
                     let nc = NotificationCenter.default
                     self.tokens = [
                         // Each open: the popover takes key focus.
@@ -213,7 +216,8 @@ enum PopoverPlacement {
     }
 }
 
-/// Gives the MenuBarExtra popover a fade-OUT. The system hides the window via `orderOut:`,
+/// Gives the MenuBarExtra popover a fade-OUT, and logs each show and hide (`AppLog`).
+/// The system hides the window via `orderOut:`,
 /// instantly, so there's nothing to animate. We swap that method's IMPLEMENTATION (method
 /// swizzle — crucially NOT a class change, so the window's KVO isa stays intact and it can't
 /// crash the way an `object_setClass` reclass does) with one that first animates `alphaValue`
@@ -228,6 +232,7 @@ enum PopoverFadeOut {
     private static var swizzled = Set<ObjectIdentifier>()
     private static var isPopoverKey: UInt8 = 0
     private static var isFadingKey: UInt8 = 0
+    private static var hidesKey: UInt8 = 0
 
     static func enable(on window: NSWindow) {
         // Tag this exact window; the swizzled method only fades tagged windows.
@@ -260,7 +265,8 @@ enum PopoverFadeOut {
                 return
             }
             if place == orderOut, ours, !fading {
-                AppLog.log("popover", "hide (was visible=\(win.isVisible ? 1 : 0))")
+                objc_setAssociatedObject(win, &hidesKey, hides(win) + 1, .OBJC_ASSOCIATION_RETAIN)
+                if !AppLog.exiting { AppLog.log("popover", "hide (was visible=\(win.isVisible ? 1 : 0))") }
                 NotificationCenter.default.post(name: didHide, object: win)
             }
             // Only intercept OUR popover's hide, once, while it's actually visible.
@@ -287,13 +293,23 @@ enum PopoverFadeOut {
     /// How long after an order-in the popover is judged: its 0.1 s fade-in is over by then.
     static var showSettle: TimeInterval = 0.4
 
-    /// One line per open, once it has settled. A show that is not on screen by then is
-    /// the "won't open" failure; a show during a fade-out is ordered out again when the
-    /// fade ends, behind SwiftUI's back.
-    private static func logShow(_ win: NSWindow, duringFadeOut: Bool) {
+    private static func hides(_ win: NSWindow) -> Int {
+        objc_getAssociatedObject(win, &hidesKey) as? Int ?? 0
+    }
+
+    /// One line per open, once it has settled. A show that is not on screen and opaque by
+    /// then is the "won't open" failure; a show during a fade-out is ordered out again
+    /// when the fade ends, behind SwiftUI's back. One closed again before it settled is
+    /// not judged.
+    static func logShow(_ win: NSWindow, duringFadeOut: Bool) {
         let orderedIn = win.isVisible
+        let hidesBefore = hides(win)
         DispatchQueue.main.asyncAfter(deadline: .now() + showSettle) {
-            let ok = win.isVisible && win.occlusionState.contains(.visible)
+            if hides(win) != hidesBefore {
+                AppLog.log("popover", "show, closed again within \(showSettle)s")
+                return
+            }
+            let ok = win.isVisible && win.occlusionState.contains(.visible) && win.alphaValue >= 0.5
             AppLog.log("popover", "show \(ok ? "ok" : "FAILED")"
                 + (orderedIn ? "" : " (still invisible right after ordering in)")
                 + (duringFadeOut ? " (during a fade-out)" : "")
