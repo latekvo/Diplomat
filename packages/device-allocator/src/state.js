@@ -9,6 +9,10 @@ import { BASE_DIR, DISCOVERY_PATH, STATE_PATH, LEASES_PATH, SOCKET_PATH, CONFIG_
 export function ensureDirs() { fs.mkdirSync(BASE_DIR, { recursive: true }); }
 
 export function atomicWrite(file, obj, mode = 0o644) {
+  writeAtomic(file, `${JSON.stringify(obj, null, 2)}\n`, mode);
+}
+
+export function writeAtomic(file, data, mode = 0o644) {
   fs.mkdirSync(path.dirname(file), { recursive: true }); // handles files outside BASE_DIR
   const tmp = `${file}.tmp.${process.pid}`;
   // fsync before rename: without it a crash/power loss can leave a zero-length
@@ -17,7 +21,7 @@ export function atomicWrite(file, obj, mode = 0o644) {
   try {
     const fd = fs.openSync(tmp, 'w', mode);
     try {
-      fs.writeFileSync(fd, `${JSON.stringify(obj, null, 2)}\n`);
+      fs.writeFileSync(fd, data);
       fs.fsyncSync(fd);
     } finally { fs.closeSync(fd); }
     fs.renameSync(tmp, file);

@@ -1,9 +1,16 @@
 // Tiny HTTP-over-unix-socket client. The daemon listens on a unix socket
 // (filesystem-permission secured, no port/token to manage); every MCP server
-// instance and the installer talk to it through this helper.
+// instance and the installer start it and talk to it through these helpers.
 
 import http from 'node:http';
-import { SOCKET_PATH } from './paths.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
+import { SOCKET_PATH, BASE_DIR, LOG_PATH } from './paths.js';
+
+const DAEMON_JS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'daemon.js');
 
 // {ok, pid} from the daemon serving the socket, or null when none answers. Clients
 // key liveness on this, not on daemon.json: a full disk can refuse that file to a
@@ -47,4 +54,40 @@ export function callDaemon(method, route, body, opts = {}) {
     if (data) req.write(data);
     req.end();
   });
+}
+
+// Starts a daemon and waits for it to serve. Throws when it exits first, with its exit
+// status and the reason it sent over the IPC channel (a full disk loses its log line),
+// or when it is not serving within budgetMs. One that exits 0 deferred to another
+// daemon, which is waited for in its place.
+export async function spawnDaemon(budgetMs) {
+  try { fs.mkdirSync(BASE_DIR, { recursive: true }); } catch {}
+  let out = 'ignore';
+  try { out = fs.openSync(LOG_PATH, 'a'); } catch {}
+  let child;
+  try {
+    child = spawn(process.execPath, [DAEMON_JS], { detached: true, stdio: ['ignore', out, out, 'ipc'] });
+  } finally {
+    // The child holds its own copy; a client outlives many spawns.
+    if (out !== 'ignore') fs.closeSync(out);
+  }
+  child.unref();
+  let reason = '';
+  child.on('message', (m) => { reason = String(m); });
+  const failed = new Promise((resolve) => {
+    child.once('error', (e) => resolve(e.message));
+    child.once('exit', (code, signal) => { if (code !== 0) resolve(signal ? `signal ${signal}` : `exit ${code}`); });
+  });
+  try {
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+      const status = await Promise.race([delay(200), failed]);
+      if (status) throw new Error(`device-allocator daemon failed to start (${status}): ${reason || `see ${LOG_PATH}`}`);
+      if (await daemonHealth(1000)) return;
+    }
+  } finally {
+    // An open channel would keep this process alive.
+    if (child.connected) child.disconnect();
+  }
+  throw new Error('device-allocator daemon failed to start');
 }

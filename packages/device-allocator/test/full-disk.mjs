@@ -13,7 +13,10 @@
 //    throwaway daemon, --check sees it and --uninstall stops it. Once space
 //    returns, its own tick writes daemon.json with no request to prompt it, and
 //    every daemon catches up, or starts.
+//    A tool call where no daemon can start fails at once, saying why.
 // 3. A starting daemon removes the tmp files of writers that died mid-write.
+// 4. An install on a full disk leaves the skill, the rule, ~/.claude.json and its
+//    backup each whole (old or new), and no tmp file.
 //
 // A machine that cannot mount a volume skips (exit 77 from the fixture), unless
 // DIPLOMAT_FULL_VOLUME_REQUIRED=1. Run: node test/full-disk.mjs
@@ -143,8 +146,8 @@ function mcpCall(base, name, args) {
     send({ id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'full-disk', version: '0' } } });
   });
 }
-function installer(base, arg) {
-  const r = spawnSync(process.execPath, [INSTALL, arg], { encoding: 'utf8', env: clientEnv(base), timeout: 30000 });
+function installer(base, arg, home = HOME) {
+  const r = spawnSync(process.execPath, [INSTALL, arg], { encoding: 'utf8', env: { ...clientEnv(base), HOME: home }, timeout: 30000 });
   return JSON.parse(r.stdout);
 }
 const discoveredPid = (base) => { try { return readJson(path.join(base, 'daemon.json')).pid; } catch { return null; } };
@@ -387,6 +390,14 @@ async function scenarioStartFull() {
     assert.ok(gone(started[0]), '--uninstall left the serving daemon running');
   }
   if (serving.length) pass(`clients find ${serving.length} daemon(s) serving without daemon.json`);
+  for (const base of bases.filter((_, i) => outcomes[i] === 'exited')) {
+    const t0 = Date.now();
+    const text = await mcpCall(base, 'free-device', {});
+    const ms = Date.now() - t0;
+    assert.match(text, /daemon failed to start \(exit 1\): .*ENOSPC/, `${base}: ${text}`);
+    assert.ok(ms < 6000, `${base}: the failed start took ${ms} ms to report`);
+    pass(`a tool call with no daemon able to start fails in ${ms} ms, saying why`);
+  }
   await settle('drain');
 
   const kept = started.filter((d) => !gone(d));
@@ -430,6 +441,52 @@ async function scenarioDeadWritersTmp() {
   pass('a starting daemon sweeps dead writers\' tmp files and keeps a live writer\'s');
 }
 
+// Each file is its old content or its new one, whole.
+function assertWhole(file, ...contents) {
+  let now;
+  try { now = fs.readFileSync(file, 'utf8'); } catch (e) { assert.fail(`${file}: ${e.code}`); }
+  assert.ok(contents.includes(now), `${file} is neither old nor new (${now.length} bytes)`);
+}
+
+async function scenarioInstallFull() {
+  console.log('scenario 4: an install on a full disk');
+  const base = path.join(VOL, 'd');
+  // Only ~/.claude on the volume: the registration lands, the skill copy does not.
+  const homeA = path.join(ROOT, 'home-a');
+  const claudeDir = path.join(VOL, 'claude');
+  const skill = path.join(claudeDir, 'skills', 'diplomat-device-allocator', 'SKILL.md');
+  const rule = path.join(claudeDir, 'rules', 'diplomat-device-allocator.md');
+  const oldText = 'an older install\n';
+  for (const f of [skill, rule]) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, oldText); }
+  fs.mkdirSync(homeA);
+  fs.symlinkSync(claudeDir, path.join(homeA, '.claude'));
+  const asset = (f) => fs.readFileSync(path.join(__dirname, '..', 'assets', f), 'utf8');
+  // All of HOME on the volume: the ~/.claude.json backup and rewrite are refused.
+  const homeB = path.join(VOL, 'home');
+  const claudeJson = path.join(homeB, '.claude.json');
+  const config = JSON.stringify({ projects: { big: 'c'.repeat(300 * 1024) } });
+  const backup = JSON.stringify({ projects: { old: 'b'.repeat(300 * 1024) } });
+  fs.mkdirSync(homeB);
+  fs.writeFileSync(claudeJson, config);
+  fs.writeFileSync(`${claudeJson}.bak-da`, backup);
+
+  await settle('fill');
+  const a = installer(base, '--install', homeA);
+  assert.match(a.error ?? '', /ENOSPC/);
+  assert.equal(a.mcpRegistered, true, 'the registration off the full volume did not land');
+  assertWhole(skill, oldText, asset('skill/SKILL.md'));
+  assertWhole(rule, oldText, asset('rule/diplomat-device-allocator.md'));
+  assert.match(installer(base, '--install', homeB).error ?? '', /ENOSPC/);
+  assertWhole(claudeJson, config);
+  assertWhole(`${claudeJson}.bak-da`, backup, config);
+  const ours = (f) => f.startsWith(claudeDir + path.sep) || f.startsWith(homeB + path.sep);
+  assert.deepEqual(tmpFiles().filter(ours), [], 'the installer left tmp files on the full volume');
+  pass('an install on a full disk keeps the skill, the rule, ~/.claude.json and its backup whole, and leaves no tmp file');
+  await settle('drain');
+  // A daemon --install started where the kernel still let one bind.
+  try { process.kill((await call(base, 'GET', '/health', null, 500)).pid, 'SIGTERM'); } catch {}
+}
+
 const mount = volume('mount');
 if (mount.status === 77) {
   console.log(`SKIP full-disk: ${mount.stderr.trim()}`);
@@ -450,6 +507,7 @@ try {
   await scenarioRunningDaemon();
   await scenarioStartFull();
   await scenarioDeadWritersTmp();
+  await scenarioInstallFull();
   console.log(`\nall ${ok} full-disk checks passed`);
 } catch (e) {
   for (const d of daemons) if (d.stderrText) console.error(`--- daemon ${d.pid} stderr ---\n${d.stderrText}`);
