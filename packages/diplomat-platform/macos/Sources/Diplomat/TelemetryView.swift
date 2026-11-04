@@ -142,8 +142,10 @@ struct TelemetryView: View {
     // MARK: - Cards
 
     /// A card's heading row: tinted symbol, title, the headline number on the right —
-    /// the one shape all four cards share.
-    private func cardHead(_ id: String, _ value: String) -> some View {
+    /// the one shape all four cards share. `valueTint` colours the number as the
+    /// series it quotes when that is not the card's own.
+    private func cardHead(_ id: String, _ value: String,
+                          valueTint: Color? = nil) -> some View {
         HStack(spacing: 6) {
             Image(systemName: symbol(id)).font(.system(size: 10, weight: .bold))
                 .foregroundStyle(tint(id))
@@ -151,7 +153,7 @@ struct TelemetryView: View {
                 .foregroundStyle(.secondary).kerning(1)
             Spacer(minLength: 4)
             Text(value).font(.system(size: 17, weight: .bold).monospacedDigit())
-                .foregroundStyle(tint(id))
+                .foregroundStyle(valueTint ?? tint(id))
         }
     }
 
@@ -205,7 +207,7 @@ struct TelemetryView: View {
         // Whichever windows the ledger priced: the 5-hour series holds only tasks
         // its readings covered, and the week can be unpriced while it is not.
         let lines = spreadLines(d, week)
-        // Both series hold the same tasks, so whichever was priced is the sample.
+        // The week holds every task the 5-hour series does, so the larger is the sample.
         let shown = Swift.max(d.count, week.count)
         VStack(alignment: .leading, spacing: 6) {
             cardHead("limitPerTask", headline)
@@ -250,7 +252,7 @@ struct TelemetryView: View {
         let key: [(Color, String)] = hasSession
             ? [weekKey, (tint("quotaLeft"), "5-hour")] : [weekKey]
         VStack(alignment: .leading, spacing: 6) {
-            cardHead("quotaLeft", weekText)
+            cardHead("quotaLeft", weekText, valueTint: tint("quotaWeek"))
             note(blurb("quotaLeft"))
             if s.quota.isEmpty {
                 note("No quota readings in this range. The probe uses the OAuth token "

@@ -264,8 +264,15 @@ def test_the_rate_limit_card_leads_with_the_week(store):
     telemetry.append({"at": now - 300, "ev": "sample",
                       "weekLeft": 0.91, "repoTokens": 2000.0, "otherTokens": 2000.0})
     telemetry._reset_cache()
-    labels = _labels(_view(store))
+    view = _view(store)
+    labels = _labels(view)
     assert "91.0%" in labels, "the headline is not the week left"
+    from PySide6.QtWidgets import QLabel
+    from diplomat_app import telemetryview
+    headline = [w for w in view.findChildren(QLabel) if w.text() == "91.0%"][0]
+    assert telemetryview._tint("quotaWeek") in headline.styleSheet(), (
+        "the week's figure is coloured as the 5-hour series"
+    )
     assert "◼ 7-day 91.0%" in labels
     assert "◼ 5-hour" in labels, "the 5-hour reading in the range lost its key"
     assert not any("missing" in t for t in labels), (

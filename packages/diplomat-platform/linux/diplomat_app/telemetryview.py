@@ -797,9 +797,10 @@ class TelemetryView(QWidget):
     # MARK: cards
 
     def _card_head(self, layout, metric_id: str, value: str, *,
-                   caption: str | None = None) -> None:
+                   caption: str | None = None, value_tint: str | None = None) -> None:
         """A card's heading row: tinted glyph, title, the headline number on the
-        right — the one shape all four cards share."""
+        right — the one shape all four cards share. ``value_tint`` colours the
+        number as the series it quotes when that is not the card's own."""
         row = QHBoxLayout()
         row.setSpacing(6)
         row.addWidget(GlyphLabel(_glyph(metric_id), 15, _tint(metric_id), font_px=13))
@@ -809,7 +810,7 @@ class TelemetryView(QWidget):
         row.addStretch(1)
         big = QLabel(value)
         big.setStyleSheet(
-            f"color: {_tint(metric_id)}; font-weight: 700; font-size: 17px;"
+            f"color: {value_tint or _tint(metric_id)}; font-weight: 700; font-size: 17px;"
         )
         row.addWidget(big)
         layout.addLayout(row)
@@ -872,7 +873,7 @@ class TelemetryView(QWidget):
             unpriced.setStyleSheet(muted(9))
             self.cost_col.addWidget(unpriced)
 
-        # Both series hold the same tasks, so whichever was priced is the sample.
+        # The week holds every task the 5-hour series does, so the larger is the sample.
         shown = max(d.count, week.count)
         if shown < self._min_sample:
             warn = QLabel(
@@ -896,7 +897,7 @@ class TelemetryView(QWidget):
         week = s.week_left_pct
         week_text = telemetry.percent(week) if week is not None else "—"
         self._card_head(self.quota_col, "quotaLeft", week_text,
-                        caption=_blurb("quotaLeft"))
+                        caption=_blurb("quotaLeft"), value_tint=_tint("quotaWeek"))
         if not s.quota:
             hint = QLabel(
                 "No quota readings in this range. The probe uses the OAuth token "
