@@ -338,6 +338,23 @@ let snapJSON = """
 check(MeshSnapshot.decode(snapJSON) != nil, "snapshot decodes")
 let snap = MeshSnapshot.decode(snapJSON)!
 check(snap.pid == 4242 && snap.tcpPort == 40878, "snapshot header")
+// A pid the OS handed on after the node died names a process started after its last write.
+func written(_ stamp: String?) -> MeshSnapshot {
+    MeshSnapshot.decode(Data((stamp.map { #"{"pid": 1, "updatedAt": "\#($0)"}"# } ?? #"{"pid": 1}"#).utf8))!
+}
+let wrote = written("2026-11-04T16:06:48.462459+00:00")
+check(abs((wrote.writtenAt?.timeIntervalSince1970 ?? 0) - 1_793_808_408.462459) < 0.001,
+      "Python's isoformat, microseconds and all")
+check(written("2026-11-04T16:06:48+00:00").writtenAt == Date(timeIntervalSince1970: 1_793_808_408),
+      "…and without them, as it writes a whole second")
+check(!wrote.names(processStarted: wrote.writtenAt!.addingTimeInterval(1)),
+      "a process started after the snapshot was written is not the node that wrote it")
+check(wrote.names(processStarted: wrote.writtenAt!.addingTimeInterval(-600)))
+check(written(nil).names(processStarted: Date()) && written("now").names(processStarted: Date())
+        && wrote.names(processStarted: nil),
+      "with either time unknown, the pid is all there is")
+check(written("2026-11-04T16:06:48+00:00") == written("2026-11-05T00:00:00+00:00"),
+      "the write time alone is no change to the snapshot")
 check(snap.selfNode?.platform == "macos" && snap.selfNode?.tier == 2, "self node")
 // The console fields (strength auto, auto token %, real uptime, trust) decode.
 check(snap.selfNode?.strengthAuto == true && snap.selfNode?.tokensPct == 0.81, "self console fields")
