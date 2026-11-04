@@ -395,7 +395,9 @@ struct ContentView: View {
                 query = pre
                 searchFocused = true
             }
-            if !store.hasLoaded { await store.refresh() }
+            // Headless screens are fixtures; each mount would otherwise spend a ~57-point
+            // live GraphQL load.
+            if !store.hasLoaded, !Headless.active { await store.refresh() }
         }
     }
 

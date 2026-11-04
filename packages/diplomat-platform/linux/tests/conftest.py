@@ -115,8 +115,8 @@ def outside_a_user_service(tmp_path, monkeypatch):
     yield
 
 
-@pytest.fixture(autouse=True)
-def no_github_reads(monkeypatch):
+@pytest.fixture(scope="session", autouse=True)
+def no_github_reads():
     """Fail loudly instead of shelling out to the real ``gh``.
 
     Every GitHub read in the applet funnels through :func:`gh.run`, and a test that
@@ -127,6 +127,10 @@ def no_github_reads(monkeypatch):
 
     Tests that mean to exercise a fetch stub ``autofixmonitor.fetch_*`` (or
     ``models.API``) themselves; this is the backstop for the ones that don't.
+
+    Session-wide and never undone: a poll a test started on a daemon thread outlives
+    it, and ``gh.graphql`` swallows this refusal and retries 0.8 s later, by when a
+    per-test patch is gone.
     """
     from diplomat_runtime import gh
 
@@ -137,8 +141,7 @@ def no_github_reads(monkeypatch):
             "/ fetch_closed_prs / fetch_open_issues)"
         )
 
-    monkeypatch.setattr(gh, "run", refuse)
-    yield
+    gh.run = refuse
 
 
 @pytest.fixture(autouse=True)
