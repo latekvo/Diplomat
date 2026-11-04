@@ -367,6 +367,14 @@ def write_prompt(prompt: str) -> str:
     return path
 
 
+def discard_prompt(prompt_file: str) -> None:
+    """Remove a staged prompt and any OpenCode bodies staged beside it, for a spawn
+    that never started an agent to read them."""
+    for path in (prompt_file, *runner.opencode_staged(prompt_file)):
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
 def stage_opencode_session(prompt_file: str, checkout: str | None = None) -> str | None:
     """Mint an OpenCode 2.x run's session and stage the two bodies that start it
     (:func:`runner.agent_command`). The id, or ``None`` when the selected runner is not
@@ -728,7 +736,8 @@ def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = 
     ``settings_file`` holds the hooks the run reports its own turns through — see
     :func:`shell_command`. ``prompt_file`` skips the staging when
     the caller has already written the prompt somewhere it wants to keep it (the run
-    directory in :mod:`.agentregistry`). ``session`` names the run's tmux session, so a
+    directory in :mod:`.agentregistry`); one staged here is removed again if the
+    terminal fails to launch. ``session`` names the run's tmux session, so a
     backstop can close its window without a tty — see :func:`terminal_argv`.
     ``checkout`` is where the agent works when that is not :func:`repo_path`."""
     check_token()
@@ -740,5 +749,7 @@ def spawn(prompt: str, preferred: SpawnTerminal | None, done_path: str | None = 
     try:
         popen_detached(argv, env=spawn_env())
     except OSError as exc:
+        if prompt_file is None:
+            discard_prompt(file)
         raise SpawnError(f"failed to launch {term.title}: {exc}") from exc
     return file

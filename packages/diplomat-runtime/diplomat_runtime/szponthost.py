@@ -70,6 +70,7 @@ class DiplomatHost(szpont_host.Host):
         settings = _stage_hooks(done_path)
         if platform.system() == "Darwin":
             return _spawn_macos(prompt, done_path, settings)
+        prompt_file = None
         try:
             # Before the prompt is staged, as on macOS: a job refused for its token
             # leaves none behind.
@@ -84,6 +85,8 @@ class DiplomatHost(szpont_host.Host):
             return review.spawn(prompt, None, done_path=done_path,
                                 settings_file=settings, **staged)
         except review.SpawnError as exc:
+            if prompt_file:
+                review.discard_prompt(prompt_file)
             raise szpont_host.NoRunner(str(exc)) from exc
 
     def work_already_running(self, work_key: str) -> bool:
@@ -266,17 +269,21 @@ def _spawn_macos(prompt: str, done_path: str | None,
 
     try:
         review.check_token()
+        prompt_file = review.write_prompt(prompt)
     except review.SpawnError as exc:
         raise szpont_host.NoRunner(str(exc)) from exc
-    prompt_file = review.write_prompt(prompt)
-    shell_cmd = review.shell_command(
-        prompt_file, done_path, settings_file=settings_file,
-        opencode_session=review.stage_opencode_session(prompt_file))
-    script = f'tell application "Terminal" to do script {_applescript_quote(shell_cmd)}'
     try:
-        review.popen_detached(["osascript", "-e", script])
-    except OSError as exc:
-        raise szpont_host.NoRunner(f"osascript failed: {exc}") from exc
+        shell_cmd = review.shell_command(
+            prompt_file, done_path, settings_file=settings_file,
+            opencode_session=review.stage_opencode_session(prompt_file))
+        script = f'tell application "Terminal" to do script {_applescript_quote(shell_cmd)}'
+        try:
+            review.popen_detached(["osascript", "-e", script])
+        except OSError as exc:
+            raise review.SpawnError(f"osascript failed: {exc}") from exc
+    except review.SpawnError as exc:
+        review.discard_prompt(prompt_file)
+        raise szpont_host.NoRunner(str(exc)) from exc
     return prompt_file
 
 

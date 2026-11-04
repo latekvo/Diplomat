@@ -172,6 +172,74 @@ def test_host_macos_runner_failure_becomes_a_job_spawn_error(monkeypatch, tmp_pa
     assert "osascript" in str(exc.value)
 
 
+# ---- a launch that fails takes its staged prompt back ----------------------
+#
+# A mesh prompt is a PR job's whole private brief, staged 0600 in the shared temp
+# dir; a launch that never started an agent has no reader left for it.
+
+
+@pytest.fixture
+def staging(monkeypatch, tmp_path):
+    """The temp dir prompts are staged in, and every launcher refusing to start."""
+    import tempfile
+
+    def refuse(*args, **kwargs):
+        raise OSError("no such file")
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+    monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
+    monkeypatch.setattr(review, "popen_detached", refuse)
+    monkeypatch.setattr(launch, "popen_detached", refuse)
+    return tmp_path / "tmp"
+
+
+def test_the_applet_spawner_takes_back_the_prompt_it_staged(staging):
+    with pytest.raises(review.SpawnError):
+        _real_spawn("prompt", review.default_terminal())
+    assert list(staging.iterdir()) == []
+
+
+def test_the_applet_spawner_leaves_a_callers_prompt_to_the_caller(staging):
+    mine = staging / "run-prompt.txt"
+    mine.write_text("prompt")
+    with pytest.raises(review.SpawnError):
+        _real_spawn("prompt", review.default_terminal(), prompt_file=str(mine))
+    assert list(staging.iterdir()) == [mine]
+
+
+def test_the_host_macos_runner_takes_back_its_prompt(staging):
+    with pytest.raises(spawnjob.JobSpawnError):
+        _real_spawn_macos("prompt", None)
+    assert list(staging.iterdir()) == []
+
+
+def test_the_host_linux_runner_takes_back_an_opencode_prompt_and_its_bodies(
+        staging, monkeypatch):
+    """Staged by the host rather than by ``review.spawn``, so the host removes it."""
+    import platform
+
+    from diplomat_runtime import runner, usagescan
+
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(review, "spawn", _real_spawn)
+    monkeypatch.setattr(runner, "selected", lambda: runner.OPENCODE)
+    monkeypatch.setattr(usagescan, "opencode_is_v2", lambda: True)
+    with pytest.raises(spawnjob.JobSpawnError):
+        szponthost.DiplomatHost().run_job("prompt", None)
+    assert list(staging.iterdir()) == []
+
+
+def test_the_nodes_own_runners_take_back_their_prompts(staging, monkeypatch):
+    monkeypatch.setenv("SZPONTNET_SPAWN", "some-runner")
+    with pytest.raises(spawnjob.JobSpawnError):
+        spawnjob.spawn_job("prompt")
+    monkeypatch.setenv("SZPONTNET_FOREIGN_SPAWN", "some-sandbox")
+    with pytest.raises(spawnjob.JobSpawnError):
+        spawnjob.spawn_confined("prompt", str(staging.parent / "result.json"))
+    assert list(staging.iterdir()) == []
+
+
 # ---- the runners keep the detachment contract too -------------------------
 
 
