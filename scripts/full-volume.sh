@@ -54,8 +54,8 @@ case "$cmd" in
     mkdir -p "$ballast"
     # Big pieces first for speed, then ever smaller ones for the tail. APFS hands
     # back blocks as pending writes and frees are flushed, so passes repeat, each
-    # after a sync, until a probe write fails.
-    probe="$dir/.full-volume-probe.$$"
+    # after a sync, until a probe write fails. A probe that lands stays as ballast:
+    # deleting it would free its block at the next sync, for the next probe to take.
     for pass in 1 2 3 4 5 6; do
       for bs in 65536 4096 512 1; do
         dd if=/dev/zero bs="$bs" >> "$ballast/0" 2>/dev/null || true
@@ -69,11 +69,10 @@ case "$cmd" in
       i=0
       while [ "$i" -lt 10000 ] && { printf x > "$ballast/f$pass.$i"; } 2>/dev/null; do i=$((i + 1)); done
       sync
+      probe="$ballast/probe$pass"
       if [ "$pass" -ge 2 ] && ! { { printf x > "$probe"; } 2>/dev/null && [ -s "$probe" ]; }; then
-        rm -f "$probe" 2>/dev/null || true
         exit 0
       fi
-      rm -f "$probe" 2>/dev/null || true
     done
     echo "full-volume: $dir still takes writes after fill" >&2
     exit 1
