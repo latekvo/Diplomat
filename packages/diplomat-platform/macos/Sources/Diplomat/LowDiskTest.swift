@@ -33,7 +33,33 @@ enum LowDiskTest {
         defer { try? fm.removeItem(at: scratch) }
         let vol = scratch.appendingPathComponent("vol")
         func volume(_ cmd: String, _ extra: String...) -> Int32 {
-            run(["/bin/bash", script, cmd, vol.path] + extra).code
+            var code = run(["/bin/bash", script, cmd, vol.path] + extra).code
+            // What a drain frees can come back over more syncs than one fill waits out.
+            for _ in 0..<3 where cmd == "fill" && code != 0 {
+                code = run(["/bin/bash", script, cmd, vol.path] + extra).code
+            }
+            return code
+        }
+        /// Fill, then take what the volume hands back as it flushes until a flush gives
+        /// nothing back (`tests/full-disk.sh`'s `settle`): whether a new file is then refused.
+        func filledFull() -> Bool {
+            guard volume("fill") == 0 else { return false }
+            let zeros = [UInt8](repeating: 0, count: 4096)
+            let sink = vol.appendingPathComponent(".ballast/sink").path
+            for _ in 0..<10 {
+                sync()
+                let fd = open(sink, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+                var taken = 0
+                while fd >= 0, taken < 1000, write(fd, zeros, zeros.count) == zeros.count { taken += 1 }
+                if fd >= 0 { close(fd) }
+                if taken == 0 { break }
+            }
+            let probe = vol.appendingPathComponent(".probe").path
+            let fd = open(probe, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+            guard fd >= 0 else { return true }
+            close(fd)
+            unlink(probe)
+            return false
         }
 
         let mounted = volume("mount", "32m")
@@ -317,6 +343,79 @@ enum LowDiskTest {
                   "\(j.lines)")
             check("…and rebuilds", j.rebuilds == 1 && code == 0, "\(j.lines)")
         }
+
+        // MARK: the telemetry ledger
+
+        // The feed directory's ledger, linked onto the volume.
+        let ledger = vol.appendingPathComponent("telemetry.jsonl")
+        fm.createFile(atPath: ledger.path, contents: nil)
+        try? fm.removeItem(at: TelemetryLog.url)
+        try? fm.createSymbolicLink(at: TelemetryLog.url, withDestinationURL: ledger)
+        func clearedKeys() -> [String] {
+            ((try? String(contentsOf: ledger, encoding: .utf8)) ?? "")
+                .split(separator: "\n").compactMap { line in
+                    guard let obj = (try? JSONSerialization.jsonObject(with: Data(line.utf8)))
+                            as? [String: Any], obj["ev"] as? String == "cleared" else { return nil }
+                    return obj["key"] as? String
+                }
+        }
+        func ledgerLines(_ action: String, _ prefix: String) -> Int {
+            AuditLog.read().filter { $0.action == action && $0.detail.hasPrefix(prefix) }.count
+        }
+        let maxUnwritten = TelemetryLog.maxUnwritten
+        TelemetryLog.maxUnwritten = 3
+        check("fill for the ledger", filledFull())
+        for key in ["a", "b", "c", "d", "e"] { TelemetryLog.cleared(key: "lowdisk-\(key)") }
+        check("events the full volume refuses are not on it", clearedKeys().isEmpty,
+              "\(clearedKeys())")
+        check("…and the feed says once that the ledger is not taking them",
+              ledgerLines("warn", "Can't write the telemetry ledger (") == 1,
+              "\(ledgerLines("warn", "Can't write the telemetry ledger ("))")
+        check("drain for the ledger", volume("drain") == 0)
+        TelemetryLog.cleared(key: "lowdisk-f")
+        check("with room, the held events land ahead of the next, in order, each once, "
+              + "the oldest past the cap dropped",
+              clearedKeys() == ["lowdisk-d", "lowdisk-e", "lowdisk-f"], "\(clearedKeys())")
+        check("…and the feed says once that the ledger is writing again",
+              ledgerLines("poll-recovered", "Telemetry ledger writing again") == 1)
+        TelemetryLog.maxUnwritten = maxUnwritten
+        // APFS refuses a write whole, so the short one is a stand-in's.
+        let realWrite = TelemetryLog.writeFd
+        TelemetryLog.writeFd = { fd, buf in
+            TelemetryLog.writeFd = realWrite
+            return write(fd, buf.baseAddress, buf.count / 2)
+        }
+        TelemetryLog.cleared(key: "lowdisk-g")
+        TelemetryLog.cleared(key: "lowdisk-h")
+        check("a line cut short is closed before the next",
+              clearedKeys() == ["lowdisk-d", "lowdisk-e", "lowdisk-f", "lowdisk-g", "lowdisk-h"],
+              "\(clearedKeys())")
+
+        // MARK: the operator's quit
+
+        let realMark = OperatorQuit.url
+        OperatorQuit.url = vol.appendingPathComponent("home/.diplomat/operator-quit")
+        defer { OperatorQuit.url = realMark }
+        try? fm.createDirectory(at: OperatorQuit.url.deletingLastPathComponent(),
+                                withIntermediateDirectories: true)
+        func watchdogLaunches() -> Int {
+            let j = Job()
+            var h = j.host
+            h.operatorQuit = SelfUpdate.Host().operatorQuit
+            _ = SelfUpdate.runWatchdog(h)
+            return j.launches
+        }
+        for episode in ["", "again "] {
+            OperatorQuit.clear()    // what every launch does
+            check("fill \(episode)for the quit", filledFull())
+            OperatorQuit.mark()
+            check("a quit on a full volume is marked \(episode)", OperatorQuit.isMarked)
+            check("…so the watchdog leaves the app closed", watchdogLaunches() == 0)
+            check("drain \(episode)for the quit", volume("drain") == 0)
+        }
+        OperatorQuit.clear()
+        check("the next launch clears the mark", !OperatorQuit.isMarked)
+        check("…and the watchdog brings a dead app back", watchdogLaunches() == 1)
 
         print(pass ? "\nLOWDISK TEST OK" : "\nLOWDISK TEST FAILED")
         return pass
