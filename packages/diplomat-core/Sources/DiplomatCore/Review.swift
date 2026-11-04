@@ -411,9 +411,12 @@ public struct ReviewConfig: Codable, Equatable {
         out.append(fill(scope["single"] ?? ""))
         out.append(fill(specific["determineAuthor"] ?? ""))
         // The review work itself is the same regardless of author; only the
-        // disposition differs, so the approach + bar come before the split.
+        // disposition differs, so everything both cases share comes before the split
+        // and CASE B is the last section: whatever follows its header is CASE B's alone.
         out.append(chosen.fragment)
         if let bar = blocks["bar"] { out.append(bar) }
+        if let trailer = blocks["trailer"] { out.append(trailer) }
+        if let b = diplomatTag(blocks) { out.append(b) }
 
         // CASE A — it's mine: fix it on the branch.
         out.append(fill(specific["mineHeader"] ?? ""))
@@ -427,15 +430,11 @@ public struct ReviewConfig: Codable, Equatable {
         if let b = blocks["reviewOnly"] { out.append(b) }
         out += reviewBlocks(blocks)
         out.append(fill(specific["otherNoMarkReady"] ?? ""))
-
-        if let trailer = blocks["trailer"] { out.append(trailer) }
         if effFinalPass, let b = blocks["finalPass"] {
             out.append(b)
         } else if effSoftApprove, let b = blocks["softApprove"] {
             out.append(b)
         }
-        // Whichever branch the PR falls into, tag every comment/review it posts.
-        if let b = diplomatTag(blocks) { out.append(b) }
 
         return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }

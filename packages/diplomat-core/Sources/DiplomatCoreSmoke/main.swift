@@ -531,9 +531,16 @@ check(ConflictConfig(target: .specific,
                       specificPR: "https://github.com/\(cfg.owner)/\(cfg.repo)/pull/337").isValid)
 check(!ConflictConfig(target: .specific, specificPR: "https://github.com/x/y/pull/1").isValid)
 check(cMine.buildPrompt().contains("authored by @\(me)"))
-check(cMine.buildPrompt().contains("For each, merge the latest `origin/main`"))
+check(cMine.buildPrompt().contains("For each, merge the latest version of the PR's BASE branch"))
 check(cSingle.buildPrompt().hasPrefix("Take PR #337 in \(cfg.owner)/\(cfg.repo)."))
-check(cSingle.buildPrompt().contains("Merge the latest `origin/main`"))
+check(cSingle.buildPrompt().contains("Merge the latest version of the PR's BASE branch"))
+// A stacked PR conflicts with the branch it targets, not with main: merging main clears
+// nothing, so the conflicts duty would re-dispatch it forever and pollute its diff.
+for p in [cSingle.buildPrompt(), cMine.buildPrompt()] {
+    check(p.contains("--json baseRefName") && p.contains("--no-ff origin/<baseRefName>"),
+          "the merge targets the PR's own base")
+    check(!p.contains("origin/main"), "no conflict prompt merges main regardless of the base")
+}
 check(cMine.buildPrompt().contains("No AI attribution"))
 // A clean local merge of a PR GitHub still calls CONFLICTING must be pushed: left
 // untouched, the PR stays flagged and the conflicts reconciler re-dispatches it forever.
@@ -2692,6 +2699,24 @@ check(!km.contains("mark it ready for review"), "markReady=false omits the block
 // The gated (author-unknown) path still branches, for the manual Specific-PR wizard.
 let gated = ReviewConfig(depth: "deep", target: .specific, me: "latekvo", specificPR: "440").buildPrompt()
 check(gated.contains("WHO AUTHORED IT") && gated.contains("CASE A") && gated.contains("CASE B"))
+// The verdict and the soft approval are CASE B's alone. CASE B is the last section, so
+// the blocks both cases share (the swarm loop, the attribution tag) precede CASE A, and
+// the verdict follows CASE B's header with nothing shared after it.
+for (label, cfg) in [("soft-approve", ReviewConfig(depth: "deep", target: .specific, me: "latekvo",
+                                                   specificPR: "440")),
+                     ("verdict", ReviewConfig(depth: "deep", target: .specific, me: "latekvo",
+                                              specificPR: "440", finalPass: true))] {
+    let p = cfg.buildPrompt()
+    let caseA = p.range(of: "▸ CASE A")!.lowerBound, caseB = p.range(of: "▸ CASE B")!.lowerBound
+    let verdict = p.range(of: label == "verdict" ? "and if so, APPROVE it" : "thanking them for contributing")!
+    check(verdict.lowerBound > caseB, "\(label): the verdict sits inside CASE B")
+    check(p.range(of: "Keep dispatching swarms until")!.lowerBound < caseA,
+          "\(label): the shared swarm loop precedes the split, not CASE B")
+    check(p.range(of: "Diplomat attribution tag")!.lowerBound < caseA,
+          "\(label): the shared attribution tag precedes the split, not CASE B")
+    check(!p[caseA..<caseB].contains("APPROVE it") && !p[caseA..<caseB].contains("thanking them"),
+          "\(label): CASE A carries no verdict")
+}
 print("known-mine review prompt assertions passed")
 
 // ---- known-theirs comprehensive review (review-request monitor) ----

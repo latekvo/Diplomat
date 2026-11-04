@@ -139,11 +139,12 @@ branches merge-able. A single three-way selector picks *whose* PRs to sweep:
 - **Someone else's** - a handle field lights up; sweep that user's open PRs.
 - **Specific PR** - a PR-number field lights up; do just that one.
 
-For each PR it merges the latest `origin/main` into the branch. **Clean merges are left
+For each PR it merges the latest version of the PR's base branch (`baseRefName` - `main`, or
+the branch a stacked PR targets) into the branch. **Clean merges are left
 untouched** - only where the merge *conflicts* does it resolve every conflict and push the
 merge commit back to the PR's remote branch. The exception is a merge git completes cleanly
 while GitHub still reports the PR conflicting: that merge is pushed, since GitHub keeps
-flagging the PR until its head contains main. The contextual field (handle / PR number)
+flagging the PR until its head contains its base. The contextual field (handle / PR number)
 appears only for the target it applies to.
 
 > Preview the assembled prompt without launching anything:
