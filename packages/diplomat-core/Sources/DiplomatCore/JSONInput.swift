@@ -30,12 +30,23 @@ public enum JSONInput {
         public let on: Bool
     }
 
+    /// Deepest nesting read, the top-level object being 1. swift-corelibs-foundation
+    /// refuses deeper, Darwin refuses deeper but for an empty container, and
+    /// `jsoninput.MAX_DEPTH` is the twin.
+    public static let maxDepth = 512
+
     /// Decode a JSON object; `nil` for anything else.
+    ///
+    /// Also `nil` for what `json` refuses and `JSONSerialization` takes - a trailing
+    /// comma, and on Darwin `-1e400`, read as `-inf` (an uncatchable exception at the
+    /// next write of the book) - and for a string opening with U+FEFF, which Darwin drops
+    /// and `json` keeps.
     public static func parse(_ data: Data) -> [String: Any]? {
         // Python reads these files as UTF-8 and refuses a byte-order mark;
         // `JSONSerialization` also takes UTF-16/32, whose JSON always holds a NUL byte.
         guard !data.starts(with: [0xEF, 0xBB, 0xBF]), !data.contains(0),
-              let values = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+              let values = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              usable(values, depth: 1), !lexicallyRefused(data)
         else { return nil }
         // The shape pass is the costly half, and a telemetry fold pays it per ledger
         // line; only text that spells a boolean literal can hold one.
@@ -44,6 +55,53 @@ public enum JSONInput {
         guard let shape = try? JSONDecoder().decode([String: Shape].self, from: data)
         else { return nil }
         return marked(values, .object(shape)) as? [String: Any]
+    }
+
+    /// Every container within `maxDepth`, every number finite.
+    private static func usable(_ value: Any, depth: Int) -> Bool {
+        switch value {
+        case let object as [String: Any]:
+            return depth <= maxDepth && object.values.allSatisfy { usable($0, depth: depth + 1) }
+        case let array as [Any]:
+            return depth <= maxDepth && array.allSatisfy { usable($0, depth: depth + 1) }
+        case let number as NSNumber:
+            return number.doubleValue.isFinite
+        default:
+            return true
+        }
+    }
+
+    /// Whether a `,` outside a string is followed, past whitespace, by `]` or `}`, or a
+    /// string opens with U+FEFF, raw or escaped.
+    private static func lexicallyRefused(_ data: Data) -> Bool {
+        let bytes = [UInt8](data)
+        var i = 0, inString = false, comma = false
+        while i < bytes.count {
+            let byte = bytes[i]
+            i += 1
+            if inString {
+                if byte == UInt8(ascii: "\\") { i += 1 }
+                else if byte == UInt8(ascii: "\"") { inString = false }
+                continue
+            }
+            switch byte {
+            case UInt8(ascii: "\""):
+                inString = true
+                comma = false
+                let next = bytes[i..<min(i + 6, bytes.count)]
+                if next.starts(with: [0xEF, 0xBB, 0xBF])
+                    || next.first == UInt8(ascii: "\\")
+                    && next.dropFirst().map({ $0 | 0x20 }).elementsEqual("ufeff".utf8) {
+                    return true
+                }
+            case UInt8(ascii: ","): comma = true
+            case UInt8(ascii: "]"), UInt8(ascii: "}"): if comma { return true }
+            case UInt8(ascii: " "), UInt8(ascii: "\t"), UInt8(ascii: "\n"), UInt8(ascii: "\r"):
+                break
+            default: comma = false
+            }
+        }
+        return false
     }
 
     /// A flag out of a decoded payload, or `fallback` when the field is absent or is not

@@ -634,17 +634,58 @@ def test_a_hand_edited_flag_or_number_folds_the_same_on_both_sides():
 
 
 def test_a_line_one_parser_refuses_is_skipped_by_both():
-    """`json` takes each of these lines and `JSONSerialization` none of them."""
+    """`json` takes each of the first three lines and `JSONSerialization` none of them;
+    Darwin's or corelibs' `JSONSerialization` takes the next four and `json` none. A
+    line 100,000 deep is a `RecursionError` out of `json`, which is no `ValueError`."""
+    deep = "[" * 100_000 + "]" * 100_000
     lines = [
         '{"at": %d, "ev": "started", "key": "review:h/o/r#71@aa", "tokens": Infinity}' % NOW,
         '{"at": %d, "ev": "started", "key": "review:h/o/r#72@bb", "pr": 1%s}'
         % (NOW, "0" * 400),
         '{"at": %d, "ev": "started", "key": "review:h/o/r#73@cc\\ud800"}' % NOW,
+        '{"at": %d, "ev": "done", "key": "review:h/o/r#77@gg", "tokens": -1e400}' % NOW,
+        '{"at": %d, "ev": "started", "key": "review:h/o/r#78@hh",}' % NOW,
+        '{"at": %d, "ev": "started", "key": "review:h/o/r#79@ii", "x": %s}'
+        % (NOW, "[" * 512 + "]" * 512),
+        '{"at": %d, "ev": "started", "key": "review:h/o/r#80@jj", "x": %s}' % (NOW, deep),
         '{"at": %d, "ev": "started", "key": "review:h/o/r#75@ee"}' % NOW,
     ]
     swift, python = _swift(lines), _python(lines)
     assert python == swift
     assert [t["key"] for t in python["tasks"]] == ["review:h/o/r#75@ee"]
+
+
+def test_a_line_is_read_by_json_whitespace_alone():
+    """Not by either language's wider idea of it, which differ: Swift's takes U+200B
+    and not U+001C, Python's the other way round. Nor is a NUL the end of a number,
+    as `Double(String)` alone reads it."""
+    lines = [
+        '\u200b{"at": %d, "ev": "started", "key": "review:h/o/r#81@aa"}' % NOW,
+        '\x1c{"at": %d, "ev": "started", "key": "review:h/o/r#82@bb"}' % NOW,
+        '{"at": "%d\\u0000", "ev": "started", "key": "review:h/o/r#83@cc"}' % NOW,
+        ' \t{"at": %d, "ev": "started", "key": "review:h/o/r#84@dd"}\r' % NOW,
+    ]
+    swift, python = _swift(lines), _python(lines)
+    assert python == swift
+    assert [t["key"] for t in python["tasks"]] == ["review:h/o/r#84@dd"]
+
+
+def test_a_number_past_ints_range_folds_without_trapping():
+    """`Int(Double)` traps past Int's range, and the fold runs on every poll: a PR
+    number of 1e20, or a wait of 2^63 seconds formatted for the screen, would take the
+    macOS app down until the line was removed. Both clamp to Int's range instead."""
+    key = "review:h/o/r#85@aa"
+    lines = [
+        '{"at": -9223372036854775809, "ev": "queued", "key": "%s", "pr": 1e20}' % key,
+        json.dumps({"at": NOW - 600, "ev": "started", "key": key, "remote": False,
+                    "attempt": 1}),
+        json.dumps({"at": NOW - 60, "ev": "done", "key": key, "tokens": 10}),
+    ]
+    swift, python = _swift(lines), _python(lines)
+    assert python == swift
+    assert python["tasks"][0]["pr"] == 2**63 - 1
+    assert python["waitSamples"] == 1
+    assert python["format"]["wait"].endswith("m")
 
 
 def test_a_duplicated_key_keeps_its_first_value_on_both_sides():

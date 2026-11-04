@@ -233,7 +233,9 @@ def read_lines() -> list[str]:
         nl = data.find(b"\n")
         data = data[nl + 1:] if nl >= 0 else b""
     try:
-        return data.decode("utf-8").splitlines()
+        # On "\n" alone, as the Swift twin splits: ``splitlines`` also breaks at
+        # U+2028 and U+0085, which a JSON string may hold unescaped.
+        return [line for line in data.decode("utf-8").split("\n") if line]
     except UnicodeDecodeError:
         return []
 
@@ -560,10 +562,9 @@ def fold(lines: list[str]) -> Ledger:
     by_key: dict[str, Task] = {}
     samples: list[Sample] = []
 
-    for raw in lines:
-        line = raw.strip()
-        if not line:
-            continue
+    for line in lines:
+        # Unstripped: the parser takes JSON's own whitespace, and the two languages'
+        # wider sets of it differ (U+200B, U+001C).
         try:
             obj = jsoninput.loads(line)
         except ValueError:

@@ -146,6 +146,20 @@ def test_a_partial_tail_line_costs_only_itself(ledger):
     assert [t.key for t in telemetry.load().tasks] == ["review:h/o/r#1@aa"]
 
 
+def test_a_line_ends_at_a_newline_alone(ledger):
+    """As ``TelemetryLog.readLines`` splits it. A JSON string may hold U+2028 or
+    U+0085 unescaped, and ``splitlines`` breaks at both, and at the U+000B and U+001C
+    no JSON line holds outside a string."""
+    with open(ledger, "w", encoding="utf-8") as fh:
+        fh.write('{"at": 1, "ev": "queued", "key": "review:h/o/r#1@a\u2028a"}\n'
+                 '{"at": 1, "ev": "queued", "key": "review:h/o/r#2@b\x85b"}\n'
+                 '{"at": 1, "ev": "queued", "key": "review:h/o/r#3@cc"}\x0b'
+                 '{"at": 1, "ev": "queued", "key": "review:h/o/r#4@dd"}\x1c\n')
+    telemetry._reset_cache()
+    assert [t.key for t in telemetry.load().tasks] == [
+        "review:h/o/r#1@a\u2028a", "review:h/o/r#2@b\x85b"]
+
+
 def test_a_number_too_wide_for_a_float_costs_its_line_not_the_fold():
     """``float(10**400)`` is an ``OverflowError``, not a ``ValueError``, and the
     screen folds the ledger on every repaint - so a raise here is every repaint. The

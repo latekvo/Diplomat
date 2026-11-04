@@ -2324,14 +2324,35 @@ do {
         try? bytes.write(to: AgentRegistry.runsPath(), options: .atomic)
         check(AgentRegistry.load().isEmpty, "a book in \(encoding) is unreadable, as to Python")
     }
+    // Each read one way by `json` and another by Darwin's `JSONSerialization`, corelibs' or both.
+    func nested(_ levels: Int) -> String {
+        String(repeating: "[", count: levels) + String(repeating: "]", count: levels)
+    }
+    for (spoil, fields) in [("-1e400", ", \"x\": -1e400"), ("a trailing comma", ", \"x\": [1,]"),
+                            ("a trailing comma in the record", ","),
+                            ("an empty array past the depth limit", ", \"x\": \(nested(510))"),
+                            ("a string opening with an escaped U+FEFF", ", \"label\": \"\\uFEFFx\""),
+                            ("a string opening with U+FEFF", ", \"tty\": \"\u{FEFF}pts/3\"")] {
+        check(read("{\"runId\": \"r\"\(fields)}").isEmpty, "a book holding \(spoil) is unreadable")
+    }
+    check(read("{\"runId\": \"r\", \"label\": \"\\\",]x\u{FEFF}\", \"x\": \(nested(509))}")
+            .map(\.label) == ["\",]x\u{FEFF}"],
+          "`,]` and a U+FEFF inside a string, and nesting at the limit, are read")
+    check(read("{\"runId\": \"r\"}", version: "18446744073709551617").isEmpty,
+          "a version that wraps to 1 in Int64 is no schema")
 
     let ledger = Telemetry.fold(lines: [
         "{\"at\": 100, \"ev\": \"started\", \"key\": \"k1\", \"remote\": 1}",
         "{\"at\": 100, \"ev\": \"started\", \"key\": \"k2\", \"remote\": true}",
         "{\"at\": true, \"ev\": \"queued\", \"key\": \"k3\"}",
+        "{\"at\": \"100\\u0000\", \"ev\": \"queued\", \"key\": \"k4\"}",
+        "\u{200B}{\"at\": 100, \"ev\": \"queued\", \"key\": \"k5\"}",
+        " {\"at\": 100, \"ev\": \"queued\", \"key\": \"k6\"}\r",
+        "\u{FEFF}{\"at\": 100, \"ev\": \"queued\", \"key\": \"k7\"}",
     ])
-    check(ledger.tasks.map(\.key) == ["k1", "k2"] && ledger.tasks.map(\.remote) == [false, true],
-          "the ledger reads `\"remote\": 1` as local and `\"at\": true` as no timestamp")
+    check(ledger.tasks.map(\.key) == ["k1", "k2", "k6"] && ledger.tasks.map(\.remote) == [false, true, false],
+          "the ledger reads `\"remote\": 1` as local, `\"at\": true` or `\"100\\0\"` as no "
+            + "timestamp, and JSON's whitespace alone around a line")
     print("hand-edited run book and ledger assertions passed")
 }
 
@@ -2402,14 +2423,8 @@ do {
       {"runId": "r1", "dispatchedAt": -1e999, "quietSince": -1e999}]}
     """
     try? infinite.write(to: AgentRegistry.runsPath(), atomically: true, encoding: .utf8)
-    let inf = AgentRegistry.load()
-    // Darwin's parser makes `-inf` of `-1e999`; corelibs refuses the whole document.
-    #if canImport(Darwin)
-    check(inf.count == 1 && inf[0].dispatchedAt == 0 && inf[0].quietSince == nil,
-          "-1e999 is the default, not -inf")
-    #else
-    check(inf.isEmpty, "a document holding -1e999 is no book")
-    #endif
+    // Darwin's parser makes `-inf` of it, which the next write of the book dies on.
+    check(AgentRegistry.load().isEmpty, "a document holding -1e999 is no book")
     print("hand-edited number assertions passed")
 }
 
