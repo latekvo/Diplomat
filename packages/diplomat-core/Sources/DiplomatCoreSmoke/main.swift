@@ -341,11 +341,10 @@ check(snap.pid == 4242 && snap.tcpPort == 40878, "snapshot header")
 check(snap.selfNode?.platform == "macos" && snap.selfNode?.tier == 2, "self node")
 // The console fields (strength auto, auto token %, real uptime, trust) decode.
 check(snap.selfNode?.strengthAuto == true && snap.selfNode?.tokensPct == 0.81, "self console fields")
-// The real per-window quota percentages (OAuth usage probe) decode on both shapes.
-check(snap.selfNode?.tokensSessionPct == 0.81 && snap.selfNode?.tokensWeekPct == 0.55,
-      "self session/week quota decode")
-check(snap.peers[0].tokensSessionPct == 0.2 && snap.peers[0].tokensWeekPct == 0.4,
-      "peer session/week quota decode")
+// The real weekly quota percentage (OAuth usage probe) decodes on both shapes, and
+// an older peer's 5-hour field beside it is ignored.
+check(snap.selfNode?.tokensWeekPct == 0.55, "self week quota decode")
+check(snap.peers[0].tokensWeekPct == 0.4, "peer week quota decode")
 check(snap.peers[0].strengthAuto == false && snap.peers[0].uptimeSecs == 187.0, "peer strength/uptime")
 check(snap.peers[0].trust == "personal" && snap.peers[0].verified == true, "peer trust decode")
 // The ban-list mirror (foreign accountability, szpontnet-spec/docs/13): who this node
@@ -381,13 +380,13 @@ let snap2 = MeshSnapshot.decode("""
  "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
 """.data(using: .utf8)!)
 check(snap == snap2, "snapshot equality ignores lastSeenSecsAgo/uptime/raw-fraction drift")
-// A session-window percentage move IS a meaningful change — the quota indicator
+// A week-window percentage move IS a meaningful change — the quota indicator
 // must repaint when the probe reports a new integer percent.
 let snap3 = MeshSnapshot.decode("""
 {"pid":4242,"tcpPort":40878,"linking":0,
  "self":{"id":"aaa","name":"here","platform":"macos","tier":2,"tokens":"ok",
          "strengthAuto":true,"tokensAuto":true,"tokensPct":0.81,"uptimeSecs":930.0,
-         "tokensSessionPct":0.63,"tokensWeekPct":0.55},
+         "tokensSessionPct":0.81,"tokensWeekPct":0.48},
  "peers":[{"id":"bbb","name":"lin","platform":"linux","tier":4,"tokens":"low",
            "link":"up","addr":"192.168.1.9:40878","lastSeenSecsAgo":1.4,"sees":["aaa"],
            "strengthAuto":false,"tokensAuto":true,"tokensPct":0.2,"uptimeSecs":187.0,
@@ -398,7 +397,7 @@ let snap3 = MeshSnapshot.decode("""
             "bannedAt":1784057240.5,"jobId":"b1c2"}],
  "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
 """.data(using: .utf8)!)
-check(snap != snap3, "a session-quota percent move is a meaningful change")
+check(snap != snap3, "a week-quota percent move is a meaningful change")
 // The discoverability banner keys on the node's OWN diagnosis: `beaconBlockReason`
 // travels beside `beaconBlocked` so the UI shows a Local-Network gate vs a genuinely
 // downed network, not a fixed "allow Python" guess. An older node predating the field
@@ -450,8 +449,8 @@ check(!legacySnap.peers[0].verified && legacySnap.peers[0].trust == "personal"
       && legacySnap.peers[0].surplus == MeshStats.neutralSurplus, "pre-trust peer defaults")
 check(legacySnap.selfNode?.surplus == MeshStats.neutralSurplus && legacySnap.selfNode?.stats == nil,
       "no stats ⇒ neutral surplus (on the burn-down line, 1.0)")
-check(legacySnap.selfNode?.tokensSessionPct == nil && legacySnap.peers[0].tokensWeekPct == nil,
-      "pre-probe snapshots ⇒ nil session/week quota (UI falls back to ≈estimate)")
+check(legacySnap.selfNode?.tokensWeekPct == nil && legacySnap.peers[0].tokensWeekPct == nil,
+      "pre-probe snapshots ⇒ nil week quota (UI falls back to ≈estimate)")
 check(legacySnap.trusted.isEmpty, "no published allowlist ⇒ empty")
 // A trust flip IS a meaningful change (unlike lastSeenSecsAgo/uptime drift) — the
 // poll must republish when a peer's verdict moves.

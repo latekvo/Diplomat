@@ -494,7 +494,7 @@ def _mesh_fixture(store: Store) -> None:
             "id": self_id, "name": "softoobox", "platform": "linux",
             "tier": 4, "tokens": "ok", "tcpPort": 40878, "epoch": 1, "seq": 12,
             "tokensAuto": True, "tokensPct": 0.64,
-            "tokensSessionPct": 0.64, "tokensWeekPct": 0.73,
+            "tokensWeekPct": 0.73,
             "sees": [peer_ok], "dutiesEnabled": {}, "v": 1,
         },
         "peers": [
@@ -502,7 +502,7 @@ def _mesh_fixture(store: Store) -> None:
             {"id": peer_ok, "name": "mbp-strong", "platform": "macos",
              "tier": 1, "tokens": "ok", "tcpPort": 40879, "epoch": 1, "seq": 20,
              "tokensAuto": False, "tokensPct": 0.31,
-             "tokensSessionPct": 0.31, "tokensWeekPct": 0.55,
+             "tokensWeekPct": 0.55,
              "sees": [self_id], "dutiesEnabled": {}, "v": 1,
              "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
              "transport": "lan", "wan": "iroh"},
