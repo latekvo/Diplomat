@@ -43,22 +43,25 @@ enum LowDiskTest {
         /// Fill, then take what the volume hands back as it flushes until a flush gives
         /// nothing back (`tests/full-disk.sh`'s `settle`): whether a new file is then refused.
         func filledFull() -> Bool {
-            guard volume("fill") == 0 else { return false }
             let zeros = [UInt8](repeating: 0, count: 4096)
             let sink = vol.appendingPathComponent(".ballast/sink").path
-            for _ in 0..<10 {
-                sync()
-                let fd = open(sink, O_WRONLY | O_APPEND | O_CREAT, 0o644)
-                var taken = 0
-                while fd >= 0, taken < 1000, write(fd, zeros, zeros.count) == zeros.count { taken += 1 }
-                if fd >= 0 { close(fd) }
-                if taken == 0 { break }
-            }
             let probe = vol.appendingPathComponent(".probe").path
-            let fd = open(probe, O_WRONLY | O_CREAT | O_EXCL, 0o644)
-            guard fd >= 0 else { return true }
-            close(fd)
-            unlink(probe)
+            // A flush can hand back room after the settle, as macos-14's runner does.
+            for _ in 0..<5 {
+                guard volume("fill") == 0 else { return false }
+                for _ in 0..<10 {
+                    sync()
+                    let fd = open(sink, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+                    var taken = 0
+                    while fd >= 0, taken < 1000, write(fd, zeros, zeros.count) == zeros.count { taken += 1 }
+                    if fd >= 0 { close(fd) }
+                    if taken == 0 { break }
+                }
+                let fd = open(probe, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+                guard fd >= 0 else { return true }
+                close(fd)
+                unlink(probe)
+            }
             return false
         }
 
