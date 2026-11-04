@@ -458,6 +458,89 @@ def test_a_reminder_answered_with_a_failure_is_a_broken_promise(
     simnet.run(scenario())
 
 
+def _disk(monkeypatch, sim) -> dict:
+    """Make ``sim``'s results directory refuse every write while ``full`` is set."""
+    import errno
+
+    state = {"full": True}
+    real = sim.node._result_path
+
+    def result_path(job_id, incoming=False):
+        if state["full"]:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real(job_id, incoming)
+
+    monkeypatch.setattr(sim.node, "_result_path", result_path)
+    return state
+
+
+def test_a_decider_the_originators_own_disk_kept_from_running_bans_nobody(
+        simnet, monkeypatch):
+    """The decider is handed its case as a file. With no room for it, the decider
+    never ran, so there is no verdict to ban on; the plea is judged once the disk
+    takes the case again."""
+    sandbox = _sandbox(monkeypatch)
+
+    async def scenario():
+        a = await simnet.node("a", trust="foreign", EXTEND_DECIDER="true")
+        b = await simnet.node("b", trust="foreign", FOREIGN_SPAWN="sandbox {prompt_file}")
+        await simnet.linked(a, b)
+        await simnet.all_verified(a, b)
+        disk = _disk(monkeypatch, a)
+
+        job_id = await _confined_dispatch(simnet, a, b, sandbox)
+        await simnet.until(lambda: simnet.frames("job-progress", src=b, dst=a), 4.0,
+                           "a running executor never pleaded")
+        await simnet.quiet(2.0)  # several grace windows
+        assert a.trust_of(b) == "foreign", a.node.snapshot()["banned"]
+        said = [d for n, _, d in simnet.log if n == "a" and "decider" in d]
+        assert len(said) == 1 and "No space left" in said[0], said
+
+        disk["full"] = False
+        await simnet.until(
+            lambda: a.node._awaiting_result.get(job_id)
+            and a.node._awaiting_result[job_id].extensions >= 1, 4.0,
+            "the plea was never judged once the disk had room")
+        assert a.trust_of(b) == "foreign"
+
+    simnet.run(scenario())
+
+
+def test_a_result_the_originators_disk_cannot_stage_is_held_until_it_can(
+        simnet, monkeypatch):
+    """The ack ends the executor's retries, so after it the result exists only
+    here. A disk with no room to stage it must not lose it, nor act on it twice."""
+    sandbox = _sandbox(monkeypatch)
+    acted: list[dict] = []
+
+    async def scenario():
+        a = await simnet.node("a")
+        b = await simnet.node("b", trust="foreign", FOREIGN_SPAWN="sandbox {prompt_file}")
+        await simnet.linked(a, b)
+        await simnet.all_verified(a, b)
+        monkeypatch.setattr(spawnjob, "run_result_handler",
+                            lambda path: acted.append(json.loads(
+                                Path(path).read_text(encoding="utf-8"))))
+        disk = _disk(monkeypatch, a)
+
+        job_id = await _confined_dispatch(simnet, a, b, sandbox)
+        Path(sandbox[0][1]).write_text("the review", encoding="utf-8")
+        await simnet.until(lambda: simnet.frames("job-ack", src=a, dst=b), 4.0,
+                           "the delivered result was never acked")
+        await simnet.quiet(0.5)
+        assert acted == []
+        said = [d for n, _, d in simnet.log if n == "a" and "holding the result" in d]
+        assert len(said) == 1, said
+
+        disk["full"] = False
+        await simnet.until(lambda: acted, 4.0, "the held result was never acted on")
+        await simnet.quiet(0.5)
+        assert [r["output"] for r in acted] == ["the review"]
+        assert acted[0]["jobId"] == job_id
+
+    simnet.run(scenario())
+
+
 def test_a_ban_survives_the_device_reconnecting(simnet, monkeypatch):
     """A ban recorded against an id alone is defeated by presenting any key, so
     it binds to the fingerprint the executor proved when it accepted the work —
