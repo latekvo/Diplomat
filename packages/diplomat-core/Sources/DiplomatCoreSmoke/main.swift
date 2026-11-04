@@ -2340,6 +2340,8 @@ do {
           "`,]` and a U+FEFF inside a string, and nesting at the limit, are read")
     check(read("{\"runId\": \"r\"}", version: "18446744073709551617").isEmpty,
           "a version that wraps to 1 in Int64 is no schema")
+    check(JSONInput.parse(Data("{\"title\": \"\u{FEFF}Fix\", \"body\": \"\\uFEFF\"}".utf8)) != nil,
+          "a CLI payload holding a PR title that opens with U+FEFF is read")
 
     let ledger = Telemetry.fold(lines: [
         "{\"at\": 100, \"ev\": \"started\", \"key\": \"k1\", \"remote\": 1}",

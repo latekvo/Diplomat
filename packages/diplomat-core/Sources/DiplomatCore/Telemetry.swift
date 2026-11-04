@@ -148,7 +148,8 @@ public enum Telemetry {
         for line in lines {
             // Untrimmed: the parser takes JSON's own whitespace, and the two languages'
             // wider sets of it differ (U+200B, U+001C).
-            guard let data = line.data(using: .utf8), let obj = JSONInput.parse(data),
+            guard let data = line.data(using: .utf8),
+                  let obj = JSONInput.parse(data, sharedFile: true),
                   let at = number(obj["at"]), let ev = obj["ev"] as? String
             else { continue }
 

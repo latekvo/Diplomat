@@ -39,14 +39,15 @@ public enum JSONInput {
     ///
     /// Also `nil` for what `json` refuses and `JSONSerialization` takes - a trailing
     /// comma, and on Darwin `-1e400`, read as `-inf` (an uncatchable exception at the
-    /// next write of the book) - and for a string opening with U+FEFF, which Darwin drops
-    /// and `json` keeps.
-    public static func parse(_ data: Data) -> [String: Any]? {
+    /// next write of the book). For a `sharedFile`, also for a string opening with
+    /// U+FEFF, which Darwin drops and `json` keeps; stdin keeps that string, which may be
+    /// a PR title or a Slack message.
+    public static func parse(_ data: Data, sharedFile: Bool = false) -> [String: Any]? {
         // Python reads these files as UTF-8 and refuses a byte-order mark;
         // `JSONSerialization` also takes UTF-16/32, whose JSON always holds a NUL byte.
         guard !data.starts(with: [0xEF, 0xBB, 0xBF]), !data.contains(0),
               let values = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              usable(values, depth: 1), !lexicallyRefused(data)
+              usable(values, depth: 1), !lexicallyRefused(data, bomStrings: sharedFile)
         else { return nil }
         // The shape pass is the costly half, and a telemetry fold pays it per ledger
         // line; only text that spells a boolean literal can hold one.
@@ -71,9 +72,9 @@ public enum JSONInput {
         }
     }
 
-    /// Whether a `,` outside a string is followed, past whitespace, by `]` or `}`, or a
-    /// string opens with U+FEFF, raw or escaped.
-    private static func lexicallyRefused(_ data: Data) -> Bool {
+    /// Whether a `,` outside a string is followed, past whitespace, by `]` or `}`, or,
+    /// with `bomStrings`, a string opens with U+FEFF, raw or escaped.
+    private static func lexicallyRefused(_ data: Data, bomStrings: Bool) -> Bool {
         let bytes = [UInt8](data)
         var i = 0, inString = false, comma = false
         while i < bytes.count {
@@ -89,7 +90,7 @@ public enum JSONInput {
                 inString = true
                 comma = false
                 let next = bytes[i..<min(i + 6, bytes.count)]
-                if next.starts(with: [0xEF, 0xBB, 0xBF])
+                if bomStrings, next.starts(with: [0xEF, 0xBB, 0xBF])
                     || next.first == UInt8(ascii: "\\")
                     && next.dropFirst().map({ $0 | 0x20 }).elementsEqual("ufeff".utf8) {
                     return true

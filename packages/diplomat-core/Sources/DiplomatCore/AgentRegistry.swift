@@ -151,7 +151,7 @@ public enum AgentRegistry {
     /// tracked one to the other.
     public static func load() -> [AgentState.RunRecord] {
         guard let data = try? Data(contentsOf: runsPath()),
-              let obj = JSONInput.parse(data),
+              let obj = JSONInput.parse(data, sharedFile: true),
               integer(obj["version"]) == schemaVersion,
               let raw = obj["runs"] as? [Any]
         else { return [] }
