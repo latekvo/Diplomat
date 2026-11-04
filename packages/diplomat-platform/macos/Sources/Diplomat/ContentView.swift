@@ -254,7 +254,13 @@ enum PopoverFadeOut {
         let block: @convention(block) (NSWindow, Int, Int) -> Void = { win, place, relativeTo in
             let ours = (objc_getAssociatedObject(win, &isPopoverKey) as? Bool) ?? false
             let fading = (objc_getAssociatedObject(win, &isFadingKey) as? Bool) ?? false
+            if place != orderOut, ours {
+                callOriginal(win, place, relativeTo)
+                logShow(win, duringFadeOut: fading)
+                return
+            }
             if place == orderOut, ours, !fading {
+                AppLog.log("popover", "hide (was visible=\(win.isVisible ? 1 : 0))")
                 NotificationCenter.default.post(name: didHide, object: win)
             }
             // Only intercept OUR popover's hide, once, while it's actually visible.
@@ -276,6 +282,34 @@ enum PopoverFadeOut {
         if !class_addMethod(cls, sel, newIMP, types) {
             method_setImplementation(class_getInstanceMethod(cls, sel)!, newIMP)
         }
+    }
+
+    /// How long after an order-in the popover is judged: its 0.1 s fade-in is over by then.
+    static var showSettle: TimeInterval = 0.4
+
+    /// One line per open, once it has settled. A show that is not on screen by then is
+    /// the "won't open" failure; a show during a fade-out is ordered out again when the
+    /// fade ends, behind SwiftUI's back.
+    private static func logShow(_ win: NSWindow, duringFadeOut: Bool) {
+        let orderedIn = win.isVisible
+        DispatchQueue.main.asyncAfter(deadline: .now() + showSettle) {
+            let ok = win.isVisible && win.occlusionState.contains(.visible)
+            AppLog.log("popover", "show \(ok ? "ok" : "FAILED")"
+                + (orderedIn ? "" : " (still invisible right after ordering in)")
+                + (duringFadeOut ? " (during a fade-out)" : "")
+                + " \(describe(win))")
+        }
+    }
+
+    static func describe(_ w: NSWindow) -> String {
+        let f = w.frame
+        return "visible=\(w.isVisible ? 1 : 0) occlusion=\(w.occlusionState.contains(.visible) ? "visible" : "hidden")"
+            + " alpha=\(String(format: "%.2f", w.alphaValue)) key=\(w.isKeyWindow ? 1 : 0)"
+            + " activeSpace=\(w.isOnActiveSpace ? 1 : 0) level=\(w.level.rawValue)"
+            + " behavior=0x\(String(w.collectionBehavior.rawValue, radix: 16))"
+            + " frame=\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))"
+            + " screen=\(w.screen?.localizedName ?? "none")"
+            + " app active=\(NSApp.isActive ? 1 : 0) hidden=\(NSApp.isHidden ? 1 : 0)"
     }
 }
 

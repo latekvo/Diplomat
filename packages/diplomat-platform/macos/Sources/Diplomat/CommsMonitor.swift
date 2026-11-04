@@ -144,7 +144,7 @@ extension Store {
         guard commsMonitorTask == nil, !Headless.active else { return }
         commsMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.runCommsPollOnce()
+                await AppLog.timed("commsPoll") { await self?.runCommsPollOnce() }
                 let ns = UInt64(Store.commsPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }

@@ -137,6 +137,27 @@ singleton or an update's relaunch. It launches the bundle the updater builds, an
 what it launched to the same file. Manage it with `./install/install-watchdog.sh` /
 `./install/uninstall-watchdog.sh`.
 
+### Logs
+
+`~/Library/Logs/diplomat.log` records what the app did, when, and how long it took, one
+line per event: `<local time> [<pid>] <category> <message>`.
+
+| Category | Lines |
+|---|---|
+| `app` | launch (binary, its build time, parent), each quit request and who sent it, exit, the singleton ending an older instance |
+| `system` | sleep and wake, displays asleep, awake or rearranged, screen lock and unlock, Space switches |
+| `popover` | each open, judged 0.4 s later (`show ok`, or `show FAILED` with the window's state), and each close |
+| `hang` | the main thread answering 0.5 s or more late: how long, whether it was computing or waiting, the polls in flight. One still going at 2 s is sampled into `~/Library/Logs/diplomat-hangs/` (at most one per 10 minutes, newest 20 kept) |
+| `timing` | a poll that took 10 s or more |
+| `alive` | every 15 minutes: uptime, memory, hangs, each poll's count, average and worst, what is in flight |
+| `activity` | the activity feed's own lines |
+| `update` | the 06:00 updater and the watchdog, as in `diplomat-autoupdate.log` |
+
+At 8 MB the file moves to `diplomat.log.1`. Every line also goes to the unified log,
+where it sits beside WindowServer's and AppKit's own:
+`log show --predicate 'subsystem == "com.ignacy.diplomat"' --last 1h`. Self-tests and
+renders write only there, unless `DIPLOMAT_LOG_DIR` names a directory for the file.
+
 ### Headless self-test
 
 Every mode runs the real pipeline once, prints, and exits - none of them start
@@ -234,6 +255,9 @@ DIPLOMAT_REPOPATHS_TEST=1 ...                    # self-test: which checkout the
                                                      #   it or from a copy; scratch dirs; exit code = verdict
 DIPLOMAT_POPOVER_TEST=1 ...                      # self-test: a dismissed popover reopens on the panel when
                                                      #   Settings was up; off-screen windows; exit code = verdict
+DIPLOMAT_APPLOG_TEST=1 ...                       # self-test: the diagnostic log's lines and rotation, a busy
+                                                     #   and a waiting hang and the sample, the popover's show
+                                                     #   lines; scratch dir; exit code = verdict
 
 # The shared core itself is independently buildable & testable (also on Linux):
 swift run DiplomatCoreSmoke                    # loads assets/, runs filter + prompt + golden-file assertions
@@ -399,6 +423,9 @@ packages/
         Spend.swift                the OpenRouter balance probe - dollars left on the key cap and the credits
         AutoBudget.swift           ledger + probe + knobs -> may another automatic task start here?
         SelfUpdate.swift           fetch/merge upstream, rebuild, relaunch (Update button + the 06:00 run)
+        AppLog.swift               the diagnostic log (~/Library/Logs/diplomat.log), timed polls, the session's system events
+        HangWatch.swift            the main-thread hang watch, its samples, the 15-minute heartbeat
+        AppLogTest.swift           self-test of both (DIPLOMAT_APPLOG_TEST)
         RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → the checkout the bundle sits in → the one it recorded → ~/dev/diplomat),
                                    the sibling packages it reaches for, and the agents' repo root
         AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares
