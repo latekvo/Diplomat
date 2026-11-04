@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import platform
 import subprocess
+import time
 from pathlib import Path
 
 from szpontnet import host as szpont_host
@@ -150,13 +151,18 @@ class DiplomatHost(szpont_host.Host):
         An unreadable tmux degrades the other way, to "everything is working", so a
         node that cannot see its panes declines work rather than piling it on.
 
+        Automatic work that names no PR (an issue fix, a sweep) is invisible to that
+        scan, so it is counted from the run book the applet writes instead
+        (:func:`autofix.running_unscoped_auto_runs`), against the same dump and screens.
+
         The idle subtraction is taken from the union, entries of ``running_keys``
         included, so it has to be sound about an agent this node started moments ago —
         which is why :func:`autofix.idle_pr_numbers` reads a process's age before its
         screen. A booting agent shows the bare prompt of a finished one, and subtracted
         there it hands back the bay its own dispatch just took.
         """
-        from . import appconfig, autobudget, autofix, core, diskfloor, review, tmuxwatch
+        from . import (agentregistry, appconfig, autobudget, autofix, core, diskfloor,
+                       review, tmuxwatch)
 
         disk = diskfloor.lowest([review.repo_path(), str(Path.home() / ".diplomat")])
         if disk is not None and disk.low:
@@ -175,15 +181,18 @@ class DiplomatHost(szpont_host.Host):
             if ref is not None
         }
         dump = _ps_dump()
+        book = agentregistry.load()
         live = autofix.live_pr_numbers(dump, cfg["owner"], cfg["repo"])
         # `or {}` is the "everything is working" degradation this docstring promises:
         # tmux answering `None` means it could not be read, and no tty then resolves
         # to a tail, so nothing is subtracted as idle.
         tails = tmuxwatch.pane_tails_for_ttys(
             autofix.agent_ttys(dump, cfg["owner"], cfg["repo"])
+            | autofix.unscoped_auto_ttys(book, dump)
         ) or {}
         idle = autofix.idle_pr_numbers(dump, tails, cfg["owner"], cfg["repo"])
         return (autofix.running_auto_tasks(live, mine, set(), idle)
+                + autofix.running_unscoped_auto_runs(book, dump, tails, time.time())
                 >= appconfig.auto_task_limit())
 
 

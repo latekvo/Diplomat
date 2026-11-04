@@ -1238,16 +1238,53 @@ def idle_pr_numbers(
     agent this machine has no book entry for at all. An age that could not be parsed
     counts as too young, because a bay is freed on positive evidence or not at all.
     """
+    return {a.pr_number for a in agent_lines(ps_output, owner, repo)
+            if _at_prompt(a.elapsed, pane_tails.get(a.tty))}
+
+
+def _at_prompt(elapsed: float | None, tail: str | None) -> bool:
+    """Has an agent this old, showing this screen, finished its turn? Positive
+    evidence only (:func:`idle_pr_numbers`)."""
     from . import agentstate, apiwatch
 
-    out: set[int] = set()
-    for a in agent_lines(ps_output, owner, repo):
-        if a.elapsed is None or a.elapsed <= agentstate.FIRST_TURN_GRACE:
-            continue
-        tail = pane_tails.get(a.tty)
-        if tail is not None and not apiwatch.looks_busy(tail):
-            out.add(a.pr_number)
-    return out
+    if elapsed is None or elapsed <= agentstate.FIRST_TURN_GRACE:
+        return False
+    return tail is not None and not apiwatch.looks_busy(tail)
+
+
+def unscoped_auto_ttys(records, ps_output: str) -> set[str]:
+    """The ttys of the automatic runs in this machine's run book that name no PR of the
+    configured repo (an issue fix, a sweep, an audit, a PR in another checkout) and
+    whose agent is alive on that tty in a ``ps`` dump. The prompt scan behind
+    :func:`live_pr_numbers` cannot see these, yet each holds a bay of the cap
+    (:func:`agentstate.cap_load`)."""
+    alive = {tty for tty, _elapsed, _argv in _agent_processes(ps_output)}
+    return {r.tty for r in _unscoped_auto(records) if r.tty in alive}
+
+
+def _unscoped_auto(records) -> list:
+    from . import agentstate
+
+    return [r for r in records
+            if r.runs_here and r.source == agentstate.SOURCE_AUTO and not r.released
+            and r.pr_number is None]
+
+
+def running_unscoped_auto_runs(records, ps_output: str, pane_tails: dict[str, str],
+                               now: float) -> int:
+    """How many automatic runs that name no PR hold a bay here: each tty of
+    :func:`unscoped_auto_ttys` whose agent is not back at its prompt, plus every such run
+    dispatched too recently for anything to have observed its tty
+    (:data:`agentstate.SPAWN_GRACE`) - the bay a run takes is its own from the moment it
+    is booked, as the applet counts it."""
+    from . import agentstate
+
+    ages = {tty: elapsed for tty, elapsed, _argv in _agent_processes(ps_output)}
+    busy = {tty for tty in unscoped_auto_ttys(records, ps_output)
+            if not _at_prompt(ages.get(tty), pane_tails.get(tty))}
+    starting = sum(1 for r in _unscoped_auto(records)
+                   if not r.tty and now - r.dispatched_at <= agentstate.SPAWN_GRACE)
+    return len(busy) + starting
 
 
 #: ``ps`` ``etime``: ``[[DD-]HH:]MM:SS``. The portable spelling — BSD/macOS ``ps``
@@ -1296,9 +1333,19 @@ def agent_lines(ps_output: str, owner: str, repo: str):
     An OpenCode 2.x TUI's argv holds ``--session <id>`` rather than its prompt, so the
     prompt is read from the service for it (:func:`opencodeapi.scan_text`).
     """
-    from . import opencodeapi, runner
+    from . import opencodeapi
 
     pat = re.compile(_LIVE_AGENT_RE_TMPL.format(repo=re.escape(f"{owner}/{repo}")))
+    for tty, elapsed, argv in _agent_processes(ps_output):
+        for m in pat.finditer(opencodeapi.scan_text(argv)):
+            yield AgentLine(tty=tty, pr_number=int(m.group(1)), elapsed=elapsed)
+
+
+def _agent_processes(ps_output: str):
+    """``(tty, elapsed, argv)`` for every agent process in a ``ps`` dump, whatever its
+    prompt names (:func:`agent_lines`)."""
+    from . import runner
+
     for line in ps_output.splitlines():
         if not runner.is_agent_line(line):
             continue
@@ -1307,8 +1354,6 @@ def agent_lines(ps_output: str, owner: str, repo: str):
         fields = line.strip().split(maxsplit=2)
         if not fields:
             continue
-        tty = fields[0].removeprefix("/dev/")
         elapsed = elapsed_seconds(fields[1]) if len(fields) > 1 else None
         argv = fields[2] if elapsed is not None and len(fields) > 2 else line.strip()
-        for m in pat.finditer(opencodeapi.scan_text(argv)):
-            yield AgentLine(tty=tty, pr_number=int(m.group(1)), elapsed=elapsed)
+        yield fields[0].removeprefix("/dev/"), elapsed, argv
