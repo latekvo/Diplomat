@@ -29,8 +29,8 @@ conversations, so "can you review it?" after "#412 is ready" is understood as a 
 A message listing several PRs or issues acts on all of them, up to twenty: each gets its own row and
 its own place in the queue, the first it names first. One message is one kind of work: "review #12 and
 fix issue #34" does only what triage picks. Comms acts only on the watched repo: triage is told to
-leave out references to other repositories, and links and `owner/repo#N` references to them are
-removed before its numbers are checked.
+leave out references to other repositories, and GitHub links to their PRs, issues, discussions and
+commits are removed before its numbers are checked.
 
 So a "can you look at #412 when you get a chance?" lands #412's review ahead of every review you
 asked for - behind only what the monitors owe GitHub - and a "the installer dies on Node 22 for me"
@@ -68,7 +68,7 @@ Slack text is written by other people, so Comms treats it as data from end to en
   default).
 - Each answer is **validated** against its own message before anything acts on it: a number that
   appears neither in the message nor in an earlier message of its conversation, or only inside a
-  reference to another repository, is dropped. An unknown action, a review / fix / bump left with no
+  recognised reference to another repository, is dropped. An unknown action, a review / fix / bump left with no
   number, or an injection whose quoted evidence does not appear in the message itself (case, runs of
   whitespace and the fence's `|` quoting aside), becomes `none`. Each number must name an **open** PR
   (for a review) or an **open** issue (for a fix) of the watched repo, or nothing is queued for it.

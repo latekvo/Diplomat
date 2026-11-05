@@ -2666,6 +2666,18 @@ private func severalTargetsSmoke() throws {
     check(text("see <https://github.com/software-mansion/argent/pull/123|#123>").contains("#123")
           && text("software-mansion/argent#123") == "software-mansion/argent#123",
           "this repo's own label and owner/repo#N stay")
+    check(!CommsMatch.containsWord(text("other-fork/argent#123"), "123"),
+          "a fork of this repo's name is another repository")
+    for kept in ["can you review PR/issue#12?", "branch fix/login#12 needs a review",
+                 "PR/issue#12 and issue#13", "docs/comms.md#12"] {
+        check(text(kept) == kept, "\(kept) is nobody's repository: \(text(kept))")
+    }
+    let joined = text("https://github.com/other/radon/pull/9/files,https://github.com/software-mansion/argent/pull/13")
+    check(joined.hasSuffix("https://github.com/software-mansion/argent/pull/13") && !joined.contains("radon"),
+          "a foreign link stops where the next reference starts: \(joined)")
+    let stray = text("https://github.com/other/radon/pull/9|x and #13 > y")
+    check(CommsMatch.containsWord(stray, "13") && !stray.contains("radon"),
+          "only a Slack link's own brackets hold a label: \(stray)")
     func one(_ body: String) -> CommsMessage {
         CommsMessage(id: "D0SEVERAL1:1793064601.000001", channelID: "D0SEVERAL1", channelName: "U1", isDM: true,
                      userID: "U1", userName: "t", teamID: "T", text: body, ts: "1793064601.000001",

@@ -313,7 +313,9 @@ extension Store {
             // Folded before the next item's lookup suspends: a dispatch of this ask in
             // that gap finds its owner here (`commsSettled`).
             recordComms(lines)
-            if let line = act.feedLine { AuditLog.log("auto", act.verb, line) }
+            if let line = act.feedLine, act.verb != "comms-ping" || !item.message.isExtraTarget {
+                AuditLog.log("auto", act.verb, line)
+            }
             guard commsEnabled, !bannedNow.contains(item.message.userID) else { continue }
             if let work = commsQueuedWork(effect, act) {
                 replies.append(CommsReplyRequest(message: item.message, decision: item.decision,

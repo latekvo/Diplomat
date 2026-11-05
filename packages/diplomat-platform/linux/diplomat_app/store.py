@@ -1081,7 +1081,6 @@ class Store(QObject):
 
     @property
     def comms_batch_size(self) -> int:
-        """How many pings one triage call reads (``CommsSettings.batchSize``)."""
         return self._settings.value("commsBatchSize", comms.batch_defaults()[0], int)
 
     @comms_batch_size.setter
@@ -1090,7 +1089,6 @@ class Store(QObject):
 
     @property
     def comms_flush_after_secs(self) -> int:
-        """How old a shorter queue's newest ping gets before it is triaged anyway."""
         return self._settings.value("commsFlushAfterSecs", comms.batch_defaults()[2], int)
 
     @comms_flush_after_secs.setter

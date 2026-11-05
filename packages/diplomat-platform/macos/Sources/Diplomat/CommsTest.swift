@@ -1323,6 +1323,21 @@ enum CommsTest {
                 && slack.posts.last?["thread_ts"] as? String == several.message.ts)
         check("…and one more unread ping, not three (\(unreadBefore) -> \(store.commsUnread))",
               store.commsUnread == unreadBefore + 1)
+        let pingLinesBefore = feed("comms-ping").count
+        store.commsActRequests = false
+        let heldBack = inChannel("U0RITA001", "rita",
+                             CommsDecision(action: .review, numbers: [90101, 90102],
+                                           summary: "s", reason: "r"))
+        let heldRows = CommsTickResult.Item.targets(heldBack.message, heldBack.decision, maxTargets: 20)
+        CommsLog.append(CommsEvent(kind: .ping, id: heldBack.message.id, message: heldBack.message))
+        for row in heldRows {
+            CommsLog.append(CommsEvent(kind: .decision, id: row.message.id, decision: row.decision))
+        }
+        await store.applyComms(CommsTickResult(me: nil, pings: [heldBack.message], items: heldRows,
+                                               error: nil))
+        store.commsActRequests = true
+        check("…and one the switches hold back is one feed line, not two",
+              feed("comms-ping").count == pingLinesBefore + 1)
         store.commsReplyToReviews = false
         let unwanted = ask(.review, 90104)
         await apply([unwanted])

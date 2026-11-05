@@ -202,19 +202,20 @@ public struct CommsDecision: Codable, Equatable, Sendable {
                              summary: summary, reason: why, language: language)
     }
 
-    /// One decision for `n`, one of `numbers`.
     func targeting(_ n: Int) -> CommsDecision {
         CommsDecision(action: action, numbers: [n], summary: summary, reason: reason,
                       evidence: evidence, language: language)
     }
 
     /// `text` with its references into other repositories taken out: GitHub links with
-    /// their Slack or markdown label, `owner/repo#N`, and `name#N` for a repository one of
-    /// those names. A number there is not one of this repository's, even when this
-    /// repository has a PR that happens to wear it. A bare `name#N` stays, as `PR#12` must.
+    /// their Slack or markdown label, `owner/repo#N` sharing this repository's owner or
+    /// name, and `name#N` for a repository a link names. A number there is not one of this
+    /// repository's, even when this repository has a PR that happens to wear it. Any other
+    /// `word#N` or `word/word#N` stays: `PR#12` and `fix/login#12` are nobody's repository.
     public static func ownRepoText(_ text: String, settings: CommsSettings) -> String {
+        let url = #"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues|discussions|commit)/\w+[\w./#?=&%-]*"#
         guard let links = try? NSRegularExpression(
-            pattern: #"(?:<|\[[^\]\n]*\]\()?(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues|discussions|commit)/\w+(?:[/#?][^\s>|)\]]*)?(?:\|[^>\n]*>|>|\))?"#
+            pattern: "<\(url)(?:\\|[^>\\n]*)?>|\\[[^\\]\\n]*\\]\\(\(url)\\)|\(url)"
                 + #"|(?<![\w./-])([\w.-]+)/([\w.-]+)#\d+"#,
             options: [.caseInsensitive]) else { return text }
         let source = text as NSString
@@ -222,13 +223,15 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         var others = Set<String>()
         // Backwards, so each match's range still holds in `out`.
         for m in links.matches(in: text, range: NSRange(location: 0, length: source.length)).reversed() {
-            let isLink = m.range(at: 1).location != NSNotFound
-            let owner = source.substring(with: m.range(at: isLink ? 1 : 3))
-            let repo = source.substring(with: m.range(at: isLink ? 2 : 4))
-            guard owner.lowercased() != settings.owner.lowercased()
-                    || repo.lowercased() != settings.repo.lowercased() else { continue }
+            let group = stride(from: 1, to: 9, by: 2).first { m.range(at: $0).location != NSNotFound } ?? 1
+            let owner = source.substring(with: m.range(at: group))
+            let repo = source.substring(with: m.range(at: group + 1))
+            let sameOwner = owner.lowercased() == settings.owner.lowercased()
+            let sameRepo = repo.lowercased() == settings.repo.lowercased()
+            let isLink = group < 7
+            guard sameOwner != sameRepo || (isLink && !sameOwner) else { continue }
             out.replaceCharacters(in: m.range, with: "")
-            if repo.lowercased() != settings.repo.lowercased() { others.insert(repo) }
+            if isLink && !sameRepo { others.insert(repo) }
         }
         var kept = out as String
         for name in others {
@@ -517,7 +520,6 @@ public struct CommsToggles: Codable, Equatable, Sendable {
         self.replyToQuestions = replyToQuestions
     }
 
-    /// Whether the operator wants a reply to this answer.
     public func repliesTo(_ action: CommsAction) -> Bool {
         switch action {
         case .review:                        return replyToReviews
