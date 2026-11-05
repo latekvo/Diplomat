@@ -1322,7 +1322,7 @@ enum CommsTest {
                 && severalText.hasPrefix("[Diplomat]: W kolejce: review #90101, #90102 i #90103, przewidywany koniec: ")
                 && slack.posts.last?["thread_ts"] as? String == several.message.ts)
         check("…and one more unread ping, not three (\(unreadBefore) -> \(store.commsUnread))",
-              store.commsUnread <= unreadBefore + 1)
+              store.commsUnread == unreadBefore + 1)
         store.commsReplyToReviews = false
         let unwanted = ask(.review, 90104)
         await apply([unwanted])

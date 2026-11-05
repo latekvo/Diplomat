@@ -194,6 +194,17 @@ def test_a_message_asking_for_several_is_one_unread_ping(comms_store):
     assert comms_store.comms_unread == 2
 
 
+def test_a_message_naming_several_queues_each_first_named_first_under_one_ping_line(
+        comms_store, monkeypatch):
+    first = _message(1, "review #12 and #13 please")
+    second = {**first, "id": first["id"] + "#13"}
+    _tick(comms_store, monkeypatch,
+          (second, _decision("review", 13)), (first, _decision("review", 12)), pings=[first])
+    assert [t.id for t in comms_store.queued_tasks][:2] == ["review:12", "review:13"]
+    assert [e["id"] for e in _events() if e["kind"] == "action"] == [second["id"], first["id"]]
+    assert [e["action"] for e in _feed_lines()].count("comms-ping") == 1
+
+
 def test_the_tick_is_handed_the_settings(comms_store, monkeypatch):
     comms_store.comms_keywords_raw = "argent"
     comms_store.comms_sender_allowlist_raw = "kacper"

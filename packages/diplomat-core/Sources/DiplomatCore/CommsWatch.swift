@@ -594,7 +594,7 @@ public enum CommsWatch {
             CommsTS.number(String(id.split(separator: ":").last ?? "")).map { $0 > next } ?? false
         }.suffix(assets.seenLimit))
         state.save(in: dir)
-        flush(&state, settings: settings, now: now, dir: dir, assets: assets, classify: classify)
+        flush(&state, settings: settings, now: now, dir: dir, assets: assets, notice: notice, classify: classify)
         return finish(error: nil)
     }
 
@@ -603,7 +603,7 @@ public enum CommsWatch {
     /// conversation's context, so no sender is banned, nor anything asked, on the strength
     /// of another batch message's text.
     private static func flush(_ state: inout CommsState, settings: CommsSettings, now: Date,
-                              dir: URL, assets: CoreAssets.CommsModel,
+                              dir: URL, assets: CoreAssets.CommsModel, notice: (String) -> Void,
                               classify: (CommsBatch) -> [CommsDecision]) {
         func ts(_ m: CommsMessage) -> Int { CommsTS.number(m.ts) ?? 0 }
         state.queue.sort { (ts($0), $0.id) < (ts($1), $1.id) }
@@ -642,6 +642,11 @@ public enum CommsWatch {
         state.undelivered.replaceSubrange(at..., with: zip(messages, decisions).flatMap {
             CommsTickResult.Item.targets($0, $1, maxTargets: assets.maxTargets)
         })
+        for decision in decisions where decision.numbers.count > assets.maxTargets {
+            let left = decision.numbers.dropFirst(assets.maxTargets).map { "#\($0)" }
+            notice("A Slack message named more than the \(assets.maxTargets) a message can act on, "
+                   + "so nothing was done for \(left.joined(separator: ", ")).")
+        }
         state.classifierError = decisions.first {
             $0.reason.hasPrefix(CommsClassifier.failurePrefix)
         }?.reason

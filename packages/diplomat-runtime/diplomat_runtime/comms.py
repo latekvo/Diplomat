@@ -131,7 +131,7 @@ def tick_timeout(batch_size: int | None = None) -> float:
     one call per message of it when its answers hold an ``injection``."""
     t = tunables()
     slack = float(t.get("slackBudgetSecs", 120)) + _HTTP_GRACE_SECS
-    batch = float(t.get("batchSize", 8) if batch_size is None else batch_size)
+    batch = float(max(1, t.get("batchSize", 8) if batch_size is None else batch_size))
     call = float(t.get("classifierTimeoutSecs", 90))
     triage = (_LOGIN_SHELL_SECS
               + max(call, float(t.get("classifierSecsPerMessage", 5)) * batch)
@@ -284,7 +284,7 @@ def reply(request: dict) -> dict:
 
 def merge_replies(requests: list[dict]) -> list[dict]:
     """``CommsReplyRequest.merged``: one request per Slack message, so a message asking
-    for several gets one reply naming them all. A CLI that could not answer leaves the
+    for several gets one reply naming every target acted on. A CLI that could not answer leaves the
     requests as they are: the core still posts once per message, naming fewer."""
     if not any(is_extra_target(r.get("message") or {}) for r in requests):
         return requests

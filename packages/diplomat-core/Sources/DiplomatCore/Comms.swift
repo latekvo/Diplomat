@@ -197,7 +197,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
             .joined(separator: ", ")
         let noun = numbers.count - kept.count == 1 ? "a number" : "numbers"
         let why = "answered \(action.rawValue) \(dropped), \(noun) neither the message nor its "
-            + "conversation contains; \(reason)"
+            + "conversation names in this repository; \(reason)"
         return CommsDecision(action: kept.isEmpty ? .none : action, numbers: kept,
                              summary: summary, reason: why, language: language)
     }
@@ -208,20 +208,23 @@ public struct CommsDecision: Codable, Equatable, Sendable {
                       evidence: evidence, language: language)
     }
 
-    /// `text` with its references into other repositories taken out: GitHub links, and
-    /// `name#N` for a repository one of those links names. A number there is not one of
-    /// this repository's, even when this repository has a PR that happens to wear it.
+    /// `text` with its references into other repositories taken out: GitHub links with
+    /// their Slack or markdown label, `owner/repo#N`, and `name#N` for a repository one of
+    /// those names. A number there is not one of this repository's, even when this
+    /// repository has a PR that happens to wear it. A bare `name#N` stays, as `PR#12` must.
     public static func ownRepoText(_ text: String, settings: CommsSettings) -> String {
         guard let links = try? NSRegularExpression(
-            pattern: #"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues)/\d+"#,
+            pattern: #"(?:<|\[[^\]\n]*\]\()?(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues|discussions|commit)/\w+(?:[/#?][^\s>|)\]]*)?(?:\|[^>\n]*>|>|\))?"#
+                + #"|(?<![\w./-])([\w.-]+)/([\w.-]+)#\d+"#,
             options: [.caseInsensitive]) else { return text }
         let source = text as NSString
         let out = NSMutableString(string: text)
         var others = Set<String>()
         // Backwards, so each match's range still holds in `out`.
         for m in links.matches(in: text, range: NSRange(location: 0, length: source.length)).reversed() {
-            let owner = source.substring(with: m.range(at: 1))
-            let repo = source.substring(with: m.range(at: 2))
+            let isLink = m.range(at: 1).location != NSNotFound
+            let owner = source.substring(with: m.range(at: isLink ? 1 : 3))
+            let repo = source.substring(with: m.range(at: isLink ? 2 : 4))
             guard owner.lowercased() != settings.owner.lowercased()
                     || repo.lowercased() != settings.repo.lowercased() else { continue }
             out.replaceCharacters(in: m.range, with: "")
@@ -262,8 +265,8 @@ public struct CommsDecision: Codable, Equatable, Sendable {
 
     /// Field by field, so one bad field costs the decision its action instead of failing
     /// the object: an unknown action, or a number that is missing, fractional, a string or
-    /// a boolean, lands in `init` as something it refuses. `number` alone is what an answer
-    /// logged before `numbers` existed holds.
+    /// a boolean, lands in `init` as something it refuses. An older log line has `number`
+    /// alone.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let summary = (try? c.decode(String.self, forKey: .summary)) ?? ""

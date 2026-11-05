@@ -10,7 +10,7 @@ Every minute Comms asks Slack for messages that reached you since it last looked
 **ping** - a row on the Comms screen (the speech-bubble button in the panel header, which carries
 an unread count), a line in the activity feed under its own **Comms** chip, and a system notification.
 
-Then it **triages** the message - a short, sandboxed model call that answers one of six words -
+Then it **triages** the message - a short, sandboxed model call that answers one of seven words -
 and acts on the answer through the same queue every other task goes through. Triage runs in
 **batches**: a ping waits in a queue until it holds eight, or until its newest message is 30
 minutes old (both are [settings](#settings)), and the whole batch is one call. Each call also reads the earlier pings of the same
@@ -22,12 +22,15 @@ conversations, so "can you review it?" after "#412 is ready" is understood as a 
 | **fix_issue** #N… | queues a fix of each open issue named, as the Fix-issues wizard would, at the front of the requested fixes |
 | **bump** #N… | moves whatever is already queued for each one named to the front of its band; starts nothing new |
 | **investigate** | queues an **Investigate** agent that reproduces and researches the report and writes a markdown report |
+| **question** | answers it while you are away, when the project's documentation settles it (see [Reply to…](#settings)) |
 | **none** | the ping, and nothing else |
 | **injection** | [bans the sender](#bans): the message tries to hijack an agent instead of asking you for something |
 
 A message listing several PRs or issues acts on all of them, up to twenty: each gets its own row and
-its own place in the queue, the first it names first. Links into other repositories are left out:
-Comms acts only on the watched repo.
+its own place in the queue, the first it names first. One message is one kind of work: "review #12 and
+fix issue #34" does only what triage picks. Comms acts only on the watched repo: triage is told to
+leave out references to other repositories, and links and `owner/repo#N` references to them are
+removed before its numbers are checked.
 
 So a "can you look at #412 when you get a chance?" lands #412's review ahead of every review you
 asked for - behind only what the monitors owe GitHub - and a "the installer dies on Node 22 for me"
@@ -157,7 +160,8 @@ All of them are on the **Comms (Slack)** card.
 - **Batch interval** (**default 30m**) - how old the newest ping of a shorter batch gets before it is
   triaged anyway: one minute to a day, on a logarithmic slider.
 - **Reply in Slack** (**default on**) - whether Comms writes back at all. A reply opens with
-  `[Diplomat]:`, in the language of the message (Polish, English for anything else), only in the
+  `[Diplomat]:`, in the language of the message (Polish, English for anything else; an away answer is
+  written in the question's own language), only in the
   conversation the message was written in, at most once per message, however many PRs it asked for.
 - **Reply to…** **questions** (**default on**) / **reviews** / **fixes** / **investigations** (**default
   off**) - which kinds get one. A question is answered while you are away, from the project's
@@ -186,8 +190,8 @@ binary triage and the login refresh run.
   trimmed to its newest half past 2 MB.
 - `reports/<id>.md` - the investigations' reports.
 
-To check the login and see what triage would do with the last hour of Slack (its oldest eight
-messages, triaged as one batch at once rather than queued), without queueing anything or touching
+To check the login and see what triage would do with the last hour of Slack (its oldest batch of
+messages, triaged at once rather than queued), without queueing anything or touching
 the files above:
 `DIPLOMAT_COMMS_POLL=1 ./Diplomat.app/Contents/MacOS/Diplomat` (Linux: `DIPLOMAT_COMMS_POLL=1
 ./diplomat`). It exits non-zero when the poll fails. With `DIPLOMAT_COMMS_DIR` set it polls that
@@ -202,8 +206,10 @@ messages without queueing their asks.
 - One poll takes at most eight new messages, and triages at most one batch; the rest wait for the
   next poll, oldest first. It reads at most 100 matches per search; anything older than
   those is reported in the activity feed, not triaged.
-- A ping can wait up to the batch interval for its triage, and so for the review or investigation it asks for;
-  longer while Slack is failing, as a poll that cannot reach Slack triages nothing.
+- A ping waits for its triage, and so for the review or investigation it asks for, until its batch is
+  full or the batch's newest message reaches the batch interval. Each new ping restarts that interval,
+  so under a steady trickle the wait is set by the batch size. Longer while Slack is failing, as a poll
+  that cannot reach Slack triages nothing.
 - The context is earlier **pings** only: what Comms already saw of the conversation. Your own replies
   and messages that were not pings are not in it.
 - On Linux the Slack calls go through `curl`, which must be installed.

@@ -3737,8 +3737,9 @@ class Store(QObject):
         refused = (self.comms_enabled and entry.get("sender_banned")
                    and kind not in ("none", "ban"))
         line = f"{where} from {sender}: {self.comms_snippet(message.get('text', ''))}"
-        activity.log("auto", "comms-ping",
-                     line + (f" ({self.COMMS_SENDER_BANNED_OUTCOME})" if refused else ""))
+        if not comms.is_extra_target(message):
+            activity.log("auto", "comms-ping",
+                         line + (f" ({self.COMMS_SENDER_BANNED_OUTCOME})" if refused else ""))
         if kind == "ban":
             # Reported in the tick's worker half, so it stands whatever the switch says.
             outcome = self._comms_ban_outcome(effect["ban"], entry["reported"])

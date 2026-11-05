@@ -327,6 +327,16 @@ def test_the_reply_switch_sits_with_the_comms_switches_and_writes_through(make_v
     assert make_view()._sw_comms_replies.isChecked() is False
 
 
+def test_the_reply_kinds_show_only_while_replies_are_on(make_view):
+    view = make_view()
+    assert view._comms_reply_kinds.isHidden() is False
+    view._sw_comms_replies.setChecked(False)
+    assert view._comms_reply_kinds.isHidden() is True
+    assert make_view()._comms_reply_kinds.isHidden() is True
+    view._sw_comms_replies.setChecked(True)
+    assert view._comms_reply_kinds.isHidden() is False
+
+
 def test_only_questions_get_a_reply_until_the_operator_says_otherwise(make_view):
     from diplomat_app.store import app_settings
 
@@ -339,7 +349,7 @@ def test_only_questions_get_a_reply_until_the_operator_says_otherwise(make_view)
     assert toggles["replyToQuestions"] is True
     for key, sw in switches.items():
         assert sw.isChecked() is False and toggles[key] is False
-        assert _row_of(sw).parent() is _row_of(view._sw_comms_replies).parent()
+        assert _row_of(sw).parent() is view._comms_reply_kinds
     view._sw_comms_reply_fixes.setChecked(True)
     view._sw_comms_reply_questions.setChecked(False)
     assert app_settings().value("commsReplyToFixes") is True

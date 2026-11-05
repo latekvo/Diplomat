@@ -1048,20 +1048,24 @@ class SettingsView(QWidget):
             inner, "Reply in Slack", st.comms_replies, "comms_replies",
             "In the message's language (Polish or English), only ever in the conversation "
             "it was written in, and at most once per message.")
+        self._comms_reply_kinds, kinds = nested_settings(_BLUE)
+        inner.addWidget(self._comms_reply_kinds)
+        self._comms_reply_kinds.setVisible(st.comms_replies)
+        self._sw_comms_replies.toggled.connect(self._comms_reply_kinds.setVisible)
         self._sw_comms_reply_questions = self._comms_switch(
-            inner, "Reply to questions", st.comms_reply_to_questions,
+            kinds, "Reply to questions", st.comms_reply_to_questions,
             "comms_reply_to_questions",
             "While you are away, a question your repo's documentation answers gets that "
             "answer.")
         self._sw_comms_reply_reviews = self._comms_switch(
-            inner, "Reply to review asks", st.comms_reply_to_reviews, "comms_reply_to_reviews",
+            kinds, "Reply to review asks", st.comms_reply_to_reviews, "comms_reply_to_reviews",
             "A review a ping queued, or found queued or running, gets a reply saying when "
             "it should be done.")
         self._sw_comms_reply_fixes = self._comms_switch(
-            inner, "Reply to fix asks", st.comms_reply_to_fixes, "comms_reply_to_fixes",
+            kinds, "Reply to fix asks", st.comms_reply_to_fixes, "comms_reply_to_fixes",
             "So does a fix.")
         self._sw_comms_reply_investigations = self._comms_switch(
-            inner, "Reply to investigations", st.comms_reply_to_investigations,
+            kinds, "Reply to investigations", st.comms_reply_to_investigations,
             "comms_reply_to_investigations", "So does an investigation.")
         _, step, most = comms.away_after_secs()
         self._comms_away = SliderSetting(

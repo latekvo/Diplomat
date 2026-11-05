@@ -834,7 +834,7 @@ struct SettingsView: View {
             SliderSetting(label: title,
                           value: Binding(
                               get: { Double(CommsSliderStops.index(of: value.wrappedValue, in: stops)) },
-                              set: { value.wrappedValue = stops[Int($0.rounded())] }
+                              set: { value.wrappedValue = stops[min(Int($0.rounded()), stops.count - 1)] }
                           ),
                           range: 0...Double(max(1, stops.count - 1)),
                           step: 1,

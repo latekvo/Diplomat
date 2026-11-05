@@ -2127,7 +2127,7 @@ private func numberSmoke() {
     let refused = r.items.filter { unnamed.contains($0.message.text) }.map(\.decision)
     check(refused.count == unnamed.count
           && refused.allSatisfy { $0.action == .none && $0.number == 0
-              && $0.reason.contains("a number neither the message nor its conversation contains") },
+              && $0.reason.contains("a number neither the message nor its conversation names in this repository") },
           "…anywhere else it is none, saying why: \(refused.first.map(\.reason) ?? "")")
     let logged = CommsLog.read(in: dir).filter { $0.kind == .decision && $0.decision?.action == .review }
     check(logged.count == named.count, "…and the log records the checked decision")
@@ -2654,6 +2654,18 @@ private func severalTargetsSmoke() throws {
     check(text("x github.com/a/radon/pull/1 wymaga RADON#292") == "x  wymaga "
           && text("PR#12 and radon#292") == "PR#12 and radon#292",
           "name#N goes only for a repository a link names, so PR#12 is never taken for one")
+    for spelling in ["<https://github.com/other/radon/pull/123|#123>",
+                     "[#123](https://github.com/other/radon/pull/123)",
+                     "software-mansion/radon#123",
+                     "https://github.com/other/radon/discussions/123",
+                     "https://github.com/other/radon/commit/123",
+                     "https://github.com/other/radon/pull/9#issuecomment-123"] {
+        check(!CommsMatch.containsWord(text("see \(spelling) ok"), "123"),
+              "another repo's \(spelling) holds no number of this one: \(text(spelling))")
+    }
+    check(text("see <https://github.com/software-mansion/argent/pull/123|#123>").contains("#123")
+          && text("software-mansion/argent#123") == "software-mansion/argent#123",
+          "this repo's own label and owner/repo#N stay")
     func one(_ body: String) -> CommsMessage {
         CommsMessage(id: "D0SEVERAL1:1793064601.000001", channelID: "D0SEVERAL1", channelName: "U1", isDM: true,
                      userID: "U1", userName: "t", teamID: "T", text: body, ts: "1793064601.000001",
@@ -2729,6 +2741,21 @@ private func severalTargetsSmoke() throws {
     check(many.count == assets.maxTargets && assets.maxTargets == 20
           && many.last?.decision.number == 1 && many.first?.decision.number == 20,
           "one message acts on at most maxTargets, its first ones: \(many.count)")
+
+    section("comms: targets past the limit are reported")
+    let overDir = scratchDir("several-over")
+    defer { try? FileManager.default.removeItem(at: overDir) }
+    let overSlack = StubSlack()
+    CommsState(watermark: "\(w).000000", me: slackMe).save(in: overDir)
+    let overNumbers = Array(1...22)
+    overSlack.messages = [dm("\(w + 10).000100", overNumbers.map { "#\($0)" }.joined(separator: " "))]
+    let over = CommsWatch.tick(settings: settings, now: at, dir: overDir, api: overSlack.api) { batch in
+        batch.messages.map { _ in
+            CommsDecision(action: .review, numbers: overNumbers, summary: "s", reason: "r")
+        }
+    }
+    check(over.items.count == 20 && over.notices.count == 1 && over.notices[0].contains("#21, #22."),
+          "the operator is told which it left out: \(over.notices)")
 
     section("comms: one reply to a message asking for several, in its language")
     let now = Date(timeIntervalSince1970: 1_793_700_000)   // 2026-11-03 11:00 Warsaw

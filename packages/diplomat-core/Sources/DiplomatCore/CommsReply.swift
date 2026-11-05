@@ -3,7 +3,7 @@ import Foundation
 /// Work a ping put in the queue, or found there or already under way, as the front-end
 /// that acted on it sees it: what an acknowledgement names and estimates.
 public struct CommsQueuedWork: Codable, Equatable, Sendable {
-    /// `review`, `fix_issue` or `investigate`: a key of `replies.what` and `replies.runSecs`.
+    /// `review`, `fix_issue` or `investigate`: a key of `replies.languages`' `what` and of `replies.runSecs`.
     public var kind: String
     /// The PR or issue; unused for an investigation.
     public var number: Int
