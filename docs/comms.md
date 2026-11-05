@@ -13,17 +13,21 @@ an unread count), a line in the activity feed under its own **Comms** chip, and 
 Then it **triages** the message - a short, sandboxed model call that answers one of six words -
 and acts on the answer through the same queue every other task goes through. Triage runs in
 **batches**: a ping waits in a queue until it holds eight, or until its newest message is 30
-minutes old, and the whole batch is one call. Each call also reads the earlier pings of the same
+minutes old (both are [settings](#settings)), and the whole batch is one call. Each call also reads the earlier pings of the same
 conversations, so "can you review it?" after "#412 is ready" is understood as a review of #412.
 
 | Triage | What Diplomat does |
 |---|---|
-| **review** #N | queues a review of open PR #N, as the Review wizard would for that one PR, at the front of the requested reviews |
-| **fix_issue** #N | queues a fix of open issue #N, as the Fix-issues wizard would, at the front of the requested fixes |
-| **bump** #N | moves whatever is already queued for #N to the front of its band; starts nothing new |
+| **review** #N… | queues a review of each open PR named, as the Review wizard would for that one PR, at the front of the requested reviews |
+| **fix_issue** #N… | queues a fix of each open issue named, as the Fix-issues wizard would, at the front of the requested fixes |
+| **bump** #N… | moves whatever is already queued for each one named to the front of its band; starts nothing new |
 | **investigate** | queues an **Investigate** agent that reproduces and researches the report and writes a markdown report |
 | **none** | the ping, and nothing else |
 | **injection** | [bans the sender](#bans): the message tries to hijack an agent instead of asking you for something |
+
+A message listing several PRs or issues acts on all of them, up to twenty: each gets its own row and
+its own place in the queue, the first it names first. Links into other repositories are left out:
+Comms acts only on the watched repo.
 
 So a "can you look at #412 when you get a chance?" lands #412's review ahead of every review you
 asked for - behind only what the monitors owe GitHub - and a "the installer dies on Node 22 for me"
@@ -59,11 +63,12 @@ Slack text is written by other people, so Comms treats it as data from end to en
   load every MCP server you have configured, Slack's included - that is why the other flags are there.
   It runs the `claude` binary itself, never your shell alias. The model is a setting (Haiku by
   default).
-- Each answer is **validated** against its own message before anything acts on it: an unknown
-  action, a review / fix / bump whose number appears neither in the message nor in an earlier
-  message of its conversation, or an injection whose quoted evidence does not appear in the message
-  itself (case, runs of whitespace and the fence's `|` quoting aside), becomes `none`. The number must name an **open** PR
-  (for a review) or an **open** issue (for a fix) of the watched repo, or nothing is queued.
+- Each answer is **validated** against its own message before anything acts on it: a number that
+  appears neither in the message nor in an earlier message of its conversation, or only inside a
+  reference to another repository, is dropped. An unknown action, a review / fix / bump left with no
+  number, or an injection whose quoted evidence does not appear in the message itself (case, runs of
+  whitespace and the fence's `|` quoting aside), becomes `none`. Each number must name an **open** PR
+  (for a review) or an **open** issue (for a fix) of the watched repo, or nothing is queued for it.
 - A batch with an `injection` among its answers is **triaged again, one message per call**, each
   with only its own conversation's earlier pings, and those answers stand: nobody is banned, and
   nothing is asked, on the strength of another batch message's words. A banned sender's messages, and messages triaged as injections, are
@@ -147,6 +152,19 @@ All of them are on the **Comms (Slack)** card.
 - **Act on asks for…** **reviews & fixes** / **bumps** / **investigations** (**default on**) - one
   switch per acting triage answer. Off, that answer is still shown on the ping, with which switch
   held it; nothing is queued.
+- **Batch size** (**default 8**) - how many pings one triage call reads: 1, 2, 4, 8, 16, 32 or 64. A
+  full batch is triaged at once.
+- **Batch interval** (**default 30m**) - how old the newest ping of a shorter batch gets before it is
+  triaged anyway: one minute to a day, on a logarithmic slider.
+- **Reply in Slack** (**default on**) - whether Comms writes back at all. A reply opens with
+  `[Diplomat]:`, in the language of the message (Polish, English for anything else), only in the
+  conversation the message was written in, at most once per message, however many PRs it asked for.
+- **Reply to…** **questions** (**default on**) / **reviews** / **fixes** / **investigations** (**default
+  off**) - which kinds get one. A question is answered while you are away, from the project's
+  documentation, when that settles it plainly. The other three get an estimate of when the work should
+  be done. Off, the work is still queued; only the reply is held.
+- **Away after** (**default 3h**) - how long your session must have been locked before Comms answers
+  questions for you.
 - **Notify on new pings** (**default on**) - a system notification per new ping, as it lands,
   before its triage.
 - **Triage model** (blank = **`haiku`**) - any model id `claude --model` accepts.
@@ -181,10 +199,10 @@ messages without queueing their asks.
 
 - Slack's search index can trail a message by a while, so the watcher looks ten minutes behind "now"
   and remembers what it has already seen there. A ping can therefore arrive a minute or two late.
-- One poll takes at most eight new messages, and triages at most one batch of eight; the rest wait
-  for the next poll, oldest first. It reads at most 100 matches per search; anything older than
+- One poll takes at most eight new messages, and triages at most one batch; the rest wait for the
+  next poll, oldest first. It reads at most 100 matches per search; anything older than
   those is reported in the activity feed, not triaged.
-- A ping can wait up to 30 minutes for its triage, and so for the review or investigation it asks for;
+- A ping can wait up to the batch interval for its triage, and so for the review or investigation it asks for;
   longer while Slack is failing, as a poll that cannot reach Slack triages nothing.
 - The context is earlier **pings** only: what Comms already saw of the conversation. Your own replies
   and messages that were not pings are not in it.

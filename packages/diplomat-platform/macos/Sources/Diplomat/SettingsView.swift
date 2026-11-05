@@ -770,9 +770,11 @@ struct SettingsView: View {
                            symbol: "person.2.fill")
             }
             commsActionsBlock
+            commsBatchRows
             SettingRow(title: "Reply in Slack", detail: SettingsView.commsRepliesDetail) {
                 switchControl("Reply in Slack", $store.commsReplies)
             }
+            if store.commsReplies { commsRepliesBlock }
             commsAwayRow
             SettingRow(title: "Notify on new pings") {
                 switchControl("Notify on new pings", $store.commsNotify)
@@ -801,6 +803,58 @@ struct SettingsView: View {
                 ToggleChip(label: "investigations", isOn: $store.commsActInvestigations, tint: .blue,
                            help: "Queue an agent that reproduces a reported problem and writes a report")
             }
+        }
+    }
+
+    private var commsRepliesBlock: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("REPLY TO…")
+                .font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary).kerning(0.5)
+            HStack(spacing: 5) {
+                ToggleChip(label: "questions", isOn: $store.commsReplyToQuestions, tint: .blue,
+                           help: "While you are away, answer a question the project's documentation settles")
+                ToggleChip(label: "reviews", isOn: $store.commsReplyToReviews, tint: .blue,
+                           help: "Say when a review a message asked for should be done")
+                ToggleChip(label: "fixes", isOn: $store.commsReplyToFixes, tint: .blue,
+                           help: "Say when a fix a message asked for should be done")
+                ToggleChip(label: "investigations", isOn: $store.commsReplyToInvestigations, tint: .blue,
+                           help: "Say when an investigation a message started should be done")
+            }
+        }
+    }
+
+    private static let commsBatchSizes = (try? CoreAssets.comms())?.batchSizes ?? [8]
+    private static let commsFlushChoices = (try? CoreAssets.comms())?.flushAfterChoices ?? [1800]
+
+    /// Each slider's position is an index into the stops `comms.json` gives it.
+    private func commsStopsRow(title: String, detail: String, stops: [Int], value: Binding<Int>,
+                               format: @escaping (Int) -> String) -> some View {
+        let at = CommsSliderStops.index(of: value.wrappedValue, in: stops)
+        return SettingRow(title: title, detail: detail, stacked: true) {
+            SliderSetting(label: title,
+                          value: Binding(
+                              get: { Double(CommsSliderStops.index(of: value.wrappedValue, in: stops)) },
+                              set: { value.wrappedValue = stops[Int($0.rounded())] }
+                          ),
+                          range: 0...Double(max(1, stops.count - 1)),
+                          step: 1,
+                          badge: format(stops[at]),
+                          minLabel: format(stops.first ?? 0),
+                          maxLabel: format(stops.last ?? 0),
+                          tint: .blue)
+        }
+    }
+
+    private var commsBatchRows: some View {
+        Group {
+            commsStopsRow(title: "Batch size",
+                          detail: "How many pings one triage call reads. A full batch is triaged at once.",
+                          stops: SettingsView.commsBatchSizes, value: $store.commsBatchSize,
+                          format: { String($0) })
+            commsStopsRow(title: "Batch interval",
+                          detail: "How old the newest ping of a shorter batch gets before it is triaged anyway.",
+                          stops: SettingsView.commsFlushChoices, value: $store.commsFlushAfterSecs,
+                          format: { Fmt.duration(TimeInterval($0)) })
         }
     }
 
@@ -858,11 +912,12 @@ struct SettingsView: View {
         """
 
     private static let commsRepliesDetail = """
-        Replies start with [Diplomat]: and go only to the conversation the message was \
-        written in, in its thread, once per message. A review, fix or investigation a \
-        ping queued (or found queued or running) gets an estimate of when it should be \
-        done. While you are away, a question about the project is answered from its \
-        documentation when that settles it plainly, and left alone otherwise.
+        Replies start with [Diplomat]:, in the message's language (Polish or English), and \
+        go only to the conversation the message was written in, in its thread, once per \
+        message. While you are away, a question about the project is answered from its \
+        documentation when that settles it plainly, and left alone otherwise. A review, fix \
+        or investigation a ping queued (or found queued or running) can get an estimate of \
+        when it should be done.
         """
 
     private static let commsAwayDetail =

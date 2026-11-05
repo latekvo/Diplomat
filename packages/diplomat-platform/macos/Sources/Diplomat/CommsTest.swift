@@ -73,6 +73,14 @@ enum CommsTest {
                                author: "dave", isOpen: true, state: "OPEN"),
             90046: CommsTarget(number: 90046, url: "https://github.com/o/r/pull/90046",
                                author: "dave", isOpen: true, state: "OPEN"),
+            90101: CommsTarget(number: 90101, url: "https://github.com/o/r/pull/90101",
+                             author: "dave", isOpen: true, state: "OPEN"),
+            90102: CommsTarget(number: 90102, url: "https://github.com/o/r/pull/90102",
+                             author: "dave", isOpen: true, state: "OPEN"),
+            90103: CommsTarget(number: 90103, url: "https://github.com/o/r/pull/90103",
+                             author: "dave", isOpen: true, state: "OPEN"),
+            90104: CommsTarget(number: 90104, url: "https://github.com/o/r/pull/90104",
+                             author: "dave", isOpen: true, state: "OPEN"),
             90090: CommsTarget(number: 90090, url: "https://github.com/o/r/pull/90090",
                                author: "ivan", isOpen: true, state: "OPEN"),
             90091: CommsTarget(number: 90091, url: "https://github.com/o/r/issues/90091",
@@ -1139,6 +1147,10 @@ enum CommsTest {
         unsetenv("DIPLOMAT_COMMS_AWAY")
         store.commsLockedSince = nil
         store.commsReplies = true
+        store.commsReplyToReviews = true
+        store.commsReplyToFixes = true
+        store.commsReplyToInvestigations = true
+        store.commsReplyToQuestions = true
         store.commsAwayAfterSecs = 3 * 3600
         store.autoTaskLimit = 2
         var state = CommsState.load()
@@ -1195,7 +1207,7 @@ enum CommsTest {
             let eta = CommsReplier.etaText(
                 CommsReplier.eta(work, now: at, assets: try! CoreAssets.comms()),
                 now: at, timezone: nil, roundMins: r?.roundMins ?? 5)
-            return (r?.prefix ?? "") + CommsText.fill(r?.queued ?? "", [
+            return (r?.prefix ?? "") + CommsText.fill(r?.language("en")?.queued ?? "", [
                 "what": "a review of #90090", "eta": eta])
         }
         let text = post?["message"] as? String ?? ""
@@ -1286,12 +1298,44 @@ enum CommsTest {
         store.commsEnabled = true
         store.commsLockedSince = nil
 
+        // One message asking for several, in Polish, as the tick hands it over.
+        let several = inChannel("U0RITA001", "rita",
+                                CommsDecision(action: .review, numbers: [90101, 90102, 90103],
+                                              summary: "s", reason: "r", language: "pl"))
+        let rows = CommsTickResult.Item.targets(several.message, several.decision, maxTargets: 20)
+        CommsLog.append(CommsEvent(kind: .ping, id: several.message.id, message: several.message))
+        for row in rows {
+            CommsLog.append(CommsEvent(kind: .decision, id: row.message.id, decision: row.decision))
+        }
+        let unreadBefore = store.commsUnread
+        await store.applyComms(CommsTickResult(me: nil, pings: [several.message], items: rows,
+                                               error: nil))
+        await settled()
+        let order = store.queuedTasks.map(\.id).filter { $0.hasPrefix("review:9010") }
+        check("a message asking for three PRs queues all three, the first asked for first: \(order)",
+              order == ["review:90101", "review:90102", "review:90103"])
+        check("…each its own row, wearing its own queue key",
+              rows.allSatisfy { folded($0)?.queueKey == "review:\($0.decision.number)" })
+        let severalText = slack.posts.last?["message"] as? String ?? ""
+        check("…one reply naming all three, in the message's language: \(severalText.debugDescription)",
+              slack.posts.count == 4
+                && severalText.hasPrefix("[Diplomat]: W kolejce: review #90101, #90102 i #90103, przewidywany koniec: ")
+                && slack.posts.last?["thread_ts"] as? String == several.message.ts)
+        check("…and one more unread ping, not three (\(unreadBefore) -> \(store.commsUnread))",
+              store.commsUnread <= unreadBefore + 1)
+        store.commsReplyToReviews = false
+        let unwanted = ask(.review, 90104)
+        await apply([unwanted])
+        await settled()
+        check("with replies to reviews off, a queued review gets none (\(slack.posts.count) posts)",
+              outcome(unwanted).hasPrefix("queued") && slack.posts.count == 4)
+        store.commsReplyToReviews = true
         store.commsReplies = false
         let offAsk = ask(.review, 90092)
         await apply([offAsk])
         await settled()
         check("with replies switched off, queued work is not acknowledged (\(tally()))",
-              outcome(offAsk).hasPrefix("queued") && slack.posts.count == 3)
+              outcome(offAsk).hasPrefix("queued") && slack.posts.count == 4)
         store.commsReplies = true
 
         let question = ask(.question, 0)
@@ -1303,7 +1347,7 @@ enum CommsTest {
         await settled()
         check("a question is not answered while the operator is here, nor an hour into a lock "
               + "(\(tally()))",
-              slack.posts.count == 3 && answers.ids.isEmpty && outcome(question) == "ping only")
+              slack.posts.count == 4 && answers.ids.isEmpty && outcome(question) == "ping only")
 
         store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
         let awayQuestion = ask(.question, 0)
@@ -1312,7 +1356,7 @@ enum CommsTest {
         let answer = slack.posts.last?["message"] as? String ?? ""
         check("a question while the operator has been locked out for hours is answered from the "
               + "docs, in its own thread, cleaned: \(answer.debugDescription)",
-              slack.posts.count == 4 && answers.ids == [awayQuestion.message.id]
+              slack.posts.count == 5 && answers.ids == [awayQuestion.message.id]
                 && answer == "[Diplomat]: Ignacy is currently away, but I can answer that for you. "
                     + "Yes: the screen-recording tools record the simulator to an mp4. Ask here for more."
                 && slack.posts.last?["thread_ts"] as? String == awayQuestion.message.ts)

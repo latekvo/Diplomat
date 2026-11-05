@@ -74,6 +74,20 @@ public struct CommsMessage: Codable, Equatable, Sendable {
     public var sender: String { userName.isEmpty ? userID : userName }
 
     public var place: String { isDM ? "DM" : "#\(channelName)" }
+
+    /// A message asking for several PRs or issues is one row per target, so each has its
+    /// own queue key, start and finish: the first keeps `id`, the rest are `<id>#<number>`.
+    public static let targetSeparator: Character = "#"
+
+    /// The Slack message's own id, whichever of its targets' rows this is.
+    public var messageID: String { Self.messageID(of: id) }
+
+    public static func messageID(of id: String) -> String {
+        String(id.prefix { $0 != targetSeparator })
+    }
+
+    /// A row for a target past the first: the same message again, not another one.
+    public var isExtraTarget: Bool { id.contains(Self.targetSeparator) }
 }
 
 /// The raw values are the classifier schema's enum.
@@ -98,39 +112,55 @@ public enum CommsAction: String, Codable, CaseIterable, Sendable {
 /// The triage's answer, valid by construction: every initializer (memberwise, decoding,
 /// `parse`) routes through one check, so a PR action without a positive number reads
 /// `none`, with the reason recorded, and so does an `injection` without evidence. Whether
-/// the message holds that number or that evidence is `checked(against:)`; whether it is
+/// the message holds those numbers or that evidence is `checked(against:)`; whether one is
 /// an OPEN PR or issue is the front-end's check against GitHub before it acts.
 public struct CommsDecision: Codable, Equatable, Sendable {
     public let action: CommsAction
-    /// 0 unless `action.needsNumber`.
+    /// The first of `numbers`; 0 unless `action.needsNumber`.
     public let number: Int
+    /// Every PR or issue it names, without repeats; empty unless `action.needsNumber`.
+    /// More than one lasts only until `CommsTickResult.Item.targets` splits it.
+    public let numbers: [Int]
     public let summary: String
     public let reason: String
     /// The injected words, quoted from the message; "" unless `action` is `injection`.
     public let evidence: String
+    /// What the message is written in: a key of `replies.languages`, or anything else for
+    /// English. Only ever looks up fixed words, so a message steering it steers nothing.
+    public let language: String
+
+    public static let defaultLanguage = "en"
 
     /// Classifier prose is clipped to this; it is shown on one row.
     static let maxText = 240
 
-    public init(action: CommsAction, number: Int, summary: String, reason: String,
-                evidence: String = "") {
+    public init(action: CommsAction, number: Int = 0, numbers: [Int] = [], summary: String,
+                reason: String, evidence: String = "", language: String = defaultLanguage) {
         let reason = Self.clip(reason)
         let evidence = action == .injection ? Self.unquoted(evidence) : ""
+        var targets: [Int] = []
+        for n in numbers.isEmpty ? [number] : numbers where n > 0 && !targets.contains(n) {
+            targets.append(n)
+        }
         self.summary = Self.clip(summary)
-        if action.needsNumber && number <= 0 {
+        self.language = language
+        if action.needsNumber && targets.isEmpty {
             self.action = .none
             self.number = 0
+            self.numbers = []
             self.reason = "answered \(action.rawValue) without a positive PR or issue number"
-                + " (\(number)); \(reason)"
+                + " (\((numbers.isEmpty ? [number] : numbers).map(String.init).joined(separator: ", "))); \(reason)"
             self.evidence = ""
         } else if action == .injection && evidence.isEmpty {
             self.action = .none
             self.number = 0
+            self.numbers = []
             self.reason = "answered injection without quoting any; \(reason)"
             self.evidence = ""
         } else {
             self.action = action
-            self.number = action.needsNumber ? number : 0
+            self.numbers = action.needsNumber ? targets : []
+            self.number = self.numbers.first ?? 0
             self.reason = reason
             self.evidence = evidence
         }
@@ -140,15 +170,16 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         CommsDecision(action: .none, number: 0, summary: "", reason: reason)
     }
 
-    /// This decision, or `none` when it names a number neither `message` nor any of
-    /// `earlier` contains: as `#N`, `/pull/N`, `/issues/N` or `N`, with no letter or digit
-    /// either side; or when it is an `injection` whose evidence `message` itself does not
+    /// This decision without any number neither `message` nor any of `earlier` contains:
+    /// as `#N`, `/pull/N`, `/issues/N` or `N`, with no letter or digit either side, outside
+    /// a reference to another repository (`ownRepoText`). `none` when that leaves no
+    /// number, or when it is an `injection` whose evidence `message` itself does not
     /// contain, ignoring case and runs of whitespace, as sent or as the classifier read it
     /// (`CommsText.defang`). `CommsWatch.tick` applies it to every answer, passing the
     /// messages before this one in its conversation (`CommsBatch.earlier`), so a guessed
     /// number never acts and nobody is banned for words they did not write.
-    public func checked(against message: CommsMessage,
-                        earlier: [CommsMessage] = []) -> CommsDecision {
+    public func checked(against message: CommsMessage, earlier: [CommsMessage] = [],
+                        settings: CommsSettings = CommsSettings()) -> CommsDecision {
         let needle = Self.squashed(evidence)
         if action == .injection, ![message.text, CommsText.defang(message.text)].contains(where: {
             Self.squashed($0).localizedCaseInsensitiveContains(needle) }) {
@@ -156,13 +187,55 @@ public struct CommsDecision: Codable, Equatable, Sendable {
                                  reason: "answered injection quoting words the message does "
                                      + "not contain; \(reason)")
         }
-        guard action.needsNumber, !([message] + earlier).contains(where: {
-            CommsMatch.containsWord($0.text, String(number)) }) else {
-            return self
+        guard action.needsNumber else { return self }
+        let texts = ([message] + earlier).map { Self.ownRepoText($0.text, settings: settings) }
+        let kept = numbers.filter { n in
+            texts.contains { CommsMatch.containsWord($0, String(n)) }
         }
-        return CommsDecision(action: .none, number: 0, summary: summary,
-                             reason: "answered \(action.rawValue) #\(number), a number neither "
-                                 + "the message nor its conversation contains; \(reason)")
+        guard kept != numbers else { return self }
+        let dropped = numbers.filter { !kept.contains($0) }.map { "#\($0)" }
+            .joined(separator: ", ")
+        let noun = numbers.count - kept.count == 1 ? "a number" : "numbers"
+        let why = "answered \(action.rawValue) \(dropped), \(noun) neither the message nor its "
+            + "conversation contains; \(reason)"
+        return CommsDecision(action: kept.isEmpty ? .none : action, numbers: kept,
+                             summary: summary, reason: why, language: language)
+    }
+
+    /// One decision for `n`, one of `numbers`.
+    func targeting(_ n: Int) -> CommsDecision {
+        CommsDecision(action: action, numbers: [n], summary: summary, reason: reason,
+                      evidence: evidence, language: language)
+    }
+
+    /// `text` with its references into other repositories taken out: GitHub links, and
+    /// `name#N` for a repository one of those links names. A number there is not one of
+    /// this repository's, even when this repository has a PR that happens to wear it.
+    public static func ownRepoText(_ text: String, settings: CommsSettings) -> String {
+        guard let links = try? NSRegularExpression(
+            pattern: #"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues)/\d+"#,
+            options: [.caseInsensitive]) else { return text }
+        let source = text as NSString
+        let out = NSMutableString(string: text)
+        var others = Set<String>()
+        // Backwards, so each match's range still holds in `out`.
+        for m in links.matches(in: text, range: NSRange(location: 0, length: source.length)).reversed() {
+            let owner = source.substring(with: m.range(at: 1))
+            let repo = source.substring(with: m.range(at: 2))
+            guard owner.lowercased() != settings.owner.lowercased()
+                    || repo.lowercased() != settings.repo.lowercased() else { continue }
+            out.replaceCharacters(in: m.range, with: "")
+            if repo.lowercased() != settings.repo.lowercased() { others.insert(repo) }
+        }
+        var kept = out as String
+        for name in others {
+            let pattern = "(?<![\\w.-])" + NSRegularExpression.escapedPattern(for: name) + "#\\d+"
+            guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+            else { continue }
+            kept = re.stringByReplacingMatches(in: kept, range: NSRange(kept.startIndex..., in: kept),
+                                               withTemplate: "")
+        }
+        return kept
     }
 
     /// Evidence copied from the classifier's stdin carries the fence's `|` on every line;
@@ -183,11 +256,14 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         s.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
-    private enum CodingKeys: String, CodingKey { case action, number, summary, reason, evidence }
+    private enum CodingKeys: String, CodingKey {
+        case action, number, numbers, summary, reason, evidence, language
+    }
 
     /// Field by field, so one bad field costs the decision its action instead of failing
     /// the object: an unknown action, or a number that is missing, fractional, a string or
-    /// a boolean, lands in `init` as something it refuses.
+    /// a boolean, lands in `init` as something it refuses. `number` alone is what an answer
+    /// logged before `numbers` existed holds.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let summary = (try? c.decode(String.self, forKey: .summary)) ?? ""
@@ -199,8 +275,10 @@ public struct CommsDecision: Codable, Equatable, Sendable {
             return
         }
         self.init(action: action, number: (try? c.decode(Int.self, forKey: .number)) ?? 0,
+                  numbers: (try? c.decode([Int].self, forKey: .numbers)) ?? [],
                   summary: summary, reason: reason,
-                  evidence: (try? c.decode(String.self, forKey: .evidence)) ?? "")
+                  evidence: (try? c.decode(String.self, forKey: .evidence)) ?? "",
+                  language: (try? c.decode(String.self, forKey: .language)) ?? Self.defaultLanguage)
     }
 
     /// `claude -p --output-format json` prints a JSON array of events whose
@@ -319,9 +397,11 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     /// Slack user ids on the ban list (`CommsBan`): their messages are never triaged.
     public var bannedSenders: [String]
     public var model: String
-    /// How many new messages one tick takes, and how many one triage call reads.
+    /// How many new messages one tick takes.
     public var maxPerTick: Int
-    /// A queue shorter than `maxPerTick` is triaged once its newest message is this old.
+    /// How many messages one triage call reads.
+    public var batchSize: Int
+    /// A queue shorter than `batchSize` is triaged once its newest message is this old.
     public var flushAfterSecs: Int
     public var owner: String
     public var repo: String
@@ -330,8 +410,8 @@ public struct CommsSettings: Codable, Equatable, Sendable {
 
     public init(keywords: [String] = [], senderAllowlist: [String] = [],
                 bannedSenders: [String] = [],
-                model: String? = nil, maxPerTick: Int? = nil, flushAfterSecs: Int? = nil,
-                owner: String? = nil, repo: String? = nil, login: String = "") {
+                model: String? = nil, maxPerTick: Int? = nil, batchSize: Int? = nil,
+                flushAfterSecs: Int? = nil, owner: String? = nil, repo: String? = nil, login: String = "") {
         let assets = try? CoreAssets.comms()
         let coordinates = CoreAssets.repoCoordinates()
         self.keywords = keywords
@@ -340,6 +420,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         let m = (model ?? "").trimmingCharacters(in: .whitespaces)
         self.model = m.isEmpty ? (assets?.model ?? "haiku") : m
         self.maxPerTick = max(1, maxPerTick ?? assets?.maxPerTick ?? 8)
+        self.batchSize = max(1, batchSize ?? assets?.batchSize ?? 8)
         self.flushAfterSecs = max(0, flushAfterSecs ?? assets?.flushAfterSecs ?? 1800)
         self.owner = owner ?? coordinates.owner
         self.repo = repo ?? coordinates.repo
@@ -367,8 +448,8 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case keywords, senderAllowlist, bannedSenders, model, maxPerTick, flushAfterSecs, owner,
-             repo, login
+        case keywords, senderAllowlist, bannedSenders, model, maxPerTick, batchSize,
+             flushAfterSecs, owner, repo, login
         case keywordsRaw, senderAllowlistRaw
     }
 
@@ -384,6 +465,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
                   bannedSenders: try c.decodeIfPresent([String].self, forKey: .bannedSenders) ?? [],
                   model: try c.decodeIfPresent(String.self, forKey: .model),
                   maxPerTick: try c.decodeIfPresent(Int.self, forKey: .maxPerTick),
+                  batchSize: try c.decodeIfPresent(Int.self, forKey: .batchSize),
                   flushAfterSecs: try c.decodeIfPresent(Int.self, forKey: .flushAfterSecs),
                   owner: try c.decodeIfPresent(String.self, forKey: .owner),
                   repo: try c.decodeIfPresent(String.self, forKey: .repo),
@@ -397,6 +479,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         try c.encode(bannedSenders, forKey: .bannedSenders)
         try c.encode(model, forKey: .model)
         try c.encode(maxPerTick, forKey: .maxPerTick)
+        try c.encode(batchSize, forKey: .batchSize)
         try c.encode(flushAfterSecs, forKey: .flushAfterSecs)
         try c.encode(owner, forKey: .owner)
         try c.encode(repo, forKey: .repo)
@@ -405,30 +488,75 @@ public struct CommsSettings: Codable, Equatable, Sendable {
 }
 
 /// Per-kind switches (`requests` covers reviews and issue fixes); off turns that kind
-/// into a ping alone. `replies` is whether Comms writes back in Slack (`CommsReplier`).
+/// into a ping alone. `replies` is whether Comms writes back in Slack (`CommsReplier`) at
+/// all, and the `replyTo…` switches about what: its answers to questions, and only those,
+/// until the operator says otherwise.
 public struct CommsToggles: Codable, Equatable, Sendable {
     public var requests: Bool
     public var bumps: Bool
     public var investigations: Bool
     public var replies: Bool
+    public var replyToReviews: Bool
+    public var replyToFixes: Bool
+    public var replyToInvestigations: Bool
+    public var replyToQuestions: Bool
 
     public init(requests: Bool = true, bumps: Bool = true, investigations: Bool = true,
-                replies: Bool = true) {
+                replies: Bool = true, replyToReviews: Bool = false, replyToFixes: Bool = false,
+                replyToInvestigations: Bool = false, replyToQuestions: Bool = true) {
         self.requests = requests
         self.bumps = bumps
         self.investigations = investigations
         self.replies = replies
+        self.replyToReviews = replyToReviews
+        self.replyToFixes = replyToFixes
+        self.replyToInvestigations = replyToInvestigations
+        self.replyToQuestions = replyToQuestions
     }
 
-    private enum CodingKeys: String, CodingKey { case requests, bumps, investigations, replies }
+    /// Whether the operator wants a reply to this answer.
+    public func repliesTo(_ action: CommsAction) -> Bool {
+        switch action {
+        case .review:                        return replyToReviews
+        case .fixIssue:                      return replyToFixes
+        case .investigate:                   return replyToInvestigations
+        case .question:                      return replyToQuestions
+        case .none, .bump, .injection:       return false
+        }
+    }
 
-    /// A missing switch reads as on.
+    private enum CodingKeys: String, CodingKey {
+        case requests, bumps, investigations, replies, replyToReviews, replyToFixes,
+             replyToInvestigations, replyToQuestions
+    }
+
+    /// A missing switch reads as its default.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.init(requests: try c.decodeIfPresent(Bool.self, forKey: .requests) ?? true,
-                  bumps: try c.decodeIfPresent(Bool.self, forKey: .bumps) ?? true,
-                  investigations: try c.decodeIfPresent(Bool.self, forKey: .investigations) ?? true,
-                  replies: try c.decodeIfPresent(Bool.self, forKey: .replies) ?? true)
+        let d = CommsToggles()
+        func read(_ key: CodingKeys, _ fallback: Bool) throws -> Bool {
+            try c.decodeIfPresent(Bool.self, forKey: key) ?? fallback
+        }
+        self.init(requests: try read(.requests, d.requests),
+                  bumps: try read(.bumps, d.bumps),
+                  investigations: try read(.investigations, d.investigations),
+                  replies: try read(.replies, d.replies),
+                  replyToReviews: try read(.replyToReviews, d.replyToReviews),
+                  replyToFixes: try read(.replyToFixes, d.replyToFixes),
+                  replyToInvestigations: try read(.replyToInvestigations, d.replyToInvestigations),
+                  replyToQuestions: try read(.replyToQuestions, d.replyToQuestions))
+    }
+}
+
+/// A Settings slider that stops only at `choices`: its position is an index into them.
+public enum CommsSliderStops {
+    /// The stop closest to `value` on a log scale, for a value written by hand; 0 for no
+    /// stops.
+    public static func index(of value: Int, in choices: [Int]) -> Int {
+        let v = log(Double(max(1, value)))
+        return choices.indices.min {
+            abs(log(Double(choices[$0])) - v) < abs(log(Double(choices[$1])) - v)
+        } ?? 0
     }
 }
 

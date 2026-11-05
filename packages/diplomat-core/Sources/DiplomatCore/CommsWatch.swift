@@ -120,6 +120,11 @@ public enum CommsClassifier {
         return found
     }
 
+    /// How long one call over `messages` may take: its answer grows with them.
+    public static func callBudget(messages: Int, model: CoreAssets.CommsModel) -> TimeInterval {
+        max(model.classifierTimeoutSecs, model.classifierSecsPerMessage * Double(messages))
+    }
+
     /// One decision per message of `batch`, in order. Never hangs past `timeout`; a call
     /// that fails is a `none` for every message, whose reason starts with `failurePrefix`.
     public static func run(_ batch: CommsBatch, settings: CommsSettings,
@@ -134,7 +139,7 @@ public enum CommsClassifier {
         guard let exe = binary ?? self.binary() else {
             return failed("the claude CLI was not found (set DIPLOMAT_CLAUDE to its path)")
         }
-        let budget = timeout ?? model.classifierTimeoutSecs
+        let budget = timeout ?? callBudget(messages: count, model: model)
         switch execute(exe, arguments(settings: settings),
                        input: Data(input(for: batch, settings: settings).utf8),
                        timeout: budget) {
@@ -326,6 +331,23 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
             self.message = message
             self.decision = decision
         }
+
+        /// One item per target of `decision`, at most `maxTargets` of them, so each has its
+        /// own row in the log and its own queue entry; last first, as each goes to the
+        /// front of its band and the first asked for should run first. A decision with one
+        /// target or none is one item, as it stands.
+        public static func targets(_ message: CommsMessage, _ decision: CommsDecision,
+                            maxTargets: Int) -> [Item] {
+            guard decision.numbers.count > 1 else {
+                return [Item(message: message, decision: decision)]
+            }
+            let kept = decision.numbers.prefix(max(1, maxTargets))
+            return kept.enumerated().reversed().map { i, n in
+                var row = message
+                if i > 0 { row.id += String(CommsMessage.targetSeparator) + String(n) }
+                return Item(message: row, decision: decision.targeting(n))
+            }
+        }
     }
 
     public var me: CommsIdentity?
@@ -392,9 +414,11 @@ public enum CommsWatch {
     /// newest first, and one `error` event names what went unread.
     ///
     /// The queue is triaged in batches, one `classify` call each (`flush`): its oldest
-    /// `maxPerTick` once it holds that many, or all of it once its newest message is
+    /// `batchSize` once it holds that many or its newest message is
     /// `settings.flushAfterSecs` old; at most one batch a tick. A tick whose Slack calls fail
-    /// triages nothing: offline, the classifier would fail too, and spend the batch.
+    /// triages nothing: offline, the classifier would fail too, and spend the batch. An
+    /// answer naming several PRs or issues is handed over as one item per target
+    /// (`CommsTickResult.Item.targets`).
     ///
     /// A queued message from one of `settings.bannedSenders` is never triaged: its decision
     /// is a `none` whose reason starts with `bannedPrefix`, on the tick it is taken or the
@@ -592,11 +616,11 @@ public enum CommsWatch {
         let stale = state.queue.last.map {
             max(0, CommsTS.number(now) - ts($0)) >= settings.flushAfterSecs * 1_000_000
         } ?? false
-        guard state.queue.count >= settings.maxPerTick || stale else {
+        guard state.queue.count >= settings.batchSize || stale else {
             state.save(in: dir)
             return
         }
-        let messages = Array(state.queue.prefix(settings.maxPerTick))
+        let messages = Array(state.queue.prefix(settings.batchSize))
         state.queue.removeFirst(messages.count)
         let at = state.undelivered.count
         state.undelivered += messages.map {
@@ -607,15 +631,17 @@ public enum CommsWatch {
         let batch = CommsBatch(messages: messages,
                                context: context(for: messages, in: dir, settings: settings,
                                                 assets: assets))
-        var decisions = triage(batch, classify)
+        var decisions = triage(batch, settings: settings, classify)
         if messages.count > 1, decisions.contains(where: { $0.action == .injection }) {
             decisions = messages.map { m in
                 triage(CommsBatch(messages: [m],
                                   context: batch.context.filter { $0.channelID == m.channelID }),
-                       classify)[0]
+                       settings: settings, classify)[0]
             }
         }
-        for (i, d) in decisions.enumerated() { state.undelivered[at + i].decision = d }
+        state.undelivered.replaceSubrange(at..., with: zip(messages, decisions).flatMap {
+            CommsTickResult.Item.targets($0, $1, maxTargets: assets.maxTargets)
+        })
         state.classifierError = decisions.first {
             $0.reason.hasPrefix(CommsClassifier.failurePrefix)
         }?.reason
@@ -624,18 +650,19 @@ public enum CommsWatch {
 
     /// One answer per message of `batch`, each `checked` against it and what came before
     /// it; a missing answer is a `none`.
-    private static func triage(_ batch: CommsBatch,
+    private static func triage(_ batch: CommsBatch, settings: CommsSettings,
                                _ classify: (CommsBatch) -> [CommsDecision]) -> [CommsDecision] {
         let answers = classify(batch)
         return batch.messages.enumerated().map { i, message in
             let answer = i < answers.count ? answers[i]
                 : .none("the classifier gave this message no answer")
-            let decision = answer.checked(against: message, earlier: batch.earlier(than: message))
+            let decision = answer.checked(against: message, earlier: batch.earlier(than: message),
+                                          settings: settings)
             // The marker is the tick's alone: a reason the model wrote cannot claim it.
             guard decision.reason.hasPrefix(bannedPrefix) else { return decision }
-            return CommsDecision(action: decision.action, number: decision.number,
+            return CommsDecision(action: decision.action, numbers: decision.numbers,
                                  summary: decision.summary, reason: "triage: " + decision.reason,
-                                 evidence: decision.evidence)
+                                 evidence: decision.evidence, language: decision.language)
         }
     }
 
@@ -643,7 +670,7 @@ public enum CommsWatch {
     /// at most `contextHours` older than the oldest of `messages`; oldest first. A banned
     /// sender's, or one triaged as an injection, is left out: its text reaches no model
     /// again.
-    static func context(for messages: [CommsMessage], in dir: URL, settings: CommsSettings,
+    public static func context(for messages: [CommsMessage], in dir: URL, settings: CommsSettings,
                         assets: CoreAssets.CommsModel) -> [CommsMessage] {
         let places = Set(messages.map(\.channelID)), ids = Set(messages.map(\.id))
         guard assets.contextMessages > 0,
@@ -654,7 +681,7 @@ public enum CommsWatch {
         }
         let earlier = CommsLog.fold(CommsLog.read(in: dir)).compactMap { item -> CommsMessage? in
             guard let d = item.decision, d.action != .injection,
-                  !d.reason.hasPrefix(bannedPrefix),
+                  !d.reason.hasPrefix(bannedPrefix), !item.message.isExtraTarget,
                   places.contains(item.message.channelID), !ids.contains(item.message.id),
                   !settings.bannedSenders.contains(item.message.userID),
                   let n = CommsTS.number(item.message.ts), n >= since else { return nil }

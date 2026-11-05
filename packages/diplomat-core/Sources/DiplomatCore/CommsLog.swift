@@ -4,7 +4,8 @@ import Foundation
 /// `kind` and `id` (`<channelID>:<ts>`; `""` for an `error`):
 ///
 /// - `ping`     + `message`                         — the tick, per new message, as it hands it over
-/// - `decision` + `decision`                        — the tick, right after that ping
+/// - `decision` + `decision`                        — the tick, right after that ping; one per
+///                                                    target, each extra target's id `<id>#<number>`
 /// - `action`   + `outcome`, `queueKey`?, `label`?  — the front-end, once it has acted
 /// - `started`  + `label`                           — the front-end, when the ask's agent spawned
 /// - `finished` + `label`                           — the front-end, when that run left the agent list
@@ -153,6 +154,8 @@ public enum CommsLog {
     /// The Comms screen's rows, newest ping first: the one projection both front-ends
     /// draw (Linux via `diplomat-core comms-feed`). An event with no ping before it is
     /// dropped, having no message to draw on; a later `action` overwrites an earlier one.
+    /// A `decision` for an extra target (`CommsMessage.isExtraTarget`) starts its row, a
+    /// copy of its message's beside it.
     public static func fold(_ events: [CommsEvent]) -> [CommsItem] {
         var items: [String: (index: Int, item: CommsItem)] = [:]
         for (i, e) in events.enumerated() {
@@ -160,7 +163,14 @@ public enum CommsLog {
             case .ping:
                 if items[e.id] == nil, let m = e.message { items[e.id] = (i, CommsItem(message: m, at: e.at)) }
             case .decision:
-                if let d = e.decision { items[e.id]?.item.decision = d }
+                guard let d = e.decision else { break }
+                if items[e.id] == nil,
+                   let first = items[CommsMessage.messageID(of: e.id)] {
+                    var message = first.item.message
+                    message.id = e.id
+                    items[e.id] = (first.index, CommsItem(message: message, at: first.item.at))
+                }
+                items[e.id]?.item.decision = d
             case .action:
                 items[e.id]?.item.outcome = e.outcome
                 if let k = e.queueKey { items[e.id]?.item.queueKey = k }
@@ -178,7 +188,11 @@ public enum CommsLog {
             }
         }
         return items.values
-            .sorted { ($0.item.at, $0.index) > ($1.item.at, $1.index) }
+            .sorted {
+                ($0.item.at, $0.index) == ($1.item.at, $1.index)
+                    ? $0.item.message.id < $1.item.message.id
+                    : ($0.item.at, $0.index) > ($1.item.at, $1.index)
+            }
             .map(\.item)
     }
 

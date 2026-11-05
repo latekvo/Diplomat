@@ -55,12 +55,16 @@ extension Store {
         CommsSettings(keywords: CommsSettings.keywordList(commsKeywordsRaw),
                       senderAllowlist: CommsSettings.allowlist(commsSenderAllowlistRaw),
                       bannedSenders: BanList.slackUserIDs(in: BanList.read()),
-                      model: commsModel, login: effectiveMe)
+                      model: commsModel, batchSize: commsBatchSize,
+                      flushAfterSecs: commsFlushAfterSecs, login: effectiveMe)
     }
 
     var commsToggles: CommsToggles {
         CommsToggles(requests: commsActRequests, bumps: commsActBumps,
-                     investigations: commsActInvestigations, replies: commsReplies)
+                     investigations: commsActInvestigations, replies: commsReplies,
+                     replyToReviews: commsReplyToReviews, replyToFixes: commsReplyToFixes,
+                     replyToInvestigations: commsReplyToInvestigations,
+                     replyToQuestions: commsReplyToQuestions)
     }
 
     /// Where a Slack ban's message was (`#channel`, `DM`): the ban's own `place`, else the
@@ -72,7 +76,10 @@ extension Store {
         return commsItems.first { $0.message.permalink == link }?.message.place
     }
 
-    var commsUnread: Int { commsItems.filter { $0.at > commsSeenAt }.count }
+    /// Messages, not rows: one asking for several PRs is one ping.
+    var commsUnread: Int {
+        commsItems.filter { $0.at > commsSeenAt && !$0.message.isExtraTarget }.count
+    }
 
     func markCommsSeen() {
         if commsUnread > 0 { commsSeenAt = Date() }
@@ -318,7 +325,7 @@ extension Store {
             }
         }
         // A later ping of this tick can get an earlier one's sender banned.
-        let due = replies.filter { !bannedNow.contains($0.message.userID) }
+        let due = CommsReplyRequest.merged(replies.filter { !bannedNow.contains($0.message.userID) })
         if !due.isEmpty { replyInSlack(due) }
         for m in result.pings where commsNotify && commsEnabled && !bannedNow.contains(m.userID) {
             Notifier.post(m)
