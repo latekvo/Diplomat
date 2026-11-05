@@ -30,7 +30,8 @@ A message listing several PRs or issues acts on all of them, up to twenty: each 
 its own place in the queue, the first it names first. One message is one kind of work: "review #12 and
 fix issue #34" does only what triage picks. Comms acts only on the watched repo: triage is told to
 leave out references to other repositories, and GitHub links to their PRs, issues, discussions and
-commits, and `owner/repo#N` sharing this repo's owner or name, are removed before its numbers are checked.
+commits, and `owner/repo#N` for another repo of this one's owner, are removed before its numbers are
+checked.
 
 So a "can you look at #412 when you get a chance?" lands #412's review ahead of every review you
 asked for - behind only what the monitors owe GitHub - and a "the installer dies on Node 22 for me"

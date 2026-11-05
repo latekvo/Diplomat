@@ -2666,10 +2666,10 @@ private func severalTargetsSmoke() throws {
     check(text("see <https://github.com/software-mansion/argent/pull/123|#123>").contains("#123")
           && text("software-mansion/argent#123") == "software-mansion/argent#123",
           "this repo's own label and owner/repo#N stay")
-    check(!CommsMatch.containsWord(text("other-fork/argent#123"), "123"),
-          "a fork of this repo's name is another repository")
     for kept in ["can you review PR/issue#12?", "branch fix/login#12 needs a review",
-                 "PR/issue#12 and issue#13", "docs/comms.md#12"] {
+                 "PR/issue#12 and issue#13", "docs/comms.md#12",
+                 "swmansion/argent#12", "@swmansion/argent#12 please review",
+                 "this conflicts w/argent#12", "argent#12/argent#13", "#12/argent#13"] {
         check(text(kept) == kept, "\(kept) is nobody's repository: \(text(kept))")
     }
     for own in ["_software-mansion/argent#12_", "-software-mansion/argent#12",

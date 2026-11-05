@@ -208,17 +208,17 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     }
 
     /// `text` with its references into other repositories taken out: GitHub links with
-    /// their Slack or markdown label, `owner/repo#N` sharing this repository's owner or
-    /// name, and `name#N` for a repository a link names. A number there is not one of this
+    /// their Slack or markdown label, `owner/repo#N` for another repository of this one's
+    /// owner, and `name#N` for a repository a link names. A number there is not one of this
     /// repository's, even when this repository has a PR that happens to wear it. Any other
-    /// `word#N` or `word/word#N` stays: `PR#12` and `fix/login#12` are nobody's repository.
+    /// `word#N` or `word/word#N` stays, for the classifier to judge: `PR#12`, `fix/login#12`
+    /// and `swmansion/argent#12` cannot be told from a foreign reference here.
     public static func ownRepoText(_ text: String, settings: CommsSettings) -> String {
         let url = #"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues|discussions|commit)/\w+"#
         guard let links = try? NSRegularExpression(
             pattern: #"<\#(url)[^\s>|]*(?:\|[^>\n]*)?>"#
                 + #"|\[[^\[\]\n]*\]\(\#(url)[^\s)]*\)"#
                 + #"|\#(url)(?:/[\w./-]*)?(?:#[A-Za-z][\w-]*)?"#
-                // A GitHub owner holds only letters, digits and hyphens: `_a/b#1_` is italics.
                 + #"|(?<![\w./-])([A-Za-z0-9][A-Za-z0-9-]*)/([\w.-]+)#\d+"#,
             options: [.caseInsensitive]) else { return text }
         let source = text as NSString
@@ -232,7 +232,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
             let sameOwner = owner.lowercased() == settings.owner.lowercased()
             let sameRepo = repo.lowercased() == settings.repo.lowercased()
             let isLink = group < 7
-            guard sameOwner != sameRepo || (isLink && !sameOwner) else { continue }
+            guard isLink ? !(sameOwner && sameRepo) : (sameOwner && !sameRepo) else { continue }
             out.replaceCharacters(in: m.range, with: "")
             if isLink && !sameRepo { others.insert(repo) }
         }
