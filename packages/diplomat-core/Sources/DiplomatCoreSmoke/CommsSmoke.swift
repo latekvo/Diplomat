@@ -2672,6 +2672,19 @@ private func severalTargetsSmoke() throws {
                  "PR/issue#12 and issue#13", "docs/comms.md#12"] {
         check(text(kept) == kept, "\(kept) is nobody's repository: \(text(kept))")
     }
+    for own in ["_software-mansion/argent#12_", "-software-mansion/argent#12",
+                "review...software-mansion/argent#12", "thanks.software-mansion/argent#12",
+                "https://github.com/other/radon/pull/9.#12", "https://github.com/other/radon/pull/9-#12",
+                "https://github.com/other/radon/pull/9&#12", "https://github.com/other/radon/pull/9#12",
+                "review [#12 and see [x](https://github.com/other/radon/pull/9)"] {
+        check(CommsMatch.containsWord(text(own), "12"), "\(own) still asks for this repo's #12: \(text(own))")
+    }
+    for label in ["<https://github.com/other/radon/pull/9?a=b:c|#12>",
+                  "<https://github.com/other/radon/pull/9?a=1&amp;b=2|#12>",
+                  "<https://github.com/other/radon/pull/9/files#a,b|#12>",
+                  "[#12](https://github.com/other/radon/pull/9?a=b:c)"] {
+        check(!CommsMatch.containsWord(text(label), "12"), "\(label) is all another repo's: \(text(label))")
+    }
     let joined = text("https://github.com/other/radon/pull/9/files,https://github.com/software-mansion/argent/pull/13")
     check(joined.hasSuffix("https://github.com/software-mansion/argent/pull/13") && !joined.contains("radon"),
           "a foreign link stops where the next reference starts: \(joined)")

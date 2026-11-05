@@ -213,10 +213,13 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// repository's, even when this repository has a PR that happens to wear it. Any other
     /// `word#N` or `word/word#N` stays: `PR#12` and `fix/login#12` are nobody's repository.
     public static func ownRepoText(_ text: String, settings: CommsSettings) -> String {
-        let url = #"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues|discussions|commit)/\w+[\w./#?=&%-]*"#
+        let url = #"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues|discussions|commit)/\w+"#
         guard let links = try? NSRegularExpression(
-            pattern: "<\(url)(?:\\|[^>\\n]*)?>|\\[[^\\]\\n]*\\]\\(\(url)\\)|\(url)"
-                + #"|(?<![\w./-])([\w.-]+)/([\w.-]+)#\d+"#,
+            pattern: #"<\#(url)[^\s>|]*(?:\|[^>\n]*)?>"#
+                + #"|\[[^\[\]\n]*\]\(\#(url)[^\s)]*\)"#
+                + #"|\#(url)(?:/[\w./-]*)?(?:#[A-Za-z][\w-]*)?"#
+                // A GitHub owner holds only letters, digits and hyphens: `_a/b#1_` is italics.
+                + #"|(?<![\w./-])([A-Za-z0-9][A-Za-z0-9-]*)/([\w.-]+)#\d+"#,
             options: [.caseInsensitive]) else { return text }
         let source = text as NSString
         let out = NSMutableString(string: text)
