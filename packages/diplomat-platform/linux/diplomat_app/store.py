@@ -1043,6 +1043,58 @@ class Store(QObject):
     def comms_replies(self, value: bool) -> None:
         self._settings.setValue("commsReplies", bool(value))
 
+    def _comms_reply_switch(self, key: str) -> bool:
+        """A ``replyTo…`` switch of ``CommsToggles``: only questions start on."""
+        return self._settings.value(key, key == "commsReplyToQuestions", bool)
+
+    @property
+    def comms_reply_to_reviews(self) -> bool:
+        return self._comms_reply_switch("commsReplyToReviews")
+
+    @comms_reply_to_reviews.setter
+    def comms_reply_to_reviews(self, value: bool) -> None:
+        self._settings.setValue("commsReplyToReviews", bool(value))
+
+    @property
+    def comms_reply_to_fixes(self) -> bool:
+        return self._comms_reply_switch("commsReplyToFixes")
+
+    @comms_reply_to_fixes.setter
+    def comms_reply_to_fixes(self, value: bool) -> None:
+        self._settings.setValue("commsReplyToFixes", bool(value))
+
+    @property
+    def comms_reply_to_investigations(self) -> bool:
+        return self._comms_reply_switch("commsReplyToInvestigations")
+
+    @comms_reply_to_investigations.setter
+    def comms_reply_to_investigations(self, value: bool) -> None:
+        self._settings.setValue("commsReplyToInvestigations", bool(value))
+
+    @property
+    def comms_reply_to_questions(self) -> bool:
+        return self._comms_reply_switch("commsReplyToQuestions")
+
+    @comms_reply_to_questions.setter
+    def comms_reply_to_questions(self, value: bool) -> None:
+        self._settings.setValue("commsReplyToQuestions", bool(value))
+
+    @property
+    def comms_batch_size(self) -> int:
+        return self._settings.value("commsBatchSize", comms.batch_defaults()[0], int)
+
+    @comms_batch_size.setter
+    def comms_batch_size(self, value: int) -> None:
+        self._settings.setValue("commsBatchSize", int(value))
+
+    @property
+    def comms_flush_after_secs(self) -> int:
+        return self._settings.value("commsFlushAfterSecs", comms.batch_defaults()[2], int)
+
+    @comms_flush_after_secs.setter
+    def comms_flush_after_secs(self, value: int) -> None:
+        self._settings.setValue("commsFlushAfterSecs", int(value))
+
     @property
     def comms_away_after_secs(self) -> int:
         """How long the session must have been locked to count as away."""
@@ -3380,6 +3432,8 @@ class Store(QObject):
             "keywordsRaw": self.comms_keywords_raw,
             "senderAllowlistRaw": self.comms_sender_allowlist_raw,
             "model": self.comms_model,
+            "batchSize": self.comms_batch_size,
+            "flushAfterSecs": self.comms_flush_after_secs,
             "owner": cfg["owner"],
             "repo": cfg["repo"],
             "login": self.effective_me,
@@ -3389,7 +3443,11 @@ class Store(QObject):
     def comms_toggles(self) -> dict:
         return {"requests": self.comms_act_requests, "bumps": self.comms_act_bumps,
                 "investigations": self.comms_act_investigations,
-                "replies": self.comms_replies}
+                "replies": self.comms_replies,
+                "replyToReviews": self.comms_reply_to_reviews,
+                "replyToFixes": self.comms_reply_to_fixes,
+                "replyToInvestigations": self.comms_reply_to_investigations,
+                "replyToQuestions": self.comms_reply_to_questions}
 
     def note_session_lock(self, locked: bool | None,
                           now: datetime | None = None) -> None:
@@ -3417,6 +3475,8 @@ class Store(QObject):
         seen = comms.parse_iso(self.comms_seen_at)
         count = 0
         for item in self.comms_items:
+            if comms.is_extra_target(item.get("message") or {}):
+                continue
             at = comms.parse_iso(str(item.get("at", "")))
             if seen is None or (at is not None and at > seen):
                 count += 1
@@ -3606,7 +3666,7 @@ class Store(QObject):
     def _send_comms_replies(self, requests: list[dict]) -> None:
         def work() -> None:
             with self._comms_reply_lock:
-                done = [(r, comms.reply(r)) for r in requests]
+                done = [(r, comms.reply(r)) for r in comms.merge_replies(requests)]
             self._comms_replied.emit(done)
 
         self.start_background(work, name="comms-reply")
@@ -3675,8 +3735,9 @@ class Store(QObject):
         refused = (self.comms_enabled and entry.get("sender_banned")
                    and kind not in ("none", "ban"))
         line = f"{where} from {sender}: {self.comms_snippet(message.get('text', ''))}"
-        activity.log("auto", "comms-ping",
-                     line + (f" ({self.COMMS_SENDER_BANNED_OUTCOME})" if refused else ""))
+        if not comms.is_extra_target(message):
+            activity.log("auto", "comms-ping",
+                         line + (f" ({self.COMMS_SENDER_BANNED_OUTCOME})" if refused else ""))
         if kind == "ban":
             # Reported in the tick's worker half, so it stands whatever the switch says.
             outcome = self._comms_ban_outcome(effect["ban"], entry["reported"])

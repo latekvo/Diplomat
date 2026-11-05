@@ -521,6 +521,27 @@ final class Store: ObservableObject {
     @Published var commsReplies: Bool {
         didSet { persist(commsReplies, forKey: Keys.commsReplies) }
     }
+    /// What Comms replies to (`CommsToggles.repliesTo`), under `commsReplies`.
+    @Published var commsReplyToReviews: Bool {
+        didSet { persist(commsReplyToReviews, forKey: Keys.commsReplyToReviews) }
+    }
+    @Published var commsReplyToFixes: Bool {
+        didSet { persist(commsReplyToFixes, forKey: Keys.commsReplyToFixes) }
+    }
+    @Published var commsReplyToInvestigations: Bool {
+        didSet { persist(commsReplyToInvestigations, forKey: Keys.commsReplyToInvestigations) }
+    }
+    @Published var commsReplyToQuestions: Bool {
+        didSet { persist(commsReplyToQuestions, forKey: Keys.commsReplyToQuestions) }
+    }
+    /// How many pings one triage call reads (`CommsSettings.batchSize`).
+    @Published var commsBatchSize: Int {
+        didSet { persist(commsBatchSize, forKey: Keys.commsBatchSize) }
+    }
+    /// How old a shorter queue's newest ping gets before it is triaged anyway.
+    @Published var commsFlushAfterSecs: Int {
+        didSet { persist(commsFlushAfterSecs, forKey: Keys.commsFlushAfterSecs) }
+    }
     /// How long the session must have been locked to count as away (`CommsAway`).
     @Published var commsAwayAfterSecs: Int {
         didSet { persist(commsAwayAfterSecs, forKey: Keys.commsAwayAfterSecs) }
@@ -702,6 +723,12 @@ final class Store: ObservableObject {
         static let commsActBumps = "commsActBumps"
         static let commsActInvestigations = "commsActInvestigations"
         static let commsReplies = "commsReplies"
+        static let commsReplyToReviews = "commsReplyToReviews"
+        static let commsReplyToFixes = "commsReplyToFixes"
+        static let commsReplyToInvestigations = "commsReplyToInvestigations"
+        static let commsReplyToQuestions = "commsReplyToQuestions"
+        static let commsBatchSize = "commsBatchSize"
+        static let commsFlushAfterSecs = "commsFlushAfterSecs"
         static let commsAwayAfterSecs = "commsAwayAfterSecs"
         static let commsLockedSince = "commsLockedSince"
         static let commsNotify = "commsNotify"
@@ -867,6 +894,19 @@ final class Store: ObservableObject {
         commsActBumps = defaults.object(forKey: Keys.commsActBumps) as? Bool ?? true
         commsActInvestigations = defaults.object(forKey: Keys.commsActInvestigations) as? Bool ?? true
         commsReplies = defaults.object(forKey: Keys.commsReplies) as? Bool ?? true
+        let commsReplyDefaults = CommsToggles()
+        commsReplyToReviews = defaults.object(forKey: Keys.commsReplyToReviews) as? Bool
+            ?? commsReplyDefaults.replyToReviews
+        commsReplyToFixes = defaults.object(forKey: Keys.commsReplyToFixes) as? Bool
+            ?? commsReplyDefaults.replyToFixes
+        commsReplyToInvestigations = defaults.object(forKey: Keys.commsReplyToInvestigations) as? Bool
+            ?? commsReplyDefaults.replyToInvestigations
+        commsReplyToQuestions = defaults.object(forKey: Keys.commsReplyToQuestions) as? Bool
+            ?? commsReplyDefaults.replyToQuestions
+        commsBatchSize = defaults.object(forKey: Keys.commsBatchSize) as? Int
+            ?? (try? CoreAssets.comms())?.batchSize ?? 8
+        commsFlushAfterSecs = defaults.object(forKey: Keys.commsFlushAfterSecs) as? Int
+            ?? (try? CoreAssets.comms())?.flushAfterSecs ?? 1800
         commsAwayAfterSecs = defaults.object(forKey: Keys.commsAwayAfterSecs) as? Int
             ?? (try? CoreAssets.comms())?.replies.awayAfterSecs ?? 10800
         commsLockedSince = defaults.object(forKey: Keys.commsLockedSince) as? Date

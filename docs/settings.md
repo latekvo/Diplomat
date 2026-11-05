@@ -215,8 +215,9 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   the **⬡ Mesh screen**.
 - **Comms (Slack)** - the [Slack watcher](comms.md) (**default off**): the switch,
   keywords, a sender allowlist, one switch per thing it may do (queue reviews and
-  fixes, bump queued work, investigate bug reports), notifications, the triage
-  model, where the token is read from, and **Test**. Every one is described in
+  fixes, bump queued work, investigate bug reports), the batch size and interval,
+  replies and which kinds get one, notifications, the triage model, where the token
+  is read from, and **Test**. Every one is described in
   [Comms → Settings](comms.md#settings).
 - **Update** - pull the checkout, rebuild, and relaunch in place. Shows how many
   commits the checkout is behind *and* ahead of upstream, with a ↻ re-check

@@ -211,7 +211,11 @@ public enum CoreAssets {
         public let pollSecs: Int
         public let minPollSecs: Int
         public let maxPerTick: Int
+        public let batchSize: Int
+        public let batchSizes: [Int]
         public let flushAfterSecs: Int
+        public let flushAfterChoices: [Int]
+        public let maxTargets: Int
         public let contextMessages: Int
         public let contextHours: Int
         public let indexLagSecs: Int
@@ -226,6 +230,7 @@ public enum CoreAssets {
         public let maxProfileReads: Int
         public let model: String
         public let classifierTimeoutSecs: Double
+        public let classifierSecsPerMessage: Double
         public let maxLogBytes: Int
         public let labelSummaryMax: Int
         public struct Replies: Decodable {
@@ -236,12 +241,29 @@ public enum CoreAssets {
             public let roundMins: Int
             /// Keyed by `CommsQueuedWork.kind`.
             public let runSecs: [String: Int]
-            public let what: [String: String]
-            public let queued: String
-            public let queuedAway: String
-            public let running: String
-            public let runningAway: String
-            public let answeredAway: String
+            /// Keyed by `CommsDecision.language`.
+            public let languages: [String: Language]
+
+            public struct Language: Decodable {
+                public let locale: String
+                public let `operator`: String
+                public let and: String
+                public let today: String
+                public let tomorrow: String
+                public let what: [String: String]
+                public let whatMany: [String: String]
+                public let queued: String
+                public let queuedAway: String
+                public let running: String
+                public let runningAway: String
+                public let answeredAway: String
+            }
+
+            /// `code`'s words, else English's: a language the replies do not hold still
+            /// gets a reply.
+            public func language(_ code: String) -> Language? {
+                languages[code] ?? languages[CommsDecision.defaultLanguage]
+            }
         }
         public struct Answer: Decodable {
             public struct Knowledge: Decodable {
@@ -275,11 +297,12 @@ public enum CoreAssets {
         public internal(set) var answerSchema: String = ""
 
         private enum CodingKeys: String, CodingKey {
-            case pollSecs, minPollSecs, maxPerTick, flushAfterSecs, contextMessages, contextHours,
+            case pollSecs, minPollSecs, maxPerTick, batchSize, batchSizes, flushAfterSecs,
+                 flushAfterChoices, maxTargets, contextMessages, contextHours,
                  indexLagSecs, seenLimit, searchCount,
                  maxSearchPages, catchUpHours, httpTimeoutSecs, loginRefreshSecs,
                  loginRefreshTimeoutSecs, slackBudgetSecs, maxProfileReads, model, classifierTimeoutSecs,
-                 maxLogBytes, labelSummaryMax, queries, classifier, investigate, replies, answer
+                 classifierSecsPerMessage, maxLogBytes, labelSummaryMax, queries, classifier, investigate, replies, answer
         }
     }
 
