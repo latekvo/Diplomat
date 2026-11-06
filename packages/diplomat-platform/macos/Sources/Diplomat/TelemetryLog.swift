@@ -31,23 +31,64 @@ enum TelemetryLog {
 
     // MARK: - Append
 
-    /// Append one event. Best-effort and never throwing: a monitor poll must not
-    /// fail over bookkeeping.
+    /// Events no append could write yet, oldest first, each a whole line. Every append
+    /// writes these ahead of its own, so a full disk delays the ledger rather than losing
+    /// what it would have said: a run's completion is priced nowhere else. Capped, since
+    /// a disk that never recovers must not take the applet's memory with it.
+    private static var unwritten: [Data] = []
+    static var maxUnwritten = 10_000
+    /// Whether the last write stopped mid-line, which the next one must close before it
+    /// starts its own, or both lines are lost to the reader.
+    private static var torn = false
+    /// Why appends started failing; "" while they land. One feed line per episode.
+    private static var appendError = ""
+    private static let appendLock = NSLock()
+    /// `write(2)` onto the ledger. `LowDiskTest` cuts one short, which APFS never does.
+    static var writeFd: (Int32, UnsafeRawBufferPointer) -> Int = { write($0, $1.baseAddress, $1.count) }
+
+    /// Append one event, after any an earlier append could not write. Never throws:
+    /// a monitor poll must not fail over bookkeeping. Twin of `telemetry.append`.
     static func append(_ event: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: event,
-                                                     options: [.sortedKeys]),
-              var line = String(data: data, encoding: .utf8) else { return }
-        line += "\n"
+                                                     options: [.sortedKeys]) else { return }
+        appendLock.lock()
+        defer { appendLock.unlock() }
+        unwritten.append(data + Data("\n".utf8))
+        unwritten.removeFirst(max(0, unwritten.count - maxUnwritten))
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         rotateIfLarge()
         // O_APPEND: the kernel appends atomically, so a concurrent append from a
         // mesh node (or the Linux applet over a shared home) can't be overwritten;
         // O_CREAT closes the create/exists race too. Same idiom as AuditLog.
+        let head = Data(torn ? "\n".utf8 : "".utf8)
+        var failure: Int32 = 0
+        var written = -1
         let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
-        guard fd >= 0 else { return }
-        defer { close(fd) }
-        _ = line.data(using: .utf8)?.withUnsafeBytes { buf in
-            write(fd, buf.baseAddress, buf.count)
+        if fd < 0 {
+            failure = errno
+        } else {
+            let n = unwritten.reduce(head, +).withUnsafeBytes { writeFd(fd, $0) }
+            if n < 0 { failure = errno } else { written = n - head.count }
+            close(fd)
+        }
+        guard failure == 0 else {
+            if appendError.isEmpty {
+                appendError = String(cString: strerror(failure))
+                AuditLog.log("auto", "warn", "Can't write the telemetry ledger (\(appendError)) — "
+                             + "keeping its events until it can")
+            }
+            return
+        }
+        if written >= 0 {
+            while let first = unwritten.first, written >= first.count {
+                written -= first.count
+                unwritten.removeFirst()
+            }
+            torn = written > 0
+        }
+        if !appendError.isEmpty, unwritten.isEmpty {
+            appendError = ""
+            AuditLog.log("auto", "poll-recovered", "Telemetry ledger writing again")
         }
     }
 

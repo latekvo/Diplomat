@@ -208,6 +208,8 @@ work and MUST be delivered reliably - the originator has to act on it exactly on
   because its earlier ack was lost - so the executor's retries stop. It MUST perform
   the social action **at most once** per Job `id`: a duplicate is re-acked but never
   re-acted. (The reference records acted-on Job ids and de-duplicates against them.)
+  Once acked, the result is the originator's to keep: one it cannot act on yet (no
+  room to stage it) it SHOULD hold and retry rather than drop.
 - **Compute bound.** The executor bounds the confined compute at
   `foreignJobTimeoutSecs`; on timeout it returns a `job-result` with `ok:false` and
   an `error`, so the originator is never left waiting indefinitely.
@@ -325,7 +327,9 @@ agent (the same pattern as `SZPONTNET_FOREIGN_SPAWN` /
 plea then cannot save the executor and resolution 2 collapses into a ban - the
 zero-trust default, consistent with every other opt-in in this chapter. A decider
 that crashes, times out (the reference bounds it by the grace window), or answers
-malformed grants **no** extension.
+malformed grants **no** extension. A decider the originator cannot consult at all
+(no room for the case, no process to run it in) gives no verdict either way: the
+originator SHOULD NOT ban on it, and judges the plea answering its next reminder.
 
 ### The ban
 

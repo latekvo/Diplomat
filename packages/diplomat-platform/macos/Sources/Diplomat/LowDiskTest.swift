@@ -33,7 +33,36 @@ enum LowDiskTest {
         defer { try? fm.removeItem(at: scratch) }
         let vol = scratch.appendingPathComponent("vol")
         func volume(_ cmd: String, _ extra: String...) -> Int32 {
-            run(["/bin/bash", script, cmd, vol.path] + extra).code
+            var code = run(["/bin/bash", script, cmd, vol.path] + extra).code
+            // What a drain frees can come back over more syncs than one fill waits out.
+            for _ in 0..<3 where cmd == "fill" && code != 0 {
+                code = run(["/bin/bash", script, cmd, vol.path] + extra).code
+            }
+            return code
+        }
+        /// Fill, then take what the volume hands back as it flushes until a flush gives
+        /// nothing back (`tests/full-disk.sh`'s `settle`): whether a new file is then refused.
+        func filledFull() -> Bool {
+            let zeros = [UInt8](repeating: 0, count: 4096)
+            let sink = vol.appendingPathComponent(".ballast/sink").path
+            let probe = vol.appendingPathComponent(".probe").path
+            // A flush can hand back room after the settle, as macos-14's runner does.
+            for _ in 0..<5 {
+                guard volume("fill") == 0 else { return false }
+                for _ in 0..<10 {
+                    sync()
+                    let fd = open(sink, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+                    var taken = 0
+                    while fd >= 0, taken < 1000, write(fd, zeros, zeros.count) == zeros.count { taken += 1 }
+                    if fd >= 0 { close(fd) }
+                    if taken == 0 { break }
+                }
+                let fd = open(probe, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+                guard fd >= 0 else { return true }
+                close(fd)
+                unlink(probe)
+            }
+            return false
         }
 
         let mounted = volume("mount", "32m")
@@ -317,6 +346,144 @@ enum LowDiskTest {
                   "\(j.lines)")
             check("…and rebuilds", j.rebuilds == 1 && code == 0, "\(j.lines)")
         }
+
+        // MARK: the telemetry ledger
+
+        // The feed directory's ledger, linked onto the volume.
+        let ledger = vol.appendingPathComponent("telemetry.jsonl")
+        fm.createFile(atPath: ledger.path, contents: nil)
+        try? fm.removeItem(at: TelemetryLog.url)
+        try? fm.createSymbolicLink(at: TelemetryLog.url, withDestinationURL: ledger)
+        func clearedKeys() -> [String] {
+            ((try? String(contentsOf: ledger, encoding: .utf8)) ?? "")
+                .split(separator: "\n").compactMap { line in
+                    guard let obj = (try? JSONSerialization.jsonObject(with: Data(line.utf8)))
+                            as? [String: Any], obj["ev"] as? String == "cleared" else { return nil }
+                    return obj["key"] as? String
+                }
+        }
+        func ledgerLines(_ action: String, _ prefix: String) -> Int {
+            AuditLog.read().filter { $0.action == action && $0.detail.hasPrefix(prefix) }.count
+        }
+        let maxUnwritten = TelemetryLog.maxUnwritten
+        TelemetryLog.maxUnwritten = 3
+        check("fill for the ledger", filledFull())
+        for key in ["a", "b", "c", "d", "e"] { TelemetryLog.cleared(key: "lowdisk-\(key)") }
+        check("events the full volume refuses are not on it", clearedKeys().isEmpty,
+              "\(clearedKeys())")
+        check("…and the feed says once that the ledger is not taking them",
+              ledgerLines("warn", "Can't write the telemetry ledger (") == 1,
+              "\(ledgerLines("warn", "Can't write the telemetry ledger ("))")
+        check("drain for the ledger", volume("drain") == 0)
+        TelemetryLog.cleared(key: "lowdisk-f")
+        check("with room, the held events land ahead of the next, in order, each once, "
+              + "the oldest past the cap dropped",
+              clearedKeys() == ["lowdisk-d", "lowdisk-e", "lowdisk-f"], "\(clearedKeys())")
+        check("…and the feed says once that the ledger is writing again",
+              ledgerLines("poll-recovered", "Telemetry ledger writing again") == 1)
+        TelemetryLog.maxUnwritten = maxUnwritten
+        // APFS refuses a write whole, so the short one is a stand-in's.
+        let realWrite = TelemetryLog.writeFd
+        TelemetryLog.writeFd = { fd, buf in
+            TelemetryLog.writeFd = realWrite
+            return write(fd, buf.baseAddress, buf.count / 2)
+        }
+        TelemetryLog.cleared(key: "lowdisk-g")
+        TelemetryLog.cleared(key: "lowdisk-h")
+        check("a line cut short is closed before the next",
+              clearedKeys() == ["lowdisk-d", "lowdisk-e", "lowdisk-f", "lowdisk-g", "lowdisk-h"],
+              "\(clearedKeys())")
+
+        // MARK: the operator's quit
+
+        let realMark = OperatorQuit.url
+        OperatorQuit.url = vol.appendingPathComponent("home/.diplomat/operator-quit")
+        defer { OperatorQuit.url = realMark }
+        try? fm.createDirectory(at: OperatorQuit.url.deletingLastPathComponent(),
+                                withIntermediateDirectories: true)
+        func watchdogLaunches() -> Int {
+            let j = Job()
+            var h = j.host
+            h.operatorQuit = SelfUpdate.Host().operatorQuit
+            _ = SelfUpdate.runWatchdog(h)
+            return j.launches
+        }
+        for episode in ["", "again "] {
+            OperatorQuit.clear()    // what every launch does
+            check("fill \(episode)for the quit", filledFull())
+            OperatorQuit.mark()
+            check("a quit on a full volume is marked \(episode)", OperatorQuit.isMarked)
+            check("…so the watchdog leaves the app closed", watchdogLaunches() == 0)
+            check("drain \(episode)for the quit", volume("drain") == 0)
+        }
+        OperatorQuit.clear()
+        check("the next launch clears the mark", !OperatorQuit.isMarked)
+        check("…and the watchdog brings a dead app back", watchdogLaunches() == 1)
+
+        // MARK: settings
+
+        setenv("DIPLOMAT_CONFIG", vol.appendingPathComponent("config.json").path, 1)
+        store.writesConfig = true
+        store.autoTaskLimit = 2
+        store.autoBudgetGate = true
+        store.agentModel = "model-a"
+        check("with room a setting lands", AppConfig.autoTaskLimit == 2 && !store.configSaveFailed)
+        check("fill for the settings", filledFull())
+        store.autoTaskLimit = 3
+        store.autoBudgetGate = false
+        store.agentModel = "model-b"
+        check("a setting the full volume refuses says so", store.configSaveFailed)
+        check("…and reads back what the file holds, as the mesh node behind it does",
+              store.autoTaskLimit == 2 && AppConfig.autoTaskLimit == 2 && store.autoBudgetGate
+                && store.agentModel == "model-a",
+              "\(store.autoTaskLimit) \(store.autoBudgetGate) \(store.agentModel)")
+        store.terminalChoice = store.terminalChoice == SpawnTerminal.terminal.rawValue
+            ? SpawnTerminal.ghostty.rawValue : SpawnTerminal.terminal.rawValue
+        let published = { AppConfig.string(AppConfig.spawnTerminalKey) }
+        check("the terminal handed to the allocator daemon is not on the full volume",
+              published().isEmpty, published())
+        check("drain for the settings", volume("drain") == 0)
+        store.autoTaskLimit = 3
+        check("with room the change lands, and the warning goes",
+              store.autoTaskLimit == 3 && AppConfig.autoTaskLimit == 3 && !store.configSaveFailed)
+        // With no login the poll stops before GitHub, past where it publishes.
+        setenv("DIPLOMAT_GH", "/usr/bin/false", 1)
+        store.usernameOverride = ""
+        await store.runAutofixPollOnce()
+        check("…and the next poll hands the daemon the terminal",
+              published() == AgentSpawner.resolved(store.terminal).rawValue, published())
+        store.writesConfig = false
+        setenv("DIPLOMAT_CONFIG", scratch.appendingPathComponent("config.json").path, 1)
+
+        // MARK: an un-ban
+
+        // No daemon socket, so the list is rewritten here.
+        setenv("DA_BASE_DIR", scratch.appendingPathComponent("allocator").path, 1)
+        setenv("DA_BAN_DIR", vol.path, 1)
+        try? Data(#"{"banned":[{"login":"lowdisk-x"}]}"#.utf8).write(to: BanList.fileURL)
+        func unbanLines() -> Int {
+            AuditLog.read().filter { $0.action == "unban" && $0.detail.contains("@lowdisk-x") }.count
+        }
+        func unbanned() async -> String? {
+            store.error = nil
+            store.unban("lowdisk-x")
+            for _ in 0..<50 where store.error == nil && unbanLines() == 0 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            return store.error
+        }
+        check("fill for the un-ban", filledFull())
+        let refusal = await unbanned()
+        check("an un-ban the full volume refuses says why",
+              refusal == "Could not un-ban @lowdisk-x: could not write \(BanList.fileURL.path)",
+              refusal ?? "no error")
+        check("…logs nothing, and the ban holds",
+              unbanLines() == 0 && BanList.isBanned("lowdisk-x", in: BanList.read()))
+        check("drain for the un-ban", volume("drain") == 0)
+        let lifted = await unbanned()
+        check("with room it lifts the ban, and logs it once",
+              lifted == nil && !BanList.isBanned("lowdisk-x", in: BanList.read())
+                && unbanLines() == 1, lifted ?? "")
 
         print(pass ? "\nLOWDISK TEST OK" : "\nLOWDISK TEST FAILED")
         return pass

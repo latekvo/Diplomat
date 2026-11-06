@@ -14,6 +14,7 @@ way it wraps the device-allocator installer.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -386,32 +387,42 @@ def _sched_log(message: str) -> None:
 # MARK: bringing a dead app back
 
 
-def _quit_marker() -> Path:
-    return _state_dir() / "operator-quit"
+def _quit_markers() -> list[Path]:
+    """The state dir's mark, then one in the per-login runtime dir: that is RAM, so
+    it takes a mark the full disk refused, and it is cleared at logout, after which
+    the login's own GUI launch would clear the mark anyway."""
+    markers = [_state_dir() / "operator-quit"]
+    if os.environ.get("XDG_RUNTIME_DIR"):
+        markers.append(Path(os.environ["XDG_RUNTIME_DIR"]) / "diplomat" / "operator-quit")
+    return markers
 
 
 def mark_operator_quit() -> None:
     """Leave the mark that keeps the unattended jobs from bringing the app back.
     Set by an operator's quit only; the next GUI launch clears it. Mirrors the
-    macOS ``OperatorQuit``."""
+    macOS ``OperatorQuit``. The mark is the file's existence, so the timestamp is
+    written only once the file is there."""
     from datetime import datetime
 
-    try:
-        _state_dir().mkdir(parents=True, exist_ok=True)
-        _quit_marker().write_text(datetime.now().isoformat(timespec="seconds") + "\n")
-    except OSError:
-        pass
+    for marker in _quit_markers():
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        except OSError:
+            continue
+        with contextlib.suppress(OSError):
+            marker.write_text(datetime.now().isoformat(timespec="seconds") + "\n")
+        return
 
 
 def clear_operator_quit() -> None:
-    try:
-        _quit_marker().unlink()
-    except OSError:
-        pass
+    for marker in _quit_markers():
+        with contextlib.suppress(OSError):
+            marker.unlink()
 
 
 def operator_quit() -> bool:
-    return _quit_marker().exists()
+    return any(marker.exists() for marker in _quit_markers())
 
 
 def _display_env_file() -> Path:

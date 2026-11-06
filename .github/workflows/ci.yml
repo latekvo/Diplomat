@@ -71,7 +71,7 @@ jobs:
       - name: Headless settings render
         working-directory: packages/diplomat-platform/macos
         run: |
-          for mode in settings settings-explain; do
+          for mode in settings settings-explain settings-unsaved; do
             DIPLOMAT_RENDER=$mode DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/$mode.png" \
               swift run Diplomat
             test -s "$RUNNER_TEMP/$mode.png"

@@ -26,7 +26,7 @@ from . import config, host
 # Imported as the accessor, not the module: `env` is this file's name for the
 # child environments it builds, and one of those is three lines from a read.
 from .env import get as env_get
-from .launch import JobSpawnError, detached, fill, write_prompt
+from .launch import JobSpawnError, detached, discarded_on_failure, fill, write_prompt
 
 __all__ = ["JobSpawnError", "spawn_job", "spawn_confined", "run_result_handler"]
 
@@ -113,7 +113,8 @@ def spawn_job(prompt: str, done_path: str | None = None) -> str:
     template = env_get("SPAWN")
     if template:
         prompt_file = write_prompt(prompt)
-        _spawn_override(prompt_file, template, done_path)
+        with discarded_on_failure(prompt_file):
+            _spawn_override(prompt_file, template, done_path)
         return prompt_file
     try:
         return host.host().run_job(prompt, done_path)
@@ -149,8 +150,9 @@ def spawn_confined(prompt: str, result_file: str) -> str:
         SZPONTNET_PROMPT_FILE=prompt_file,
         SZPONTNET_RESULT_FILE=result_file,
     )
-    detached(fill(template, prompt_file=prompt_file, result_file=result_file),
-             "SZPONTNET_FOREIGN_SPAWN", env=env)
+    with discarded_on_failure(prompt_file):
+        detached(fill(template, prompt_file=prompt_file, result_file=result_file),
+                 "SZPONTNET_FOREIGN_SPAWN", env=env)
     return prompt_file
 
 

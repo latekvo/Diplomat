@@ -250,6 +250,7 @@ class _Awaiting:
     next_remind: float = 0.0  # monotonic; reminders re-send across the grace window
     extensions: int = 0
     deciding: bool = False
+    undecided: bool = False  # the last plea found the decider unreachable here
 
 
 @dataclass
@@ -489,6 +490,9 @@ class MeshNode:
         self._pending_results: dict[str, _PendingResult] = {}
         self._awaiting_result: dict[str, _Awaiting] = {}
         self._acted_results: dict[str, float] = {}
+        # Acked results our handler could not take yet, job id → (executor id, duty,
+        # result); see [_act_on_result]. Grows only with our own dispatches.
+        self._unstaged_results: dict[str, tuple[str, str, dict]] = {}
         # Confined jobs currently computing here, job id → (requester id, started
         # monotonic) — so a `job-reminder` for a still-running job can be answered
         # truthfully with a `job-progress` instead of silence (which gets us banned).
@@ -1980,10 +1984,11 @@ class MeshNode:
                     del self.peers[pid]  # long dead / stale phantom — drop it
                     self._forget_claims(pid)  # its origination leases lapse with it
             # Reliable foreign-result delivery + expiry ride the same tick: re-send
-            # any unacked job-result whose retry is due, hold late foreign
-            # executors to their acceptance (reminder → extension or ban), and
-            # reap stale bookkeeping.
+            # any unacked job-result whose retry is due, hand on returned results
+            # the disk refused, hold late foreign executors to their acceptance
+            # (reminder → extension or ban), and reap stale bookkeeping.
             self._retry_pending_results()
+            self._retry_unstaged_results()
             self._check_foreign_deadlines()
             self._reap_foreign()
             self._reap_released_claims(time.monotonic())
@@ -3259,7 +3264,11 @@ class MeshNode:
                        result: dict) -> None:
         """Perform the social action for a returned foreign result under OUR identity
         (the reference hands it to ``SZPONTNET_ON_RESULT``, where e.g. `gh` runs).
-        A failed compute is logged, not acted on."""
+        A failed compute is logged, not acted on.
+
+        The result is already acked, so the executor no longer holds it for us: one
+        that can't be staged or handed over (a full disk) is kept here and retried
+        every tick ([_retry_unstaged_results])."""
         if not bool(result.get("ok", False)):
             log("mesh-dispatch-failed",
                 f"Mesh: {duty} from {self._node_name(executor_id)} returned "
@@ -3276,12 +3285,20 @@ class MeshNode:
                 "error": str(result.get("error", ""))}), encoding="utf-8")
             spawnjob.run_result_handler(str(path))
         except (OSError, spawnjob.JobSpawnError) as exc:
-            log("spawn-failed",
-                f"Mesh: result handler for {duty} failed: {exc}")
+            if job_id not in self._unstaged_results:
+                log("spawn-failed",
+                    f"Mesh: result handler for {duty} failed: {exc} "
+                    "(holding the result, retrying)")
+            self._unstaged_results[job_id] = (executor_id, duty, result)
             return
+        self._unstaged_results.pop(job_id, None)
         log("mesh-spawn",
             f"Mesh: acting on {duty} result from "
             f"{self._node_name(executor_id)} (under our identity)")
+
+    def _retry_unstaged_results(self) -> None:
+        for job_id, (executor_id, duty, result) in list(self._unstaged_results.items()):
+            self._act_on_result(job_id, executor_id, duty, result)
 
     # MARK: - foreign accountability (deadline → reminder → extension or ban)
     #
@@ -3398,7 +3415,8 @@ class MeshNode:
         """Judge a late executor's plea: hand the case to the operator's extension
         decider (an agent — SZPONTNET_EXTEND_DECIDER); exit 0 re-arms the full
         deadline window, anything else — including no decider configured, a crash,
-        or a timeout — bans. The verdict is the originator's alone."""
+        or a timeout — bans. The verdict is the originator's alone, so a decider
+        this side could not consult reaches none ([_no_verdict])."""
         aw = self._awaiting_result.get(job_id)
         if aw is None:
             return
@@ -3407,6 +3425,9 @@ class MeshNode:
         if decider:
             try:
                 granted = await self._run_extend_decider(decider, job_id, aw, note)
+            except OSError as exc:
+                self._no_verdict(job_id, exc)
+                return
             except Exception as exc:  # noqa: BLE001 — a crashed decider grants nothing;
                 # the decision must still conclude (extend or ban), or `deciding`
                 # would wedge the entry past every check until the reap backstop.
@@ -3418,6 +3439,7 @@ class MeshNode:
         if aw is None:
             return
         aw.deciding = False
+        aw.undecided = False
         if granted:
             aw.extensions += 1
             aw.reminded_at = None
@@ -3433,10 +3455,28 @@ class MeshNode:
                      "extension declined by the decider")
             self._ban_for_broken_promise(job_id, f"{cause}; plea: {note[:200]}")
 
+    def _no_verdict(self, job_id: str, exc: OSError) -> None:
+        """The decider could not be consulted for a reason on this side (no room for
+        the case file, no process to run it in). That is no verdict on the executor:
+        the deadline and its grace window restart from now, so the plea answering
+        the next reminder is judged afresh and the entry outlives the reap."""
+        aw = self._awaiting_result.get(job_id)
+        if aw is None:
+            return
+        aw.deciding = False
+        aw.deadline = aw.reminded_at = time.monotonic()
+        if not aw.undecided:
+            log("warn",
+                f"Mesh: couldn't consult the extension decider on "
+                f"{self._node_name(aw.executor_id)}'s plea for {aw.duty} job "
+                f"{job_id[:8]}: {exc} (not banned; asking again)")
+        aw.undecided = True
+
     async def _run_extend_decider(self, decider: str, job_id: str, aw: _Awaiting,
                                   note: str) -> bool:
         """Run the decider on the case file; True = extend. Bounded by the grace
-        window so a hung decider can't stall the ban forever."""
+        window so a hung decider can't stall the ban forever. Raises ``OSError``
+        when the case can't be staged or the decider can't be started."""
         peer = self.peers.get(aw.executor_id)
         case_path = self._result_path(job_id).with_name(f"extend-{job_id}.json")
         now = time.monotonic()
@@ -3453,15 +3493,12 @@ class MeshNode:
             "extensionsGranted": aw.extensions,
             "progressNote": note,
         }
-        try:
-            case_path.write_text(json.dumps(case, indent=2), encoding="utf-8")
-        except OSError:
-            return False
+        case_path.write_text(json.dumps(case, indent=2), encoding="utf-8")
         cmd = decider.replace("{job_file}", str(case_path))
+        proc = await asyncio.create_subprocess_shell(
+            cmd, stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL)
         try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd, stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL)
             rc = await asyncio.wait_for(
                 proc.wait(), timeout=float(self.proto["foreignReminderGraceSecs"]))
             return rc == 0
@@ -3470,10 +3507,6 @@ class MeshNode:
                 proc.kill()
             log("warn",
                 f"Mesh: extension decider timed out for job {job_id[:8]}")
-            return False
-        except OSError as exc:
-            log("warn",
-                f"Mesh: extension decider failed to run: {exc}")
             return False
 
     def _ban_for_broken_promise(self, job_id: str, cause: str) -> None:

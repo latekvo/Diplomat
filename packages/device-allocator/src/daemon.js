@@ -1141,6 +1141,14 @@ function releaseTakeoverLock(fd) {
   try { fs.unlinkSync(LOCK_PATH); } catch {}
 }
 
+// A full disk loses the log line, so the client that spawned this daemon (spawnDaemon in
+// ipc.js) also gets the reason over the IPC channel.
+function startFailed(...why) {
+  log(...why);
+  if (process.connected) process.send(why.join(' '), () => process.exit(1));
+  else process.exit(1);
+}
+
 // Singleton acquisition without a pre-emptive unlink (which would clobber a live peer's
 // socket). We let listen() fail with EADDRINUSE and use a /health probe to distinguish "a
 // live daemon owns it" (defer + exit) from "a stale socket file remains" (take the lock,
@@ -1157,7 +1165,7 @@ server.on('error', async (e) => {
     retriedListen = true;
     let lockFd;
     try { lockFd = acquireTakeoverLock(); }
-    catch (err) { log('cannot take the startup lock', String(err)); process.exit(1); }
+    catch (err) { startFailed('cannot take the startup lock', String(err)); return; }
     if (lockFd == null) {
       // Another daemon is (or just finished) taking over. Give it a beat, then defer to it.
       await delay(300);
@@ -1174,8 +1182,7 @@ server.on('error', async (e) => {
     server.listen(SOCKET_PATH, () => { releaseTakeoverLock(takeoverLock); takeoverLock = null; onListening(); });
     return;
   }
-  log('server error', String(e));
-  process.exit(1);
+  startFailed('server error', String(e));
 });
 
 async function start() {

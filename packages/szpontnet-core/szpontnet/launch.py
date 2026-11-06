@@ -38,6 +38,17 @@ def write_prompt(prompt: str) -> str:
     return path
 
 
+@contextlib.contextmanager
+def discarded_on_failure(prompt_file: str):
+    """Remove a staged prompt if the launch that was to read it raises."""
+    try:
+        yield
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(prompt_file)
+        raise
+
+
 def popen_detached(target: list[str] | str, *, shell: bool = False,
                    env: dict | None = None) -> None:
     """Launch a process and forget it, raising ``OSError`` if it won't start.

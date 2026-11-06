@@ -314,6 +314,28 @@ def test_a_prompt_the_disk_cannot_hold_is_not_left_behind(on_volume, monkeypatch
     assert sorted(p.name for p in on_volume.path.glob("prompt.txt*")) == ["prompt.txt"]
 
 
+def test_a_quit_on_a_full_disk_still_keeps_the_app_closed(on_volume, tmp_path,
+                                                          monkeypatch):
+    """The watchdog brings back any app that is not marked quit, so a mark the full
+    disk refused is a quit that undoes itself every five minutes."""
+    from diplomat_app import selfupdate
+    from diplomat_app.singleton import SingleInstance
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    monkeypatch.setattr(SingleInstance, "any_running", staticmethod(lambda: False))
+    monkeypatch.setattr(selfupdate, "relaunch",
+                        lambda *a, **k: pytest.fail("the watchdog relaunched the app"))
+    monkeypatch.setattr(selfupdate, "_recorded_display_env", lambda: {"DISPLAY": ":0"})
+    on_volume.fill()
+
+    selfupdate.mark_operator_quit()
+    assert selfupdate.operator_quit()
+    assert selfupdate.run_watchdog() == 0
+
+    selfupdate.clear_operator_quit()
+    assert not selfupdate.operator_quit()
+
+
 def test_hooks_the_disk_cannot_hold_are_not_left_behind(on_volume):
     """A mesh job's hook settings, staged beside its sentinel. A tmpfs creates the file
     and then refuses its bytes, and an empty settings file left there is one the next

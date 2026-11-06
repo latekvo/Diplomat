@@ -17,17 +17,16 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readDiscovery, procIdentity } from './state.js';
+import { readDiscovery, procIdentity, writeAtomic } from './state.js';
 import { DISCOVERY_PATH } from './paths.js';
-import { daemonHealth } from './ipc.js';
+import { daemonHealth, spawnDaemon } from './ipc.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = path.resolve(__dirname, '..');
 const MCP_JS = path.join(__dirname, 'mcp.js');
-const DAEMON_JS = path.join(__dirname, 'daemon.js');
 const ASSETS = path.join(PKG_DIR, 'assets');
 const PKG_JSON = path.join(PKG_DIR, 'package.json');
 
@@ -95,21 +94,14 @@ const CLAUDE_MD_BODY = [
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
 }
-// Atomic write (temp + rename) so a concurrent reader (Claude Code rewrites
-// ~/.claude.json frequently) never sees a torn file, and a killed write can't
-// truncate the original.
-function writeFileAtomic(file, content) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, content);
-  fs.renameSync(tmp, file);
-}
+// Every write is atomic (temp + rename): a concurrent reader (Claude Code rewrites
+// ~/.claude.json frequently) never sees a torn file, and neither a killed write nor a
+// full disk can truncate the original.
 function writeJson(file, obj) {
-  writeFileAtomic(file, `${JSON.stringify(obj, null, 2)}\n`);
+  writeAtomic(file, `${JSON.stringify(obj, null, 2)}\n`);
 }
 function copyFile(src, dest) {
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.copyFileSync(src, dest);
+  writeAtomic(dest, fs.readFileSync(src));
 }
 // Move every entry from a legacy dir into the new one WITHOUT overwriting anything
 // already there (an applet started post-update may have created the new dir first,
@@ -254,7 +246,7 @@ function registerMcp() {
     }
     // Back up only a known-good file (we just parsed it), so a clobber can't
     // overwrite a good backup with a bad one.
-    try { fs.copyFileSync(CLAUDE_JSON, `${CLAUDE_JSON}.bak-da`); } catch {}
+    try { writeAtomic(`${CLAUDE_JSON}.bak-da`, raw, fs.statSync(CLAUDE_JSON).mode & 0o777); } catch {}
   }
   j.mcpServers = j.mcpServers || {};
   j.mcpServers[MCP_KEY] = { type: 'stdio', command: CMD_NODE, args: [MCP_JS] };
@@ -284,7 +276,7 @@ function injectClaudeMd() {
   if (fs.existsSync(CLAUDE_MD)) text = fs.readFileSync(CLAUDE_MD, 'utf8');
   text = stripClaudeMd(text);
   const sep = text && !text.endsWith('\n\n') ? (text.endsWith('\n') ? '\n' : '\n\n') : '';
-  writeFileAtomic(CLAUDE_MD, `${text}${sep}${CLAUDE_MD_BODY}\n`);
+  writeAtomic(CLAUDE_MD, `${text}${sep}${CLAUDE_MD_BODY}\n`);
 }
 // Remove every block delimited by (begin, end) — loop, so install/uninstall and
 // the legacy-marker cleanup always converge to zero copies.
@@ -304,7 +296,7 @@ function uninjectClaudeMd() {
   try {
     if (!fs.existsSync(CLAUDE_MD)) return;
     const text = fs.readFileSync(CLAUDE_MD, 'utf8');
-    writeFileAtomic(CLAUDE_MD, stripClaudeMd(text));
+    writeAtomic(CLAUDE_MD, stripClaudeMd(text));
   } catch {}
 }
 
@@ -349,15 +341,12 @@ async function startDaemon() {
   if (silent) {
     return { running: false, error: `the daemon (pid ${silent}) is running but not answering; it may be shutting down` };
   }
-  const child = spawn(CMD_NODE, [DAEMON_JS], { detached: true, stdio: 'ignore' });
-  child.unref();
-  // give it a moment to bind
-  const deadline = Date.now() + 6000;
-  while (Date.now() < deadline) {
-    if (await daemonHealth(1000)) return { running: true };
-    await delay(200);
+  try {
+    await spawnDaemon(6000);
+    return { running: true };
+  } catch (e) {
+    return { running: false, error: e.message };
   }
-  return { running: (await daemonHealth()) != null };
 }
 /// The pid it signalled, else null.
 async function stopDaemon() {
@@ -426,7 +415,7 @@ function migrateLegacy() {
     if (fs.existsSync(CLAUDE_MD)) {
       const text = fs.readFileSync(CLAUDE_MD, 'utf8');
       const stripped = stripBlock(text, LEGACY.claudeMdBegin, LEGACY.claudeMdEnd);
-      if (stripped !== text) writeFileAtomic(CLAUDE_MD, stripped);
+      if (stripped !== text) writeAtomic(CLAUDE_MD, stripped);
     }
   } catch {}
 }

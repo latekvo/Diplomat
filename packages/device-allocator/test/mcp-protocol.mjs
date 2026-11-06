@@ -1,8 +1,9 @@
 // Drives the real stdio MCP server (src/mcp.js) over JSON-RPC, the same way
 // Claude Code does, against a fake device pool. Proves: the handshake carries
 // the coercive `instructions`, request-device is advertised with the alwaysLoad
-// meta, a tools/call actually allocates a device through the daemon, and starting
-// that daemon leaves the server holding none of its fds.
+// meta, a tools/call actually allocates a device through the daemon, starting
+// that daemon leaves the server holding none of its fds, and a daemon that cannot
+// start fails the call at once with its reason.
 // Run: node test/mcp-protocol.mjs
 
 import { spawn, execFileSync } from 'node:child_process';
@@ -22,36 +23,41 @@ fs.writeFileSync(FAKE, JSON.stringify([
   { key: 'ios:UDID-1', platform: 'ios', handle: 'UDID-1', udid: 'UDID-1', name: 'iPhone 16', version: '18.5', apiVersion: '18', format: 'phone', state: 'booted' },
 ]));
 
-const child = spawn(process.execPath, [MCP], {
-  stdio: ['pipe', 'pipe', 'inherit'],
-  env: { ...process.env, DA_BASE_DIR: BASE, DA_FAKE_DEVICES: FAKE, DA_NO_SPAWN: '1' },
-});
-onInterrupt(() => { child.kill('SIGKILL'); killDaemonsUnder(BASE); });
-
-const pending = new Map();
-let buf = '';
-child.stdout.on('data', (chunk) => {
-  buf += chunk.toString();
-  let nl;
-  while ((nl = buf.indexOf('\n')) >= 0) {
-    const line = buf.slice(0, nl).trim();
-    buf = buf.slice(nl + 1);
-    if (!line) continue;
-    let msg; try { msg = JSON.parse(line); } catch { continue; }
-    if (msg.id != null && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); }
-  }
-});
-
-let nextId = 1;
-function rpc(method, params) {
-  const id = nextId++;
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error(`timeout: ${method}`)); } }, 15000);
-    pending.set(id, (m) => { clearTimeout(timer); (m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result)); });
-    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+// A stdio MCP server on its own BASE_DIR, driven over JSON-RPC.
+function connect(base) {
+  const child = spawn(process.execPath, [MCP], {
+    stdio: ['pipe', 'pipe', 'inherit'],
+    env: { ...process.env, DA_BASE_DIR: base, DA_FAKE_DEVICES: FAKE, DA_NO_SPAWN: '1' },
   });
+  onInterrupt(() => { child.kill('SIGKILL'); killDaemonsUnder(base); });
+  const pending = new Map();
+  let buf = '';
+  child.stdout.on('data', (chunk) => {
+    buf += chunk.toString();
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let msg; try { msg = JSON.parse(line); } catch { continue; }
+      if (msg.id != null && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); }
+    }
+  });
+  let nextId = 1;
+  const rpc = (method, params) => {
+    const id = nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error(`timeout: ${method}`)); } }, 15000);
+      pending.set(id, (m) => { clearTimeout(timer); (m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result)); });
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+    });
+  };
+  const notify = (method, params) => { child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`); };
+  return { child, rpc, notify };
 }
-function notify(method, params) { child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`); }
+const INIT = { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' } };
+
+const { child, rpc, notify } = connect(BASE);
 
 // Paths a process holds open.
 function openFiles(pid) {
@@ -67,9 +73,7 @@ let ok = 0;
 const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
 
 try {
-  const init = await rpc('initialize', {
-    protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' },
-  });
+  const init = await rpc('initialize', INIT);
   assert.ok(/MANDATORY|MUST/.test(init.instructions || ''), 'handshake instructions missing the coercion');
   pass('initialize handshake carries the coercive instructions');
 
@@ -115,6 +119,23 @@ try {
   const freed = await rpc('tools/call', { name: 'free-device', arguments: { deviceId: 'UDID-1' } });
   assert.ok(/Released/.test(freed.content?.[0]?.text || ''), 'free-device did not release');
   pass('tools/call free-device releases the device');
+
+  // A daemon that cannot start (its socket path is past the sun_path limit, so listen
+  // fails) exits at once: the call says how and why, without waiting out the start budget.
+  const doomed = connect(path.join(BASE, 'x'.repeat(110)));
+  try {
+    await doomed.rpc('initialize', INIT);
+    doomed.notify('notifications/initialized');
+    const t0 = Date.now();
+    const failed = await doomed.rpc('tools/call', { name: 'free-device', arguments: {} });
+    const ms = Date.now() - t0;
+    assert.ok(failed.isError, `free-device succeeded with no daemon: ${failed.content?.[0]?.text}`);
+    assert.match(failed.content?.[0]?.text || '', /daemon failed to start \(exit 1\): server error Error: listen E[A-Z]+/);
+    assert.ok(ms < 6000, `the failed start took ${ms} ms to report`);
+    pass(`a daemon that cannot start fails the call in ${ms} ms, with its exit code and reason`);
+  } finally {
+    doomed.child.kill('SIGKILL');
+  }
 
   console.log(`\nMCP PROTOCOL OK — ${ok} assertions passed`);
 } catch (e) {

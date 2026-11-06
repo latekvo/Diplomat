@@ -200,7 +200,7 @@ enum Render {
             let _ = seedSettings(store, explain: false)
             let _ = seedListedRepos(store)
             SettingsView(isPresented: .constant(true))
-        case "settings", "settings-explain", "settings-comms-error":
+        case "settings", "settings-explain", "settings-comms-error", "settings-unsaved":
             // Seed an outstanding review count so the "2 owed" pill renders on the
             // review-requests row. No fixed height: the two-column form sizes to its
             // natural content (a fixed frame taller than the content centers it and
@@ -212,6 +212,8 @@ enum Render {
             let _ = seedSettings(store, explain: w.hasSuffix("explain"))
             // `-comms-error` draws the Comms card's pill over a failing poll.
             let _ = w.hasSuffix("comms-error") ? seedCommsError(store) : false
+            // `-unsaved` draws the warning over a change config.json refused.
+            let _ = w.hasSuffix("unsaved") ? seedUnsaved(store) : false
             SettingsView(isPresented: .constant(true))
         case let m where m.hasPrefix("mesh"):
             // The ⬡ Mesh screen over a synthetic topology (the macOS analogue of the
@@ -488,6 +490,20 @@ enum Render {
     private static func seedCommsError(_ store: Store) -> Bool {
         store.commsEnabled = true          // headless-guarded: persists nothing, polls nothing
         store.commsError = SlackError.unauthorized.errorDescription
+        return true
+    }
+
+    /// A change refused by the real write: config.json is put under a plain file.
+    @MainActor
+    private static func seedUnsaved(_ store: Store) -> Bool {
+        let blocker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-render-unsaved-\(getpid())")
+        FileManager.default.createFile(atPath: blocker.path, contents: nil)
+        defer { try? FileManager.default.removeItem(at: blocker) }
+        setenv("DIPLOMAT_CONFIG", blocker.appendingPathComponent("config.json").path, 1)
+        store.writesConfig = true
+        store.autoTaskLimit += 1
+        store.writesConfig = false
         return true
     }
 

@@ -86,11 +86,14 @@ final class Store: ObservableObject {
         }
     }
     /// Hand the allocator daemon the terminal a spawn would open (`AppConfig.spawnTerminalKey`).
-    /// Resolved, because the daemon cannot ask whether Ghostty has its tmux.
+    /// Resolved, because the daemon cannot ask whether Ghostty has its tmux. One the disk
+    /// refused is published again by the next monitor poll.
     private func publishSpawnTerminal() {
-        guard !Headless.active else { return }
-        AppConfig.set(AppConfig.spawnTerminalKey, AgentSpawner.resolved(terminal).rawValue)
+        guard writesConfig else { return }
+        terminalUnpublished = !AppConfig.set(AppConfig.spawnTerminalKey,
+                                             AgentSpawner.resolved(terminal).rawValue)
     }
+    private var terminalUnpublished = false
     /// The repo root every spawned agent `cd`s into (Settings → REPO ROOT). Empty ⇒
     /// fall back to `~/dev/<repo>`; `DIPLOMAT_REPO` outranks both. Stored raw (a typed
     /// `~/…` is expanded at use), so the field shows back exactly what was entered.
@@ -100,8 +103,10 @@ final class Store: ObservableObject {
     /// `~/.diplomat/config.json` (see `AppConfig`). Headless-guarded like the rest.
     @Published var repoPathOverride: String {
         didSet {
-            guard !Headless.active else { return }
-            AppConfig.set(AppConfig.repoRootKey, repoPathOverride)
+            guard writesConfig, !readingConfig,
+                  !configSaved(AppConfig.set(AppConfig.repoRootKey, repoPathOverride))
+            else { return }
+            readBack { repoPathOverride = AppConfig.string(AppConfig.repoRootKey) }
         }
     }
     /// Checkouts besides the repo root whose PR and issue links the wizards accept
@@ -132,8 +137,10 @@ final class Store: ObservableObject {
     /// agents from a process with no UserDefaults to ask.
     @Published var agentRunner: AgentRunner {
         didSet {
-            guard !Headless.active else { return }
-            AppConfig.set(AppConfig.agentRunnerKey, agentRunner.rawValue)
+            guard writesConfig, !readingConfig else { return }
+            if !configSaved(AppConfig.set(AppConfig.agentRunnerKey, agentRunner.rawValue)) {
+                readBack { agentRunner = AppConfig.agentRunner }
+            }
         }
     }
     /// The model the selected runner is pinned to; empty leaves the choice to that
@@ -141,8 +148,10 @@ final class Store: ObservableObject {
     /// runner's provider store.
     @Published var agentModel: String {
         didSet {
-            guard !Headless.active else { return }
-            AppConfig.set(AppConfig.agentModelKey, agentModel)
+            guard writesConfig, !readingConfig,
+                  !configSaved(AppConfig.set(AppConfig.agentModelKey, agentModel))
+            else { return }
+            readBack { agentModel = AppConfig.agentModel }
         }
     }
     /// Whether the in-process PR auto-fix monitor is on. Persisted; when turned on we
@@ -226,12 +235,13 @@ final class Store: ObservableObject {
         didSet {
             // Normalise in memory as well as on disk. Clamping only on the way out
             // would leave the gate comparing against a number the file — and so the
-            // mesh node behind it — does not have. (Assigning here does not re-enter
-            // this observer.)
+            // mesh node behind it — does not have.
             let clamped = AgentDispatchGate.clampAutoTaskLimit(autoTaskLimit)
             if clamped != autoTaskLimit { autoTaskLimit = clamped }
-            guard !Headless.active else { return }
-            AppConfig.setInt(AppConfig.autoTaskLimitKey, clamped)
+            guard writesConfig, !readingConfig,
+                  !configSaved(AppConfig.setInt(AppConfig.autoTaskLimitKey, clamped))
+            else { return }
+            readBack { autoTaskLimit = AppConfig.autoTaskLimit }
         }
     }
 
@@ -245,8 +255,10 @@ final class Store: ObservableObject {
     @Published var autoBudgetGate: Bool {
         didSet {
             AutoBudget.resetCache()
-            guard !Headless.active else { return }
-            AppConfig.setBool(AppConfig.autoBudgetGateKey, autoBudgetGate)
+            guard writesConfig, !readingConfig,
+                  !configSaved(AppConfig.setBool(AppConfig.autoBudgetGateKey, autoBudgetGate))
+            else { return }
+            readBack { autoBudgetGate = AppConfig.autoBudgetGate }
         }
     }
 
@@ -256,8 +268,10 @@ final class Store: ObservableObject {
     /// the resolver cannot disagree about it.
     @Published var runDeadlineEnabled: Bool {
         didSet {
-            guard !Headless.active else { return }
-            AppConfig.setBool(AppConfig.runDeadlineKey, runDeadlineEnabled)
+            guard writesConfig, !readingConfig,
+                  !configSaved(AppConfig.setBool(AppConfig.runDeadlineKey, runDeadlineEnabled))
+            else { return }
+            readBack { runDeadlineEnabled = AppConfig.runDeadline != nil }
         }
     }
 
@@ -266,8 +280,10 @@ final class Store: ObservableObject {
             let clamped = AgentDispatchGate.clampBudgetConfidence(autoBudgetConfidence)
             if clamped != autoBudgetConfidence { autoBudgetConfidence = clamped }
             AutoBudget.resetCache()
-            guard !Headless.active else { return }
-            AppConfig.setInt(AppConfig.autoBudgetConfidenceKey, clamped)
+            guard writesConfig, !readingConfig,
+                  !configSaved(AppConfig.setInt(AppConfig.autoBudgetConfidenceKey, clamped))
+            else { return }
+            readBack { autoBudgetConfidence = AppConfig.autoBudgetConfidence }
         }
     }
 
@@ -276,8 +292,10 @@ final class Store: ObservableObject {
             let clamped = AgentDispatchGate.clampBudgetFloorPct(autoBudgetFloorPct)
             if clamped != autoBudgetFloorPct { autoBudgetFloorPct = clamped }
             AutoBudget.resetCache()
-            guard !Headless.active else { return }
-            AppConfig.setDouble(AppConfig.autoBudgetFloorPctKey, clamped)
+            guard writesConfig, !readingConfig,
+                  !configSaved(AppConfig.setDouble(AppConfig.autoBudgetFloorPctKey, clamped))
+            else { return }
+            readBack { autoBudgetFloorPct = AppConfig.autoBudgetFloorPct }
         }
     }
 
@@ -286,8 +304,10 @@ final class Store: ObservableObject {
             let clamped = AgentDispatchGate.clampBudgetReserveUsd(autoBudgetReserveUsd)
             if clamped != autoBudgetReserveUsd { autoBudgetReserveUsd = clamped }
             AutoBudget.resetCache()
-            guard !Headless.active else { return }
-            AppConfig.setDouble(AppConfig.autoBudgetReserveUsdKey, clamped)
+            guard writesConfig, !readingConfig,
+                  !configSaved(AppConfig.setDouble(AppConfig.autoBudgetReserveUsdKey, clamped))
+            else { return }
+            readBack { autoBudgetReserveUsd = AppConfig.autoBudgetReserveUsd }
         }
     }
 
@@ -300,8 +320,9 @@ final class Store: ObservableObject {
                                                      AppConfig.deviceIdleFreeRange,
                                                      fallback: AppConfig.deviceIdleFreeDefault)
             if clamped != deviceIdleFreeMinutes { deviceIdleFreeMinutes = clamped }
-            guard writesDeviceConfig, !reloadingDeviceConfig else { return }
+            guard writesConfig, !readingConfig else { return }
             deviceIdleSaveFailed = !AppConfig.setInt(AppConfig.deviceIdleFreeMinutesKey, clamped)
+            if deviceIdleSaveFailed { reloadDeviceConfig() }
         }
     }
 
@@ -311,29 +332,45 @@ final class Store: ObservableObject {
                                                      AppConfig.deviceIdleLeasedRange,
                                                      fallback: AppConfig.deviceIdleLeasedDefault)
             if clamped != deviceIdleLeasedMinutes { deviceIdleLeasedMinutes = clamped }
-            guard writesDeviceConfig, !reloadingDeviceConfig else { return }
+            guard writesConfig, !readingConfig else { return }
             deviceIdleSaveFailed = !AppConfig.setInt(AppConfig.deviceIdleLeasedMinutesKey, clamped)
+            if deviceIdleSaveFailed { reloadDeviceConfig() }
         }
     }
 
-    /// Whether the idle limits and the provider are written to config.json. Off in a
-    /// headless run, which persists nothing; a self-test on a scratch file turns it on.
-    var writesDeviceConfig = !Headless.active
-    /// Whether the last idle-limit change failed to reach config.json.
+    /// Whether settings are written to config.json. Off in a headless run, which
+    /// persists nothing; a self-test on a scratch file turns it on.
+    var writesConfig = !Headless.active
+    /// Whether the last change to a Settings knob in config.json failed to land (a full
+    /// disk). The knob then reads back what the file holds, which is what every other
+    /// process acts on. Linux twin: `SettingsView._save`.
+    @Published private(set) var configSaveFailed = false
+    private func configSaved(_ landed: Bool) -> Bool {
+        configSaveFailed = !landed
+        return landed
+    }
+    /// The same for the idle limits, which the Devices screen sets.
     @Published private(set) var deviceIdleSaveFailed = false
-    /// Set while `reloadDeviceConfig` copies the file in, which is no change to write back.
-    private var reloadingDeviceConfig = false
+    /// Set while knobs are copied in from config.json, which is no change to write back.
+    /// The observers re-enter on an assignment of their own, so `readBack` is how one
+    /// puts its knob back.
+    private var readingConfig = false
+    private func readBack(_ copy: () -> Void) {
+        readingConfig = true
+        defer { readingConfig = false }
+        copy()
+    }
 
     /// The remote device pool's provider module, in config.json because the daemon reads
     /// it; empty = no remote pool.
     @Published private(set) var deviceRemoteProvider: String
 
     /// Store the provider trimmed (empty removes the key, which turns the remote pool
-    /// off) and say whether the write landed. Kept in memory alone without `writesDeviceConfig`.
+    /// off) and say whether the write landed. Kept in memory alone without `writesConfig`.
     @discardableResult
     func setDeviceRemoteProvider(_ raw: String) -> Bool {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if writesDeviceConfig, !AppConfig.set(AppConfig.deviceRemoteProviderKey, value) { return false }
+        if writesConfig, !AppConfig.set(AppConfig.deviceRemoteProviderKey, value) { return false }
         if value != deviceRemoteProvider { deviceRemoteProvider = value }
         return true
     }
@@ -341,8 +378,8 @@ final class Store: ObservableObject {
     /// Re-read the idle limits and the provider from config.json, which is also edited
     /// by hand.
     func reloadDeviceConfig() {
-        reloadingDeviceConfig = true
-        defer { reloadingDeviceConfig = false }
+        readingConfig = true
+        defer { readingConfig = false }
         let free = AppConfig.deviceIdleFreeMinutes, leased = AppConfig.deviceIdleLeasedMinutes
         if free != deviceIdleFreeMinutes { deviceIdleFreeMinutes = free }
         if leased != deviceIdleLeasedMinutes { deviceIdleLeasedMinutes = leased }
@@ -1971,6 +2008,7 @@ final class Store: ObservableObject {
         autofixPollInFlight = true
         defer { autofixPollInFlight = false }
         pollErrorThisCycle = nil
+        if terminalUnpublished { publishSpawnTerminal() }
         if me.isEmpty { await fetchMe() }
         if effectiveMe.isEmpty {
             // The most common total-breakage mode (gh missing/unauthenticated) used to
