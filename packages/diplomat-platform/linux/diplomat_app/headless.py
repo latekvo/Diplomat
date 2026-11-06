@@ -12,6 +12,7 @@ from collections.abc import Mapping
 #: one that takes a value, ``False`` for a flag set to 1. ``test_headless_modes.py``
 #: holds it to the ladder.
 MODES = {
+    "DIPLOMAT_UPDATE_PROBE": False,
     "DIPLOMAT_SELF_UPDATE": False,
     "DIPLOMAT_WATCHDOG": False,
     "DIPLOMAT_AGENTS": False,

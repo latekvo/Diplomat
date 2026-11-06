@@ -194,7 +194,9 @@ def test_the_updater_merges_nothing_below_the_floor(tmp_path, monkeypatch, volum
 
     # Origin on the real disk, the checkout on the volume, one commit behind.
     origin = tmp_path / "origin"
-    origin.mkdir()
+    launcher = selfupdate.linux_package(origin) / "diplomat"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/usr/bin/env bash\n")  # passes the merge's probe
     _git(origin, "init", "-q", "-b", "main")
     _commit(origin, "1\n")
     checkout = volume.path / "checkout"

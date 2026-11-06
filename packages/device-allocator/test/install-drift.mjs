@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { killDaemonsUnder, onInterrupt } from './lib/interrupt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = path.join(__dirname, '..');
@@ -24,6 +25,7 @@ const MCP_JS = path.join(PKG_DIR, 'src', 'mcp.js');
 
 const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'da-drift-'));
 const BASE = path.join(HOME, '.diplomat', 'device-allocator');
+onInterrupt(() => killDaemonsUnder(BASE));
 const FAKE = path.join(HOME, 'fake.json');
 fs.writeFileSync(FAKE, '[]');
 

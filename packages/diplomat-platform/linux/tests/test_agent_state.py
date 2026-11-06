@@ -214,6 +214,14 @@ CASES = [
      rec(), ev(processes={4242: proc()}, tails={"pts/3": WORKING},
                sessions={"r1": A.SessionState(busy=False)}),
      A.FINISHED, "its runner reported the turn over"),
+    ("a session whose turn its provider refused has failed, and says why",
+     rec(), ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+               sessions={"r1": A.SessionState(busy=False, failure="Insufficient account funds")}),
+     A.FAILED, "its runner reported the turn failed: Insufficient account funds"),
+    ("a failed turn whose runner gave no detail still fails",
+     rec(), ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+               sessions={"r1": A.SessionState(busy=False, failure="")}),
+     A.FAILED, "its runner reported the turn failed"),
     ("a run with no session of its own is still read off its screen",
      rec(), ev(processes={4242: proc()}, tails={"pts/3": WORKING},
                sessions={"someone-else": A.SessionState(busy=False)}),
@@ -675,6 +683,22 @@ def test_only_the_stillness_backstop_marks_a_run_wedged():
     verdicts = [A.resolve_one(r, e, T0) for _n, r, e, _s, _rr in CASES]
     assert any(v.wedged for v in verdicts)
     assert any(v.state == A.FINISHED and not v.wedged for v in verdicts)
+
+
+def test_only_the_agents_own_word_marks_a_run_reported():
+    """``reported`` is what lets a review request's run end it without a retry
+    (:func:`autofix.concluded`), so it must name only the rungs where the agent's own
+    runner said the turn went well — never a sentinel, a session that ended, a gone
+    pid, a refused turn or a backstop, none of which says the agent meant to stop."""
+    for name, record, evidence, _state, _reason in CASES:
+        got = A.resolve_one(record, evidence, T0)
+        by_report = got.reason.endswith(("its CLI reported the turn over",
+                                         "its runner reported the turn over"))
+        assert got.reported is by_report, f"{name}: {got.reason!r}"
+    verdicts = [A.resolve_one(r, e, T0) for _n, r, e, _s, _rr in CASES]
+    assert any(v.reported for v in verdicts)
+    assert any(v.state == A.FINISHED and not v.reported for v in verdicts)
+    assert any(v.state == A.FAILED and "turn failed" in v.reason for v in verdicts)
 
 
 def test_only_the_run_deadline_marks_a_run_expired():

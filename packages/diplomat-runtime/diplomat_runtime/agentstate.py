@@ -194,7 +194,7 @@ def _jsonable(value: Any) -> Any:
 
 MERGED = "merged"  # the PR landed — terminal, and outranks whatever the process does
 FINISHED = "finished"  # positive evidence the agent ended
-FAILED = "failed"  # positive evidence the agent never ran at all
+FAILED = "failed"  # positive evidence its work never ran: never started, or turn refused
 AWAITING_INPUT = "awaiting_input"  # alive, and its screen shows it back at the prompt
 RUNNING = "running"  # alive, and either working or unreadable
 STARTING = "starting"  # dispatched so recently that nothing could have observed it yet
@@ -371,20 +371,29 @@ class SessionState:
     SQLite (:mod:`diplomat_runtime.hermesstore`); Claude Code serves nothing, so its runs
     are absent from the evidence and are still read from the screen.
 
-    Only the one fact, because it is the only one this evidence can carry honestly:
+    Only how the turn stands, because that is all this evidence can carry honestly:
     an OpenCode run's spend is a sum over its whole transcript and the poll reads one
     message. A finished run is priced from its runner's own store instead.
     """
 
     #: Is a turn in flight? Whichever way its runner says so.
     busy: bool
+    #: Set when the runner says the last turn FAILED (a 2.x session's
+    #: ``outcome: "failed"``, e.g. a provider that refused it): what it said went
+    #: wrong, or "" when it said nothing more. ``None`` for a turn that did not fail.
+    failure: str | None = None
 
     def to_json(self) -> dict:
-        return {"busy": self.busy}
+        out: dict = {"busy": self.busy}
+        if self.failure is not None:
+            out["failure"] = self.failure
+        return out
 
     @staticmethod
     def from_json(obj: dict) -> "SessionState":
-        return SessionState(busy=_flag(obj.get("busy")))
+        failure = obj.get("failure")
+        return SessionState(busy=_flag(obj.get("busy")),
+                            failure=failure if isinstance(failure, str) else None)
 
 
 @dataclass(frozen=True)
@@ -636,6 +645,11 @@ class Resolution:
     #: it would free nothing, since the next scan re-books the same agent, and a screen
     #: that stays unreadable keeps it RUNNING on every pass.
     lapsed: bool = False
+    #: Whether the agent's own runner said its turn was over and went well: a CLI's
+    #: ``idle`` turn report, or a session that went idle without failing. Every other
+    #: ending (an exit, a gone pid, a released claim, a backstop) is inferred, and says
+    #: nothing about whether the agent finished what it set out to do.
+    reported: bool = False
 
     @property
     def occupying(self) -> bool:
@@ -860,7 +874,8 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
 
     reported = _reported(record, evidence)
     if reported is not None and completion.is_over(reported[0]):
-        return done(FINISHED, _REPORTED_REASON[reported[0]])
+        return replace(done(FINISHED, _REPORTED_REASON[reported[0]]),
+                       reported=reported[0] == completion.IDLE)
 
     if record.placement == PLACEMENT_MESH_PEER:
         out = _resolve_peer(record, evidence, now, done)
@@ -1176,7 +1191,13 @@ def _classify_activity(record: RunRecord, evidence: Evidence, now: float, done,
                 return done(RUNNING, f"{alive_reason}; its session is mid-turn")
             if record.untracked:
                 return done(AWAITING_INPUT, f"{alive_reason}; at the prompt")
-            return done(FINISHED, f"{alive_reason}; its runner reported the turn over")
+            # A refused turn ends in a second and did none of the work, which is still
+            # owed: FAILED, so it is neither priced nor read as an answer.
+            if session.failure is not None:
+                return done(FAILED, f"{alive_reason}; its runner reported the turn failed"
+                                    + (f": {session.failure}" if session.failure else ""))
+            return replace(done(FINISHED, f"{alive_reason}; its runner reported the turn over"),
+                           reported=True)
     if not evidence.tails.ok:
         return done(RUNNING,
                     f"{alive_reason}; screen {evidence.tails.reason or 'unavailable'}")

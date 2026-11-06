@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { onInterrupt } from './lib/interrupt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DAEMON = path.join(__dirname, '..', 'src', 'daemon.js');
@@ -51,7 +52,7 @@ function sandbox({ remote = REMOTE, mode = 'ok', config = {} } = {}) {
 // or a SIGTERM from a runner's timeout would otherwise leave them up for good.
 const live = new Set();
 process.on('exit', () => { for (const c of live) c.kill('SIGTERM'); });
-for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => process.exit(1));
+onInterrupt(() => {}); // its exit(1) runs the hook above
 
 function startDaemon(box, extraEnv = {}, provider = PROVIDER) {
   const child = spawn(process.execPath, [DAEMON], {

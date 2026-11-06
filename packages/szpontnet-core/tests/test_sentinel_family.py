@@ -9,11 +9,13 @@ behind is a directory that grows with every mesh-placed run.
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
-from szpontnet import protocol
+from szpontnet import host, protocol
 from szpontnet import node as node_mod
 from szpontnet.node import MeshNode
 
@@ -77,3 +79,45 @@ def test_a_launch_that_fails_leaves_nothing_staged(node, monkeypatch):
     assert node._spawn_local(job)[0] == "failed"
     agents = Path(node._agent_done_path("o/r:review#3@abc")).parent
     assert list(agents.iterdir()) == []
+
+
+class _Told(host.Host):
+    def __init__(self):
+        self.finished: list[tuple[str, float]] = []
+        self.told = threading.Event()
+
+    def job_finished(self, work_key, started_at):
+        self.finished.append((work_key, started_at))
+        self.told.set()
+
+
+def test_the_host_is_told_a_job_finished(node):
+    """What the host checks after a run (Diplomat: the review's lifecycle) only the
+    executor can, so the node that watched the agent tells it, with the work key."""
+    told = _Told()
+    host.set_host(told)
+    done = Path(node._agent_done_path("o/r:review#5@abc"))
+    done.write_text("0")
+    before = time.time()
+    asyncio.run(node._watch_agent("o/r:review#5@abc", str(done)))
+    assert told.told.wait(5)
+    [(key, started)] = told.finished
+    assert key == "o/r:review#5@abc" and before <= started <= time.time()
+
+
+def test_a_job_the_node_stopped_waiting_on_is_not_reported_finished(node):
+    """No sentinel, and the claim gone (a yield): nothing says the agent finished."""
+    told = _Told()
+    host.set_host(told)
+    done = Path(node._agent_done_path("o/r:review#6@abc"))
+    asyncio.run(node._watch_agent("o/r:review#6@abc", str(done)))
+    assert not told.told.wait(0.5)
+
+
+def test_a_host_that_raises_on_being_told_is_ignored():
+    class Broken(host.Host):
+        def job_finished(self, work_key, started_at):
+            raise RuntimeError("boom")
+
+    host.set_host(Broken())
+    host.job_finished("o/r:review#7@abc", 1.0)

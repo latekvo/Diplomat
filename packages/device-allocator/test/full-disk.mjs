@@ -28,6 +28,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { onInterrupt } from './lib/interrupt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DAEMON = path.join(__dirname, '..', 'src', 'daemon.js');
@@ -41,7 +42,7 @@ const VOL = path.join(ROOT, 'v');
 const BIN = path.join(ROOT, 'bin');
 const FAKE = path.join(ROOT, 'fake.json');
 const CONFIG = path.join(ROOT, 'config.json');
-const TERMINAL_RECORD = path.join(ROOT, 'terminal-argv');
+const TERMINAL_RECORDS = path.join(ROOT, 'terminal-argv'); // one file per window opened
 const HOME = path.join(ROOT, 'home');
 // Every node process a client starts appends its script here, off the full volume.
 const TRACE = path.join(ROOT, 'node-starts');
@@ -57,10 +58,13 @@ fs.writeFileSync(FAKE, JSON.stringify([
   { key: 'android:P', platform: 'android', avd: 'P', name: 'P', version: '14', apiVersion: '34', format: 'phone', serial: null, state: 'shutdown' },
 ]));
 // The repair window opens through a recording stand-in: osascript on macOS, xterm
-// (the published terminal) on Linux.
+// (the published terminal) on Linux. Each record is renamed into place, as it is read the
+// moment it exists.
 fs.mkdirSync(BIN);
+fs.mkdirSync(TERMINAL_RECORDS);
 for (const t of ['osascript', 'xterm']) {
-  fs.writeFileSync(path.join(BIN, t), `#!/bin/sh\necho "$@" >> '${TERMINAL_RECORD}'\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(BIN, t),
+    `#!/bin/sh\necho "$@" > '${TERMINAL_RECORDS}/.'$$ && mv '${TERMINAL_RECORDS}/.'$$ '${TERMINAL_RECORDS}/'$$\n`, { mode: 0o755 });
 }
 fs.writeFileSync(CONFIG, JSON.stringify({ spawnTerminal: 'xterm' }));
 
@@ -194,8 +198,8 @@ async function leakedTmpFiles() {
 }
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 // The launcher each repair window was opened on.
-const opened = () => (fs.existsSync(TERMINAL_RECORD)
-  ? fs.readFileSync(TERMINAL_RECORD, 'utf8').trim().split('\n').map((l) => l.match(/[^\s']+\.sh/)[0]) : []);
+const opened = () => fs.readdirSync(TERMINAL_RECORDS).filter((f) => !f.startsWith('.'))
+  .map((f) => fs.readFileSync(path.join(TERMINAL_RECORDS, f), 'utf8').match(/[^\s']+\.sh/)[0]);
 async function waitOpened(n) {
   for (let i = 0; i < 60 && opened().length < n; i++) await delay(50);
   return opened().length;
@@ -495,14 +499,11 @@ if (mount.status === 77) {
 }
 assert.equal(mount.status, 0, `mount failed: ${mount.stderr}`);
 // A signal skips the finally below, and the volume would stay attached.
-for (const sig of ['SIGTERM', 'SIGINT']) {
-  process.on(sig, () => {
-    for (const d of daemons) d.kill('SIGKILL');
-    volume('unmount');
-    fs.rmSync(ROOT, { recursive: true, force: true });
-    process.exit(1);
-  });
-}
+onInterrupt(() => {
+  for (const d of daemons) d.kill('SIGKILL');
+  volume('unmount');
+  fs.rmSync(ROOT, { recursive: true, force: true });
+});
 try {
   await scenarioRunningDaemon();
   await scenarioStartFull();

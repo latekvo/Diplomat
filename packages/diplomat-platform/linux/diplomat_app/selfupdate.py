@@ -130,12 +130,16 @@ def pull() -> str:
     checkout is left byte-for-byte as it was, and a readable ``UpdateError``
     says it needs a manual merge. Uncommitted local changes still block the
     merge outright — an update must never clobber work in flight.
+
+    A merge the unattended jobs cannot start from is undone too (:func:`_probe`):
+    they run from this checkout, so keeping it would leave nothing to pull the fix.
     """
     root = repo_root()
     if _git(root, "status", "--porcelain", "--untracked-files=no"):
         raise UpdateError("checkout has local changes — commit or stash them first")
     _git(root, "fetch", "--quiet", "origin")
     up = _upstream(root)
+    before = _git(root, "rev-parse", "HEAD")
 
     # A diverged checkout needs a merge commit; give the auto-merge a committer
     # identity if the environment has none (a stripped 6AM service env might),
@@ -163,7 +167,60 @@ def pull() -> str:
             )
         last = blob.splitlines()[-1] if blob else f"exit {merge.returncode}"
         raise UpdateError(f"git merge: {last}")
-    return _git(root, "rev-parse", "--short", "HEAD")
+    commit = _git(root, "rev-parse", "--short", "HEAD")
+    broken = _probe(root)
+    if broken:
+        _git(root, "reset", "--keep", before)
+        _reject(_git(root, "rev-parse", up))
+        raise UpdateError(f"{commit} cannot start the updater ({broken}) - "
+                          f"rolled back to {before[:7]}")
+    return commit
+
+
+#: How long the probe may take: an interpreter start and a handful of imports.
+PROBE_TIMEOUT = 120.0
+
+
+def _probe(root: Path) -> str:
+    """Why the unattended jobs could not start from this checkout, "" when they can:
+    its launcher, run as their systemd units run it, in the mode that imports them
+    and stops (``DIPLOMAT_UPDATE_PROBE``)."""
+    env = {k: v for k, v in os.environ.items() if k not in headless_markers()}
+    env["DIPLOMAT_UPDATE_PROBE"] = "1"
+    try:
+        proc = subprocess.run(  # noqa: S603 - the checkout's own launcher
+            ["bash", str(linux_package(root) / "diplomat")], cwd=str(root), env=env,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return f"no answer in {PROBE_TIMEOUT:.0f}s"
+    except OSError as exc:
+        return str(exc)
+    if proc.returncode == 0:
+        return ""
+    lines = (proc.stderr.strip() or proc.stdout.strip()).splitlines()
+    return f"exit {proc.returncode}" + (f": {lines[-1]}" if lines else "")
+
+
+def _rejected_file() -> Path:
+    return _state_dir() / "rejected-update"
+
+
+def _reject(upstream_commit: str) -> None:
+    """Remember an upstream the jobs could not start from, so the 6AM run waits for
+    upstream to move rather than merging and undoing it every morning."""
+    try:
+        _state_dir().mkdir(parents=True, exist_ok=True)
+        _rejected_file().write_text(upstream_commit + "\n")
+    except OSError:
+        pass
+
+
+def _is_rejected(upstream_commit: str) -> bool:
+    try:
+        return _rejected_file().read_text().strip() == upstream_commit
+    except OSError:
+        return False
 
 
 def build_core() -> None:
@@ -460,6 +517,13 @@ def run_scheduled() -> int:
     if not st["behind"]:
         extra = f" ({st['ahead']} local ahead)" if st.get("ahead") else ""
         _sched_log(f"up to date at {st['commit']}{extra}")
+        return revive(quietly=False)
+    try:
+        tip = _git(repo_root(), "rev-parse", st["upstream"])
+    except (UpdateError, OSError, subprocess.TimeoutExpired):
+        tip = ""
+    if tip and _is_rejected(tip):
+        _sched_log(f"skip: {tip[:7]} could not start the updater; waiting for a fix upstream")
         return revive(quietly=False)
 
     _sched_log(f"{st['behind']} behind at {st['commit']} — merging {st['upstream']}")

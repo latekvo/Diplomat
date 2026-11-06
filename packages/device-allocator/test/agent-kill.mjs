@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { killDaemonsUnder, onInterrupt } from './lib/interrupt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MCP = path.join(__dirname, '..', 'src', 'mcp.js');
@@ -42,6 +43,7 @@ async function report(name, args, env = {}) {
       ...env,
     },
   });
+  onInterrupt(() => { child.kill('SIGKILL'); sleeper.kill('SIGKILL'); killDaemonsUnder(base); });
 
   const pending = new Map();
   let buf = '';

@@ -26,10 +26,14 @@ So the six questions it cannot answer alone are asked of a **host**:
   stand is a deployment's policy, and the processes that make them up are the
   application's to count.
 
+One thing it tells the host rather than asks: :meth:`Host.job_finished`, that a job
+:meth:`Host.run_job` started has finished, for whatever the application checks after
+one. Only the machine that ran it holds the job's work key at its end.
+
 Every one has a working default, so the package imports and a node runs with no
 host at all — it just advertises the v1 duties, discards its log, declines work
-it has no runner for, dedups solely against its own book, and accepts work
-without limit.
+it has no runner for, dedups solely against its own book, accepts work without
+limit, and checks nothing after a job.
 
 Two ways to register:
 
@@ -131,6 +135,14 @@ class Host:
         """
         return False
 
+    def job_finished(self, work_key: str, started_at: float) -> None:
+        """A job :meth:`run_job` started for ``work_key`` (at ``started_at``, a Unix
+        time) has finished: its completion sentinel appeared. Not called for one the
+        node stopped waiting on (a yield, the backstop), nor for a job with no key.
+
+        Called on a thread of its own, so it may block, and never twice for one run.
+        """
+
 
 class NoRunner(JobSpawnError):
     """This machine has no way to run the job it was handed.
@@ -221,6 +233,15 @@ def at_job_capacity(running_keys: list[str]) -> bool:
         return bool(host().at_job_capacity(running_keys))
     except Exception:  # noqa: BLE001 - a broken host must not cost us the job
         return False
+
+
+def job_finished(work_key: str, started_at: float) -> None:
+    """Tell the current host a job finished. A host that raises is ignored: the
+    job is over either way."""
+    try:
+        host().job_finished(work_key, started_at)
+    except Exception:  # noqa: BLE001 - a broken host must not take the node down
+        pass
 
 
 @functools.lru_cache(maxsize=1)

@@ -112,6 +112,40 @@ def test_decide_changed_stamp_cooldown():
     assert decide(prior, "new", False, False, 100.0 + 60 * 60 + 1) == ("dispatch", 1)
 
 
+def test_decide_never_retries_a_request_its_run_concluded():
+    """#177: a run that finished on its own word and posted nothing (soft-approve off
+    on a clean PR, or my own draft found on it) answered the request. Only a genuine
+    re-request - a new stamp - asks again."""
+    prior = ReviewAttempt("s", last_dispatched_at=100.0, attempts=1, concluded_at=400.0)
+    assert decide(prior, "s", False, False, 100.0 + 10 * 3600) == ("concluded", 0.0)
+    assert decide(prior, "new", False, False, 100.0 + 2 * 3600) == ("dispatch", 1)
+
+
+def test_only_a_review_request_run_its_runner_reported_over_concludes():
+    from diplomat_runtime import agentstate as A
+
+    def run(run_id, kind, pr):
+        return A.RunRecord(run_id=run_id, dispatched_at=0.0, pr_number=pr, kind="review",
+                           ledger_key=f"{kind}:github.com/o/r#{pr}@abc")
+
+    runs = [run("idle", autofix.WORK_REVIEW_REQ, 11), run("gone", autofix.WORK_REVIEW_REQ, 12),
+            run("reply", autofix.WORK_REVIEW_REPLY, 13)]
+    verdicts = {"idle": A.Resolution("idle", A.FINISHED, "r", reported=True),
+                "gone": A.Resolution("gone", A.FINISHED, "pid absent"),
+                "reply": A.Resolution("reply", A.FINISHED, "r", reported=True)}
+    assert autofix.concluded(runs, verdicts) == {11}
+
+
+def test_a_concluded_record_outlives_the_ceiling_only_while_its_request_is_owed():
+    book = {"11": ReviewAttempt("s", 0.0, 1), "13": ReviewAttempt("s", 0.0, 1)}
+    stamped = autofix.conclude(book, {11, 15}, 50.0)
+    assert stamped["11"].concluded_at == 50.0 and stamped["13"].concluded_at is None
+    assert "15" not in stamped, "a conclusion invents no record"
+    late = autofix.RETRY_MAX_BACKOFF + 60
+    assert set(autofix.retained(stamped, {"11": "s", "13": "s"}, late)) == {"11"}
+    assert autofix.retained(stamped, {"11": "newer"}, late) == {}
+
+
 # MARK: - ReviewRequest.owe_review
 
 
@@ -1704,6 +1738,50 @@ def test_a_poll_dispatches_only_up_to_the_cap(store, monkeypatch):
             fh.write("0")
     store._poll_review_requests("o", "r")
     assert len(calls) == 4
+
+
+@pytest.mark.parametrize("ending,retried", [("reported", False), ("exited", True)])
+def test_a_review_run_that_finished_posting_nothing_is_not_dispatched_again(
+        store, monkeypatch, ending, retried):
+    """#177 through the store. A run whose agent reported its turn over answered the
+    request even though GitHub still calls it owed (it chose not to post): no later
+    poll re-dispatches it, past the whole backoff ladder. One whose agent merely
+    exited said nothing about that, and is retried as before."""
+    import time as _time
+    from diplomat_runtime import agentregistry
+
+    store.pr_autofix_enabled = False
+    calls = _spawn_recorder(monkeypatch)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
+    req = ReviewRequest(number=7, title="t", url="https://github.com/o/r/pull/7",
+                        author="bob", author_association="MEMBER", files=[],
+                        requested_at="2026-01-02", my_last_review_at=None, head_sha="abc")
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
+                        lambda *a, **k: [req])
+
+    store._poll_review_requests("o", "r")
+    assert len(calls) == 1
+    (run,) = agentregistry.load()
+    now = _time.time()
+    if ending == "reported":
+        fake_probes(monkeypatch, activity={run.run_id: ("idle", now - 5)})
+    else:
+        with open(calls[0]["done"], "w") as fh:
+            fh.write("0")
+        fake_probes(monkeypatch)
+    store._settle_agents()
+    assert agentregistry.load() == [], "the run must actually retire, or this pins nothing"
+
+    # Past every rung of the ladder, and past the ceiling the book is pruned at.
+    key = "reviewReqAttempts"
+    book = store._load_attempts(key)
+    book["7"] = dataclasses.replace(book["7"], last_dispatched_at=now - 4 * 3600)
+    store._save_attempts(key, book)
+    store._poll_review_requests("o", "r")
+    store._poll_review_requests("o", "r")
+
+    assert len(calls) == (2 if retried else 1)
+    assert store.unaddressed_reviews == 0
 
 
 def test_a_panel_spawn_does_not_spend_the_automatic_budget(store, monkeypatch):

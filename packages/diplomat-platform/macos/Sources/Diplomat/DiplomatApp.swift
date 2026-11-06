@@ -393,6 +393,13 @@ enum SingleInstance {
         return a < b
     }
 
+    /// When `pid` started, nil once it has exited.
+    static func startDate(_ pid: pid_t) -> Date? {
+        startTime(pid).map {
+            Date(timeIntervalSince1970: TimeInterval($0.tv_sec) + TimeInterval($0.tv_usec) / 1e6)
+        }
+    }
+
     private static func startTime(_ pid: pid_t) -> timeval? {
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
@@ -887,6 +894,7 @@ enum Dump {
                     case .skipInFlight: recon = "reconcile→in-flight"
                     case .skipBanned: recon = "reconcile→banned"
                     case .skipCoolingDown(let s): recon = "reconcile→cooldown(\(Int(s))s)"
+                    case .skipConcluded: recon = "reconcile→concluded"
                     }
                 } else { recon = "addressed" }
                 print("  #\(r.number)  owe=\(r.oweReview ? "YES" : "no")  \(recon)  "

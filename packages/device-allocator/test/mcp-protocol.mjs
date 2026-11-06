@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { killDaemonsUnder, onInterrupt } from './lib/interrupt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MCP = path.join(__dirname, '..', 'src', 'mcp.js');
@@ -28,6 +29,7 @@ function connect(base) {
     stdio: ['pipe', 'pipe', 'inherit'],
     env: { ...process.env, DA_BASE_DIR: base, DA_FAKE_DEVICES: FAKE, DA_NO_SPAWN: '1' },
   });
+  onInterrupt(() => { child.kill('SIGKILL'); killDaemonsUnder(base); });
   const pending = new Map();
   let buf = '';
   child.stdout.on('data', (chunk) => {

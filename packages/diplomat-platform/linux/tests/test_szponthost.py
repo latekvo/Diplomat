@@ -361,6 +361,61 @@ def test_an_agent_the_node_started_seconds_ago_still_holds_its_bay(host, monkeyp
     assert spawned("10:00") is False
 
 
+def test_automatic_work_on_no_pr_holds_its_bay_too(host, monkeypatch):
+    """#162. An automatic issue fix or sweep names no PR, so the prompt scan never sees
+    it, yet it holds a bay of the applet's cap (``agentstate.cap_load``). Counted from
+    the run book the applet writes, against the same ``ps`` dump: alive on its tty and
+    not back at its prompt. A panel run spends none of the automatic cap, and one whose
+    agent is gone or waiting at its prompt has given its bay back."""
+    import time
+
+    from diplomat_runtime import agentregistry, appconfig
+    from diplomat_runtime import agentstate as A
+
+    cfg = core.config()
+    at_prompt = "● Opened the PR.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
+    tails = {}
+    monkeypatch.setattr("diplomat_runtime.tmuxwatch.pane_tails_for_ttys",
+                        lambda ttys: {t: tails[t] for t in ttys if t in tails})
+    appconfig.set_int(appconfig.AUTO_TASK_LIMIT, 2)
+    now = time.time()
+
+    def book(tty, *, source=A.SOURCE_AUTO, pid=None, at=now - 600, kind="issues"):
+        agentregistry.create_run(A.RunRecord(
+            run_id=agentregistry.new_run_id(at), dispatched_at=at, pr_number=None,
+            kind=kind, source=source, placement=A.PLACEMENT_LOCAL, pid=pid, tty=tty), "P")
+
+    _ps_output(monkeypatch, "".join(
+        f"pts/{n}    15:00 claude Take issue #{n} in {cfg['owner']}/{cfg['repo']}\n"
+        for n in (31, 41, 51)))
+    book("pts/31", pid=4101)
+    assert host.at_job_capacity([]) is False
+    book("pts/41", pid=4102)
+    assert host.at_job_capacity([]) is True, "two issue fixes fill a cap of two"
+    tails["pts/41"] = at_prompt
+    assert host.at_job_capacity([]) is False, "one back at its prompt gave its bay back"
+    book("pts/51", pid=4103, source=A.SOURCE_PANEL)
+    assert host.at_job_capacity([]) is False, "a panel run spends none of the cap"
+    book("pts/61", pid=4104, kind="audit")
+    assert host.at_job_capacity([]) is False, "a run whose agent is gone holds nothing"
+    book("", at=now - 1, kind="audit")
+    assert host.at_job_capacity([]) is True, "a spawn nothing has observed yet holds its bay"
+
+
+def test_a_pr_run_in_the_book_is_not_counted_twice(host, monkeypatch):
+    from diplomat_runtime import agentregistry, appconfig
+    from diplomat_runtime import agentstate as A
+
+    cfg = core.config()
+    monkeypatch.setattr("diplomat_runtime.tmuxwatch.pane_tails_for_ttys", lambda ttys: {})
+    appconfig.set_int(appconfig.AUTO_TASK_LIMIT, 2)
+    _ps_output(monkeypatch, f"pts/5    15:00 claude Review PR #5 in {cfg['owner']}/{cfg['repo']}\n")
+    agentregistry.create_run(A.RunRecord(
+        run_id="r5", dispatched_at=0.0, pr_number=5, kind="review",
+        source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL, pid=4105, tty="pts/5"), "P")
+    assert host.at_job_capacity([]) is False
+
+
 def test_the_cap_is_the_one_the_applet_writes(host, monkeypatch):
     """Same file, same number: a device with two answers to "how many at once" has
     no cap at all."""

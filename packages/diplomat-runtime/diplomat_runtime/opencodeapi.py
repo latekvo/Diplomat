@@ -98,6 +98,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 
 from .agentstate import SessionState
 
@@ -331,7 +332,11 @@ def service_state(session_id: str, active: dict | None) -> SessionState | None:
     info = info.get("data") if isinstance(info, dict) else None
     if not isinstance(info, dict):
         return None
-    return service_state_of(info, active, session_id)
+    state = service_state_of(info, active, session_id)
+    if state.failure is not None:
+        last = _service_call(_session_route(session_id) + "/message?limit=1&order=desc")
+        state = replace(state, failure=failure_message(last))
+    return state
 
 
 def interrupt(session_id: str) -> None:
@@ -535,12 +540,31 @@ def service_state_of(info: dict, active: dict, session_id: str) -> SessionState:
     agent in the moment between ``session.create`` and its turn starting. So absent
     reads idle only once the session carries ``time.idle``, which the service stamps
     when a turn ends.
+
+    An idle session's ``outcome`` is how its last turn ended (``succeeded``,
+    ``failed`` or ``interrupted``, 2.2.5); ``failed`` — a provider that refused it,
+    say — is a ``failure`` whose text :func:`failure_message` reads, since the session
+    does not carry it.
     """
     if session_id in active:
         return SessionState(busy=True)
     idle = _sub(info, "time").get("idle")
-    return SessionState(busy=not (isinstance(idle, (int, float))
-                                  and not isinstance(idle, bool)))
+    if not isinstance(idle, (int, float)) or isinstance(idle, bool):
+        return SessionState(busy=True)
+    return SessionState(busy=False,
+                        failure="" if info.get("outcome") == "failed" else None)
+
+
+def failure_message(response) -> str:
+    """What a failed turn's closing ``idle`` message says went wrong, from the
+    session's newest message (``GET …/message?limit=1&order=desc``, the whole decoded
+    answer); "" when it says nothing."""
+    data = response.get("data") if isinstance(response, dict) else None
+    last = data[0] if isinstance(data, list) and data else None
+    if not isinstance(last, dict) or last.get("type") != "idle":
+        return ""
+    message = _sub(last, "error").get("message")
+    return message.strip() if isinstance(message, str) else ""
 
 
 def session_tokens(session_messages: list) -> float:

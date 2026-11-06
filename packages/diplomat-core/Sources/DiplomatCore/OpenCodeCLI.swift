@@ -3,8 +3,7 @@ import Foundation
 /// The installed `opencode` executable: where it is, which major it is, and what a 2.x
 /// spawn stages for it — the impure half of `OpenCodeAPI`.
 ///
-/// On Linux only the major is used from here (`AgentModel`, via the `diplomat-core` CLI);
-/// the Python runtime twins the rest and passes the major it found (`majorOverride`).
+/// The Linux runtime has its own Python twin of it.
 public enum OpenCodeCLI {
     /// How long `opencode --version` may take: 0.03 s on 2.0.18 and under a second on
     /// 1.x, so this only ever bounds a wedged binary.
@@ -155,19 +154,6 @@ public enum OpenCodeCLI {
         return service
     }
 
-    /// `installedIsService` as an earlier call already answered it, running neither the
-    /// shell nor the binary — nil until one has. The last resolution is trusted past
-    /// `resolveTTL`: this is for the main actor, where asking again is a blocking shell.
-    public static func knownIsService() -> Bool? {
-        resolveLock.lock()
-        let path = cached?.resolution.path
-        resolveLock.unlock()
-        guard let path, let key = VersionKey(path) else { return nil }
-        versionLock.lock()
-        defer { versionLock.unlock() }
-        return versions[key]
-    }
-
     /// What `isService` is remembered under.
     private struct VersionKey: Hashable {
         let path: String, inode: UInt64, size: UInt64, modified: Double
@@ -186,18 +172,6 @@ public enum OpenCodeCLI {
         }
     }
 
-    /// The major `DIPLOMAT_OPENCODE_MAJOR` names — `true` for exactly `2`, `false` for
-    /// exactly `1`, nil for anything else, which leaves the question to `installedIsService`.
-    /// The Linux runtime sets it, having resolved the binary itself, so a prompt build
-    /// costs no shell and no `--version`.
-    public static func majorOverride(_ environment: [String: String]) -> Bool? {
-        switch environment["DIPLOMAT_OPENCODE_MAJOR"] {
-        case "2": return true
-        case "1": return false
-        default: return nil
-        }
-    }
-
     /// Stage what a 2.x spawn hands `opencode api`, and return the session id it minted —
     /// nil when either file could not be written, which is a run that cannot start.
     ///
@@ -206,7 +180,8 @@ public enum OpenCodeCLI {
     /// is typed through AppleScript and two shells (`AgentRunner.agentCommand`).
     ///
     /// `directory` is where the agent is `cd`'d into; the session records its physical
-    /// path, the one the agent's own tools will report.
+    /// path, the one the agent's own tools will report. An empty `model` (no pin) names
+    /// `AgentModel.openCodeSessionModel()`.
     public static func stageSession(promptFile: URL, directory: String,
                                     model: String) -> String? {
         guard let prompt = try? String(contentsOf: promptFile, encoding: .utf8) else {
@@ -216,7 +191,9 @@ public enum OpenCodeCLI {
         let bodies: [(String, [String: Any])] = [
             (".session.json", OpenCodeAPI.sessionBody(id: sessionID,
                                                       directory: physicalPath(directory),
-                                                      model: model)),
+                                                      model: model.isEmpty
+                                                          ? AgentModel.openCodeSessionModel()
+                                                          : model)),
             (".prompt.json", OpenCodeAPI.promptBody(prompt)),
         ]
         for (suffix, body) in bodies {

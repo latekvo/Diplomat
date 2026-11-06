@@ -202,8 +202,13 @@ enum OpenCodeProbe {
     static func serviceState(sessionID: String, pass: ServicePass) -> AgentState.SessionState? {
         guard let active = pass.activeMap(),
               let path = OpenCodeAPI.servicePath(sessionID: sessionID),
-              let session = pass.fetch(path) else { return nil }
-        return OpenCodeAPI.serviceState(session: session, active: active, sessionID: sessionID)
+              let session = pass.fetch(path),
+              var state = OpenCodeAPI.serviceState(session: session, active: active,
+                                                   sessionID: sessionID) else { return nil }
+        if state.failure != nil, let last = OpenCodeAPI.serviceLastMessagePath(sessionID: sessionID) {
+            state.failure = OpenCodeAPI.failureMessage(pass.fetch(last))
+        }
+        return state
     }
 
     /// Stop a 2.x session's turn, best-effort. Returns whether the service answered the

@@ -12,11 +12,17 @@ public struct ReviewAttempt: Codable, Equatable {
     public var lastDispatchedAt: Date
     /// How many agents we've dispatched for this request so far (drives the backoff).
     public var attempts: Int
+    /// When a run for this request ended on its agent's own word that the turn was over
+    /// (`AgentState.Resolution.reported`). It finished, so whatever it left on the PR -
+    /// nothing included - is its answer, and the request is not retried.
+    public var concludedAt: Date?
 
-    public init(requestedAt: String, lastDispatchedAt: Date, attempts: Int) {
+    public init(requestedAt: String, lastDispatchedAt: Date, attempts: Int,
+                concludedAt: Date? = nil) {
         self.requestedAt = requestedAt
         self.lastDispatchedAt = lastDispatchedAt
         self.attempts = attempts
+        self.concludedAt = concludedAt
     }
 }
 
@@ -65,6 +71,9 @@ public enum ReviewReconcile {
         case skipInFlight
         /// We dispatched recently; wait `remaining` seconds before retrying.
         case skipCoolingDown(TimeInterval)
+        /// A run for this very request finished on its own word (`ReviewAttempt
+        /// .concludedAt`) and the request is still owed: it chose to post nothing.
+        case skipConcluded
         /// (Re)dispatch now; `attemptNumber` is 1 for a first dispatch, ≥2 for a retry.
         case dispatch(attemptNumber: Int)
     }
@@ -83,6 +92,7 @@ public enum ReviewReconcile {
         guard let rec = prior else { return .dispatch(attemptNumber: 1) }
         let elapsed = now.timeIntervalSince(rec.lastDispatchedAt)
         if rec.requestedAt == stamp {
+            if rec.concludedAt != nil { return .skipConcluded }
             // Same request we already dispatched for, still owed with no agent on it: the
             // earlier attempt didn't land. Retry once the escalating backoff has elapsed.
             let delay = retryDelay(afterAttempts: rec.attempts)
@@ -95,5 +105,40 @@ public enum ReviewReconcile {
         // a genuine fresh review need rather than churn.
         if elapsed < reRequestCooldown { return .skipCoolingDown(reRequestCooldown - elapsed) }
         return .dispatch(attemptNumber: 1)
+    }
+
+    /// The review requests whose run ended on its agent's own word: retired runs
+    /// dispatched for a review requested of me (`AutofixMesh.kindReviewReq`) whose verdict
+    /// is `reported`. A run that died, failed, was reaped or ran on a peer says nothing
+    /// about whether it meant to post, so its request stays on the retry ladder.
+    public static func concluded(_ retired: [AgentState.RunRecord],
+                                 verdicts: [String: AgentState.Resolution]) -> Set<Int> {
+        Set(retired.compactMap { r -> Int? in
+            guard r.ledgerKey.hasPrefix(AutofixMesh.kindReviewReq + ":"),
+                  verdicts[r.runID]?.reported == true else { return nil }
+            return r.prNumber
+        })
+    }
+
+    /// `attempts` with each of `prs`' records stamped concluded, keyed by PR number as
+    /// the review-request monitor keys them.
+    public static func conclude(_ attempts: [String: ReviewAttempt], prs: Set<Int>,
+                                at now: Date) -> [String: ReviewAttempt] {
+        var out = attempts
+        for pr in prs where out[String(pr)] != nil { out[String(pr)]?.concludedAt = now }
+        return out
+    }
+
+    /// The records worth keeping after a poll. Each is kept until it ages past the backoff
+    /// ceiling, not the moment the review lands: a force-push dismisses my review (briefly
+    /// un-owing it) then re-requests, and the record is what lets `reRequestCooldown` read
+    /// that as churn. A concluded record is kept for as long as that same request is
+    /// still owed (`owed`: PR key -> stamp), because dropping it re-dispatches the request.
+    public static func retained(_ attempts: [String: ReviewAttempt], owed: [String: String],
+                                now: Date) -> [String: ReviewAttempt] {
+        attempts.filter { key, rec in
+            now.timeIntervalSince(rec.lastDispatchedAt) < retryMaxBackoff
+                || (rec.concludedAt != nil && owed[key] == rec.requestedAt)
+        }
     }
 }
