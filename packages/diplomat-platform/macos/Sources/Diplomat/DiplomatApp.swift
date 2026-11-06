@@ -197,6 +197,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_COMMS_TEST"] == "1" {
             Task { @MainActor in let ok = await CommsTest.run(); exit(ok ? 0 : 1) }
         }
+        // Tasks self-test: edits and syncs through the Store against a stand-in gh, on
+        // scratch tasks and Comms dirs. Exit code = pass/fail.
+        if env["DIPLOMAT_TASKS_TEST"] == "1" {
+            Task { @MainActor in exit(await TasksTest.run() ? 0 : 1) }
+        }
         // API-error-watcher self-test: proves a scan writes into the sessions an agent is
         // running in and no others, and that a wrapped agent's window is still one of
         // them. Every session and process is a literal — no terminal is read and nothing

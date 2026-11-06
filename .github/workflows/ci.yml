@@ -90,6 +90,19 @@ jobs:
               swift run Diplomat
             test -s "$RUNNER_TEMP/$mode.png"
           done
+      # The Tasks screen, for the same reason: over tasks the real core writes into a
+      # scratch DIPLOMAT_TASKS_DIR the render sets itself (one per status, history from
+      # every source, one archived), inside the whole panel (the header button and its
+      # badge), with the new-task form, a note editor and the error banners, with the
+      # archived task listed, and with no task at all.
+      - name: Headless tasks render
+        working-directory: packages/diplomat-platform/macos
+        run: |
+          for mode in tasks tasks-panel tasks-form tasks-archived tasks-empty; do
+            DIPLOMAT_RENDER=$mode DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/$mode.png" \
+              swift run Diplomat
+            test -s "$RUNNER_TEMP/$mode.png"
+          done
       # The Devices screen, in each state that builds a different tree: a daemon with
       # no remote pool, a remote pool signing in (with leases and a pool listing), one
       # whose sign-in went unanswered, and a daemon that is not running.
@@ -128,6 +141,8 @@ jobs:
       # run book and config scratch, as QUEUE_TEST does. COMMS_TEST hands composed
       # Slack ticks to the real effect application with GitHub stood in for, and keeps
       # its feed, Comms log, run book and config scratch; nothing it queues is drained.
+      # TASKS_TEST sets its own stand-in gh over the tripwire, and keeps its tasks and
+      # Comms dirs scratch.
       # REOPEN_TEST hosts the panel in windows it never orders in, re-run on a scratch
       # home and no checkout, so the checks its Settings and Devices screens run find nothing.
       #
@@ -185,6 +200,7 @@ jobs:
           DIPLOMAT_WINDOW_TEST=1 swift run Diplomat
           DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
           DIPLOMAT_COMMS_TEST=1 swift run Diplomat
+          DIPLOMAT_TASKS_TEST=1 swift run Diplomat
           DIPLOMAT_SWEEP_TEST=1 swift run Diplomat
           DIPLOMAT_QUOTA_TEST=1 swift run Diplomat
           DIPLOMAT_APIWATCH_TEST=1 swift run Diplomat
