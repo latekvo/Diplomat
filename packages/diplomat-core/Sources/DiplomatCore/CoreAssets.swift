@@ -304,6 +304,19 @@ public enum CoreAssets {
         }
     }
 
+    /// The Tasks tracker's tunables, `tasks.json`.
+    public struct TasksModel: Decodable {
+        public let syncSecs: Int
+        public let minSyncSecs: Int
+        public let chunk: Int
+        public let commentsPerItem: Int
+        public let staleDays: Int
+        public let maxLogBytes: Int
+        public let historyLimit: Int
+        public let excerptChars: Int
+        public let commsHoldSecs: Int
+    }
+
     // MARK: - Directory resolution
 
     /// Candidate locations for `assets/`, in priority order: an explicit override,
@@ -381,6 +394,7 @@ public enum CoreAssets {
     private static let _models = try? loadJSON("models.json", as: Models.self)
     private static let _telemetry = try? loadJSON("telemetry.json", as: TelemetryModel.self)
     private static let _comms = try? loadComms()
+    private static let _tasks = try? loadJSON("tasks.json", as: TasksModel.self)
 
     private static func loadComms() throws -> CommsModel {
         var model = try loadJSON("comms.json", as: CommsModel.self)
@@ -467,6 +481,11 @@ public enum CoreAssets {
     public static func comms() throws -> CommsModel {
         guard let c = _comms else { return try loadComms() }
         return c
+    }
+
+    public static func tasks() throws -> TasksModel {
+        guard let t = _tasks else { return try loadJSON("tasks.json", as: TasksModel.self) }
+        return t
     }
 
     public static func graphql(_ name: String) throws -> String {

@@ -275,7 +275,8 @@ DIPLOMAT_APPLOG_TEST=1 ...                       # self-test: the diagnostic log
                                                      #   and close lines; scratch dir; exit code = verdict
 
 # The shared core itself is independently buildable & testable (also on Linux):
-swift run DiplomatCoreSmoke                    # loads assets/, runs filter + prompt + golden-file assertions
+swift build && swift run DiplomatCoreSmoke     # loads assets/, runs filter + prompt + golden-file assertions;
+                                               #   the Tasks checks drive the diplomat-core `swift build` makes
 DIPLOMAT_DUMP=1 swift run DiplomatCoreSmoke    # + live gh dump, cross-checks the Linux front-end
 DIPLOMAT_GOLDEN_WRITE=1 swift run DiplomatCoreSmoke  # regenerate assets/golden-prompts/ after an intentional change
 ```

@@ -3409,6 +3409,9 @@ print("audit category assertions passed")
 try commsSmoke()
 print("comms assertions passed")
 
+try await tasksSmoke()
+print("tasks assertions passed")
+
 // ---- Golden prompts (cross-platform parity) ----
 // Every prompt mode both front-ends can assemble is compared byte-for-byte against a
 // committed golden file in assets/golden-prompts/. The Linux tests assert the SAME
