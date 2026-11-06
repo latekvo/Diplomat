@@ -93,7 +93,7 @@ jobs:
       # The Tasks screen, for the same reason: over tasks the real core writes into a
       # scratch DIPLOMAT_TASKS_DIR the render sets itself (one per status, history from
       # every source, one archived), inside the whole panel (the header button and its
-      # badge), with the new-task form, a note editor and the sync and read error banners,
+      # badge), with the new-task form, a note editor and the sync error banner,
       # with refused edits drawn at their editors, with the archived task listed, and with
       # no task at all.
       - name: Headless tasks render

@@ -444,8 +444,9 @@ public enum TaskSync {
 
     /// `events` but for the Slack ones whose ping, by its permalink in `comms`, a sender in
     /// `banned` sent; nil when there are none.
-    static func withoutBanned(_ events: [TaskEvent], comms: [CommsItem], banned: Set<String>) -> [TaskEvent]? {
-        let permalinks = Set(comms.filter { banned.contains($0.message.userID.uppercased()) }.map(\.message.permalink))
+    public static func withoutBanned(_ events: [TaskEvent], comms: [CommsItem], banned: Set<String>) -> [TaskEvent]? {
+        let permalinks = Set(comms.filter { banned.contains($0.message.userID.uppercased()) }
+                                  .map(\.message.permalink).filter { !$0.isEmpty })
         guard !permalinks.isEmpty else { return nil }
         let kept = events.filter { $0.source != "slack" || !permalinks.contains($0.url ?? "") }
         return kept.count == events.count ? nil : kept

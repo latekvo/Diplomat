@@ -180,6 +180,23 @@ struct TasksView: View {
     private func actions(_ task: TrackedTask) -> some View {
         let id = task.id
         return HStack(spacing: 5) {
+            if task.archivedAt != nil {
+                ActionChip(symbol: "arrow.uturn.backward", text: "Unarchive", tint: .accentColor) {
+                    edit(.unarchive(id: id), task: id, sync: true)
+                }
+            } else {
+                editActions(task)
+            }
+            Spacer(minLength: 0)
+            Text(id).font(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)
+                .textSelection(.enabled)
+        }
+    }
+
+    @ViewBuilder
+    private func editActions(_ task: TrackedTask) -> some View {
+        let id = task.id
+        Group {
             ActionChip(symbol: "link.badge.plus", text: "Add link", tint: .accentColor) {
                 editor = Editor(task: id, kind: .link)
             }
@@ -201,18 +218,9 @@ struct TasksView: View {
                     edit(.update(id: id, title: nil, tags: nil, pinnedStatus: TaskStatus.paused.rawValue), task: id)
                 }
             }
-            if task.archivedAt == nil {
-                ActionChip(symbol: "archivebox", text: "Archive", tint: .secondary) {
-                    edit(.archive(id: id), task: id)
-                }
-            } else {
-                ActionChip(symbol: "arrow.uturn.backward", text: "Unarchive", tint: .accentColor) {
-                    edit(.unarchive(id: id), task: id, sync: true)
-                }
+            ActionChip(symbol: "archivebox", text: "Archive", tint: .secondary) {
+                edit(.archive(id: id), task: id)
             }
-            Spacer(minLength: 0)
-            Text(id).font(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)
-                .textSelection(.enabled)
         }
     }
 
@@ -488,9 +496,8 @@ private struct TaskRow<Details: View>: View {
                     }
                     ForEach(task.links, id: \.url) { link in
                         LinkChip(link: link, label: labels[link.url] ?? link.url,
-                                 state: TaskTint.linkState(view.linkStates[link.url], kind: link.kind)) {
-                            unlink(link.url)
-                        }
+                                 state: TaskTint.linkState(view.linkStates[link.url], kind: link.kind),
+                                 remove: task.archivedAt == nil ? { unlink(link.url) } : nil)
                     }
                 }
                 .padding(.leading, 14)
@@ -565,7 +572,8 @@ private struct LinkChip: View {
     let link: TaskLink
     let label: String
     let state: TaskTint.LinkState?
-    let remove: () -> Void
+    /// Nil on an archived task, which offers only Unarchive.
+    let remove: (() -> Void)?
 
     var body: some View {
         let url = URL(string: link.url)
@@ -586,7 +594,7 @@ private struct LinkChip: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button("Open", action: open).disabled(url == nil)
-            Button("Remove link", action: remove)
+            if let remove { Button("Remove link", action: remove) }
         }
         .help(([link.title, state?.word, link.url, link.via == "manual" ? nil : "linked via \(link.via)"]
                as [String?]).compactMap { $0 }.joined(separator: "\n"))

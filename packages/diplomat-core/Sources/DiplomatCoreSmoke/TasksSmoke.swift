@@ -422,6 +422,10 @@ func tasksSmoke() async throws {
                     watermark: at(0), banned: ["U-EVE"])
     check(bans.events.map(\.text) == ["#12 from bob"] && bans.watermark == at(2),
           "a sender on the ban list now is skipped: \(bans.events.map(\.text))")
+    let bobsLine = TaskEvent(at: at(2), task: "t", source: "slack", tags: ["slack", "@bob"], url: "")
+    check(TaskSync.withoutBanned([bobsLine], comms: [ping(message("hi", user: "eve", permalink: ""), at: at(1), nil)],
+                                 banned: ["U-EVE"]) == nil,
+          "a banned ping with no permalink takes no one else's permalink-less line with it")
 
     // Comms logs whole seconds: a ping logged in the second a sync already read is still told.
     let first5 = message("#12 first", ts: "1762000005.000001"), second5 = message("#12 second", ts: "1762000005.000002")

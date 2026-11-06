@@ -221,8 +221,9 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   tasks (the Tasks screen over tasks the core writes into
                                                      #   a scratch DIPLOMAT_TASKS_DIR, or the one you set, drawn
                                                      #   as it is); tasks-panel; tasks-form (new task, a note
-                                                     #   being written, the error banners); tasks-archived;
-                                                     #   tasks-empty
+                                                     #   being written, the sync error banner; window-tasks-form
+                                                     #   adds the read error's); tasks-edit-error (refused edits
+                                                     #   at their editors); tasks-archived; tasks-empty
                                                      #   settings-unsaved (a change config.json refused)
                                                      #   app (the REAL window root at the width that shows
                                                      #   the whole panel, incl. the legacy scroller lane;

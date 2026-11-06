@@ -262,7 +262,8 @@ enum Render {
             // "tasks" draws the screen over six tasks, one per status, and one archived, two
             // of them unfolded; "tasks-panel" the same inside the whole panel (header
             // button, blocked badge, screen swap); "tasks-form" the new-task form, a note
-            // being written and the sync and read error banners; "tasks-edit-error" the
+            // being written and the sync error banner (`window-tasks-form` adds the read
+            // error's, from the screen's own reload); "tasks-edit-error" the
             // refusals drawn where they were made: the new-task form's, a link editor's and
             // a row action's; "tasks-archived" the archived one listed; "tasks-empty" no
             // task at all. A `DIPLOMAT_TASKS_DIR` set by the caller is drawn as it is, every
@@ -792,7 +793,8 @@ enum Render {
         tasksUnfolded = Set(["Physical iPhone support", "Release 0.9 checklist"].compactMap { byTitle[$0] })
         if form {
             store.tasksSyncError = "gh: GraphQL: API rate limit exceeded for user ID 1234 (skipped 2 links)"
-            // Torn after the read above, so the screen's own reload says why.
+            // Torn after the read above, so the screen's own reload, which only a `window-`
+            // render waits for, says why.
             try? Data("{".utf8).write(to: dir.appendingPathComponent("tasks.json"))
         }
         return true

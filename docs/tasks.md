@@ -61,8 +61,8 @@ a badge counting the blocked tasks.
   it. The newest twelve are listed, then "N older…" shows the rest.
 - **Actions** - **New task** (a title, tags, and links one per line), and per task **Add link**,
   **Remove link** (from a chip), **Add note** (text and tags), **Edit tags**, **Pin done** /
-  **Pin paused** or **Unpin**, and **Archive** / **Unarchive**. **Show archived** lists the archived
-  ones. An edit that fails says why at the editor it came from.
+  **Pin paused** or **Unpin**, and **Archive**. An archived task offers only **Unarchive**; **Show
+  archived** lists the archived ones. An edit that fails says why at the editor it came from.
 - **Sync now** syncs at once; it is disabled while no task is unarchived. Creating a task, adding a
   link and unarchiving sync right after; a sync asked for while one runs follows it.
 
