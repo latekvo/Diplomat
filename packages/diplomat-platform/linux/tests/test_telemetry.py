@@ -146,6 +146,20 @@ def test_a_partial_tail_line_costs_only_itself(ledger):
     assert [t.key for t in telemetry.load().tasks] == ["review:h/o/r#1@aa"]
 
 
+def test_a_line_ends_at_a_newline_alone(ledger):
+    """As ``TelemetryLog.readLines`` splits it. A JSON string may hold U+2028 or
+    U+0085 unescaped, and ``splitlines`` breaks at both, and at the U+000B and U+001C
+    no JSON line holds outside a string."""
+    with open(ledger, "w", encoding="utf-8") as fh:
+        fh.write('{"at": 1, "ev": "queued", "key": "review:h/o/r#1@a\u2028a"}\n'
+                 '{"at": 1, "ev": "queued", "key": "review:h/o/r#2@b\x85b"}\n'
+                 '{"at": 1, "ev": "queued", "key": "review:h/o/r#3@cc"}\x0b'
+                 '{"at": 1, "ev": "queued", "key": "review:h/o/r#4@dd"}\x1c\n')
+    telemetry._reset_cache()
+    assert [t.key for t in telemetry.load().tasks] == [
+        "review:h/o/r#1@a\u2028a", "review:h/o/r#2@b\x85b"]
+
+
 def test_a_number_too_wide_for_a_float_costs_its_line_not_the_fold():
     """``float(10**400)`` is an ``OverflowError``, not a ``ValueError``, and the
     screen folds the ledger on every repaint - so a raise here is every repaint. The
@@ -477,6 +491,28 @@ def test_a_claude_completion_is_still_priced_by_its_own_transcript(ledger, scann
     telemetry.record_completion("review:h/o/r#41@aa", "review PR #41 please",
                                 now - 300, now, now)
     assert telemetry.load().tasks[0].tokens == 1500
+
+
+def test_a_run_whose_agent_never_answered_is_not_a_finished_task(ledger, scanner):
+    """Its transcript holds the prompt and then an interrupt: zero tokens, nothing
+    done. Recorded, it counts among the finished tasks; left open, it is what it is.
+    A run that could not be attributed at all is still recorded, unpriced."""
+    repo, projects = scanner
+    _transcript(projects / "s" / "cut.jsonl", [
+        {"type": "user", "message": {"content": "review PR #41 please"}},
+        {"type": "user", "message": {"content": "[Request interrupted by user]"}},
+    ])
+    now = time.time()
+    telemetry.record_started("review:h/o/r#41@aa")
+    telemetry.record_completion("review:h/o/r#41@aa", "review PR #41 please",
+                                now - 300, now, now)
+    telemetry.record_completion("review:h/o/r#42@bb", "a prompt nothing matches",
+                                now - 300, now, now)
+
+    tasks = {t.key: t for t in telemetry.load().tasks}
+    assert tasks["review:h/o/r#41@aa"].done_at is None
+    assert tasks["review:h/o/r#42@bb"].done_at == now
+    assert tasks["review:h/o/r#42@bb"].tokens is None
 
 
 def test_a_run_is_priced_before_its_directory_is_deleted(ledger, monkeypatch):
@@ -1052,6 +1088,34 @@ def test_the_5_hour_window_can_be_the_one_the_samples_cannot_price():
     # 120k of a 10M week, and nothing from the empty series to widen it: the span is
     # the largest share either window was actually measured at.
     assert s.per_task_week.bins[-1].upper == pytest.approx(1.2)
+
+
+def _week_samples(*readings: tuple[float, float]) -> list[telemetry.Sample]:
+    """``(week_left, cumulative tokens)`` per reading, 15 minutes apart."""
+    return [telemetry.Sample(at=900.0 * i, session_left=None, week_left=left,
+                             repo_tokens=tok, other_tokens=0.0)
+            for i, (left, tok) in enumerate(readings)]
+
+
+def test_a_flat_interval_still_counts_the_tokens_it_spent():
+    """The reading moves in whole 1% steps, so 600k spent over three intervals shows
+    up as one step on the last. Pricing only that interval says a 1% step costs
+    200k; the step cost all 600k."""
+    samples = _week_samples((0.50, 0.0), (0.50, 200_000.0), (0.50, 400_000.0),
+                            (0.49, 600_000.0))
+    assert telemetry.calibrate(samples, session=False) == pytest.approx(60_000_000.0)
+
+
+def test_a_reset_or_an_exhausted_window_prices_none_of_its_tokens():
+    """A reset (the reading rose) and spending at 0% left say nothing about what a
+    step costs, so their tokens stay out while the steps around them still price."""
+    samples = _week_samples((0.02, 0.0), (0.01, 100_000.0),        # priced
+                            (0.0, 200_000.0),                      # priced
+                            (0.0, 900_000.0),                      # exhausted
+                            (1.0, 5_000_000.0),                    # reset
+                            (0.99, 5_100_000.0),                   # priced
+                            (1.0, 6_000_000.0))                    # reset
+    assert telemetry.calibrate(samples, session=False) == pytest.approx(10_000_000.0)
 
 
 def test_the_5_hour_window_prices_only_the_work_its_readings_covered():

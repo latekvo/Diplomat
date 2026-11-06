@@ -39,7 +39,7 @@ import sys
 from pathlib import Path
 from typing import Mapping, Sequence
 
-__version__ = "0.118.0"
+__version__ = "0.125.0"
 
 DEFAULT_REPO_URL = "https://github.com/latekvo/Diplomat.git"
 SUPPORTED = ("darwin", "linux")
@@ -236,7 +236,7 @@ def plan(facts: Mapping) -> dict:
                            cwd=macos, needs="swift"))
         # build-app.sh rebuilds unconditionally, so the bundle always matches the
         # source it was just cloned or pulled from; `open` then detaches it from
-        # this terminal, which is where a menu-bar app belongs. `-n` starts that
+        # this terminal, which is where a desktop app belongs. `-n` starts that
         # bundle even while an instance is up, and the app's newest-wins singleton
         # retires the old one - the swap its own updater relies on.
         launch = ["open", "-n", os.path.join(macos, "Diplomat.app")]

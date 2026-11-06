@@ -65,7 +65,7 @@ when the budget resets, and the mesh reacts within a gossip round.
 
 **Auto-derivation.** When the usage probe cannot answer, a node derives this state
 from its **own measured consumption**: it sums the tokens spent over a trailing
-window (`accounts.usageWindowHours`, default 5h) from the local agent's usage logs,
+window (`accounts.usageWindowHours`, default 168h - the week the probe reads) from the local agent's usage logs,
 and compares that to a heuristic per-plan ceiling `plan.weight × accounts.tokensPerWeight`. The fraction
 remaining `1 − used/ceiling` maps to the state: `≥ accounts.lowThreshold` → `"ok"`,
 `> 0` → `"low"`, `≤ 0` → `"out"`. A node advertises `tokensAuto` (bool, whether the

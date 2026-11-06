@@ -764,6 +764,40 @@ enum QueueTest {
         store.queuedTasks = []
         emptyBook()
 
+        // 19. A finished run is a finished task only if its agent answered. One whose
+        //     transcript holds its prompt and then an interrupt spent nothing and did
+        //     nothing, so retiring it leaves its ledger entry open. Twin of
+        //     test_telemetry.py's never-answered test.
+        let claude = feed.appendingPathComponent("claude")
+        setenv("DIPLOMAT_CLAUDE_DIR", claude.path, 1)
+        func transcript(_ name: String, _ records: [String]) {
+            let dir = claude.appendingPathComponent("projects/q")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? (records.joined(separator: "\n") + "\n")
+                .write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+        transcript("cut.jsonl", [#"{"type":"user","message":{"content":"price #31"}}"#,
+                                 #"{"type":"user","message":{"content":"[Request interrupted by user]"}}"#])
+        transcript("ran.jsonl", [#"{"type":"user","message":{"content":"price #32"}}"#,
+                                 #"{"type":"assistant","cwd":"/x","message":{"usage":{"input_tokens":700,"output_tokens":0,"cache_creation_input_tokens":0}}}"#])
+        for n in [31, 32] {
+            AgentRegistry.createRun(
+                AgentState.RunRecord(
+                    runID: AgentRegistry.newRunID(now: Date().timeIntervalSince1970),
+                    dispatchedAt: Date().timeIntervalSince1970 - 600, prNumber: n,
+                    kind: "review", label: "Auto · Review · #\(n)",
+                    ledgerKey: "review:q#\(n)@aa", pid: 4242),
+                prompt: "price #\(n)")
+        }
+        _ = await store.settleAgents()
+        let settled = Dictionary(TelemetryLog.load().tasks.map { ($0.key, $0) },
+                                 uniquingKeysWith: { a, _ in a })
+        check("a retired run whose agent never answered is not a finished task",
+              AgentRegistry.load().isEmpty && settled["review:q#31@aa"] == nil)
+        check("…while one that answered is, priced from its transcript",
+              settled["review:q#32@aa"]?.tokens == 700)
+        unsetenv("DIPLOMAT_CLAUDE_DIR")
+
         // 13. The redirect above is the only thing between a run of this test and the
         //    operator's real activity log, so prove it caught the writes.
         check("the at-capacity lines it provoked went to the scratch feed",

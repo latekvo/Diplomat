@@ -43,9 +43,9 @@ struct CommsView: View {
             if !items.isEmpty {
                 HStack(alignment: .top, spacing: 12) {
                     pingsColumn(Array(items.prefix(CommsView.maxPings)))
-                        .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
+                        .frame(width: MainRoot.columnWidth, alignment: .topLeading)
                     jobsColumn(jobs)
-                        .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
+                        .frame(width: MainRoot.columnWidth, alignment: .topLeading)
                 }
             }
             Spacer(minLength: 0)
@@ -141,7 +141,8 @@ struct CommsView: View {
         let since = openedSeenAt ?? store.commsSeenAt
         let unread = items.filter { $0.at > since }
         let read = items.filter { $0.at <= since }
-        let caption: String? = unread.isEmpty ? nil : "\(unread.count) new"
+        let new = unread.filter { !$0.message.isExtraTarget }.count
+        let caption: String? = new == 0 ? nil : "\(new) new"
         return VStack(alignment: .leading, spacing: 3) {
             columnTitle("PINGS", count: store.commsItems.count, caption: caption)
             ForEach(unread, id: \.message.id) { item in

@@ -1,10 +1,10 @@
 """Newest-wins singleton (the Linux analogue of macOS
-SingleInstance.terminateOthers). A freshly launched tray instance terminates
+SingleInstance.terminateOthers). A freshly launched GUI instance terminates
 *every live instance of the applet that started before it* — matched by process
 identity, not by the name of a pidfile — then claims the pidfile. So there's
-never more than one wrench in the tray.
+never more than one Diplomat running.
 
-Only older instances: two trays launched together (two autostart mechanisms at
+Only older instances: two instances launched together (two autostart mechanisms at
 login) each see the other, and if each ended every other instance both would die,
 leaving none. Ordering by start time, lower pid first within one clock tick, gives
 every pair one answer, so exactly the newest survives.
@@ -13,9 +13,9 @@ Why identity and not just the pidfile: the pidfile path is derived from the
 product name (``.../diplomat/diplomat.pid``). Keying the whole guarantee on it
 means a *rename* silently breaks it — a self-update that crosses the rename
 boundary launches an instance that writes the *new* pidfile and never signals
-the still-running instance recorded in the *old* one, leaving two wrenches (and
+the still-running instance recorded in the *old* one, leaving two instances (and
 the orphan stuck on "Restarting…" forever, waiting to be terminated). That is
-exactly how the ``argent_utils`` -> ``diplomat_app`` rename orphaned a tray.
+exactly how the ``argent_utils`` -> ``diplomat_app`` rename orphaned an instance.
 Scanning ``/proc`` for other instances of the applet — under any name it has
 ever launched as — makes the guarantee hold across renames. The pidfile remains
 as a cheap record for the headless 6AM updater (``running_pid``).
@@ -31,14 +31,14 @@ from . import procscan
 from .headless import MODES
 from .procscan import alive as _alive
 
-# Every module name this applet's tray has launched under. A rename appends a
+# Every module name this applet's GUI has launched under. A rename appends a
 # new name but keeps the old ones, so newest-wins still terminates a pre-rename
 # instance across the boundary.
 _APPLET_MODULES = frozenset({"diplomat_app", "argent_utils"})
 
 # Env-var suffixes that mark a ``python -m <module>`` process as a headless
-# one-shot (the modes ``__main__.py`` dispatches) rather than the GUI tray. We
-# never terminate these: they exit on their own and are not a wrench in the tray.
+# one-shot (the modes ``__main__.py`` dispatches) rather than the GUI. We
+# never terminate these: they exit on their own and are not a running Diplomat.
 # Matched under both the current and the legacy env prefix.
 _HEADLESS_SUFFIXES = frozenset(name.removeprefix("DIPLOMAT_") for name in MODES)
 _ENV_PREFIXES = ("DIPLOMAT_", "ARGENT_UTILS_")
@@ -46,7 +46,7 @@ _ENV_PREFIXES = ("DIPLOMAT_", "ARGENT_UTILS_")
 
 def headless_markers() -> frozenset[str]:
     """Every environment variable that marks a process as a headless one-shot -
-    what a relaunch strips, so the tray it starts is one the next newest-wins can
+    what a relaunch strips, so the GUI it starts is one the next newest-wins can
     end."""
     return frozenset(prefix + suffix
                      for prefix in _ENV_PREFIXES for suffix in _HEADLESS_SUFFIXES)
@@ -65,7 +65,7 @@ def _pidfile() -> Path:
 
 
 def _cmdline_is_applet_gui(tokens: list[str]) -> bool:
-    """Whether an argv is a tray launch of this applet: ``python -m <module>``
+    """Whether an argv is a GUI launch of this applet: ``python -m <module>``
     where <module> is *exactly* an applet module. The exact match excludes
     submodules (the mesh node runs as ``python -m szpontnet``, a separate long-lived
     process that must never be terminated here)."""
@@ -86,14 +86,14 @@ def _environ_is_headless(raw: bytes) -> bool:
 
 
 def _is_applet_gui(pid: int) -> bool:
-    """Whether a live pid is a *GUI tray* instance of the applet (any name)."""
+    """Whether a live pid is a *GUI* instance of the applet (any name)."""
     if not _cmdline_is_applet_gui(procscan.cmdline_tokens(pid)):
         return False
     return not _environ_is_headless(procscan.environ_bytes(pid))
 
 
 def _other_instances() -> set[int]:
-    """PIDs of every *other* live GUI tray instance of the applet, by any name.
+    """PIDs of every *other* live GUI instance of the applet, by any name.
 
     Best-effort — a scan failure just falls back to the pidfile path.
     """
@@ -109,14 +109,14 @@ class SingleInstance:
     @staticmethod
     def acquire_newest_wins() -> None:
         me = os.getpid()
-        # Terminate every older live tray instance — whatever it's named and
+        # Terminate every older live GUI instance - whatever it's named and
         # whichever pidfile it wrote. A newer one is left alone: it ends this one.
         # The recorded pidfile pid is folded in for the common case (the scan
         # catches it too), but it MUST pass the same identity and age checks: a
-        # tray that exited uncleanly leaves a stale pidfile, and the OS
+        # GUI that exited uncleanly leaves a stale pidfile, and the OS
         # recycles that pid to an unrelated same-uid process (an editor, a shell, a
         # build). Folding it in on liveness ALONE would SIGTERM/SIGKILL that innocent
-        # process. _is_applet_gui verifies the pid is really a GUI tray of this applet
+        # process. _is_applet_gui verifies the pid is really a GUI of this applet
         # before it can become a victim.
         victims = {p for p in _other_instances() if _started_before(p, me)}
         pf = _pidfile()
@@ -130,7 +130,7 @@ class SingleInstance:
 
         # SIGTERM, ~2s of grace for a clean Qt shutdown, then SIGKILL any
         # survivor — so the guarantee holds even against a wedged instance
-        # rather than degrading to two wrenches.
+        # rather than degrading to two instances.
         procscan.terminate(victims)
 
         try:
@@ -140,28 +140,28 @@ class SingleInstance:
 
     @staticmethod
     def running_pid() -> int:
-        """PID of the tray that holds the pidfile, or 0 if it is not running.
+        """PID of the GUI that holds the pidfile, or 0 if it is not running.
 
-        The headless 6AM updater relaunches this tray onto a new build, on its own
-        display env. It reads only the pidfile, so a tray still reaping its
-        predecessor goes unseen; :meth:`any_running` answers whether any tray is up.
+        The headless 6AM updater relaunches this GUI onto a new build, on its own
+        display env. It reads only the pidfile, so a GUI still reaping its
+        predecessor goes unseen; :meth:`any_running` answers whether any GUI is up.
         """
         pf = _pidfile()
         try:
             pid = int(pf.read_text().strip())
         except (OSError, ValueError):
             return 0
-        # Liveness alone is not enough: a tray that exited uncleanly leaves a stale
+        # Liveness alone is not enough: a GUI that exited uncleanly leaves a stale
         # pidfile, and the OS recycles that pid to an unrelated same-uid process. A
-        # bare _alive check would then report a "running tray" that is really a shell
+        # bare _alive check would then report a "running GUI" that is really a shell
         # or an editor, and the 6AM updater would "relaunch" it from that process's
-        # env. _is_applet_gui verifies the pidfile pid really is a GUI tray of this
+        # env. _is_applet_gui verifies the pidfile pid really is a GUI of this
         # applet (the same identity gate acquire_newest_wins uses before it kills).
         return pid if pid and _alive(pid) and _is_applet_gui(pid) else 0
 
     @staticmethod
     def any_running() -> bool:
-        """Whether any GUI tray is up. Unlike :meth:`running_pid` it also sees one
+        """Whether any GUI is up. Unlike :meth:`running_pid` it also sees one
         that is still reaping its predecessor and has not claimed the pidfile yet,
         so a check made during a hand-over never finds nobody."""
         return bool(SingleInstance.running_pid() or _other_instances())

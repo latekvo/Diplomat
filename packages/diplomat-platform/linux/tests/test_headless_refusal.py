@@ -116,6 +116,7 @@ def entry(monkeypatch):
     from diplomat_app import agentdump, app, migrate, render, selftest, selfupdate
 
     monkeypatch.setattr(migrate, "migrate_legacy_state_dir", tripwire("migrate"))
+    monkeypatch.setattr(migrate, "migrate_autostart_entry", tripwire("autostart"))
     monkeypatch.setattr(app, "run_app", tripwire("tray"))
     monkeypatch.setattr(selfupdate, "run_scheduled", tripwire("self-update"))
     monkeypatch.setattr(agentdump, "run", tripwire("agents"))
@@ -144,4 +145,4 @@ def test_the_entry_point_still_runs_a_known_mode(entry, monkeypatch):
 def test_the_entry_point_still_starts_the_tray(entry):
     main, ran = entry
     assert main() == 0
-    assert ran == ["migrate", "tray"]
+    assert ran == ["migrate", "autostart", "tray"]

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Install a systemd *user* timer that checks every 5 minutes that the tray is up,
-# and launches it if it died (a crash, a kill, a failed update). It runs the
-# launcher in its headless watchdog mode (DIPLOMAT_WATCHDOG=1), which launches
-# nothing while a tray runs or after the operator quit it from the tray. Idempotent;
+# Install a systemd *user* timer that checks every 5 minutes that the app is up,
+# and launches it, window hidden, if it died (a crash, a kill, a failed update). It
+# runs the launcher in its headless watchdog mode (DIPLOMAT_WATCHDOG=1), which
+# launches nothing while the app runs or after the operator quit it. Idempotent;
 # safe to re-run.
 set -euo pipefail
 
@@ -14,7 +14,7 @@ TIMER="${UNIT_DIR}/diplomat-watchdog.timer"
 
 if ! command -v systemctl >/dev/null 2>&1; then
     echo "systemctl not found — cannot install the watchdog timer." >&2
-    echo "A tray that dies stays down until the next login." >&2
+    echo "An app that dies stays down until the next login." >&2
     exit 1
 fi
 
@@ -23,11 +23,11 @@ mkdir -p "$UNIT_DIR"
 
 cat > "$SERVICE" <<EOF
 [Unit]
-Description=Diplomat liveness check (launch the tray if it died)
+Description=Diplomat liveness check (launch the app if it died)
 
 [Service]
 Type=oneshot
-# The tray it launches gets a scope of its own from systemd-run; without that it is
+# The app it launches gets a scope of its own from systemd-run; without that it is
 # a detached child in this unit's cgroup, which the default KillMode=control-group
 # would kill the moment this oneshot finishes.
 KillMode=process
@@ -37,7 +37,7 @@ EOF
 
 cat > "$TIMER" <<EOF
 [Unit]
-Description=Check every 5 minutes that the Diplomat tray is up
+Description=Check every 5 minutes that Diplomat is up
 
 [Timer]
 OnCalendar=*:0/5

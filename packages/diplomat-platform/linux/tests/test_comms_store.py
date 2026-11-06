@@ -176,6 +176,35 @@ def test_every_setting_round_trips_under_the_contract_key():
         True, "sonnet", False)
 
 
+def test_the_tick_is_handed_the_batch_settings(comms_store, monkeypatch):
+    comms_store.comms_batch_size = 32
+    comms_store.comms_flush_after_secs = 300
+    handed = _tick(comms_store, monkeypatch)
+    assert handed["settings"]["batchSize"] == 32
+    assert handed["settings"]["flushAfterSecs"] == 300
+
+
+def test_a_message_asking_for_several_is_one_unread_ping(comms_store):
+    comms_store.comms_items = [
+        {"at": "2026-11-05T10:00:00Z", "message": {"id": "D1:1.0"}},
+        {"at": "2026-11-05T10:00:00Z", "message": {"id": "D1:1.0#7"}},
+        {"at": "2026-11-05T10:00:00Z", "message": {"id": "D1:1.0#8"}},
+        {"at": "2026-11-05T10:00:01Z", "message": {"id": "D1:2.0"}}]
+    comms_store.comms_seen_at = "2026-11-05T09:00:00Z"
+    assert comms_store.comms_unread == 2
+
+
+def test_a_message_naming_several_queues_each_first_named_first_under_one_ping_line(
+        comms_store, monkeypatch):
+    first = _message(1, "review #12 and #13 please")
+    second = {**first, "id": first["id"] + "#13"}
+    _tick(comms_store, monkeypatch,
+          (second, _decision("review", 13)), (first, _decision("review", 12)), pings=[first])
+    assert [t.id for t in comms_store.queued_tasks][:2] == ["review:12", "review:13"]
+    assert [e["id"] for e in _events() if e["kind"] == "action"] == [second["id"], first["id"]]
+    assert [e["action"] for e in _feed_lines()].count("comms-ping") == 1
+
+
 def test_the_tick_is_handed_the_settings(comms_store, monkeypatch):
     comms_store.comms_keywords_raw = "argent"
     comms_store.comms_sender_allowlist_raw = "kacper"
@@ -1331,7 +1360,7 @@ def test_the_tick_is_given_every_bound_the_child_holds_itself_to(monkeypatch):
     call = t["httpTimeoutSecs"] + 5
     sign_in = 6 * call + 10 + t["loginRefreshTimeoutSecs"]
     deadline = t["slackBudgetSecs"] + 5
-    triage = 10 + (1 + t["maxPerTick"]) * t["classifierTimeoutSecs"]
+    triage = 10 + (1 + t["batchSize"]) * t["classifierTimeoutSecs"]
     assert comms.tick_timeout() == sign_in + deadline + triage + 30
     seen = []
 
@@ -1351,18 +1380,30 @@ def test_the_tick_is_given_every_bound_the_child_holds_itself_to(monkeypatch):
 
 
 def test_the_triage_bound_is_a_batch_call_and_one_call_per_message(monkeypatch):
-    """A batch whose answers hold an injection is triaged again one message per call,
-    so a tick of ``maxPerTick`` messages may make ``1 + maxPerTick`` calls."""
+    """A batch whose answers hold an injection is triaged again one message per call, and
+    the batch call itself lasts longer past ``classifierTimeoutSecs / SecsPerMessage``
+    messages, so the bound follows the operator's batch size, not the default."""
     fixed = {"httpTimeoutSecs": 15, "loginRefreshTimeoutSecs": 60, "slackBudgetSecs": 120,
-             "classifierTimeoutSecs": 90}
+             "classifierTimeoutSecs": 90, "classifierSecsPerMessage": 5, "batchSize": 8}
     sign_in_and_slack = 6 * 20 + 10 + 60 + 125
+    monkeypatch.setattr(comms, "tunables", lambda: fixed)
 
-    def bound(per_tick: int) -> float:
-        monkeypatch.setattr(comms, "tunables", lambda: {**fixed, "maxPerTick": per_tick})
-        return comms.tick_timeout()
+    assert comms.tick_timeout(1) == sign_in_and_slack + 10 + 90 + 1 * 90 + 30
+    assert comms.tick_timeout(8) == sign_in_and_slack + 10 + 90 + 8 * 90 + 30
+    assert comms.tick_timeout() == comms.tick_timeout(8)
+    assert comms.tick_timeout(64) == sign_in_and_slack + 10 + 320 + 64 * 90 + 30
 
-    assert bound(1) == sign_in_and_slack + 10 + 2 * 90 + 30
-    assert bound(8) == sign_in_and_slack + 10 + 9 * 90 + 30
+
+def test_the_tick_child_is_given_the_bound_of_the_operators_batch(monkeypatch):
+    seen = []
+
+    class Done:
+        returncode, stdout, stderr = 0, '{"me": null, "items": [], "error": null}', ""
+
+    monkeypatch.setattr("diplomat_runtime.promptcore.core_bin", lambda: "/bin/core")
+    monkeypatch.setattr("subprocess.run", lambda argv, **kw: seen.append(kw["timeout"]) or Done())
+    comms.tick({"batchSize": 64})
+    assert seen == [comms.tick_timeout(64)] and seen[0] > comms.tick_timeout()
 
 
 @pytest.mark.parametrize("raw", ["inf", "1e12", "-inf", "nan"])

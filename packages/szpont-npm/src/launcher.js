@@ -17,7 +17,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
-export const VERSION = '0.118.0';
+export const VERSION = '0.125.0';
 export const DEFAULT_REPO_URL = 'https://github.com/latekvo/Diplomat.git';
 export const SUPPORTED = ['darwin', 'linux'];
 export const MIN_PYTHON = [3, 10];
@@ -261,7 +261,7 @@ export function plan(facts) {
     steps.push(step('build', [path.join(macos, 'install', 'build-app.sh')], { cwd: macos, needs: 'swift' }));
     // build-app.sh rebuilds unconditionally, so the bundle always matches the
     // source it was just cloned or pulled from; `open` then detaches it from this
-    // terminal, which is where a menu-bar app belongs. `-n` starts that bundle
+    // terminal, which is where a desktop app belongs. `-n` starts that bundle
     // even while an instance is up, and the app's newest-wins singleton retires
     // the old one - the swap its own updater relies on.
     const launch = ['open', '-n', path.join(macos, 'Diplomat.app')];

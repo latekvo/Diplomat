@@ -320,11 +320,89 @@ def test_the_reply_switch_sits_with_the_comms_switches_and_writes_through(make_v
     assert sw.isChecked() is True
     assert sw.accessibleName() == "Reply in Slack"
     assert _row_of(sw).parent() is _row_of(view._sw_comms_bumps).parent()
-    assert "While you are away" in _row_of(sw)._detail.text()
+    assert _row_of(sw)._detail.text().startswith("Only while you are away")
     sw.setChecked(False)
     assert app_settings().value("commsReplies") is False
     assert view.store.comms_toggles()["replies"] is False
     assert make_view()._sw_comms_replies.isChecked() is False
+
+
+def test_the_reply_kinds_show_only_while_replies_are_on(make_view):
+    view = make_view()
+    assert view._comms_reply_kinds.isHidden() is False
+    view._sw_comms_replies.setChecked(False)
+    assert view._comms_reply_kinds.isHidden() is True
+    assert make_view()._comms_reply_kinds.isHidden() is True
+    view._sw_comms_replies.setChecked(True)
+    assert view._comms_reply_kinds.isHidden() is False
+
+
+def test_only_questions_get_a_reply_until_the_operator_says_otherwise(make_view):
+    from diplomat_app.store import app_settings
+
+    view = make_view()
+    assert view._sw_comms_reply_questions.isChecked() is True
+    switches = {"replyToReviews": view._sw_comms_reply_reviews,
+                "replyToFixes": view._sw_comms_reply_fixes,
+                "replyToInvestigations": view._sw_comms_reply_investigations}
+    toggles = view.store.comms_toggles()
+    assert toggles["replyToQuestions"] is True
+    for key, sw in switches.items():
+        assert sw.isChecked() is False and toggles[key] is False
+        assert _row_of(sw).parent() is view._comms_reply_kinds
+    view._sw_comms_reply_fixes.setChecked(True)
+    view._sw_comms_reply_questions.setChecked(False)
+    assert app_settings().value("commsReplyToFixes") is True
+    toggles = view.store.comms_toggles()
+    assert (toggles["replyToFixes"], toggles["replyToQuestions"],
+            toggles["replyToReviews"]) == (True, False, False)
+    again = make_view()
+    assert again._sw_comms_reply_fixes.isChecked() is True
+    assert again._sw_comms_reply_questions.isChecked() is False
+
+
+def test_the_batch_size_slider_stops_at_powers_of_two_and_writes_through(make_view):
+    from diplomat_app.store import app_settings
+
+    view = make_view()
+    slider = view._comms_batch
+    assert _row_of(slider).parent() is _row_of(view._sw_comms_replies).parent()
+    assert slider._slider.accessibleName() == "Batch size"
+    assert (slider.minimum(), slider.maximum(), slider.badge()) == (0, 6, "8")
+    seen = []
+    for at in range(7):
+        slider._slider.setValue(at)
+        seen.append((slider.badge(), view.store.comms_batch_size))
+    assert seen == [(str(n), n) for n in (1, 2, 4, 8, 16, 32, 64)]
+    assert app_settings().value("commsBatchSize") == 64
+    assert view.store.comms_settings_payload()["batchSize"] == 64
+    assert make_view()._comms_batch.badge() == "64"
+
+
+def test_the_batch_interval_slider_is_logarithmic_and_writes_through(make_view):
+    view = make_view()
+    slider = view._comms_interval
+    assert slider._slider.accessibleName() == "Batch interval"
+    assert slider.badge() == "30m"
+    slider._slider.setValue(slider.minimum())
+    assert (slider.badge(), view.store.comms_flush_after_secs) == ("1m", 60)
+    slider._slider.setValue(slider.maximum())
+    assert (slider.badge(), view.store.comms_flush_after_secs) == ("1d", 86400)
+    assert view.store.comms_settings_payload()["flushAfterSecs"] == 86400
+    # Half the slider's travel is around the geometric middle of a minute and a day
+    # (38m), where a linear one would read 12h.
+    slider._slider.setValue(slider.maximum() // 2)
+    assert 1200 <= view.store.comms_flush_after_secs <= 3600
+    assert make_view()._comms_interval.value() == slider.maximum() // 2
+
+
+def test_a_hand_written_setting_finds_the_nearest_stop_and_stays_until_moved(make_view):
+    from diplomat_app.store import app_settings
+
+    app_settings().setValue("commsBatchSize", 5)
+    view = make_view()
+    assert view._comms_batch.badge() == "4"
+    assert view.store.comms_batch_size == 5
 
 
 def test_the_away_slider_steps_in_quarter_hours_and_writes_through(make_view):
@@ -419,34 +497,28 @@ def panel(app, monkeypatch):
     p.deleteLater()
 
 
-def test_dismissing_the_panel_on_settings_reopens_it_on_the_main_screen(panel):
+def test_closing_the_panel_on_settings_reopens_it_on_the_main_screen(panel):
     panel._set_screen("settings")
-    panel.hide()
+    panel.close()
     assert panel._screen == "main"
     assert panel.body.currentIndex() == panel._screens["main"]
     panel.show()
     assert panel._screen == "main"
 
 
-def test_dismissing_the_panel_on_another_screen_keeps_it(panel):
+def test_closing_the_panel_on_another_screen_keeps_it(panel):
     panel._set_screen("devices")
-    panel.hide()
+    panel.close()
     assert panel._screen == "devices"
 
 
-def test_a_modal_over_settings_hiding_the_panel_is_not_a_dismissal(panel):
-    """The repo-root picker is modal and, as a portal or GTK dialog, another process's
-    window, so the panel loses focus to it and hides."""
-    from PySide6.QtWidgets import QApplication, QDialog
+def test_minimizing_the_panel_on_settings_keeps_it(panel):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
 
     panel._set_screen("settings")
-    picker = QDialog()
-    picker.setModal(True)
-    picker.show()
-    try:
-        assert QApplication.activeModalWidget() is picker
-        panel.hide()
-        assert panel._screen == "settings"
-    finally:
-        picker.close()
-        picker.deleteLater()
+    panel.setWindowState(Qt.WindowState.WindowMinimized)
+    for _ in range(3):
+        QApplication.processEvents()
+    assert panel.isMinimized()
+    assert panel._screen == "settings"

@@ -62,6 +62,7 @@ enum AuditLog {
 
     /// Append one action. Best-effort; never throws into the caller.
     static func log(_ source: String, _ action: String, _ detail: String) {
+        AppLog.log("activity", "\(source) \(action): \(detail)")
         let entry: [String: String] = ["at": iso.string(from: Date()), "source": source,
                                        "action": action, "detail": detail]
         guard let data = try? JSONSerialization.data(withJSONObject: entry),

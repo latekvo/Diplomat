@@ -124,15 +124,18 @@ def _sign_in_secs(t: dict) -> float:
             + float(t.get("loginRefreshTimeoutSecs", 60)))
 
 
-def tick_timeout() -> float:
+def tick_timeout(batch_size: int | None = None) -> float:
     """The sum of the bounds the ``comms-tick`` child holds itself to, so it is never
     killed inside them: signing in, the deadline every later Slack call shares, and the
-    triage: one batch call, then one call per message of it when its answers hold an
-    ``injection``."""
+    triage of ``batch_size`` messages (``batchSize`` unless given): one batch call, then
+    one call per message of it when its answers hold an ``injection``."""
     t = tunables()
     slack = float(t.get("slackBudgetSecs", 120)) + _HTTP_GRACE_SECS
+    batch = float(max(1, t.get("batchSize", 8) if batch_size is None else batch_size))
+    call = float(t.get("classifierTimeoutSecs", 90))
     triage = (_LOGIN_SHELL_SECS
-              + (1 + float(t.get("maxPerTick", 8))) * float(t.get("classifierTimeoutSecs", 90)))
+              + max(call, float(t.get("classifierSecsPerMessage", 5)) * batch)
+              + batch * call)
     return _sign_in_secs(t) + slack + triage + _MARGIN_SECS
 
 
@@ -144,6 +147,25 @@ def reply_timeout() -> float:
     answer = float(a.get("timeoutSecs", 180)) + float((a.get("knowledge") or {}).get("fetchSecs", 90))
     slack = float(t.get("slackBudgetSecs", 120)) + _HTTP_GRACE_SECS
     return _sign_in_secs(t) + _LOGIN_SHELL_SECS + answer + slack + _MARGIN_SECS
+
+
+def batch_defaults() -> tuple[int, list[int], int, list[int]]:
+    """``batchSize``, its Settings stops, ``flushAfterSecs``, and its Settings stops."""
+    t = tunables()
+    return (int(t.get("batchSize", 8)), [int(n) for n in t.get("batchSizes", [8])],
+            int(t.get("flushAfterSecs", 1800)),
+            [int(n) for n in t.get("flushAfterChoices", [1800])])
+
+
+def slider_stop(value: int, stops: list[int]) -> int:
+    """Twin of ``CommsSliderStops.index``."""
+    at = math.log(max(1, int(value)))
+    return min(range(len(stops)), key=lambda i: abs(math.log(stops[i]) - at))
+
+
+def is_extra_target(message: dict) -> bool:
+    """Twin of ``CommsMessage.isExtraTarget``."""
+    return "#" in str(message.get("id", ""))
 
 
 def away_after_secs() -> tuple[int, int, int]:
@@ -211,7 +233,8 @@ def tick(settings: dict) -> dict:
     for a ping of this tick or an earlier one. Never raises: a CLI failure is the
     tick's ``error``."""
     try:
-        out = _core(["comms-tick"], stdin=settings, timeout=tick_timeout())
+        out = _core(["comms-tick"], stdin=settings,
+                    timeout=tick_timeout(settings.get("batchSize")))
         result = json.loads(out)
     except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
         return {"me": None, "pings": [], "items": [], "error": str(exc), "notices": []}
@@ -257,6 +280,19 @@ def reply(request: dict) -> dict:
     outcome, text = out.get("outcome"), out.get("text")
     return {"outcome": outcome if isinstance(outcome, str) else None,
             "text": text if isinstance(text, str) else None}
+
+
+def merge_replies(requests: list[dict]) -> list[dict]:
+    """``CommsReplyRequest.merged``: one request per Slack message, so a message asking
+    for several gets one reply naming every target acted on. A CLI that could not answer leaves the
+    requests as they are: the core still posts once per message, naming fewer."""
+    if not any(is_extra_target(r.get("message") or {}) for r in requests):
+        return requests
+    try:
+        out = json.loads(_core(["comms-reply-merge"], stdin={"requests": requests}))
+    except (RuntimeError, promptcore.CoreBinaryMissing, ValueError):
+        return requests
+    return out if isinstance(out, list) else requests
 
 
 # MARK: - the front-end's lines of the log

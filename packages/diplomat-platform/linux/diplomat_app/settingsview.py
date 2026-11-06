@@ -1036,12 +1036,37 @@ class SettingsView(QWidget):
             "A reported bug with no PR or issue number queues an agent that reproduces "
             "and researches it and writes a report, which the ✉ screen opens. It never "
             "pushes, opens PRs or issues, comments, or posts to Slack.")
+        _, sizes, _, intervals = comms.batch_defaults()
+        self._comms_batch = self._comms_stops(
+            inner, "Batch size", sizes, st.comms_batch_size, "comms_batch_size", str,
+            "How many pings one triage call reads. A full batch is triaged at once.")
+        self._comms_interval = self._comms_stops(
+            inner, "Batch interval", intervals, st.comms_flush_after_secs,
+            "comms_flush_after_secs", Fmt.duration,
+            "How old the newest ping of a shorter batch gets before it is triaged anyway.")
         self._sw_comms_replies = self._comms_switch(
             inner, "Reply in Slack", st.comms_replies, "comms_replies",
-            "Work a ping queued, or found already queued or running, gets a reply "
-            "saying when it should be done. While you are away, a question your repo's "
-            "documentation answers gets that answer. Only ever in the conversation the "
-            "message was written in, and at most once per message.")
+            "Only while you are away; work is queued either way. In the message's language "
+            "(Polish or English), only ever in the conversation it was written in, and at "
+            "most once per message.")
+        self._comms_reply_kinds, kinds = nested_settings(_BLUE)
+        inner.addWidget(self._comms_reply_kinds)
+        self._comms_reply_kinds.setVisible(st.comms_replies)
+        self._sw_comms_replies.toggled.connect(self._comms_reply_kinds.setVisible)
+        self._sw_comms_reply_questions = self._comms_switch(
+            kinds, "Reply to questions", st.comms_reply_to_questions,
+            "comms_reply_to_questions",
+            "A question your repo's documentation answers gets that answer.")
+        self._sw_comms_reply_reviews = self._comms_switch(
+            kinds, "Reply to review asks", st.comms_reply_to_reviews, "comms_reply_to_reviews",
+            "A review a ping queued, or found queued or running, gets a reply saying when "
+            "it should be done.")
+        self._sw_comms_reply_fixes = self._comms_switch(
+            kinds, "Reply to fix asks", st.comms_reply_to_fixes, "comms_reply_to_fixes",
+            "So does a fix.")
+        self._sw_comms_reply_investigations = self._comms_switch(
+            kinds, "Reply to investigations", st.comms_reply_to_investigations,
+            "comms_reply_to_investigations", "So does an investigation.")
         _, step, most = comms.away_after_secs()
         self._comms_away = SliderSetting(
             label="Away after", minimum=step, maximum=most, step=step,
@@ -1053,8 +1078,8 @@ class SettingsView(QWidget):
             lambda secs: setattr(self.store, "comms_away_after_secs", secs))
         inner.addWidget(self._track(SettingRow(
             "Away after", self._comms_away, stacked=True,
-            detail="How long your session must have been locked before Comms answers "
-                   "questions for you.")))
+            detail="How long your session must have been locked before Comms replies "
+                   "for you.")))
         self._sw_comms_notify = self._comms_switch(
             inner, "Notify on new pings", st.comms_notify, "comms_notify",
             "A tray notification per new ping.")
@@ -1093,6 +1118,19 @@ class SettingsView(QWidget):
         sw.toggled.connect(lambda v: setattr(self.store, attr, v))
         layout.addWidget(self._track(SettingRow(title, sw, detail=detail)))
         return sw
+
+    def _comms_stops(self, layout, title: str, stops: list[int], value: int, attr: str,
+                     fmt, detail: str) -> SliderSetting:
+        """A slider whose position is an index into ``stops``."""
+        slider = SliderSetting(
+            label=title, minimum=0, maximum=len(stops) - 1, step=1,
+            min_label=fmt(stops[0]), max_label=fmt(stops[-1]), tint=_BLUE,
+        )
+        slider.set_badge_text(lambda i: fmt(stops[i]))
+        slider.set_value(comms.slider_stop(value, stops))
+        slider.changed.connect(lambda i: setattr(self.store, attr, stops[i]))
+        layout.addWidget(self._track(SettingRow(title, slider, stacked=True, detail=detail)))
+        return slider
 
     def _on_comms_toggled(self, on: bool) -> None:
         self.store.comms_enabled = on
@@ -1390,7 +1428,7 @@ class SettingsView(QWidget):
             "This applet", btn_row, stacked=True,
             summary="comparing with origin…",
             detail="Pulls the latest applet from GitHub, rebuilds the diplomat-core "
-                   "prompt engine, and relaunches the tray app in place.",
+                   "prompt engine, and relaunches the app in place.",
         ))
         body.addWidget(self._update_row)
         return card

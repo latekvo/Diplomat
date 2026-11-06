@@ -3950,11 +3950,12 @@ def test_a_run_registered_during_the_reap_refused_stamp_survives(store, monkeypa
 
 
 def test_the_poll_settles_the_agents_even_with_the_panel_shut(store, monkeypatch):
-    """Diplomat is a TRAY applet: its panel is shut most of the time, and the panel's
-    own tick is gated on being visible. If retirement rides only on that tick, a
-    finished agent's record is never dropped, its bay never comes back, its PR stays
-    deduped and its cost never reaches the ledger — on precisely the machines that
-    leave the tray alone. Seen live with three runs and the panel closed.
+    """Diplomat keeps working with its window closed, which is how it spends most of
+    the time, and the window's own tick runs only while it is on screen. If
+    retirement rode only on that tick, a finished agent's record would never be
+    dropped, its bay would never come back, its PR would stay deduped and its cost
+    would never reach the ledger - on precisely the machines that leave the window
+    closed. Seen live with three runs and the window closed.
 
     So the 3-minute poll settles them, whatever is on screen."""
     from diplomat_runtime import agentregistry

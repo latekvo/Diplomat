@@ -19,7 +19,7 @@ them under Settings → *Tools - color & visibility*.
 Every row is clickable → opens the PR/issue in your browser. Counts show on each
 card; hit ↻ to refresh, ⏻ to quit (with a confirmation prompt). The data also
 **auto-refreshes every 5 minutes** in the background, so the counts are fresh the
-moment you click the wrench - even if the panel was never open.
+moment you open the window - even if it was never open before.
 
 **Reverse lookup:** type a PR/issue number in the search box (press **⌘F** to jump to
 it) and it instantly shows which of the six lists that number is on - a ✓/- checklist

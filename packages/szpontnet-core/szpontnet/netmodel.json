@@ -35,9 +35,9 @@
     "jobCostUnits": 1.0,
     "quotaWindowDays": 7.0,
     "usageTimeConstantDays": 21.0,
-    "_tokenComment": "Automatic token-budget signal (the ok/low/out state a UI shows and the mesh routes around). PRIMARY: the node probes the account's REAL remaining quota via the OAuth usage endpoint - utilization of the 7-day week rate-limit window, gossiped as tokensWeekPct (tokensSessionPct stays in the advert schema but is always omitted: the account has no 5-hour window); that fraction drives the state: ≥ lowThreshold → ok, > 0 → low, ≤ 0 → out. FALLBACK (no credentials / offline / SZPONTNET_OAUTH_PROBE=0): the node measures its OWN recent consumption from the local agent logs over the last usageWindowHours against a heuristic per-plan ceiling = plan.weight × tokensPerWeight. The fallback is deliberately rough (real limits are dynamic and account-specific) - the UIs mark it '≈'; tune tokensPerWeight, or pin a node's state with the manual override.",
-    "tokensPerWeight": 2000000,
-    "usageWindowHours": 5.0,
+    "_tokenComment": "Automatic token-budget signal (the ok/low/out state a UI shows and the mesh routes around). PRIMARY: the node probes the account's REAL remaining quota via the OAuth usage endpoint - utilization of the 7-day week rate-limit window, gossiped as tokensWeekPct (tokensSessionPct stays in the advert schema but is always omitted: the account has no 5-hour window); that fraction drives the state: ≥ lowThreshold → ok, > 0 → low, ≤ 0 → out. FALLBACK (no credentials / offline / SZPONTNET_OAUTH_PROBE=0): the node measures its OWN consumption from the local agent logs over the last usageWindowHours (the week the real probe reads) against a heuristic per-plan ceiling = plan.weight × tokensPerWeight. The fallback is deliberately rough (real limits are dynamic and account-specific) - the UIs mark it '≈'; tune tokensPerWeight, or pin a node's state with the manual override. 75M per weight: a Max 20× machine logged 5.5e8 tokens over the 7 days its probe read 36% of the week used (2026-11-04).",
+    "tokensPerWeight": 75000000,
+    "usageWindowHours": 168.0,
     "lowThreshold": 0.34
   },
 

@@ -1305,7 +1305,8 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
     Only where the scan would re-book once the PR's other records are gone: a run on
     this machine, on a PR the scan sees. One with no pid is held to the scan's
     sighting, which cannot tell two agents apart, so it is released only alone on its
-    PR. Beside a record already named ``untracked:<pr>``, its run id carries its pid.
+    PR. Beside a record already named ``untracked:<pr>`` (the run itself, if a hand edit
+    made it a dispatch), its run id carries its pid, and without one it is not released.
     Not a run a backstop ended, whose window is being closed. And only while the
     released record resolves to a live agent, or to one the stillness backstop ends at
     once, so that its window is closed.
@@ -1325,6 +1326,8 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
             continue
         run_id = f"untracked:{r.pr_number}"
         if run_id in taken:
+            if r.pid is None:
+                continue
             run_id = f"{run_id}:{r.pid}"
         heir = RunRecord(run_id=run_id,
                          dispatched_at=r.dispatched_at, pr_number=r.pr_number,

@@ -191,6 +191,10 @@ def test_a_setting_the_disk_refuses_says_so(on_volume, monkeypatch):
     from diplomat_app.store import Store
 
     QApplication.instance() or QApplication([])
+    # Opening Settings fetches origin and runs the allocator's installer; neither is
+    # what the join at the end is about.
+    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
     st = Store()
     view = SettingsView(st)
     before = appconfig.auto_budget_gate()
@@ -310,9 +314,9 @@ def test_a_prompt_the_disk_cannot_hold_is_not_left_behind(on_volume, monkeypatch
     assert sorted(p.name for p in on_volume.path.glob("prompt.txt*")) == ["prompt.txt"]
 
 
-def test_a_quit_on_a_full_disk_still_keeps_the_tray_closed(on_volume, tmp_path,
-                                                           monkeypatch):
-    """The watchdog brings back any tray that is not marked quit, so a mark the full
+def test_a_quit_on_a_full_disk_still_keeps_the_app_closed(on_volume, tmp_path,
+                                                          monkeypatch):
+    """The watchdog brings back any app that is not marked quit, so a mark the full
     disk refused is a quit that undoes itself every five minutes."""
     from diplomat_app import selfupdate
     from diplomat_app.singleton import SingleInstance
@@ -320,7 +324,7 @@ def test_a_quit_on_a_full_disk_still_keeps_the_tray_closed(on_volume, tmp_path,
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     monkeypatch.setattr(SingleInstance, "any_running", staticmethod(lambda: False))
     monkeypatch.setattr(selfupdate, "relaunch",
-                        lambda *a, **k: pytest.fail("the watchdog relaunched the tray"))
+                        lambda *a, **k: pytest.fail("the watchdog relaunched the app"))
     monkeypatch.setattr(selfupdate, "_recorded_display_env", lambda: {"DISPLAY": ":0"})
     on_volume.fill()
 

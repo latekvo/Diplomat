@@ -73,19 +73,43 @@ def _on_linux(monkeypatch):
     monkeypatch.setattr(review, "token_export", lambda: _token_export("linux"))
 
 
-def _spawn(tmp_path, monkeypatch, shell, agent="printenv GH_TOKEN > out", pid=True):
+def _spawn(tmp_path, monkeypatch, shell, agent="printenv GH_TOKEN > out", pid=True,
+           platform="linux"):
     """The real spawn string, with a stand-in agent and the terminal's trailing
     interactive shell cut off (it would sit at a prompt forever). ``pid=False`` is the
     form a mesh node spawns, with the agent in the terminal's own shell."""
     monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
     monkeypatch.setattr(review, "user_shell", lambda: shell)
     monkeypatch.setattr(runner, "agent_command", lambda *a, **k: agent)
-    _on_linux(monkeypatch)
+    monkeypatch.setattr(review, "token_export", lambda: _token_export(platform))
     cmd = review.shell_command("/tmp/p.txt", done_path=str(tmp_path / "done"),
                                pid_path=str(tmp_path / "pid") if pid else None)
     head, sep, _ = cmd.rpartition('; exec "$SHELL" -i')
     assert sep, cmd
     return cmd, head
+
+
+def _hold(source, contents, tmp_path, token_file) -> str:
+    """Put ``contents`` (None: nothing at all) where ``source`` is read from, and return
+    the platform that reads it. The Keychain is a stand-in ``security`` on
+    :func:`_clean_env`'s PATH that answers with those bytes, or exits 44 as the real one
+    does for a missing item."""
+    if source == "file":
+        if contents is None:
+            token_file.unlink()
+        else:
+            token_file.write_text(contents)
+        return "linux"
+    stubs = tmp_path / "bin"
+    stubs.mkdir(exist_ok=True)
+    secret = tmp_path / "keychain-secret"
+    if contents is not None:
+        secret.write_text(contents)
+    answer = "exit 44" if contents is None else f"cat {shlex.quote(str(secret))}"
+    (stubs / "security").write_text(f"#!/bin/sh\n{answer}\n")
+    (stubs / "security").chmod(0o755)
+    appconfig.set_value(appconfig.AGENT_TOKEN_KEYCHAIN_ITEM, "diplomat-agent-gh")
+    return "darwin"
 
 
 def _clean_env(tmp_path) -> dict:
@@ -126,7 +150,8 @@ def test_macos_reads_the_configured_keychain_item():
     through ``AgentSpawner.tokenExport``; ``DIPLOMAT_SPAWN_SCRIPT_TEST`` pins that one."""
     appconfig.set_value(appconfig.AGENT_TOKEN_KEYCHAIN_ITEM, "diplomat-agent-gh")
     assert review.token_export("darwin") == (
-        "GH_TOKEN=$(security find-generic-password -s diplomat-agent-gh -w) "
+        "GH_TOKEN=$(security find-generic-password -s diplomat-agent-gh -w "
+        "| tr -d '\\000[:space:]') "
         f"&& [ -n \"$GH_TOKEN\" ] && export GH_TOKEN {_GIT}"
     )
 
@@ -234,20 +259,18 @@ def test_the_launcher_never_hands_on_the_slack_token(monkeypatch):
     assert comms.TOKEN_ENV not in review.spawn_env()
 
 
+@pytest.mark.parametrize("source", ["file", "keychain"])
 @pytest.mark.parametrize("pid", [True, False], ids=["local", "mesh"])
 @pytest.mark.parametrize("contents", [None, "", "\n", " \t\r\n", "\0\0\n"],
                          ids=["missing", "empty", "blank", "whitespace", "nul"])
 @pytest.mark.parametrize("shell", _SHELLS)
-def test_an_unreadable_token_starts_nothing(shell, contents, pid, tmp_path, monkeypatch,
-                                            token_file):
+def test_an_unreadable_token_starts_nothing(shell, contents, pid, source, tmp_path,
+                                            monkeypatch, token_file):
     """Not a fallback to the broad login: nothing runs. No pid file, so the tick
     resolves a local run FAILED past its grace, and no exit sentinel, which reads as a
     run that finished - to the resolver, and to a mesh node holding the work's claim."""
-    if contents is None:
-        token_file.unlink()
-    else:
-        token_file.write_text(contents)
-    _, cmd = _spawn(tmp_path, monkeypatch, shell, pid=pid)
+    platform = _hold(source, contents, tmp_path, token_file)
+    _, cmd = _spawn(tmp_path, monkeypatch, shell, pid=pid, platform=platform)
     done = subprocess.run([shell, "-c", cmd], cwd=tmp_path, env=_clean_env(tmp_path),
                           capture_output=True, timeout=30)
     assert done.returncode != 0
@@ -256,17 +279,18 @@ def test_an_unreadable_token_starts_nothing(shell, contents, pid, tmp_path, monk
     assert not (tmp_path / "done").exists()
 
 
+@pytest.mark.parametrize("source", ["file", "keychain"])
 @pytest.mark.parametrize("contents", [f" {DUMMY} \r\n", f"\0{DUMMY}\0\n"],
                          ids=["padded", "nul"])
 @pytest.mark.parametrize("shell", _SHELLS)
-def test_whitespace_around_the_token_is_not_part_of_it(shell, contents, tmp_path,
+def test_whitespace_around_the_token_is_not_part_of_it(shell, contents, source, tmp_path,
                                                        monkeypatch, token_file):
     """An editor that saves CRLF, or a paste with a trailing space: ``gh`` refuses a
     token holding a CR, and git over HTTPS one holding a space. Nor is a NUL, which
     zsh keeps in the variable and cuts the export at: a leading one would hand the
     agent an empty ``GH_TOKEN``, which ``gh`` reads as its stored login."""
-    token_file.write_text(contents)
-    _, cmd = _spawn(tmp_path, monkeypatch, shell, agent=_AGENT)
+    platform = _hold(source, contents, tmp_path, token_file)
+    _, cmd = _spawn(tmp_path, monkeypatch, shell, agent=_AGENT, platform=platform)
     subprocess.run([shell, "-c", cmd], cwd=tmp_path, env=_clean_env(tmp_path),
                    capture_output=True, timeout=30)
     assert (tmp_path / "out").read_text() == DUMMY + "\n"
@@ -402,8 +426,10 @@ def test_a_missing_keychain_item_fails_the_mesh_spawn(monkeypatch):
 
 
 
-@pytest.mark.parametrize("secret, spawns", [("", False), (DUMMY, True)],
-                         ids=["empty", "held"])
+@pytest.mark.parametrize("secret, spawns",
+                         [("", False), (" \t\r", False), (DUMMY, True),
+                          (f" {DUMMY} \r", True)],
+                         ids=["empty", "whitespace", "held", "padded"])
 def test_a_keychain_item_spawns_only_on_a_secret(secret, spawns, tmp_path, monkeypatch):
     """An item that exists with an empty secret - what Enter at ``security
     add-generic-password -w``'s prompt stores - is refused like a missing one: the
