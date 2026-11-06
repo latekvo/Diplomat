@@ -352,21 +352,23 @@ def test_the_real_core_posts_one_ack_in_the_messages_thread(slack, no_comms_repl
     # A channel id as Slack writes one: the core answers nothing else.
     message = {**MESSAGE, "id": "C0GENERAL1:1508284197.000015", "channelID": "C0GENERAL1",
                "permalink": "https://ours.slack.com/archives/C0GENERAL1/p1508284197000015"}
-    request = {"message": message, "away": False,
+    request = {"message": message, "away": True,
                "decision": {"action": "review", "number": 12, "summary": "Review PR 12",
                             "reason": "a direct ask"},
                "toggles": {"replies": True, "replyToReviews": True},
                "settings": {"owner": "o", "repo": "r"},
                "queued": {"kind": "review", "number": 12, "ahead": 1, "bays": 1}}
     _logged((message, request["decision"]))
+    assert comms.reply({**request, "away": False}) == {"outcome": None, "text": None}
+    assert _tools("slack_send_message") == []
     before = datetime.now()
     first = comms.reply(request)
     assert first["outcome"] == "sent", first
     [posted] = _tools("slack_send_message")
     assert {k: posted[k] for k in ("channel_id", "thread_ts", "reply_broadcast")} == {
         "channel_id": "C0GENERAL1", "thread_ts": message["ts"], "reply_broadcast": False}
-    match = re.fullmatch(r"\[Diplomat\]: Queued a review of #12, should be done by "
-                         r"(\d\d):(\d\d) (today|tomorrow) \(±1h\)\.", posted["message"])
+    match = re.fullmatch(r"\[Diplomat\]: The operator is away, I queued a review of #12, "
+                         r"should be done by (\d\d):(\d\d) (today|tomorrow) \(±1h\)\.", posted["message"])
     assert match, posted["message"]
     # Two runs of 45 minutes: the one ahead of it on the one bay, then its own.
     due = before + timedelta(seconds=2 * 2700)
@@ -397,7 +399,7 @@ def _rows_of_one_message(numbers: list[int], language: str = "pl") -> list[dict]
             "decision": {"action": "review", "number": n, "summary": "s", "reason": "r",
                          "language": language},
             "queued": {"kind": "review", "number": n, "ahead": 0, "bays": 1},
-            "away": False, "toggles": {"replies": True, "replyToReviews": True},
+            "away": True, "toggles": {"replies": True, "replyToReviews": True},
             "settings": {"owner": "o", "repo": "r"},
         })
     return rows
@@ -417,7 +419,8 @@ def test_one_message_asking_for_several_gets_one_reply_in_its_language(
     result = comms.reply(merged[0])
     assert result["outcome"] == "sent", result
     assert result["text"].startswith(
-        "[Diplomat]: W kolejce: review #1616, #1652 i #1588, przewidywany koniec: ")
+        "[Diplomat]: Operator jest teraz offline. W kolejce: review #1616, #1652 i #1588, "
+        "przewidywany koniec: ")
     posts = _tools("slack_send_message")
     assert [p["message"] for p in posts] == [result["text"]]
 

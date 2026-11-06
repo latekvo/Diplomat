@@ -252,9 +252,7 @@ public enum CoreAssets {
                 public let tomorrow: String
                 public let what: [String: String]
                 public let whatMany: [String: String]
-                public let queued: String
                 public let queuedAway: String
-                public let running: String
                 public let runningAway: String
                 public let answeredAway: String
             }

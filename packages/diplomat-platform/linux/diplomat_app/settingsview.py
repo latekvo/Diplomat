@@ -1046,8 +1046,9 @@ class SettingsView(QWidget):
             "How old the newest ping of a shorter batch gets before it is triaged anyway.")
         self._sw_comms_replies = self._comms_switch(
             inner, "Reply in Slack", st.comms_replies, "comms_replies",
-            "In the message's language (Polish or English), only ever in the conversation "
-            "it was written in, and at most once per message.")
+            "Only while you are away; work is queued either way. In the message's language "
+            "(Polish or English), only ever in the conversation it was written in, and at "
+            "most once per message.")
         self._comms_reply_kinds, kinds = nested_settings(_BLUE)
         inner.addWidget(self._comms_reply_kinds)
         self._comms_reply_kinds.setVisible(st.comms_replies)
@@ -1055,8 +1056,7 @@ class SettingsView(QWidget):
         self._sw_comms_reply_questions = self._comms_switch(
             kinds, "Reply to questions", st.comms_reply_to_questions,
             "comms_reply_to_questions",
-            "While you are away, a question your repo's documentation answers gets that "
-            "answer.")
+            "A question your repo's documentation answers gets that answer.")
         self._sw_comms_reply_reviews = self._comms_switch(
             kinds, "Reply to review asks", st.comms_reply_to_reviews, "comms_reply_to_reviews",
             "A review a ping queued, or found queued or running, gets a reply saying when "
@@ -1078,8 +1078,8 @@ class SettingsView(QWidget):
             lambda secs: setattr(self.store, "comms_away_after_secs", secs))
         inner.addWidget(self._track(SettingRow(
             "Away after", self._comms_away, stacked=True,
-            detail="How long your session must have been locked before Comms answers "
-                   "questions for you.")))
+            detail="How long your session must have been locked before Comms replies "
+                   "for you.")))
         self._sw_comms_notify = self._comms_switch(
             inner, "Notify on new pings", st.comms_notify, "comms_notify",
             "A tray notification per new ping.")

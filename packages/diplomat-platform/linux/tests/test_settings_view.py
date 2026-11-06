@@ -320,7 +320,7 @@ def test_the_reply_switch_sits_with_the_comms_switches_and_writes_through(make_v
     assert sw.isChecked() is True
     assert sw.accessibleName() == "Reply in Slack"
     assert _row_of(sw).parent() is _row_of(view._sw_comms_bumps).parent()
-    assert "While you are away" in _row_of(view._sw_comms_reply_questions)._detail.text()
+    assert _row_of(sw)._detail.text().startswith("Only while you are away")
     sw.setChecked(False)
     assert app_settings().value("commsReplies") is False
     assert view.store.comms_toggles()["replies"] is False

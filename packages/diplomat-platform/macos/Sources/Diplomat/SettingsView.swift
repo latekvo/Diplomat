@@ -812,7 +812,7 @@ struct SettingsView: View {
                 .font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary).kerning(0.5)
             HStack(spacing: 5) {
                 ToggleChip(label: "questions", isOn: $store.commsReplyToQuestions, tint: .blue,
-                           help: "While you are away, answer a question the project's documentation settles")
+                           help: "Answer a question the project's documentation settles")
                 ToggleChip(label: "reviews", isOn: $store.commsReplyToReviews, tint: .blue,
                            help: "Say when a review a message asked for should be done")
                 ToggleChip(label: "fixes", isOn: $store.commsReplyToFixes, tint: .blue,
@@ -912,16 +912,16 @@ struct SettingsView: View {
         """
 
     private static let commsRepliesDetail = """
-        Replies start with [Diplomat]:, in the message's language (Polish or English), and \
-        go only to the conversation the message was written in, in its thread, once per \
-        message. While you are away, a question about the project is answered from its \
-        documentation when that settles it plainly, and left alone otherwise. A review, fix \
-        or investigation a ping queued (or found queued or running) can get an estimate of \
-        when it should be done.
+        Only while you are away; work is queued either way. Replies start with [Diplomat]:, \
+        in the message's language (Polish or English), and go only to the conversation the \
+        message was written in, in its thread, once per message. A question about the \
+        project is answered from its documentation when that settles it plainly, and left \
+        alone otherwise. A review, fix or investigation a ping queued (or found queued or \
+        running) can get an estimate of when it should be done.
         """
 
     private static let commsAwayDetail =
-        "How long your Mac must have been locked before Comms answers questions for you."
+        "How long your Mac must have been locked before Comms replies for you."
     private static let commsAwayStep = (try? CoreAssets.comms())?.replies.awayAfterStepSecs ?? 900
     private static let commsAwayMax = (try? CoreAssets.comms())?.replies.awayAfterMaxSecs ?? 43200
 

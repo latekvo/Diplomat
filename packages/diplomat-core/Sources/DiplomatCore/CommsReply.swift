@@ -127,8 +127,8 @@ public enum CommsAway {
     }
 }
 
-/// Comms' replies in Slack (`assets/comms.json` → `replies`): an acknowledgement of
-/// queued work, and while the operator is away an answer to a question their project's
+/// Comms' replies in Slack (`assets/comms.json` → `replies`), only while the operator is
+/// away: an acknowledgement of queued work, and an answer to a question their project's
 /// documentation settles. Each goes to the conversation the message was written in, and
 /// nowhere else, whatever the message or any model says.
 public enum CommsReplier {
@@ -142,7 +142,7 @@ public enum CommsReplier {
             r.settings.bannedSenders.contains(r.message.userID)
                 || CommsBan.bannedNow().contains(r.message.userID.uppercased())
         }
-        guard let assets = try? CoreAssets.comms(), r.toggles.replies,
+        guard r.away, let assets = try? CoreAssets.comms(), r.toggles.replies,
               r.toggles.repliesTo(r.decision.action), !barred(),
               let words = assets.replies.language(r.decision.language),
               let to = destination(for: r.message) else { return CommsReplyResult() }
@@ -155,9 +155,9 @@ public enum CommsReplier {
         let who = name.isEmpty ? words.operator : name
         let body: String
         if let q = r.queued, [.review, .fixIssue, .investigate].contains(r.decision.action) {
-            body = acknowledgement([q] + r.alsoQueued, away: r.away, name: who, sender: r.message,
+            body = acknowledgement([q] + r.alsoQueued, name: who, sender: r.message,
                                    now: now, words: words, assets: assets)
-        } else if r.decision.action == .question, r.away {
+        } else if r.decision.action == .question {
             var settings = r.settings
             settings.bannedSenders += CommsBan.bannedNow()
             let asked = CommsTS.number(r.message.ts) ?? 0
@@ -236,7 +236,7 @@ public enum CommsReplier {
     /// `work` is everything one message asked for, all of one kind. Queued targets went to
     /// the front of their band one after the other, so the last of them runs behind the
     /// rest and whatever the longest wait was ahead of.
-    static func acknowledgement(_ work: [CommsQueuedWork], away: Bool, name: String,
+    static func acknowledgement(_ work: [CommsQueuedWork], name: String,
                                 sender: CommsMessage, now: Date,
                                 words: CoreAssets.CommsModel.Replies.Language,
                                 assets: CoreAssets.CommsModel) -> String {
@@ -252,8 +252,7 @@ public enum CommsReplier {
             what = CommsText.fill(words.whatMany[kind] ?? "", ["numbers": numbers])
         }
         let allRunning = work.allSatisfy { $0.startedAt != nil }
-        let template = allRunning ? (away ? words.runningAway : words.running)
-            : (away ? words.queuedAway : words.queued)
+        let template = allRunning ? words.runningAway : words.queuedAway
         var last = work.filter { $0.startedAt == nil }.max { $0.ahead < $1.ahead }
         last?.ahead += work.filter { $0.startedAt == nil }.count - 1
         let due = (work.filter { $0.startedAt != nil } + (last.map { [$0] } ?? []))

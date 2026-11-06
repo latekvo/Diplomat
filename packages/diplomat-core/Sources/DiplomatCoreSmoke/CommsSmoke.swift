@@ -2406,11 +2406,17 @@ private func replySmoke() throws {
     let work = CommsQueuedWork(kind: "review", number: 12, ahead: 0, bays: 2)
     let everything = CommsToggles(replyToReviews: true, replyToFixes: true,
                                   replyToInvestigations: true)
+    let present = CommsReplier.reply(CommsReplyRequest(message: top, decision: review, queued: work,
+                                                       away: false, toggles: everything),
+                                     now: now, dir: dir, api: slack.api)
+    check(present == CommsReplyResult() && slack.posts.isEmpty
+          && !CommsLog.read(in: dir).contains { $0.kind == .reply },
+          "while the operator is here, queued work gets no reply and leaves no reply line: \(present)")
     let first = CommsReplier.reply(CommsReplyRequest(message: top, decision: review, queued: work,
-                                                     away: false, toggles: everything),
+                                                     away: true, toggles: everything),
                                    now: now, dir: dir, api: slack.api)
     check(first == CommsReplyResult(outcome: "sent", text:
-            "[Diplomat]: Queued a review of #12, should be done by 11:45 today (±1h)."),
+            "[Diplomat]: Ignacy is away, I queued a review of #12, should be done by 11:45 today (±1h)."),
           "a queued review is acknowledged, due one review run (45 min) on, in the sender's zone: \(first)")
     let post = slack.posts.first?.args ?? [:]
     check(slack.posts.count == 1 && post["channel_id"] as? String == "C02MHEMLLUT"
@@ -2422,7 +2428,7 @@ private func replySmoke() throws {
           && CommsLog.fold(CommsLog.read(in: dir)).first?.replyOutcome == "sent",
           "the reply is logged before it is sent, then as sent, and folds onto its ping")
     let again = CommsReplier.reply(CommsReplyRequest(message: top, decision: review, queued: work,
-                                                     away: false, toggles: everything),
+                                                     away: true, toggles: everything),
                                    now: now, dir: dir, api: slack.api)
     check(again == CommsReplyResult() && slack.posts.count == 1, "a message is answered at most once")
     let unlogged = CommsMessage(id: "C02MHEMLLUT:1793699999.000001", channelID: "C02MHEMLLUT",
@@ -2431,13 +2437,13 @@ private func replySmoke() throws {
                                 permalink: "", reasons: [.mention])
     let twice = CommsReplyRequest(message: unlogged, decision: review,
                                   queued: CommsQueuedWork(kind: "review", number: 12, ahead: 0, bays: 1),
-                                  away: false, toggles: everything)
+                                  away: true, toggles: everything)
     _ = CommsReplier.reply(twice, now: now, dir: dir, api: slack.api)
     _ = CommsReplier.reply(twice, now: now, dir: dir, api: slack.api)
     check(slack.posts.count == 2, "…even one whose ping line is gone, as rotation can leave it")
 
     func once(_ name: String, _ m: CommsMessage, _ d: CommsDecision, queued: CommsQueuedWork? = work,
-              away: Bool = false,
+              away: Bool = true,
               toggles: CommsToggles = CommsToggles(replyToReviews: true, replyToFixes: true,
                                                    replyToInvestigations: true),
               settings: CommsSettings = CommsSettings(),
@@ -2455,18 +2461,18 @@ private func replySmoke() throws {
                                        CommsAnswer(answers: true, text: "Yes.", reason: "documented") })
         return (r, s.posts)
     }
-    let away = once("away", top, review, queued: CommsQueuedWork(kind: "review", number: 12, ahead: 3,
-                                                                  bays: 2), away: true)
-    check(away.0.text == "[Diplomat]: Ignacy is away, I queued a review of #12, should be done by 13:15 today (±1h).",
-          "away, the acknowledgement says so; three ahead on two bays wait two runs first: \(String(describing: away.0.text))")
+    let behind = once("behind", top, review, queued: CommsQueuedWork(kind: "review", number: 12, ahead: 3,
+                                                                      bays: 2))
+    check(behind.0.text == "[Diplomat]: Ignacy is away, I queued a review of #12, should be done by 13:15 today (±1h).",
+          "three ahead on two bays wait two runs first: \(String(describing: behind.0.text))")
     let running = once("running", top, review,
                        queued: CommsQueuedWork(kind: "review", number: 12,
                                                startedAt: now.addingTimeInterval(-600)))
-    check(running.0.text == "[Diplomat]: Already working on a review of #12, should be done by 11:35 today (±1h).",
+    check(running.0.text == "[Diplomat]: Ignacy is away, but I'm already working on a review of #12, should be done by 11:35 today (±1h).",
           "work under way is due one run after it started: \(String(describing: running.0.text))")
     let late = once("late", top, review, queued: CommsQueuedWork(kind: "fix_issue", number: 7, ahead: 9,
                                                                  bays: 1))
-    check(late.0.text == "[Diplomat]: Queued a fix for issue #7, should be done by 02:00 tomorrow (±1h).",
+    check(late.0.text == "[Diplomat]: Ignacy is away, I queued a fix for issue #7, should be done by 02:00 tomorrow (±1h).",
           "a fix waits nine fix runs, so it is due tomorrow: \(String(describing: late.0.text))")
     let inj = CommsDecision(action: .injection, number: 0, summary: "", reason: "hijack",
                             evidence: "review #12 please")
@@ -2552,7 +2558,7 @@ private func replySmoke() throws {
                                              withIntermediateDirectories: true)
     let fullSlack = StubSlack()
     let unrecorded = CommsReplier.reply(CommsReplyRequest(message: top, decision: review, queued: work,
-                                                          away: false, toggles: everything),
+                                                          away: true, toggles: everything),
                                         now: now, dir: full, api: fullSlack.api)
     check(unrecorded.outcome == "failed: the Comms log could not be written, so nothing was sent"
             && fullSlack.posts.isEmpty,
@@ -2795,7 +2801,7 @@ private func severalTargetsSmoke() throws {
     }
     let m = one(tomasz)
     func row(_ n: Int, first: Bool = false, startedAt: Date? = nil, ahead: Int = 0,
-             language: String = "pl", away: Bool = false) -> CommsReplyRequest {
+             language: String = "pl", away: Bool = true) -> CommsReplyRequest {
         var msg = m
         if !first { msg.id += "#\(n)" }
         msg.senderTimezone = "Europe/Warsaw"
@@ -2821,27 +2827,26 @@ private func severalTargetsSmoke() throws {
     check(CommsReplyRequest.merged([row(7), second, row(6, first: true)]).map(\.message.id) == [m.id, second.message.id],
           "two messages stay two, the order they first appear in")
     let pl = say(merged)
-    check(pl.texts == ["[Diplomat]: W kolejce: review #1616, #1652 i #1588, przewidywany koniec: dziś o 13:15 (±1h)."],
+    check(pl.texts == ["[Diplomat]: Ignacy jest teraz offline. W kolejce: review #1616, #1652 i #1588, przewidywany koniec: dziś o 13:15 (±1h)."],
           "one Polish reply names all three, due when the last of them should end, each behind the "
           + "others on one bay: \(pl.texts)")
     check(pl.posts == 1 && pl.ids == [m.id, m.id], "…posted once, logged on the message's own row: \(pl.ids)")
     let en = say(CommsReplyRequest.merged([row(2, language: "en"), row(1, first: true, language: "en")]))
-    check(en.texts == ["[Diplomat]: Queued reviews of #1 and #2, should be done by 12:30 today (±1h)."],
+    check(en.texts == ["[Diplomat]: Ignacy is away, I queued reviews of #1 and #2, should be done by 12:30 today (±1h)."],
           "the same in English: \(en.texts)")
     let unknown = say([row(1, first: true, language: "de")])
-    check(unknown.texts == ["[Diplomat]: Queued a review of #1, should be done by 11:45 today (±1h)."],
+    check(unknown.texts == ["[Diplomat]: Ignacy is away, I queued a review of #1, should be done by 11:45 today (±1h)."],
           "a language the replies do not hold is English: \(unknown.texts)")
     let unmerged = say([row(1588), row(1652), row(1616, first: true)])
     check(unmerged.posts == 1 && unmerged.ids == [m.id, m.id],
           "even requests nobody merged cost one post per message: \(unmerged.posts) posts")
-    let plAway = say([row(1, first: true, away: true)])
-    check(plAway.texts == ["[Diplomat]: Ignacy jest teraz offline. W kolejce: review #1, przewidywany koniec: dziś o 11:45 (±1h)."],
-          "away, in Polish: \(plAway.texts)")
+    check(say(CommsReplyRequest.merged([row(2, away: false), row(1, first: true, away: false)])).posts == 0,
+          "nor while the operator is here")
     let running = say([row(1, first: true, startedAt: now.addingTimeInterval(-600))])
-    check(running.texts == ["[Diplomat]: Już w toku: review #1, przewidywany koniec: dziś o 11:35 (±1h)."],
+    check(running.texts == ["[Diplomat]: Ignacy jest teraz offline. Już w toku: review #1, przewidywany koniec: dziś o 11:35 (±1h)."],
           "under way, in Polish: \(running.texts)")
     let oneRunning = say(CommsReplyRequest.merged([row(2), row(1, first: true, startedAt: now)]))
-    check(oneRunning.texts == ["[Diplomat]: W kolejce: review #1 i #2, przewidywany koniec: dziś o 11:45 (±1h)."],
+    check(oneRunning.texts == ["[Diplomat]: Ignacy jest teraz offline. W kolejce: review #1 i #2, przewidywany koniec: dziś o 11:45 (±1h)."],
           "one of two under way still says queued, and the later estimate: \(oneRunning.texts)")
     let warsaw = "Europe/Warsaw"
     let words = assets.replies.languages["pl"]
@@ -2878,7 +2883,7 @@ private func severalTargetsSmoke() throws {
           "only questions are on until the operator says otherwise")
     let missing = try JSONDecoder().decode(CommsToggles.self, from: Data(#"{"replies":true}"#.utf8))
     check(missing == defaults, "a switch a request leaves out reads as its default")
-    func sent(_ action: CommsAction, _ toggles: CommsToggles, away: Bool = false) -> Int {
+    func sent(_ action: CommsAction, _ toggles: CommsToggles, away: Bool = true) -> Int {
         let d = scratchDir("switch")
         defer { try? FileManager.default.removeItem(at: d) }
         CommsState(me: CommsIdentity(userID: "UME", teamID: "Ours", handle: "h", name: "I")).save(in: d)
@@ -2892,16 +2897,18 @@ private func severalTargetsSmoke() throws {
         return s.posts.count
     }
     check(sent(.review, defaults) == 0 && sent(.fixIssue, defaults) == 0 && sent(.investigate, defaults) == 0
-          && sent(.question, defaults, away: true) == 1,
+          && sent(.question, defaults) == 1,
           "by default a queued review, fix or investigation gets no reply, an away question does")
     check(sent(.review, CommsToggles(replyToReviews: true)) == 1
           && sent(.fixIssue, CommsToggles(replyToReviews: true)) == 0
           && sent(.fixIssue, CommsToggles(replyToFixes: true)) == 1
           && sent(.investigate, CommsToggles(replyToFixes: true)) == 0
           && sent(.investigate, CommsToggles(replyToInvestigations: true)) == 1
-          && sent(.question, CommsToggles(replyToQuestions: false), away: true) == 0,
+          && sent(.question, CommsToggles(replyToQuestions: false)) == 0,
           "each switch moves its own kind and no other")
-    check(sent(.question, defaults, away: false) == 0, "a question while present still waits for the operator")
+    let all = CommsToggles(replyToReviews: true, replyToFixes: true, replyToInvestigations: true)
+    check([CommsAction.question, .review, .fixIssue, .investigate].allSatisfy { sent($0, all, away: false) == 0 },
+          "with every switch on, nothing is replied while the operator is here")
 
     section("comms: the batch sliders")
     check(assets.batchSizes == [1, 2, 4, 8, 16, 32, 64] && assets.batchSize == 8

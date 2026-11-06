@@ -160,16 +160,17 @@ All of them are on the **Comms (Slack)** card.
   full batch is triaged at once.
 - **Batch interval** (**default 30m**) - how old the newest ping of a shorter batch gets before it is
   triaged anyway: one minute to a day, on a logarithmic slider.
-- **Reply in Slack** (**default on**) - whether Comms writes back at all. A reply opens with
-  `[Diplomat]:`, in the language of the message (Polish, English for anything else; an away answer is
+- **Reply in Slack** (**default on**) - whether Comms writes back at all. It only ever does while you
+  are away (see **Away after**); triage and the work it queues never wait for that. A reply opens with
+  `[Diplomat]:`, in the language of the message (Polish, English for anything else; an answer is
   written in the question's own language), only in the
   conversation the message was written in, at most once per message, however many PRs it asked for.
 - **Reply to…** **questions** (**default on**) / **reviews** / **fixes** / **investigations** (**default
-  off**) - which kinds get one. A question is answered while you are away, from the project's
-  documentation, when that settles it plainly. The other three get an estimate of when the work should
-  be done. Off, the work is still queued; only the reply is held.
-- **Away after** (**default 3h**) - how long your session must have been locked before Comms answers
-  questions for you.
+  off**) - which kinds get one. A question is answered from the project's documentation, when that
+  settles it plainly. The other three get an estimate of when the work should be done. Off, the work is
+  still queued; only the reply is held.
+- **Away after** (**default 3h**) - how long your session must have been locked before Comms replies
+  for you. A message that arrives while you are here gets no reply, then or later.
 - **Notify on new pings** (**default on**) - a system notification per new ping, as it lands,
   before its triage.
 - **Triage model** (blank = **`haiku`**) - any model id `claude --model` accepts.

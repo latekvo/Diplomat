@@ -93,6 +93,8 @@ enum CommsTest {
                                author: "ivan", isOpen: true, state: "OPEN"),
             90097: CommsTarget(number: 90097, url: "https://github.com/o/r/pull/90097",
                                author: "ivan", isOpen: true, state: "OPEN"),
+            90089: CommsTarget(number: 90089, url: "https://github.com/o/r/pull/90089",
+                               author: "ivan", isOpen: true, state: "OPEN"),
         ]
         var lookups: [Int] = []
         // Run while a lookup is suspended, as a dispatch elsewhere on the main actor would.
@@ -1182,6 +1184,7 @@ enum CommsTest {
         }
                 func settled() async { await store.commsReplying?.value }
 
+        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
         // Work ahead of it in the queue: the front of the review band is behind band 0.
         store.queuedTasks = [monitorFind("review-req", 90095, "Review-req · #90095 (@dave)"),
                              monitorFind("review-req", 90096, "Review-req · #90096 (@dave)")]
@@ -1207,8 +1210,8 @@ enum CommsTest {
             let eta = CommsReplier.etaText(
                 CommsReplier.eta(work, now: at, assets: try! CoreAssets.comms()),
                 now: at, timezone: nil, roundMins: r?.roundMins ?? 5)
-            return (r?.prefix ?? "") + CommsText.fill(r?.language("en")?.queued ?? "", [
-                "what": "a review of #90090", "eta": eta])
+            return (r?.prefix ?? "") + CommsText.fill(r?.language("en")?.queuedAway ?? "", [
+                "name": "Ignacy", "what": "a review of #90090", "eta": eta])
         }
         let text = post?["message"] as? String ?? ""
         check("…naming the work and when it should be done, counting the \(ahead) tasks ahead "
@@ -1237,7 +1240,7 @@ enum CommsTest {
               slack.posts.count == 2
                 && awayText.hasPrefix("[Diplomat]: Ignacy is away, I queued a fix for issue #90091")
                 && slack.posts.last?["thread_ts"] as? String == fixAway.message.ts)
-        store.commsLockedSince = nil
+        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
         store.commsAwayAfterSecs = 3 * 3600
 
         store.pinAgentRows([run("r9", 90093, "review", "Auto · Review · #90093")])
@@ -1247,8 +1250,17 @@ enum CommsTest {
         let runningText = slack.posts.last?["message"] as? String ?? ""
         check("work already running is acknowledged as under way: \(runningText.debugDescription)",
               outcome(runningAsk) == "already running" && slack.posts.count == 3
-                && runningText.hasPrefix("[Diplomat]: Already working on a review of #90093"))
+                && runningText.hasPrefix("[Diplomat]: Ignacy is away, but I'm already working on a review of #90093"))
         store.pinAgentRows([])
+
+        store.commsLockedSince = nil
+        let presentAsk = ask(.review, 90089)
+        await apply([presentAsk])
+        await settled()
+        check("while the operator is here, a review ping is queued but not answered "
+              + "(\(slack.posts.count) posts)",
+              outcome(presentAsk).hasPrefix("queued") && slack.posts.count == 3
+                && folded(presentAsk)?.replyOutcome == nil)
 
         func tally() -> String { "\(slack.posts.count) posts, asked \(answers.ids)" }
         store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
@@ -1279,7 +1291,6 @@ enum CommsTest {
         check("a banned sender's later ask and question are not answered (\(tally()))",
               slack.posts.count == 3 && answers.ids.isEmpty
                 && outcome(bannedAsk) == Store.commsSenderBannedOutcome)
-        store.commsLockedSince = nil
 
         let merged = ask(.review, 90098)
         await apply([merged])
@@ -1296,7 +1307,6 @@ enum CommsTest {
         check("with Comms switched off, nothing is answered (\(tally()))",
               slack.posts.count == 3 && answers.ids.isEmpty)
         store.commsEnabled = true
-        store.commsLockedSince = nil
 
         // One message asking for several, in Polish, as the tick hands it over.
         let several = inChannel("U0RITA001", "rita",
@@ -1319,7 +1329,7 @@ enum CommsTest {
         let severalText = slack.posts.last?["message"] as? String ?? ""
         check("…one reply naming all three, in the message's language: \(severalText.debugDescription)",
               slack.posts.count == 4
-                && severalText.hasPrefix("[Diplomat]: W kolejce: review #90101, #90102 i #90103, przewidywany koniec: ")
+                && severalText.hasPrefix("[Diplomat]: Ignacy jest teraz offline. W kolejce: review #90101, #90102 i #90103, przewidywany koniec: ")
                 && slack.posts.last?["thread_ts"] as? String == several.message.ts)
         check("…and one more unread ping, not three (\(unreadBefore) -> \(store.commsUnread))",
               store.commsUnread == unreadBefore + 1)
@@ -1353,6 +1363,7 @@ enum CommsTest {
               outcome(offAsk).hasPrefix("queued") && slack.posts.count == 4)
         store.commsReplies = true
 
+        store.commsLockedSince = nil
         let question = ask(.question, 0)
         await apply([question])
         await settled()
@@ -1387,10 +1398,12 @@ enum CommsTest {
         print("     this session reads as locked: \(String(describing: Store.sessionLocked()))")
 
         slack.fail = "channel_not_found"
+        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
         let refusedAsk = ask(.review, 90094)
         let replyLines = feed(Store.commsReplyVerb).count
         await apply([refusedAsk])
         await settled()
+        store.commsLockedSince = nil
         check("a reply Slack refuses is logged as failed, on the ping and in the feed",
               folded(refusedAsk)?.replyOutcome?.hasPrefix("failed:") == true
                 && feed(Store.commsReplyVerb).count == replyLines + 1
