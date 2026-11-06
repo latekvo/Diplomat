@@ -315,6 +315,7 @@ public enum CoreAssets {
         public let historyLimit: Int
         public let excerptChars: Int
         public let commsHoldSecs: Int
+        public let noteChars: Int
     }
 
     // MARK: - Directory resolution

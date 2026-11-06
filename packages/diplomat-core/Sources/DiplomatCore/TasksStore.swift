@@ -14,10 +14,33 @@ public enum TaskEdit: Decodable, Equatable, Sendable {
 
     private enum Key: String, CodingKey { case op, id, title, tags, links, pinnedStatus, url, text }
 
+    private struct AnyKey: CodingKey {
+        var stringValue: String
+        var intValue: Int? { nil }
+        init(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
+    }
+
+    /// Each op's keys besides `op`; any other key is refused, so a misspelled one is not
+    /// silently left out.
+    private static let keys: [String: [Key]] = [
+        "create": [.title, .tags, .links], "update": [.id, .title, .tags, .pinnedStatus],
+        "link": [.id, .url], "unlink": [.id, .url], "note": [.id, .text, .tags, .url],
+        "archive": [.id], "unarchive": [.id],
+    ]
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Key.self)
         let op = try c.decode(String.self, forKey: .op)
         func id() throws -> String { try c.decode(String.self, forKey: .id) }
+        if let allowed = Self.keys[op],
+           let extra = try decoder.container(keyedBy: AnyKey.self).allKeys.map(\.stringValue)
+               .sorted().first(where: { $0 != Key.op.rawValue && !allowed.map(\.rawValue).contains($0) }) {
+            throw DecodingError.dataCorruptedError(
+                forKey: .op, in: c,
+                debugDescription: "unknown key \"\(extra)\" for op \(op) (it takes "
+                    + allowed.map(\.rawValue).joined(separator: ", ") + ")")
+        }
         switch op {
         case "create":
             self = .create(title: try c.decode(String.self, forKey: .title),
@@ -46,7 +69,41 @@ public enum TaskEdit: Decodable, Equatable, Sendable {
 
 public struct TaskError: LocalizedError, Equatable {
     public let message: String
+    /// The task as the edit left it, when the edit itself was saved and only its history
+    /// line was not: repeating the edit would apply it twice.
+    public let saved: TrackedTask?
     public var errorDescription: String? { message }
+
+    init(message: String, saved: TrackedTask? = nil) {
+        self.message = message
+        self.saved = saved
+    }
+
+    /// One line on why JSON did not decode: `not valid JSON (line 3)`,
+    /// `tasks[2].links[0]: missing key url`, `tasks[0].title: Expected to decode String…`.
+    public static func describe(_ error: Error) -> String {
+        guard let error = error as? DecodingError else { return error.localizedDescription }
+        func at(_ path: [CodingKey]) -> String {
+            path.map { $0.intValue.map { "[\($0)]" } ?? ".\($0.stringValue)" }.joined()
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        }
+        func located(_ path: [CodingKey], _ what: String) -> String {
+            path.isEmpty ? what : "\(at(path)): \(what)"
+        }
+        switch error {
+        case .dataCorrupted(let c) where c.codingPath.isEmpty:
+            let detail = ((c.underlyingError as NSError?)?.userInfo["NSDebugDescription"] as? String)
+                ?? c.underlyingError.map { "\($0)" } ?? ""
+            let line = detail.range(of: "line [0-9]+", options: .regularExpression).map { " (\(detail[$0]))" }
+            return "not valid JSON" + (line ?? "")
+        case .dataCorrupted(let c), .typeMismatch(_, let c), .valueNotFound(_, let c):
+            return located(c.codingPath, c.debugDescription)
+        case .keyNotFound(let key, let c):
+            return located(c.codingPath, "missing key \(key.stringValue)")
+        @unknown default:
+            return "\(error)"
+        }
+    }
 }
 
 /// `dir` holds `tasks.json` (`{"tasks": [TrackedTask]}`), `events.jsonl` (the history),
@@ -76,7 +133,7 @@ public enum TaskStore {
         do {
             return try CommsLog.decoder.decode(File.self, from: Data(contentsOf: url)).tasks
         } catch {
-            throw TaskError(message: "\(url.path) does not read: \(error)")
+            throw TaskError(message: "\(url.path): \(TaskError.describe(error))")
         }
     }
 
@@ -125,7 +182,9 @@ public enum TaskStore {
 
     /// Applies `edit` under the lock and returns the task as it now is. Every change to
     /// tags, links, pin or archival also appends a `diplomat` event naming it (`tag:+x`,
-    /// `link:-`, `pinned:done`, `archived`…); a note appends its `note` event.
+    /// `link:-`, `pinned:done`, `archived`…); a note appends its `note` event. A note's
+    /// text over `noteChars` characters (Unicode scalars) is refused. Throws a `TaskError`
+    /// with `saved` set when the edit was saved but its event was not appended.
     @discardableResult
     public static func edit(_ edit: TaskEdit, now: Date = Date(), in dir: URL = dir) throws -> TrackedTask {
         let assets = try CoreAssets.tasks()
@@ -134,13 +193,16 @@ public enum TaskStore {
         guard let task = try PrivateFiles.locked(lockURL(in: dir), { () throws -> TrackedTask in
             let before = try tasks(in: dir)
             var tasks = before
-            let (task, events) = try apply(edit, to: &tasks, now: now, watched: watched)
+            let (task, events) = try apply(edit, to: &tasks, now: now, watched: watched,
+                                           noteChars: assets.noteChars)
             guard tasks == before || save(tasks, in: dir) else {
                 throw TaskError(message: "could not write \(tasksURL(in: dir).path)")
             }
             guard append(events, in: dir, maxBytes: assets.maxLogBytes) else {
-                throw TaskError(message: "the edit was saved, but its history line was not written to "
-                                + eventsURL(in: dir).path)
+                let path = eventsURL(in: dir).path
+                guard tasks != before else { throw TaskError(message: "could not append to \(path)") }
+                throw TaskError(message: "the edit was saved, but its history line was not written to \(path)",
+                                saved: task)
             }
             return task
         }) else { throw TaskError(message: "could not lock \(lockURL(in: dir).path)") }
@@ -148,7 +210,8 @@ public enum TaskStore {
     }
 
     private static func apply(_ edit: TaskEdit, to tasks: inout [TrackedTask], now: Date,
-                              watched: (owner: String, repo: String)) throws -> (TrackedTask, [TaskEvent]) {
+                              watched: (owner: String, repo: String),
+                              noteChars: Int) throws -> (TrackedTask, [TaskEvent]) {
         func event(_ id: String, _ tags: [String], url: String? = nil) -> TaskEvent {
             TaskEvent(at: now, task: id, source: "diplomat", tags: tags, url: url, subject: url)
         }
@@ -218,7 +281,9 @@ public enum TaskStore {
         case let .link(id, raw):
             let i = try index(id)
             let link = try parsed(raw)
-            guard !tasks[i].links.contains(where: { TaskLinks.identity($0.url) == TaskLinks.identity(link.url) }) else {
+            let identity = TaskLinks.identity(link.url)
+            tasks[i].dismissed.removeAll { TaskLinks.identity($0) == identity }
+            guard !tasks[i].links.contains(where: { TaskLinks.identity($0.url) == identity }) else {
                 return (tasks[i], [])
             }
             tasks[i].links.append(TaskLink(url: link.url, kind: link.kind, addedAt: now))
@@ -231,6 +296,9 @@ public enum TaskStore {
                 throw TaskError(message: "task \(id) has no link \(raw)")
             }
             let gone = tasks[i].links.remove(at: j)
+            if !tasks[i].dismissed.contains(where: { TaskLinks.identity($0) == identity }) {
+                tasks[i].dismissed.append(gone.url)
+            }
             return (tasks[i], [event(id, ["link:-"], url: gone.url)])
 
         case let .note(id, text, tags, url):
@@ -240,6 +308,10 @@ public enum TaskStore {
             let link = try url.map { try parsed($0).url }
             guard !(text ?? "").isEmpty || !tags.isEmpty || link != nil else {
                 throw TaskError(message: "a note needs text, tags or a url")
+            }
+            guard (text ?? "").unicodeScalars.count <= noteChars else {
+                throw TaskError(message: "a note's text is at most \(noteChars) characters, not "
+                                + "\(text?.unicodeScalars.count ?? 0)")
             }
             return (tasks[i], [TaskEvent(at: now, task: id, source: "note", tags: tags, url: link,
                                          text: (text ?? "").isEmpty ? nil : text)])
@@ -267,12 +339,23 @@ public enum TaskStore {
     /// All of `events` in one `write(2)`. The caller holds the lock.
     static func append(_ events: [TaskEvent], in dir: URL, maxBytes: Int) -> Bool {
         guard !events.isEmpty else { return true }
+        guard let data = lines(events) else { return false }
+        return PrivateFiles.append(data, to: eventsURL(in: dir), maxBytes: maxBytes)
+    }
+
+    /// `events` as the whole history, via a temp file. The caller holds the lock.
+    static func rewrite(_ events: [TaskEvent], in dir: URL) -> Bool {
+        guard let data = lines(events) else { return false }
+        return PrivateFiles.writeWhole(data, to: eventsURL(in: dir))
+    }
+
+    private static func lines(_ events: [TaskEvent]) -> Data? {
         var data = Data()
         for e in events {
-            guard let line = try? CommsLog.encoder.encode(e) else { return false }
+            guard let line = try? CommsLog.encoder.encode(e) else { return nil }
             data.append(line)
             data.append(UInt8(ascii: "\n"))
         }
-        return PrivateFiles.append(data, to: eventsURL(in: dir), maxBytes: maxBytes)
+        return data
     }
 }

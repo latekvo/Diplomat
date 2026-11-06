@@ -23,7 +23,8 @@ enum PrivateFiles {
 
     /// `O_APPEND`, so another writer's line is never overwritten; `write(2)`, so a full
     /// disk costs the lines instead of aborting the process. Past `maxBytes` the file
-    /// first keeps its newest half, cut at a line boundary. The caller holds the file's
+    /// first keeps the newest whole lines that fit in its newest half, and at least its
+    /// last line however long. The caller holds the file's
     /// lock: a line appended mid-rotation would land in the replaced file. False when
     /// `data` is not all on disk.
     static func append(_ data: Data, to url: URL, maxBytes: Int) -> Bool {
@@ -54,8 +55,12 @@ enum PrivateFiles {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? Int, size > maxBytes,
               let data = try? Data(contentsOf: url) else { return }
-        let mid = data.index(data.startIndex, offsetBy: data.count / 2)
-        guard let nl = data[mid...].firstIndex(of: UInt8(ascii: "\n")) else { return }
-        writeWhole(Data(data[data.index(after: nl)...]), to: url)
+        let nl = UInt8(ascii: "\n"), start = data.startIndex, end = data.endIndex
+        let last = data[start..<(end - 1)].lastIndex(of: nl).map { $0 + 1 } ?? start
+        let half = end - data.count / 2
+        let cut = half > start && data[half - 1] == nl ? half : data[half...].firstIndex(of: nl).map { $0 + 1 } ?? end
+        let keep = min(cut, last)
+        guard keep > start else { return }
+        writeWhole(Data(data[keep...]), to: url)
     }
 }

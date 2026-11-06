@@ -6,13 +6,15 @@ import Foundation
 /// `$DIPLOMAT_COMMS_DIR` and runs `$DIPLOMAT_GH`.
 ///
 ///   tasks-list   [--archived]  stdout = [TaskView] ({task, status, reasons, history,
-///                lastEventAt}), archived tasks too with --archived.
+///                lastEventAt, linkStates}), archived tasks too with --archived.
 ///   tasks-sync   one `TaskSync.run`; stdout = {"ok", "error"?, "events": n}. Exits 0 when
-///                `error` is set: a failed sync is an answer.
+///                `error` is set: a failed sync is an answer, and `ok` with an `error`
+///                names the links it skipped.
 ///   tasks-edit   stdin = a TaskEdit ({"op": "create" | "update" | "link" | "unlink" |
 ///                "note" | "archive" | "unarchive", …}); stdout = the task as it now is.
-///                Exits 1 with the reason on stderr for an unknown op or task, or an edit
-///                that does not apply.
+///                Exits 1 with the reason on stderr for an unknown op, key or task, or an
+///                edit that does not apply. An edit saved without its history line exits
+///                0, printing the task, with the reason on stderr: it is not to be retried.
 enum TasksCommand {
     static func list(_ arguments: [String]) {
         guard arguments.allSatisfy({ $0 == "--archived" }) else {
@@ -41,18 +43,13 @@ enum TasksCommand {
     static func edit(_ input: Data) {
         let edit: TaskEdit
         do { edit = try CommsLog.decoder.decode(TaskEdit.self, from: input) } catch {
-            let why: String
-            switch error as? DecodingError {
-            case .dataCorrupted(let c)?: why = c.debugDescription
-            case .keyNotFound(let key, _)?: why = "no \"\(key.stringValue)\""
-            case .typeMismatch(_, let c)?, .valueNotFound(_, let c)?:
-                why = "\"\(c.codingPath.map(\.stringValue).joined(separator: "."))\": \(c.debugDescription)"
-            default: why = "\(error)"
-            }
-            die("stdin is not a TaskEdit: \(why)", 1)
+            die("stdin is not a TaskEdit: \(TaskError.describe(error))", 1)
         }
         do { emitJSON(try TaskStore.edit(edit)) } catch {
-            die(error.localizedDescription, 1)
+            guard let saved = (error as? TaskError)?.saved else { die(error.localizedDescription, 1) }
+            let warning = "diplomat-core: warning: \(error.localizedDescription)\n"
+            try? FileHandle.standardError.write(contentsOf: Data(warning.utf8))
+            emitJSON(saved)
         }
     }
 

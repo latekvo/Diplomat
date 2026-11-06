@@ -107,9 +107,11 @@ public enum TaskSync {
 
     /// Fetches every GitHub link of every unarchived task (one `gh api graphql` call per
     /// `chunk` of them), then, under the lock, diffs the answers against the mirror
-    /// (`apply`), folds Comms' log (`slack`), appends the events and writes the tasks and
-    /// the mirror. A failed fetch writes nothing. An item GitHub answered with an error of
-    /// its own is left as it was, and the answer is `ok` with `error` naming each such item.
+    /// (`apply`), folds Comms' log (`slack`), drops from the history the Slack events of
+    /// senders on the ban list now (`withoutBanned`), appends the events and writes the
+    /// tasks and the mirror. A failed fetch writes nothing. An item GitHub answered with an
+    /// error of its own is left as it was, and the answer is `ok` with `error` naming each
+    /// such item.
     public static func run(now: Date = Date(), dir: URL = TaskStore.dir,
                            commsDir: URL = CommsLog.dir) async -> Result {
         func failed(_ message: String) -> Result { Result(ok: false, error: message, events: 0) }
@@ -140,6 +142,7 @@ public enum TaskSync {
         }
         let comms = CommsLog.fold(CommsLog.read(in: commsDir))
         let watched = CoreAssets.repoCoordinates()
+        let banned = CommsBan.bannedNow()
 
         PrivateFiles.prepare(dir)
         let lock = TaskStore.lockURL(in: dir)
@@ -150,10 +153,16 @@ public enum TaskSync {
                            excerptChars: assets.excerptChars)
             var mirror = gh.mirror
             let slack = self.slack(tasks: gh.tasks, comms: comms, watermark: mirror.commsWatermark,
-                                   now: now, watched: watched, holdSecs: assets.commsHoldSecs,
-                                   excerptChars: assets.excerptChars)
+                                   handled: mirror.commsHandled, now: now, watched: watched, banned: banned,
+                                   holdSecs: assets.commsHoldSecs, excerptChars: assets.excerptChars)
             mirror.commsWatermark = slack.watermark
+            mirror.commsHandled = slack.handled
             let events = gh.events + slack.events
+            if let kept = withoutBanned(TaskStore.events(in: dir), comms: comms, banned: banned) {
+                guard TaskStore.rewrite(kept, in: dir) else {
+                    return failed("could not rewrite \(TaskStore.eventsURL(in: dir).path)")
+                }
+            }
             // Events first: a write failing past them repeats them on the next sync rather
             // than losing them.
             guard TaskStore.append(events, in: dir, maxBytes: assets.maxLogBytes) else {
@@ -252,8 +261,10 @@ public enum TaskSync {
     /// - per new comment `comment`, `@login`; per new submitted review `review:<state>`, `@login`
     /// - `link:missing` once when GitHub stops having it
     /// A holder's links to it take GitHub's URL, kind and title, and each closing reference
-    /// a holder lacks becomes its link (via `closes`) with a `linked`, `via:closes` event;
-    /// that item is first fetched by the next sync. The mirror keeps only linked items.
+    /// a holder neither holds nor `dismissed` becomes its link (via `closes`) with a
+    /// `linked`, `via:closes` event; that item is first fetched by the next sync. The
+    /// mirror keeps the items some task links, archived ones included, so an archived task
+    /// keeps its status and its unarchiving tells only what changed meanwhile.
     public static func apply(tasks: [TrackedTask], mirror: TaskMirror, fetched: [String: TaskFetch],
                              now: Date, excerptChars: Int)
         -> (tasks: [TrackedTask], mirror: TaskMirror, events: [TaskEvent]) {
@@ -289,7 +300,6 @@ public enum TaskSync {
                 let (snapshot, happened) = diff(old: items[item.url] ?? items[link.url], item,
                                                 now: now, excerptChars: excerptChars)
                 for h in happened { tell(h.tags, at: h.at, url: h.url, subject: item.url, text: h.text) }
-                items[link.url] = nil
                 items[item.url] = snapshot
                 for h in holders {
                     var links: [TaskLink] = []
@@ -303,8 +313,8 @@ public enum TaskSync {
                             links.append(l)
                         }
                     }
-                    for closing in item.closes
-                    where !links.contains(where: { TaskLinks.identity($0.url) == TaskLinks.identity(closing) }) {
+                    let held = Set((links.map(\.url) + tasks[h].dismissed).map(TaskLinks.identity))
+                    for closing in item.closes where !held.contains(TaskLinks.identity(closing)) {
                         links.append(TaskLink(url: closing, kind: item.kind == "pr" ? "issue" : "pr",
                                               addedAt: now, via: "closes"))
                         events.append(TaskEvent(at: now, task: tasks[h].id, source: "github",
@@ -315,7 +325,7 @@ public enum TaskSync {
                 }
             }
         }
-        let linked = Set(tasks.filter { $0.archivedAt == nil }.flatMap(\.links).filter(\.isGitHub).map(\.url))
+        let linked = Set(tasks.flatMap(\.links).filter(\.isGitHub).map(\.url))
         var next = mirror
         next.items = items.filter { linked.contains($0.key) }
         return (tasks, next, events)
@@ -333,12 +343,15 @@ public enum TaskSync {
         let old = old?.state == GitHubSnapshot.missing ? nil : old
         let reviews = item.reviews.filter { $0.state != "PENDING" }
         let seen = Set(old?.seenIDs ?? [])
-        let fresh = (item.comments + reviews).map(\.id).filter { !seen.contains($0) }
         let mergeable = item.mergeable == "UNKNOWN" ? old?.mergeable : item.mergeable
+        // What the fetch window still holds is never evicted: it would be told again.
+        let window = (item.comments + reviews).map(\.id)
+        let inWindow = Set(window)
+        let older = (old?.seenIDs ?? []).filter { !inWindow.contains($0) }
         let snapshot = GitHubSnapshot(kind: item.kind, title: item.title, state: item.state,
                                       isDraft: item.isDraft, reviewDecision: item.reviewDecision,
                                       ci: item.ci, mergeable: mergeable,
-                                      seenIDs: Array(((old?.seenIDs ?? []) + fresh).suffix(GitHubSnapshot.seenLimit)),
+                                      seenIDs: older.suffix(max(0, GitHubSnapshot.seenLimit - window.count)) + window,
                                       updatedAt: now)
         guard let old else {
             return (snapshot, [Happening(at: now, tags: ["linked", "\(item.kind):\(item.state.lowercased())"],
@@ -380,29 +393,38 @@ public enum TaskSync {
         return (snapshot, out)
     }
 
-    /// The Slack half of a sync: the Comms pings logged past `watermark` that name one of a
+    /// The Slack half of a sync: the Comms pings logged from `watermark` on, but for those
+    /// in `handled` (taken by an earlier sync in `watermark`'s second), that name one of a
     /// task's links (a GitHub item by URL, `o/r#n`, or `#n` of `watched`; any other link by
     /// its URL in the text, or a Slack link by being the ping's permalink), one event per
     /// such task: source `slack`, tags `slack`, `@<sender>`, `#<channel>` or `dm`, and
-    /// `triage:<action>`. A banned sender's ping, or one triaged as an injection, is
-    /// skipped. Pings are taken a logged second at a time, oldest first; a second holding a
-    /// matching ping Comms has not triaged yet waits, up to `holdSecs`, and so does every
-    /// later one. With no `watermark` (the first sync), nothing is told and the watermark
-    /// is `now`.
-    public static func slack(tasks: [TrackedTask], comms: [CommsItem], watermark: Date?, now: Date,
-                             watched: (owner: String, repo: String), holdSecs: Int,
-                             excerptChars: Int) -> (events: [TaskEvent], watermark: Date) {
-        guard let watermark else { return ([], now) }
+    /// `triage:<action>`. A ping by one of `banned` (Slack user ids, upper case), or one
+    /// Comms skipped as banned or triaged as an injection, is skipped. Pings are taken a
+    /// logged second at a time, oldest first; a second holding a matching ping Comms has
+    /// not triaged yet waits, up to `holdSecs`, and so does every later one. The answer's
+    /// `watermark` and `handled` are where the next sync starts. With no `watermark` (the
+    /// first sync), nothing is told and the watermark is `now`.
+    public static func slack(tasks: [TrackedTask], comms: [CommsItem], watermark: Date?, handled: [String] = [],
+                             now: Date, watched: (owner: String, repo: String), banned: Set<String> = [],
+                             holdSecs: Int, excerptChars: Int)
+        -> (events: [TaskEvent], watermark: Date, handled: [String]) {
+        guard let watermark else { return ([], now, []) }
         let live = tasks.filter { $0.archivedAt == nil }
-        let pings = comms.filter { !$0.message.isExtraTarget && $0.at > watermark }
-        var mark = watermark
+        let pings = comms.filter { ping in
+            !ping.message.isExtraTarget
+                && (ping.at > watermark || ping.at == watermark && !handled.contains(ping.message.id))
+        }
+        var mark = watermark, taken = handled
         var events: [TaskEvent] = []
         for at in Set(pings.map(\.at)).sorted() {
             let second = pings.filter { $0.at == at }.map { ($0, subjects(of: $0.message, in: live, watched)) }
             if second.contains(where: { !$0.1.isEmpty && $0.0.decision == nil })
                 && now.timeIntervalSince(at) < Double(holdSecs) { break }
+            if at != mark { taken = [] }
             mark = at
+            taken += second.map(\.0.message.id)
             for (ping, subjects) in second {
+                if banned.contains(ping.message.userID.uppercased()) { continue }
                 if let d = ping.decision, d.action == .injection || d.reason.hasPrefix(CommsWatch.bannedPrefix) {
                     continue
                 }
@@ -417,7 +439,16 @@ public enum TaskSync {
                 }
             }
         }
-        return (events, mark)
+        return (events, mark, taken)
+    }
+
+    /// `events` but for the Slack ones whose ping, by its permalink in `comms`, a sender in
+    /// `banned` sent; nil when there are none.
+    static func withoutBanned(_ events: [TaskEvent], comms: [CommsItem], banned: Set<String>) -> [TaskEvent]? {
+        let permalinks = Set(comms.filter { banned.contains($0.message.userID.uppercased()) }.map(\.message.permalink))
+        guard !permalinks.isEmpty else { return nil }
+        let kept = events.filter { $0.source != "slack" || !permalinks.contains($0.url ?? "") }
+        return kept.count == events.count ? nil : kept
     }
 
     /// Per task `message` names, the first of its links it names.
@@ -427,7 +458,8 @@ public enum TaskSync {
         return tasks.compactMap { task in
             task.links.first { link in
                 if let ref = GitHubRef(url: link.url) { return mentioned.contains(ref.key) }
-                return message.permalink == link.url || message.text.contains(link.url)
+                return TaskLinks.identity(message.permalink) == TaskLinks.identity(link.url)
+                    || message.text.contains(link.url)
             }.map { (task.id, $0.url) }
         }
     }
@@ -435,9 +467,8 @@ public enum TaskSync {
     /// Slack's markup as it reads: `<url|label>` -> `label`, `<url>` -> `url`, `<@U1>` ->
     /// `@U1`, `<#C1|name>` -> `#name`.
     static func slackText(_ text: String) -> String {
-        guard let re = try? NSRegularExpression(pattern: "<([^<>|]*)(?:\\|([^<>]*))?>") else { return text }
         var out = "", rest = text.startIndex
-        for m in re.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+        for m in markup.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
             guard let whole = Range(m.range, in: text), let target = Range(m.range(at: 1), in: text) else { continue }
             let label = Range(m.range(at: 2), in: text).map { String(text[$0]) }.flatMap { $0.isEmpty ? nil : $0 }
             let id = String(text[target])
@@ -451,6 +482,8 @@ public enum TaskSync {
         }
         return out + text[rest...]
     }
+
+    private static let markup = try! NSRegularExpression(pattern: "<([^<>|]*)(?:\\|([^<>]*))?>")
 
     /// One line, at most `limit` characters.
     static func excerpt(_ text: String, _ limit: Int) -> String {

@@ -12,9 +12,14 @@ public struct TrackedTask: Codable, Equatable, Sendable {
     public var pinnedStatus: TaskStatus?
     /// Not synced, and left out of `TaskStore.views` unless asked for.
     public var archivedAt: Date?
+    /// The links the operator removed, which a sync's closing reference does not add back;
+    /// linking one again takes it off. Compared by `TaskLinks.identity`; written only when
+    /// not empty.
+    public var dismissed: [String]
 
     public init(id: String, title: String, tags: [String] = [], links: [TaskLink] = [],
-                createdAt: Date, pinnedStatus: TaskStatus? = nil, archivedAt: Date? = nil) {
+                createdAt: Date, pinnedStatus: TaskStatus? = nil, archivedAt: Date? = nil,
+                dismissed: [String] = []) {
         self.id = id
         self.title = title
         self.tags = tags
@@ -22,6 +27,34 @@ public struct TrackedTask: Codable, Equatable, Sendable {
         self.createdAt = createdAt
         self.pinnedStatus = pinnedStatus
         self.archivedAt = archivedAt
+        self.dismissed = dismissed
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, tags, links, createdAt, pinnedStatus, archivedAt, dismissed
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(id: try c.decode(String.self, forKey: .id), title: try c.decode(String.self, forKey: .title),
+                  tags: try c.decode([String].self, forKey: .tags),
+                  links: try c.decode([TaskLink].self, forKey: .links),
+                  createdAt: try c.decode(Date.self, forKey: .createdAt),
+                  pinnedStatus: try c.decodeIfPresent(TaskStatus.self, forKey: .pinnedStatus),
+                  archivedAt: try c.decodeIfPresent(Date.self, forKey: .archivedAt),
+                  dismissed: try c.decodeIfPresent([String].self, forKey: .dismissed) ?? [])
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        try c.encode(tags, forKey: .tags)
+        try c.encode(links, forKey: .links)
+        try c.encode(createdAt, forKey: .createdAt)
+        try c.encodeIfPresent(pinnedStatus, forKey: .pinnedStatus)
+        try c.encodeIfPresent(archivedAt, forKey: .archivedAt)
+        if !dismissed.isEmpty { try c.encode(dismissed, forKey: .dismissed) }
     }
 }
 
@@ -88,7 +121,8 @@ public struct GitHubSnapshot: Codable, Equatable, Sendable {
     public var ci: String?
     /// The last known `MERGEABLE` or `CONFLICTING`; GitHub's transient `UNKNOWN` is not kept.
     public var mergeable: String?
-    /// Comment and review ids already in the history, newest `seenLimit`.
+    /// Comment and review ids already in the history: every id of the last fetch, then
+    /// the newest others, `seenLimit` in all.
     public var seenIDs: [String]
     /// When a sync last wrote it.
     public var updatedAt: Date
@@ -114,14 +148,25 @@ public struct GitHubSnapshot: Codable, Equatable, Sendable {
 }
 
 /// `mirror.json`: every synced item keyed by its link URL, and how far the Slack fold has
-/// read Comms' log (a ping's `at`).
+/// read Comms' log: the `at` of the newest ping it took, and the ids of the pings it took
+/// logged in that same second.
 public struct TaskMirror: Codable, Equatable, Sendable {
     public var items: [String: GitHubSnapshot]
     public var commsWatermark: Date?
+    public var commsHandled: [String]
 
-    public init(items: [String: GitHubSnapshot] = [:], commsWatermark: Date? = nil) {
+    public init(items: [String: GitHubSnapshot] = [:], commsWatermark: Date? = nil,
+                commsHandled: [String] = []) {
         self.items = items
         self.commsWatermark = commsWatermark
+        self.commsHandled = commsHandled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(items: try c.decode([String: GitHubSnapshot].self, forKey: .items),
+                  commsWatermark: try c.decodeIfPresent(Date.self, forKey: .commsWatermark),
+                  commsHandled: try c.decodeIfPresent([String].self, forKey: .commsHandled) ?? [])
     }
 }
 
@@ -149,13 +194,16 @@ public struct TaskView: Codable, Equatable, Sendable {
 
 public enum TaskTags {
     static let maxLength = 64
+    private static let colon = try! NSRegularExpression(pattern: "\\s*:\\s*")
 
     /// Lowercased and trimmed, no whitespace around `:`, other whitespace runs as `-`, at
     /// most `maxLength` characters; empty ones dropped, repeats too, first-seen order kept.
     public static func normalize(_ tags: [String]) -> [String] {
         var out: [String] = []
         for raw in tags {
-            let words = raw.lowercased().replacingOccurrences(of: "\\s*:\\s*", with: ":", options: .regularExpression)
+            let lower = raw.lowercased()
+            let words = colon.stringByReplacingMatches(in: lower, range: NSRange(lower.startIndex..., in: lower),
+                                                       withTemplate: ":")
                 .split(whereSeparator: { $0.isWhitespace })
             let tag = String(words.joined(separator: "-").prefix(maxLength))
             if !tag.isEmpty, !out.contains(tag) { out.append(tag) }
@@ -178,8 +226,7 @@ public struct GitHubRef: Equatable, Hashable, Sendable {
 
     /// Of a canonical link URL (`TaskLinks.parse`'s, or GitHub's own).
     public init?(url: String) {
-        guard let g = TaskLinks.match(url, "^https://github\\.com/\(TaskLinks.name)/\(TaskLinks.name)/(?:pull|issues)/([0-9]+)$"),
-              let n = TaskLinks.number(g[3]) else { return nil }
+        guard let g = TaskLinks.match(url, TaskLinks.canonical), let n = TaskLinks.number(g[3]) else { return nil }
         self.init(owner: g[1], repo: g[2], number: n)
     }
 
@@ -201,23 +248,22 @@ public struct GitHubRef: Equatable, Hashable, Sendable {
 public enum TaskLinks {
     /// What a link field accepts, as its canonical URL and kind; nil for anything else
     /// (including any scheme but http and https):
-    /// - `https://github.com/o/r/pull/12`, `…/issues/12`, with any `#fragment`, deeper path
-    ///   or query dropped -> `pr` / `issue`
+    /// - `https://github.com/o/r/pull/12`, `…/issues/12`, with any `.diff` / `.patch`,
+    ///   `#fragment`, deeper path or query dropped -> `pr` / `issue`
     /// - `o/r#12` -> `issue` until a sync says it is a PR; `#12` -> the same in `watched`
     /// - `https://<workspace>.slack.com/archives/…` -> `slack`
     /// - any other `http(s)://` URL -> `url`
     public static func parse(_ raw: String,
                              watched: (owner: String, repo: String)) -> (url: String, kind: String)? {
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let g = match(s, "^https?://(?:www\\.)?github\\.com/\(name)/\(name)/(pull|issues)/([0-9]+)(?:[/?#]\\S*)?$"),
-           let n = number(g[4]) {
+        if let g = match(s, itemURL), let n = number(g[4]) {
             let kind = g[3].lowercased() == "pull" ? "pr" : "issue"
             return (GitHubRef(owner: g[1], repo: g[2], number: n).url(kind: kind), kind)
         }
-        if let g = match(s, "^\(name)/\(name)#([0-9]+)$"), let n = number(g[3]) {
+        if let g = match(s, fullRef), let n = number(g[3]) {
             return (GitHubRef(owner: g[1], repo: g[2], number: n).url(kind: "issue"), "issue")
         }
-        if let g = match(s, "^#([0-9]+)$"), let n = number(g[1]) {
+        if let g = match(s, bareRef), let n = number(g[1]) {
             return (GitHubRef(owner: watched.owner, repo: watched.repo, number: n).url(kind: "issue"), "issue")
         }
         guard !s.contains(where: { $0.isWhitespace }), let c = URLComponents(string: s),
@@ -227,23 +273,30 @@ public enum TaskLinks {
         return (s, "url")
     }
 
-    /// What two links are the same link by: a GitHub item's `GitHubRef.key`, else the URL.
+    /// What two links are the same link by: a GitHub item's `GitHubRef.key`, else the URL
+    /// with its scheme and host lowercased.
     public static func identity(_ url: String) -> String {
-        GitHubRef(url: url)?.key ?? url
+        if let key = GitHubRef(url: url)?.key { return key }
+        guard let scheme = url.range(of: "://") else { return url }
+        let host = url[scheme.upperBound...].firstIndex(where: { "/?#".contains($0) }) ?? url.endIndex
+        return url[..<host].lowercased() + url[host...]
     }
 
-    /// Every GitHub item `text` names: an item URL, `o/r#n`, or a bare `#n` meaning
-    /// `watched`. A `#n` or `o/r#n` must stand alone: `#12` is not in `#123`, `a#12` or
-    /// `…/r#12`.
+    /// Every GitHub item `text` names: an item URL on github.com, `o/r#n`, or a bare `#n`
+    /// meaning `watched`. A `#n` or `o/r#n` must stand alone: `#12` is not in `#123`,
+    /// `a#12` or `…/r#12`; nor is it in the label of Slack's `<url|label>`, which names
+    /// what its URL does.
     public static func mentions(in text: String, watched: (owner: String, repo: String)) -> Set<String> {
+        let text = slackLabel.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text),
+                                                       withTemplate: "<$1>")
         var keys = Set<String>()
-        for g in matches(text, "github\\.com/\(name)/\(name)/(?:pull|issues)/([0-9]+)(?![0-9])") {
+        for g in matches(text, mentionURL) {
             if let n = number(g[3]) { keys.insert(GitHubRef(owner: g[1], repo: g[2], number: n).key) }
         }
-        for g in matches(text, "(?<![A-Za-z0-9_./-])\(name)/\(name)#([0-9]+)(?![A-Za-z0-9_])") {
+        for g in matches(text, mentionRef) {
             if let n = number(g[3]) { keys.insert(GitHubRef(owner: g[1], repo: g[2], number: n).key) }
         }
-        for g in matches(text, "(?<![A-Za-z0-9_./#-])#([0-9]+)(?![A-Za-z0-9_])") {
+        for g in matches(text, mentionNumber) {
             if let n = number(g[1]) {
                 keys.insert(GitHubRef(owner: watched.owner, repo: watched.repo, number: n).key)
             }
@@ -251,21 +304,36 @@ public enum TaskLinks {
         return keys
     }
 
-    static let name = "([A-Za-z0-9_.-]+)"
+    private static let name = "([A-Za-z0-9_.-]+)"
+
+    // Compiled once: the status of every row is derived on each redraw.
+    private static func regex(_ pattern: String) -> NSRegularExpression {
+        try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    }
+
+    static let canonical = regex("^https://github\\.com/\(name)/\(name)/(?:pull|issues)/([0-9]+)$")
+    private static let itemURL = regex(
+        "^https?://(?:www\\.)?github\\.com/\(name)/\(name)/(pull|issues)/([0-9]+)(?:\\.(?:diff|patch))?(?:[/?#]\\S*)?$")
+    private static let fullRef = regex("^\(name)/\(name)#([0-9]+)$")
+    private static let bareRef = regex("^#([0-9]+)$")
+    private static let mentionURL = regex(
+        "(?<![A-Za-z0-9_./-])(?:https?://)?(?:www\\.)?github\\.com/\(name)/\(name)/(?:pull|issues)/([0-9]+)(?![0-9])")
+    private static let mentionRef = regex("(?<![A-Za-z0-9_./-])\(name)/\(name)#([0-9]+)(?![A-Za-z0-9_])")
+    private static let mentionNumber = regex("(?<![A-Za-z0-9_./#-])#([0-9]+)(?![A-Za-z0-9_])")
+    private static let slackLabel = regex("<([^<>|]*)\\|[^<>]*>")
 
     /// A positive number of ASCII digits that fits an `Int`.
     static func number(_ s: String) -> Int? {
         Int(s).flatMap { $0 > 0 ? $0 : nil }
     }
 
-    /// The capture groups of `pattern`'s first match (0 = the whole match).
-    static func match(_ s: String, _ pattern: String) -> [String]? {
-        matches(s, pattern).first
+    /// The capture groups of `re`'s first match (0 = the whole match).
+    static func match(_ s: String, _ re: NSRegularExpression) -> [String]? {
+        matches(s, re).first
     }
 
-    private static func matches(_ s: String, _ pattern: String) -> [[String]] {
-        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
-        return re.matches(in: s, range: NSRange(s.startIndex..., in: s)).map { m in
+    private static func matches(_ s: String, _ re: NSRegularExpression) -> [[String]] {
+        re.matches(in: s, range: NSRange(s.startIndex..., in: s)).map { m in
             (0..<m.numberOfRanges).map { i in Range(m.range(at: i), in: s).map { String(s[$0]) } ?? "" }
         }
     }
