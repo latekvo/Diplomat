@@ -381,7 +381,7 @@ def stage_opencode_session(prompt_file: str, checkout: str | None = None) -> str
     ``checkout`` is the directory the session works in when it is not
     :func:`repo_path`; see :func:`shell_command`.
     """
-    from . import usagescan
+    from . import promptcore, usagescan
 
     if runner.selected() != runner.OPENCODE or not usagescan.opencode_is_v2():
         return None
@@ -391,7 +391,7 @@ def stage_opencode_session(prompt_file: str, checkout: str | None = None) -> str
             prompt = fh.read()
         bodies = (runner.opencode_session_body(
                       session_id, os.path.realpath(checkout or repo_path()),
-                      runner.model()),
+                      runner.model() or promptcore.opencode_session_model()),
                   runner.opencode_prompt_body(prompt))
         for path, body in zip(runner.opencode_staged(prompt_file), bodies):
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

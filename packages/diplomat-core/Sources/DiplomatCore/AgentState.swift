@@ -78,7 +78,8 @@ public enum AgentState {
         case merged
         /// Positive evidence the agent ended.
         case finished
-        /// Positive evidence the agent never ran at all.
+        /// Positive evidence the agent's work never ran: its command never started, or
+        /// its runner refused the turn.
         case failed
         /// Alive, and its screen shows it back at the prompt.
         case awaitingInput = "awaiting_input"
@@ -256,15 +257,20 @@ public enum AgentState {
     /// Claude Code serves nothing, so its runs are absent from the evidence and are
     /// still read from the screen.
     ///
-    /// Only the one fact, because it is the only one this evidence can carry honestly:
+    /// Only how the turn stands, because that is all this evidence can carry honestly:
     /// an OpenCode run's spend is a sum over its whole transcript and the poll reads one
     /// message. A finished run is priced from its runner's own store instead.
     public struct SessionState: Equatable {
         /// Is a turn in flight? Whichever way its runner says so.
         public var busy: Bool
+        /// Set when the runner says the last turn FAILED (a 2.x session's
+        /// `outcome: "failed"`, e.g. a provider that refused it): what it said went
+        /// wrong, or "" when it said nothing more. nil for a turn that did not fail.
+        public var failure: String?
 
-        public init(busy: Bool) {
+        public init(busy: Bool, failure: String? = nil) {
             self.busy = busy
+            self.failure = failure
         }
     }
 
@@ -463,6 +469,11 @@ public enum AgentState {
         /// it would free nothing, since the next scan re-books the same agent, and a
         /// screen that stays unreadable keeps it `.running` on every pass.
         public var lapsed: Bool = false
+        /// Whether the agent's own runner said its turn was over and went well: a CLI's
+        /// `idle` turn report, or a session that went idle without failing. Every other
+        /// ending (an exit, a gone pid, a released claim, a backstop) is inferred, and
+        /// says nothing about whether the agent finished what it set out to do.
+        public var reported: Bool = false
 
         public var occupying: Bool { AgentState.occupying.contains(state) && !lapsed }
     }
@@ -711,7 +722,9 @@ public enum AgentState {
             return done(.finished, "completion sentinel present")
         }
         if let report = reported(record, evidence), let why = report.verb.overReason {
-            return done(.finished, why)
+            var out = done(.finished, why)
+            out.reported = report.verb == .idle
+            return out
         }
         let out = record.placement == .meshPeer
             ? resolvePeer(record, evidence: evidence, now: now, done: done)
@@ -1038,7 +1051,15 @@ public enum AgentState {
         if let known = evidence.sessions.value, let session = known[record.runID] {
             if session.busy { return done(.running, "\(aliveReason); its session is mid-turn") }
             if record.untracked { return done(.awaitingInput, "\(aliveReason); at the prompt") }
-            return done(.finished, "\(aliveReason); its runner reported the turn over")
+            // A refused turn ends in a second and did none of the work, which is still
+            // owed: `.failed`, so it is neither priced nor read as an answer.
+            if let failure = session.failure {
+                return done(.failed, "\(aliveReason); its runner reported the turn failed"
+                            + (failure.isEmpty ? "" : ": \(failure)"))
+            }
+            var out = done(.finished, "\(aliveReason); its runner reported the turn over")
+            out.reported = true
+            return out
         }
         guard let tails = evidence.tails.value else {
             let why = evidence.tails.reason.isEmpty ? "unavailable" : evidence.tails.reason

@@ -91,17 +91,18 @@ enum MeshBridge {
         return MeshSnapshot.decode(data)
     }
 
-    /// True when a local node appears alive: the snapshot names a live pid. Mirrors
+    /// True when a local node appears alive: the snapshot names a live pid, of a process
+    /// that started before the snapshot was written (`MeshSnapshot.names`). Mirrors
     /// `statefile.node_running` (a suspended laptop resumes with a stale timestamp but a
     /// live pid, so we key on the pid, not freshness).
     static func nodeRunning(_ snap: MeshSnapshot? = nil) -> Bool {
-        let s = snap ?? readState()
-        guard let pid = s?.pid, pid > 0 else { return false }
+        guard let s = snap ?? readState(), let pid = s.pid, pid > 0 else { return false }
         // kill(pid, 0): 0 ⇒ alive & ours; -1/EPERM ⇒ alive but not ours; -1/ESRCH ⇒ gone.
         // pid_t(clamping:) not pid_t(): a corrupt state.json pid > Int32.max would TRAP the
         // plain Int32 conversion; clamping yields an out-of-range pid that kill reports ESRCH.
-        if kill(pid_t(clamping: pid), 0) == 0 { return true }
-        return errno == EPERM
+        let process = pid_t(clamping: pid)
+        guard kill(process, 0) == 0 || errno == EPERM else { return false }
+        return s.names(processStarted: SingleInstance.startDate(process))
     }
 
     // MARK: - node spawn

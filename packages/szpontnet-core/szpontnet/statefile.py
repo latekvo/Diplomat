@@ -24,6 +24,8 @@ Shape::
 from __future__ import annotations
 
 import os
+import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -77,13 +79,50 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _started_at(pid: int) -> float | None:
+    """When a live process started, as a Unix time rounded down; None when it cannot
+    be read. ``/proc`` where there is one, ``ps`` elsewhere (macOS)."""
+    try:
+        # Field 22, counted after the parenthesised command name, which may hold spaces.
+        ticks = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
+        boot = next(int(line.split()[1])
+                    for line in Path("/proc/stat").read_text().splitlines()
+                    if line.startswith("btime "))
+        return boot + ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError, StopIteration):
+        pass
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=5, env={**os.environ, "LC_ALL": "C"})
+        return time.mktime(time.strptime(out.stdout.strip(), "%a %b %d %H:%M:%S %Y"))
+    except (OSError, subprocess.SubprocessError, ValueError, OverflowError):
+        return None
+
+
+def _written_at(state: dict) -> float | None:
+    try:
+        return datetime.fromisoformat(state["updatedAt"]).timestamp()
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
 def node_running(state: dict | None = None) -> bool:
     """True when a local mesh node appears to be alive: the snapshot names a
-    live pid. (Freshness beyond that is the reader's call — a suspended laptop
-    resumes with a stale ``updatedAt`` but a live node that recovers.)"""
+    live pid, of a process that started before the snapshot was written. A pid the
+    OS has handed on since the node died (a crash, a reboot) names a process that
+    started after the node's last write. (Freshness beyond that is the reader's
+    call — a suspended laptop resumes with a stale ``updatedAt`` but a live node
+    that recovers.)
+
+    A snapshot with no readable ``updatedAt``, or a pid whose start time cannot be
+    read, is judged by the pid alone."""
     if state is None:
         state = read_state()
     if not isinstance(state, dict):
         return False  # never run here, or a caller passed a corrupt/non-object snapshot
     pid = state.get("pid")
-    return isinstance(pid, int) and pid > 0 and _pid_alive(pid)
+    if not (isinstance(pid, int) and pid > 0 and _pid_alive(pid)):
+        return False
+    written = _written_at(state)
+    started = _started_at(pid) if written is not None else None
+    return started is None or started <= written

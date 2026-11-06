@@ -8,6 +8,7 @@
                                                         # issues…, conflicts…, audit…
     DIPLOMAT_SELF_UPDATE=1 python -m diplomat_app       # headless 6AM update
     DIPLOMAT_WATCHDOG=1 python -m diplomat_app          # launch the app if it died
+    DIPLOMAT_UPDATE_PROBE=1 python -m diplomat_app      # can those two start? (exit 0)
     DIPLOMAT_AGENTS=1 python -m diplomat_app            # why each agent reads as it does
     DIPLOMAT_COMMS_POLL=1 python -m diplomat_app        # one Slack tick, nothing applied
 """
@@ -27,6 +28,11 @@ def main() -> int:
     if refused:
         sys.stderr.write(refusal(refused))
         return 64  # EX_USAGE
+
+    if env.get("DIPLOMAT_UPDATE_PROBE") == "1":
+        from .selfupdate import run_scheduled, run_watchdog  # noqa: F401
+
+        return 0
 
     if env.get("DIPLOMAT_SELF_UPDATE") == "1":
         from .selfupdate import run_scheduled

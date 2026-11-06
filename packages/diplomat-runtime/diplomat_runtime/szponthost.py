@@ -1,10 +1,11 @@
-"""Diplomat's answers to the six questions a SzpontNet node asks its host.
+"""Diplomat's answers to the six questions a SzpontNet node asks its host, and what
+it does when the node says a job it ran has finished.
 
 The node knows how to find machines and choose one; it does not know that a
 "duty" here means a Claude agent reviewing a pull request, that events belong in
 the applet's activity feed, that an agent might already be up on this PR without
 the mesh having placed it, or how many agents this machine will run at once. This
-module is where all six answers live — the whole of Diplomat inside SzpontNet,
+module is where all of that lives — the whole of Diplomat inside SzpontNet,
 and the only file the library would need replacing to run under something else.
 
 Registered two ways, because the node runs in two places:
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import platform
 import subprocess
+import time
 from pathlib import Path
 
 from szpontnet import host as szpont_host
@@ -150,13 +152,18 @@ class DiplomatHost(szpont_host.Host):
         An unreadable tmux degrades the other way, to "everything is working", so a
         node that cannot see its panes declines work rather than piling it on.
 
+        Automatic work that names no PR (an issue fix, a sweep) is invisible to that
+        scan, so it is counted from the run book the applet writes instead
+        (:func:`autofix.running_unscoped_auto_runs`), against the same dump and screens.
+
         The idle subtraction is taken from the union, entries of ``running_keys``
         included, so it has to be sound about an agent this node started moments ago —
         which is why :func:`autofix.idle_pr_numbers` reads a process's age before its
         screen. A booting agent shows the bare prompt of a finished one, and subtracted
         there it hands back the bay its own dispatch just took.
         """
-        from . import appconfig, autobudget, autofix, core, diskfloor, review, tmuxwatch
+        from . import (agentregistry, appconfig, autobudget, autofix, core, diskfloor,
+                       review, tmuxwatch)
 
         disk = diskfloor.lowest([review.repo_path(), str(Path.home() / ".diplomat")])
         if disk is not None and disk.low:
@@ -175,16 +182,55 @@ class DiplomatHost(szpont_host.Host):
             if ref is not None
         }
         dump = _ps_dump()
+        book = agentregistry.load()
         live = autofix.live_pr_numbers(dump, cfg["owner"], cfg["repo"])
         # `or {}` is the "everything is working" degradation this docstring promises:
         # tmux answering `None` means it could not be read, and no tty then resolves
         # to a tail, so nothing is subtracted as idle.
         tails = tmuxwatch.pane_tails_for_ttys(
             autofix.agent_ttys(dump, cfg["owner"], cfg["repo"])
+            | autofix.unscoped_auto_ttys(book, dump)
         ) or {}
         idle = autofix.idle_pr_numbers(dump, tails, cfg["owner"], cfg["repo"])
         return (autofix.running_auto_tasks(live, mine, set(), idle)
+                + autofix.running_unscoped_auto_runs(book, dump, tails, time.time())
                 >= appconfig.auto_task_limit())
+
+
+    def job_finished(self, work_key: str, started_at: float) -> None:
+        """Check a finished review's review went through GitHub's lifecycle
+        (:mod:`reviewaudit`), and warn in the feed when it did not.
+
+        The node owns the check for every run it placed, here or on a peer: the
+        dispatching applet's gh login cannot see a PENDING review another login
+        left, and the applet on this machine knows the agent only as untracked. The
+        applet checks the runs it spawned itself."""
+        from . import reviewaudit
+        from .activity import log
+        from .models import API
+
+        url = _review_url(work_key)
+        if not url:
+            return
+        label = f"Mesh review · {url.split('/', 3)[3].replace('/pull/', '#')}"
+        try:
+            found = reviewaudit.audit(url, API.fetch_viewer_login(), started_at)
+        except Exception as exc:  # noqa: BLE001 - a check that could not run says so
+            found = [f"could not check its review: {exc}"]
+        for line in found:
+            log("mesh", "warn", f"{label} {line}")
+
+
+def _review_url(work_key: str) -> str:
+    """The PR URL behind a review work key (``autofix.work_key``), "" for any other."""
+    from . import autofix
+
+    kind, _, rest = work_key.partition(":")
+    if kind not in (autofix.WORK_REVIEW_REQ, autofix.WORK_REVIEW_REPLY) \
+            or autofix.parse_work_key(work_key) is None:
+        return ""
+    path, number = rest.rsplit("@", 1)[0].rsplit("#", 1)
+    return f"https://{path}/pull/{number}"
 
 
 def _ps_dump() -> str:

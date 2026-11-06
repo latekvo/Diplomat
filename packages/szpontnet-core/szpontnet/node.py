@@ -44,7 +44,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from .host import at_job_capacity, log, work_already_running
+from .host import at_job_capacity, job_finished, log, work_already_running
 from . import (
     assign, banned, config, crypto, env, identity, irohnet, peercache,
     protocol, spawnjob, statefile, stats, tor, trust, usage, wancache,
@@ -2853,11 +2853,17 @@ class MeshNode:
         actually resolved (a crashed review) — the retry path. A backstop frees the
         key if that signal is ever lost, and a yield (a better peer preempts us)
         stops the watch early. Freeing on node death is the liveness lease, handled
-        elsewhere."""
+        elsewhere.
+
+        A finished agent is reported to the host (:meth:`Host.job_finished`) on a
+        thread of its own, which a node exiting does not wait for."""
+        started = time.time()
         deadline = time.monotonic() + self._agent_max_secs
+        finished = False
         try:
             while time.monotonic() < deadline:
                 if done_path and os.path.exists(done_path):
+                    finished = True
                     break
                 own = self._own_claim(work_key)
                 if own is None or not own.active:
@@ -2868,6 +2874,9 @@ class MeshNode:
             if done_path:
                 self._reclaim_sentinel(done_path)
             self.release(work_key)
+        if finished:
+            threading.Thread(target=job_finished, args=(work_key, started),
+                             name="szpontnet-job-finished", daemon=True).start()
 
     @staticmethod
     def _reclaim_sentinel(done_path: str) -> None:

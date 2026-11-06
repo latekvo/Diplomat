@@ -144,8 +144,8 @@ def opencode_model(pin: str) -> dict:
 
 
 def opencode_session_body(session_id: str, directory: str, pin: str) -> str:
-    """The ``session.create`` body for a 2.x run. Unpinned, the service picks the
-    model itself — its configured ``model``, else the first one available."""
+    """The ``session.create`` body for a 2.x run. With no ``pin``, the service starts
+    on its config's model."""
     body: dict = {"id": session_id, "location": {"directory": directory},
                   "permissions": OPENCODE_ALLOW_ALL}
     if pin:

@@ -573,6 +573,9 @@ public struct MeshWan: Decodable, Equatable {
 public struct MeshSnapshot: Decodable, Equatable {
     /// The node process pid, used for the liveness check.
     public let pid: Int?
+    /// When the node wrote this snapshot (`updatedAt`); nil when unreadable.
+    public var writtenAt: Date? { written.date }
+    private let written: WriteTime
     /// The local control endpoint (127.0.0.1:tcpPort) for edits/dispatch.
     public let tcpPort: Int?
     /// This machine's own node info (`self` in the JSON).
@@ -613,7 +616,7 @@ public struct MeshSnapshot: Decodable, Equatable {
     public let wan: MeshWan?
 
     enum CodingKeys: String, CodingKey {
-        case pid, tcpPort, selfNode = "self", peers, trusted, banned, defaultTrust,
+        case pid, updatedAt, tcpPort, selfNode = "self", peers, trusted, banned, defaultTrust,
              assignments, overrides, claims,
              linking, beaconBlocked, beaconBlockReason, wan
     }
@@ -621,6 +624,8 @@ public struct MeshSnapshot: Decodable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         pid = try? c.decode(Int.self, forKey: .pid)
+        written = WriteTime(date: (try? c.decode(String.self, forKey: .updatedAt))
+            .flatMap(WriteTime.parse))
         tcpPort = try? c.decode(Int.self, forKey: .tcpPort)
         selfNode = try? c.decode(MeshNode.self, forKey: .selfNode)
         peers = (try? c.decode([MeshPeer].self, forKey: .peers)) ?? []
@@ -640,5 +645,30 @@ public struct MeshSnapshot: Decodable, Equatable {
     /// `statefile.read_state`.
     public static func decode(_ data: Data) -> MeshSnapshot? {
         try? JSONDecoder().decode(MeshSnapshot.self, from: data)
+    }
+
+    /// Whether the process now at `pid`, started at `processStarted`, can be the node
+    /// that wrote this snapshot: one started after the write is a process the OS handed
+    /// the pid on to once the node died. Twin of `statefile.node_running`; with either
+    /// time unknown, the pid is all there is to go on.
+    public func names(processStarted: Date?) -> Bool {
+        guard let writtenAt, let processStarted else { return true }
+        return processStarted <= writtenAt
+    }
+
+    /// `updatedAt`, which `==` ignores: it advances on every write (08-state), so a
+    /// snapshot compared with it would always read as changed.
+    private struct WriteTime: Equatable {
+        let date: Date?
+        static func == (_: WriteTime, _: WriteTime) -> Bool { true }
+
+        /// Python's `isoformat()`: microseconds, or none at all when they are zero.
+        static func parse(_ text: String) -> Date? {
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let d = f.date(from: text) { return d }
+            f.formatOptions = [.withInternetDateTime]
+            return f.date(from: text)
+        }
     }
 }

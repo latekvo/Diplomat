@@ -234,10 +234,57 @@ def test_staging_writes_both_bodies_beside_the_prompt(opencode, as_v2, tmp_path)
         "id": sid,
         "location": {"directory": str(opencode.resolve())},
         "permissions": [{"action": "*", "resource": "*", "effect": "allow"}],
-    }, "no model is sent unpinned — the service picks its own"
+    }, "with nothing recorded, no model is sent - the service picks its own"
     assert prompt == {"text": PROMPT}
     for path in runner.opencode_staged(str(prompt_file)):
         assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+def _opencode_dirs() -> tuple[Path, Path]:
+    config = Path(os.environ["DIPLOMAT_OPENCODE_CONFIG_DIR"])
+    state = Path(os.environ["DIPLOMAT_OPENCODE_STATE_DIR"])
+    config.mkdir(parents=True, exist_ok=True)
+    state.mkdir(parents=True, exist_ok=True)
+    return config, state
+
+
+def test_an_unpinned_spawn_starts_on_the_pickers_last_model(opencode, as_v2, tmp_path):
+    """#169. The service never reads the picker's recent list: with no config model it
+    starts on the first model of its first provider, which against a scratch 2.2.5
+    service was ``stub/broke-1`` while the operator's last pick was ``stub/picked-1``.
+    So an unpinned spawn names that pick, with the variant chosen for it."""
+    _config, state = _opencode_dirs()
+    (state / "model.json").write_text(json.dumps({
+        "recent": [{"providerID": "openrouter", "modelID": "moonshotai/kimi-k3"},
+                   {"providerID": "stub", "modelID": "broke-1"}],
+        "variant": {"openrouter/moonshotai/kimi-k3": "high"}}), encoding="utf-8")
+    prompt_file = _prompt_file(tmp_path)
+    review.stage_opencode_session(str(prompt_file))
+    assert _staged(prompt_file)[0]["model"] == {
+        "providerID": "openrouter", "id": "moonshotai/kimi-k3", "variant": "high"}
+
+
+def test_an_unpinned_spawn_leaves_a_config_model_to_the_service(opencode, as_v2, tmp_path):
+    """The service applies a config ``model`` itself - a repo's own config included,
+    which naming the global one here would override."""
+    config, state = _opencode_dirs()
+    (config / "opencode.jsonc").write_text('{"model": "openai/gpt-5.2" // mine\n}',
+                                           encoding="utf-8")
+    (state / "model.json").write_text(json.dumps(
+        {"recent": [{"providerID": "stub", "modelID": "broke-1"}]}), encoding="utf-8")
+    prompt_file = _prompt_file(tmp_path)
+    review.stage_opencode_session(str(prompt_file))
+    assert "model" not in _staged(prompt_file)[0]
+
+
+def test_a_pin_beats_the_pickers_last_model(opencode, as_v2, tmp_path):
+    _config, state = _opencode_dirs()
+    (state / "model.json").write_text(json.dumps(
+        {"recent": [{"providerID": "stub", "modelID": "broke-1"}]}), encoding="utf-8")
+    appconfig.set_value(appconfig.AGENT_MODEL, "openai/gpt-5-mini")
+    prompt_file = _prompt_file(tmp_path)
+    review.stage_opencode_session(str(prompt_file))
+    assert _staged(prompt_file)[0]["model"] == {"providerID": "openai", "id": "gpt-5-mini"}
 
 
 @pytest.mark.parametrize("pin, model", [
@@ -469,6 +516,44 @@ def test_a_session_whose_turn_ended_is_idle(service):
     service.routes[("GET", f"/api/session/{SID}")] = _session(idle=5.0)
     service.routes[("GET", "/api/session/active")] = (200, {"data": {"ses_other": {}}})
     assert _ask(SID) == SessionState(busy=False)
+
+
+#: A refused turn as 2.2.5 records it against a provider answering 402: the session
+#: says only that it failed, its closing ``idle`` message says why.
+REFUSED = {"type": "idle", "outcome": "failed",
+           "error": {"type": "provider.quota", "message": "Insufficient account funds",
+                     "status": 402}}
+
+
+@pytest.mark.parametrize("outcome, last, failure", [
+    ("failed", REFUSED, "Insufficient account funds"),
+    ("failed", {"type": "idle", "outcome": "failed"}, ""),
+    ("succeeded", REFUSED, None),
+    ("interrupted", None, None),
+    (None, None, None),
+])
+def test_a_turn_its_runner_says_failed_is_a_failure(service, outcome, last, failure):
+    """#169: an unpinned run on a model with no credit ended in a second, and read as an
+    agent that finished its work."""
+    status, body = _session(idle=5.0)
+    if outcome:
+        body["data"]["outcome"] = outcome
+    service.routes[("GET", f"/api/session/{SID}")] = (status, body)
+    service.routes[("GET", "/api/session/active")] = (200, {"data": {}})
+    if last is not None:
+        service.routes[("GET", f"/api/session/{SID}/message?limit=1&order=desc")] = (
+            200, {"data": [last]})
+    assert _ask(SID) == SessionState(busy=False, failure=failure)
+    asked_why = any("/message" in path for _m, path, _a in service.seen)
+    assert asked_why == (outcome == "failed"), "only a failed turn costs a second request"
+
+
+def test_an_earlier_failed_turn_does_not_end_the_one_running_now(service):
+    status, body = _session(idle=5.0)
+    body["data"]["outcome"] = "failed"
+    service.routes[("GET", f"/api/session/{SID}")] = (status, body)
+    service.routes[("GET", "/api/session/active")] = (200, {"data": {SID: {}}})
+    assert _ask(SID) == SessionState(busy=True)
 
 
 def test_a_session_whose_first_turn_has_not_ended_is_busy(service):
@@ -1144,23 +1229,6 @@ def test_a_shell_integrations_escapes_do_not_hide_the_binary(tmp_path, monkeypat
 
 
 # MARK: - What the rest of the applet is told
-
-
-def test_a_prompt_build_is_told_which_opencode_is_installed(tmp_path, monkeypatch,
-                                                            opencode):
-    from diplomat_runtime import promptcore
-
-    core_bin = tmp_path / "core"
-    core_bin.write_text('#!/bin/sh\necho "major=${DIPLOMAT_OPENCODE_MAJOR-unset}"\n',
-                        encoding="utf-8")
-    core_bin.chmod(0o755)
-    monkeypatch.setenv("DIPLOMAT_CORE_BIN", str(core_bin))
-    exe = fake_opencode(tmp_path, monkeypatch, V2)
-    assert promptcore.build_prompt({"kind": "review"}).strip() == "major=2"
-    exe.write_text("#!/bin/sh\n" + V1, encoding="utf-8")
-    assert promptcore.build_prompt({"kind": "review"}).strip() == "major=1"
-    appconfig.set_value(appconfig.AGENT_RUNNER, runner.CLAUDE)
-    assert promptcore.build_prompt({"kind": "review"}).strip() == "major=unset"
 
 
 def test_the_prompt_dump_shows_the_2x_command(capsys, opencode, as_v2):

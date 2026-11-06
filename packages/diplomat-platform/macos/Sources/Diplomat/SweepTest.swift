@@ -317,6 +317,22 @@ enum SweepTest {
               gets.filter { $0 == OpenCodeAPI.serviceActivePath }.count == 1
                 && gets.count == 3 && busy?.busy == true && idle?.busy == false)
         gets = []
+        let refusedPass = OpenCodeProbe.ServicePass(
+            find: { OpenCodeAPI.serviceEndpoint(Data(#"{"url": "http://127.0.0.1:1"}"#.utf8)) },
+            get: { _, path in
+                gets.append(path)
+                if path == OpenCodeAPI.serviceActivePath { return ["data": [String: Any]()] }
+                if path.contains("/message") {
+                    return ["data": [["type": "idle", "outcome": "failed",
+                                      "error": ["message": "Insufficient account funds"]]]]
+                }
+                return ["data": ["time": ["idle": 5], "outcome": "failed"]]
+            })
+        check("a turn its runner says failed is read with what it said went wrong",
+              OpenCodeProbe.serviceState(sessionID: "ses_a", pass: refusedPass)
+                == AgentState.SessionState(busy: false, failure: "Insufficient account funds")
+                && gets.last == OpenCodeAPI.serviceLastMessagePath(sessionID: "ses_a"))
+        gets = []
         let hungPass = OpenCodeProbe.ServicePass(
             find: { OpenCodeAPI.serviceEndpoint(Data(#"{"url": "http://127.0.0.1:1"}"#.utf8)) },
             get: { _, path in

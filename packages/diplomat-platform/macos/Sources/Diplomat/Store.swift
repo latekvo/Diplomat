@@ -134,14 +134,7 @@ final class Store: ObservableObject {
         didSet {
             guard !Headless.active else { return }
             AppConfig.set(AppConfig.agentRunnerKey, agentRunner.rawValue)
-            Store.warmOpenCode(agentRunner)
         }
-    }
-    /// Find the OpenCode major off the main actor, where a prompt build then reads it
-    /// (`OpenCodeCLI.knownIsService`) instead of running a shell and the binary.
-    private static func warmOpenCode(_ runner: AgentRunner) {
-        guard runner == .opencode else { return }
-        Task.detached(priority: .utility) { _ = OpenCodeCLI.installedIsService() }
     }
     /// The model the selected runner is pinned to; empty leaves the choice to that
     /// runner's own picker. A model id, never a credential — those live in the
@@ -852,7 +845,6 @@ final class Store: ObservableObject {
         repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
         localRepoPaths = defaults.stringArray(forKey: Keys.localRepoPaths) ?? []
         agentRunner = AppConfig.agentRunner
-        if !Headless.active { Store.warmOpenCode(AppConfig.agentRunner) }
         agentModel = AppConfig.agentModel
         autoTaskLimit = AppConfig.autoTaskLimit
         autoBudgetGate = AppConfig.autoBudgetGate
@@ -1598,7 +1590,7 @@ final class Store: ObservableObject {
         // Only a run whose agent is done: a merge retires one that may still be filling
         // its review. Decided here, while the sentinel `forget` deletes is still there.
         let audited = gone
-            .filter { $0.kind == "review" && !$0.prURL.isEmpty && $0.runsHere
+            .filter { ReviewAudit.checkedOnRetire($0)
                 && (t.states[$0.runID]?.state == .finished || AgentRegistry.finishedAt($0.runID) != nil) }
             .map { (label: $0.label.isEmpty ? $0.runID : $0.label, source: $0.source,
                     url: $0.prURL, since: $0.dispatchedAt) }
@@ -1607,6 +1599,11 @@ final class Store: ObservableObject {
         // disk) is retired again next tick: nothing below may happen to one that stays,
         // or it is logged and priced twice.
         guard bookWritten(AgentRegistry.forget(Set(gone.map(\.runID)))) else { return }
+        let concluded = ReviewReconcile.concluded(gone, verdicts: t.states)
+        if !concluded.isEmpty {
+            saveReviewReqAttempts(ReviewReconcile.conclude(loadReviewReqAttempts(),
+                                                           prs: concluded, at: Date()))
+        }
         // Forgetting deletes every trace a run leaves — record, directory, prompt,
         // handle — so a retirement that was wrong is otherwise just a row that stopped
         // being there. This line is the only thing that says which rung decided.
@@ -2235,7 +2232,7 @@ final class Store: ObservableObject {
         }
         let banned = BanList.read()
         let now = Date()
-        var attempts = loadReviewReqAttempts()   // prNumber -> our attempt record
+        let prior = loadReviewReqAttempts()   // prNumber -> our attempt record
         // An author outside the allowlist is dropped here rather than carried down as a
         // decision the way a ban is, because there is nothing further to say about them:
         // the ledger, the backoff ladder and the "owed" count all describe work this
@@ -2255,39 +2252,44 @@ final class Store: ObservableObject {
                 (AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
                                        prURL: $0.url, headSha: $0.headSha), $0.number)
             }, uniquingKeysWith: { first, _ in first }))
+        var concluded: Set<Int> = []
+        var dispatched: [String: ReviewAttempt] = [:]
         for r in owed {
             let key = String(r.number)
             let stamp = AttemptStamp.reviewRequest(r)
             let decision = ReviewReconcile.decide(
-                prior: attempts[key], stamp: stamp, inFlight: await inFlight(r.number),
+                prior: prior[key], stamp: stamp, inFlight: await inFlight(r.number),
                 banned: BanList.isBanned(r.author, in: banned), now: now)
             switch decision {
             case .skipBanned, .skipInFlight, .skipCoolingDown:
                 continue
+            case .skipConcluded:
+                concluded.insert(r.number)
             case .dispatch(let attemptNumber):
                 // Record the attempt (start the retry backoff) only if an agent actually
                 // launched — a transient spawn failure should retry next tick, not sit out
                 // a 5m–3h cooldown while the review stays unanswered.
                 if await dispatchReviewRequest(r, attemptNumber: attemptNumber) {
-                    attempts[key] = ReviewAttempt(requestedAt: stamp, lastDispatchedAt: now,
-                                                  attempts: attemptNumber)
+                    dispatched[key] = ReviewAttempt(requestedAt: stamp, lastDispatchedAt: now,
+                                                    attempts: attemptNumber)
                 }
             }
         }
-        // Keep each dispatch record until it ages past the backoff ceiling — NOT the moment
-        // the review lands. A force-push dismisses my review (briefly un-owing it) then
-        // re-requests; retaining the record across that flap lets `reRequestCooldown`
-        // recognise the re-request as churn instead of a fresh request. Aged-out records are
-        // dropped so the store can't grow unbounded and a real future re-request is fresh.
-        attempts = attempts.filter {
-            now.timeIntervalSince($0.value.lastDispatchedAt) < ReviewReconcile.retryMaxBackoff
-        }
+        // Onto the records as they stand now, not as this pass read them: the awaits above
+        // let a retirement conclude a request, or the queue record a dispatch, meanwhile.
+        // Aged-out records are dropped so the store can't grow unbounded and a real future
+        // re-request is fresh (`ReviewReconcile.retained`).
+        let attempts = ReviewReconcile.retained(
+            loadReviewReqAttempts().merging(dispatched) { _, new in new },
+            owed: Dictionary(owed.map { (String($0.number), AttemptStamp.reviewRequest($0)) },
+                             uniquingKeysWith: { first, _ in first }),
+            now: now)
         saveReviewReqAttempts(attempts)
         // Reviews still owed with no agent on them AFTER this poll — the ones a freshly
         // spawned agent didn't cover (cooling down between retries, or a spawn that failed).
-        // Excludes banned authors, which we never auto-review.
+        // Excludes banned authors, which we never auto-review, and requests a run concluded.
         var unaddressed = 0
-        for r in owed where !BanList.isBanned(r.author, in: banned) {
+        for r in owed where !BanList.isBanned(r.author, in: banned) && !concluded.contains(r.number) {
             if await !inFlight(r.number) { unaddressed += 1 }
         }
         unaddressedReviews = unaddressed

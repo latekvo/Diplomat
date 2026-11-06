@@ -208,6 +208,15 @@ enum MeshStrayTest {
         name(pid: reusedPid, port: closedPort(), id: "n-a")
         check("a pid the OS handed to another process is left alone",
               await store.stopStrayMeshNode() == .none && reused.isRunning)
+        // Started after the snapshot's last write, that process is no node.
+        let lastWrite = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3600))
+        let recycled = MeshSnapshot.decode(Data(
+            #"{"pid": \#(reusedPid), "updatedAt": "\#(lastWrite)"}"#.utf8))
+        check("a pid handed on after the node's last write reads as no node running",
+              !MeshBridge.nodeRunning(recycled) && reused.isRunning)
+        check("…while one the snapshot is written after still does",
+              MeshBridge.nodeRunning(MeshSnapshot.decode(Data(
+                  #"{"pid": \#(reusedPid), "updatedAt": "\#(ISO8601DateFormatter().string(from: Date().addingTimeInterval(5)))"}"#.utf8))))
 
         guard let b = launch("n-b", in: theirs) else {
             print("  FAIL  the other state dir's stand-in never wrote its state.json")

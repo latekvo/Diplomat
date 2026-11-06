@@ -7,7 +7,8 @@ import Foundation
 /// success from here: a review left PENDING is visible to nobody but me, and findings
 /// posted one at a time each become a review of their own. When a review run retires, the
 /// store reads my reviews on its PR (`assets/graphql/my-reviews`) and logs what `findings`
-/// names. Mirrored by `reviewaudit.py`.
+/// names; when one the mesh placed finishes, the node that ran it does
+/// (`szponthost.DiplomatHost.job_finished`). Mirrored by `reviewaudit.py`.
 public enum ReviewAudit {
     public struct PullRequest: Decodable, Equatable {
         public struct Login: Decodable, Equatable { public let login: String? }
@@ -27,6 +28,15 @@ public enum ReviewAudit {
         public struct Reply: Decodable, Equatable { public let id: String? }
         public let author: Login?
         public let reviews: Reviews?
+    }
+
+    /// Whether the store checks this run's review when it retires: a review run on a PR
+    /// that it spawned itself. Exactly one machine checks each run, and for a run the mesh
+    /// placed that is the node that ran it, whose gh login left the review: the
+    /// dispatcher's cannot see a PENDING one, and the app beside the node knows the agent
+    /// only as untracked.
+    public static func checkedOnRetire(_ r: AgentState.RunRecord) -> Bool {
+        r.kind == "review" && !r.prURL.isEmpty && r.placement == .local
     }
 
     /// What every comment a run posts opens with (`assets/review.json` → `diplomatTag`).
