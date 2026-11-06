@@ -46,6 +46,7 @@ function run(file) {
     const child = spawn(process.execPath, [path.join(__dirname, file)], {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd: path.join(__dirname, '..'),
+      detached: true, // a process group of its own, which a stop below signals whole
     });
     const out = [];
     running.set(file, { child, out });
@@ -63,16 +64,16 @@ function run(file) {
   });
 }
 // A runner stopped from outside (a CI timeout, ^C) starts nothing more, passes the
-// signal on as a process-group signal would, and waits for each test's output: one
+// signal on to each test's process group, and waits for each test's output: one
 // left writing into a closed pipe would die without cleaning up, and its held output
 // is all that says how far it got.
-for (const sig of ['SIGTERM', 'SIGINT']) {
+for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
   process.on(sig, async () => {
     stopped = true;
     queue.length = 0;
     console.log(`\n===== ${sig}: stopping ${[...running.keys()].join(', ') || 'nothing'} =====`);
     const closed = [...running.values()].map(({ child }) => new Promise((r) => child.once('close', r)));
-    for (const { child } of running.values()) child.kill(sig);
+    for (const { child } of running.values()) { try { process.kill(-child.pid, sig); } catch {} }
     await Promise.race([Promise.all(closed), new Promise((r) => setTimeout(r, 10000).unref())]);
     for (const [file, { out }] of running) {
       console.log(`\n===== ${file} did not stop =====`);

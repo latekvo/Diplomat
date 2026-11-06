@@ -692,6 +692,10 @@ def run(what: str, out: str) -> int:
     else:
         _agents_scratch()
         _fixture(store)
+        # The screens shell the allocator's `--check` and a `git fetch` as they are
+        # built, which would overwrite the seeded state with this host's.
+        store.refresh_allocator_install_async = lambda: None
+        store.refresh_update_status_async = lambda: None
 
     # ⬡ is a whole screen only when the add-on is installed, so asking for that
     # render without it is a request for something that does not exist — said
@@ -724,10 +728,6 @@ def run(what: str, out: str) -> int:
     # Also before Panel(): the header's ✉ count is read as it is built.
     if what.startswith("comms"):
         _comms_fixture(store, signed_in=what != "comms-empty")
-
-    # The screens shell `--check` as they are built, overwriting the seeded status.
-    if what.startswith("devices-screen"):
-        store.refresh_allocator_install_async = lambda: None
 
     panel = Panel(store)
     if what == "lookup":
@@ -776,5 +776,6 @@ def run(what: str, out: str) -> int:
     app.processEvents()
     ok = panel.grab().save(out)
     panel.hide()
+    store.wait_for_background()
     print(f"rendered {what} -> {out} ({'ok' if ok else 'FAILED'})")
     return 0 if ok else 1

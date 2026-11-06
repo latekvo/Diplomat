@@ -409,8 +409,11 @@ async function phase8() {
 
 async function phase9() {
   console.log('phase 9: /repaired ends quarantine; repair TTL is a fallback');
-  const d = startDaemon({ DA_REPAIR_TTL_MS: '600' });
+  // A TTL no step here outlasts, so no read can miss a quarantine; a second daemon with
+  // an expired one drives the fallback.
+  const d = startDaemon({ DA_REPAIR_TTL_MS: '3600000' });
   await waitHealth();
+  let ttl;
   try {
     const a = await call('POST', '/request', { ownerPid: ME, platform: 'ios', format: 'tablet' });
     await call('POST', '/broken', { ownerPid: ME, deviceId: a.deviceId, reason: 'test' });
@@ -427,14 +430,22 @@ async function phase9() {
     // TTL fallback: quarantine again, never notify — the reaper returns it.
     const b = await call('POST', '/request', { ownerPid: ME, platform: 'ios', format: 'tablet' });
     await call('POST', '/broken', { ownerPid: ME, deviceId: b.deviceId, reason: 'ttl test' });
+    assert.equal((await stateByKey())[b.key].status, 'repairing');
+    // Not stop(): the quarantine carries over in leases.json.
+    const exited = new Promise((res) => d.once('exit', res));
+    d.kill('SIGTERM');
+    await exited;
+    ttl = startDaemon({ DA_REPAIR_TTL_MS: '1' });
+    await waitHealth();
     let freed = false;
     for (let i = 0; i < 30; i++) {
       if ((await stateByKey())[b.key]?.status !== 'repairing') { freed = true; break; }
       await delay(200);
     }
     assert.ok(freed, 'repair TTL never freed the device');
+    assert.match(fs.readFileSync(path.join(BASE, 'daemon.log'), 'utf8'), new RegExp(`repair TTL expired, returning to pool ${b.key}`));
     pass('an un-notified repair is returned to the pool after the TTL');
-  } finally { await stop(d); await delay(300); }
+  } finally { await stop(ttl ?? d); await delay(300); }
 }
 
 async function phase10() {

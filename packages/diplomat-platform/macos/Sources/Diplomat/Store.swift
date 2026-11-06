@@ -828,9 +828,12 @@ final class Store: ObservableObject {
     }
 
     init() {
-        Store.migrateLegacyDefaultsIfNeeded()
-        Store.migrateTerminalChoiceIfNeeded()
-        MeshBridge.migrateLegacyStateDirIfNeeded()
+        // Each writes the operator's state, which a one-shot mode never does (`persist`).
+        if !Headless.active {
+            Store.migrateLegacyDefaultsIfNeeded()
+            Store.migrateTerminalChoiceIfNeeded()
+            MeshBridge.migrateLegacyStateDirIfNeeded()
+        }
         let defaults = UserDefaults.standard
         usernameOverride = defaults.string(forKey: Keys.usernameOverride) ?? ""
         // SKILL.md + Installer/CLI tools ship hidden (absent key ⇒ default); any
@@ -1748,9 +1751,8 @@ final class Store: ObservableObject {
         guard !completions.isEmpty else { return }
         // Scanning transcripts walks ~/.claude, so it stays off the main actor. The batch
         // is bound to a `let` first because capturing a mutable var in concurrently-
-        // executing code is an error under the Swift 5.10 toolchain the macOS CI job builds
-        // with — 6.x proves the mutation is finished and accepts it, so this only ever
-        // fails away from the machine it was written on.
+        // executing code is an error before Swift 6, which the 5.9 tools version admits
+        // and no CI job builds with, so 6.x accepting it proves nothing.
         let batch = completions
         await Task.detached(priority: .utility) {
             for f in batch {

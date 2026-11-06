@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { killDaemonsUnder, onInterrupt } from './lib/interrupt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -59,6 +60,7 @@ const child = spawn(process.execPath, [MCP], {
     DA_KILL_PID_OVERRIDE: String(supervisor.pid), // the forwarder must NOT kill this
   },
 });
+onInterrupt(() => { child.kill('SIGKILL'); killDaemonsUnder(BASE); });
 
 const pending = new Map();
 let buf = '';
