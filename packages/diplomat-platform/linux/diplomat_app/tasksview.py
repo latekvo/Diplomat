@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -39,18 +40,15 @@ TINT = _GREEN
 STATUS_TINT = {"open": glyphs.MUTED, "in-progress": _BLUE, "in-review": _PURPLE,
                "blocked": _RED, "done": _GREEN, "paused": glyphs.MUTED}
 
-#: The history tags that say what state a linked item is in, by the dot they draw.
-_STATE_TAGS = {
-    "pr:open": "open", "issue:open": "open", "pr:reopened": "open",
-    "issue:reopened": "open", "pr:ready": "open", "pr:draft": "draft",
-    "pr:merged": "merged", "pr:closed": "closed", "issue:closed": "closed",
-    "link:missing": "missing",
-}
+#: `TaskView.linkStates`' values, by the dot they draw.
 STATE_TINT = {"open": _GREEN, "draft": glyphs.MUTED, "merged": _PURPLE, "closed": _RED,
               "missing": _ORANGE}
 
 SOURCE_GLYPH = {"github": glyphs.G_ISSUES, "slack": glyphs.G_COMMS, "note": glyphs.G_NOTE,
                 "diplomat": glyphs.G_APP}
+
+#: An opened history shows this many of the newest events until asked for the rest.
+HISTORY_SHOWN = 12
 
 _GITHUB = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/(?:pull|issues)/([0-9]+)$")
 
@@ -122,33 +120,21 @@ def link_label(url: str, kind: str) -> str:
     return urlparse(url or "").hostname or url
 
 
-def link_state(view: dict, url: str) -> str | None:
-    """The newest state the task's history gives the linked item at ``url``; None when
-    the history holds none."""
-    key = _github_key(url)
-    for event in view.get("history") or []:
-        subject = str(event.get("subject") or "")
-        if subject != url and (key is None or _github_key(subject) != key):
-            continue
-        for tag in event.get("tags") or []:
-            if tag in _STATE_TAGS:
-                return _STATE_TAGS[tag]
-    return None
-
-
 def _when(iso: str | None) -> str:
     when = comms.parse_iso(iso or "")
     return when.astimezone().strftime("%b %d %H:%M") if when else "—"
 
 
 class LinkChip(QFrame):
-    """A linked item: its state dot and label; a click opens it."""
+    """A linked item: its state dot and label; a click opens it, and with ``on_remove``
+    a right-click offers to unlink it too."""
 
     def __init__(self, url: str, label: str, *, state: str | None = None,
-                 title: str | None = None) -> None:
+                 title: str | None = None, on_remove=None) -> None:
         super().__init__()
         self.url = url
         self.state = state
+        self._on_remove = on_remove
         self.setObjectName("linkChip")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet(f"#linkChip {{ background-color: {tint_bg(_BLUE, 0.12)};"
@@ -171,6 +157,16 @@ class LinkChip(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             open_url(self.url)
         super().mouseReleaseEvent(event)
+
+    def context_menu(self) -> QMenu:
+        menu = QMenu(self)
+        menu.addAction("Open", lambda: open_url(self.url))
+        if self._on_remove is not None:
+            menu.addAction("Remove link", lambda: self._on_remove(self.url))
+        return menu
+
+    def contextMenuEvent(self, event) -> None:
+        self.context_menu().exec(event.globalPos())
 
 
 class HistoryRow(QFrame):
@@ -222,10 +218,11 @@ def _tag_tint(tag: str) -> str:
 
 class TaskCard(QFrame):
     """One task: status, title, reasons and tags; its links; its actions; and, opened,
-    its history. Every action is a ``tasks-edit`` through the store."""
+    its history. Every action is a ``tasks-edit`` through the store, whose answer
+    :class:`TasksView` routes back by ``("card", id, from_editor)``."""
 
-    def __init__(self, view: dict, store: Store, *, expanded: bool, on_toggle,
-                 on_editing) -> None:
+    def __init__(self, view: dict, store: Store, *, expanded: bool, full_history: bool,
+                 error: str | None, on_toggle, on_older, on_editing) -> None:
         super().__init__()
         self.view = view
         self.store = store
@@ -234,6 +231,8 @@ class TaskCard(QFrame):
         self._on_toggle = on_toggle
         self._on_editing = on_editing
         self.mode: str | None = None
+        #: A Save sent and not yet answered.
+        self.saving = False
         self.setObjectName("taskCard")
         status = str(view.get("status") or "open")
         archived = bool(self.task.get("archivedAt"))
@@ -266,11 +265,13 @@ class TaskCard(QFrame):
         links = QHBoxLayout()
         links.setSpacing(4)
         self.link_chips: list[LinkChip] = []
+        states = view.get("linkStates") or {}
         for lk in self.task.get("links") or []:
             url, kind = str(lk.get("url", "")), str(lk.get("kind", "url"))
-            chip = LinkChip(url, link_label(url, kind),
-                            state=link_state(view, url) if kind in ("pr", "issue") else None,
-                            title=lk.get("title"))
+            chip = LinkChip(url, link_label(url, kind), state=states.get(url),
+                            title=lk.get("title"),
+                            on_remove=None if archived else lambda u: self.apply(
+                                {"op": "unlink", "id": self.id, "url": u}))
             self.link_chips.append(chip)
             links.addWidget(chip)
         links.addStretch(1)
@@ -319,21 +320,29 @@ class TaskCard(QFrame):
         self.editor.setVisible(False)
         col.addWidget(self.editor)
 
-        self.error = _plain("")
+        self.error = _plain(error or "")
         self.error.setWordWrap(True)
         self.error.setStyleSheet(f"color: {_RED}; font-size: 9px;")
-        self.error.setVisible(False)
+        self.error.setVisible(bool(error))
         col.addWidget(self.error)
 
         self.history_rows: list[HistoryRow] = []
+        self.older_btn: QPushButton | None = None
         if expanded:
             hist = QVBoxLayout()
             hist.setContentsMargins(6, 2, 0, 0)
             hist.setSpacing(2)
-            for event in history:
+            for event in history if full_history else history[:HISTORY_SHOWN]:
                 row = HistoryRow(event, view)
                 self.history_rows.append(row)
                 hist.addWidget(row)
+            if older := len(history) - len(self.history_rows):
+                self.older_btn = QPushButton(f"{older} older…")
+                self.older_btn.setFlat(True)
+                self.older_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.older_btn.setStyleSheet(muted(9, bold=True))
+                self.older_btn.clicked.connect(lambda _=False: on_older(self.id))
+                hist.addWidget(self.older_btn, 0, Qt.AlignmentFlag.AlignLeft)
             if not history:
                 none = QLabel("No history yet.")
                 none.setStyleSheet(muted(9))
@@ -342,7 +351,7 @@ class TaskCard(QFrame):
 
     # MARK: inline editors
 
-    def start(self, mode: str) -> None:
+    def start(self, mode: str, *, focus: bool = True) -> None:
         """Open the one inline editor: a link, a note (text and tags), or the tags."""
         _clear(self.editor_row)
         self.mode = mode
@@ -367,16 +376,42 @@ class TaskCard(QFrame):
         self.editor_row.addWidget(self.save_btn)
         self.editor_row.addWidget(_small_button("Cancel", self.cancel))
         self.editor.setVisible(True)
-        self.error.setVisible(False)
-        next(iter(self.fields.values())).setFocus()
+        if focus:
+            next(iter(self.fields.values())).setFocus()
         self._on_editing(True)
 
-    def cancel(self) -> None:
+    def draft(self) -> dict | None:
+        """The open editor as typed, for the card a rebuild puts in this one's place."""
+        if self.mode is None:
+            return None
+        focused = next((k for k, f in self.fields.items() if f.hasFocus()), None)
+        return {"mode": self.mode, "texts": {k: f.text() for k, f in self.fields.items()},
+                "focus": focused,
+                "cursor": self.fields[focused].cursorPosition() if focused else 0,
+                "saving": self.saving}
+
+    def restore(self, draft: dict) -> None:
+        self.start(draft["mode"], focus=False)
+        for key, text in draft["texts"].items():
+            self.fields[key].setText(text)
+        if draft["focus"]:
+            self.fields[draft["focus"]].setFocus()
+            self.fields[draft["focus"]].setCursorPosition(draft["cursor"])
+        self.saving = draft["saving"]
+        self.save_btn.setEnabled(not self.saving)
+
+    def close_editor(self) -> None:
         self.mode = None
+        self.saving = False
         self.editor.setVisible(False)
+
+    def cancel(self) -> None:
+        self.close_editor()
         self._on_editing(False)
 
     def save(self) -> None:
+        if self.saving:
+            return
         f = {k: v.text() for k, v in self.fields.items()}
         if self.mode == "link":
             op = {"op": "link", "id": self.id, "url": f["url"].strip()}
@@ -385,17 +420,21 @@ class TaskCard(QFrame):
                   "tags": split_tags(f["tags"])}
         else:
             op = {"op": "update", "id": self.id, "tags": split_tags(f["tags"])}
-        self.apply(op)
+        self.saving = True
+        self.save_btn.setEnabled(False)
+        self.apply(op, from_editor=True)
 
-    def apply(self, op: dict) -> bool:
-        """The edit through the CLI; on failure its reason stays on the card."""
-        error = self.store.edit_tracked_task(op)
-        if error:
-            self.error.setText(error)
-            self.error.setVisible(True)
-            return False
-        self.cancel()
-        return True
+    def apply(self, op: dict, *, from_editor: bool = False) -> None:
+        self.error.setVisible(False)
+        self.store.edit_tracked_task_async(op, ("card", self.id, from_editor))
+
+    def refused(self, error: str, *, from_editor: bool) -> None:
+        """Why the edit did not apply, under the editor, which stays open."""
+        self.error.setText(error)
+        self.error.setVisible(True)
+        if from_editor and self.mode is not None:
+            self.saving = False
+            self.save_btn.setEnabled(True)
 
 
 class TasksView(QWidget):
@@ -407,10 +446,16 @@ class TasksView(QWidget):
         self.setStyleSheet("TasksView { background: transparent; }")
         #: Ids of the tasks whose history is open; survive the rebuild every change causes.
         self._expanded: set[str] = set()
-        #: Cards with an inline editor open: a rebuild would drop what is being typed,
-        #: so it waits for the last one to close.
+        #: Ids of the tasks whose whole history is open, not only its newest
+        #: `HISTORY_SHOWN`.
+        self._full_history: set[str] = set()
+        #: Cards with an inline editor open. A change from elsewhere waits for the last
+        #: one to close rather than move the focus under the typing; the screen's own
+        #: actions rebuild at once, each open editor carried over as typed.
         self._editing: set[str] = set()
         self._stale = False
+        #: Why each task's last edit did not apply, until one does.
+        self._errors: dict[str, str] = {}
         self.cards: list[TaskCard] = []
 
         col = QVBoxLayout(self)
@@ -440,6 +485,7 @@ class TasksView(QWidget):
         col.addStretch(1)
 
         store.tracked_tasks_changed.connect(self.rebuild)
+        store.tracked_task_edited.connect(self._edited)
         self.rebuild()
 
     def _build_header(self) -> QHBoxLayout:
@@ -509,19 +555,45 @@ class TasksView(QWidget):
 
     def create(self) -> None:
         links = [ln.strip() for ln in self.new_links.toPlainText().splitlines() if ln.strip()]
-        error = self.store.edit_tracked_task({
+        self.create_btn.setEnabled(False)
+        self.store.edit_tracked_task_async({
             "op": "create", "title": self.new_title.text(),
-            "tags": split_tags(self.new_tags.text()), "links": links})
-        self.new_error.setText(error or "")
-        if error is None:
-            self.new_title.clear()
-            self.new_tags.clear()
-            self.new_links.clear()
-            self.new_host.setVisible(False)
+            "tags": split_tags(self.new_tags.text()), "links": links}, ("new",))
 
     def open(self) -> None:
-        self.store.refresh_tracked_tasks()
-        self.rebuild()
+        """Re-read: an agent may have edited them through the CLI."""
+        self.store.refresh_tracked_tasks_async()
+
+    def _edited(self, origin: object, error: str | None) -> None:
+        """A ``tasks-edit``'s answer, routed to what asked: the form, or a card by its
+        id, since a rebuild may have replaced the card that asked."""
+        if origin == ("new",):
+            self.create_btn.setEnabled(True)
+            self.new_error.setText(error or "")
+            if error is None:
+                self.new_title.clear()
+                self.new_tags.clear()
+                self.new_links.clear()
+                self.new_host.setVisible(False)
+            return
+        if not (isinstance(origin, tuple) and origin[0] == "card"):
+            return
+        _, task_id, from_editor = origin
+        card = self.card(task_id)
+        if error:
+            self._errors[task_id] = error
+            if card is not None:
+                card.refused(error, from_editor=from_editor)
+            return
+        self._errors.pop(task_id, None)
+        if card is not None:
+            # Drawn by the rebuild the edit's own change caused, before this answer.
+            card.error.setVisible(False)
+            if from_editor:
+                card.close_editor()
+                self._editing.discard(task_id)
+        if self._stale:
+            self.rebuild(force=True)
 
     # MARK: rebuild
 
@@ -541,20 +613,24 @@ class TasksView(QWidget):
             parts.append("not synced yet")
         return " · ".join(parts)
 
-    def rebuild(self) -> None:
+    def rebuild(self, *, force: bool = False) -> None:
         st = self.store
         self.status.setText(self._status_text())
         errors = [e for e in (st.tracker_sync_error, st.tracker_list_error) if e]
         self.error_banner.setVisible(bool(errors))
         self.error_banner.setText("\n".join(f"⚠ {e}" for e in errors))
-        self.sync_btn.setEnabled(not st.tracker_syncing)
+        self.sync_btn.setEnabled(not st.tracker_syncing and any(
+            not v["task"].get("archivedAt") for v in st.tracked_tasks))
         self.archived_box.blockSignals(True)
         self.archived_box.setChecked(st.tracker_show_archived)
         self.archived_box.blockSignals(False)
-        if self._editing:
+        if self._editing and not force:
             self._stale = True
             return
         self._stale = False
+        drafts = {c.id: d for c in self.cards if (d := c.draft()) is not None}
+        # Refilled by each restored draft: a card that is gone takes its editor along.
+        self._editing = set()
         _clear(self.list_col)
         self.cards = []
         if not st.tracked_tasks:
@@ -564,16 +640,28 @@ class TasksView(QWidget):
             none.setWordWrap(True)
             self.list_col.addWidget(none)
         for view in st.tracked_tasks:
-            card = TaskCard(view, st, expanded=str(view["task"].get("id")) in self._expanded,
-                            on_toggle=self._toggle_history,
-                            on_editing=lambda on, i=str(view["task"].get("id")):
-                            self._note_editing(i, on))
+            task_id = str(view["task"].get("id"))
+            card = TaskCard(view, st, expanded=task_id in self._expanded,
+                            full_history=task_id in self._full_history,
+                            error=self._errors.get(task_id),
+                            on_toggle=self._toggle_history, on_older=self._show_older,
+                            on_editing=lambda on, i=task_id: self._note_editing(i, on))
             self.cards.append(card)
             self.list_col.addWidget(card)
+            if task_id in drafts:
+                card.restore(drafts[task_id])
 
     def _toggle_history(self, task_id: str) -> None:
-        (self._expanded.discard if task_id in self._expanded else self._expanded.add)(task_id)
-        self.rebuild()
+        if task_id in self._expanded:
+            self._expanded.discard(task_id)
+            self._full_history.discard(task_id)
+        else:
+            self._expanded.add(task_id)
+        self.rebuild(force=True)
+
+    def _show_older(self, task_id: str) -> None:
+        self._full_history.add(task_id)
+        self.rebuild(force=True)
 
     def _note_editing(self, task_id: str, on: bool) -> None:
         (self._editing.add if on else self._editing.discard)(task_id)

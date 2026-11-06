@@ -157,7 +157,7 @@ class DiplomatApp:
         self.tasks_timer.setInterval(int(tasks.sync_secs() * 1000))
         self.tasks_timer.timeout.connect(self.store.run_tracker_sync_async)
         self.tasks_timer.start()
-        self.store.start_background(self._load_tasks, name="tasks-list")
+        self.store.refresh_tracked_tasks_async()
         QTimer.singleShot(12000, self.store.run_tracker_sync_async)
 
         # Resolve identity + first fetch eagerly.
@@ -217,10 +217,6 @@ class DiplomatApp:
     def _load_comms(self) -> None:
         self.store.refresh_comms_feed()
         self.store.comms_changed.emit()
-
-    def _load_tasks(self) -> None:
-        self.store.refresh_tracked_tasks()
-        self.store.tracked_tasks_changed.emit()
 
     # MARK: window
 
