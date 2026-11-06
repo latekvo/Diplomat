@@ -99,6 +99,7 @@ public enum TaskFetch: Equatable, Sendable {
 public enum TaskSync {
     public struct Result: Codable, Equatable, Sendable {
         public var ok: Bool
+        /// Why it failed; with `ok`, the items GitHub refused, which were left as they were.
         public var error: String?
         /// History lines appended.
         public var events: Int
@@ -107,7 +108,8 @@ public enum TaskSync {
     /// Fetches every GitHub link of every unarchived task (one `gh api graphql` call per
     /// `chunk` of them), then, under the lock, diffs the answers against the mirror
     /// (`apply`), folds Comms' log (`slack`), appends the events and writes the tasks and
-    /// the mirror. A failed fetch writes nothing.
+    /// the mirror. A failed fetch writes nothing. An item GitHub answered with an error of
+    /// its own is left as it was, and the answer is `ok` with `error` naming each such item.
     public static func run(now: Date = Date(), dir: URL = TaskStore.dir,
                            commsDir: URL = CommsLog.dir) async -> Result {
         func failed(_ message: String) -> Result { Result(ok: false, error: message, events: 0) }
@@ -125,10 +127,13 @@ public enum TaskSync {
             urls.append(link.url)
         }
         var fetched: [String: TaskFetch] = [:]
+        var skipped: [String] = []
         do {
             for start in stride(from: 0, to: urls.count, by: max(1, assets.chunk)) {
                 let chunk = Array(urls[start..<min(start + max(1, assets.chunk), urls.count)])
-                fetched.merge(try await fetch(chunk, perItem: assets.commentsPerItem)) { $1 }
+                let answer = try await fetch(chunk, perItem: assets.commentsPerItem)
+                fetched.merge(answer.fetched) { $1 }
+                skipped += answer.skipped
             }
         } catch {
             return failed(error.localizedDescription)
@@ -161,7 +166,8 @@ public enum TaskSync {
                   PrivateFiles.writeWhole(data, to: TaskStore.mirrorURL(in: dir)) else {
                 return failed("could not write \(TaskStore.mirrorURL(in: dir).path)")
             }
-            return Result(ok: true, error: nil, events: events.count)
+            return Result(ok: true, error: skipped.isEmpty ? nil : "skipped " + skipped.joined(separator: "; "),
+                          events: events.count)
         }
         return result ?? failed("could not lock \(lock.path)")
     }
@@ -180,7 +186,8 @@ public enum TaskSync {
     }
 
     /// `links` are GitHub link URLs, whose parse cannot fail.
-    private static func fetch(_ links: [String], perItem: Int) async throws -> [String: TaskFetch] {
+    private static func fetch(_ links: [String], perItem: Int) async throws
+        -> (fetched: [String: TaskFetch], skipped: [String]) {
         var args = ["api", "graphql", "-f", "query=\(try query(count: links.count))", "-F", "c=\(perItem)"]
         for (i, ref) in links.compactMap(GitHubRef.init(url:)).enumerated() {
             args += ["-f", "o\(i)=\(ref.owner)", "-f", "r\(i)=\(ref.repo)", "-F", "n\(i)=\(ref.number)"]
@@ -194,27 +201,42 @@ public enum TaskSync {
     }
 
     /// `query`'s answer per link of `links` (the K-th answered by alias `iK`). An item or
-    /// repository GitHub reports `NOT_FOUND` is `missing`; any other GraphQL error, or an
-    /// alias left out, throws.
-    static func items(fromResponse data: Data, links: [String]) throws -> [String: TaskFetch] {
+    /// repository GitHub reports `NOT_FOUND` is `missing`. An item under any other error
+    /// (FORBIDDEN, SAML…) is left out of `fetched` and named in `skipped` as `o/r#n: <message>`.
+    /// An error naming no item, or an alias left out, throws.
+    static func items(fromResponse data: Data, links: [String]) throws
+        -> (fetched: [String: TaskFetch], skipped: [String]) {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let answers = root["data"] as? [String: Any] else {
             throw GHError.graphql(messages: ["the answer holds no data"])
         }
-        let errors = root["errors"] as? [[String: Any]] ?? []
-        let fatal = errors.filter { ($0["type"] as? String) != "NOT_FOUND" }
-        guard fatal.isEmpty else {
-            throw GHError.graphql(messages: fatal.map { $0["message"] as? String ?? "\($0)" })
+        var failed: [Int: String] = [:]
+        var fatal: [String] = []
+        for e in root["errors"] as? [[String: Any]] ?? [] where (e["type"] as? String) != "NOT_FOUND" {
+            let message = e["message"] as? String ?? "\(e)"
+            if let alias = (e["path"] as? [Any])?.first as? String, alias.hasPrefix("i"),
+               let i = Int(alias.dropFirst()), links.indices.contains(i) {
+                failed[i] = failed[i] ?? message
+            } else {
+                fatal.append(message)
+            }
         }
+        guard fatal.isEmpty else { throw GHError.graphql(messages: fatal) }
         var out: [String: TaskFetch] = [:]
+        var skipped: [String] = []
         for (i, link) in links.enumerated() {
+            if let message = failed[i] {
+                let ref = GitHubRef(url: link)
+                skipped.append("\(ref.map { "\($0.owner)/\($0.repo)#\($0.number)" } ?? link): \(message)")
+                continue
+            }
             guard let answer = answers["i\(i)"] else {
                 throw GHError.graphql(messages: ["no answer for \(link)"])
             }
             let node = (answer as? [String: Any])?["issueOrPullRequest"] as? [String: Any]
             out[link] = node.flatMap(TaskItem.init(node:)).map(TaskFetch.found) ?? .missing
         }
-        return out
+        return (out, skipped)
     }
 
     // MARK: - Pure steps
@@ -391,7 +413,7 @@ public enum TaskSync {
                     events.append(TaskEvent(at: Double(m.ts).map { Date(timeIntervalSince1970: $0) } ?? at,
                                             task: task, source: "slack", tags: TaskTags.normalize(tags),
                                             url: m.permalink, subject: subject,
-                                            text: excerpt(m.text, excerptChars)))
+                                            text: excerpt(slackText(m.text), excerptChars)))
                 }
             }
         }
@@ -408,6 +430,26 @@ public enum TaskSync {
                 return message.permalink == link.url || message.text.contains(link.url)
             }.map { (task.id, $0.url) }
         }
+    }
+
+    /// Slack's markup as it reads: `<url|label>` -> `label`, `<url>` -> `url`, `<@U1>` ->
+    /// `@U1`, `<#C1|name>` -> `#name`.
+    static func slackText(_ text: String) -> String {
+        guard let re = try? NSRegularExpression(pattern: "<([^<>|]*)(?:\\|([^<>]*))?>") else { return text }
+        var out = "", rest = text.startIndex
+        for m in re.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let whole = Range(m.range, in: text), let target = Range(m.range(at: 1), in: text) else { continue }
+            let label = Range(m.range(at: 2), in: text).map { String(text[$0]) }.flatMap { $0.isEmpty ? nil : $0 }
+            let id = String(text[target])
+            out += text[rest..<whole.lowerBound]
+            if let sigil = id.first, sigil == "@" || sigil == "#" {
+                out += String(sigil) + (label ?? String(id.dropFirst()))
+            } else {
+                out += label ?? id
+            }
+            rest = whole.upperBound
+        }
+        return out + text[rest...]
     }
 
     /// One line, at most `limit` characters.

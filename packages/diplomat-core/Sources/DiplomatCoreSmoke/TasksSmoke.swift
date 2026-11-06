@@ -157,6 +157,8 @@ func tasksSmoke() async throws {
     check(TaskTags.normalize(["  Area  Devices ", "AREA-devices", "", "  ", "@Alice", String(repeating: "x", count: 80)])
           == ["area-devices", "@alice", String(repeating: "x", count: 64)],
           "lowercased, trimmed, spaces as -, deduped, empties dropped, 64 at most")
+    check(TaskTags.normalize(["Area: Devices", "blocked on : apple", "a :b: c"]) == ["area:devices", "blocked-on:apple", "a:b:c"],
+          "no whitespace around a colon: \(TaskTags.normalize(["Area: Devices", "blocked on : apple", "a :b: c"]))")
 
     section("tasks: first sight")
     let comment = TaskItem.Activity(id: "C1", url: issue(12) + "#issuecomment-1", login: "Alice",
@@ -330,6 +332,14 @@ func tasksSmoke() async throws {
     ], watermark: at(0))
     check(waiting.events.map(\.text) == ["#12 a"] && waiting.watermark == at(1),
           "an untriaged ping holds its whole second and what follows: \(waiting.events.map(\.text))")
+    let markupText = "see <https://github.com/acme/app/pull/12|the PR> and <https://x.io/a>\ncc <@U123> in <#C1|general>, <@U9|bob> <#C2>"
+    func markup(_ chars: Int) -> [String?] {
+        TaskSync.slack(tasks: held, comms: [ping(message(markupText), at: at(2), .none("n"))], watermark: at(1),
+                       now: at(600), watched: watched, holdSecs: 3_600, excerptChars: chars).events.map(\.text)
+    }
+    check(markup(200) == ["see the PR and https://x.io/a cc @U123 in #general, @bob #C2"],
+          "Slack's markup reads as Slack shows it, on one line: \(markup(200))")
+    check(markup(20) == ["see the PR and http…"], "…and is capped after it is rendered: \(markup(20))")
     let late = fold(held, [ping(message("#12 c"), at: at(2), nil)], watermark: at(1), now: at(2 + 3_600))
     check(late.events.map(\.tags) == [["slack", "@alice", "#general"]] && late.watermark == at(2),
           "past holdSecs it is told without a triage")
@@ -403,6 +413,31 @@ private func tasksRunSmoke() async throws {
           && mode(dir.appendingPathComponent("events.jsonl")) == 0o600, "owner-only")
     let again = await TaskSync.run(now: at(120), dir: dir, commsDir: comms)
     check(again.ok && again.error == nil && again.events == 0, "a second sync of the same answer appends nothing: \(again)")
+
+    // An item GitHub refuses on its own (SAML) is left as it was; the rest of the answer lands.
+    let pr7 = "https://github.com/o/r/pull/7"
+    let mirror7 = try CommsLog.encoder.encode(TaskStore.mirror(in: dir).items[pr7])
+    let saml = #"{"type":"FORBIDDEN","path":["i0"],"message":"Resource protected by organization SAML enforcement."}"#
+    func issue8(_ state: String) -> String {
+        #"{"__typename":"Issue","title":"Eight","url":"https://github.com/o/r/issues/8","state":""# + state
+            + #"","closedAt":null,"closedByPullRequestsReferences":{"nodes":[]},"comments":{"nodes":[]}}"#
+    }
+    let lines = TaskStore.events(in: dir).count
+    for (n, state) in ["OPEN", "CLOSED"].enumerated() {
+        try answer(#"{"data":{"i0":null,"i1":{"issueOrPullRequest":"# + issue8(state) + #"}},"errors":["# + saml + "]}",
+                   err: "gh: Resource protected by organization SAML enforcement.", code: 1)
+        let refused = await TaskSync.run(now: at(125 + Double(n)), dir: dir, commsDir: comms)
+        check(refused.ok && refused.events == 1
+              && refused.error == "skipped o/r#7: Resource protected by organization SAML enforcement.",
+              "one refused item fails no sync, and is named: \(refused)")
+    }
+    let told = TaskStore.events(in: dir).dropFirst(lines)
+    check(told.map(\.tags) == [["linked", "issue:open"], ["issue:closed"]]
+          && told.allSatisfy { $0.subject == "https://github.com/o/r/issues/8" },
+          "the item beside it syncs: \(told.map(\.tags))")
+    check(try CommsLog.encoder.encode(TaskStore.mirror(in: dir).items[pr7]) == mirror7
+          && TaskStore.tasks(in: dir)[0].links[0] == synced[0].links[0],
+          "the refused item's mirror entry and link are untouched")
 
     // A ping naming the task, logged where Comms logs it.
     let m = message("o/r#7 is ready?", ts: "1762000300.000001")

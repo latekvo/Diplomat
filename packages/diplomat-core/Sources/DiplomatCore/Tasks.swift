@@ -138,12 +138,13 @@ public struct TaskView: Codable, Equatable, Sendable {
 public enum TaskTags {
     static let maxLength = 64
 
-    /// Lowercased and trimmed, whitespace runs as `-`, at most `maxLength` characters;
-    /// empty ones dropped, repeats too, first-seen order kept.
+    /// Lowercased and trimmed, no whitespace around `:`, other whitespace runs as `-`, at
+    /// most `maxLength` characters; empty ones dropped, repeats too, first-seen order kept.
     public static func normalize(_ tags: [String]) -> [String] {
         var out: [String] = []
         for raw in tags {
-            let words = raw.lowercased().split(whereSeparator: { $0.isWhitespace })
+            let words = raw.lowercased().replacingOccurrences(of: "\\s*:\\s*", with: ":", options: .regularExpression)
+                .split(whereSeparator: { $0.isWhitespace })
             let tag = String(words.joined(separator: "-").prefix(maxLength))
             if !tag.isEmpty, !out.contains(tag) { out.append(tag) }
         }
