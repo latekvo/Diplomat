@@ -99,7 +99,8 @@ enum AutoBudget {
         return known.allSatisfy { $0 > 0 }
     }
 
-    /// The ledger, summarized the way the Telemetry screen summarizes it.
+    /// The ledger, summarized the way the Telemetry screen summarizes it, with its
+    /// money priced from `usdRunner`'s bills alone.
     ///
     /// The screen's DEFAULT lookback, not its longest and not whatever range the
     /// operator last flipped it to: the gate is a background decision, and the one
@@ -107,13 +108,14 @@ enum AutoBudget {
     /// the figure it was priced from. `steps`/`binCount`/`bucketHours` are floors —
     /// the series, the histogram and the finished-work buckets are the screen's, and
     /// only the weekly distribution's moments are read here.
-    private static func summary() -> (Telemetry.Summary, Int)? {
+    private static func summary(usdRunner: String = "") -> (Telemetry.Summary, Int)? {
         guard let model = try? CoreAssets.telemetry() else { return nil }
         let days = Double(model.defaultRangeDays)
         return (Telemetry.summarize(TelemetryLog.load(),
                                     now: Date().timeIntervalSince1970,
                                     days: days, steps: 2, binCount: 1,
-                                    z: model.confidence.z, bucketHours: 24 * days),
+                                    z: model.confidence.z, bucketHours: 24 * days,
+                                    usdRunner: usdRunner),
                 model.minSample)
     }
 
@@ -152,21 +154,23 @@ enum AutoBudget {
     /// equally: it is the ceiling that refills on its own, and naming it tells the
     /// operator to wait rather than to go and top the account up.
     ///
-    /// **A ledger with no billed task at all decides nothing.** The reserve exists to
-    /// hold work back while a machine that spends money has not yet been measured, and
-    /// applying it to a machine that spends none — a runner pointed at a local model,
-    /// or one Diplomat cannot price — would hold that machine's work against an account
-    /// it never draws on, purely because a key for that account is on disk. So the
-    /// standing reserve engages only once something has actually been charged here;
-    /// before that this is the same fail-open a silent probe gets, and the task cap is
-    /// still in front of it.
+    /// **A ledger with no task billed under the selected runner decides nothing.** The
+    /// reserve exists to hold work back while a machine that spends money has not yet
+    /// been measured, and applying it to a machine that spends none — a runner pointed
+    /// at a local model, or one Diplomat cannot price — would hold that machine's work
+    /// against an account it never draws on, purely because a key for that account is
+    /// on disk, or because another runner was billed here before. So the standing
+    /// reserve engages only once this runner has actually been charged here; before
+    /// that this is the same fail-open a silent probe gets, and the task cap is still
+    /// in front of it.
     private static func decideMoney() -> AgentDispatchGate.Budget {
         let unbilled = AgentDispatchGate.Budget(affordable: true,
                                                 unit: AgentDispatchGate.unitUsd)
         // A ledger that will not parse cannot show the evidence the reserve needs
         // either, so it lands where an unbilled machine does rather than on a floor it
         // was never shown to owe.
-        guard let (s, minSample) = summary(), s.perTaskUsd.count > 0 else { return unbilled }
+        guard let (s, minSample) = summary(usdRunner: AppConfig.agentRunner.rawValue),
+              s.perTaskUsd.count > 0 else { return unbilled }
         let d = s.perTaskUsd
         let cost = AgentDispatchGate.taskCostBound(
             mean: d.mean, sd: d.sd, count: d.count,

@@ -1779,6 +1779,9 @@ final class Store: ObservableObject {
                     tokens = UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at,
                                                   endedAt: f.done)
                 }
+                // Nothing spent: its agent never answered, so it finished nothing and
+                // its entry stays open. Twin of `telemetry.record_completion`.
+                if tokens == 0, (usd ?? 0) <= 0 { continue }
                 TelemetryLog.done(key: f.key, at: f.done, tokens: tokens,
                                   runner: f.runner, usd: usd, model: model)
             }

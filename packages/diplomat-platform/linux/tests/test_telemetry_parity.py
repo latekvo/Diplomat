@@ -325,9 +325,9 @@ def _ledger_lines() -> list[str]:
     return lines
 
 
-def _swift(lines: list[str]) -> dict:
+def _swift(lines: list[str], usd_runner: str = "") -> dict:
     payload = {"now": NOW, "days": DAYS, "steps": STEPS, "bins": BINS, "z": Z,
-               "bucketHours": BUCKET_HOURS, "lines": lines}
+               "bucketHours": BUCKET_HOURS, "usdRunner": usd_runner, "lines": lines}
     proc = subprocess.run(
         [CORE_BIN, "telemetry"],
         input=json.dumps(payload).encode("utf-8"),
@@ -339,10 +339,11 @@ def _swift(lines: list[str]) -> dict:
     return json.loads(proc.stdout)
 
 
-def _python(lines: list[str]) -> dict:
+def _python(lines: list[str], usd_runner: str = "") -> dict:
     ledger = telemetry.fold(lines)
     summary = telemetry.summarize(ledger, now=NOW, days=DAYS, steps=STEPS,
-                                  bin_count=BINS, z=Z, bucket_hours=BUCKET_HOURS)
+                                  bin_count=BINS, z=Z, bucket_hours=BUCKET_HOURS,
+                                  usd_runner=usd_runner)
     return json.loads(json.dumps(telemetry.parity_payload(ledger, summary)))
 
 
@@ -534,6 +535,27 @@ def test_the_money_distribution_is_one_models_local_runs(both):
     # third of this; the remote one would double it.
     assert 4.5 < p["perTaskUsd"]["mean"] < 5.3
     assert p["format"]["usdMean"].startswith("$4."), p["format"]["usdMean"]
+
+
+def test_the_money_distribution_is_the_named_runners_alone():
+    """The money gate prices the selected runner from its own bills. An OpenCode run
+    billed after every Hermes one is the newest model, so a side that ignores the
+    runner prices Hermes from it — and prices OpenCode from Hermes's history once the
+    OpenCode run is gone."""
+    lines = _ledger_lines() + [
+        json.dumps({"at": NOW - DAY, "ev": "started", "key": "review:h/o/r#81@oc",
+                    "remote": False, "attempt": 1}),
+        json.dumps({"at": NOW - DAY + 600, "ev": "done", "key": "review:h/o/r#81@oc",
+                    "tokens": 1000.0, "runner": "opencode", "usd": 0.02,
+                    "model": "openai/gpt-6"}),
+    ]
+    for runner, model, count in (("hermes", "anthropic/claude-opus-5", 5),
+                                 ("opencode", "openai/gpt-6", 1),
+                                 ("", "openai/gpt-6", 1)):
+        swift, python = _swift(lines, runner), _python(lines, runner)
+        assert python == swift, runner
+        assert (swift["perTaskUsdModel"], swift["perTaskUsd"]["count"]) == (model, count)
+    assert _swift(_ledger_lines(), "opencode")["perTaskUsd"]["count"] == 0
 
 
 def test_a_retry_does_not_move_the_measured_wait(both):

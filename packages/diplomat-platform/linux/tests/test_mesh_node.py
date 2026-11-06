@@ -859,7 +859,7 @@ def test_auto_token_state_reflects_real_usage(fleet):
     now_iso = datetime.now(timezone.utc).isoformat()
     (proj / "s.jsonl").write_text(json.dumps({
         "timestamp": now_iso,
-        "message": {"usage": {"input_tokens": 20_000_000, "output_tokens": 0,
+        "message": {"usage": {"input_tokens": 400_000_000, "output_tokens": 0,
                               "cache_creation_input_tokens": 0}},
     }) + "\n")
 
@@ -872,7 +872,7 @@ def test_auto_token_state_reflects_real_usage(fleet):
     me = _wait_for(_self_when_out,
                    what="auto token state to read 'out' from real usage")
     assert me["tokensAuto"] is True        # derived, not pinned
-    assert me["tokens"] == "out"           # 20M > 10M ceiling
+    assert me["tokens"] == "out"           # 400M > 5 × 75M ceiling
     assert me["tokensPct"] == 0.0
     # Heuristic fallback (probe disabled in fleets) never advertises the real
     # per-window percentages — the UIs then mark the estimate with '≈'.

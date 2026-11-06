@@ -65,8 +65,8 @@ override is `"auto"`); these constants set the heuristic ceiling it's measured a
 
 | Constant | Value | Meaning |
 |----------|-------|---------|
-| `accounts.tokensPerWeight` | `2000000` | tokens per unit of plan weight over the window - the per-plan ceiling is `plan.weight × this`. |
-| `accounts.usageWindowHours` | `5.0` | trailing window over which local token consumption is summed. |
+| `accounts.tokensPerWeight` | `75000000` | tokens per unit of plan weight over the window - the per-plan ceiling is `plan.weight × this`. |
+| `accounts.usageWindowHours` | `168.0` | trailing window over which local token consumption is summed - the 7-day week the usage probe reads. |
 | `accounts.lowThreshold` | `0.34` | remaining-fraction boundary below which the state drops to `low` (`≤ 0` → `out`). |
 
 ## Trust (v1 vocabulary)
