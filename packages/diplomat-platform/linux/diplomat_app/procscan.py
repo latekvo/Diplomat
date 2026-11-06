@@ -1,7 +1,7 @@
-"""Process identification and newest-wins reaping, for the tray.
+"""Process identification and newest-wins reaping, for the GUI.
 
 :mod:`diplomat_app.singleton` enforces "newest wins" over the applet: on startup,
-find every *other* live tray of this uid and terminate it. Reading a pid's argv,
+find every *other* live GUI instance of this uid and terminate it. Reading a pid's argv,
 walking ``/proc`` restricted to this uid, and the SIGTERM/grace/SIGKILL escalation
 are that guarantee's machinery, and the half that decides which process receives a
 signal.

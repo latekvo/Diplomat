@@ -26,31 +26,70 @@ import Foundation
 /// mesh routes to a peer is assembled here and shipped as finished text, so it names
 /// the model of the machine that assembled it rather than the one that runs it.
 ///
-/// Resolved per prompt build, never cached: a wizard's config is rebuilt on every
-/// redraw, and a spawn is the one moment where the extra directory listing is both
-/// affordable and worth being current for.
+/// Resolved per prompt build, except what Claude Code last ran: walking its transcripts
+/// takes a second or more on a machine with thousands, and every queued task's prompt is
+/// rebuilt on every monitor poll, so `detected()` remembers that answer for
+/// `claudeRunMemoAge`. The poll reads it afresh off the main thread first
+/// (`detectedAfresh()`), and the builds after it answer from memory.
 public enum AgentModel {
 
     // MARK: - The name that goes in the tag
 
     /// The model named in the tag for a spawn started here, or "" when nothing on this
     /// machine says which one that is.
-    public static func detected() -> String {
+    public static func detected() -> String { detected(afresh: false) }
+
+    /// `detected()` with Claude Code's transcripts read now, for a caller off the main
+    /// thread ahead of prompt builds that will then answer from what it read.
+    @discardableResult
+    public static func detectedAfresh() -> String { detected(afresh: true) }
+
+    private static func detected(afresh: Bool) -> String {
         detect(configFile: configURL(), claudeHome: claudeHomeURL(), hermesConfig: hermesConfigURL(),
-               openCodeConfig: openCodeConfigURL(), openCodeState: openCodeStateURL())
+               openCodeConfig: openCodeConfigURL(), openCodeState: openCodeStateURL(),
+               claudeCodeModel: { rememberedClaudeCodeModel(home: $0, afresh: afresh) })
+    }
+
+    /// How long `detected()` trusts what it last read out of Claude Code's transcripts.
+    /// Longer than the monitor poll, which re-reads them, so a prompt build on the main
+    /// thread never has to.
+    public static let claudeRunMemoAge: TimeInterval = 300
+
+    private static let memoLock = NSLock()
+    private static var memo: (home: String, model: String, at: TimeInterval)?
+
+    private static func rememberedClaudeCodeModel(home: URL, afresh: Bool) -> String {
+        let now = ProcessInfo.processInfo.systemUptime
+        memoLock.lock()
+        let last = memo
+        memoLock.unlock()
+        if !afresh, let last, last.home == home.path, now - last.at < claudeRunMemoAge { return last.model }
+        let model = claudeCodeModel(home: home)
+        memoLock.lock()
+        memo = (home.path, model, now)
+        memoLock.unlock()
+        return model
     }
 
     /// `detected()` against explicit locations, so the smoke test can drive the whole
     /// lookup over a fixture instead of over the developer's own machine.
     public static func detect(configFile: URL, claudeHome: URL, hermesConfig: URL,
                               openCodeConfig: URL, openCodeState: URL) -> String {
+        detect(configFile: configFile, claudeHome: claudeHome, hermesConfig: hermesConfig,
+               openCodeConfig: openCodeConfig, openCodeState: openCodeState,
+               claudeCodeModel: claudeCodeModel(home:))
+    }
+
+    private static func detect(configFile: URL, claudeHome: URL, hermesConfig: URL,
+                               openCodeConfig: URL, openCodeState: URL,
+                               claudeCodeModel: (URL) -> String) -> String {
         let cfg = readJSONObject(configFile)
         // Same two keys as `AppConfig` (macOS) and the runtime's `appconfig.py` write.
         let runner = AgentRunner.from(cfg["agentRunner"] as? String ?? "")
         let pinned = (cfg["agentModel"] as? String ?? "")
         // The Claude runner ignores that field (`AgentRunner.agentCommand` passes it no
         // model flag), so a pin left over from OpenCode must not be claimed here.
-        if runner == .claude { return displayName(claudeCodeModel(home: claudeHome)) }
+        if runner == .claude { return displayName(claudeCodeModel(claudeHome)) }
         guard pinned.isEmpty else { return displayName(pinned) }
         return displayName(foreignRunnerModel(runner, hermesConfig: hermesConfig,
                                               openCodeConfig: openCodeConfig,

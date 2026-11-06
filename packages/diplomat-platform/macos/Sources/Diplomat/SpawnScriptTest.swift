@@ -265,7 +265,8 @@ enum SpawnScriptTest {
               AgentSpawner.tokenExport(keychainItem: "") == nil)
         check("the item is read by `security`, and an empty answer refused",
               AgentSpawner.tokenExport(keychainItem: "diplomat-agent-gh")
-                == "GH_TOKEN=$(security find-generic-password -s 'diplomat-agent-gh' -w) "
+                == "GH_TOKEN=$(security find-generic-password -s 'diplomat-agent-gh' -w "
+                + "| tr -d '\\000[:space:]') "
                 + "&& [ -n \"$GH_TOKEN\" ] && export GH_TOKEN GIT_CONFIG_COUNT=2 "
                 + "GIT_CONFIG_KEY_0=credential.https://github.com.helper GIT_CONFIG_VALUE_0= "
                 + "GIT_CONFIG_KEY_1=credential.https://github.com.helper "
@@ -342,6 +343,12 @@ enum SpawnScriptTest {
               FileManager.default.fileExists(atPath: gitSeen.path))
         stub("security", "printf ''")
         check("an empty item starts nothing", runGated(item: "diplomat-agent-gh").seen == nil)
+        stub("security", "printf ' %s \\r\\n' '\(dummy)'")
+        check("whitespace around the secret is not part of the token",
+              runGated(item: "diplomat-agent-gh").seen == dummy)
+        stub("security", "printf ' \\t\\r\\n'")
+        check("a whitespace-only item starts nothing",
+              runGated(item: "diplomat-agent-gh").seen == nil)
         // What `spawn` asks before any window: the same answers, from this process.
         check("an item the Keychain does not hold is unreadable",
               !AgentSpawner.tokenReadable(keychainItem: "diplomat-selftest-\(UUID().uuidString)"))
@@ -354,6 +361,12 @@ enum SpawnScriptTest {
         stub("security", "printf '\\n'")
         check("an item holding an empty secret is unreadable",
               !AgentSpawner.tokenReadable(keychainItem: "diplomat-agent-gh"))
+        stub("security", "printf ' \\t\\r\\n'")
+        check("an item holding only whitespace is unreadable",
+              !AgentSpawner.tokenReadable(keychainItem: "diplomat-agent-gh"))
+        stub("security", "printf ' %s \\r\\n' '\(dummy)'")
+        check("an item holding a padded token is readable",
+              AgentSpawner.tokenReadable(keychainItem: "diplomat-agent-gh"))
         setenv("PATH", path, 1)
         check("…and refusing it names the item",
               AgentSpawner.SpawnError.noToken(item: "diplomat-agent-gh").errorDescription

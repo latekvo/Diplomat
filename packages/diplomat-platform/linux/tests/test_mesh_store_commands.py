@@ -207,7 +207,7 @@ def test_every_command_surfaces_errors_and_refreshes(store, ctl, command):
 
 def test_commands_do_not_block_the_caller(store, monkeypatch):
     """The panel calls these from a click handler on the UI thread; a synchronous
-    control round-trip would freeze the popover for the socket timeout."""
+    control round-trip would freeze the window for the socket timeout."""
     from szpontnet import ctl as real_ctl
 
     entered = threading.Event()

@@ -208,7 +208,8 @@ def test_a_queued_review_asks_for_one_reply_with_its_place_in_the_queue(
     assert replies == [{
         "message": m, "decision": d, "away": False,
         "toggles": {"requests": True, "bumps": True, "investigations": True,
-                    "replies": True},
+                    "replies": True, "replyToReviews": False, "replyToFixes": False,
+                    "replyToInvestigations": False, "replyToQuestions": True},
         "settings": comms_store.comms_settings_payload(),
         "queued": {"kind": "review", "number": 12, "ahead": 0, "bays": 3}}]
     assert _reply_lines() == ["Replied to kacper in DM: [Diplomat]: Queued it"]
@@ -333,7 +334,10 @@ def test_the_reply_switch_round_trips_and_reaches_every_toggles(store):  # noqa:
     store.comms_replies = False
     assert app_settings().value("commsReplies") is False
     assert Store().comms_toggles() == {"requests": True, "bumps": True,
-                                       "investigations": True, "replies": False}
+                                       "investigations": True, "replies": False,
+                                       "replyToReviews": False, "replyToFixes": False,
+                                       "replyToInvestigations": False,
+                                       "replyToQuestions": True}
 
 
 # MARK: - the real core
@@ -348,20 +352,23 @@ def test_the_real_core_posts_one_ack_in_the_messages_thread(slack, no_comms_repl
     # A channel id as Slack writes one: the core answers nothing else.
     message = {**MESSAGE, "id": "C0GENERAL1:1508284197.000015", "channelID": "C0GENERAL1",
                "permalink": "https://ours.slack.com/archives/C0GENERAL1/p1508284197000015"}
-    request = {"message": message, "away": False,
+    request = {"message": message, "away": True,
                "decision": {"action": "review", "number": 12, "summary": "Review PR 12",
                             "reason": "a direct ask"},
-               "toggles": {"replies": True}, "settings": {"owner": "o", "repo": "r"},
+               "toggles": {"replies": True, "replyToReviews": True},
+               "settings": {"owner": "o", "repo": "r"},
                "queued": {"kind": "review", "number": 12, "ahead": 1, "bays": 1}}
     _logged((message, request["decision"]))
+    assert comms.reply({**request, "away": False}) == {"outcome": None, "text": None}
+    assert _tools("slack_send_message") == []
     before = datetime.now()
     first = comms.reply(request)
     assert first["outcome"] == "sent", first
     [posted] = _tools("slack_send_message")
     assert {k: posted[k] for k in ("channel_id", "thread_ts", "reply_broadcast")} == {
         "channel_id": "C0GENERAL1", "thread_ts": message["ts"], "reply_broadcast": False}
-    match = re.fullmatch(r"\[Diplomat\]: Queued a review of #12, should be done by "
-                         r"(\d\d):(\d\d) (today|tomorrow) \(±1h\)\.", posted["message"])
+    match = re.fullmatch(r"\[Diplomat\]: The operator is away, I queued a review of #12, "
+                         r"should be done by (\d\d):(\d\d) (today|tomorrow) \(±1h\)\.", posted["message"])
     assert match, posted["message"]
     # Two runs of 45 minutes: the one ahead of it on the one bay, then its own.
     due = before + timedelta(seconds=2 * 2700)
@@ -376,6 +383,73 @@ def test_the_real_core_posts_one_ack_in_the_messages_thread(slack, no_comms_repl
     lines = [json.loads(line) for line in comms.events_path().read_text().splitlines()]
     assert [(e["kind"], e.get("outcome")) for e in lines] == [
         ("ping", None), ("decision", None), ("reply", "sending"), ("reply", "sent")]
+
+
+def _rows_of_one_message(numbers: list[int], language: str = "pl") -> list[dict]:
+    """The requests a front-end builds for one message's target rows, last first."""
+    rows = []
+    for n in reversed(numbers):
+        # A channel id as Slack writes one: the core answers nothing else.
+        message = {**MESSAGE, "channelID": "C0GENERAL1", "senderTimezone": "Europe/Warsaw",
+                   "permalink": "https://ours.slack.com/archives/C0GENERAL1/p1508284197000015",
+                   "id": "C0GENERAL1:1508284197.000015"
+                   + ("" if n == numbers[0] else f"#{n}")}
+        rows.append({
+            "message": message,
+            "decision": {"action": "review", "number": n, "summary": "s", "reason": "r",
+                         "language": language},
+            "queued": {"kind": "review", "number": n, "ahead": 0, "bays": 1},
+            "away": True, "toggles": {"replies": True, "replyToReviews": True},
+            "settings": {"owner": "o", "repo": "r"},
+        })
+    return rows
+
+
+@needs_core
+def test_one_message_asking_for_several_gets_one_reply_in_its_language(
+        slack, no_comms_replies, monkeypatch):  # noqa: F811
+    """Through the real binary: merged, posted once, and in Polish."""
+    monkeypatch.setattr(comms, "reply", no_comms_replies)
+    monkeypatch.setenv(comms.TOKEN_ENV, "x")
+    _Slack.token = "x"
+    merged = comms.merge_replies(_rows_of_one_message([1616, 1652, 1588]))
+    assert [r["message"]["id"] for r in merged] == ["C0GENERAL1:1508284197.000015"]
+    assert merged[0]["queued"]["number"] == 1616
+    assert [w["number"] for w in merged[0]["alsoQueued"]] == [1652, 1588]
+    result = comms.reply(merged[0])
+    assert result["outcome"] == "sent", result
+    assert result["text"].startswith(
+        "[Diplomat]: Operator jest teraz offline. W kolejce: review #1616, #1652 i #1588, "
+        "przewidywany koniec: ")
+    posts = _tools("slack_send_message")
+    assert [p["message"] for p in posts] == [result["text"]]
+
+
+def test_a_tick_with_no_extra_target_merges_nothing(monkeypatch):
+    def refuse(*a, **k):
+        raise AssertionError("no merge call is needed")
+
+    monkeypatch.setattr(comms, "_core", refuse)
+    requests = _rows_of_one_message([1616])
+    assert comms.merge_replies(requests) is requests
+
+
+def test_a_merge_that_fails_leaves_the_requests_as_they_are(monkeypatch):
+    def down(*a, **k):
+        raise RuntimeError("no core")
+
+    monkeypatch.setattr(comms, "_core", down)
+    requests = _rows_of_one_message([1, 2])
+    assert comms.merge_replies(requests) is requests
+
+
+def test_the_store_merges_a_ticks_rows_before_it_replies(comms_store, monkeypatch):
+    calls = []
+    monkeypatch.setattr(comms, "merge_replies", lambda r: calls.append(("merge", len(r))) or r[:1])
+    monkeypatch.setattr(comms, "reply", lambda r: calls.append(("reply", r["message"]["id"])) or {})
+    monkeypatch.setattr(comms_store, "start_background", lambda fn, name: fn())
+    comms_store._send_comms_replies(_rows_of_one_message([1, 2, 3]))
+    assert calls == [("merge", 3), ("reply", "C0GENERAL1:1508284197.000015#3")]
 
 
 def test_a_reply_is_given_every_bound_the_core_holds_itself_to():

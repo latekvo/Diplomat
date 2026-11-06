@@ -3,7 +3,7 @@ import Foundation
 /// Work a ping put in the queue, or found there or already under way, as the front-end
 /// that acted on it sees it: what an acknowledgement names and estimates.
 public struct CommsQueuedWork: Codable, Equatable, Sendable {
-    /// `review`, `fix_issue` or `investigate`: a key of `replies.what` and `replies.runSecs`.
+    /// `review`, `fix_issue` or `investigate`: a key of `replies.languages`' `what` and of `replies.runSecs`.
     public var kind: String
     /// The PR or issue; unused for an investigation.
     public var number: Int
@@ -29,29 +29,56 @@ public struct CommsReplyRequest: Codable, Sendable {
     public var decision: CommsDecision
     /// Set only when the ping's work is queued or running.
     public var queued: CommsQueuedWork?
+    /// The rest of what the same message asked for (`merged`).
+    public var alsoQueued: [CommsQueuedWork]
     /// The operator's session has been locked for their away setting (`CommsAway`).
     public var away: Bool
     public var toggles: CommsToggles
     public var settings: CommsSettings
 
     public init(message: CommsMessage, decision: CommsDecision, queued: CommsQueuedWork? = nil,
-                away: Bool, toggles: CommsToggles = CommsToggles(),
+                alsoQueued: [CommsQueuedWork] = [], away: Bool, toggles: CommsToggles = CommsToggles(),
                 settings: CommsSettings = CommsSettings()) {
         self.message = message
         self.decision = decision
         self.queued = queued
+        self.alsoQueued = alsoQueued
         self.away = away
         self.toggles = toggles
         self.settings = settings
     }
 
-    private enum CodingKeys: String, CodingKey { case message, decision, queued, away, toggles, settings }
+    private enum CodingKeys: String, CodingKey {
+        case message, decision, queued, alsoQueued, away, toggles, settings
+    }
+
+    /// One request per Slack message, in the order `requests` first names each: a message
+    /// that asked for several gets one reply. A row's targets arrive last first
+    /// (`CommsTickResult.Item.targets`), and the merged work reads in the message's order.
+    public static func merged(_ requests: [CommsReplyRequest]) -> [CommsReplyRequest] {
+        var order: [String] = []
+        var groups: [String: [CommsReplyRequest]] = [:]
+        for r in requests {
+            let id = r.message.messageID
+            if groups[id] == nil { order.append(id) }
+            groups[id, default: []].append(r)
+        }
+        return order.compactMap { id in
+            guard var out = groups[id]?.first else { return nil }
+            let work = (groups[id] ?? []).reversed().flatMap { [$0.queued].compactMap { $0 } + $0.alsoQueued }
+            out.message.id = id
+            out.queued = work.first
+            out.alsoQueued = Array(work.dropFirst())
+            return out
+        }
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(message: try c.decode(CommsMessage.self, forKey: .message),
                   decision: try c.decode(CommsDecision.self, forKey: .decision),
                   queued: try c.decodeIfPresent(CommsQueuedWork.self, forKey: .queued),
+                  alsoQueued: try c.decodeIfPresent([CommsQueuedWork].self, forKey: .alsoQueued) ?? [],
                   away: try c.decodeIfPresent(Bool.self, forKey: .away) ?? false,
                   toggles: try c.decodeIfPresent(CommsToggles.self, forKey: .toggles) ?? CommsToggles(),
                   settings: try c.decodeIfPresent(CommsSettings.self, forKey: .settings)
@@ -100,8 +127,8 @@ public enum CommsAway {
     }
 }
 
-/// Comms' replies in Slack (`assets/comms.json` → `replies`): an acknowledgement of
-/// queued work, and while the operator is away an answer to a question their project's
+/// Comms' replies in Slack (`assets/comms.json` → `replies`), only while the operator is
+/// away: an acknowledgement of queued work, and an answer to a question their project's
 /// documentation settles. Each goes to the conversation the message was written in, and
 /// nowhere else, whatever the message or any model says.
 public enum CommsReplier {
@@ -115,19 +142,22 @@ public enum CommsReplier {
             r.settings.bannedSenders.contains(r.message.userID)
                 || CommsBan.bannedNow().contains(r.message.userID.uppercased())
         }
-        guard let assets = try? CoreAssets.comms(), r.toggles.replies, !barred(),
+        guard r.away, let assets = try? CoreAssets.comms(), r.toggles.replies,
+              r.toggles.repliesTo(r.decision.action), !barred(),
+              let words = assets.replies.language(r.decision.language),
               let to = destination(for: r.message) else { return CommsReplyResult() }
         // The raw lines, not the fold: rotation can cut a ping whose reply survives.
-        guard !CommsLog.read(in: dir).contains(where: { $0.kind == .reply && $0.id == r.message.id })
+        let id = r.message.messageID
+        guard !CommsLog.read(in: dir).contains(where: { $0.kind == .reply && $0.id == id })
         else { return CommsReplyResult() }
         let me = CommsState.load(in: dir).me
         let name = me?.name ?? me.map { $0.handle } ?? ""
-        let who = name.isEmpty ? "The operator" : name
+        let who = name.isEmpty ? words.operator : name
         let body: String
         if let q = r.queued, [.review, .fixIssue, .investigate].contains(r.decision.action) {
-            body = acknowledgement(q, away: r.away, name: who, sender: r.message, now: now,
-                                   assets: assets)
-        } else if r.decision.action == .question, r.away {
+            body = acknowledgement([q] + r.alsoQueued, name: who, sender: r.message,
+                                   now: now, words: words, assets: assets)
+        } else if r.decision.action == .question {
             var settings = r.settings
             settings.bannedSenders += CommsBan.bannedNow()
             let asked = CommsTS.number(r.message.ts) ?? 0
@@ -143,22 +173,22 @@ public enum CommsReplier {
             guard a.answers, !text.isEmpty else {
                 let outcome = "skipped: " + (a.answers ? "nothing was left once mentions and links were taken out"
                                              : a.reason.isEmpty ? "no answer" : a.reason)
-                CommsLog.append(CommsEvent(kind: .reply, id: r.message.id, outcome: outcome), in: dir)
+                CommsLog.append(CommsEvent(kind: .reply, id: id, outcome: outcome), in: dir)
                 return CommsReplyResult(outcome: outcome)
             }
-            body = CommsText.fill(assets.replies.answeredAway, ["name": who, "answer": text])
+            body = CommsText.fill(words.answeredAway, ["name": who, "answer": text])
         } else {
             return CommsReplyResult()
         }
         let text = assets.replies.prefix + body
         if barred() {
             let outcome = "skipped: the sender was banned before it went out"
-            CommsLog.append(CommsEvent(kind: .reply, id: r.message.id, outcome: outcome), in: dir)
+            CommsLog.append(CommsEvent(kind: .reply, id: id, outcome: outcome), in: dir)
             return CommsReplyResult(outcome: outcome)
         }
         // On disk first, so no failure after this point sends a second one; unrecorded, a
         // later tick would find nothing and post it again.
-        guard CommsLog.append(CommsEvent(kind: .reply, id: r.message.id, outcome: "sending",
+        guard CommsLog.append(CommsEvent(kind: .reply, id: id, outcome: "sending",
                                          detail: text), in: dir) else {
             return CommsReplyResult(outcome: "failed: the Comms log could not be written, so nothing was sent")
         }
@@ -173,8 +203,7 @@ public enum CommsReplier {
         } catch {
             outcome = "failed: " + error.localizedDescription
         }
-        CommsLog.append(CommsEvent(kind: .reply, id: r.message.id, outcome: outcome, detail: text),
-                        in: dir)
+        CommsLog.append(CommsEvent(kind: .reply, id: id, outcome: outcome, detail: text), in: dir)
         return CommsReplyResult(outcome: outcome, text: text)
     }
 
@@ -204,17 +233,34 @@ public enum CommsReplier {
         return ts
     }
 
-    static func acknowledgement(_ q: CommsQueuedWork, away: Bool, name: String,
+    /// `work` is everything one message asked for, all of one kind. Queued targets went to
+    /// the front of their band one after the other, so the last of them runs behind the
+    /// rest and whatever the longest wait was ahead of.
+    static func acknowledgement(_ work: [CommsQueuedWork], name: String,
                                 sender: CommsMessage, now: Date,
+                                words: CoreAssets.CommsModel.Replies.Language,
                                 assets: CoreAssets.CommsModel) -> String {
         let r = assets.replies
-        let what = CommsText.fill(r.what[q.kind] ?? "it", ["number": String(q.number)])
-        let template = q.startedAt == nil ? (away ? r.queuedAway : r.queued)
-            : (away ? r.runningAway : r.running)
-        let due = eta(q, now: now, assets: assets)
+        let kind = work.first?.kind ?? ""
+        let what: String
+        if work.count == 1 {
+            what = CommsText.fill(words.what[kind] ?? "", ["number": String(work[0].number)])
+        } else {
+            let tags = work.map { "#\($0.number)" }
+            let numbers = tags.dropLast().joined(separator: ", ")
+                + " \(words.and) " + (tags.last ?? "")
+            what = CommsText.fill(words.whatMany[kind] ?? "", ["numbers": numbers])
+        }
+        let allRunning = work.allSatisfy { $0.startedAt != nil }
+        let template = allRunning ? words.runningAway : words.queuedAway
+        var last = work.filter { $0.startedAt == nil }.max { $0.ahead < $1.ahead }
+        last?.ahead += work.filter { $0.startedAt == nil }.count - 1
+        let due = (work.filter { $0.startedAt != nil } + (last.map { [$0] } ?? []))
+            .map { eta($0, now: now, assets: assets) }.max() ?? now
         return CommsText.fill(template, [
             "name": name, "what": what,
-            "eta": etaText(due, now: now, timezone: sender.senderTimezone, roundMins: r.roundMins),
+            "eta": etaText(due, now: now, timezone: sender.senderTimezone, roundMins: r.roundMins,
+                           words: words),
         ])
     }
 
@@ -230,23 +276,27 @@ public enum CommsReplier {
         return now.addingTimeInterval(run * Double(1 + (ahead + bays - 1) / bays))
     }
 
-    /// `15:40 today`, `09:05 tomorrow`, or `Thu 6 Nov 11:20`, rounded up to `roundMins`,
-    /// in `timezone` (the sender's), else this machine's.
-    public static func etaText(_ date: Date, now: Date, timezone: String?, roundMins: Int) -> String {
+    /// `15:40 today`, `09:05 tomorrow`, or `Thu 6 Nov 11:20`, as `words` (English by
+    /// default) write them, rounded up to `roundMins`, in `timezone` (the sender's), else
+    /// this machine's.
+    public static func etaText(_ date: Date, now: Date, timezone: String?, roundMins: Int,
+                               words: CoreAssets.CommsModel.Replies.Language? = nil) -> String {
+        guard let words = words ?? (try? CoreAssets.comms())?.replies
+            .language(CommsDecision.defaultLanguage) else { return "" }
         let step = Double(max(1, roundMins) * 60)
         let rounded = Date(timeIntervalSince1970: (date.timeIntervalSince1970 / step).rounded(.up) * step)
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = timezone.flatMap(TimeZone.init(identifier:)) ?? .current
         let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
+        f.locale = Locale(identifier: words.locale)
         f.timeZone = cal.timeZone
         f.dateFormat = "HH:mm"
         let clock = f.string(from: rounded)
         let days = cal.dateComponents([.day], from: cal.startOfDay(for: now),
                                       to: cal.startOfDay(for: rounded)).day ?? 0
         switch days {
-        case ...0: return "\(clock) today"
-        case 1:    return "\(clock) tomorrow"
+        case ...0: return CommsText.fill(words.today, ["clock": clock])
+        case 1:    return CommsText.fill(words.tomorrow, ["clock": clock])
         default:
             f.dateFormat = "EEE d MMM HH:mm"
             return f.string(from: rounded)

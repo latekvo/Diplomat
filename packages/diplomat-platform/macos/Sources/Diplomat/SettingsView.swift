@@ -30,7 +30,7 @@ struct SettingsView: View {
                     autofixSection
                     limitsSection
                 }
-                .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
+                .frame(width: MainRoot.columnWidth, alignment: .topLeading)
 
                 VStack(alignment: .leading, spacing: 10) {
                     toolsSection
@@ -41,7 +41,7 @@ struct SettingsView: View {
                     meshSection
                     updateSection
                 }
-                .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
+                .frame(width: MainRoot.columnWidth, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -276,9 +276,7 @@ struct SettingsView: View {
         return "\(c.owner)/\(c.repo)"
     }
 
-    /// Directory picker for the repo root. The menu-bar popover closes when the panel
-    /// takes focus (it's a `.window`-style MenuBarExtra) — the pick is still stored, so
-    /// reopening Settings shows the new path.
+    /// Directory picker for the repo root.
     private func chooseRepoRoot() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -287,7 +285,6 @@ struct SettingsView: View {
         panel.message = "Choose the local checkout agents should work in"
         panel.prompt = "Use as repo root"
         panel.directoryURL = URL(fileURLWithPath: RepoPaths.agentRepo)
-        NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url {
             store.repoPathOverride = url.path
         }
@@ -349,7 +346,6 @@ struct SettingsView: View {
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
     }
 
-    /// Same popover caveat as `chooseRepoRoot`.
     private func chooseOtherRepos() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -357,7 +353,6 @@ struct SettingsView: View {
         panel.allowsMultipleSelection = true
         panel.message = "Choose local checkouts whose PR and issue links the wizards accept"
         panel.prompt = "Add"
-        NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK else { return }
         let added = panel.urls.map(\.path).filter { !store.localRepoPaths.contains($0) }
         store.localRepoPaths.append(contentsOf: added)
@@ -775,9 +770,11 @@ struct SettingsView: View {
                            symbol: "person.2.fill")
             }
             commsActionsBlock
+            commsBatchRows
             SettingRow(title: "Reply in Slack", detail: SettingsView.commsRepliesDetail) {
                 switchControl("Reply in Slack", $store.commsReplies)
             }
+            if store.commsReplies { commsRepliesBlock }
             commsAwayRow
             SettingRow(title: "Notify on new pings") {
                 switchControl("Notify on new pings", $store.commsNotify)
@@ -806,6 +803,58 @@ struct SettingsView: View {
                 ToggleChip(label: "investigations", isOn: $store.commsActInvestigations, tint: .blue,
                            help: "Queue an agent that reproduces a reported problem and writes a report")
             }
+        }
+    }
+
+    private var commsRepliesBlock: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("REPLY TO…")
+                .font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary).kerning(0.5)
+            HStack(spacing: 5) {
+                ToggleChip(label: "questions", isOn: $store.commsReplyToQuestions, tint: .blue,
+                           help: "Answer a question the project's documentation settles")
+                ToggleChip(label: "reviews", isOn: $store.commsReplyToReviews, tint: .blue,
+                           help: "Say when a review a message asked for should be done")
+                ToggleChip(label: "fixes", isOn: $store.commsReplyToFixes, tint: .blue,
+                           help: "Say when a fix a message asked for should be done")
+                ToggleChip(label: "investigations", isOn: $store.commsReplyToInvestigations, tint: .blue,
+                           help: "Say when an investigation a message started should be done")
+            }
+        }
+    }
+
+    private static let commsBatchSizes = (try? CoreAssets.comms())?.batchSizes ?? [8]
+    private static let commsFlushChoices = (try? CoreAssets.comms())?.flushAfterChoices ?? [1800]
+
+    /// Each slider's position is an index into the stops `comms.json` gives it.
+    private func commsStopsRow(title: String, detail: String, stops: [Int], value: Binding<Int>,
+                               format: @escaping (Int) -> String) -> some View {
+        let at = CommsSliderStops.index(of: value.wrappedValue, in: stops)
+        return SettingRow(title: title, detail: detail, stacked: true) {
+            SliderSetting(label: title,
+                          value: Binding(
+                              get: { Double(CommsSliderStops.index(of: value.wrappedValue, in: stops)) },
+                              set: { value.wrappedValue = stops[min(Int($0.rounded()), stops.count - 1)] }
+                          ),
+                          range: 0...Double(max(1, stops.count - 1)),
+                          step: 1,
+                          badge: format(stops[at]),
+                          minLabel: format(stops.first ?? 0),
+                          maxLabel: format(stops.last ?? 0),
+                          tint: .blue)
+        }
+    }
+
+    private var commsBatchRows: some View {
+        Group {
+            commsStopsRow(title: "Batch size",
+                          detail: "How many pings one triage call reads. A full batch is triaged at once.",
+                          stops: SettingsView.commsBatchSizes, value: $store.commsBatchSize,
+                          format: { String($0) })
+            commsStopsRow(title: "Batch interval",
+                          detail: "How old the newest ping of a shorter batch gets before it is triaged anyway.",
+                          stops: SettingsView.commsFlushChoices, value: $store.commsFlushAfterSecs,
+                          format: { Fmt.duration(TimeInterval($0)) })
         }
     }
 
@@ -863,15 +912,16 @@ struct SettingsView: View {
         """
 
     private static let commsRepliesDetail = """
-        Replies start with [Diplomat]: and go only to the conversation the message was \
-        written in, in its thread, once per message. A review, fix or investigation a \
-        ping queued (or found queued or running) gets an estimate of when it should be \
-        done. While you are away, a question about the project is answered from its \
-        documentation when that settles it plainly, and left alone otherwise.
+        Only while you are away; work is queued either way. Replies start with [Diplomat]:, \
+        in the message's language (Polish or English), and go only to the conversation the \
+        message was written in, in its thread, once per message. A question about the \
+        project is answered from its documentation when that settles it plainly, and left \
+        alone otherwise. A review, fix or investigation a ping queued (or found queued or \
+        running) can get an estimate of when it should be done.
         """
 
     private static let commsAwayDetail =
-        "How long your Mac must have been locked before Comms answers questions for you."
+        "How long your Mac must have been locked before Comms replies for you."
     private static let commsAwayStep = (try? CoreAssets.comms())?.replies.awayAfterStepSecs ?? 900
     private static let commsAwayMax = (try? CoreAssets.comms())?.replies.awayAfterMaxSecs ?? 43200
 

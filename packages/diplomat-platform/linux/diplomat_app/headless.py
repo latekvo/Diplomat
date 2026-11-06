@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-#: Every mode ``__main__.main`` dispatches before it launches the tray: ``True`` for
+#: Every mode ``__main__.main`` dispatches before it launches the GUI: ``True`` for
 #: one that takes a value, ``False`` for a flag set to 1. ``test_headless_modes.py``
 #: holds it to the ladder.
 MODES = {
@@ -50,7 +50,7 @@ def looks_like_mode(name: str) -> bool:
 
 def unrunnable(env: Mapping[str, str]) -> list[str]:
     """The variables in ``env`` that ask for a one-shot this build will not run, as
-    sorted ``NAME=value``s. Started with only these, the applet would launch the tray:
+    sorted ``NAME=value``s. Started with only these, the applet would launch the GUI:
     newest-wins terminates the running one, and it acts on the real state."""
     return sorted(f"{name}={value}" for name, value in env.items()
                   if looks_like_mode(name) and not _turns_on(name, value))

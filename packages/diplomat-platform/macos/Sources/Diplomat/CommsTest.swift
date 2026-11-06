@@ -73,6 +73,14 @@ enum CommsTest {
                                author: "dave", isOpen: true, state: "OPEN"),
             90046: CommsTarget(number: 90046, url: "https://github.com/o/r/pull/90046",
                                author: "dave", isOpen: true, state: "OPEN"),
+            90101: CommsTarget(number: 90101, url: "https://github.com/o/r/pull/90101",
+                             author: "dave", isOpen: true, state: "OPEN"),
+            90102: CommsTarget(number: 90102, url: "https://github.com/o/r/pull/90102",
+                             author: "dave", isOpen: true, state: "OPEN"),
+            90103: CommsTarget(number: 90103, url: "https://github.com/o/r/pull/90103",
+                             author: "dave", isOpen: true, state: "OPEN"),
+            90104: CommsTarget(number: 90104, url: "https://github.com/o/r/pull/90104",
+                             author: "dave", isOpen: true, state: "OPEN"),
             90090: CommsTarget(number: 90090, url: "https://github.com/o/r/pull/90090",
                                author: "ivan", isOpen: true, state: "OPEN"),
             90091: CommsTarget(number: 90091, url: "https://github.com/o/r/issues/90091",
@@ -84,6 +92,8 @@ enum CommsTest {
             90094: CommsTarget(number: 90094, url: "https://github.com/o/r/pull/90094",
                                author: "ivan", isOpen: true, state: "OPEN"),
             90097: CommsTarget(number: 90097, url: "https://github.com/o/r/pull/90097",
+                               author: "ivan", isOpen: true, state: "OPEN"),
+            90089: CommsTarget(number: 90089, url: "https://github.com/o/r/pull/90089",
                                author: "ivan", isOpen: true, state: "OPEN"),
         ]
         var lookups: [Int] = []
@@ -1139,6 +1149,10 @@ enum CommsTest {
         unsetenv("DIPLOMAT_COMMS_AWAY")
         store.commsLockedSince = nil
         store.commsReplies = true
+        store.commsReplyToReviews = true
+        store.commsReplyToFixes = true
+        store.commsReplyToInvestigations = true
+        store.commsReplyToQuestions = true
         store.commsAwayAfterSecs = 3 * 3600
         store.autoTaskLimit = 2
         var state = CommsState.load()
@@ -1170,6 +1184,7 @@ enum CommsTest {
         }
                 func settled() async { await store.commsReplying?.value }
 
+        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
         // Work ahead of it in the queue: the front of the review band is behind band 0.
         store.queuedTasks = [monitorFind("review-req", 90095, "Review-req · #90095 (@dave)"),
                              monitorFind("review-req", 90096, "Review-req · #90096 (@dave)")]
@@ -1195,8 +1210,8 @@ enum CommsTest {
             let eta = CommsReplier.etaText(
                 CommsReplier.eta(work, now: at, assets: try! CoreAssets.comms()),
                 now: at, timezone: nil, roundMins: r?.roundMins ?? 5)
-            return (r?.prefix ?? "") + CommsText.fill(r?.queued ?? "", [
-                "what": "a review of #90090", "eta": eta])
+            return (r?.prefix ?? "") + CommsText.fill(r?.language("en")?.queuedAway ?? "", [
+                "name": "Ignacy", "what": "a review of #90090", "eta": eta])
         }
         let text = post?["message"] as? String ?? ""
         check("…naming the work and when it should be done, counting the \(ahead) tasks ahead "
@@ -1225,7 +1240,7 @@ enum CommsTest {
               slack.posts.count == 2
                 && awayText.hasPrefix("[Diplomat]: Ignacy is away, I queued a fix for issue #90091")
                 && slack.posts.last?["thread_ts"] as? String == fixAway.message.ts)
-        store.commsLockedSince = nil
+        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
         store.commsAwayAfterSecs = 3 * 3600
 
         store.pinAgentRows([run("r9", 90093, "review", "Auto · Review · #90093")])
@@ -1235,8 +1250,17 @@ enum CommsTest {
         let runningText = slack.posts.last?["message"] as? String ?? ""
         check("work already running is acknowledged as under way: \(runningText.debugDescription)",
               outcome(runningAsk) == "already running" && slack.posts.count == 3
-                && runningText.hasPrefix("[Diplomat]: Already working on a review of #90093"))
+                && runningText.hasPrefix("[Diplomat]: Ignacy is away, but I'm already working on a review of #90093"))
         store.pinAgentRows([])
+
+        store.commsLockedSince = nil
+        let presentAsk = ask(.review, 90089)
+        await apply([presentAsk])
+        await settled()
+        check("while the operator is here, a review ping is queued but not answered "
+              + "(\(slack.posts.count) posts)",
+              outcome(presentAsk).hasPrefix("queued") && slack.posts.count == 3
+                && folded(presentAsk)?.replyOutcome == nil)
 
         func tally() -> String { "\(slack.posts.count) posts, asked \(answers.ids)" }
         store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
@@ -1267,7 +1291,6 @@ enum CommsTest {
         check("a banned sender's later ask and question are not answered (\(tally()))",
               slack.posts.count == 3 && answers.ids.isEmpty
                 && outcome(bannedAsk) == Store.commsSenderBannedOutcome)
-        store.commsLockedSince = nil
 
         let merged = ask(.review, 90098)
         await apply([merged])
@@ -1284,16 +1307,63 @@ enum CommsTest {
         check("with Comms switched off, nothing is answered (\(tally()))",
               slack.posts.count == 3 && answers.ids.isEmpty)
         store.commsEnabled = true
-        store.commsLockedSince = nil
 
+        // One message asking for several, in Polish, as the tick hands it over.
+        let several = inChannel("U0RITA001", "rita",
+                                CommsDecision(action: .review, numbers: [90101, 90102, 90103],
+                                              summary: "s", reason: "r", language: "pl"))
+        let rows = CommsTickResult.Item.targets(several.message, several.decision, maxTargets: 20)
+        CommsLog.append(CommsEvent(kind: .ping, id: several.message.id, message: several.message))
+        for row in rows {
+            CommsLog.append(CommsEvent(kind: .decision, id: row.message.id, decision: row.decision))
+        }
+        let unreadBefore = store.commsUnread
+        await store.applyComms(CommsTickResult(me: nil, pings: [several.message], items: rows,
+                                               error: nil))
+        await settled()
+        let order = store.queuedTasks.map(\.id).filter { $0.hasPrefix("review:9010") }
+        check("a message asking for three PRs queues all three, the first asked for first: \(order)",
+              order == ["review:90101", "review:90102", "review:90103"])
+        check("…each its own row, wearing its own queue key",
+              rows.allSatisfy { folded($0)?.queueKey == "review:\($0.decision.number)" })
+        let severalText = slack.posts.last?["message"] as? String ?? ""
+        check("…one reply naming all three, in the message's language: \(severalText.debugDescription)",
+              slack.posts.count == 4
+                && severalText.hasPrefix("[Diplomat]: Ignacy jest teraz offline. W kolejce: review #90101, #90102 i #90103, przewidywany koniec: ")
+                && slack.posts.last?["thread_ts"] as? String == several.message.ts)
+        check("…and one more unread ping, not three (\(unreadBefore) -> \(store.commsUnread))",
+              store.commsUnread == unreadBefore + 1)
+        let pingLinesBefore = feed("comms-ping").count
+        store.commsActRequests = false
+        let heldBack = inChannel("U0RITA001", "rita",
+                             CommsDecision(action: .review, numbers: [90101, 90102],
+                                           summary: "s", reason: "r"))
+        let heldRows = CommsTickResult.Item.targets(heldBack.message, heldBack.decision, maxTargets: 20)
+        CommsLog.append(CommsEvent(kind: .ping, id: heldBack.message.id, message: heldBack.message))
+        for row in heldRows {
+            CommsLog.append(CommsEvent(kind: .decision, id: row.message.id, decision: row.decision))
+        }
+        await store.applyComms(CommsTickResult(me: nil, pings: [heldBack.message], items: heldRows,
+                                               error: nil))
+        store.commsActRequests = true
+        check("…and one the switches hold back is one feed line, not two",
+              feed("comms-ping").count == pingLinesBefore + 1)
+        store.commsReplyToReviews = false
+        let unwanted = ask(.review, 90104)
+        await apply([unwanted])
+        await settled()
+        check("with replies to reviews off, a queued review gets none (\(slack.posts.count) posts)",
+              outcome(unwanted).hasPrefix("queued") && slack.posts.count == 4)
+        store.commsReplyToReviews = true
         store.commsReplies = false
         let offAsk = ask(.review, 90092)
         await apply([offAsk])
         await settled()
         check("with replies switched off, queued work is not acknowledged (\(tally()))",
-              outcome(offAsk).hasPrefix("queued") && slack.posts.count == 3)
+              outcome(offAsk).hasPrefix("queued") && slack.posts.count == 4)
         store.commsReplies = true
 
+        store.commsLockedSince = nil
         let question = ask(.question, 0)
         await apply([question])
         await settled()
@@ -1303,7 +1373,7 @@ enum CommsTest {
         await settled()
         check("a question is not answered while the operator is here, nor an hour into a lock "
               + "(\(tally()))",
-              slack.posts.count == 3 && answers.ids.isEmpty && outcome(question) == "ping only")
+              slack.posts.count == 4 && answers.ids.isEmpty && outcome(question) == "ping only")
 
         store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
         let awayQuestion = ask(.question, 0)
@@ -1312,7 +1382,7 @@ enum CommsTest {
         let answer = slack.posts.last?["message"] as? String ?? ""
         check("a question while the operator has been locked out for hours is answered from the "
               + "docs, in its own thread, cleaned: \(answer.debugDescription)",
-              slack.posts.count == 4 && answers.ids == [awayQuestion.message.id]
+              slack.posts.count == 5 && answers.ids == [awayQuestion.message.id]
                 && answer == "[Diplomat]: Ignacy is currently away, but I can answer that for you. "
                     + "Yes: the screen-recording tools record the simulator to an mp4. Ask here for more."
                 && slack.posts.last?["thread_ts"] as? String == awayQuestion.message.ts)
@@ -1328,10 +1398,12 @@ enum CommsTest {
         print("     this session reads as locked: \(String(describing: Store.sessionLocked()))")
 
         slack.fail = "channel_not_found"
+        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
         let refusedAsk = ask(.review, 90094)
         let replyLines = feed(Store.commsReplyVerb).count
         await apply([refusedAsk])
         await settled()
+        store.commsLockedSince = nil
         check("a reply Slack refuses is logged as failed, on the ping and in the feed",
               folded(refusedAsk)?.replyOutcome?.hasPrefix("failed:") == true
                 && feed(Store.commsReplyVerb).count == replyLines + 1

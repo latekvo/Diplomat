@@ -12,7 +12,7 @@ LAN P2P duty coordination between several machines running Diplomat.
 > exits non-zero if any MUST fails.
 
 With several machines on one desk (say a Linux box and two MacBooks), the
-wrench's grunt work shouldn't all land on the laptop you're typing on. **Diplomat
+agents' grunt work shouldn't all land on the laptop you're typing on. **Diplomat
 Mesh** makes the machines coordinate: every node self-discovers its peers over
 UDP (multicast + subnet broadcast), holds heartbeat TCP links, and gossips its
 status - platform, a machine *tier* (1 = strongest, auto-detected from the

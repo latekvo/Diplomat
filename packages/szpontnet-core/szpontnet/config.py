@@ -358,17 +358,17 @@ def tokens_per_weight() -> float:
     """Heuristic per-window token ceiling for a weight-1 (Pro) plan. Scaled by a
     plan's weight to get its ceiling (see usage.py)."""
     try:
-        return float(accounts().get("tokensPerWeight", 2_000_000))
+        return float(accounts().get("tokensPerWeight", 75_000_000))
     except (TypeError, ValueError, OverflowError):
-        return 2_000_000.0
+        return 75_000_000.0
 
 
 def usage_window_hours() -> float:
     """Trailing window over which local token consumption is measured."""
     try:
-        return float(accounts().get("usageWindowHours", 5.0)) or 5.0
+        return float(accounts().get("usageWindowHours", 168.0)) or 168.0
     except (TypeError, ValueError, OverflowError):
-        return 5.0
+        return 168.0
 
 
 def low_threshold() -> float:

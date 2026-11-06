@@ -479,6 +479,21 @@ def test_a_machine_that_has_never_been_charged_has_no_opinion(monkeypatch):
     assert budget.window == "", "nothing was decided, rather than decided cheaply"
 
 
+def test_another_runners_bills_do_not_price_this_one(monkeypatch):
+    """Hermes was billed here, then the runner switched to OpenCode, which may be on
+    another provider or a local model. Hermes's charges say nothing about it, so the
+    gate has no opinion until OpenCode itself is billed."""
+    _billed_tasks(time.time() - 3600, _USD_SPREAD)
+    appconfig.set_value(appconfig.AGENT_RUNNER, "opencode")
+    # Short of one Hermes task and of the reserve alike.
+    _balance(monkeypatch, key_left=0.05, credit_left=0.05)
+
+    budget = autobudget.decide()
+
+    assert budget.affordable, "an OpenCode machine was gated on Hermes's bills"
+    assert budget.window == "", "nothing was decided, rather than decided cheaply"
+
+
 def test_an_unreachable_account_never_holds_work_back(monkeypatch):
     """The same fail-open the quota probe gets, on the same reasoning."""
     _hermes(monkeypatch)

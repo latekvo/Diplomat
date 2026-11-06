@@ -263,8 +263,9 @@ no gate whatsoever.
 - **Hermes** (and any other runner billed by a provider) spends **money**. Hermes
   prices each of its own sessions against the model it ran on, so the ledger carries
   what the task cost in dollars and which model's rates it was charged at - and the
-  gate prices the next task from that model's runs alone, since rates differ by two
-  orders of magnitude and a mean across models describes no task that ever ran. What
+  gate prices the next task from the selected runner's runs on that model alone, since
+  rates differ by two orders of magnitude and a mean across models describes no task
+  that ever ran, and another runner's bills say nothing about this one's provider. What
   is left is read from OpenRouter: the **key limit** (the cap on the API key itself,
   which resets on whatever period the account chose) and the **credit balance** (what
   was bought less what has been spent, which does not reset at all). Both gate, and
@@ -297,8 +298,8 @@ Two failure directions, both deliberate:
   `DIPLOMAT_SPEND_PROBE=0`), logged out, or simply offline. Nothing is held then -
   a gate that read silence as "no budget" would take a machine's automatic work down
   with the network every time it dropped. **A machine that has never been charged a
-  dollar is the same silence**: the reserve engages only once something has actually
-  been billed here, so a runner pointed at a local model - or one Diplomat cannot
+  dollar is the same silence**: the reserve engages only once the selected runner has
+  actually been billed here, so a runner pointed at a local model - or one Diplomat cannot
   price - is not held against an account it never draws on merely because a key for
   that account is sitting on disk.
 - **A refusal defers, it never drops.** Held work writes no attempt record, so the

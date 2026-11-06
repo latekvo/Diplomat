@@ -9,7 +9,7 @@ let package = Package(
         .package(path: "../../diplomat-core"),
     ],
     targets: [
-        // The macOS SwiftUI menu-bar app — a thin UI renderer over the core.
+        // The macOS SwiftUI app — a thin UI renderer over the core.
         .executableTarget(
             name: "Diplomat",
             dependencies: [.product(name: "DiplomatCore", package: "diplomat-core")],

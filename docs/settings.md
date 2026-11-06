@@ -107,9 +107,9 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
     The [spending budget](automation.md#the-spending-budget) gates every runner, each in its
     own currency: Claude Code against its windows, any other runner in dollars - what
     its tasks were charged, against what is left on the OpenRouter key and balance.
-    Only Hermes reports what a task was charged, and the dollar gate prices any
-    non-Claude runner from the tasks billed here in the last 14 days, so it holds
-    nothing until a Hermes task has been billed in that span.
+    Only Hermes reports what a task was charged, and the dollar gate prices a runner
+    from its own tasks billed here in the last 14 days, so it holds nothing until that
+    runner has been billed in that span.
   - What does *not* carry over: the [Claude API-error watcher](automation.md#autonomous-monitors)
     - its banners are Claude Code's. A foreign agent that errors reads as idle, so
     it gives its task-cap slot back and the monitor that owed the work dispatches it
@@ -160,7 +160,7 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   it must reach that a task fits (**default 95%**, one-sided) and what to keep in
   hand while the ledger cannot price a task yet - a share of a window (**default
   20%**) under Claude Code, or dollars on the account (**default $1.00**) under a
-  runner billed in money, once a task has been charged here in the last 14 days. Priced from the same per-task figure the
+  runner billed in money, once that runner has been charged here in the last 14 days. Priced from the same per-task figure the
   [Telemetry](telemetry.md) screen shows, against the 7-day rate-limit window or against
   both of the OpenRouter ceilings. Held work waits under [Agent tasks](panel.md#agent-tasks)
   and starts when a window refills or the balance is topped up; *execute now*
@@ -215,8 +215,9 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   the **⬡ Mesh screen**.
 - **Comms (Slack)** - the [Slack watcher](comms.md) (**default off**): the switch,
   keywords, a sender allowlist, one switch per thing it may do (queue reviews and
-  fixes, bump queued work, investigate bug reports), notifications, the triage
-  model, where the token is read from, and **Test**. Every one is described in
+  fixes, bump queued work, investigate bug reports), the batch size and interval,
+  replies and which kinds get one, notifications, the triage model, where the token
+  is read from, and **Test**. Every one is described in
   [Comms → Settings](comms.md#settings).
 - **Update** - pull the checkout, rebuild, and relaunch in place. Shows how many
   commits the checkout is behind *and* ahead of upstream, with a ↻ re-check
@@ -308,10 +309,11 @@ it as `GH_TOKEN`, which `gh` ranks above its own login. The agent's `git` over H
 to github.com gets it too, from `gh auth git-credential`, instead of any credential
 helper you configured (macOS git ships `osxkeychain`, which holds your broad login).
 The token itself is never in an AppleScript, an argv `ps` can show, a prompt file or
-the activity feed; the feed marks each run started on it with `· agent GH token`. A
-token that cannot be read (missing item, empty file) starts nothing rather than
-falling back to the broad login: the spawn fails, and the work stays owed. Remove the
-key to go back.
+the activity feed; the feed marks each run started on it with `· agent GH token`.
+Whitespace in the item or file (a trailing space or CRLF from a paste) is dropped. A
+token that cannot be read (a missing item, one empty or blank, a missing or blank file)
+starts nothing rather than falling back to the broad login: the spawn fails, and the
+work stays owed. Remove the key to go back.
 
 What it does not cover: `git` over SSH still pushes with your SSH keys, and a
 `GH_TOKEN` or `GIT_CONFIG_COUNT` your shell rc exports replaces this one, because the

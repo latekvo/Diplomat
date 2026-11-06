@@ -151,8 +151,8 @@ public enum AgentRegistry {
     /// tracked one to the other.
     public static func load() -> [AgentState.RunRecord] {
         guard let data = try? Data(contentsOf: runsPath()),
-              let obj = JSONInput.parse(data),
-              (obj["version"] as? NSNumber)?.intValue == schemaVersion,
+              let obj = JSONInput.parse(data, sharedFile: true),
+              integer(obj["version"]) == schemaVersion,
               let raw = obj["runs"] as? [Any]
         else { return [] }
         return raw.compactMap { ($0 as? [String: Any]).flatMap(decode) }
@@ -468,9 +468,8 @@ public enum AgentRegistry {
     }
 
     // Python twin: `agentstate._number` / `_integer`. One rule, because the parsers
-    // disagree first: Darwin's `JSONSerialization` reads `-1e999` as `-inf`, which the
-    // next `write` dies on (an uncatchable exception), and `NSNumber.intValue`
-    // saturates on `1e300` and wraps on a 20-digit literal.
+    // disagree first: `NSNumber.intValue` saturates on `1e300` and wraps on a 20-digit
+    // literal, so `"version": 18446744073709551617` would be version 1.
 
     /// A JSON number as a `Double`; nil unless finite.
     public static func number(_ raw: Any?) -> Double? {

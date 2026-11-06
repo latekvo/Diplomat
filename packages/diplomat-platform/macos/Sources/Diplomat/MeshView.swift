@@ -48,10 +48,8 @@ struct MeshView: View {
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .task { if store.meshEnabled { await store.meshTick() } }
-        // An in-popover overlay, NOT a `.alert`/`.sheet`: a system dialog steals key-window
-        // focus from the MenuBarExtra popover, which then auto-closes on dismiss (the "OK
-        // closes the applet" bug). Drawing the modal inside the same window keeps the
-        // popover open and lets it carry a "Don't show again" checkbox.
+        // Drawn in the panel rather than as an `.alert`, so it can carry a "Don't show
+        // again" checkbox.
         .overlay {
             if let name = trustReminderPeer { trustReminderModal(name) }
         }
@@ -59,7 +57,7 @@ struct MeshView: View {
 
     // MARK: trust reminder modal
 
-    /// The "marked Personal — trust the other side too" reminder, as an in-popover card
+    /// The "marked Personal — trust the other side too" reminder, as an in-panel card
     /// over a dimming scrim. Dismiss (OK or tap-outside) applies the "Don't show again"
     /// choice. Trust is one-directional, so this nudges the user to set the reverse.
     private func trustReminderModal(_ peerName: String) -> some View {

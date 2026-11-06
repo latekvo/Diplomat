@@ -16,7 +16,7 @@ struct DevicesScreen: View {
     @State private var providerDraft: String?
     /// Why the last provider change did not reach config.json.
     @State private var saveError: String?
-    /// MenuBarExtra hides the popover without tearing this view down, so the poll
+    /// Closing or covering the window does not tear this view down, so the poll
     /// follows the window rather than the view's lifetime.
     @State private var onScreen = false
     @State private var inUseExpanded = true
@@ -30,12 +30,12 @@ struct DevicesScreen: View {
                     devicesCard
                     eventsCard
                 }
-                .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
+                .frame(width: MainRoot.columnWidth, alignment: .topLeading)
                 VStack(alignment: .leading, spacing: 10) {
                     allocatorCard
                     remoteCard
                 }
-                .frame(width: PopoverRoot.columnWidth, alignment: .topLeading)
+                .frame(width: MainRoot.columnWidth, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -51,8 +51,10 @@ struct DevicesScreen: View {
             guard live, onScreen else { return }
             // `daemonRunning` comes from `--check` alone, which no poll runs.
             while !Task.isCancelled {
-                store.reloadDeviceConfig()
-                await store.refreshAllocatorInstall()
+                await AppLog.timed("devicesPoll") {
+                    store.reloadDeviceConfig()
+                    await store.refreshAllocatorInstall()
+                }
                 try? await Task.sleep(nanoseconds: pollNanoseconds)
             }
         }
@@ -264,7 +266,6 @@ struct DevicesScreen: View {
         panel.allowsMultipleSelection = false
         panel.message = "Choose the module that lends devices from the remote pool"
         panel.prompt = "Use as provider"
-        NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url {
             providerDraft = nil
             save(url.path)

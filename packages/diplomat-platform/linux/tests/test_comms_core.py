@@ -433,7 +433,8 @@ def test_comms_tick_runs_end_to_end_through_the_binary(tmp_path, slack, monkeypa
         "UALICE", "alice", "Ours", True,
         f"https://ours.slack.test/archives/D1/p{secs + 5}000100")
     assert result["items"][0]["decision"] == {
-        "action": "review", "number": 12, "summary": "Review PR 12", "reason": "a direct ask",
+        "action": "review", "number": 12, "numbers": [12], "language": "en",
+        "summary": "Review PR 12", "reason": "a direct ask",
         "evidence": ""}
     searches = _tools("slack_search_public_and_private")
     assert [(s.get("filters"), s.get("keywords"), s["after"]) for s in searches] == [
@@ -487,10 +488,10 @@ def test_a_ping_is_triaged_in_a_later_tick_once_its_queue_is_stale(tmp_path, sla
 
 
 def test_a_full_queue_is_triaged_in_one_call(tmp_path, slack, monkeypatch):
-    """``maxPerTick`` pings are one batch, whatever ``flushAfterSecs`` says; a message
+    """``batchSize`` pings are one batch, whatever ``flushAfterSecs`` says; a message
     the classifier left unanswered is a ``none``."""
     monkeypatch.setenv("DIPLOMAT_CLAUDE", str(_stub_claude(tmp_path)))
-    settings = {"maxPerTick": 2}
+    settings = {"batchSize": 2}
     secs = _first_tick(settings)
     _Slack.messages = [_message(f"{secs + 5}.000100", "UALICE", "can you review PR 12?"),
                        _message(f"{secs + 6}.000100", "UALICE", "thanks!")]
