@@ -112,8 +112,9 @@ date while it works. It is not on `PATH`:
   when installed with `szpont`): `swift build --package-path <checkout>/packages/diplomat-core
   --product diplomat-core`, then run `<checkout>/packages/diplomat-core/.build/debug/diplomat-core`.
 
-It reads its tunables from the checkout it was built in; a binary whose checkout has moved needs
-`DIPLOMAT_CORE=<checkout>/packages/diplomat-core/assets`.
+It reads its tunables from `$DIPLOMAT_CORE`, else from `assets/` or `packages/diplomat-core/assets/`
+under the working directory, else from the checkout it was built in. Run from inside another
+checkout, or after its own moved, it needs `DIPLOMAT_CORE=<checkout>/packages/diplomat-core/assets`.
 
 ```sh
 diplomat-core tasks-list [--archived]      # every task: status, reasons, history (newest 200), linkStates

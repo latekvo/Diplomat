@@ -296,9 +296,7 @@ public enum TaskStore {
                 throw TaskError(message: "task \(id) has no link \(raw)")
             }
             let gone = tasks[i].links.remove(at: j)
-            if !tasks[i].dismissed.contains(where: { TaskLinks.identity($0) == identity }) {
-                tasks[i].dismissed.append(gone.url)
-            }
+            tasks[i].dismissed.append(gone.url)
             return (tasks[i], [event(id, ["link:-"], url: gone.url)])
 
         case let .note(id, text, tags, url):
