@@ -768,7 +768,8 @@ def _tasks_fixture(store: Store) -> bool:
     from diplomat_runtime import core, tasks
 
     if os.environ.get("DIPLOMAT_TASKS_DIR"):
-        store.set_tracker_show_archived(True)
+        store.tracker_show_archived = True
+        store.refresh_tracked_tasks()
         return True
     scratch = Path(tempfile.mkdtemp(prefix="diplomat-render-tasks-"))
     os.environ["DIPLOMAT_TASKS_DIR"] = str(scratch / "tasks")
@@ -902,6 +903,9 @@ def run(what: str, out: str) -> int:
         panel._toggle_comms()
     elif what == "tasks":
         panel._toggle_task_tracker()
+        # The re-read opening the screen starts, landed.
+        store.wait_for_background()
+        app.processEvents()
         # The fixture's first task unfolded; a caller's every one.
         for view in store.tracked_tasks[:None if given_tasks else 1]:
             panel.tasks_view._toggle_history(view["task"]["id"])

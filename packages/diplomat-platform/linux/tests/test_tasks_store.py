@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -75,14 +77,39 @@ def github(tmp_path, monkeypatch) -> GitHub:
     return gh
 
 
+def settle(store: Store) -> None:
+    """Every worker done and what each signalled delivered, including the work a
+    delivery starts (an edit's sync)."""
+    from PySide6.QtWidgets import QApplication
+
+    for _ in range(20):
+        assert store.wait_for_background(60) == []
+        QApplication.processEvents()
+        with store._workers_lock:
+            if not any(t.is_alive() for t in store._workers):
+                QApplication.processEvents()
+                return
+    raise AssertionError("the tracker's workers never settled")
+
+
 def _sync(store: Store, *, force: bool = False) -> None:
     store.run_tracker_sync_async(force=force)
-    assert store.wait_for_background(60) == []
+    settle(store)
+
+
+def _edit(store: Store, op: dict) -> str | None:
+    """``edit_tracked_task_async``'s answer, once the edit and what follows it landed."""
+    origin, answers = object(), []
+    store.tracked_task_edited.connect(lambda o, error: o is origin and answers.append(error))
+    store.edit_tracked_task_async(op, origin)
+    settle(store)
+    [error] = answers
+    return error
 
 
 def _create(store: Store, title: str, *, tags=(), links=()) -> str:
-    assert store.edit_tracked_task({"op": "create", "title": title, "tags": list(tags),
-                                    "links": list(links)}) is None
+    assert _edit(store, {"op": "create", "title": title, "tags": list(tags),
+                         "links": list(links)}) is None
     return next(v["task"]["id"] for v in store.tracked_tasks if v["task"]["title"] == title.strip())
 
 
@@ -150,7 +177,7 @@ def test_a_created_task_round_trips_through_the_cli(tstore):
     tstore.tracked_tasks_changed.connect(lambda: fired.append(1))
     task_id = _create(tstore, "  Physical iPhone ", tags=["Area:Devices", "kind feature"],
                       links=["#12", f"{PR7}/files", "https://ws.slack.com/archives/C1/p1"])
-    assert fired == [1]
+    assert fired
     # The store's rows are the CLI's own answer, read back from disk by a second call.
     assert tstore.tracked_tasks == tasks.views()
     view = _view(tstore, task_id)
@@ -168,7 +195,7 @@ def test_each_edit_lands_in_the_task_and_its_history(tstore):
     task_id = _create(tstore, "Tor transport", tags=["area:network", "old"])
 
     def edit(**op) -> dict:
-        assert tstore.edit_tracked_task({"id": task_id, **op}) is None
+        assert _edit(tstore, {"id": task_id, **op}) is None
         return _view(tstore, task_id)
 
     v = edit(op="update", tags=["area:network", "kind:feature"])
@@ -190,13 +217,15 @@ def test_each_edit_lands_in_the_task_and_its_history(tstore):
     v = edit(op="update", pinnedStatus="")
     assert "pinnedStatus" not in v["task"] and v["history"][0]["tags"] == ["unpinned"]
 
-    assert tstore.edit_tracked_task({"op": "archive", "id": task_id}) is None
+    assert _edit(tstore, {"op": "archive", "id": task_id}) is None
     assert tstore.tracked_tasks == []
     tstore.set_tracker_show_archived(True)
+    settle(tstore)
     assert [v["task"]["id"] for v in tstore.tracked_tasks] == [task_id]
     assert _view(tstore, task_id)["task"]["archivedAt"]
-    assert tstore.edit_tracked_task({"op": "unarchive", "id": task_id}) is None
+    assert _edit(tstore, {"op": "unarchive", "id": task_id}) is None
     tstore.set_tracker_show_archived(False)
+    settle(tstore)
     assert [v["task"]["id"] for v in tstore.tracked_tasks] == [task_id]
 
 
@@ -204,9 +233,9 @@ def test_each_edit_lands_in_the_task_and_its_history(tstore):
 def test_an_edit_the_core_refuses_is_its_reason_and_changes_nothing(tstore):
     task_id = _create(tstore, "Tor transport")
     before = tstore.tracked_tasks
-    assert tstore.edit_tracked_task({"op": "update", "id": "t-nope", "tags": ["x"]}) == \
+    assert _edit(tstore, {"op": "update", "id": "t-nope", "tags": ["x"]}) == \
         "diplomat-core tasks-edit failed: diplomat-core: no task t-nope"
-    assert tstore.edit_tracked_task({"op": "link", "id": task_id, "url": "ftp://x"}) == \
+    assert _edit(tstore, {"op": "link", "id": task_id, "url": "ftp://x"}) == \
         "diplomat-core tasks-edit failed: diplomat-core: not a link: ftp://x"
     assert tstore.tracked_tasks is before
     assert tasks.views() == before
@@ -226,7 +255,7 @@ def test_the_tick_syncs_only_while_a_task_is_not_archived(tstore, github, monkey
 
     github.answer(o_r_7=gh_pr(PR7, "Seven", ci="FAILURE"))
     task_id = _create(tstore, "Seven", links=[PR7, "https://example.com/doc"])
-    _sync(tstore)
+    # The create's own sync.
     assert synced == [1] and len(github.calls()) == 1
     view = _view(tstore, task_id)
     assert (view["status"], view["reasons"]) == ("blocked", ["o/r#7:ci-failing"])
@@ -234,16 +263,18 @@ def test_the_tick_syncs_only_while_a_task_is_not_archived(tstore, github, monkey
     assert view["task"]["links"][0]["title"] == "Seven"
     assert tstore.tracker_sync_events == 1 and tstore.tracker_sync_error is None
     assert tstore.tracker_last_sync is not None and not tstore.tracker_syncing
-
-    assert tstore.edit_tracked_task({"op": "archive", "id": task_id}) is None
     _sync(tstore)
-    assert synced == [1]
+    assert synced == [1, 1]
+
+    assert _edit(tstore, {"op": "archive", "id": task_id}) is None
+    _sync(tstore)
+    assert synced == [1, 1]
     # Even with the archived ones on screen: they are not the ones the tick asks about.
     tstore.set_tracker_show_archived(True)
     _sync(tstore)
-    assert synced == [1]
+    assert synced == [1, 1]
     _sync(tstore, force=True)
-    assert synced == [1, 0]
+    assert synced == [1, 1, 0]
 
 
 @needs_core
@@ -260,9 +291,9 @@ def test_a_task_another_process_made_is_seen_and_synced_by_the_next_tick(tstore,
 
 @needs_core
 def test_a_gh_failure_is_the_error_and_writes_nothing(tstore, github):
+    github.fail("HTTP 502: Bad Gateway")
     _create(tstore, "Seven", links=[PR7])
     lines = _events_file().read_text()
-    github.fail("HTTP 502: Bad Gateway")
     _sync(tstore)
     assert tstore.tracker_sync_error == "gh exited 1: HTTP 502: Bad Gateway"
     assert tstore.tracker_sync_events == 0
@@ -282,12 +313,12 @@ def test_the_blocked_count_is_of_unarchived_blocked_tasks(tstore, github):
     _create(tstore, "Seven", links=[PR7])
     eight = _create(tstore, "Eight", links=[pr8])
     _create(tstore, "Notes only")
-    assert tstore.tracker_blocked == 0
     _sync(tstore)
     assert sorted(v["status"] for v in tstore.tracked_tasks) == ["blocked", "blocked", "open"]
     assert tstore.tracker_blocked == 2
-    assert tstore.edit_tracked_task({"op": "archive", "id": eight}) is None
+    assert _edit(tstore, {"op": "archive", "id": eight}) is None
     tstore.set_tracker_show_archived(True)
+    settle(tstore)
     assert _view(tstore, eight)["status"] == "blocked"
     assert tstore.tracker_blocked == 1
 
@@ -304,3 +335,127 @@ def test_a_list_the_cli_cannot_answer_keeps_the_rows_and_says_why(tstore, monkey
     tstore.refresh_tracked_tasks()
     assert tstore.tracked_tasks is rows
     assert tstore.tracker_list_error == "diplomat-core not found"
+
+
+@needs_core
+def test_a_create_a_link_and_an_unarchive_each_sync_and_nothing_else_does(tstore, github):
+    pr8 = "https://github.com/o/r/pull/8"
+    github.answer(o_r_7=gh_pr(PR7, "Seven", draft=True), o_r_8=gh_pr(pr8, "Eight"))
+    task_id = _create(tstore, "Seven", links=[PR7])
+    assert len(github.calls()) == 1
+    assert _view(tstore, task_id)["linkStates"] == {PR7: "draft"}
+
+    def calls_after(**op) -> int:
+        assert _edit(tstore, {"id": task_id, **op}) is None
+        return len(github.calls())
+
+    assert calls_after(op="note", text="x") == 1
+    assert calls_after(op="update", tags=["a"]) == 1
+    assert calls_after(op="link", url=pr8) == 2
+    assert _view(tstore, task_id)["linkStates"] == {PR7: "draft", pr8: "open"}
+    assert calls_after(op="archive") == 2
+    assert calls_after(op="unarchive") == 3
+
+
+# MARK: - the Qt thread never waits on the CLI
+
+
+def _one_task(task_id: str = "t-1", **task) -> dict:
+    return {"task": {"id": task_id, "title": "T", "links": [], **task}, "status": "open",
+            "reasons": [], "history": [], "linkStates": {}}
+
+
+def test_every_tracker_cli_call_runs_off_the_qt_thread(tstore, monkeypatch):
+    from diplomat_app.tasksview import TasksView
+
+    ran: list[tuple[str, threading.Thread]] = []
+    monkeypatch.setattr(tasks, "views", lambda archived=False: ran.append(
+        ("tasks-list", threading.current_thread())) or [_one_task()])
+    monkeypatch.setattr(tasks, "edit", lambda op: ran.append(
+        (f"tasks-edit {op['op']}", threading.current_thread())) or {})
+    monkeypatch.setattr(tasks, "sync", lambda n: ran.append(
+        ("tasks-sync", threading.current_thread())) or {"ok": True, "events": 0})
+    tstore.tracked_tasks = [_one_task()]
+    view = TasksView(tstore)
+
+    # A worker mid-read holds the list lock; nothing the Qt thread does may wait on it.
+    held, release = threading.Event(), threading.Event()
+
+    def reading() -> None:
+        with tstore._tracker_lock:
+            held.set()
+            release.wait(30)
+
+    reader = threading.Thread(target=reading)
+    reader.start()
+    held.wait(5)
+    try:
+        started = time.monotonic()
+        view.open()
+        view.archived_box.setChecked(True)
+        view.card("t-1").buttons["pin-done"].click()
+        view.new_title.setText("New")
+        view.create()
+        view.sync_btn.click()
+        assert time.monotonic() - started < 1
+    finally:
+        release.set()
+        reader.join()
+    settle(tstore)
+    assert {name for name, _ in ran} == {"tasks-list", "tasks-edit update", "tasks-edit create",
+                                         "tasks-sync"}
+    assert all(thread is not threading.main_thread() for _, thread in ran)
+
+
+def test_edits_run_one_at_a_time_in_the_order_asked(tstore, monkeypatch):
+    applied, answers = [], []
+    gate = threading.Event()
+
+    def edit(op):
+        if op["n"] == 0:
+            gate.wait(30)
+        applied.append(op["n"])
+        return {}
+
+    monkeypatch.setattr(tasks, "edit", edit)
+    monkeypatch.setattr(tasks, "views", lambda archived=False: [])
+    tstore.tracked_task_edited.connect(lambda origin, error: answers.append((origin, error)))
+    for n in range(4):
+        tstore.edit_tracked_task_async({"op": "note", "n": n}, n)
+    gate.set()
+    settle(tstore)
+    assert applied == [0, 1, 2, 3]
+    assert answers == [(0, None), (1, None), (2, None), (3, None)]
+
+
+@pytest.mark.parametrize("live, asked_mid_sync, follow_up", [
+    # Any number of asks while one runs is one more sync after it.
+    (True, [False, False, True], 1),
+    # A "Sync now" among them forces the one that follows, as it would have alone.
+    (False, [False, True], 1),
+    (False, [False], 0),
+])
+def test_a_sync_asked_for_mid_sync_runs_after_it(tstore, monkeypatch, live, asked_mid_sync,
+                                                 follow_up):
+    synced, in_sync, release = [], threading.Event(), threading.Event()
+
+    def sync(n):
+        synced.append(n)
+        in_sync.set()
+        release.wait(30)
+        return {"ok": True, "events": 0}
+
+    monkeypatch.setattr(tasks, "sync", sync)
+    monkeypatch.setattr(tasks, "views",
+                        lambda archived=False: [_one_task(archivedAt=None if live else "x")])
+    tstore.run_tracker_sync_async(force=True)
+    assert in_sync.wait(10)
+    for force in asked_mid_sync:
+        tstore.run_tracker_sync_async(force=force)
+    release.set()
+    settle(tstore)
+    assert len(synced) == 1 + follow_up
+    # And the asks after it start a sync of their own.
+    tstore.run_tracker_sync_async(force=True)
+    settle(tstore)
+    assert len(synced) == 2 + follow_up and not tstore.tracker_syncing

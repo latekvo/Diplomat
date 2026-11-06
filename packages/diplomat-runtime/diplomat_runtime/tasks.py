@@ -3,7 +3,8 @@
 Everything Tasks decides is ``DiplomatCore``, reached through the ``diplomat-core`` CLI
 (``tasks-list``, ``tasks-sync``, ``tasks-edit``), which reads and writes
 ``$DIPLOMAT_TASKS_DIR`` (default ``~/.diplomat/tasks``). What lives here is calling it,
-and the sync period, the one tunable of ``assets/tasks.json`` a front-end reads itself.
+and the tunables of ``assets/tasks.json`` the front-end reads itself: the sync period
+(``syncSecs``, ``minSyncSecs``) and the ``chunk`` that bounds a sync's run time.
 
 Stdlib-only, like the rest of the runtime.
 """
