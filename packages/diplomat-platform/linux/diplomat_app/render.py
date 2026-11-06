@@ -8,7 +8,7 @@ a real display by grabbing the widget's own pixels:
 
 what ∈ {panel, lookup, wizard, issues, conflicts, audit, settings[-explain],
 devices, devices-screen[-remote[-away]|-off], mesh, telemetry, comms, comms-panel,
-comms-empty}.
+comms-empty, tasks}.
 With DIPLOMAT_RENDER_LIVE=1 it fetches real data first; otherwise it uses a small
 synthetic fixture.
 """
@@ -684,6 +684,144 @@ def _comms_fixture(store: Store, *, signed_in: bool) -> None:
     store.refresh_comms_feed()
 
 
+def write_gh_stub(directory, answers: dict) -> str:
+    """A ``gh`` for ``tasks-sync``: it answers the batched query from ``gh-answers.json``
+    in ``directory`` (``{"owner/repo#n": node | None}``, re-read per call, so a caller
+    moves GitHub on between syncs; ``{"fail": stderr}`` exits 1 with it), and appends
+    each argv to ``gh-calls``. An item it holds no node for is ``NOT_FOUND``, as GitHub
+    answers. Returns the stub's path, for ``DIPLOMAT_GH``."""
+    import json
+    import sys
+    from pathlib import Path
+
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "gh-answers.json").write_text(json.dumps(answers))
+    stub = directory / "gh"
+    stub.write_text(f"""#!{sys.executable}
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+args = sys.argv[1:]
+with open(os.path.join(here, "gh-calls"), "a") as f:
+    f.write(json.dumps(args) + "\\n")
+with open(os.path.join(here, "gh-answers.json")) as f:
+    answers = json.load(f)
+if "fail" in answers:
+    sys.stderr.write(answers["fail"])
+    sys.exit(1)
+vals = dict(a.split("=", 1) for a in args if "=" in a)
+data, errors, k = {{}}, [], 0
+while f"o{{k}}" in vals:
+    key = (vals[f"o{{k}}"] + "/" + vals[f"r{{k}}"] + "#" + vals[f"n{{k}}"]).lower()
+    node = answers.get(key)
+    data[f"i{{k}}"] = {{"issueOrPullRequest": node}}
+    if node is None:
+        errors.append({{"type": "NOT_FOUND", "path": [f"i{{k}}", "issueOrPullRequest"],
+                       "message": "Could not resolve to an issue or pull request"}})
+    k += 1
+print(json.dumps({{"data": data, **({{"errors": errors}} if errors else {{}})}}))
+sys.exit(1 if errors else 0)
+""")
+    stub.chmod(0o755)
+    return str(stub)
+
+
+def gh_pr(url: str, title: str, *, state: str = "OPEN", draft: bool = False,
+          review: str | None = None, mergeable: str = "MERGEABLE", ci: str | None = "SUCCESS",
+          comments: tuple = (), reviews: tuple = (), closes: tuple = ()) -> dict:
+    """A ``TaskPR`` node (assets/graphql/task-item.graphql) as GitHub answers it.
+    ``comments``: ``(id, login, body)``; ``reviews``: ``(id, login, state)``."""
+    at = "2026-11-05T10:00:00Z"
+    return {
+        "__typename": "PullRequest", "title": title, "url": url, "state": state,
+        "isDraft": draft, "reviewDecision": review, "mergeable": mergeable,
+        "mergedAt": at if state == "MERGED" else None,
+        "closedAt": at if state in ("MERGED", "CLOSED") else None,
+        "commits": {"nodes": [{"commit": {"statusCheckRollup": ci and {"state": ci}}}]},
+        "closingIssuesReferences": {"nodes": [{"url": u} for u in closes]},
+        "comments": {"nodes": [
+            {"id": i, "url": f"{url}#issuecomment-{i}", "author": {"login": who},
+             "createdAt": at, "bodyText": body} for i, who, body in comments]},
+        "reviews": {"nodes": [
+            {"id": i, "url": f"{url}#pullrequestreview-{i}", "author": {"login": who},
+             "state": st, "submittedAt": at} for i, who, st in reviews]},
+    }
+
+
+def gh_issue(url: str, title: str, *, state: str = "OPEN") -> dict:
+    """A ``TaskIssue`` node."""
+    return {"__typename": "Issue", "title": title, "url": url, "state": state,
+            "closedAt": "2026-11-05T10:00:00Z" if state == "CLOSED" else None,
+            "closedByPullRequestsReferences": {"nodes": []}, "comments": {"nodes": []}}
+
+
+def _tasks_fixture(store: Store) -> bool:
+    """Tasks made through the real ``diplomat-core tasks-edit`` in a scratch
+    ``DIPLOMAT_TASKS_DIR``, synced twice through the real ``tasks-sync`` against a stub
+    ``gh`` that moves GitHub on in between: the screen draws the core's own statuses,
+    reasons and history, so seeding the Store would test nothing the user sees. A
+    ``DIPLOMAT_TASKS_DIR`` set by the caller is drawn as it is, archived tasks too: True
+    then."""
+    import tempfile
+    from pathlib import Path
+
+    from diplomat_runtime import core, tasks
+
+    if os.environ.get("DIPLOMAT_TASKS_DIR"):
+        store.set_tracker_show_archived(True)
+        return True
+    scratch = Path(tempfile.mkdtemp(prefix="diplomat-render-tasks-"))
+    os.environ["DIPLOMAT_TASKS_DIR"] = str(scratch / "tasks")
+    os.environ["DIPLOMAT_COMMS_DIR"] = str(scratch / "comms")
+    cfg = core.config()
+    home = f"https://github.com/{cfg['owner']}/{cfg['repo']}"
+    pr, issue = f"{home}/pull/1714", f"{home}/issues/1702"
+    tor = "https://github.com/latekvo/szpontnet/pull/27"
+    old = f"{home}/pull/1650"
+    answers = {
+        f"{cfg['owner']}/{cfg['repo']}#1714".lower(): gh_pr(
+            pr, "Physical iPhone runner", comments=[("C1", "kacper", "old")]),
+        f"{cfg['owner']}/{cfg['repo']}#1702".lower(): gh_issue(issue, "Support real iPhones"),
+        "latekvo/szpontnet#27": gh_pr(tor, "Tor onion transport", review="REVIEW_REQUIRED"),
+        f"{cfg['owner']}/{cfg['repo']}#1650".lower(): gh_pr(old, "Drop the old allocator",
+                                                            state="MERGED"),
+    }
+    stub_dir = scratch / "gh"
+    os.environ["DIPLOMAT_GH"] = write_gh_stub(stub_dir, answers)
+
+    def made(op: dict) -> str:
+        return tasks.edit(op)["id"]
+
+    iphone = made({"op": "create", "title": "Physical iPhone support",
+                   "tags": ["area:devices", "kind:feature", "blocked-on:apple"],
+                   "links": [pr, "#1702",
+                             "https://swmansion.slack.com/archives/D0B54QMA6DT/p1793373966186819"]})
+    made({"op": "create", "title": "Tor transport", "tags": ["area:network"],
+          "links": ["latekvo/szpontnet#27", "https://community.torproject.org/onion-services/"]})
+    docs = made({"op": "create", "title": "Docs refresh", "tags": ["kind:docs"]})
+    tasks.edit({"op": "note", "id": docs, "text": "waiting for the new screenshots",
+                "tags": ["waiting"]})
+    tasks.edit({"op": "update", "id": docs, "pinnedStatus": "paused"})
+    made({"op": "create", "title": "Retire the old allocator", "tags": ["area:devices"],
+          "links": [old]})
+    tasks.sync(4)
+    answers[f"{cfg['owner']}/{cfg['repo']}#1714".lower()] = gh_pr(
+        pr, "Physical iPhone runner", ci="FAILURE", review="CHANGES_REQUESTED",
+        comments=[("C1", "kacper", "old"),
+                  ("C2", "hubert", "The runner needs a signing identity on CI first; "
+                                   "the xcodebuild step fails without one.")],
+        reviews=[("R1", "hubert", "CHANGES_REQUESTED")])
+    write_gh_stub(stub_dir, answers)
+    tasks.edit({"op": "note", "id": iphone, "text": "Apple's DDI mount is the blocker",
+                "tags": ["blocked-on:apple"], "url": "https://developer.apple.com/forums/"})
+    synced = tasks.sync(4)
+    store.refresh_tracked_tasks()
+    store.tracker_last_sync = datetime.now().astimezone()
+    store.tracker_sync_events = synced["events"]
+    store.tracker_sync_error = synced.get("error")
+    return False
+
+
 def run(what: str, out: str) -> int:
     app = QApplication.instance() or QApplication([])
     store = Store()
@@ -728,6 +866,8 @@ def run(what: str, out: str) -> int:
     # Also before Panel(): the header's ✉ count is read as it is built.
     if what.startswith("comms"):
         _comms_fixture(store, signed_in=what != "comms-empty")
+    # Also before Panel(): the header's ✓ count is read as it is built.
+    given_tasks = what == "tasks" and _tasks_fixture(store)
 
     panel = Panel(store)
     if what == "lookup":
@@ -760,6 +900,11 @@ def run(what: str, out: str) -> int:
         panel._toggle_telemetry()
     elif what in ("comms", "comms-empty"):
         panel._toggle_comms()
+    elif what == "tasks":
+        panel._toggle_task_tracker()
+        # The fixture's first task unfolded; a caller's every one.
+        for view in store.tracked_tasks[:None if given_tasks else 1]:
+            panel.tasks_view._toggle_history(view["task"]["id"])
     else:  # panel, and comms-panel: the same, its ✉ header button showing a count
         _device_fixture(store)
         _left_pane_fixture(store)
