@@ -353,6 +353,17 @@ def isolated_comms_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_tasks_dir(tmp_path, monkeypatch):
+    """Redirect ``~/.diplomat/tasks`` to a per-test temp dir, for this process and the
+    ``diplomat-core`` it starts: the real one is the operator's task list. Its
+    ``tasks-sync`` gets a ``gh`` that is not there, not the operator's, unless the test
+    stubs one (``test_tasks_store.github``): an edit can start a sync."""
+    monkeypatch.setenv("DIPLOMAT_TASKS_DIR", str(tmp_path / "tasks"))
+    monkeypatch.setenv("DIPLOMAT_GH", str(tmp_path / "no-gh"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def no_comms_replies(monkeypatch):
     """Answer every ``comms-reply`` with "no reply due", and yield the real function.
 

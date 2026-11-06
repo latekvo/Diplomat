@@ -258,6 +258,45 @@ enum Render {
             } else {
                 CommsView(isPresented: .constant(true))
             }
+        case let s where s.hasPrefix("tasks"):
+            // "tasks" draws the screen over six tasks, one per status, and one archived, two
+            // of them unfolded; "tasks-panel" the same inside the whole panel (header
+            // button, blocked badge, screen swap); "tasks-form" the new-task form, a note
+            // being written and the sync error banner (`window-tasks-form` adds the read
+            // error's, from the screen's own reload); "tasks-edit-error" the
+            // refusals drawn where they were made: the new-task form's, a link editor's and
+            // a row action's; "tasks-archived" the archived one listed; "tasks-empty" no
+            // task at all. A `DIPLOMAT_TASKS_DIR` set by the caller is drawn as it is, every
+            // task unfolded, instead of the fixture.
+            let _ = seedTasks(store, empty: s.contains("empty"), form: s.contains("form"))
+            let first = tasksUnfolded.sorted().first
+            if s.contains("panel") {
+                ContentView(showTasks: true)
+            } else if s.contains("form") {
+                TasksView(isPresented: .constant(true), seedExpanded: tasksUnfolded,
+                          seedComposer: .init(text: "Fire TV screen recording",
+                                              tags: "area:vega kind:feature",
+                                              links: "https://github.com/software-mansion/argent/issues/1730\n#1731"),
+                          seedEditor: first.map {
+                              .init(task: $0, kind: .note,
+                                    seed: .init(text: "Apple confirmed the entitlement is per-team; waiting on legal",
+                                                tags: "decision blocked-on:legal"))
+                          })
+            } else if s.contains("edit-error") {
+                TasksView(isPresented: .constant(true), seedExpanded: tasksUnfolded,
+                          seedComposer: .init(text: "Fire TV screen recording", links: "argent 1730",
+                                              error: "not a link: argent 1730"),
+                          seedEditor: first.map {
+                              .init(task: $0, kind: .link,
+                                    seed: .init(text: "argent 1714", error: "not a link: argent 1714"))
+                          },
+                          seedActionErrors: Dictionary(uniqueKeysWithValues: tasksUnfolded.sorted().dropFirst().map {
+                              ($0, "could not write \(NSHomeDirectory())/.diplomat/tasks/tasks.json")
+                          }))
+            } else {
+                TasksView(isPresented: .constant(true), seedExpanded: tasksUnfolded,
+                          seedArchived: s.contains("archived"))
+            }
         case "unban-confirm", "unban-confirm-slack":
             // Seed the ban list and open the inline "Unban @X?" confirmation on a row —
             // proving it renders inside the panel (not as a separate NSAlert window).
@@ -712,6 +751,170 @@ enum Render {
         ]
         store.refreshComms()
         return true
+    }
+
+    /// The tasks "tasks" draws unfolded.
+    private static var tasksUnfolded: Set<String> = []
+
+    /// Written by the real core into a scratch `DIPLOMAT_TASKS_DIR` (`TaskStore.dir` reads it
+    /// per call): the tasks, notes and tag edits through `TaskStore.edit`, the GitHub history
+    /// and mirror from two `TaskSync.apply` rounds over composed answers, so the statuses and
+    /// reasons are `TaskStore.views`' own. Only the Slack lines, which a sync folds from
+    /// Comms' log, are composed whole.
+    @discardableResult
+    private static func seedTasks(_ store: Store, empty: Bool, form: Bool) -> Bool {
+        let now = Date()
+        if let given = ProcessInfo.processInfo.environment["DIPLOMAT_TASKS_DIR"], !given.isEmpty {
+            // When a sync last wrote the mirror.
+            let mirror = URL(fileURLWithPath: given).appendingPathComponent("mirror.json")
+            store.tasksLastSync = (try? FileManager.default.attributesOfItem(atPath: mirror.path))?[.modificationDate] as? Date
+            store.taskViews = (try? TaskStore.views(archived: true)) ?? []
+            store.taskLabels = TaskTint.labels(of: store.taskViews)
+            tasksUnfolded = Set(store.taskViews.map(\.task.id))
+            return true
+        }
+        store.tasksLastSync = now.addingTimeInterval(-95)
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diplomat-render-tasks-\(getpid())")
+        try? FileManager.default.removeItem(at: dir)
+        setenv("DIPLOMAT_TASKS_DIR", dir.path, 1)
+        guard !empty else {
+            store.taskViews = []
+            return true
+        }
+        do {
+            try writeTaskFixture(in: dir, now: now)
+            store.taskViews = try TaskStore.views(archived: true, now: now)
+            store.taskLabels = TaskTint.labels(of: store.taskViews)
+        } catch {
+            print("RENDER ERROR: tasks fixture: \(error)")
+        }
+        let byTitle = Dictionary(store.taskViews.map { ($0.task.title, $0.task.id) }) { a, _ in a }
+        tasksUnfolded = Set(["Physical iPhone support", "Release 0.9 checklist"].compactMap { byTitle[$0] })
+        if form {
+            store.tasksSyncError = "gh: GraphQL: API rate limit exceeded for user ID 1234 (skipped 2 links)"
+            // Torn after the read above, so the screen's own reload, which only a `window-`
+            // render waits for, says why.
+            try? Data("{".utf8).write(to: dir.appendingPathComponent("tasks.json"))
+        }
+        return true
+    }
+
+    private static func writeTaskFixture(in dir: URL, now: Date) throws {
+        let (owner, repo) = CoreAssets.repoCoordinates()
+        func ago(_ hours: Double) -> Date { now.addingTimeInterval(-hours * 3600) }
+        func gh(_ kind: String, _ n: Int, in o: String = owner, _ r: String = repo) -> String {
+            "https://github.com/\(o)/\(r)/\(kind == "pr" ? "pull" : "issues")/\(n)"
+        }
+        let slack1 = "https://swmansion.slack.com/archives/C05ARGENTDEV/p1793373966186819"
+        let slack2 = "https://swmansion.slack.com/archives/D0B54QMA6DT/p1793380000000100"
+
+        @discardableResult
+        func edit(_ e: TaskEdit, _ hoursAgo: Double) throws -> TrackedTask {
+            try TaskStore.edit(e, now: ago(hoursAgo), in: dir)
+        }
+        let iphone = try edit(.create(title: "Physical iPhone support",
+                                      tags: ["area:devices", "kind:feature"],
+                                      links: [gh("pr", 1714), gh("issue", 1650), slack1]), 26 * 24)
+        try edit(.update(id: iphone.id, title: nil, tags: ["area:devices", "kind:feature", "blocked-on:apple"],
+                         pinnedStatus: nil), 5 * 24)
+        try edit(.note(id: iphone.id, text: "USB-only for now: Wi-Fi pairing needs a provisioning profile per device",
+                       tags: ["decision"], url: nil), 4 * 24)
+        try edit(.create(title: "Network inspector for iOS",
+                                       tags: ["area:network", "kind:feature"],
+                                       links: [gh("pr", 1688), gh("pr", 1402, in: "software-mansion", "radon-ide")]),
+                               12 * 24)
+        try edit(.create(title: "Tor transport for the mesh", tags: ["area:mesh", "kind:feature"],
+                                   links: [gh("pr", 1601), gh("issue", 1540)]), 40 * 24)
+        let release = try edit(.create(title: "Release 0.9 checklist", tags: ["kind:chore", "release"],
+                                       links: [slack2, "https://docs.google.com/document/d/1x0-release-notes"]),
+                               3 * 24)
+        try edit(.note(id: release.id, text: "Changelog drafted; waiting for the Vega build to go green",
+                       tags: ["changelog"], url: "https://docs.google.com/document/d/1x0-release-notes"), 30)
+        try edit(.create(title: "Fire TV screen recording", tags: ["area:vega", "kind:feature"],
+                         links: [gh("pr", 1731), gh("issue", 1730)]), 6 * 24)
+        let tvos = try edit(.create(title: "Apple TV remote gestures", tags: ["area:tvos", "kind:feature"],
+                                    links: [gh("issue", 1590)]), 30 * 24)
+        try edit(.update(id: tvos.id, title: nil, tags: nil, pinnedStatus: TaskStatus.paused.rawValue), 8 * 24)
+        let spike = try edit(.create(title: "Hermes sampling profiler spike", tags: ["kind:spike"],
+                                     links: [gh("issue", 1203)]), 90 * 24)
+        try edit(.archive(id: spike.id), 60 * 24)
+
+        typealias Activity = TaskItem.Activity
+        func comment(_ id: String, _ url: String, _ login: String, _ hoursAgo: Double, _ text: String) -> Activity {
+            Activity(id: id, url: url + "#issuecomment-\(id)", login: login, at: ago(hoursAgo), text: text)
+        }
+        func review(_ id: String, _ url: String, _ login: String, _ hoursAgo: Double, _ state: String) -> Activity {
+            Activity(id: id, url: url + "#pullrequestreview-\(id)", login: login, at: ago(hoursAgo), state: state)
+        }
+        let p1714 = gh("pr", 1714), i1650 = gh("issue", 1650), p1688 = gh("pr", 1688)
+        let p1402 = gh("pr", 1402, in: "software-mansion", "radon-ide"), p1601 = gh("pr", 1601)
+        let i1540 = gh("issue", 1540), p1731 = gh("pr", 1731), i1730 = gh("issue", 1730)
+        let i1590 = gh("issue", 1590)
+        let old = [comment("c0", p1714, "octocat", 20 * 24, "first pass at the USB transport")]
+        // First sight: one `linked` line each; the older comments are seen silently.
+        let first: [String: TaskFetch] = [
+            p1714: .found(TaskItem(kind: "pr", title: "feat: physical iPhone over USB", url: p1714,
+                                   state: "OPEN", ci: "PENDING", comments: old)),
+            i1650: .found(TaskItem(kind: "issue", title: "Support physical iPhones", url: i1650, state: "OPEN")),
+            p1688: .found(TaskItem(kind: "pr", title: "feat: iOS network inspector", url: p1688,
+                                   state: "OPEN", isDraft: true, ci: "SUCCESS")),
+            p1402: .found(TaskItem(kind: "pr", title: "Network panel for iOS apps", url: p1402,
+                                   state: "OPEN", reviewDecision: "REVIEW_REQUIRED", ci: "SUCCESS")),
+            p1601: .found(TaskItem(kind: "pr", title: "mesh: Tor onion transport", url: p1601,
+                                   state: "OPEN", reviewDecision: "APPROVED", ci: "SUCCESS")),
+            i1540: .found(TaskItem(kind: "issue", title: "Mesh across NATs", url: i1540, state: "OPEN")),
+            p1731: .found(TaskItem(kind: "pr", title: "feat: Vega screen recording", url: p1731,
+                                   state: "OPEN", isDraft: true, ci: "PENDING")),
+            i1730: .found(TaskItem(kind: "issue", title: "Record the Fire TV screen", url: i1730, state: "OPEN")),
+            i1590: .found(TaskItem(kind: "issue", title: "Swipe gestures on the Apple TV remote", url: i1590,
+                                   state: "OPEN")),
+        ]
+        // Later: what moved since.
+        let second: [String: TaskFetch] = [
+            p1714: .found(TaskItem(kind: "pr", title: "feat: physical iPhone over USB", url: p1714,
+                                   state: "OPEN", reviewDecision: "CHANGES_REQUESTED", ci: "FAILURE",
+                                   comments: old + [
+                                       comment("c1", p1714, "hubert-gancarczyk", 7, "The device lane times out on pairing, see the run"),
+                                       comment("c2", p1714, "latekvo", 3, "Repro'd: the runner never trusts the host. Fixing."),
+                                   ],
+                                   reviews: [review("r1", p1714, "kacperkapusciak", 6, "CHANGES_REQUESTED")])),
+            i1650: first[i1650]!,
+            p1688: .found(TaskItem(kind: "pr", title: "feat: iOS network inspector", url: p1688,
+                                   state: "OPEN", reviewDecision: "APPROVED", ci: "SUCCESS",
+                                   reviews: [review("r2", p1688, "filip131311", 20, "APPROVED")])),
+            p1402: first[p1402]!,
+            p1601: .found(TaskItem(kind: "pr", title: "mesh: Tor onion transport", url: p1601,
+                                   state: "MERGED", reviewDecision: "APPROVED", ci: "SUCCESS", mergedAt: ago(9 * 24))),
+            i1540: .found(TaskItem(kind: "issue", title: "Mesh across NATs", url: i1540, state: "CLOSED",
+                                   closedAt: ago(9 * 24))),
+            p1731: first[p1731]!, i1730: first[i1730]!, i1590: first[i1590]!,
+        ]
+        let excerpt = (try? CoreAssets.tasks())?.excerptChars ?? 200
+        let round1 = TaskSync.apply(tasks: try TaskStore.tasks(in: dir), mirror: TaskMirror(), fetched: first,
+                                    now: ago(10 * 24), excerptChars: excerpt)
+        let round2 = TaskSync.apply(tasks: round1.tasks, mirror: round1.mirror, fetched: second,
+                                    now: ago(2), excerptChars: excerpt)
+        let slack = [
+            TaskEvent(at: ago(8), task: iphone.id, source: "slack",
+                      tags: ["slack", "@hubert.gancarczyk", "#argent-dev", "triage:review"],
+                      url: slack1, subject: p1714,
+                      text: "can you look at #1714 when you get a chance? the device lane is red again"),
+            TaskEvent(at: ago(28), task: release.id, source: "slack",
+                      tags: ["slack", "@kacper.kapusciak", "dm", "triage:question"],
+                      url: slack2, subject: slack2, text: "is 0.9 still going out on Friday?"),
+        ]
+        var lines = Data()
+        for e in round1.events + round2.events + slack {
+            lines.append(try CommsLog.encoder.encode(e))
+            lines.append(UInt8(ascii: "\n"))
+        }
+        let events = dir.appendingPathComponent("events.jsonl")
+        let handle = try FileHandle(forWritingTo: events)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: lines)
+        try handle.close()
+        try CommsLog.encoder.encode(round2.mirror).write(to: dir.appendingPathComponent("mirror.json"))
     }
 
     /// Synthetic mesh topology (the macOS analogue of the Linux render.py

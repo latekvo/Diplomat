@@ -19,6 +19,9 @@ import Foundation
 //   diplomat-core comms-reply       < request.json   # Comms' reply in Slack, if one is due
 //   diplomat-core comms-reply-merge < requests.json  # those requests, one per Slack message
 //   diplomat-core opencode-session-model             # what an unpinned 2.x spawn names
+//   diplomat-core tasks-list        [--archived]     # the Tasks screen's rows (see TasksCommand)
+//   diplomat-core tasks-sync                         # one GitHub + Comms sync of every task
+//   diplomat-core tasks-edit        < edit.json      # one operator edit of a task
 //
 // build-prompt: the JSON config's "kind" field ("review" | "conflicts" | "audit" |
 // "issues" | "investigate") selects the builder; remaining fields mirror the Swift
@@ -80,12 +83,15 @@ let args = CommandLine.arguments
 guard args.count >= 2,
       ["build-prompt", "tool-data", "telemetry", "agent-state", "agent-registry",
        "comms-tick", "comms-auth", "comms-feed", "comms-effect", "comms-reply", "comms-reply-merge",
-       "opencode-session-model"].contains(args[1]) else {
+       "opencode-session-model", "tasks-list", "tasks-sync", "tasks-edit"].contains(args[1]) else {
     die("usage: diplomat-core (build-prompt | tool-data | telemetry | agent-state"
-        + " | agent-registry | comms-tick | comms-effect | comms-reply | comms-reply-merge)  (JSON on stdin)"
+        + " | agent-registry | comms-tick | comms-effect | comms-reply | comms-reply-merge"
+        + " | tasks-edit)  (JSON on stdin)"
         + "\n       diplomat-core comms-feed [--limit N]"
         + "\n       diplomat-core comms-auth"
-        + "\n       diplomat-core opencode-session-model", 1)
+        + "\n       diplomat-core opencode-session-model"
+        + "\n       diplomat-core tasks-list [--archived]"
+        + "\n       diplomat-core tasks-sync", 1)
 }
 
 // These read no stdin, so a caller leaving it attached to a terminal must not hang them.
@@ -101,10 +107,23 @@ if args[1] == "opencode-session-model" {
     emit(Data(AgentModel.openCodeSessionModel().utf8))
     exit(0)
 }
+if args[1] == "tasks-list" {
+    TasksCommand.list(Array(args.dropFirst(2)))
+    exit(0)
+}
+if args[1] == "tasks-sync" {
+    TasksCommand.sync()
+    exit(0)
+}
 
 let input = FileHandle.standardInput.readDataToEndOfFile()
 guard let obj = JSONInput.parse(input) else {
     die("invalid JSON on stdin", 1)
+}
+
+if args[1] == "tasks-edit" {
+    TasksCommand.edit(input)
+    exit(0)
 }
 
 if args[1] == "comms-tick" {

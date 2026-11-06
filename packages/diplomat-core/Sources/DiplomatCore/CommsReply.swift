@@ -485,7 +485,7 @@ public enum CommsKnowledge {
         CommsLog.prepare(dir)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
-        CommsLog.writePrivate(Data(fresh.utf8), to: file)
+        PrivateFiles.writeWhole(Data(fresh.utf8), to: file)
         return fresh
     }
 

@@ -41,6 +41,29 @@ def core_bin() -> str:
     )
 
 
+def cli(args: list[str], *, stdin: object = None, timeout: float = 30) -> str:
+    """``diplomat-core <args>``'s stdout, with ``stdin`` handed over as JSON; or
+    :class:`RuntimeError` saying why not (:class:`CoreBinaryMissing` when there is no
+    binary)."""
+    env = dict(os.environ)
+    env.setdefault("DIPLOMAT_CORE", str(core.assets_dir()))
+    try:
+        proc = subprocess.run(  # noqa: S603 — argv is a literal list
+            [core_bin(), *args],
+            input=None if stdin is None else json.dumps(stdin),
+            stdin=subprocess.DEVNULL if stdin is None else None,
+            capture_output=True, text=True, env=env, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"diplomat-core {args[0]} did not answer within "
+                           f"{int(timeout)}s") from exc
+    except OSError as exc:
+        raise RuntimeError(f"diplomat-core could not be run: {exc}") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(f"diplomat-core {args[0]} failed: {proc.stderr.strip()}")
+    return proc.stdout
+
+
 def opencode_session_model() -> str:
     """The model an unpinned OpenCode 2.x spawn names in its session, or "" to leave
     the choice to the service (``AgentModel.openCodeSessionModel``). "" too when the
