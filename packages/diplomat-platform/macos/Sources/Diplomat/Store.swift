@@ -628,13 +628,14 @@ final class Store: ObservableObject {
     /// `TaskStore.views(archived: true)`: archived tasks too, which the screen hides
     /// until asked.
     @Published var taskViews: [TaskView] = []
+    /// `TaskTint.labels(of: taskViews)`, read with them.
+    @Published var taskLabels: [String: String] = [:]
+    /// When the last sync finished, whether or not it failed.
     @Published var tasksLastSync: Date?
     /// What the last sync could not do: all of it (`ok` false), or some links.
     @Published var tasksSyncError: String?
     /// Why the task files did not read on the last reload.
     @Published var tasksReadError: String?
-    /// Why the operator's last edit was refused.
-    @Published var tasksEditError: String?
     @Published var tasksSyncing = false
     var tasksSyncAgain = false
     /// Driven from `TasksMonitor.swift`, hence not private.

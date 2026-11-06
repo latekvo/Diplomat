@@ -6,7 +6,8 @@ import DiplomatCore
 /// and links, and its history.
 ///
 /// Draws `store.taskViews` (`TaskStore.views`, the rows `diplomat-core tasks-list` prints for
-/// the Linux twin); every change is a `TaskEdit` through `Store.editTask`.
+/// the Linux twin); every change is a `TaskEdit` through `Store.editTask`. What an editor
+/// holds lives in the editor's own view, so typing redraws that editor and not every row.
 struct TasksView: View {
     @EnvironmentObject var store: Store
     @Binding var isPresented: Bool
@@ -16,37 +17,32 @@ struct TasksView: View {
     /// Tasks whose whole history is listed rather than its newest `historyShown`.
     @State private var wholeHistory: Set<String> = []
     @State private var showArchived: Bool
-    @State private var composing: Bool
-    @State private var newTitle: String
-    @State private var newTags: String
-    @State private var newLinks: String
-    /// The one inline editor open, and what is typed into it.
+    /// The new-task form, while open: what it was opened with.
+    @State private var composer: TaskDraft.Seed?
+    /// The one inline editor open, and what it was opened with.
     @State private var editor: Editor?
-    @State private var editorText: String
-    @State private var editorTags: String
+    /// Why a row's last action (a pin, an archive, a removed link) was refused, by task id.
+    @State private var actionErrors: [String: String]
 
-    struct Editor: Equatable {
-        enum Kind { case link, note, tags }
+    struct Editor: Hashable {
+        enum Kind: Hashable { case link, note, tags }
         let task: String
         let kind: Kind
+        var seed = TaskDraft.Seed()
     }
 
     private static let historyShown = 12
 
     /// Seeded only by the headless renders.
     init(isPresented: Binding<Bool>, seedExpanded: Set<String> = [], seedArchived: Bool = false,
-         seedComposing: (title: String, tags: String, links: String)? = nil,
-         seedEditor: Editor? = nil, seedEditorText: String = "", seedEditorTags: String = "") {
+         seedComposer: TaskDraft.Seed? = nil, seedEditor: Editor? = nil,
+         seedActionErrors: [String: String] = [:]) {
         _isPresented = isPresented
         _expanded = State(initialValue: seedExpanded)
         _showArchived = State(initialValue: seedArchived)
-        _composing = State(initialValue: seedComposing != nil)
-        _newTitle = State(initialValue: seedComposing?.title ?? "")
-        _newTags = State(initialValue: seedComposing?.tags ?? "")
-        _newLinks = State(initialValue: seedComposing?.links ?? "")
+        _composer = State(initialValue: seedComposer)
         _editor = State(initialValue: seedEditor)
-        _editorText = State(initialValue: seedEditorText)
-        _editorTags = State(initialValue: seedEditorTags)
+        _actionErrors = State(initialValue: seedActionErrors)
     }
 
     var body: some View {
@@ -54,12 +50,12 @@ struct TasksView: View {
         return VStack(alignment: .leading, spacing: 8) {
             header
             statusLine
-            if let error = store.tasksSyncError { banner(error, tint: .orange, dismiss: nil) }
-            if let error = store.tasksReadError { banner(error, tint: .red, dismiss: nil) }
-            if let error = store.tasksEditError {
-                banner(error, tint: .red) { store.tasksEditError = nil }
+            if let error = store.tasksSyncError { banner(error, tint: .orange) }
+            if let error = store.tasksReadError { banner(error, tint: .red) }
+            if let seed = composer {
+                let open = $composer
+                NewTaskForm(store: store, seed: seed) { open.wrappedValue = nil }
             }
-            if composing { newTaskForm }
             if views.isEmpty {
                 Text(showArchived || store.taskViews.isEmpty
                      ? "No tasks yet. A task is something that outlives one PR: give it a title, "
@@ -104,8 +100,8 @@ struct TasksView: View {
                 let store = store
                 Task { await store.syncTasks() }
             }
-            ActionChip(symbol: "plus", text: "New task", tint: .accentColor, enabled: !composing) {
-                composing = true
+            ActionChip(symbol: "plus", text: "New task", tint: .accentColor, enabled: composer == nil) {
+                composer = TaskDraft.Seed()
             }
             Button { withAnimation(.easeInOut(duration: 0.15)) { isPresented = false } } label: {
                 Text("Done").bold()
@@ -134,7 +130,7 @@ struct TasksView: View {
         return "GitHub state and Comms pings of every linked item · \(last) · every \(every)"
     }
 
-    private func banner(_ message: String, tint: Color, dismiss: (() -> Void)?) -> some View {
+    private func banner(_ message: String, tint: Color) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 10)).foregroundStyle(tint)
@@ -142,65 +138,8 @@ struct TasksView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             Spacer(minLength: 0)
-            if let dismiss {
-                Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
-                    .buttonStyle(.plain).foregroundStyle(.secondary)
-            }
         }
         .cardChrome(fill: tint.opacity(0.14))
-    }
-
-    // MARK: - New task
-
-    private var newTaskForm: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("NEW TASK").font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.secondary).kerning(0.5)
-            TextField("Title, e.g. Physical iPhone support", text: $newTitle)
-                .textFieldStyle(.roundedBorder).font(.system(size: 11))
-            TextField("Tags, e.g. area:devices kind:feature blocked-on:apple", text: $newTags)
-                .textFieldStyle(.roundedBorder).font(.system(size: 11))
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $newLinks)
-                    .font(.system(size: 11, design: .monospaced))
-                    .frame(height: 52)
-                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
-                if newLinks.isEmpty {
-                    Text("Links, one per line: a PR or issue URL, o/r#12, #12, a Slack permalink, any URL")
-                        .font(.system(size: 11)).foregroundStyle(.tertiary)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .allowsHitTesting(false)
-                }
-            }
-            HStack(spacing: 6) {
-                Spacer()
-                ActionChip(symbol: nil, text: "Cancel", tint: .secondary) { closeComposer() }
-                ActionChip(symbol: "plus", text: "Create", tint: .accentColor,
-                           enabled: !newTitle.trimmingCharacters(in: .whitespaces).isEmpty) {
-                    create()
-                }
-            }
-        }
-        .cardChrome(fill: Color.accentColor.opacity(0.07), padding: 7)
-    }
-
-    private func create() {
-        let edit = TaskEdit.create(title: newTitle, tags: TasksView.words(newTags),
-                                   links: newLinks.split(whereSeparator: \.isNewline)
-                                       .map { $0.trimmingCharacters(in: .whitespaces) }
-                                       .filter { !$0.isEmpty })
-        let store = store
-        let composer = $composing
-        Task {
-            if await store.editTask(edit, sync: true) { composer.wrappedValue = false }
-        }
-    }
-
-    private func closeComposer() {
-        composing = false
-        newTitle = ""
-        newTags = ""
-        newLinks = ""
     }
 
     /// Tags as typed: separated by spaces, commas or new lines.
@@ -213,14 +152,24 @@ struct TasksView: View {
     private func row(_ view: TaskView) -> some View {
         let id = view.task.id
         let open = expanded.contains(id)
-        return TaskRow(view: view, expanded: open,
+        let errors = $actionErrors
+        return TaskRow(view: view, labels: store.taskLabels, expanded: open,
+                       error: actionErrors[id],
                        toggle: {
                            if open { expanded.remove(id) } else { expanded.insert(id) }
-                       }) {
+                       },
+                       dismissError: { errors.wrappedValue[id] = nil },
+                       unlink: { url in edit(.unlink(id: id, url: url), task: id) }) {
             if open {
                 VStack(alignment: .leading, spacing: 5) {
                     actions(view.task)
-                    if let editor, editor.task == id { editorForm(editor, task: view.task) }
+                    if let editor, editor.task == id {
+                        let current = $editor
+                        TaskEditorForm(store: store, editor: editor) {
+                            if current.wrappedValue == editor { current.wrappedValue = nil }
+                        }
+                        .id(editor)
+                    }
                     history(view)
                 }
                 .padding(.leading, 14)
@@ -232,33 +181,33 @@ struct TasksView: View {
         let id = task.id
         return HStack(spacing: 5) {
             ActionChip(symbol: "link.badge.plus", text: "Add link", tint: .accentColor) {
-                openEditor(Editor(task: id, kind: .link), text: "", tags: "")
+                editor = Editor(task: id, kind: .link)
             }
             ActionChip(symbol: "note.text.badge.plus", text: "Add note", tint: .accentColor) {
-                openEditor(Editor(task: id, kind: .note), text: "", tags: "")
+                editor = Editor(task: id, kind: .note)
             }
             ActionChip(symbol: "tag", text: "Edit tags", tint: .accentColor) {
-                openEditor(Editor(task: id, kind: .tags), text: task.tags.joined(separator: " "), tags: "")
+                editor = Editor(task: id, kind: .tags, seed: .init(text: task.tags.joined(separator: " ")))
             }
             if let pinned = task.pinnedStatus {
                 ActionChip(symbol: "pin.slash", text: "Unpin \(pinned.rawValue)", tint: .orange) {
-                    edit(.update(id: id, title: nil, tags: nil, pinnedStatus: ""))
+                    edit(.update(id: id, title: nil, tags: nil, pinnedStatus: ""), task: id)
                 }
             } else {
                 ActionChip(symbol: "checkmark.circle", text: "Pin done", tint: .green) {
-                    edit(.update(id: id, title: nil, tags: nil, pinnedStatus: TaskStatus.done.rawValue))
+                    edit(.update(id: id, title: nil, tags: nil, pinnedStatus: TaskStatus.done.rawValue), task: id)
                 }
                 ActionChip(symbol: "pause.circle", text: "Pin paused", tint: .orange) {
-                    edit(.update(id: id, title: nil, tags: nil, pinnedStatus: TaskStatus.paused.rawValue))
+                    edit(.update(id: id, title: nil, tags: nil, pinnedStatus: TaskStatus.paused.rawValue), task: id)
                 }
             }
             if task.archivedAt == nil {
                 ActionChip(symbol: "archivebox", text: "Archive", tint: .secondary) {
-                    edit(.archive(id: id))
+                    edit(.archive(id: id), task: id)
                 }
             } else {
                 ActionChip(symbol: "arrow.uturn.backward", text: "Unarchive", tint: .accentColor) {
-                    edit(.unarchive(id: id), sync: true)
+                    edit(.unarchive(id: id), task: id, sync: true)
                 }
             }
             Spacer(minLength: 0)
@@ -267,58 +216,10 @@ struct TasksView: View {
         }
     }
 
-    private func openEditor(_ e: Editor, text: String, tags: String) {
-        editor = e
-        editorText = text
-        editorTags = tags
-    }
-
-    private func edit(_ edit: TaskEdit, sync: Bool = false) {
+    private func edit(_ edit: TaskEdit, task id: String, sync: Bool = false) {
         let store = store
-        Task { await store.editTask(edit, sync: sync) }
-    }
-
-    private func editorForm(_ e: Editor, task: TrackedTask) -> some View {
-        let prompt: String
-        switch e.kind {
-        case .link: prompt = "A PR or issue URL, o/r#12, #12, a Slack permalink or any URL"
-        case .note: prompt = "Note: what happened, what was decided"
-        case .tags: prompt = "Tags, separated by spaces"
-        }
-        return HStack(spacing: 5) {
-            TextField(prompt, text: $editorText)
-                .textFieldStyle(.roundedBorder).font(.system(size: 11))
-                .onSubmit { saveEditor(e) }
-            if e.kind == .note {
-                TextField("Tags, e.g. decision blocked-on:apple", text: $editorTags)
-                    .textFieldStyle(.roundedBorder).font(.system(size: 11))
-                    .frame(width: 230)
-                    .onSubmit { saveEditor(e) }
-            }
-            ActionChip(symbol: nil, text: "Cancel", tint: .secondary) { editor = nil }
-            ActionChip(symbol: "checkmark", text: "Save", tint: .accentColor) { saveEditor(e) }
-        }
-    }
-
-    private func saveEditor(_ e: Editor) {
-        let edit: TaskEdit
-        let sync: Bool
-        switch e.kind {
-        case .link:
-            edit = .link(id: e.task, url: editorText)
-            sync = true
-        case .note:
-            edit = .note(id: e.task, text: editorText, tags: TasksView.words(editorTags), url: nil)
-            sync = false
-        case .tags:
-            edit = .update(id: e.task, title: nil, tags: TasksView.words(editorText), pinnedStatus: nil)
-            sync = false
-        }
-        let store = store
-        let open = $editor
-        Task {
-            if await store.editTask(edit, sync: sync), open.wrappedValue == e { open.wrappedValue = nil }
-        }
+        let errors = $actionErrors
+        Task { errors.wrappedValue[id] = await store.editTask(edit, sync: sync) }
     }
 
     private func history(_ view: TaskView) -> some View {
@@ -326,12 +227,13 @@ struct TasksView: View {
         let all = wholeHistory.contains(id)
         let shown = all ? view.history : Array(view.history.prefix(TasksView.historyShown))
         let hidden = view.history.count - shown.count
+        let labels = store.taskLabels
         return VStack(alignment: .leading, spacing: 1) {
             if view.history.isEmpty {
                 Text("No history yet.").font(.system(size: 10)).foregroundStyle(.secondary)
             }
             ForEach(Array(shown.enumerated()), id: \.offset) { _, event in
-                HistoryLine(event: event)
+                HistoryLine(event: event, subject: event.subject.map { labels[$0] ?? $0 })
             }
             if hidden > 0 {
                 Text("\(hidden) older…").font(.system(size: 10, weight: .semibold))
@@ -345,14 +247,211 @@ struct TasksView: View {
     }
 }
 
+// MARK: - Editors
+
+/// What one of the screen's editors holds: what is typed, and why the core refused its last
+/// save, which the editor draws itself.
+@MainActor
+final class TaskDraft: ObservableObject {
+    enum Kind: Equatable {
+        case create
+        case link(task: String)
+        case note(task: String)
+        case tags(task: String)
+    }
+
+    /// What an editor opens with.
+    struct Seed: Hashable {
+        var text = ""
+        var tags = ""
+        var links = ""
+        var error: String?
+    }
+
+    let kind: Kind
+    /// A new task's title; the link, the note or the tags of the others.
+    @Published var text: String
+    /// A new task's or a note's tags.
+    @Published var tags: String
+    /// A new task's links, one per line.
+    @Published var links: String
+    @Published var error: String?
+
+    init(_ kind: Kind, seed: Seed = Seed()) {
+        self.kind = kind
+        text = seed.text
+        tags = seed.tags
+        links = seed.links
+        error = seed.error
+    }
+
+    var edit: TaskEdit {
+        switch kind {
+        case .create:
+            return .create(title: text, tags: TasksView.words(tags),
+                           links: links.split(whereSeparator: \.isNewline)
+                               .map { $0.trimmingCharacters(in: .whitespaces) }
+                               .filter { !$0.isEmpty })
+        case .link(let id):
+            return .link(id: id, url: text)
+        case .note(let id):
+            return .note(id: id, text: text, tags: TasksView.words(tags), url: nil)
+        case .tags(let id):
+            return .update(id: id, title: nil, tags: TasksView.words(text), pinnedStatus: nil)
+        }
+    }
+
+    /// Applies `edit`: true, and every field emptied, once the core takes it; false, with
+    /// `error` saying why and what was typed kept, when it refuses. A new link or task syncs
+    /// right after, so its GitHub state shows without waiting for the timer.
+    func submit(to store: Store) async -> Bool {
+        let sync: Bool
+        switch kind {
+        case .create, .link: sync = true
+        case .note, .tags: sync = false
+        }
+        error = await store.editTask(edit, sync: sync)
+        guard error == nil else { return false }
+        text = ""
+        tags = ""
+        links = ""
+        return true
+    }
+}
+
+/// A refusal, drawn where the edit that caused it was made.
+private struct InlineError: View {
+    let message: String
+    var dismiss: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 4) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 9)).foregroundStyle(.red)
+            Text(message).font(.system(size: 10.5)).foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+            if let dismiss {
+                Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct NewTaskForm: View {
+    let store: Store
+    @StateObject private var draft: TaskDraft
+    let close: () -> Void
+
+    init(store: Store, seed: TaskDraft.Seed, close: @escaping () -> Void) {
+        self.store = store
+        _draft = StateObject(wrappedValue: TaskDraft(.create, seed: seed))
+        self.close = close
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("NEW TASK").font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.secondary).kerning(0.5)
+            TextField("Title, e.g. Physical iPhone support", text: $draft.text)
+                .textFieldStyle(.roundedBorder).font(.system(size: 11))
+            TextField("Tags, e.g. area:devices kind:feature blocked-on:apple", text: $draft.tags)
+                .textFieldStyle(.roundedBorder).font(.system(size: 11))
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $draft.links)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(height: 52)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.gray.opacity(0.3)))
+                if draft.links.isEmpty {
+                    Text("Links, one per line: a PR or issue URL, o/r#12, #12, a Slack permalink, any URL")
+                        .font(.system(size: 11)).foregroundStyle(.tertiary)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .allowsHitTesting(false)
+                }
+            }
+            HStack(spacing: 6) {
+                if let error = draft.error { InlineError(message: error) }
+                Spacer()
+                ActionChip(symbol: nil, text: "Cancel", tint: .secondary, action: close)
+                ActionChip(symbol: "plus", text: "Create", tint: .accentColor,
+                           enabled: !draft.text.trimmingCharacters(in: .whitespaces).isEmpty) {
+                    let (draft, store, close) = (draft, store, close)
+                    Task { if await draft.submit(to: store) { close() } }
+                }
+            }
+        }
+        .cardChrome(fill: Color.accentColor.opacity(0.07), padding: 7)
+    }
+}
+
+/// A row's add-link, note or tags editor.
+private struct TaskEditorForm: View {
+    let store: Store
+    @StateObject private var draft: TaskDraft
+    let close: () -> Void
+    private let prompt: String
+    private let note: Bool
+
+    init(store: Store, editor: TasksView.Editor, close: @escaping () -> Void) {
+        self.store = store
+        self.close = close
+        let kind: TaskDraft.Kind
+        switch editor.kind {
+        case .link:
+            kind = .link(task: editor.task)
+            prompt = "A PR or issue URL, o/r#12, #12, a Slack permalink or any URL"
+        case .note:
+            kind = .note(task: editor.task)
+            prompt = "Note: what happened, what was decided"
+        case .tags:
+            kind = .tags(task: editor.task)
+            prompt = "Tags, separated by spaces"
+        }
+        note = editor.kind == .note
+        _draft = StateObject(wrappedValue: TaskDraft(kind, seed: editor.seed))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                TextField(prompt, text: $draft.text)
+                    .textFieldStyle(.roundedBorder).font(.system(size: 11))
+                    .onSubmit(save)
+                if note {
+                    TextField("Tags, e.g. decision blocked-on:apple", text: $draft.tags)
+                        .textFieldStyle(.roundedBorder).font(.system(size: 11))
+                        .frame(width: 230)
+                        .onSubmit(save)
+                }
+                ActionChip(symbol: nil, text: "Cancel", tint: .secondary, action: close)
+                ActionChip(symbol: "checkmark", text: "Save", tint: .accentColor, action: save)
+            }
+            if let error = draft.error { InlineError(message: error) }
+        }
+    }
+
+    private func save() {
+        let (draft, store, close) = (draft, store, close)
+        Task { if await draft.submit(to: store) { close() } }
+    }
+}
+
 // MARK: - A task's row
 
 /// One task: its status, title and reasons, then its tags and links; tapped, it unfolds into
 /// `details` (its actions and history).
 private struct TaskRow<Details: View>: View {
     let view: TaskView
+    /// `Store.taskLabels`.
+    let labels: [String: String]
     let expanded: Bool
+    /// Why its last action was refused.
+    let error: String?
     let toggle: () -> Void
+    let dismissError: () -> Void
+    let unlink: (String) -> Void
     @ViewBuilder let details: () -> Details
 
     var body: some View {
@@ -388,10 +487,16 @@ private struct TaskRow<Details: View>: View {
                         Chip(text: tag, tint: .secondary, symbol: nil)
                     }
                     ForEach(task.links, id: \.url) { link in
-                        LinkChip(link: link, state: TaskTint.linkState(link, view: view))
+                        LinkChip(link: link, label: labels[link.url] ?? link.url,
+                                 state: TaskTint.linkState(view.linkStates[link.url], kind: link.kind)) {
+                            unlink(link.url)
+                        }
                     }
                 }
                 .padding(.leading, 14)
+            }
+            if let error {
+                InlineError(message: error, dismiss: dismissError).padding(.leading, 14)
             }
             details()
         }
@@ -405,12 +510,12 @@ private struct TaskRow<Details: View>: View {
 /// URL, the whole line opens it.
 private struct HistoryLine: View {
     let event: TaskEvent
+    /// The label of the link it is about.
+    let subject: String?
 
     var body: some View {
         // A Slack line's own permalink adds nothing to its `slack` tag.
-        let subject = event.subject.map(TaskTint.linkLabel).flatMap {
-            $0 == "slack" && event.source == "slack" ? nil : $0
-        }
+        let subject = subject == "slack" && event.source == "slack" ? nil : subject
         let url = event.url.flatMap(URL.init(string:))
         let line = HStack(alignment: .center, spacing: 5) {
             Text(TaskTint.ago(event.at)).font(.system(size: 9).monospacedDigit())
@@ -454,15 +559,18 @@ private struct HistoryLine: View {
     }
 }
 
-/// A link of a task: `#123` / `o/r#12`, `slack`, or the host; with a GitHub item's state as a
-/// dot when its history tells it. Opens in the browser.
+/// A link of a task: `#123` / `o/r#12`, `slack`, or the host; with a synced GitHub item's
+/// state as a dot. Opens in the browser; its context menu also removes it.
 private struct LinkChip: View {
     let link: TaskLink
+    let label: String
     let state: TaskTint.LinkState?
+    let remove: () -> Void
 
     var body: some View {
         let url = URL(string: link.url)
-        return Button { if let url { NSWorkspace.shared.open(url) } } label: {
+        let open = { if let url { NSWorkspace.shared.open(url) } }
+        return Button(action: open) {
             HStack(spacing: 3) {
                 if let state {
                     Circle().fill(state.tint).frame(width: 6, height: 6)
@@ -476,11 +584,13 @@ private struct LinkChip: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button("Open", action: open).disabled(url == nil)
+            Button("Remove link", action: remove)
+        }
         .help(([link.title, state?.word, link.url, link.via == "manual" ? nil : "linked via \(link.via)"]
                as [String?]).compactMap { $0 }.joined(separator: "\n"))
     }
-
-    private var label: String { TaskTint.linkLabel(link.url) }
 
     private var symbol: String {
         switch link.kind {
@@ -611,11 +721,23 @@ enum TaskTint {
         }
     }
 
-    /// `#123` / `o/r#12` for a GitHub item, `slack` for a Slack permalink, else the host.
-    static func linkLabel(_ url: String) -> String {
-        if let ref = GitHubRef(url: url) { return ref.label(watched: CoreAssets.repoCoordinates()) }
-        if TaskLinks.parse(url, watched: CoreAssets.repoCoordinates())?.kind == "slack" { return "slack" }
-        return URL(string: url)?.host ?? url
+    /// The label of every link and history subject of `views`, by URL: `#123` / `o/r#12` for
+    /// a GitHub item, `slack` for a Slack permalink, else the host.
+    static func labels(of views: [TaskView]) -> [String: String] {
+        let watched = CoreAssets.repoCoordinates()
+        var out: [String: String] = [:]
+        for view in views {
+            for url in view.task.links.map(\.url) + view.history.compactMap(\.subject) where out[url] == nil {
+                if let ref = GitHubRef(url: url) {
+                    out[url] = ref.label(watched: watched)
+                } else if TaskLinks.parse(url, watched: watched)?.kind == "slack" {
+                    out[url] = "slack"
+                } else {
+                    out[url] = URL(string: url)?.host ?? url
+                }
+            }
+        }
+        return out
     }
 
     /// `now`, `12m`, `5h`, `3d`.
@@ -628,31 +750,16 @@ enum TaskTint {
         let tint: Color
     }
 
-    /// A GitHub item's state as its newest history entry that names one says: the first
-    /// sight (`linked`, `pr:open`) or a later move (`pr:merged`, `pr:draft`, `link:missing`).
-    /// A first sight does not say draft, so an `<item>:draft` reason does. Nil for anything
-    /// else, or one whose events have aged out of the history.
-    static func linkState(_ link: TaskLink, view: TaskView) -> LinkState? {
-        guard link.isGitHub else { return nil }
-        if view.reasons.contains(linkLabel(link.url) + ":draft") {
-            return LinkState(word: "draft", tint: .gray)
+    /// A `TaskView.linkStates` word as a dot: a closed PR was given up on, a closed issue
+    /// was done.
+    static func linkState(_ word: String?, kind: String) -> LinkState? {
+        switch word {
+        case "open":    return LinkState(word: "open", tint: .green)
+        case "draft":   return LinkState(word: "draft", tint: .gray)
+        case "merged":  return LinkState(word: "merged", tint: .purple)
+        case "closed":  return LinkState(word: "closed", tint: kind == "pr" ? .red : .purple)
+        case "missing": return LinkState(word: "missing", tint: .orange)
+        default:        return nil
         }
-        let identity = TaskLinks.identity(link.url)
-        for event in view.history where event.source == "github" {
-            guard let subject = event.subject, TaskLinks.identity(subject) == identity else { continue }
-            for tag in event.tags {
-                switch tag {
-                case "pr:merged":                                return LinkState(word: "merged", tint: .purple)
-                case "pr:closed":                                return LinkState(word: "closed", tint: .red)
-                case "issue:closed":                             return LinkState(word: "closed", tint: .purple)
-                case "pr:draft":                                 return LinkState(word: "draft", tint: .gray)
-                case "link:missing":                             return LinkState(word: "missing", tint: .orange)
-                case "pr:open", "issue:open", "pr:reopened", "issue:reopened", "pr:ready":
-                    return LinkState(word: "open", tint: .green)
-                default: continue
-                }
-            }
-        }
-        return nil
     }
 }

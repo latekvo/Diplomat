@@ -25,19 +25,27 @@ extension Store {
 
     var activeTaskCount: Int { taskViews.filter { $0.task.archivedAt == nil }.count }
 
-    /// Re-reads every task, archived ones included.
+    /// Re-reads every task, archived ones included, and labels their links off the main
+    /// actor: a label is a regex match or two, too many for every redraw.
     func reloadTasks() async {
         tasksReloadGeneration += 1
         let generation = tasksReloadGeneration
         let dir = TaskStore.dir
-        let read = await Task.detached(priority: .utility) { () -> Result<[TaskView], Error> in
-            Result { try TaskStore.views(archived: true, in: dir) }
+        let read = await Task.detached(priority: .utility) {
+            () -> Result<(views: [TaskView], labels: [String: String]), Error> in
+            Result {
+                let views = try TaskStore.views(archived: true, in: dir)
+                return (views, TaskTint.labels(of: views))
+            }
         }.value
         guard generation == tasksReloadGeneration else { return }
         switch read {
-        case .success(let views):
+        case .success(let read):
             tasksReadError = nil
-            if views != taskViews { taskViews = views }
+            if read.views != taskViews {
+                taskLabels = read.labels
+                taskViews = read.views
+            }
         case .failure(let error):
             tasksReadError = error.localizedDescription
         }
@@ -69,16 +77,18 @@ extension Store {
                   tasks.contains(where: { $0.archivedAt == nil }) else { return nil }
             return await TaskSync.run(dir: dir, commsDir: commsDir)
         }.value
-        if let result, result.ok { tasksLastSync = Date() }
-        tasksSyncError = result?.error
+        if let result {
+            tasksLastSync = Date()
+            tasksSyncError = result.error
+        }
         await reloadTasks()
     }
 
-    /// Applies one operator edit; false, with `tasksEditError` saying why, when the core
-    /// refused it. `sync` starts a sync after a good one, so a new link's state shows without
-    /// waiting for the timer.
+    /// Applies one operator edit; why the core refused it, or nil once applied. `sync`
+    /// starts a sync after a good one, so a new link's state shows without waiting for the
+    /// timer.
     @discardableResult
-    func editTask(_ edit: TaskEdit, sync: Bool = false) async -> Bool {
+    func editTask(_ edit: TaskEdit, sync: Bool = false) async -> String? {
         let dir = TaskStore.dir
         let refusal = await Task.detached(priority: .userInitiated) { () -> String? in
             do {
@@ -88,18 +98,19 @@ extension Store {
                 return error.localizedDescription
             }
         }.value
-        tasksEditError = refusal
-        guard refusal == nil else { return false }
+        guard refusal == nil else { return refusal }
         // Not left to the sync, whose read may come before the timer's next turn.
         await reloadTasks()
         if sync { Task { [weak self] in await self?.syncTasks() } }
-        return true
+        return nil
     }
 
     /// Never stopped: a tick with no unarchived task syncs nothing.
     func startTasksMonitor() {
         guard tasksMonitorTask == nil, !Headless.active else { return }
         tasksMonitorTask = Task { [weak self] in
+            // The badge, before the first sync's GitHub round trip.
+            await self?.reloadTasks()
             while !Task.isCancelled {
                 await AppLog.timed("tasksSync") { await self?.syncTasks() }
                 let ns = UInt64(Store.tasksSyncInterval * 1_000_000_000)

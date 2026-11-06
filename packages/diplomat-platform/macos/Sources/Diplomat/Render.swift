@@ -259,23 +259,39 @@ enum Render {
                 CommsView(isPresented: .constant(true))
             }
         case let s where s.hasPrefix("tasks"):
-            // "tasks" draws the screen over four tasks (blocked, in review, done, open) and
-            // one archived, two of them unfolded; "tasks-panel" the same inside the whole
-            // panel (header button, blocked badge, screen swap); "tasks-form" the new-task
-            // form, a note being written and the error banners; "tasks-archived" the
-            // archived one listed; "tasks-empty" no task at all. A `DIPLOMAT_TASKS_DIR` set
-            // by the caller is drawn as it is, every task unfolded, instead of the fixture.
+            // "tasks" draws the screen over six tasks, one per status, and one archived, two
+            // of them unfolded; "tasks-panel" the same inside the whole panel (header
+            // button, blocked badge, screen swap); "tasks-form" the new-task form, a note
+            // being written and the sync and read error banners; "tasks-edit-error" the
+            // refusals drawn where they were made: the new-task form's, a link editor's and
+            // a row action's; "tasks-archived" the archived one listed; "tasks-empty" no
+            // task at all. A `DIPLOMAT_TASKS_DIR` set by the caller is drawn as it is, every
+            // task unfolded, instead of the fixture.
             let _ = seedTasks(store, empty: s.contains("empty"), form: s.contains("form"))
+            let first = tasksUnfolded.sorted().first
             if s.contains("panel") {
                 ContentView(showTasks: true)
             } else if s.contains("form") {
                 TasksView(isPresented: .constant(true), seedExpanded: tasksUnfolded,
-                          seedComposing: ("Fire TV screen recording",
-                                          "area:vega kind:feature",
-                                          "https://github.com/software-mansion/argent/issues/1730\n#1731"),
-                          seedEditor: tasksUnfolded.sorted().first.map { .init(task: $0, kind: .note) },
-                          seedEditorText: "Apple confirmed the entitlement is per-team; waiting on legal",
-                          seedEditorTags: "decision blocked-on:legal")
+                          seedComposer: .init(text: "Fire TV screen recording",
+                                              tags: "area:vega kind:feature",
+                                              links: "https://github.com/software-mansion/argent/issues/1730\n#1731"),
+                          seedEditor: first.map {
+                              .init(task: $0, kind: .note,
+                                    seed: .init(text: "Apple confirmed the entitlement is per-team; waiting on legal",
+                                                tags: "decision blocked-on:legal"))
+                          })
+            } else if s.contains("edit-error") {
+                TasksView(isPresented: .constant(true), seedExpanded: tasksUnfolded,
+                          seedComposer: .init(text: "Fire TV screen recording", links: "argent 1730",
+                                              error: "not a link: argent 1730"),
+                          seedEditor: first.map {
+                              .init(task: $0, kind: .link,
+                                    seed: .init(text: "argent 1714", error: "not a link: argent 1714"))
+                          },
+                          seedActionErrors: Dictionary(uniqueKeysWithValues: tasksUnfolded.sorted().dropFirst().map {
+                              ($0, "could not write \(NSHomeDirectory())/.diplomat/tasks/tasks.json")
+                          }))
             } else {
                 TasksView(isPresented: .constant(true), seedExpanded: tasksUnfolded,
                           seedArchived: s.contains("archived"))
@@ -752,6 +768,7 @@ enum Render {
             let mirror = URL(fileURLWithPath: given).appendingPathComponent("mirror.json")
             store.tasksLastSync = (try? FileManager.default.attributesOfItem(atPath: mirror.path))?[.modificationDate] as? Date
             store.taskViews = (try? TaskStore.views(archived: true)) ?? []
+            store.taskLabels = TaskTint.labels(of: store.taskViews)
             tasksUnfolded = Set(store.taskViews.map(\.task.id))
             return true
         }
@@ -767,6 +784,7 @@ enum Render {
         do {
             try writeTaskFixture(in: dir, now: now)
             store.taskViews = try TaskStore.views(archived: true, now: now)
+            store.taskLabels = TaskTint.labels(of: store.taskViews)
         } catch {
             print("RENDER ERROR: tasks fixture: \(error)")
         }
@@ -774,7 +792,8 @@ enum Render {
         tasksUnfolded = Set(["Physical iPhone support", "Release 0.9 checklist"].compactMap { byTitle[$0] })
         if form {
             store.tasksSyncError = "gh: GraphQL: API rate limit exceeded for user ID 1234 (skipped 2 links)"
-            store.tasksEditError = "not a link: argent 1714"
+            // Torn after the read above, so the screen's own reload says why.
+            try? Data("{".utf8).write(to: dir.appendingPathComponent("tasks.json"))
         }
         return true
     }
@@ -810,6 +829,11 @@ enum Render {
                                3 * 24)
         try edit(.note(id: release.id, text: "Changelog drafted; waiting for the Vega build to go green",
                        tags: ["changelog"], url: "https://docs.google.com/document/d/1x0-release-notes"), 30)
+        try edit(.create(title: "Fire TV screen recording", tags: ["area:vega", "kind:feature"],
+                         links: [gh("pr", 1731), gh("issue", 1730)]), 6 * 24)
+        let tvos = try edit(.create(title: "Apple TV remote gestures", tags: ["area:tvos", "kind:feature"],
+                                    links: [gh("issue", 1590)]), 30 * 24)
+        try edit(.update(id: tvos.id, title: nil, tags: nil, pinnedStatus: TaskStatus.paused.rawValue), 8 * 24)
         let spike = try edit(.create(title: "Hermes sampling profiler spike", tags: ["kind:spike"],
                                      links: [gh("issue", 1203)]), 90 * 24)
         try edit(.archive(id: spike.id), 60 * 24)
@@ -823,7 +847,8 @@ enum Render {
         }
         let p1714 = gh("pr", 1714), i1650 = gh("issue", 1650), p1688 = gh("pr", 1688)
         let p1402 = gh("pr", 1402, in: "software-mansion", "radon-ide"), p1601 = gh("pr", 1601)
-        let i1540 = gh("issue", 1540)
+        let i1540 = gh("issue", 1540), p1731 = gh("pr", 1731), i1730 = gh("issue", 1730)
+        let i1590 = gh("issue", 1590)
         let old = [comment("c0", p1714, "octocat", 20 * 24, "first pass at the USB transport")]
         // First sight: one `linked` line each; the older comments are seen silently.
         let first: [String: TaskFetch] = [
@@ -837,6 +862,11 @@ enum Render {
             p1601: .found(TaskItem(kind: "pr", title: "mesh: Tor onion transport", url: p1601,
                                    state: "OPEN", reviewDecision: "APPROVED", ci: "SUCCESS")),
             i1540: .found(TaskItem(kind: "issue", title: "Mesh across NATs", url: i1540, state: "OPEN")),
+            p1731: .found(TaskItem(kind: "pr", title: "feat: Vega screen recording", url: p1731,
+                                   state: "OPEN", isDraft: true, ci: "PENDING")),
+            i1730: .found(TaskItem(kind: "issue", title: "Record the Fire TV screen", url: i1730, state: "OPEN")),
+            i1590: .found(TaskItem(kind: "issue", title: "Swipe gestures on the Apple TV remote", url: i1590,
+                                   state: "OPEN")),
         ]
         // Later: what moved since.
         let second: [String: TaskFetch] = [
@@ -856,6 +886,7 @@ enum Render {
                                    state: "MERGED", reviewDecision: "APPROVED", ci: "SUCCESS", mergedAt: ago(9 * 24))),
             i1540: .found(TaskItem(kind: "issue", title: "Mesh across NATs", url: i1540, state: "CLOSED",
                                    closedAt: ago(9 * 24))),
+            p1731: first[p1731]!, i1730: first[i1730]!, i1590: first[i1590]!,
         ]
         let excerpt = (try? CoreAssets.tasks())?.excerptChars ?? 200
         let round1 = TaskSync.apply(tasks: try TaskStore.tasks(in: dir), mirror: TaskMirror(), fetched: first,
