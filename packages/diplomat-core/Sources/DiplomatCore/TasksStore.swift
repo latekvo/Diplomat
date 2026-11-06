@@ -113,7 +113,8 @@ public enum TaskStore {
                                                       now: now, staleDays: assets.staleDays,
                                                       watched: watched)
             return TaskView(task: task, status: status, reasons: reasons,
-                            history: Array(mine.prefix(assets.historyLimit)), lastEventAt: last)
+                            history: Array(mine.prefix(assets.historyLimit)), lastEventAt: last,
+                            linkStates: TaskView.states(of: task, snapshots: snapshots))
         }
         return views.sorted { a, b in
             if (a.status == .done) != (b.status == .done) { return b.status == .done }

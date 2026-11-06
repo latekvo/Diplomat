@@ -273,6 +273,11 @@ func tasksSmoke() async throws {
                         pr(5, repo: "o/r"): snap(mergeable: "CONFLICTING"), pr(14): snap(decision: "APPROVED")])
           == "blocked #12:ci-failing #12:changes-requested o/r#5:conflicts",
           "blocked wins over in-review, one reason per cause, o/r#n outside the watched repo")
+    check(TaskView.states(of: task("t", [pr(12), pr(14), issue(13), pr(15), "https://ours.slack.com/archives/C1/p1"]),
+                              snapshots: [pr(12): snap(draft: true), pr(14): snap(), issue(13): snap("issue", "CLOSED"),
+                                          "https://ours.slack.com/archives/C1/p1": snap()])
+          == [pr(12): "draft", pr(14): "open", issue(13): "closed"],
+          "link states: a draft is its own state, an unsynced or non-GitHub link has none")
     check(status(task("t", [pr(12)]), [pr(12): snap(ci: "ERROR")]) == "blocked #12:ci-failing", "ERROR blocks")
     check(status(task("t", [pr(12)]), [pr(12): snap("pr", "CLOSED", ci: "FAILURE")]) == "done all-closed",
           "a closed PR blocks nothing")

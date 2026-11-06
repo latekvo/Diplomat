@@ -133,6 +133,18 @@ public struct TaskView: Codable, Equatable, Sendable {
     /// Newest first, at most `historyLimit`.
     public var history: [TaskEvent]
     public var lastEventAt: Date?
+    /// Each synced GitHub link's state by its url: `open`, `draft`, `merged`, `closed` or
+    /// `missing`. A link not synced yet has none.
+    public var linkStates: [String: String]
+
+    public static func states(of task: TrackedTask, snapshots: [String: GitHubSnapshot]) -> [String: String] {
+        var out: [String: String] = [:]
+        for link in task.links where link.isGitHub {
+            guard let snap = snapshots[link.url] else { continue }
+            out[link.url] = snap.state == "OPEN" && snap.isDraft ? "draft" : snap.state.lowercased()
+        }
+        return out
+    }
 }
 
 public enum TaskTags {
