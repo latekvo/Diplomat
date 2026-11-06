@@ -126,6 +126,13 @@ enum TasksTest {
         check("and the note is history", store.taskViews.first?.history.first?.source == "note")
         let missing = await store.editTask(.archive(id: "t-nope"))
         check("a row action's refusal is returned to it", missing?.contains("no task") == true, missing ?? "nil")
+        let events = TaskStore.dir.appendingPathComponent("events.jsonl").path
+        chmod(events, 0o400)
+        let tagged = await store.editTask(.update(id: id, title: nil, tags: ["area:devices", "kind:feature", "half-logged"],
+                                                  pinnedStatus: nil))
+        chmod(events, 0o600)
+        check("an edit saved without its history line is taken, not refused",
+              tagged == nil && store.taskViews.first?.task.tags.contains("half-logged") == true, tagged ?? "")
 
         print("gh failing")
         fm.createFile(atPath: failing.path, contents: Data())

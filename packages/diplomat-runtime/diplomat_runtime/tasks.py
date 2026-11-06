@@ -63,8 +63,8 @@ def sync_timeout(github_links: int) -> float:
 
 
 def views(*, archived: bool = False) -> list[dict]:
-    """``tasks-list``: ``[TaskView]`` (``{task, status, reasons, history,
-    lastEventAt}``), not done first; archived tasks too with ``archived``."""
+    """``tasks-list``: ``[TaskView]`` (``{task, status, reasons, history, lastEventAt,
+    linkStates}``), not done first; archived tasks too with ``archived``."""
     rows = json.loads(promptcore.cli(["tasks-list", *(["--archived"] if archived else [])]))
     if not isinstance(rows, list):
         raise ValueError("diplomat-core tasks-list answered something that is not a list")

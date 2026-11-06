@@ -94,6 +94,10 @@ extension Store {
             do {
                 try TaskStore.edit(edit, in: dir)
                 return nil
+            } catch let error as TaskError where error.saved != nil {
+                // Applied: refusing it would have the operator repeat it.
+                AppLog.log("tasks", error.localizedDescription)
+                return nil
             } catch {
                 return error.localizedDescription
             }
