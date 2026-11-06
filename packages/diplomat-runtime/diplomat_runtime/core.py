@@ -124,6 +124,13 @@ def comms() -> dict:
 
 
 @functools.lru_cache(maxsize=1)
+def tasks() -> dict:
+    """Tasks' tunables. Everything else in tasks.json is read by the core alone
+    (``diplomat-core tasks-*``, :mod:`tasks`)."""
+    return _read_json("tasks.json")
+
+
+@functools.lru_cache(maxsize=1)
 def audit_categories() -> dict:
     """The shared audit/activity taxonomy (categories + action→category map).
 
