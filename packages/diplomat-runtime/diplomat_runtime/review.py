@@ -574,18 +574,24 @@ def token_export(platform: str = sys.platform) -> str:
     empty ``GH_TOKEN`` as unset. :func:`check_token` turns the same failure into a
     spawn error before a window opens.
     """
+    # A token holds no whitespace: one saved with CRLF fails in gh, one with a trailing
+    # space in git. Nor a NUL, which zsh keeps in GH_TOKEN and cuts the export at: a
+    # leading one would leave the agent on gh's stored login.
+    strip = "tr -d '\\000[:space:]'"
     item, path = _token_source(platform)
     if item:
-        read = f"security find-generic-password -s {shlex.quote(item)} -w"
+        read = f"security find-generic-password -s {shlex.quote(item)} -w | {strip}"
     elif path:
-        # A token holds no whitespace: one saved with CRLF fails in gh, one with a
-        # trailing space in git. Nor a NUL, which zsh keeps in GH_TOKEN and cuts the
-        # export at: a leading one would leave the agent on gh's stored login.
-        read = f"tr -d '\\000[:space:]' < {shlex.quote(path)}"
+        read = f"{strip} < {shlex.quote(path)}"
     else:
         return ""
     return (f'GH_TOKEN=$({read}) && [ -n "$GH_TOKEN" ] '
             f"&& export GH_TOKEN {GIT_TOKEN_HELPER}")
+
+
+def _holds_token(secret: bytes) -> bool:
+    """Whether the gate's ``tr`` leaves anything of ``secret``."""
+    return bool(secret.replace(b"\0", b"").split())
 
 
 def check_token(platform: str = sys.platform) -> None:
@@ -600,7 +606,7 @@ def check_token(platform: str = sys.platform) -> None:
         try:
             read = subprocess.run(["security", "find-generic-password", "-s", item, "-w"],
                                   capture_output=True, timeout=10)
-            ok = read.returncode == 0 and bool(read.stdout.rstrip(b"\n"))
+            ok = read.returncode == 0 and _holds_token(read.stdout)
         except (OSError, subprocess.SubprocessError):
             ok = False
         if not ok:
@@ -616,7 +622,7 @@ def check_token(platform: str = sys.platform) -> None:
             ok = stat.S_ISREG(os.stat(path).st_mode)
             if ok:
                 with open(path, "rb") as f:
-                    ok = bool(f.read().replace(b"\0", b"").split())
+                    ok = _holds_token(f.read())
         except OSError:
             ok = False
         if not ok:

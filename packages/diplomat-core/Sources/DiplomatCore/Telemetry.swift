@@ -146,9 +146,10 @@ public enum Telemetry {
         var samples: [Sample] = []
 
         for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8),
-                  let obj = JSONInput.parse(data),
+            // Untrimmed: the parser takes JSON's own whitespace, and the two languages'
+            // wider sets of it differ (U+200B, U+001C).
+            guard let data = line.data(using: .utf8),
+                  let obj = JSONInput.parse(data, sharedFile: true),
                   let at = number(obj["at"]), let ev = obj["ev"] as? String
             else { continue }
 
@@ -243,7 +244,8 @@ public enum Telemetry {
     private static func number(_ raw: Any?) -> Double? {
         var v: Double
         if let n = raw as? NSNumber { v = n.doubleValue }
-        else if let s = raw as? String, let d = Double(s) { v = d }
+        // `Double(String)` stops at a NUL, reading "100\0" as 100.
+        else if let s = raw as? String, !s.utf8.contains(0), let d = Double(s) { v = d }
         else { return nil }
         return v.isFinite ? v : nil
     }

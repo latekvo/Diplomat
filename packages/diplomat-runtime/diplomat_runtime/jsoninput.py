@@ -2,10 +2,12 @@
 the files both front-ends read (the run book, the telemetry ledger).
 
 ``json`` takes more than ``JSONSerialization`` does: ``Infinity``/``NaN``, a number
-past float range, a lone surrogate escape. Each of those is a document the Swift side
-refuses whole, so it is refused here too, rather than read as runs or tasks only one
-front-end can see. A key given twice keeps its first value, as ``JSONSerialization``
-does on Darwin; ``json`` alone keeps the last.
+past float range, a lone surrogate escape, nesting past :data:`MAX_DEPTH`. Each of
+those is a document the Swift side refuses whole, so it is refused here too, rather
+than read as runs or tasks only one front-end can see. (What ``JSONSerialization``
+takes and ``json`` does not, ``JSONInput`` refuses.) So is a string opening with
+U+FEFF, which Darwin's parser drops and ``json`` keeps. A key given twice keeps its
+first value, as ``JSONSerialization`` does on Darwin; ``json`` alone keeps the last.
 """
 
 from __future__ import annotations
@@ -15,11 +17,18 @@ import math
 from typing import Any
 
 
+#: Deepest nesting read, the top-level value being 1. Twin: ``JSONInput.maxDepth``.
+MAX_DEPTH = 512
+
+
 def loads(text: str) -> Any:
     """``text`` decoded, or ``ValueError`` where ``JSONSerialization`` would throw."""
-    value = json.loads(text, parse_constant=_refuse, parse_float=_finite,
-                       parse_int=_in_range, object_pairs_hook=_first_wins)
-    _check_text(value)
+    try:
+        value = json.loads(text, parse_constant=_refuse, parse_float=_finite,
+                           parse_int=_in_range, object_pairs_hook=_first_wins)
+    except RecursionError:
+        raise ValueError("nested past the recursion limit") from None
+    _check(value)
     return value
 
 
@@ -50,15 +59,21 @@ def _first_wins(pairs: list[tuple[str, Any]]) -> dict:
     return out
 
 
-def _check_text(value: Any) -> None:
-    """A lone surrogate is the one string ``json`` decodes that UTF-8 cannot encode;
-    ``UnicodeEncodeError`` is a ``ValueError``."""
-    if isinstance(value, str):
-        value.encode("utf-8")
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            _check_text(key)
-            _check_text(item)
-    elif isinstance(value, list):
-        for item in value:
-            _check_text(item)
+def _check(value: Any) -> None:
+    """Nesting past :data:`MAX_DEPTH`, a string opening with U+FEFF, and a lone
+    surrogate - the one string ``json`` decodes that UTF-8 cannot encode
+    (``UnicodeEncodeError`` is a ``ValueError``)."""
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, str):
+            if item.startswith("\ufeff"):
+                raise ValueError("a string opening with U+FEFF")
+            item.encode("utf-8")
+        elif isinstance(item, (dict, list)):
+            if depth > MAX_DEPTH:
+                raise ValueError(f"nested deeper than {MAX_DEPTH}")
+            if isinstance(item, dict):
+                stack.extend((key, depth) for key in item)
+                item = item.values()
+            stack.extend((child, depth + 1) for child in item)
