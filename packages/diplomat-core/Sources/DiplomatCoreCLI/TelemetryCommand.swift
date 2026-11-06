@@ -15,7 +15,7 @@ import Foundation
 /// Input:
 /// ```
 /// { "now": 1784000000.0, "days": 14, "steps": 56, "bins": 20, "z": 1.96,
-///   "bucketHours": 12,
+///   "bucketHours": 12, "usdRunner": "hermes",
 ///   "lines": ["{\"at\": …, \"ev\": \"queued\", …}", …] }
 /// ```
 /// Output: the folded tasks, then every figure the screen shows — including the
@@ -36,11 +36,13 @@ enum TelemetryCommand {
         let bins = (obj["bins"] as? NSNumber)?.intValue ?? 20
         let z = (obj["z"] as? NSNumber)?.doubleValue ?? 1.96
         let bucketHours = (obj["bucketHours"] as? NSNumber)?.doubleValue ?? 12
+        let usdRunner = obj["usdRunner"] as? String ?? ""
         let lines = obj["lines"] as? [String] ?? []
 
         let ledger = Telemetry.fold(lines: lines)
         let s = Telemetry.summarize(ledger, now: now, days: days, steps: steps,
-                                    binCount: bins, z: z, bucketHours: bucketHours)
+                                    binCount: bins, z: z, bucketHours: bucketHours,
+                                    usdRunner: usdRunner)
 
         let out: [String: Any] = [
             "tasks": ledger.tasks.map { t -> [String: Any] in

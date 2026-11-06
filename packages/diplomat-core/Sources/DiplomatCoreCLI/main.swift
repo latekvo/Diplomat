@@ -17,6 +17,7 @@ import Foundation
 //   diplomat-core comms-feed        [--limit N]      # the Comms screen's rows
 //   diplomat-core comms-effect      < request.json   # what a triaged ping makes a front-end do
 //   diplomat-core comms-reply       < request.json   # Comms' reply in Slack, if one is due
+//   diplomat-core comms-reply-merge < requests.json  # those requests, one per Slack message
 //
 // build-prompt: the JSON config's "kind" field ("review" | "conflicts" | "audit" |
 // "issues" | "investigate") selects the builder; remaining fields mirror the Swift
@@ -77,9 +78,9 @@ func specificAuthor(_ s: String?) -> SpecificAuthor {
 let args = CommandLine.arguments
 guard args.count >= 2,
       ["build-prompt", "tool-data", "telemetry", "agent-state", "agent-registry",
-       "comms-tick", "comms-auth", "comms-feed", "comms-effect", "comms-reply"].contains(args[1]) else {
+       "comms-tick", "comms-auth", "comms-feed", "comms-effect", "comms-reply", "comms-reply-merge"].contains(args[1]) else {
     die("usage: diplomat-core (build-prompt | tool-data | telemetry | agent-state"
-        + " | agent-registry | comms-tick | comms-effect | comms-reply)  (JSON on stdin)"
+        + " | agent-registry | comms-tick | comms-effect | comms-reply | comms-reply-merge)  (JSON on stdin)"
         + "\n       diplomat-core comms-feed [--limit N]"
         + "\n       diplomat-core comms-auth", 1)
 }
@@ -106,6 +107,11 @@ if args[1] == "comms-tick" {
 
 if args[1] == "comms-effect" {
     CommsCommand.effect(input)
+    exit(0)
+}
+
+if args[1] == "comms-reply-merge" {
+    CommsCommand.replyMerge(input)
     exit(0)
 }
 

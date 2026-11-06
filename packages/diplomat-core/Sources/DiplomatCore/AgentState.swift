@@ -1180,7 +1180,8 @@ public enum AgentState {
     /// Only where the scan would re-book once the PR's other records are gone: a run on
     /// this machine, on a PR the scan sees. One with no pid is held to the scan's
     /// sighting, which cannot tell two agents apart, so it is released only alone on its
-    /// PR. Beside a record already named `untracked:<pr>`, its run ID carries its pid.
+    /// PR. Beside a record already named `untracked:<pr>` (the run itself, if a hand edit
+    /// made it a dispatch), its run ID carries its pid, and without one it is not released.
     /// Not a run a backstop ended, whose window is being closed. And only while the
     /// released record resolves to a live agent, or to one the stillness backstop ends
     /// at once, so that its window is closed.
@@ -1197,7 +1198,10 @@ public enum AgentState {
                   r.runsHere, let pr = r.prNumber, live[pr] != nil,
                   r.pid != nil || count[pr] == 1 else { continue }
             var runID = "untracked:\(pr)"
-            if taken.contains(runID), let pid = r.pid { runID += ":\(pid)" }
+            if taken.contains(runID) {
+                guard let pid = r.pid else { continue }
+                runID += ":\(pid)"
+            }
             let heir = RunRecord(runID: runID, dispatchedAt: r.dispatchedAt,
                                  prNumber: pr, prURL: r.prURL, source: r.source,
                                  placement: r.placement, pid: r.pid, tty: r.tty,

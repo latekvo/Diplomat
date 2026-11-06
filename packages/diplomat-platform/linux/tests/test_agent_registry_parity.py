@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 
 import pytest
 
@@ -182,17 +181,14 @@ def test_the_write_mode_holds_the_same_bound_as_the_book(wide):
 def test_an_infinity_reaches_no_record_on_either_side():
     """Darwin's ``JSONSerialization`` parses ``-1e999`` to ``-inf`` - bare, a quiet
     clock past every timeout, and an uncatchable exception at the next save - while
-    corelibs and :mod:`jsoninput` refuse the document. So on Linux neither side has a
-    book, and on Darwin the Swift side alone keeps the record, every field that held
-    one at its default. Text, because ``json.dumps`` cannot spell ``-1e999``."""
+    corelibs and :mod:`jsoninput` refuse the document. ``JSONInput`` refuses it too, so
+    neither side has a book. Text, because ``json.dumps`` cannot spell ``-1e999``."""
     R.runs_path().parent.mkdir(parents=True, exist_ok=True)
     R.runs_path().write_text(
         f'{{"version": {R.SCHEMA_VERSION}, "runs": [{{"runId": "r1", '
         f'"dispatchedAt": -1e999, "quietSince": -1e999}}]}}')
     assert R.load() == []
-    swift = [(r["runId"], r["dispatchedAt"], r["quietSince"])
-             for r in _swift({"mode": "read"})]
-    assert swift == ([("r1", 0, None)] if sys.platform == "darwin" else [])
+    assert _swift({"mode": "read"}) == []
 
 
 def test_a_schema_the_other_side_does_not_know_is_ignored_by_both():
@@ -312,8 +308,9 @@ def test_a_hand_edited_book_reads_the_same_on_both_sides(book, expected):
 
 
 #: Spoils at the parser: (name, the book's bytes, the run ids both sides must read out
-#: of it). `json` takes every one of the refused ones and `JSONSerialization` none, so
-#: each is a book only one front-end could see runs in, or a raise out of the read.
+#: of it). Up to the surrogate pair, `json` takes every refused one and
+#: `JSONSerialization` none, so each is a book only one front-end could see runs in, or
+#: a raise out of the read.
 _HAND_EDITED_TEXT = [
     ("Infinity", b'{"version": 1, "runs": [{"runId": "r", "pid": Infinity}]}', []),
     ("NaN", b'{"version": 1, "runs": [{"runId": "r", "dispatchedAt": NaN}]}', []),
@@ -326,6 +323,31 @@ _HAND_EDITED_TEXT = [
     ("a byte-order mark", b'\xef\xbb\xbf{"version": 1, "runs": [{"runId": "r"}]}', []),
     ("a surrogate pair",
      b'{"version": 1, "runs": [{"runId": "r", "label": "\\ud83d\\ude00"}]}', ["r"]),
+    # Taken by Darwin's parser, corelibs' or both, and refused or read otherwise by
+    # `json`: `JSONInput` refuses each.
+    ("-1e400 in a field nothing reads",
+     b'{"version": 1, "runs": [{"runId": "r", "x": -1e400}]}', []),
+    ("a trailing comma in a record", b'{"version": 1, "runs": [{"runId": "r",}]}', []),
+    ("a trailing comma in the runs", b'{"version": 1, "runs": [{"runId": "r"} ,\n]}', []),
+    ("a trailing comma after an escaped quote",
+     b'{"version": 1, "runs": [{"runId": "r", "label": "a\\\\\\"", "x": [1,]}]}', []),
+    ("a ,] inside a string",
+     b'{"version": 1, "runs": [{"runId": "r", "label": "\\",]"}]}', ["r"]),
+    ("nesting at the limit",
+     b'{"version": 1, "runs": [{"runId": "r", "x": %s}]}' % (b"[" * 509 + b"]" * 509),
+     ["r"]),
+    ("an empty array past the limit",
+     b'{"version": 1, "runs": [{"runId": "r", "x": %s}]}' % (b"[" * 510 + b"]" * 510), []),
+    ("nesting past Python's recursion limit",
+     b'{"version": 1, "runs": [{"runId": "r", "x": %s}]}'
+     % (b"[" * 100_000 + b"]" * 100_000), []),
+    ("a run id opening with U+FEFF", b'{"version": 1, "runs": [{"runId": "\\ufeffr"}]}', []),
+    ("a key opening with a raw U+FEFF",
+     b'{"version": 1, "runs": [{"runId": "r", "\xef\xbb\xbftty": "pts/3"}]}', []),
+    ("a U+FEFF inside a string",
+     b'{"version": 1, "runs": [{"runId": "r", "label": "x\\uFEFF"}]}', ["r"]),
+    ("a version that wraps to 1 in Int64",
+     b'{"version": 18446744073709551617, "runs": [{"runId": "r"}]}', []),
 ]
 
 

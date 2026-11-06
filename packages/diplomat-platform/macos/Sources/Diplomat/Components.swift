@@ -560,7 +560,7 @@ struct SliderSetting: View {
 
 extension View {
     /// The panel's card chrome: padded content on a soft rounded tint. Every grouped
-    /// block in the popover wears it — the activity feed, the ongoing-sessions list, the
+    /// block in the panel wears it — the activity feed, the ongoing-sessions list, the
     /// device pool, the mesh topology/nodes/duties — so the corner radius and the tint
     /// live in one place instead of once per card.
     ///

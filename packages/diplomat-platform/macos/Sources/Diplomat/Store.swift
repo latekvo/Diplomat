@@ -521,6 +521,27 @@ final class Store: ObservableObject {
     @Published var commsReplies: Bool {
         didSet { persist(commsReplies, forKey: Keys.commsReplies) }
     }
+    /// What Comms replies to (`CommsToggles.repliesTo`), under `commsReplies`.
+    @Published var commsReplyToReviews: Bool {
+        didSet { persist(commsReplyToReviews, forKey: Keys.commsReplyToReviews) }
+    }
+    @Published var commsReplyToFixes: Bool {
+        didSet { persist(commsReplyToFixes, forKey: Keys.commsReplyToFixes) }
+    }
+    @Published var commsReplyToInvestigations: Bool {
+        didSet { persist(commsReplyToInvestigations, forKey: Keys.commsReplyToInvestigations) }
+    }
+    @Published var commsReplyToQuestions: Bool {
+        didSet { persist(commsReplyToQuestions, forKey: Keys.commsReplyToQuestions) }
+    }
+    /// How many pings one triage call reads (`CommsSettings.batchSize`).
+    @Published var commsBatchSize: Int {
+        didSet { persist(commsBatchSize, forKey: Keys.commsBatchSize) }
+    }
+    /// How old a shorter queue's newest ping gets before it is triaged anyway.
+    @Published var commsFlushAfterSecs: Int {
+        didSet { persist(commsFlushAfterSecs, forKey: Keys.commsFlushAfterSecs) }
+    }
     /// How long the session must have been locked to count as away (`CommsAway`).
     @Published var commsAwayAfterSecs: Int {
         didSet { persist(commsAwayAfterSecs, forKey: Keys.commsAwayAfterSecs) }
@@ -702,6 +723,12 @@ final class Store: ObservableObject {
         static let commsActBumps = "commsActBumps"
         static let commsActInvestigations = "commsActInvestigations"
         static let commsReplies = "commsReplies"
+        static let commsReplyToReviews = "commsReplyToReviews"
+        static let commsReplyToFixes = "commsReplyToFixes"
+        static let commsReplyToInvestigations = "commsReplyToInvestigations"
+        static let commsReplyToQuestions = "commsReplyToQuestions"
+        static let commsBatchSize = "commsBatchSize"
+        static let commsFlushAfterSecs = "commsFlushAfterSecs"
         static let commsAwayAfterSecs = "commsAwayAfterSecs"
         static let commsLockedSince = "commsLockedSince"
         static let commsNotify = "commsNotify"
@@ -870,6 +897,19 @@ final class Store: ObservableObject {
         commsActBumps = defaults.object(forKey: Keys.commsActBumps) as? Bool ?? true
         commsActInvestigations = defaults.object(forKey: Keys.commsActInvestigations) as? Bool ?? true
         commsReplies = defaults.object(forKey: Keys.commsReplies) as? Bool ?? true
+        let commsReplyDefaults = CommsToggles()
+        commsReplyToReviews = defaults.object(forKey: Keys.commsReplyToReviews) as? Bool
+            ?? commsReplyDefaults.replyToReviews
+        commsReplyToFixes = defaults.object(forKey: Keys.commsReplyToFixes) as? Bool
+            ?? commsReplyDefaults.replyToFixes
+        commsReplyToInvestigations = defaults.object(forKey: Keys.commsReplyToInvestigations) as? Bool
+            ?? commsReplyDefaults.replyToInvestigations
+        commsReplyToQuestions = defaults.object(forKey: Keys.commsReplyToQuestions) as? Bool
+            ?? commsReplyDefaults.replyToQuestions
+        commsBatchSize = defaults.object(forKey: Keys.commsBatchSize) as? Int
+            ?? (try? CoreAssets.comms())?.batchSize ?? 8
+        commsFlushAfterSecs = defaults.object(forKey: Keys.commsFlushAfterSecs) as? Int
+            ?? (try? CoreAssets.comms())?.flushAfterSecs ?? 1800
         commsAwayAfterSecs = defaults.object(forKey: Keys.commsAwayAfterSecs) as? Int
             ?? (try? CoreAssets.comms())?.replies.awayAfterSecs ?? 10800
         commsLockedSince = defaults.object(forKey: Keys.commsLockedSince) as? Date
@@ -1115,7 +1155,9 @@ final class Store: ObservableObject {
         }
     }
 
-    func refresh() async {
+    func refresh() async { await AppLog.timed("refresh") { await load() } }
+
+    private func load() async {
         isLoading = true
         error = nil
         do {
@@ -1739,6 +1781,9 @@ final class Store: ObservableObject {
                     tokens = UsageScan.taskTokens(prompt: f.prompt, startedAt: f.at,
                                                   endedAt: f.done)
                 }
+                // Nothing spent: its agent never answered, so it finished nothing and
+                // its entry stays open. Twin of `telemetry.record_completion`.
+                if tokens == 0, (usd ?? 0) <= 0 { continue }
                 TelemetryLog.done(key: f.key, at: f.done, tokens: tokens,
                                   runner: f.runner, usd: usd, model: model)
             }
@@ -1872,7 +1917,7 @@ final class Store: ObservableObject {
         guard autofixMonitorTask == nil else { return }
         autofixMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.runAutofixPollOnce()
+                await AppLog.timed("autofixPoll") { await self?.runAutofixPollOnce() }
                 let ns = UInt64(Store.autofixPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
@@ -1937,6 +1982,10 @@ final class Store: ObservableObject {
             pollErrorThisCycle = "GitHub login unknown — is `gh` installed and authenticated?"
         } else {
             let (owner, repo) = coreRepo
+            // Off the main thread, so every prompt this cycle builds on it (each queued
+            // task's, every poll) names the model from memory instead of walking Claude
+            // Code's transcripts once per prompt.
+            await Task.detached(priority: .utility) { AgentModel.detectedAfresh() }.value
             // One fetch of my PRs per cycle, taken before anything acts on it: the
             // drain re-checks the waiting queue against it and the reconcilers below
             // diff from the same list. Fetching it here rather than inside the monitor
@@ -2272,7 +2321,7 @@ final class Store: ObservableObject {
     }
     /// Remove a ban (the UI's un-ban button) and refresh. The daemon round-trip
     /// (curl over the unix socket, up to 5s against a wedged daemon) runs off-main
-    /// so the popover can't freeze. When the daemon handled the unban it also wrote
+    /// so the panel can't freeze. When the daemon handled the unban it also wrote
     /// the audit entry - don't double-log.
     func unban(_ login: String) {
         Task { [weak self] in
@@ -3760,7 +3809,7 @@ final class Store: ObservableObject {
         guard apiWatchTask == nil else { return }
         apiWatchTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.runApiErrorScanOnce()
+                await AppLog.timed("apiErrorScan") { await self?.runApiErrorScanOnce() }
                 let ns = UInt64(Store.apiWatchInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
@@ -3860,11 +3909,13 @@ final class Store: ObservableObject {
         guard processPollTask == nil else { return }
         processPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refreshAutoTaskCount()
-                await self?.refreshDeviceState()
-                self?.refreshBanList()
-                self?.refreshAudit()
-                self?.runTelemetrySampleOnce()
+                await AppLog.timed("processPoll") {
+                    await self?.refreshAutoTaskCount()
+                    await self?.refreshDeviceState()
+                    self?.refreshBanList()
+                    self?.refreshAudit()
+                    self?.runTelemetrySampleOnce()
+                }
                 let ns = UInt64(Store.processPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
@@ -3939,7 +3990,7 @@ final class Store: ObservableObject {
     ///
     /// A run on a peer has neither and dismisses rather than pretending. If both fail the
     /// window is gone, so the tick is re-run to drop the dead row immediately rather than
-    /// leaving it to linger. The AppleScript runs off the main thread so the popover
+    /// leaving it to linger. The AppleScript runs off the main thread so the panel
     /// never hitches.
     func activate(_ row: AgentRow) async -> FocusOutcome {
         guard row.isFocusable else { return .dismissed }
@@ -3968,7 +4019,7 @@ final class Store: ObservableObject {
         guard meshPollTask == nil else { return }
         meshPollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.meshTick()
+                await AppLog.timed("meshTick") { await self?.meshTick() }
                 let ns = UInt64(Store.meshPollInterval * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: ns)
             }
@@ -4176,7 +4227,7 @@ final class Store: ObservableObject {
                 self?.updateState = .updating(step: "building the app at \(commit)…")
                 try await Task.detached(priority: .userInitiated) { try SelfUpdate.rebuild() }.value
                 self?.updateState = .updating(step: "relaunching…")
-                try await Task.detached(priority: .userInitiated) { try SelfUpdate.relaunch() }.value
+                try await Task.detached(priority: .userInitiated) { try SelfUpdate.relaunch(background: false) }.value
                 self?.updateState = .restarting(commit: commit)
             } catch {
                 self?.updateState = .failed((error as? LocalizedError)?.errorDescription ?? "\(error)")

@@ -408,6 +408,41 @@ def test_the_tick_after_a_release_agrees_too():
     assert "untracked:313" not in again["capLoad"] and again["inFlight"]["313"] is False
 
 
+#: A merge ending a pid-less run already named `untracked:<pr>` (a hand edit made it a
+#: dispatch: `"untracked": 1` is no flag), whose agent the scan still sees.
+_RELEASE_INTO_ITS_OWN_NAME = {
+    "now": 1000000.0, "limit": 2, "deadline": 14400.0,
+    "records": [{"runId": "untracked:337", "dispatchedAt": 1000000.0, "prNumber": 337,
+                 "prUrl": "https://github.com/o/r/pull/337", "kind": "review",
+                 "label": "Auto · Review · #337", "source": "auto", "placement": "local",
+                 "node": "", "workKey": "", "ledgerKey": "", "pid": None, "tty": "pts/3",
+                 "claimSeenAt": None, "quietDigest": "", "quietSince": None,
+                 "reapRefusedAt": None, "untracked": 1, "released": False}],
+    "evidence": {
+        key: {"status": "present", "value": value, "reason": ""}
+        for key, value in {
+            "activity": {}, "processes": {}, "sentinels": [],
+            "tails": {"pts/3": "● Posted the review.\n❯\n"
+                               "⏵⏵ bypass permissions on (shift+tab to cycle)"},
+            "claims": [], "mergedPrs": [337], "liveAgents": {"337": "pts/3"},
+            "sessions": {}, "tokensLeft": True}.items()},
+}
+
+
+def test_a_run_whose_release_has_no_name_of_its_own_retires_on_both():
+    """Its heir's name is taken by the run itself, and with no pid there is nothing to
+    tell the two apart: Swift kept the clashing id, whose verdict hid the run's own so
+    it never retired and its PR stayed in flight; Python named the heir
+    `untracked:337:None`. No heir: the run retires, and the next tick's scan books the
+    agent it still sees."""
+    payload = _RELEASE_INTO_ITS_OWN_NAME
+    swift, python = _swift(payload), _python_decoding(payload)
+    assert swift == python
+    assert [r["runId"] for r in python["records"]] == ["untracked:337"]
+    assert python["retirable"] == ["untracked:337"]
+    assert python["inFlight"] == {"337": False}
+
+
 @pytest.mark.parametrize("record, evidence, state", RELEASED_UNSEEN)
 def test_a_released_agent_nothing_saw_working_is_left_off_by_both(record, evidence,
                                                                   state):

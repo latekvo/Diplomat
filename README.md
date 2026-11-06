@@ -2,7 +2,7 @@
 
 <img width="1146" height="904" alt="The Diplomat panel" src="https://github.com/user-attachments/assets/bffd7a4b-2859-48ee-bffb-9da8221a4b02" />
 
-Diplomat lives in the macOS menu bar or the Linux system tray and runs coding agents
+Diplomat is a regular desktop app on macOS and Linux that runs coding agents
 against a GitHub repo's review and fix queue. It watches `software-mansion/argent`
 through your `gh` login. Each agent opens in a terminal window, so you can watch it
 and type into it.
@@ -114,12 +114,12 @@ contents and pull requests, which is safer.
 ## Running from a checkout
 
 ```bash
-# macOS - a menu-bar app, no Dock icon
+# macOS
 cd packages/diplomat-platform/macos
 ./install/build-app.sh && open ./Diplomat.app
 ./install/install-autostart.sh   # start at login, update daily at 06:00, restart after a crash
 
-# Linux - a Qt6 tray applet (XFCE, KDE, GNOME with AppIndicator)
+# Linux - a Qt6 desktop app (a tray icon too, where the desktop has a tray)
 cd packages/diplomat-platform/linux
 pip install -r requirements.txt && ./install/build-core.sh && ./diplomat
 ```

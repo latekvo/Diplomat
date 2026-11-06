@@ -3,7 +3,7 @@
 `Headless.active` is the single env-var list the AppDelegate and the Store share, and
 its own docstring names the two costs of a mode that is missing from it: the launch
 block it guards runs `SingleInstance.terminateOthers()`, which kills the operator's
-live menu-bar applet, and the Store starts real polls — and potentially agent dispatch
+live app, and the Store starts real polls — and potentially agent dispatch
 — underneath a check that is supposed to be reading, not acting.
 
 The list and the dispatch ladder in `DiplomatApp.applicationDidFinishLaunching` are two
@@ -85,7 +85,7 @@ def test_every_dispatched_mode_is_headless():
     missing = sorted(_dispatched() - _headless())
     assert not missing, (
         "these modes are dispatched in DiplomatApp.applicationDidFinishLaunching but "
-        "are not in Headless.active, so running one kills the live menu-bar app "
+        "are not in Headless.active, so running one kills the live app "
         "(SingleInstance.terminateOthers) and starts the Store's real polls: "
         + ", ".join(missing)
     )

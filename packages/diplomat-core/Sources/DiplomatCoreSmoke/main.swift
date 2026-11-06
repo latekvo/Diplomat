@@ -728,6 +728,26 @@ check(detectModel() == "Opus 5")
 try writeTranscript("newest.jsonl", "{\"type\":\"user\",\"message\":{\"role\":\"user\"}}\n", ageSecs: 1)
 check(detectModel() == "Opus 5",
       "the newest transcript with a model in it, not merely the newest transcript")
+// `detected()` remembers what Claude Code last ran, since every queued task's prompt is
+// rebuilt on every poll and the walk costs seconds on a busy machine; the poll re-reads
+// it off the main thread with `detectedAfresh()`.
+do {
+    let memoEnv = ["DIPLOMAT_CONFIG": configFile.path, "DIPLOMAT_CLAUDE_DIR": claudeHome.path]
+    let priorMemoEnv = memoEnv.keys.map { ($0, ProcessInfo.processInfo.environment[$0]) }
+    for (key, value) in memoEnv { setenv(key, value, 1) }
+    defer {
+        for (key, value) in priorMemoEnv {
+            if let value { setenv(key, value, 1) } else { unsetenv(key) }
+        }
+        try? FileManager.default.removeItem(at: sessions.appendingPathComponent("memo.jsonl"))
+    }
+    check(AgentModel.detectedAfresh() == "Opus 5", "detectedAfresh reads the transcripts")
+    try writeTranscript("memo.jsonl", "{\"message\":{\"model\":\"claude-sonnet-5\"}}\n", ageSecs: 0)
+    check(AgentModel.detected() == "Opus 5",
+          "detected() answers from what was last read, without walking the transcripts again")
+    check(AgentModel.detectedAfresh() == "Sonnet 5", "detectedAfresh reads them again")
+    check(AgentModel.detected() == "Sonnet 5", "and detected() answers with what that read")
+}
 // A model pinned in Settings belongs to the OTHER runners: `AgentRunner.claude`'s
 // command carries no model flag, so claiming it here would attribute a model that
 // never ran.
@@ -2324,14 +2344,37 @@ do {
         try? bytes.write(to: AgentRegistry.runsPath(), options: .atomic)
         check(AgentRegistry.load().isEmpty, "a book in \(encoding) is unreadable, as to Python")
     }
+    // Each read one way by `json` and another by Darwin's `JSONSerialization`, corelibs' or both.
+    func nested(_ levels: Int) -> String {
+        String(repeating: "[", count: levels) + String(repeating: "]", count: levels)
+    }
+    for (spoil, fields) in [("-1e400", ", \"x\": -1e400"), ("a trailing comma", ", \"x\": [1,]"),
+                            ("a trailing comma in the record", ","),
+                            ("an empty array past the depth limit", ", \"x\": \(nested(510))"),
+                            ("a string opening with an escaped U+FEFF", ", \"label\": \"\\uFEFFx\""),
+                            ("a string opening with U+FEFF", ", \"tty\": \"\u{FEFF}pts/3\"")] {
+        check(read("{\"runId\": \"r\"\(fields)}").isEmpty, "a book holding \(spoil) is unreadable")
+    }
+    check(read("{\"runId\": \"r\", \"label\": \"\\\",]x\u{FEFF}\", \"x\": \(nested(509))}")
+            .map(\.label) == ["\",]x\u{FEFF}"],
+          "`,]` and a U+FEFF inside a string, and nesting at the limit, are read")
+    check(read("{\"runId\": \"r\"}", version: "18446744073709551617").isEmpty,
+          "a version that wraps to 1 in Int64 is no schema")
+    check(JSONInput.parse(Data("{\"title\": \"\u{FEFF}Fix\", \"body\": \"\\uFEFF\"}".utf8)) != nil,
+          "a CLI payload holding a PR title that opens with U+FEFF is read")
 
     let ledger = Telemetry.fold(lines: [
         "{\"at\": 100, \"ev\": \"started\", \"key\": \"k1\", \"remote\": 1}",
         "{\"at\": 100, \"ev\": \"started\", \"key\": \"k2\", \"remote\": true}",
         "{\"at\": true, \"ev\": \"queued\", \"key\": \"k3\"}",
+        "{\"at\": \"100\\u0000\", \"ev\": \"queued\", \"key\": \"k4\"}",
+        "\u{200B}{\"at\": 100, \"ev\": \"queued\", \"key\": \"k5\"}",
+        " {\"at\": 100, \"ev\": \"queued\", \"key\": \"k6\"}\r",
+        "\u{FEFF}{\"at\": 100, \"ev\": \"queued\", \"key\": \"k7\"}",
     ])
-    check(ledger.tasks.map(\.key) == ["k1", "k2"] && ledger.tasks.map(\.remote) == [false, true],
-          "the ledger reads `\"remote\": 1` as local and `\"at\": true` as no timestamp")
+    check(ledger.tasks.map(\.key) == ["k1", "k2", "k6"] && ledger.tasks.map(\.remote) == [false, true, false],
+          "the ledger reads `\"remote\": 1` as local, `\"at\": true` or `\"100\\0\"` as no "
+            + "timestamp, and JSON's whitespace alone around a line")
     print("hand-edited run book and ledger assertions passed")
 }
 
@@ -2402,14 +2445,8 @@ do {
       {"runId": "r1", "dispatchedAt": -1e999, "quietSince": -1e999}]}
     """
     try? infinite.write(to: AgentRegistry.runsPath(), atomically: true, encoding: .utf8)
-    let inf = AgentRegistry.load()
-    // Darwin's parser makes `-inf` of `-1e999`; corelibs refuses the whole document.
-    #if canImport(Darwin)
-    check(inf.count == 1 && inf[0].dispatchedAt == 0 && inf[0].quietSince == nil,
-          "-1e999 is the default, not -inf")
-    #else
-    check(inf.isEmpty, "a document holding -1e999 is no book")
-    #endif
+    // Darwin's parser makes `-inf` of it, which the next write of the book dies on.
+    check(AgentRegistry.load().isEmpty, "a document holding -1e999 is no book")
     print("hand-edited number assertions passed")
 }
 
@@ -2593,6 +2630,23 @@ check(overflowedSummary.perTask.count == 1 && overflowedSummary.perTaskWeek.coun
       "an overflowed share must be dropped, not binned")
 check(overflowedSummary.perTask.mean == 5, "the overflowed share moved the mean")
 check(overflowedSummary.perTaskTokensMean > 1e300, "the count itself was dropped as a cost")
+// The reading moves in whole 1% steps, so a flat interval's tokens belong to the step
+// a later one shows; a reset and spending at 0% left price nothing. Twin of
+// test_telemetry.py's flat-interval and reset/exhausted tests.
+func weekSamples(_ readings: [(Double, Double)]) -> [Telemetry.Sample] {
+    Telemetry.fold(lines: readings.enumerated().map { i, r in
+        #"{"at": \#(900 * i), "ev": "sample", "weekLeft": \#(r.0), "repoTokens": \#(r.1), "otherTokens": 0}"#
+    }).samples
+}
+check(Telemetry.calibrate(weekSamples([(0.50, 0), (0.50, 200_000), (0.50, 400_000),
+                                       (0.49, 600_000)]), session: false)
+        .map { abs($0 - 60_000_000) < 1 } == true,
+      "a flat interval's tokens were dropped from the window's price")
+check(Telemetry.calibrate(weekSamples([(0.02, 0), (0.01, 100_000), (0.0, 200_000),
+                                       (0.0, 900_000), (1.0, 5_000_000), (0.99, 5_100_000),
+                                       (1.0, 6_000_000)]), session: false)
+        .map { abs($0 - 10_000_000) < 1 } == true,
+      "a reset or an exhausted window's tokens were priced")
 // A ledger with no quota readings can count tokens but cannot honestly turn them
 // into a share of a window — the screen shows tokens and says so.
 let unpriced = Telemetry.fold(lines: tLines.filter { !$0.contains("\"sample\"") })

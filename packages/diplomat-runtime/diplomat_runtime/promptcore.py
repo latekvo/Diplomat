@@ -79,7 +79,7 @@ def build_prompt(config: dict) -> str:
             # Prompt assembly is local string work (milliseconds). A bound is mandatory:
             # this runs synchronously on the Qt UI thread (wizard "Spawn") and inside the
             # auto-fix poll worker while `_poll_lock` is held — an unbounded hang (a wedged
-            # or misbuilt core binary) would freeze the tray forever or silently no-op
+            # or misbuilt core binary) would freeze the UI forever or silently no-op
             # every future poll. Every other subprocess in the app is likewise timed.
             timeout=30,
         )

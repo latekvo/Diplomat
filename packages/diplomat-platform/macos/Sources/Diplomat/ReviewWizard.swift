@@ -472,14 +472,18 @@ enum AgentSpawner {
     /// read starts nothing rather than falling back to the broad login. The emptiness
     /// check is part of that - `gh` reads an empty `GH_TOKEN` as unset. `spawn` asks
     /// `tokenReadable` first, so the same failure opens no window.
+    ///
+    /// A token holds no whitespace or NUL, so `tr` drops them: a secret pasted with a
+    /// trailing space fails git over HTTPS, one holding a CR fails `gh`.
     static func tokenExport(keychainItem: String) -> String? {
         guard !keychainItem.isEmpty else { return nil }
-        return "GH_TOKEN=$(security find-generic-password -s \(shq(keychainItem)) -w) "
+        return "GH_TOKEN=$(security find-generic-password -s \(shq(keychainItem)) -w "
+            + "| tr -d '\\000[:space:]') "
             + "&& [ -n \"$GH_TOKEN\" ] && export GH_TOKEN \(gitTokenHelper)"
     }
 
-    /// Whether `keychainItem` holds a non-empty secret, read as `tokenExport`'s gate reads
-    /// it. Twin of `review.check_token`.
+    /// Whether `keychainItem` holds a secret the gate's `tr` leaves something of. Twin
+    /// of `review.check_token`.
     static func tokenReadable(keychainItem: String) -> Bool {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -496,7 +500,9 @@ enum AgentSpawner {
             return false
         }
         let secret = out.fileHandleForReading.readDataToEndOfFile()
-        return proc.terminationStatus == 0 && secret.contains { $0 != UInt8(ascii: "\n") }
+        // `[:space:]` in ASCII: space and \t through \r.
+        return proc.terminationStatus == 0
+            && secret.contains { $0 != 0 && $0 != 0x20 && !(0x09...0x0D).contains($0) }
     }
 
     /// Points git's credential helper for github.com at `gh`, which hands out

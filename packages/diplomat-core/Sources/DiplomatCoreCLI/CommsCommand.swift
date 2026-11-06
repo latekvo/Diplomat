@@ -21,6 +21,8 @@ import Foundation
 ///                 "toggles", "settings"}); posts the reply that is due, if any, under
 ///                 Claude Code's Slack login; stdout = {"outcome": "sent" | "failed: …" |
 ///                 "skipped: …" | null, "text": "…" | null}.
+///   comms-reply-merge  stdin = {"requests": [CommsReplyRequest]}; stdout = one per Slack
+///                 message (`CommsReplyRequest.merged`), for one `comms-reply` each.
 ///
 /// The tick, the auth and the reply reach Slack under Claude Code's own Slack login
 /// (`SlackToken`), which `DIPLOMAT_SLACK_TOKEN` overrides. The tick, the feed, the effect
@@ -97,6 +99,12 @@ enum CommsCommand {
 
     static func reply(_ input: Data) {
         emitJSON(CommsReplier.reply(decode(CommsReplyRequest.self, input, "CommsReplyRequest")))
+    }
+
+    private struct ReplyMergeInput: Decodable { let requests: [CommsReplyRequest] }
+
+    static func replyMerge(_ input: Data) {
+        emitJSON(CommsReplyRequest.merged(decode(ReplyMergeInput.self, input, "{requests}").requests))
     }
 
     static func investigatePrompt(_ input: Data) -> String {

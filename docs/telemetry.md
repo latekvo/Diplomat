@@ -56,7 +56,9 @@ a mesh node can all append to one file. The monitors write `queued` when they fi
 see work owed, `cleared` if it stops being owed before anyone takes it, `started` on
 dispatch, `done` when the agent exited - its completion sentinel's own mtime, or the
 last turn of its transcript for a run the mesh placed, which leaves no sentinel this
-applet can read, but never when a poll noticed - and a `sample` every 15 minutes. It rewrites itself to the 60-day retention horizon
+applet can read, but never when a poll noticed - and a `sample` every 15 minutes. A
+run whose agent never answered (interrupted or refused before its first reply, so its
+transcript holds zero tokens) gets no `done`: it finished nothing. It rewrites itself to the 60-day retention horizon
 once it passes 4 MB.
 
 Two gatherers fill in what GitHub doesn't know:
@@ -97,7 +99,9 @@ publishes is a **token budget**, and the budget is dynamic - so the figure that 
 be looked up is the *per-task* share, "0.2% of the window". The window is instead
 **priced from what actually happened**: over an interval the account spent `Δutil` of
 its window while this machine logged `Δtokens`, so the window is worth
-`Δtokens / Δutil`, summed across every interval that didn't span a reset. Until two
+`Δtokens / Δutil`, summed across every interval that didn't span a reset or start at
+an exhausted window. An interval whose reading did not move still counts its tokens:
+the reading moves in whole 1% steps, so what it spent shows up in a later step. Until two
 quota readings exist there is no price, and the screen says so and shows raw tokens
 per task rather than inventing a percentage. The week moves slowly, so it takes a
 while to measure, and until it has a price the screen leaves its series off rather

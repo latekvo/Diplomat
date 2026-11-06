@@ -233,7 +233,9 @@ def read_lines() -> list[str]:
         nl = data.find(b"\n")
         data = data[nl + 1:] if nl >= 0 else b""
     try:
-        return data.decode("utf-8").splitlines()
+        # On "\n" alone, as the Swift twin splits: ``splitlines`` also breaks at
+        # U+2028 and U+0085, which a JSON string may hold unescaped.
+        return [line for line in data.decode("utf-8").split("\n") if line]
     except UnicodeDecodeError:
         return []
 
@@ -310,6 +312,9 @@ def record_completion(key: str, prompt: str, started_at: float,
     no id — and that is recorded honestly as a completion with no tokens rather than
     skipped, so the run/wait times still count it and the screen can say how many
     finished tasks it could not price.
+
+    A run attributed at zero tokens and no charge is not recorded: its agent never
+    answered, so it finished nothing and its entry stays open.
     """
     from . import hermesstore, runner, usagescan
 
@@ -330,6 +335,8 @@ def record_completion(key: str, prompt: str, started_at: float,
             tokens = run.tokens if run is not None else None
     except OSError:
         tokens = None
+    if tokens == 0 and (usd or 0) <= 0:
+        return
     if exited_at is None:
         exited_at = run.last_turn_at if run is not None else noticed_at
     record_done(key, exited_at, tokens, agent_runner, usd, model)
@@ -560,10 +567,9 @@ def fold(lines: list[str]) -> Ledger:
     by_key: dict[str, Task] = {}
     samples: list[Sample] = []
 
-    for raw in lines:
-        line = raw.strip()
-        if not line:
-            continue
+    for line in lines:
+        # Unstripped: the parser takes JSON's own whitespace, and the two languages'
+        # wider sets of it differ (U+200B, U+001C).
         try:
             obj = jsoninput.loads(line)
         except ValueError:
@@ -668,10 +674,11 @@ def calibrate(samples: list[Sample], *, session: bool) -> float | None:
     intervals more heavily, which is what you want: a 15-minute interval's
     rounding error should not count as much as an hour's.
 
-    Intervals are skipped when the window RESET between the two samples (quota
-    went up, so ``d_util <= 0``) or when nothing was spent, since neither prices
-    anything. Returns None when no interval survives — the caller then falls back
-    to the heuristic ceiling and the screen says the figure is an estimate.
+    A flat interval (``d_util == 0``) still counts its tokens: the reading moves in
+    whole 1% steps, so their spending shows in a later step. Skipped are a RESET
+    (``d_util < 0``), an exhausted window, and an interval that spent nothing.
+    Returns None when no interval survives — the caller then falls back to the
+    heuristic ceiling and the screen says the figure is an estimate.
     """
     tokens = 0.0
     util = 0.0
@@ -681,7 +688,7 @@ def calibrate(samples: list[Sample], *, session: bool) -> float | None:
         if left0 is None or left1 is None:
             continue
         d_util = left0 - left1
-        if d_util <= 0:
+        if d_util < 0 or left0 <= 0:
             continue
         d_tokens = (b.repo_tokens + b.other_tokens) - (a.repo_tokens + a.other_tokens)
         if d_tokens <= 0:  # also drops a counter reset
@@ -1064,9 +1071,13 @@ class Summary:
 
 
 def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
-              bin_count: int, z: float, bucket_hours: float) -> Summary:
+              bin_count: int, z: float, bucket_hours: float,
+              usd_runner: str = "") -> Summary:
     """Reduce a folded ledger to everything the screen shows. ``now`` is injected
     so the two implementations — and the tests — agree on where the range ends.
+
+    ``usd_runner`` names the runner whose bills :attr:`Summary.per_task_usd` is
+    priced from; empty takes every runner's.
     """
     start = now - days * 86400
     # The token counters are cumulative, so what the range spent is the rise since the
@@ -1115,7 +1126,10 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
     # at, and dropping them narrows the sample until the new model has a history of
     # its own — which holds work to the standing reserve meanwhile, the conservative
     # direction of the two. Ties go to the first seen, as they do in the Swift twin.
-    billed = [t for t in local if t.usd is not None and t.usd > 0]
+    # Another runner's bills price nothing: it is logged into its own provider, or
+    # into none.
+    billed = [t for t in local if t.usd is not None and t.usd > 0
+              and (not usd_runner or t.runner == usd_runner)]
     latest: Task | None = None
     for task in billed:
         if latest is None or task.started_at > latest.started_at:
