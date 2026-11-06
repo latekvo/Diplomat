@@ -24,6 +24,7 @@ Left alone, it:
   a ping on its own screen, and a request in it is acted on - a review or fix is
   queued, queued work is bumped, and a bug report gets an agent investigating it
   before you have read the message. See [Comms](docs/comms.md).
+- tracks long-running [tasks](docs/tasks.md) across PRs, issues and Slack threads, and why each is stuck.
 
 On request, from the panel:
 
@@ -140,6 +141,8 @@ Linux has everything except the per-row Merge button and clickable agent rows. S
 - [Mesh](docs/mesh.md): multi-machine coordination, WAN transports, the trust model
 - [Comms](docs/comms.md): the Slack watcher - what it reads, how triage decides, what
   it may do, the Slack login it borrows
+- [Tasks](docs/tasks.md): the long-running task tracker - statuses and their reasons,
+  what a sync reads, the CLI agents use
 - [Development](docs/development.md): design, headless self-tests, CI, repo layout
 
 ## Layout

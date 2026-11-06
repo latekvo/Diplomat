@@ -623,6 +623,25 @@ final class Store: ObservableObject {
     /// The replies of every apply so far, chained so no two run at once.
     var commsReplying: Task<Void, Never>?
 
+    // MARK: Tasks (the long-running task tracker) state the screen draws
+
+    /// `TaskStore.views(archived: true)`: archived tasks too, which the screen hides
+    /// until asked.
+    @Published var taskViews: [TaskView] = []
+    @Published var tasksLastSync: Date?
+    /// What the last sync could not do: all of it (`ok` false), or some links.
+    @Published var tasksSyncError: String?
+    /// Why the task files did not read on the last reload.
+    @Published var tasksReadError: String?
+    /// Why the operator's last edit was refused.
+    @Published var tasksEditError: String?
+    @Published var tasksSyncing = false
+    var tasksSyncAgain = false
+    /// Driven from `TasksMonitor.swift`, hence not private.
+    var tasksMonitorTask: Task<Void, Never>?
+    /// Bumped per reload, so a slower, older read never lands over a newer one.
+    var tasksReloadGeneration = 0
+
     /// Every dispatched agent run the panel draws, in reading order: the sessions this
     /// machine spawned, the work it handed to a mesh node, and any live agent nobody
     /// dispatched at all.
@@ -971,6 +990,7 @@ final class Store: ObservableObject {
             // `finished` lines into it (`noteCommsRuns`).
             refreshComms()
             startCommsMonitor()
+            startTasksMonitor()
             startMeshPoll()
             refreshBanList()
             refreshAudit()
