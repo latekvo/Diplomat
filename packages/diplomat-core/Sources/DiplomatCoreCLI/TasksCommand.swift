@@ -5,28 +5,58 @@ import Foundation
 /// write `$DIPLOMAT_TASKS_DIR` (default `~/.diplomat/tasks`); the sync also reads
 /// `$DIPLOMAT_COMMS_DIR` and runs `$DIPLOMAT_GH`.
 ///
-///   tasks-list   [--archived]  stdout = [TaskView] ({task, status, reasons, history,
-///                lastEventAt, linkStates}), archived tasks too with --archived.
+///   tasks-list   [--archived] [--me LOGIN]  stdout = [TaskView] ({task, status, reasons,
+///                history, lastEventAt, linkStates, graph, work}), archived tasks too with
+///                --archived; LOGIN's own PRs in an `auto` task get `findings` work.
 ///   tasks-sync   one `TaskSync.run`; stdout = {"ok", "error"?, "events": n}. Exits 0 when
 ///                `error` is set: a failed sync is an answer, and `ok` with an `error`
 ///                names the links it skipped.
+///   tasks-group  [--if-due]  one `TaskGrouper.run`; stdout = {"ok", "error"?, "created",
+///                "added"}, or {"ok": true, "skipped": "not due"} with --if-due before
+///                `groupSecs` have passed. Exits 0 either way.
 ///   tasks-edit   stdin = a TaskEdit ({"op": "create" | "update" | "link" | "unlink" |
-///                "note" | "archive" | "unarchive", …}); stdout = the task as it now is.
+///                "note" | "archive" | "unarchive" | "mode" | "dispatched", …}); stdout =
+///                the task as it now is.
 ///                Exits 1 with the reason on stderr for an unknown op, key or task, or an
 ///                edit that does not apply. An edit saved without its history line exits
 ///                0, printing the task, with the reason on stderr: it is not to be retried.
 enum TasksCommand {
     static func list(_ arguments: [String]) {
-        guard arguments.allSatisfy({ $0 == "--archived" }) else {
-            die("tasks-list takes only --archived", 1)
+        var archived = false, me = ""
+        var rest = arguments[...]
+        while let a = rest.popFirst() {
+            switch a {
+            case "--archived": archived = true
+            case "--me":
+                guard let login = rest.popFirst() else { die("--me takes a login", 1) }
+                me = login
+            default: die("tasks-list takes only --archived and --me LOGIN", 1)
+            }
         }
-        do { emitJSON(try TaskStore.views(archived: !arguments.isEmpty)) } catch {
+        do { emitJSON(try TaskStore.views(archived: archived, me: me)) } catch {
             die(error.localizedDescription, 1)
         }
     }
 
     private final class Box: @unchecked Sendable {
         var result: TaskSync.Result?
+        var grouped: TaskGrouper.Result?
+    }
+
+    static func group(_ arguments: [String]) {
+        guard arguments.allSatisfy({ $0 == "--if-due" }) else { die("tasks-group takes only --if-due", 1) }
+        if !arguments.isEmpty, !TaskGrouper.due() {
+            emit(Data("{\"ok\":true,\"skipped\":\"not due\"}\n".utf8))
+            return
+        }
+        let box = Box()
+        let done = DispatchSemaphore(value: 0)
+        Task {
+            box.grouped = await TaskGrouper.run()
+            done.signal()
+        }
+        done.wait()
+        emitJSON(box.grouped!)
     }
 
     static func sync() {

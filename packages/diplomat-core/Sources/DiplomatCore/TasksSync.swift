@@ -37,11 +37,17 @@ public struct TaskItem: Equatable, Sendable {
     public var reviews: [Activity]
     public var mergedAt: Date?
     public var closedAt: Date?
+    public var author: String?
+    /// A PR's branches and head commit.
+    public var baseRef: String?
+    public var headRef: String?
+    public var headOid: String?
 
     public init(kind: String, title: String, url: String, state: String, isDraft: Bool = false,
                 reviewDecision: String? = nil, mergeable: String? = nil, ci: String? = nil,
                 closes: [String] = [], comments: [Activity] = [], reviews: [Activity] = [],
-                mergedAt: Date? = nil, closedAt: Date? = nil) {
+                mergedAt: Date? = nil, closedAt: Date? = nil, author: String? = nil,
+                baseRef: String? = nil, headRef: String? = nil, headOid: String? = nil) {
         self.kind = kind
         self.title = title
         self.url = url
@@ -55,6 +61,10 @@ public struct TaskItem: Equatable, Sendable {
         self.reviews = reviews
         self.mergedAt = mergedAt
         self.closedAt = closedAt
+        self.author = author
+        self.baseRef = baseRef
+        self.headRef = headRef
+        self.headOid = headOid
     }
 
     /// Of one `issueOrPullRequest` node.
@@ -83,7 +93,10 @@ public struct TaskItem: Equatable, Sendable {
                   comments: nodes("comments").compactMap { activity($0, at: "createdAt") },
                   reviews: nodes("reviews").compactMap { activity($0, at: "submittedAt") },
                   mergedAt: (node["mergedAt"] as? String).flatMap(CommsLog.parseISO),
-                  closedAt: (node["closedAt"] as? String).flatMap(CommsLog.parseISO))
+                  closedAt: (node["closedAt"] as? String).flatMap(CommsLog.parseISO),
+                  author: (node["author"] as? [String: Any])?["login"] as? String,
+                  baseRef: node["baseRefName"] as? String, headRef: node["headRefName"] as? String,
+                  headOid: node["headRefOid"] as? String)
     }
 }
 
@@ -363,7 +376,8 @@ public enum TaskSync {
                                       isDraft: item.isDraft, reviewDecision: item.reviewDecision,
                                       ci: item.ci, mergeable: mergeable,
                                       seenIDs: older.suffix(max(0, GitHubSnapshot.seenLimit - window.count)) + window,
-                                      updatedAt: now)
+                                      updatedAt: now, closes: item.closes, author: item.author,
+                                      baseRef: item.baseRef, headRef: item.headRef, headOid: item.headOid)
         guard let old else {
             return (snapshot, [Happening(at: now, tags: ["linked", "\(item.kind):\(item.state.lowercased())"],
                                          url: item.url)])

@@ -1,7 +1,7 @@
 import Foundation
 
 /// One operator edit, as `tasks-edit` reads it: `{"op": "create" | "update" | "link" |
-/// "unlink" | "note" | "archive" | "unarchive", …}`.
+/// "unlink" | "note" | "archive" | "unarchive" | "mode" | "dispatched", …}`.
 public enum TaskEdit: Decodable, Equatable, Sendable {
     case create(title: String, tags: [String], links: [String])
     /// Nil leaves a field as it is; a `pinnedStatus` of `""` unpins.
@@ -11,8 +11,14 @@ public enum TaskEdit: Decodable, Equatable, Sendable {
     case note(id: String, text: String?, tags: [String], url: String?)
     case archive(id: String)
     case unarchive(id: String)
+    /// `observe`, `auto`, or `dismissed` (a grouper goal only); nil `reviewOnPush` leaves it.
+    case mode(id: String, mode: String?, reviewOnPush: Bool?)
+    /// The `GoalWork.key`s a front-end just started.
+    case dispatched(id: String, work: [String])
 
-    private enum Key: String, CodingKey { case op, id, title, tags, links, pinnedStatus, url, text }
+    private enum Key: String, CodingKey {
+        case op, id, title, tags, links, pinnedStatus, url, text, mode, reviewOnPush, work
+    }
 
     private struct AnyKey: CodingKey {
         var stringValue: String
@@ -26,7 +32,7 @@ public enum TaskEdit: Decodable, Equatable, Sendable {
     private static let keys: [String: [Key]] = [
         "create": [.title, .tags, .links], "update": [.id, .title, .tags, .pinnedStatus],
         "link": [.id, .url], "unlink": [.id, .url], "note": [.id, .text, .tags, .url],
-        "archive": [.id], "unarchive": [.id],
+        "archive": [.id], "unarchive": [.id], "mode": [.id, .mode, .reviewOnPush], "dispatched": [.id, .work],
     ]
 
     public init(from decoder: Decoder) throws {
@@ -58,11 +64,15 @@ public enum TaskEdit: Decodable, Equatable, Sendable {
                          url: try c.decodeIfPresent(String.self, forKey: .url))
         case "archive": self = .archive(id: try id())
         case "unarchive": self = .unarchive(id: try id())
+        case "mode":
+            self = .mode(id: try id(), mode: try c.decodeIfPresent(String.self, forKey: .mode),
+                         reviewOnPush: try c.decodeIfPresent(Bool.self, forKey: .reviewOnPush))
+        case "dispatched": self = .dispatched(id: try id(), work: try c.decode([String].self, forKey: .work))
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .op, in: c,
                 debugDescription: "unknown op \"\(op)\" (expected create | update | link | unlink"
-                    + " | note | archive | unarchive)")
+                    + " | note | archive | unarchive | mode | dispatched)")
         }
     }
 }
@@ -153,15 +163,19 @@ public enum TaskStore {
             .flatMap { try? CommsLog.decoder.decode(TaskMirror.self, from: $0) } ?? TaskMirror()
     }
 
-    /// What `tasks-list` prints: unarchived tasks (all with `archived`), each with its
-    /// status and newest-first history; tasks not done first, then by last activity.
-    public static func views(archived: Bool = false, now: Date = Date(),
+    /// What `tasks-list` prints: unarchived tasks (all with `archived`, but never a dismissed
+    /// goal), each with its status, newest-first history, graph and, in `auto` mode, the
+    /// work it wants started (`me` is the operator's GitHub login, whose PRs get `findings`);
+    /// tasks not done first, then by last activity.
+    public static func views(archived: Bool = false, me: String = "", now: Date = Date(),
                              in dir: URL = dir) throws -> [TaskView] {
         let assets = try CoreAssets.tasks()
         let watched = CoreAssets.repoCoordinates()
         let snapshots = mirror(in: dir).items
         let history = Dictionary(grouping: events(in: dir).enumerated(), by: { $0.element.task })
-        let views = try tasks(in: dir).filter { archived || $0.archivedAt == nil }.map { task in
+        let views = try tasks(in: dir).filter {
+            (archived || $0.archivedAt == nil) && $0.effectiveMode != .dismissed
+        }.map { task in
             let mine = (history[task.id] ?? []).sorted {
                 ($0.element.at, $0.offset) > ($1.element.at, $1.offset)
             }.map(\.element)
@@ -171,7 +185,10 @@ public enum TaskStore {
                                                       watched: watched)
             return TaskView(task: task, status: status, reasons: reasons,
                             history: Array(mine.prefix(assets.historyLimit)), lastEventAt: last,
-                            linkStates: TaskView.states(of: task, snapshots: snapshots))
+                            linkStates: TaskView.states(of: task, snapshots: snapshots),
+                            graph: TaskGraph.rows(task, snapshots: snapshots, watched: watched),
+                            work: GoalWork.plan(task, snapshots: snapshots, me: me, now: now,
+                                                fixRetrySecs: assets.fixRetrySecs, watched: watched))
         }
         return views.sorted { a, b in
             if (a.status == .done) != (b.status == .done) { return b.status == .done }
@@ -325,8 +342,51 @@ public enum TaskStore {
         case let .unarchive(id):
             let i = try index(id)
             guard tasks[i].archivedAt != nil else { return (tasks[i], []) }
+            guard tasks[i].effectiveMode != .dismissed else { throw TaskError(message: "task \(id) was dismissed") }
             tasks[i].archivedAt = nil
             return (tasks[i], [event(id, ["unarchived"])])
+
+        case let .mode(id, raw, reviewOnPush):
+            let i = try index(id)
+            guard tasks[i].effectiveMode != .dismissed else { throw TaskError(message: "task \(id) was dismissed") }
+            var tags: [String] = []
+            if let raw {
+                guard let mode = TaskMode(rawValue: raw), mode != .proposed else {
+                    throw TaskError(message: "mode is observe, auto or dismissed, not \"\(raw)\"")
+                }
+                if mode == .dismissed {
+                    guard tasks[i].origin == TrackedTask.grouperOrigin else {
+                        throw TaskError(message: "only a goal the grouper proposed can be dismissed; archive task \(id) instead")
+                    }
+                    if tasks[i].archivedAt == nil { tasks[i].archivedAt = now }
+                }
+                if mode != tasks[i].effectiveMode || tasks[i].mode == nil && mode != .observe {
+                    tasks[i].mode = mode
+                    tags.append("mode:\(mode.rawValue)")
+                }
+            }
+            if let reviewOnPush, reviewOnPush != tasks[i].reviewOnPush {
+                tasks[i].reviewOnPush = reviewOnPush
+                tags.append(reviewOnPush ? "review-on-push:on" : "review-on-push:off")
+            }
+            return (tasks[i], tags.isEmpty ? [] : [event(id, tags)])
+
+        case let .dispatched(id, work):
+            let i = try index(id)
+            var events: [TaskEvent] = []
+            for key in work {
+                guard let (kind, ref, head) = GoalWork.parse(key),
+                      tasks[i].links.contains(where: { GitHubRef(url: $0.url)?.key == ref.key }) else {
+                    throw TaskError(message: "task \(id) wants no work \(key)")
+                }
+                // One review is kept per PR, its newest head's.
+                if head != nil { tasks[i].dispatched = tasks[i].dispatched.filter { !$0.key.hasPrefix("review:\(ref.key)@") } }
+                tasks[i].dispatched[key] = now
+                let url = tasks[i].links.first { GitHubRef(url: $0.url)?.key == ref.key }?.url
+                events.append(TaskEvent(at: now, task: id, source: "diplomat", tags: ["dispatch:\(kind)"],
+                                        url: url, subject: url))
+            }
+            return (tasks[i], events)
         }
     }
 

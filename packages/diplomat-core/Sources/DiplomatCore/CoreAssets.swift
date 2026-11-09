@@ -316,6 +316,29 @@ public enum CoreAssets {
         public let excerptChars: Int
         public let commsHoldSecs: Int
         public let noteChars: Int
+        /// How long after a goal asked for an issue's fix it asks again, while no PR of it
+        /// closes the issue.
+        public let fixRetrySecs: Int
+        public var grouper: Grouper
+
+        /// `TaskGrouper`'s.
+        public struct Grouper: Decodable {
+            public let groupSecs: Int
+            public let minGroupSecs: Int
+            public let model: String
+            public let timeoutSecs: Int
+            public let bodyChars: Int
+            public let minItems: Int
+            public let maxProposals: Int
+            /// Joined by new lines.
+            public let instructions: [String]
+            /// `schema` serialised with sorted keys, by `loadTasks`.
+            public var schema: String = ""
+
+            private enum CodingKeys: String, CodingKey {
+                case groupSecs, minGroupSecs, model, timeoutSecs, bodyChars, minItems, maxProposals, instructions
+            }
+        }
     }
 
     // MARK: - Directory resolution
@@ -395,7 +418,18 @@ public enum CoreAssets {
     private static let _models = try? loadJSON("models.json", as: Models.self)
     private static let _telemetry = try? loadJSON("telemetry.json", as: TelemetryModel.self)
     private static let _comms = try? loadComms()
-    private static let _tasks = try? loadJSON("tasks.json", as: TasksModel.self)
+    private static let _tasks = try? loadTasks()
+
+    private static func loadTasks() throws -> TasksModel {
+        var model = try loadJSON("tasks.json", as: TasksModel.self)
+        let url = try assetsDir().appendingPathComponent("tasks.json")
+        guard let root = (try? JSONSerialization.jsonObject(with: Data(contentsOf: url))) as? [String: Any],
+              let schema = (root["grouper"] as? [String: Any])?["schema"],
+              let data = try? JSONSerialization.data(withJSONObject: schema, options: [.sortedKeys])
+        else { throw CoreError(message: "tasks.json has no grouper.schema object") }
+        model.grouper.schema = String(decoding: data, as: UTF8.self)
+        return model
+    }
 
     private static func loadComms() throws -> CommsModel {
         var model = try loadJSON("comms.json", as: CommsModel.self)
@@ -485,7 +519,7 @@ public enum CoreAssets {
     }
 
     public static func tasks() throws -> TasksModel {
-        guard let t = _tasks else { return try loadJSON("tasks.json", as: TasksModel.self) }
+        guard let t = _tasks else { return try loadTasks() }
         return t
     }
 

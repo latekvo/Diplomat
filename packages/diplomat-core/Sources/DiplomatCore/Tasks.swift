@@ -19,10 +19,24 @@ public struct TrackedTask: Codable, Equatable, Sendable {
     /// The `at` of the newest event appended to its history: what outlives the history's
     /// rotation. Nil when none was recorded.
     public var lastEventAt: Date?
+    /// `grouper` for a goal `TaskGrouper` proposed; nil for one the operator made.
+    public var origin: String?
+    /// What Diplomat does about it; nil reads as `observe`.
+    public var mode: TaskMode?
+    /// In `auto`: review each open linked PR again on every new head commit.
+    public var reviewOnPush: Bool
+    /// What the grouper said must land before what, between its own links.
+    public var edges: [TaskEdge]
+    /// The automatic work already asked for (`GoalWork.key`), and when.
+    public var dispatched: [String: Date]
+
+    public static let grouperOrigin = "grouper"
 
     public init(id: String, title: String, tags: [String] = [], links: [TaskLink] = [],
                 createdAt: Date, pinnedStatus: TaskStatus? = nil, archivedAt: Date? = nil,
-                dismissed: [String] = [], lastEventAt: Date? = nil) {
+                dismissed: [String] = [], lastEventAt: Date? = nil, origin: String? = nil,
+                mode: TaskMode? = nil, reviewOnPush: Bool = false, edges: [TaskEdge] = [],
+                dispatched: [String: Date] = [:]) {
         self.id = id
         self.title = title
         self.tags = tags
@@ -32,10 +46,18 @@ public struct TrackedTask: Codable, Equatable, Sendable {
         self.archivedAt = archivedAt
         self.dismissed = dismissed
         self.lastEventAt = lastEventAt
+        self.origin = origin
+        self.mode = mode
+        self.reviewOnPush = reviewOnPush
+        self.edges = edges
+        self.dispatched = dispatched
     }
+
+    public var effectiveMode: TaskMode { mode ?? .observe }
 
     private enum CodingKeys: String, CodingKey {
         case id, title, tags, links, createdAt, pinnedStatus, archivedAt, dismissed, lastEventAt
+        case origin, mode, reviewOnPush, edges, dispatched
     }
 
     public init(from decoder: Decoder) throws {
@@ -47,7 +69,12 @@ public struct TrackedTask: Codable, Equatable, Sendable {
                   pinnedStatus: try c.decodeIfPresent(TaskStatus.self, forKey: .pinnedStatus),
                   archivedAt: try c.decodeIfPresent(Date.self, forKey: .archivedAt),
                   dismissed: try c.decodeIfPresent([String].self, forKey: .dismissed) ?? [],
-                  lastEventAt: try c.decodeIfPresent(Date.self, forKey: .lastEventAt))
+                  lastEventAt: try c.decodeIfPresent(Date.self, forKey: .lastEventAt),
+                  origin: try c.decodeIfPresent(String.self, forKey: .origin),
+                  mode: try c.decodeIfPresent(TaskMode.self, forKey: .mode),
+                  reviewOnPush: try c.decodeIfPresent(Bool.self, forKey: .reviewOnPush) ?? false,
+                  edges: try c.decodeIfPresent([TaskEdge].self, forKey: .edges) ?? [],
+                  dispatched: try c.decodeIfPresent([String: Date].self, forKey: .dispatched) ?? [:])
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -61,6 +88,35 @@ public struct TrackedTask: Codable, Equatable, Sendable {
         try c.encodeIfPresent(archivedAt, forKey: .archivedAt)
         if !dismissed.isEmpty { try c.encode(dismissed, forKey: .dismissed) }
         try c.encodeIfPresent(lastEventAt, forKey: .lastEventAt)
+        try c.encodeIfPresent(origin, forKey: .origin)
+        try c.encodeIfPresent(mode, forKey: .mode)
+        if reviewOnPush { try c.encode(reviewOnPush, forKey: .reviewOnPush) }
+        if !edges.isEmpty { try c.encode(edges, forKey: .edges) }
+        if !dispatched.isEmpty { try c.encode(dispatched, forKey: .dispatched) }
+    }
+}
+
+/// What Diplomat does about a task.
+public enum TaskMode: String, Codable, CaseIterable, Sendable {
+    /// A goal the grouper made, waiting for the operator: shown, never acted on.
+    case proposed
+    /// Shown with its graph; the operator acts on it by hand.
+    case observe
+    /// Its issues with no PR get fix agents, and its PRs their reviews and finding fixes.
+    case auto
+    /// A proposal the operator turned down: archived, never listed, and the grouper does
+    /// not propose it again.
+    case dismissed
+}
+
+/// `from` must land before `to`: both are link URLs of the same task.
+public struct TaskEdge: Codable, Equatable, Hashable, Sendable {
+    public var from: String
+    public var to: String
+
+    public init(from: String, to: String) {
+        self.from = from
+        self.to = to
     }
 }
 
@@ -132,13 +188,21 @@ public struct GitHubSnapshot: Codable, Equatable, Sendable {
     public var seenIDs: [String]
     /// When a sync last wrote it.
     public var updatedAt: Date
+    /// Its closing references' URLs: the issues a PR closes, the PRs that close an issue.
+    public var closes: [String]
+    public var author: String?
+    /// A PR's branches and head commit.
+    public var baseRef: String?
+    public var headRef: String?
+    public var headOid: String?
 
     public static let missing = "MISSING"
     static let seenLimit = 500
 
     public init(kind: String, title: String, state: String, isDraft: Bool = false,
                 reviewDecision: String? = nil, ci: String? = nil, mergeable: String? = nil,
-                seenIDs: [String] = [], updatedAt: Date) {
+                seenIDs: [String] = [], updatedAt: Date, closes: [String] = [], author: String? = nil,
+                baseRef: String? = nil, headRef: String? = nil, headOid: String? = nil) {
         self.kind = kind
         self.title = title
         self.state = state
@@ -148,6 +212,33 @@ public struct GitHubSnapshot: Codable, Equatable, Sendable {
         self.mergeable = mergeable
         self.seenIDs = seenIDs
         self.updatedAt = updatedAt
+        self.closes = closes
+        self.author = author
+        self.baseRef = baseRef
+        self.headRef = headRef
+        self.headOid = headOid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, title, state, isDraft, reviewDecision, ci, mergeable, seenIDs, updatedAt
+        case closes, author, baseRef, headRef, headOid
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(kind: try c.decode(String.self, forKey: .kind), title: try c.decode(String.self, forKey: .title),
+                  state: try c.decode(String.self, forKey: .state),
+                  isDraft: try c.decode(Bool.self, forKey: .isDraft),
+                  reviewDecision: try c.decodeIfPresent(String.self, forKey: .reviewDecision),
+                  ci: try c.decodeIfPresent(String.self, forKey: .ci),
+                  mergeable: try c.decodeIfPresent(String.self, forKey: .mergeable),
+                  seenIDs: try c.decode([String].self, forKey: .seenIDs),
+                  updatedAt: try c.decode(Date.self, forKey: .updatedAt),
+                  closes: try c.decodeIfPresent([String].self, forKey: .closes) ?? [],
+                  author: try c.decodeIfPresent(String.self, forKey: .author),
+                  baseRef: try c.decodeIfPresent(String.self, forKey: .baseRef),
+                  headRef: try c.decodeIfPresent(String.self, forKey: .headRef),
+                  headOid: try c.decodeIfPresent(String.self, forKey: .headOid))
     }
 
     public var isOpen: Bool { state == "OPEN" }
@@ -189,6 +280,11 @@ public struct TaskView: Codable, Equatable, Sendable {
     /// Each synced GitHub link's state by its url: `open`, `draft`, `merged`, `closed` or
     /// `missing`. A link not synced yet has none.
     public var linkStates: [String: String]
+    /// Its GitHub links as flat chains, each one what must land before what
+    /// (`TaskGraph.rows`).
+    public var graph: [[TaskGraph.Node]]
+    /// In `auto` mode, the work it still wants started (`GoalWork.plan`); else empty.
+    public var work: [GoalWork]
 
     public static func states(of task: TrackedTask, snapshots: [String: GitHubSnapshot]) -> [String: String] {
         var out: [String: String] = [:]
