@@ -64,15 +64,24 @@ function baseStatus(c) {
   return { status: 'new', error: undefined };
 }
 
-// Candidate key -> the machine id last read through it. Kept on disk, so a machine
-// excluded for good, which is never read again, is still known under all its names.
-const knownIds = new Map(Object.entries(readJson(IDS_PATH) ?? {}).filter(([, v]) => typeof v === 'string'));
-const machineIdOf = (rec) => rec.info?.machineId || knownIds.get(rec.key) || null;
+// Candidate key -> {id, hostKey}: the machine id last read through it, under the host key
+// known_hosts held then. Kept on disk, so a machine excluded for good, which is never read
+// again, is still known under all its names. A different machine at that address has a
+// different key, and the id stops counting once known_hosts is changed to accept it.
+const knownIds = new Map(Object.entries(readJson(IDS_PATH) ?? {})
+  .filter(([, v]) => typeof v?.id === 'string' && typeof v?.hostKey === 'string'));
+
+function machineIdOf(rec) {
+  if (rec.info?.machineId) return rec.info.machineId;
+  const known = knownIds.get(rec.key);
+  return known && known.hostKey === rec.hostKey ? known.id : null;
+}
 
 function learnId(rec) {
   const id = rec.info?.machineId;
-  if (!id || !rec.key || knownIds.get(rec.key) === id) return;
-  knownIds.set(rec.key, id);
+  const known = knownIds.get(rec.key);
+  if (!id || !rec.key || !rec.hostKey || (known?.id === id && known.hostKey === rec.hostKey)) return;
+  knownIds.set(rec.key, { id, hostKey: rec.hostKey });
   try { atomicWrite(IDS_PATH, Object.fromEntries(knownIds), 0o644); } catch (e) { log('ids write failed', String(e)); }
 }
 
@@ -94,16 +103,21 @@ async function applyExclusions() {
   if (run !== exclusionRun) return; // a later call read newer settings
   nextExpiry = Math.min(...paused.map((p) => p.at));
   const named = (list, rec) => list.filter((e) => e.match(rec));
-  // Entries that exclude a machine for good under one name hold all its other names too.
-  const gone = new Map();
+  // Entries that exclude a machine under one name hold all its other names too.
+  const byId = (list) => {
+    const out = new Map();
+    for (const rec of records.values()) {
+      const id = machineIdOf(rec);
+      const hits = named(list, rec);
+      if (id && hits.length) out.set(id, [...(out.get(id) ?? []), ...hits]);
+    }
+    return out;
+  };
+  const [gone, held] = [byId(forGood), byId(paused)];
   for (const rec of records.values()) {
     const id = machineIdOf(rec);
-    const by = named(forGood, rec).map((e) => e.name);
-    if (id && by.length) gone.set(id, [...(gone.get(id) ?? []), ...by]);
-  }
-  for (const rec of records.values()) {
-    const permanentBy = [...new Set([...named(forGood, rec).map((e) => e.name), ...(gone.get(machineIdOf(rec)) ?? [])])];
-    const pausedBy = named(paused, rec);
+    const permanentBy = [...new Set([...named(forGood, rec), ...(gone.get(id) ?? [])].map((e) => e.name))];
+    const pausedBy = [...new Set([...named(paused, rec), ...(held.get(id) ?? [])])];
     const by = [...new Set([...permanentBy, ...pausedBy.map((e) => e.name)])];
     const at = Math.max(...pausedBy.map((p) => p.at));
     const permanent = permanentBy.length > 0;
@@ -283,11 +297,13 @@ function longer(a, b) {
 }
 
 // Adds a view to a map by machine id, so one machine reached under two names is listed
-// once, under the name from the most preferred source.
+// once: under a name it answered on, then the name from the most preferred source.
 function merge(byId, m) {
   const prev = byId.get(m.id);
   if (!prev) { byId.set(m.id, m); return; }
-  const [keep, drop] = SOURCES.indexOf(m.sources[0]) < SOURCES.indexOf(prev.sources[0]) ? [m, prev] : [prev, m];
+  const rank = (v) => [v.status !== 'ok', SOURCES.indexOf(v.sources[0])];
+  const [a, b] = [rank(m), rank(prev)];
+  const [keep, drop] = ((a[0] - b[0]) || (a[1] - b[1])) < 0 ? [m, prev] : [prev, m];
   keep.aliases = [...new Set([...(keep.aliases ?? []), drop.target, ...(drop.aliases ?? [])])];
   keep.excluded = longer(keep.excluded, drop.excluded);
   byId.set(m.id, keep);
@@ -298,29 +314,30 @@ function publish() {
   const localId = localRecord.info?.machineId;
   const ready = new Map();
   const forGood = new Map();
-  const pausedUnread = new Map();
+  const paused = new Map(); // read or not: a paused machine stays listed as paused
   const unavailable = [];
   for (const rec of records.values()) {
     const m = view(rec);
     if (rec.status === 'excluded') merge(forGood, m);
-    else if (rec.status !== 'ok') {
-      if (rec.excluded) merge(pausedUnread, m);
-      else unavailable.push(m);
-    } else if (m.id !== localId) merge(ready, m);
+    else if (rec.excluded) merge(paused, m);
+    else if (rec.status !== 'ok') unavailable.push(m);
+    else if (m.id !== localId) merge(ready, m);
   }
   const live = [...ready.values()];
-  record([local, ...live]);
+  const pausedViews = [...paused.values()];
+  const read = (list) => list.filter((m) => m.status === 'ok' && m.id !== localId);
+  record([local, ...live, ...read(pausedViews)]);
   snapshot = {
     updatedAt: new Date().toISOString(),
     discoveredAt: lastDiscoveryAt ? new Date(lastDiscoveryAt).toISOString() : null,
     probeIntervalMs: PROBE_INTERVAL_MS,
     daemon: { pid: process.pid, startedAt, sessions: clients.size },
     local,
-    machines: live.filter((m) => !m.excluded).sort(byRank),
+    machines: live.sort(byRank),
     // Excluded for a while (those read best first, then those that could not be), then for good.
     excluded: [
-      ...live.filter((m) => m.excluded).sort(byRank),
-      ...[...pausedUnread.values()].sort((a, b) => a.target.localeCompare(b.target)),
+      ...read(pausedViews).sort(byRank),
+      ...pausedViews.filter((m) => m.status !== 'ok').sort((a, b) => a.target.localeCompare(b.target)),
       ...[...forGood.values()].sort((a, b) => a.target.localeCompare(b.target)),
     ],
     unavailable: unavailable.sort((a, b) => a.status.localeCompare(b.status) || a.target.localeCompare(b.target)),

@@ -131,7 +131,7 @@ try {
 
   await check('every probe is unattended and refuses a new or changed host key', () => {
     for (const args of sb.probes()) {
-      for (const opt of ['BatchMode=yes', 'StrictHostKeyChecking=yes', 'ControlMaster=no', 'ClearAllForwardings=yes']) {
+      for (const opt of ['BatchMode=yes', 'StrictHostKeyChecking=yes', 'ControlMaster=no', 'ControlPath=none', 'ClearAllForwardings=yes']) {
         assert.ok(args.includes(opt), `${opt} missing from ${JSON.stringify(args)}`);
       }
       assert.equal(args.at(-3), '--', `the target can be read as an option: ${JSON.stringify(args)}`);

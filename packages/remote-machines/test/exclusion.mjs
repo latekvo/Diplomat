@@ -2,11 +2,12 @@
 // here can pass on the back of a periodic scan: a machine let back in is read at once, a
 // probe already out when its machine is excluded for good does not bring it back, a pause
 // that runs out ends on time, a paused machine that stops answering stays listed as
-// paused, and an exclusion for good holds every name of its machine across a restart.
+// paused, a pause holds every name of its machine, and an exclusion for good holds every
+// name across a restart until known_hosts accepts a different machine at one of them.
 // Run: node test/exclusion.mjs
 
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { sandbox } from './lib/sandbox.mjs';
@@ -93,6 +94,23 @@ try {
     assert.deepEqual(targets(st.machines), ['quick']);
   });
 
+  await check('a pause under one name holds the machine under its others when that one stops answering', async () => {
+    const until1h = new Date(Date.now() + 3600e3).toISOString();
+    settings({ remoteMachineExcludeUntil: { quick: until1h } });
+    const h = JSON.parse(fs.readFileSync(sb.env.FAKE_SSH_HOSTS, 'utf8'));
+    h.quick.behavior = 'refused';
+    sb.setHosts(h);
+    await until((x) => x.excluded.some((m) => m.id === 'M-QUICK'), 'quick paused');
+    const st = await callDaemon('POST', '/scan', { full: true });
+    assert.ok(!st.machines.some((m) => m.id === 'M-QUICK'), JSON.stringify(st.machines.map((m) => m.target)));
+    const paused = st.excluded.filter((m) => m.id === 'M-QUICK');
+    assert.deepEqual(paused.map((m) => [m.target, m.status, m.excluded.by]), [['quick-ip', 'ok', ['quick']]]);
+    delete h.quick.behavior;
+    sb.setHosts(h);
+    settings({});
+    await until((x) => x.machines.some((m) => m.id === 'M-QUICK'), 'quick back');
+  });
+
   await check('an exclusion for good holds every name of its machine across a restart', async () => {
     settings({ remoteMachineExclude: ['quick'] });
     await until((x) => x.excluded.some((m) => m.target === 'quick'), 'quick excluded');
@@ -108,6 +126,26 @@ try {
     assert.deepEqual(st.excluded.map((m) => [m.id, m.target, m.excluded.by]), [['M-QUICK', 'quick', ['quick']]]);
     assert.ok(st.excluded[0].aliases.includes('quick-ip'));
     assert.ok(!st.machines.some((m) => m.id === 'M-QUICK'));
+  });
+
+  await check('a name known_hosts now holds another key for is no longer counted as the excluded machine', async () => {
+    // The address went to another machine, and its new key was accepted.
+    execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', `${sb.dir}/otherkey`]);
+    const pub = fs.readFileSync(`${sb.dir}/otherkey.pub`, 'utf8').trim().split(' ').slice(0, 2).join(' ');
+    const known = fs.readFileSync(sb.env.FAKE_KNOWN_HOSTS, 'utf8').split('\n')
+      .map((l) => (l.startsWith('192.168.1.9 ') ? `192.168.1.9 ${pub}` : l)).join('\n');
+    fs.writeFileSync(sb.env.FAKE_KNOWN_HOSTS, known);
+    const h = JSON.parse(fs.readFileSync(sb.env.FAKE_SSH_HOSTS, 'utf8'));
+    h['quick-ip'].overrides.machine_id = 'M-OTHER';
+    sb.setHosts(h);
+    const { pid } = JSON.parse(fs.readFileSync(`${sb.env.RM_BASE_DIR}/daemon.json`, 'utf8'));
+    process.kill(pid, 'SIGTERM');
+    while (sb.daemons().length) await delay(50);
+    await spawnDaemon(12000);
+    await callDaemon('POST', '/attach', { ownerPid: session.pid });
+    const st = await callDaemon('GET', '/state');
+    assert.deepEqual(st.machines.filter((m) => m.target === 'quick-ip').map((m) => m.id), ['M-OTHER']);
+    assert.deepEqual(st.excluded.map((m) => [m.id, m.target]), [['M-QUICK', 'quick']]);
   });
 
   console.log(`EXCLUSION OK — ${checks} checks passed`);

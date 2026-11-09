@@ -213,15 +213,19 @@ export function knownHostsLan(files) {
 }
 
 /// Whether this resolved candidate's host key is already in one of its known_hosts files.
-export async function hostKeyKnown(c) {
+/// The host keys known_hosts holds for this resolved candidate, as sorted
+/// `type base64` lines joined by newlines, or null when it holds none.
+export async function knownHostKey(c) {
   // ssh looks a HostKeyAlias up as it is, without the port.
   const key = c.hostKeyAlias ?? (c.port === 22 ? c.hostname : `[${c.hostname}]:${c.port}`);
   for (const f of c.knownHostsFiles) {
     if (!fs.existsSync(f)) continue;
     const r = await run(SSH_KEYGEN_BIN, ['-F', key, '-f', f]);
-    if (r.code === 0 && r.stdout.trim()) return true;
+    const keys = r.code === 0 ? r.stdout.split('\n').filter((l) => l.trim() && !l.startsWith('#'))
+      .map((l) => l.trim().split(/\s+/).slice(1, 3).join(' ')) : [];
+    if (keys.length) return [...new Set(keys)].sort().join('\n');
   }
-  return false;
+  return null;
 }
 
 // ---- candidates -----------------------------------------------------------
@@ -238,7 +242,7 @@ const portTarget = ({ hostname, port }) => (port === 22 ? hostname : `ssh://${ho
 const SAFE_TARGET = /^(ssh:\/\/)?[A-Za-z0-9_][A-Za-z0-9._@%:[\]-]*$/;
 
 /// Every candidate machine, merged by host name and port:
-/// [{key, target, hostname, user, port, sources, names, proxied, trusted}].
+/// [{key, target, hostname, user, port, sources, names, proxied, trusted, hostKey}].
 ///
 /// `hosts` are listed whatever their network; the other sources only on this network.
 export async function candidates({ hosts = [] } = {}) {
@@ -271,7 +275,10 @@ export async function candidates({ hosts = [] } = {}) {
   const list = [...byKey.values()];
   // A ProxyJump hop is a separate ssh that this probe's options never reach: it would
   // accept a new key, or leave a ControlPersist master behind. Such hosts are not probed.
-  await mapLimit(list, 8, async (c) => { c.trusted = !c.proxied && await hostKeyKnown(c); });
+  await mapLimit(list, 8, async (c) => {
+    c.hostKey = await knownHostKey(c);
+    c.trusted = !c.proxied && c.hostKey != null;
+  });
   return list;
 }
 

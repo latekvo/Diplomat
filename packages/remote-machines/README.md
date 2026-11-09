@@ -93,7 +93,8 @@ changes or a time in it passes. An excluded machine is listed under `excluded`, 
 entries that name it, so a UI can take back exactly those. The agent output names it as
 not usable. A machine excluded under one name stays excluded under all of them, across
 restarts too: the daemon keeps the machine id each name last reached in
-`machine-ids.json`.
+`machine-ids.json`, with the host key known_hosts held then, so a different machine later
+accepted at one of those names is not taken for it.
 
 ## Reading a machine
 
