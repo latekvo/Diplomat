@@ -1,11 +1,15 @@
 import Foundation
+import AppKit
+import SwiftUI
 import DiplomatCore
 
 /// `DIPLOMAT_TASKS_TEST=1`: the app's half of the Tasks tracker (the core's is pinned in
 /// `DiplomatCoreSmoke`): an edit through `Store.editTask` or an editor's `TaskDraft`, a sync
 /// through `Store.syncTasks` and the rows, badge and errors the screen draws after each,
 /// against a stand-in `gh` (`DIPLOMAT_GH`) that logs its calls, notes any call made while
-/// another is still running, and answers one canned GraphQL reply.
+/// another is still running, and answers one canned GraphQL reply. Then the screen itself,
+/// clicked and typed into off screen: its inline editors across folds, archiving and
+/// answers that come after the editor that asked has closed.
 ///
 /// Then goals: the automatic pass's asks and records, what pauses for them, the agent
 /// overlay, and a grouper run that fails.
@@ -202,6 +206,9 @@ enum TasksTest {
               created && form.error == nil && form.text.isEmpty && form.tags.isEmpty && form.links.isEmpty,
               "\(form.text)|\(form.tags)|\(form.links)")
         check("and syncs without waiting for the timer", calls() == j + 1, "\(calls() - j) calls")
+
+        print("the screen's editors")
+        await screen(store, check: check)
 
         print("goals")
         let goalsDir = scratch.appendingPathComponent("goals")
@@ -452,5 +459,163 @@ enum TasksTest {
         try handle.seekToEnd()
         try handle.write(contentsOf: lines)
         try handle.close()
+    }
+
+    /// The screen in a window never ordered on screen: typing goes through each field's
+    /// editor, and a click straight to the view under it, at a point found from the fields
+    /// around it. Every step that moves the screen is checked before the next relies on it.
+    @MainActor
+    private static func screen(_ store: Store,
+                               check report: (String, Bool, @autoclosure () -> String) -> Void) async {
+        func check(_ name: String, _ ok: Bool, _ detail: String = "") { report(name, ok, detail) }
+        _ = await store.editTask(.create(title: "Editor lifecycle", tags: [], links: []))
+        guard let id = store.taskViews.first(where: { $0.task.title == "Editor lifecycle" })?.task.id else {
+            return check("its task is created", false, "")
+        }
+        let host = NSHostingView(rootView: TasksView(isPresented: .constant(true), seedExpanded: [id],
+                                                     seedEditor: .init(task: id, kind: .note))
+            .environmentObject(store))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 900),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.contentView = nil }
+
+        func settle(until done: () -> Bool = { false }) async {
+            for _ in 0..<40 {
+                host.layoutSubtreeIfNeeded()
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                if done() { break }
+            }
+            host.layoutSubtreeIfNeeded()
+        }
+        func fields(_ view: NSView) -> [NSTextField] {
+            ((view as? NSTextField).map { [$0] } ?? []) + view.subviews.flatMap(fields)
+        }
+        func field(_ placeholder: String) -> NSTextField? {
+            fields(host).first { $0.placeholderString?.hasPrefix(placeholder) == true }
+        }
+        func shown(_ text: String) -> Bool { fields(host).contains { $0.stringValue.contains(text) } }
+        func frame(_ f: NSTextField) -> NSRect { f.convert(f.bounds, to: nil) }
+        func type(_ text: String, into f: NSTextField) {
+            window.makeFirstResponder(f)
+            f.currentEditor()?.insertText(text)
+        }
+        func submit(_ f: NSTextField) {
+            window.makeFirstResponder(f)
+            f.currentEditor()?.insertNewline(nil)
+        }
+        func click(_ point: NSPoint) {
+            let at = host.convert(point, from: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                                     timestamp: ProcessInfo.processInfo.systemUptime,
+                                                     windowNumber: window.windowNumber, context: nil,
+                                                     eventNumber: 0, clickCount: 1, pressure: 1) else { return }
+                if type == .leftMouseDown { host.hitTest(at)?.mouseDown(with: event) }
+                else { host.hitTest(at)?.mouseUp(with: event) }
+            }
+        }
+        let note = "Note:", link = "A PR or issue URL", tags = "Tags, e.g. decision"
+        func cancel(beside f: NSTextField) -> NSPoint { NSPoint(x: frame(f).maxX + 29, y: frame(f).midY) }
+
+        await settle()
+        // Points on the row, from its id at the right of its actions: a sync may reorder the
+        // rows. A folded row hides its actions, so its header is where it was last seen.
+        func actions() -> NSRect? { fields(host).first { $0.stringValue == id }.map(frame) }
+        guard let noteField = field(note), let row = actions() else {
+            return check("the seeded note editor is drawn", false, "")
+        }
+        let left = frame(noteField).minX
+        var headerAbove: CGFloat = 0
+        var lastHeader = NSPoint.zero
+        func header() -> NSPoint {
+            if let row = actions() { lastHeader = NSPoint(x: row.minX / 2, y: row.maxY + headerAbove) }
+            return lastHeader
+        }
+        func addLink() -> NSPoint { NSPoint(x: left + 33, y: actions()?.midY ?? -1) }
+        func addNote() -> NSPoint { NSPoint(x: left + 105, y: actions()?.midY ?? -1) }
+        type("USB only for now", into: noteField)
+        await settle()
+
+        // The header is the first point above the actions that folds the row.
+        for above in stride(from: 8.0, through: 40.0, by: 2.0) where field(note) != nil {
+            click(NSPoint(x: row.minX / 2, y: row.maxY + above))
+            await settle(until: { field(note) == nil })
+            headerAbove = above
+        }
+        guard field(note) == nil else { return check("a click on the row's header folds it", false, "") }
+        lastHeader = NSPoint(x: row.minX / 2, y: row.maxY + headerAbove)
+        click(header())
+        await settle(until: { field(note) != nil })
+        check("a note typed before its row folded is there when it unfolds",
+              field(note)?.stringValue == "USB only for now", field(note)?.stringValue ?? "no note editor")
+
+        click(addLink())
+        await settle(until: { field(link) != nil })
+        guard let linkField = field(link) else { return check("Add link opens the link editor", false, "") }
+        type("argent 1714", into: linkField)
+        submit(linkField)
+        await settle(until: { shown("not a link: argent 1714") })
+        check("a refused link says why at its editor", shown("not a link: argent 1714"))
+        click(header())
+        await settle(until: { field(link) == nil })
+        click(header())
+        await settle(until: { field(link) != nil })
+        check("the link and its refusal outlive a fold",
+              field(link)?.stringValue == "argent 1714" && shown("not a link: argent 1714"),
+              field(link)?.stringValue ?? "no link editor")
+
+        _ = await store.editTask(.archive(id: id))
+        await settle(until: { field(link) == nil })
+        check("archived, the row leaves the list", field(link) == nil)
+        _ = await store.editTask(.unarchive(id: id))
+        await settle(until: { field(link) != nil })
+        check("and comes back with its editor as it was",
+              field(link)?.stringValue == "argent 1714" && shown("not a link: argent 1714"),
+              field(link)?.stringValue ?? "no link editor")
+        if let refused = field(link) { click(cancel(beside: refused)) }
+        await settle(until: { field(link) == nil })
+        click(addLink())
+        await settle(until: { field(link) != nil })
+        check("a cancelled editor's refusal leaves with it",
+              field(link)?.stringValue == "" && !shown("not a link"), field(link)?.stringValue ?? "no link editor")
+        if let open = field(link) { type("half a link", into: open) }
+        click(addLink())
+        await settle()
+        check("Add link again keeps the open link editor as typed",
+              field(link)?.stringValue == "half a link", field(link)?.stringValue ?? "no link editor")
+        click(addNote())
+        await settle(until: { field(note) != nil })
+        check("Add note puts an empty note editor in its place",
+              field(link) == nil && field(note)?.stringValue == "", field(note)?.stringValue ?? "no note editor")
+
+        click(addNote())
+        await settle(until: { field(note) != nil })
+        guard let first = field(note), let firstTags = field(tags) else {
+            return check("Add note opens the note editor", false, "")
+        }
+        type("asked Apple about the entitlement", into: first)
+        submit(first)
+        // Before the note's answer: Cancel, and a new note editor.
+        click(cancel(beside: firstTags))
+        click(addNote())
+        await settle(until: {
+            store.taskViews.first { $0.task.id == id }?.history.first?.text == "asked Apple about the entitlement"
+        })
+        await settle()
+        check("the note is saved",
+              store.taskViews.first { $0.task.id == id }?.history.first?.text == "asked Apple about the entitlement")
+        check("and its answer leaves the note editor opened after it open", field(note) != nil)
+
+        click(addLink())
+        await settle(until: { field(link) != nil })
+        guard let second = field(link) else { return check("Add link opens the link editor", false, "") }
+        type("argent 1730", into: second)
+        submit(second)
+        click(cancel(beside: second))
+        await settle(until: { shown("not a link: argent 1730") })
+        check("a refusal whose editor closed is said on the row",
+              field(link) == nil && shown("not a link: argent 1730"))
     }
 }

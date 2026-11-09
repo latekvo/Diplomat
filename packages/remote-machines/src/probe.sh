@@ -25,9 +25,10 @@ else
   awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/ {sub(":", "", $1); print "meminfo_" $1 "=" $2}' /proc/meminfo
   echo "boottime=$(awk '/^btime/ {print $2}' /proc/stat)"
   echo "machine_id=$(cat /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null | head -1)"
-  command -v nvidia-smi >/dev/null 2>&1 &&
-    nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null |
-    sed 's/^/nvidia=/'
+  # nvidia-smi prints its failures (a driver/library mismatch, no devices) on stdout.
+  nvidia=$(nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null) ||
+    nvidia=
+  [ -n "$nvidia" ] && printf '%s\n' "$nvidia" | sed 's/^/nvidia=/'
 fi
 if [ "$mode" = full ]; then
   echo "arch=$(uname -m)"
@@ -48,7 +49,7 @@ if [ "$mode" = full ]; then
     cpu=$(awk -F': ' '/^model name/ {print $2; exit}' /proc/cpuinfo)
     [ -n "$cpu" ] || cpu=$(lscpu 2>/dev/null | awk -F': *' '/^Model name/ && $2 != "-" {print $2; exit}')
     echo "cpu=$cpu"
-    command -v nvidia-smi >/dev/null 2>&1 ||
+    [ -n "$nvidia" ] ||
       lspci 2>/dev/null | awk -F': ' '/VGA|3D controller/ {print "gpu=" $2}'
   fi
   # Toolchains on the login shell's PATH, the one agents are told to run work under

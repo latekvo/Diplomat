@@ -4642,9 +4642,9 @@ class Store(QObject):
             if verdict in ("spawned", autofix.VERDICT_STAND_DOWN):
                 self.edit_tracked_task_async(
                     {"op": "dispatched", "id": task_id, "work": [node["work"]]},
-                    ("card", task_id, False))
+                    ("card", task_id, None))
                 return
-            self.tracked_task_edited.emit(("card", task_id, False),
+            self.tracked_task_edited.emit(("card", task_id, None),
                                           f"The fix for #{number} did not start: {verdict}")
             self.tracked_tasks_changed.emit()
 

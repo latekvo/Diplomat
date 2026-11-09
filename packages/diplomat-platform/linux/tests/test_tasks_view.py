@@ -219,9 +219,10 @@ def test_a_refused_card_edit_stays_open_with_its_reason(tstore):
     assert not card.save_btn.isEnabled()
     settle(tstore)
     assert view.card(task_id) is card and not card.editor.isHidden()
-    assert card.error.text() == \
+    assert card.editor_error.text() == \
         "diplomat-core tasks-edit failed: diplomat-core: not a link: ftp://nope"
-    assert not card.error.isHidden() and card.save_btn.isEnabled()
+    assert not card.editor_error.isHidden() and card.save_btn.isEnabled()
+    assert card.error_row.isHidden()
     assert tasks.views()[0]["task"]["links"] == []
 
 
@@ -475,3 +476,93 @@ def test_the_render_mode_draws_through_the_entry_point(tmp_path):
     assert not (home / ".diplomat" / "tasks").exists()
     assert not (home / ".diplomat" / "comms").exists()
 
+
+
+def _refusals(card: TaskCard) -> list[str]:
+    """Every refusal the card shows, wherever it is drawn."""
+    from PySide6.QtWidgets import QLabel
+
+    return [w.text() for w in card.findChildren(QLabel)
+            if w.isVisibleTo(card) and "tasks-edit failed" in w.text()]
+
+
+def test_an_edit_answer_closes_only_the_editor_that_made_it(tstore):
+    task_id = _create(tstore, "Tor transport")
+    view = TasksView(tstore)
+    card = view.card(task_id)
+    card.buttons["note"].click()
+    card.fields["text"].setText("asked on Slack")
+    card.save_btn.click()
+    # The note's answer is still queued for the event loop.
+    card.buttons["link"].click()
+    card.fields["url"].setText("o/r#9")
+    settle(tstore)
+    assert tasks.views()[0]["history"][0]["text"] == "asked on Slack"
+    card = view.card(task_id)
+    assert card.mode == "link" and not card.editor.isHidden()
+    assert card.fields["url"].text() == "o/r#9" and card.save_btn.isEnabled()
+    card.save_btn.click()
+    # The answer finds its editor on the card a rebuild put in this one's place.
+    view._toggle_history(task_id)
+    settle(tstore)
+    assert [lk["url"] for lk in tasks.views()[0]["task"]["links"]] == \
+        ["https://github.com/o/r/issues/9"]
+    assert view.card(task_id).mode is None and view._editing == set()
+
+
+def test_an_editor_refusal_leaves_with_its_editor(tstore):
+    task_id = _create(tstore, "Tor transport")
+    view = TasksView(tstore)
+    refusal = "diplomat-core tasks-edit failed: diplomat-core: not a link: ftp://nope"
+    view.card(task_id).buttons["link"].click()
+    view.card(task_id).fields["url"].setText("ftp://nope")
+    view.card(task_id).save_btn.click()
+    settle(tstore)
+    view._toggle_history(task_id)
+    assert _refusals(view.card(task_id)) == [refusal]
+    assert view.card(task_id).fields["url"].text() == "ftp://nope"
+    view.card(task_id).cancel()
+    assert _refusals(view.card(task_id)) == []
+    tstore.tracked_tasks_changed.emit()
+    assert _refusals(view.card(task_id)) == []
+    card = view.card(task_id)
+    card.buttons["link"].click()
+    card.fields["url"].setText("ftp://nope")
+    card.save_btn.click()
+    settle(tstore)
+    assert _refusals(card) == [refusal]
+    card.buttons["note"].click()
+    assert _refusals(card) == []
+
+
+def test_a_refusal_whose_editor_is_gone_is_said_on_the_card_until_dismissed(tstore):
+    task_id = _create(tstore, "Tor transport")
+    view = TasksView(tstore)
+    refusal = "diplomat-core tasks-edit failed: diplomat-core: not a link: ftp://nope"
+    card = view.card(task_id)
+    card.buttons["link"].click()
+    card.fields["url"].setText("ftp://nope")
+    card.save_btn.click()
+    card.buttons["note"].click()
+    card.fields["text"].setText("half a thought")
+    settle(tstore)
+    card = view.card(task_id)
+    assert card.mode == "note" and card.fields["text"].text() == "half a thought"
+    assert card.editor_error.isHidden()
+    assert (card.error.text(), card.error.isHidden()) == (refusal, False)
+    card.dismiss_btn.click()
+    assert _refusals(view.card(task_id)) == []
+    tstore.tracked_tasks_changed.emit()
+    view.card(task_id).cancel()
+    assert _refusals(view.card(task_id)) == []
+
+
+def test_asking_for_the_open_editor_again_keeps_it_as_typed(tstore):
+    task_id = _create(tstore, "Tor transport", tags=["area:network"])
+    card = TasksView(tstore).card(task_id)
+    card.buttons["tags"].click()
+    card.fields["tags"].setText("area:network kind:feature")
+    card.buttons["tags"].click()
+    assert card.fields["tags"].text() == "area:network kind:feature"
+    card.buttons["link"].click()
+    assert card.mode == "link" and card.fields["url"].text() == ""

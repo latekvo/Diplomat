@@ -17,23 +17,16 @@ import json
 
 from diplomat_runtime import core, gh
 from diplomat_runtime.autofix import PRSnapshot, ReviewRequest
-from diplomat_runtime.models import API, OpenIssue
+from diplomat_runtime.models import API, OpenIssue, is_unanswered_run_finding, thread_owed
 
 
 def _owed_thread(thread: dict, me: str) -> bool:
-    """A review thread I still owe a reply on (mirrors ThreadTriage.owed): unresolved,
-    resolvable by me, and whose most-recent comment isn't mine."""
-    if thread.get("isResolved"):
-        return False
-    vcr = thread.get("viewerCanResolve")
-    if vcr is None:
-        vcr = True
-    if not vcr:
-        return False
+    """A review thread I still owe a reply on (:func:`models.thread_owed`)."""
     comments = (thread.get("comments") or {}).get("nodes") or []
     last = comments[-1] if comments else None
     login = ((last or {}).get("author") or {}).get("login") if last else None
-    return (login or "").lower() != me.lower()
+    return thread_owed(bool(thread.get("isResolved")), thread.get("viewerCanResolve"), login, me,
+                       is_unanswered_run_finding(thread))
 
 
 def _parse_snapshots(env: dict, me: str) -> list[PRSnapshot]:

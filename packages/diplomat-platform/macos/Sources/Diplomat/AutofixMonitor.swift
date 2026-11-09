@@ -130,9 +130,9 @@ enum AutofixMonitor {
     }
 
     /// Decode the GraphQL search response into snapshots. Non-PR search nodes (no
-    /// `number`) are skipped. `me` distinguishes threads I still owe a reply on (last
-    /// comment isn't mine) from ones waiting on the reviewer — via the shared
-    /// `ThreadTriage.owed` rule (same one the Tool 6 list uses).
+    /// `number`) are skipped. `me` distinguishes threads I still owe a reply on from ones
+    /// waiting on the reviewer — via the shared `ThreadTriage.owed` rule (same one the
+    /// Tool 6 list uses).
     static func parse(_ data: Data, me: String = "") throws -> [PRSnapshot] {
         struct Resp: Decodable {
             let data: DataField
@@ -154,8 +154,8 @@ enum AutofixMonitor {
                 let isResolved: Bool
                 let viewerCanResolve: Bool?
                 let comments: Comments?
-                struct Comments: Decodable { let nodes: [Comment] }
-                struct Comment: Decodable { let author: Author? }
+                struct Comments: Decodable { let totalCount: Int?; let nodes: [Comment] }
+                struct Comment: Decodable { let author: Author?; let body: String? }
             }
         }
         let r = try JSONDecoder().decode(Resp.self, from: data)
@@ -165,7 +165,10 @@ enum AutofixMonitor {
             let unresolved = threads.filter { !$0.isResolved }.count
             let iOwe = threads.filter { t in
                 ThreadTriage.owed(isResolved: t.isResolved, viewerCanResolve: t.viewerCanResolve,
-                                  lastCommentAuthor: t.comments?.nodes.last?.author?.login, me: me)
+                                  lastCommentAuthor: t.comments?.nodes.last?.author?.login, me: me,
+                                  unansweredRunFinding: ThreadTriage.isUnansweredRunFinding(
+                                      commentCount: t.comments?.totalCount,
+                                      lastCommentBody: t.comments?.nodes.last?.body))
             }.count
             return PRSnapshot(
                 number: number,

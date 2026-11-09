@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { sandbox, inSandbox } from './lib/sandbox.mjs';
 
@@ -82,6 +83,32 @@ try {
     assert.deepEqual(m.memory, { totalBytes: 65536000 * 1024, availableBytes: 32768000 * 1024, pressure: null });
     assert.deepEqual(m.swap, { totalBytes: 2048000 * 1024, usedBytes: 1024000 * 1024 });
     assert.deepEqual(m.gpus, [{ name: 'NVIDIA GeForce RTX 4090', vramBytes: 24564 * 2 ** 20, vramUsedBytes: 1024 * 2 ** 20, utilizationPct: 37 }]);
+  });
+
+  await check('probe.sh on Linux takes GPUs from a working nvidia-smi, else from lspci', async () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'rm-gpu-'));
+    const fake = (name, body) => fs.writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    fake('uname', 'case "$1" in -m) echo x86_64 ;; *) echo Linux ;; esac');
+    fake('lspci', 'echo "00:02.0 VGA compatible controller: Intel Iris Xe"\necho "01:00.0 3D controller: NVIDIA GA107M"');
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}:${savedPath}`;
+    try {
+      // What a driver/library mismatch prints, on stdout.
+      fake('nvidia-smi', 'echo "Failed to initialize NVML: Driver/library version mismatch"\necho "NVML library version: 615.71"\nexit 18');
+      for (const mode of ['load', 'full']) {
+        const r = await probe(null, mode);
+        assert.equal(r.fields.nvidia, undefined, `${mode}: ${JSON.stringify(r.fields.nvidia)}`);
+      }
+      assert.deepEqual(describe((await probe(null, 'full')).fields).gpus, [{ name: 'Intel Iris Xe' }, { name: 'NVIDIA GA107M' }]);
+
+      fake('nvidia-smi', 'echo "NVIDIA GeForce RTX 3050, 4096, 5, 0"');
+      const r = await probe(null, 'full');
+      assert.equal(r.fields.gpu, undefined);
+      assert.deepEqual(describe(r.fields).gpus.map((g) => g.name), ['NVIDIA GeForce RTX 3050']);
+    } finally {
+      process.env.PATH = savedPath;
+      fs.rmSync(bin, { recursive: true, force: true });
+    }
   });
 
   await check('ssh failures are told apart', () => {
