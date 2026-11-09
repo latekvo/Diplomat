@@ -157,5 +157,7 @@ golden-prompt tests on both platforms fail CI if the prompts drift apart.
 | [`diplomat-runtime`](packages/diplomat-runtime/README.md) | the Python side of everything below the UI, with no Qt or AppKit |
 | [`diplomat-platform`](packages/diplomat-platform) | the macOS SwiftUI app and the Linux PySide6 applet |
 | [`device-allocator`](packages/device-allocator/README.md) | the one-device-per-agent MCP server and its daemon |
+| [`remote-machines`](packages/remote-machines/README.md) | the MCP server that lists the machines an agent can offload work to over SSH, and their live load |
+| [`daemon-core`](packages/daemon-core/README.md) | what those two share: the socket daemon, its client, and their install into Claude Code |
 | [`szpontnet-core`](packages/szpontnet-core/README.md) / [`szpontnet-spec`](packages/szpontnet-spec/docs/README.md) | the mesh protocol: a stdlib-only reference node, the spec and a conformance suite |
 | [`szpont`](packages/szpont/README.md) / [`szpont-npm`](packages/szpont-npm/README.md) | the `szpont` launcher on PyPI and npm |
