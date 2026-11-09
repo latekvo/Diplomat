@@ -3,8 +3,8 @@
 <img width="1146" height="904" alt="The Diplomat panel" src="https://github.com/user-attachments/assets/bffd7a4b-2859-48ee-bffb-9da8221a4b02" />
 
 Diplomat is a regular desktop app on macOS and Linux that runs coding agents
-against a GitHub repo's review and fix queue. It watches `software-mansion/argent`
-through your `gh` login. Each agent opens in a terminal window, so you can watch it
+against GitHub repos' review and fix queues. It watches `software-mansion/argent`
+through your `gh` login, plus any other repo roots you add in Settings. Each agent opens in a terminal window, so you can watch it
 and type into it.
 
 It's a personal tool, built around one maintainer's workflow, and it's hacky.

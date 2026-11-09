@@ -38,9 +38,10 @@ default).)
 
 Dispatching routes a staged prompt to the chosen node over the mesh; the
 receiving machine opens its own terminal running its own agent runner exactly like a local
-SPAWN AGENT (dispatches are the **Mesh**-category rows in the activity feed). If the
-first target declines - gone, or out of tokens - the dispatch fails over to the
-next candidate by rank. While the mesh is live, the four wizards grow a
+SPAWN AGENT (dispatches are the **Mesh**-category rows in the activity feed), in its own
+[repo root](settings.md#settings) for the job's repo. If the first target declines - gone,
+out of tokens, or with no root for that repo - the dispatch fails over to the next
+candidate by rank. While the mesh is live, the four wizards grow a
 **⬡ Run on mesh** row (checked by default, with a preview of where the duty
 currently routes): SPAWN AGENT then hands the job to the node instead of always
 opening a local terminal - on both front-ends. The two wizards with a scope offer the

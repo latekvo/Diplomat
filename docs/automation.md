@@ -13,6 +13,10 @@ whatever you're working in and bounces focus straight back; only a spawn *you*
 trigger (SPAWN AGENT, a panel button) brings the terminal forward. (The API-error
 nudge opens no window at all - it types into a session that already exists.)
 
+Each monitor below covers every [repo root](settings.md#settings): one poll asks each
+root's repo in turn and acts on what they found together, and each agent starts in the
+root its PR or issue belongs to.
+
 - **PR auto-fix** - polls my open PRs every 3 minutes, plus immediately on
   toggle-enable and, on macOS, on wake from sleep. A PR that turns CONFLICTING
   gets a Resolve-conflicts agent; one carrying review threads gets a
@@ -37,13 +41,14 @@ nudge opens no window at all - it types into a session that already exists.)
   speaks for this monitor alone - conflicts, my own review threads, a sweep and a
   wizard press are untouched by it, so the Review wizard still reviews anyone. The
   ban wins where both apply.
-- **New community issues** - on each poll, reads the repo's newest open issues and
+- **New community issues** - on each poll, reads each root's newest open issues and
   queues a [Fix-issues](actions.md#fix-issues) fix (default depth, bugs only, a draft PR
   and a comment on the issue thanking the reporter) for each one filed from outside the org (author
   association other than `MEMBER` / `OWNER`) that nobody is assigned to and nobody on the
   team (`MEMBER` / `OWNER` / `COLLABORATOR`) has commented on. The fix claims the issue, reproduces it, and fixes it only if it
-  reproduces. Only issues filed after the monitor's first scan count: the mark is the
-  newest `createdAt` it has seen, so switching it on never queues the backlog, and each
+  reproduces. Only issues filed after the monitor's first scan of that repo count: the mark is the
+  newest `createdAt` it has seen there, kept per repo, so switching it on or adding a
+  root never queues a backlog, and each
   issue is queued once whatever the fix makes of it - one it skips is not retried. The
   fixes wait in the issue-fix band of the queue as cancellable asks, like a sweep's.
   Switched off, it queues nothing and forgets its mark, so issues filed meanwhile are
@@ -220,8 +225,8 @@ me can see it - or spread its findings over several reviews instead of one.
 
 An agent makes a worktree and installs dependencies into it, so one started on a
 nearly full disk cannot finish and pushes the machine toward ENOSPC - where swap
-cannot grow and macOS freezes. Automatic work is held while the volume of the agents'
-repo root, or of `~/.diplomat`, has less free than the floor: **5 GiB**, set in
+cannot grow and macOS freezes. Automatic work is held while the volume of any repo
+root, or of `~/.diplomat`, has less free than the floor: **5 GiB**, set in
 `packages/diplomat-core/assets/config.json` (`minFreeDiskGiB`) for both platforms and
 overridable with `DIPLOMAT_MIN_FREE_DISK_MIB`. Free means what `statfs` reports
 available to an ordinary writer, not the larger figure macOS quotes with purgeable

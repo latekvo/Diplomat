@@ -21,12 +21,19 @@ card; hit ↻ to refresh, ⏻ to quit (with a confirmation prompt). The data als
 **auto-refreshes every 5 minutes** in the background, so the counts are fresh the
 moment you open the window - even if it was never open before.
 
-**Reverse lookup:** type a PR/issue number in the search box (press **⌘F** to jump to
+**Reverse lookup:** type a PR/issue number of the picked repo in the search box (press **⌘F** to jump to
 it) and it instantly shows which of the six lists that number is on - a ✓/- checklist
 plus what the number is (open PR/issue, author, draft/ready). Cache-only, so it reacts
 as you type. Launch with `DIPLOMAT_PREFILL=<n>` to open pre-focused on a number.
 
 ## Layout
+
+With more than one [repo root](settings.md#settings), the header's repo name is a
+picker: it chooses the repo the right column works on (the tool lists and their counts,
+the reverse lookup, the wizards' bare numbers and sweeps, Merge and Resolve conflicts),
+and is remembered across launches. Each repo's lists are cached, so a switch shows the
+last fetch at once and refreshes it. The left column and every automatic job cover all
+the roots whichever is picked.
 
 Two columns. **Right:** everything interactive - the search box, the tool grid
 (six tools + four action cards), and whatever a card opens: a tool's result

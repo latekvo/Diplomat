@@ -11,8 +11,8 @@ AGENT**.
 A **specific PR** is one agent: a fresh terminal window (the
 [Spawn terminal](settings.md#spawn-terminal) picked in Settings, or the first that can be
 driven when that one can't - Ghostty needs tmux) running a detached review session in
-your **repo root** (Settings;
-default `~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to
+the **repo root** of the PR's repo (Settings; the one picked
+in the header for a bare number, default `~/dev/<repo>`) that you watch and steer yourself. The prompt is staged to
 a file and the window runs
 `<agent> [--settings <hooks>] "$(cat <promptfile>)"; printf %s $? > <done>` - where
 `<agent>` is the [agent runner](settings.md#agent-runner) you picked, `<hooks>` is how a Claude
