@@ -716,3 +716,13 @@ def test_a_duplicated_key_keeps_its_first_value_on_both_sides():
     swift, python = _swift(lines), _python(lines)
     assert python == swift
     assert [t["remote"] for t in python["tasks"]] == [True]
+
+
+def test_a_repeated_key_and_a_17_digit_double_fold_the_same_on_both_sides():
+    """corelibs' `JSONSerialization` keeps the 7 and reads ...7710273, which survives
+    the payload's six places as ...771027."""
+    lines = ['{"at": %d, "ev": "done", "key": "review:h/o/r#86@aa", "pr": 5, "pr": 7, '
+             '"tokens": 1791274860.7710276}' % NOW]
+    swift, python = _swift(lines), _python(lines)
+    assert python == swift
+    assert [(t["pr"], t["tokens"]) for t in python["tasks"]] == [(5, 1791274860.771028)]
