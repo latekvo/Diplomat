@@ -109,18 +109,30 @@ public enum CommsAction: String, Codable, CaseIterable, Sendable {
     }
 }
 
+/// One PR or issue a message asks about, and what it asks for it: `review`, `fixIssue` or
+/// `bump`.
+public struct CommsAsk: Codable, Equatable, Sendable {
+    public let action: CommsAction
+    public let number: Int
+
+    public init(_ action: CommsAction, _ number: Int) {
+        self.action = action
+        self.number = number
+    }
+}
+
 /// The triage's answer, valid by construction: every initializer (memberwise, decoding,
 /// `parse`) routes through one check, so a PR action without a positive number reads
 /// `none`, with the reason recorded, and so does an `injection` without evidence. Whether
 /// the message holds those numbers or that evidence is `checked(against:)`; whether one is
 /// an OPEN PR or issue is the front-end's check against GitHub before it acts.
 public struct CommsDecision: Codable, Equatable, Sendable {
+    /// For work on PRs or issues, the first target's action.
     public let action: CommsAction
-    /// The first of `numbers`; 0 unless `action.needsNumber`.
-    public let number: Int
-    /// Every PR or issue it names, without repeats; empty unless `action.needsNumber`.
-    /// More than one lasts only until `CommsTickResult.Item.targets` splits it.
-    public let numbers: [Int]
+    /// Every PR or issue it names, each with its own action, no number twice; empty unless
+    /// `action.needsNumber`. More than one lasts only until `CommsTickResult.Item.targets`
+    /// splits it.
+    public let targets: [CommsAsk]
     public let summary: String
     public let reason: String
     /// The injected words, quoted from the message; "" unless `action` is `injection`.
@@ -129,38 +141,45 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// English. Only ever looks up fixed words, so a message steering it steers nothing.
     public let language: String
 
+    /// The first target's number; 0 for none.
+    public var number: Int { targets.first?.number ?? 0 }
+    public var numbers: [Int] { targets.map(\.number) }
+
     public static let defaultLanguage = "en"
 
     /// Classifier prose is clipped to this; it is shown on one row.
     static let maxText = 240
 
-    public init(action: CommsAction, number: Int = 0, numbers: [Int] = [], summary: String,
+    /// `targets` wins; without it, `numbers` (else `number`) are targets of `action`. A
+    /// target whose number is not positive, or whose action needs none, is dropped.
+    public init(action: CommsAction, number: Int = 0, numbers: [Int] = [],
+                targets: [CommsAsk] = [], summary: String,
                 reason: String, evidence: String = "", language: String = defaultLanguage) {
         let reason = Self.clip(reason)
         let evidence = action == .injection ? Self.unquoted(evidence) : ""
-        var targets: [Int] = []
-        for n in numbers.isEmpty ? [number] : numbers where n > 0 && !targets.contains(n) {
-            targets.append(n)
+        let asked = !targets.isEmpty ? targets
+            : (numbers.isEmpty ? [number] : numbers).map { CommsAsk(action, $0) }
+        var kept: [CommsAsk] = []
+        for t in asked where t.number > 0 && t.action.needsNumber
+            && !kept.contains(where: { $0.number == t.number }) {
+            kept.append(t)
         }
         self.summary = Self.clip(summary)
         self.language = language
-        if action.needsNumber && targets.isEmpty {
+        if action.needsNumber && kept.isEmpty {
             self.action = .none
-            self.number = 0
-            self.numbers = []
+            self.targets = []
             self.reason = "answered \(action.rawValue) without a positive PR or issue number"
-                + " (\((numbers.isEmpty ? [number] : numbers).map(String.init).joined(separator: ", "))); \(reason)"
+                + " (\(Self.describe(asked, tagged: asked.contains { $0.action != action }))); \(reason)"
             self.evidence = ""
         } else if action == .injection && evidence.isEmpty {
             self.action = .none
-            self.number = 0
-            self.numbers = []
+            self.targets = []
             self.reason = "answered injection without quoting any; \(reason)"
             self.evidence = ""
         } else {
-            self.action = action
-            self.numbers = action.needsNumber ? targets : []
-            self.number = self.numbers.first ?? 0
+            self.targets = action.needsNumber ? kept : []
+            self.action = self.targets.first?.action ?? action
             self.reason = reason
             self.evidence = evidence
         }
@@ -189,22 +208,31 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         }
         guard action.needsNumber else { return self }
         let texts = ([message] + earlier).map { Self.ownRepoText($0.text, settings: settings) }
-        let kept = numbers.filter { n in
-            texts.contains { CommsMatch.containsWord($0, String(n)) }
+        let kept = targets.filter { t in
+            texts.contains { CommsMatch.containsWord($0, String(t.number)) }
         }
-        guard kept != numbers else { return self }
-        let dropped = numbers.filter { !kept.contains($0) }.map { "#\($0)" }
-            .joined(separator: ", ")
-        let noun = numbers.count - kept.count == 1 ? "a number" : "numbers"
-        let why = "answered \(action.rawValue) \(dropped), \(noun) neither the message nor its "
-            + "conversation names in this repository; \(reason)"
-        return CommsDecision(action: kept.isEmpty ? .none : action, numbers: kept,
+        guard kept != targets else { return self }
+        let dropped = targets.filter { !kept.contains($0) }
+        let noun = dropped.count == 1 ? "a number" : "numbers"
+        let why = "answered \(Self.describe(dropped, tagged: true)), \(noun) neither the message "
+            + "nor its conversation names in this repository; \(reason)"
+        return CommsDecision(action: kept.isEmpty ? .none : action, targets: kept,
                              summary: summary, reason: why, language: language)
     }
 
-    func targeting(_ n: Int) -> CommsDecision {
-        CommsDecision(action: action, numbers: [n], summary: summary, reason: reason,
+    func targeting(_ t: CommsAsk) -> CommsDecision {
+        CommsDecision(action: t.action, targets: [t], summary: summary, reason: reason,
                       evidence: evidence, language: language)
+    }
+
+    /// Tagged, `review #1, #2, fix_issue #3`: an action before the first of each run of
+    /// it. Untagged, the bare numbers: `1, 2, 3`.
+    private static func describe(_ targets: [CommsAsk], tagged: Bool = false) -> String {
+        guard tagged else { return targets.map { String($0.number) }.joined(separator: ", ") }
+        return targets.enumerated().map { i, t in
+            let named = i == 0 || targets[i - 1].action != t.action
+            return (named ? t.action.rawValue + " " : "") + "#\(t.number)"
+        }.joined(separator: ", ")
     }
 
     /// `text` with its references into other repositories taken out: GitHub links with
@@ -266,13 +294,25 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case action, number, numbers, summary, reason, evidence, language
+        case action, number, numbers, targets, summary, reason, evidence, language
+    }
+
+    /// A target as written, each field kept only when it has the right type.
+    private struct RawTarget: Decodable {
+        let action: String?
+        let number: Int?
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            action = try? c.decode(String.self, forKey: .action)
+            number = try? c.decode(Int.self, forKey: .number)
+        }
     }
 
     /// Field by field, so one bad field costs the decision its action instead of failing
     /// the object: an unknown action, or a number that is missing, fractional, a string or
-    /// a boolean, lands in `init` as something it refuses. An older log line has `number`
-    /// alone.
+    /// a boolean, lands in `init` as something it refuses. A target without an action
+    /// takes the decision's. An older log line has `numbers`, or `number` alone.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let summary = (try? c.decode(String.self, forKey: .summary)) ?? ""
@@ -283,11 +323,26 @@ public struct CommsDecision: Codable, Equatable, Sendable {
                       reason: "answered an action outside the schema (\"\(raw)\"); \(reason)")
             return
         }
+        let targets = ((try? c.decode([RawTarget].self, forKey: .targets)) ?? []).map {
+            CommsAsk($0.action.map { CommsAction(rawValue: $0) ?? .none } ?? action, $0.number ?? 0)
+        }
         self.init(action: action, number: (try? c.decode(Int.self, forKey: .number)) ?? 0,
                   numbers: (try? c.decode([Int].self, forKey: .numbers)) ?? [],
-                  summary: summary, reason: reason,
+                  targets: targets, summary: summary, reason: reason,
                   evidence: (try? c.decode(String.self, forKey: .evidence)) ?? "",
                   language: (try? c.decode(String.self, forKey: .language)) ?? Self.defaultLanguage)
+    }
+
+    /// `number` beside `targets`: the Linux ping row reads it.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(action, forKey: .action)
+        try c.encode(number, forKey: .number)
+        try c.encode(targets, forKey: .targets)
+        try c.encode(summary, forKey: .summary)
+        try c.encode(reason, forKey: .reason)
+        try c.encode(evidence, forKey: .evidence)
+        try c.encode(language, forKey: .language)
     }
 
     /// `claude -p --output-format json` prints a JSON array of events whose
