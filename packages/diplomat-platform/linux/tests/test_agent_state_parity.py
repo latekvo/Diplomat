@@ -79,6 +79,7 @@ def _python(records, evidence, now=T0, limit=LIMIT,
         "capLoad": sorted(t.cap_load),
         "retirable": sorted(r.run_id for r in t.retirable),
         "reapable": sorted(r.run_id for r in t.reapable),
+        "closeOnRetire": sorted(r.run_id for r in t.close_on_retire),
         "freeSlots": t.free_slots,
         "constants": {"runDeadline": A.RUN_DEADLINE,
                       "quietTimeout": A.QUIET_TIMEOUT,
@@ -365,6 +366,9 @@ def test_the_fixture_exercises_every_projection(mixed_results):
     assert python["capLoad"], "no run holds a bay — the cap projection is untested"
     assert python["retirable"], "nothing retires — the retirement projection is untested"
     assert python["reapable"], "no window is reaped — the destructive projection is untested"
+    assert "reported" in python["closeOnRetire"] \
+        and "reported-refused" not in python["closeOnRetire"], \
+        "a reported run's window must close, and a clicked one's must not"
     assert any(python["inFlight"].values()) and not all(python["inFlight"].values()), \
         "the dedup answer must be both True and False somewhere in the fixture"
     assert any(r["untracked"] for r in python["records"]), \

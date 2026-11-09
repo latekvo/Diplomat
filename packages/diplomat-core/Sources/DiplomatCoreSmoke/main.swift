@@ -2176,7 +2176,7 @@ do {
     check(reaps(oldAndWorking),
       "the window of a run nothing could say ever stopped is nobody's")
     check(!reaps(reported),
-      "…but one whose agent reported the turn over five hours in keeps its window")
+      "…but one whose agent reported the turn over five hours in is not the reaper's")
     check(!reaps(sentinelled),
       "…and so does one whose exit code landed")
     // The two sets the cap and the dedup read, which are deliberately different.

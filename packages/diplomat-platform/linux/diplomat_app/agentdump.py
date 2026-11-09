@@ -76,8 +76,9 @@ def run() -> int:
     print(f"  bays held        {len(t.cap_load)} of {limit}  {sorted(t.cap_load)}")
     print(f"  free slots       {t.free_slots}")
     print(f"  retirable now    {sorted(r.run_id for r in t.retirable)}")
-    # The subset whose window goes with the record — "why did my terminal close".
+    # The subsets whose window goes with the record — "why did my terminal close".
     print(f"  windows reaped   {sorted(r.run_id for r in t.reapable)}")
+    print(f"  windows closed   {sorted(r.run_id for r in t.close_on_retire)}")
     prs = sorted({r.pr_number for r in t.records if r.pr_number is not None})
     if prs:
         blocked = [pr for pr in prs if t.in_flight(pr)]

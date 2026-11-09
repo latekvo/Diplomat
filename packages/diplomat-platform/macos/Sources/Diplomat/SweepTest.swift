@@ -270,12 +270,12 @@ enum SweepTest {
         let merged = booked(14, .local)
         AgentRegistry.bindSession(merged.runID, "ses_merged")
         let retired = [meshHere, untracked, closed, merged]
-        check("a reaped run is interrupted once, a retired one only when no TUI is attached",
-              OpenCodeProbe.interrupts(reaped: [meshHere], retired: retired,
+        check("a run whose window is closed is interrupted once, a retired one only when no TUI is attached",
+              OpenCodeProbe.interrupts(closing: [meshHere], retired: retired,
                                        attached: .present(["ses_mesh", "ses_merged"]))
                   == ["ses_mesh", "ses_closed"])
         check("…and a process table that could not be read shows no TUI",
-              OpenCodeProbe.interrupts(reaped: [], retired: retired,
+              OpenCodeProbe.interrupts(closing: [], retired: retired,
                                        attached: .unavailable("could not be read"))
                   == ["ses_mesh", "ses_closed", "ses_merged"])
 

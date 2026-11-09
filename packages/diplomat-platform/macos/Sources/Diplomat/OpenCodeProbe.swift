@@ -339,17 +339,17 @@ enum OpenCodeProbe {
 
     /// The 2.x sessions to interrupt as one tick's ended runs are closed and retired.
     ///
-    /// A reaped run always: its window is being closed, and the turn outlives it. Any
-    /// other retired run only when no TUI attached to its session is in the process table
+    /// A run whose window is being closed always: the turn outlives it. Any other
+    /// retired run only when no TUI attached to its session is in the process table
     /// — its window was closed by hand or its TUI died, and the turn would run on unseen.
     /// One whose TUI is still up (retired because its PR merged, say) is left working, as
     /// a 1.x or Claude Code agent is. An unreadable process table shows no TUI.
-    static func interrupts(reaped: [AgentState.RunRecord], retired: [AgentState.RunRecord],
+    static func interrupts(closing: [AgentState.RunRecord], retired: [AgentState.RunRecord],
                            attached: Observation<[String]>) -> [String] {
-        let closed = Set(reaped.map(\.runID))
+        let closed = Set(closing.map(\.runID))
         let live = attached.value ?? []
         var out: [String] = []
-        for r in reaped + retired {
+        for r in closing + retired {
             guard let session = serviceSession(of: r), !out.contains(session) else { continue }
             if !closed.contains(r.runID), live.contains(session) { continue }
             out.append(session)

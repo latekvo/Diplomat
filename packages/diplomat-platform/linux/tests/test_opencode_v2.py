@@ -731,10 +731,11 @@ def test_closing_a_1x_or_claude_runs_window_interrupts_nothing(monkeypatch):
 
 
 def _retire(monkeypatch, records: list[RunRecord], reaped: tuple[str, ...] = (),
-            table: probes.Observation | None = None) -> list[tuple[str, str]]:
-    """Retire each run the way the tick does, recording in order what was interrupted
-    and what was priced. ``table`` is the process table — by default one without any
-    agent in it."""
+            table: probes.Observation | None = None,
+            closing: tuple[str, ...] = ()) -> list[tuple[str, str]]:
+    """Retire each run the way the tick does, recording in order what was interrupted,
+    what was closed and what was priced. ``table`` is the process table — by default one
+    without any agent in it. ``closing`` are the runs retired on their own report."""
     from diplomat_app.store import Store
     from diplomat_runtime import telemetry, tmuxwatch
 
@@ -742,11 +743,13 @@ def _retire(monkeypatch, records: list[RunRecord], reaped: tuple[str, ...] = (),
     events: list[tuple[str, str]] = []
     monkeypatch.setattr(opencodeapi, "interrupt",
                         lambda sid: events.append(("interrupt", sid)))
-    monkeypatch.setattr(tmuxwatch, "kill_session", lambda name: True)
+    monkeypatch.setattr(tmuxwatch, "kill_session",
+                        lambda name: events.append(("kill", name)) or True)
     monkeypatch.setattr(telemetry, "record_completion",
                         lambda key, *a, **kw: events.append(("price", key)))
     tick = types.SimpleNamespace(
         reapable=[r for r in records if r.run_id in reaped],
+        close_on_retire=[r for r in records if r.run_id in closing],
         retirable=records, now=T0,
         states={r.run_id: types.SimpleNamespace(state="finished", reason="pid absent")
                 for r in records})
@@ -773,6 +776,19 @@ def test_retiring_a_1x_or_claude_run_interrupts_nothing(monkeypatch):
 def test_a_run_the_reaper_closed_is_interrupted_once(monkeypatch):
     events = _retire(monkeypatch, [_v2_run()], reaped=("r1",))
     assert events.count(("interrupt", SID)) == 1
+
+
+@pytest.mark.parametrize("tui", [True, False], ids=["tui-attached", "no-tui"])
+def test_a_2x_run_retired_on_its_own_report_is_interrupted_as_its_window_closes(
+        monkeypatch, tui):
+    """Whether or not a TUI is still attached, the closer interrupts it the way the
+    reaper does: once, before the window and the pricing."""
+    from diplomat_runtime import tmuxwatch
+
+    record = dataclasses.replace(_v2_run(), ledger_key="k1")
+    table = _ps(*WRAPPERS, f"/opt/npm/bin/opencode --session {SID}") if tui else None
+    assert _retire(monkeypatch, [record], closing=("r1",), table=table) == [
+        ("interrupt", SID), ("kill", tmuxwatch.session_name("r1")), ("price", "k1")]
 
 
 # MARK: - A 2.x run with no pid, found by its session
