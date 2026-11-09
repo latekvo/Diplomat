@@ -7,7 +7,8 @@ import DiplomatCore
 ///
 /// Draws `store.taskViews` (`TaskStore.views`, the rows `diplomat-core tasks-list` prints for
 /// the Linux twin); every change is a `TaskEdit` through `Store.editTask`. What an editor
-/// holds lives in the editor's own view, so typing redraws that editor and not every row.
+/// holds is its `TaskDraft`, observed by the editor's own view, so typing redraws that editor
+/// and not every row.
 struct TasksView: View {
     @EnvironmentObject var store: Store
     @Binding var isPresented: Bool
@@ -19,16 +20,30 @@ struct TasksView: View {
     @State private var showArchived: Bool
     /// The new-task form, while open: what it was opened with.
     @State private var composer: TaskDraft.Seed?
-    /// The one inline editor open, and what it was opened with.
+    /// The one inline editor open. Held here rather than by its form, so what is typed and
+    /// why it was refused outlive the form while its row is folded or hidden.
     @State private var editor: Editor?
-    /// Why a row's last action (a pin, an archive, a removed link) was refused, by task id.
+    /// Why a row's last action (a pin, an archive, a removed link), or a save whose editor
+    /// closed before its answer, was refused, by task id.
     @State private var actionErrors: [String: String]
 
-    struct Editor: Hashable {
-        enum Kind: Hashable { case link, note, tags }
+    struct Editor {
+        enum Kind { case link, note, tags }
         let task: String
         let kind: Kind
-        var seed = TaskDraft.Seed()
+        /// Also who this editor is: an answer closes only the editor whose draft saved.
+        let draft: TaskDraft
+
+        @MainActor
+        init(task: String, kind: Kind, seed: TaskDraft.Seed = .init()) {
+            self.task = task
+            self.kind = kind
+            switch kind {
+            case .link: draft = TaskDraft(.link(task: task), seed: seed)
+            case .note: draft = TaskDraft(.note(task: task), seed: seed)
+            case .tags: draft = TaskDraft(.tags(task: task), seed: seed)
+            }
+        }
     }
 
     private static let historyShown = 12
@@ -165,10 +180,16 @@ struct TasksView: View {
                     actions(view.task)
                     if let editor, editor.task == id {
                         let current = $editor
-                        TaskEditorForm(store: store, editor: editor) {
-                            if current.wrappedValue == editor { current.wrappedValue = nil }
-                        }
-                        .id(editor)
+                        let isOpen = { current.wrappedValue?.draft === editor.draft }
+                        TaskEditorForm(store: store, editor: editor, close: {
+                            if isOpen() { current.wrappedValue = nil }
+                        }, saved: { taken in
+                            if isOpen() {
+                                if taken { current.wrappedValue = nil }
+                            } else if !taken {
+                                errors.wrappedValue[id] = editor.draft.error
+                            }
+                        })
                     }
                     history(view)
                 }
@@ -198,13 +219,13 @@ struct TasksView: View {
         let id = task.id
         Group {
             ActionChip(symbol: "link.badge.plus", text: "Add link", tint: .accentColor) {
-                editor = Editor(task: id, kind: .link)
+                open(.link, on: id)
             }
             ActionChip(symbol: "note.text.badge.plus", text: "Add note", tint: .accentColor) {
-                editor = Editor(task: id, kind: .note)
+                open(.note, on: id)
             }
             ActionChip(symbol: "tag", text: "Edit tags", tint: .accentColor) {
-                editor = Editor(task: id, kind: .tags, seed: .init(text: task.tags.joined(separator: " ")))
+                open(.tags, on: id, seed: .init(text: task.tags.joined(separator: " ")))
             }
             if let pinned = task.pinnedStatus {
                 ActionChip(symbol: "pin.slash", text: "Unpin \(pinned.rawValue)", tint: .orange) {
@@ -222,6 +243,12 @@ struct TasksView: View {
                 edit(.archive(id: id), task: id)
             }
         }
+    }
+
+    /// Asked for again, the open editor stays as typed.
+    private func open(_ kind: Editor.Kind, on id: String, seed: TaskDraft.Seed = .init()) {
+        guard editor?.task != id || editor?.kind != kind else { return }
+        editor = Editor(task: id, kind: kind, seed: seed)
     }
 
     private func edit(_ edit: TaskEdit, task id: String, sync: Bool = false) {
@@ -397,28 +424,25 @@ private struct NewTaskForm: View {
 /// A row's add-link, note or tags editor.
 private struct TaskEditorForm: View {
     let store: Store
-    @StateObject private var draft: TaskDraft
+    @ObservedObject private var draft: TaskDraft
     let close: () -> Void
+    /// A save's answer: whether the core took it.
+    let saved: (Bool) -> Void
     private let prompt: String
     private let note: Bool
 
-    init(store: Store, editor: TasksView.Editor, close: @escaping () -> Void) {
+    init(store: Store, editor: TasksView.Editor, close: @escaping () -> Void,
+         saved: @escaping (Bool) -> Void) {
         self.store = store
         self.close = close
-        let kind: TaskDraft.Kind
+        self.saved = saved
         switch editor.kind {
-        case .link:
-            kind = .link(task: editor.task)
-            prompt = "A PR or issue URL, o/r#12, #12, a Slack permalink or any URL"
-        case .note:
-            kind = .note(task: editor.task)
-            prompt = "Note: what happened, what was decided"
-        case .tags:
-            kind = .tags(task: editor.task)
-            prompt = "Tags, separated by spaces"
+        case .link: prompt = "A PR or issue URL, o/r#12, #12, a Slack permalink or any URL"
+        case .note: prompt = "Note: what happened, what was decided"
+        case .tags: prompt = "Tags, separated by spaces"
         }
         note = editor.kind == .note
-        _draft = StateObject(wrappedValue: TaskDraft(kind, seed: editor.seed))
+        draft = editor.draft
     }
 
     var body: some View {
@@ -441,8 +465,8 @@ private struct TaskEditorForm: View {
     }
 
     private func save() {
-        let (draft, store, close) = (draft, store, close)
-        Task { if await draft.submit(to: store) { close() } }
+        let (draft, store, saved) = (draft, store, saved)
+        Task { saved(await draft.submit(to: store)) }
     }
 }
 

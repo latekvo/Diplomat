@@ -8,6 +8,7 @@ core's, read here as they come.
 
 from __future__ import annotations
 
+import itertools
 import re
 from urllib.parse import urlparse
 
@@ -49,6 +50,9 @@ SOURCE_GLYPH = {"github": glyphs.G_ISSUES, "slack": glyphs.G_COMMS, "note": glyp
 
 #: An opened history shows this many of the newest events until asked for the rest.
 HISTORY_SHOWN = 12
+
+#: Names each inline editor opened, so an edit's answer finds the editor that sent it.
+_EDITOR_IDS = itertools.count(1)
 
 _GITHUB = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/(?:pull|issues)/([0-9]+)$")
 
@@ -216,13 +220,23 @@ def _tag_tint(tag: str) -> str:
     return glyphs.MUTED
 
 
+def _error_label(text: str | None = None) -> QLabel:
+    label = _plain(text or "")
+    label.setWordWrap(True)
+    label.setStyleSheet(f"color: {_RED}; font-size: 9px;")
+    label.setVisible(bool(text))
+    return label
+
+
 class TaskCard(QFrame):
     """One task: status, title, reasons and tags; its links; its actions; and, opened,
     its history. Every action is a ``tasks-edit`` through the store, whose answer
-    :class:`TasksView` routes back by ``("card", id, from_editor)``."""
+    :class:`TasksView` routes back by ``("card", id, editor_id)``: the id of the editor
+    that saved it, or None for a card action."""
 
     def __init__(self, view: dict, store: Store, *, expanded: bool, full_history: bool,
-                 error: str | None, on_toggle, on_older, on_editing) -> None:
+                 error: str | None, on_toggle, on_older, on_editing,
+                 on_dismiss_error) -> None:
         super().__init__()
         self.view = view
         self.store = store
@@ -230,7 +244,9 @@ class TaskCard(QFrame):
         self.id = str(self.task.get("id", ""))
         self._on_toggle = on_toggle
         self._on_editing = on_editing
+        self._on_dismiss_error = on_dismiss_error
         self.mode: str | None = None
+        self.editor_id: int | None = None
         #: A Save sent and not yet answered.
         self.saving = False
         self.setObjectName("taskCard")
@@ -314,17 +330,30 @@ class TaskCard(QFrame):
         col.addLayout(actions)
 
         self.editor = QWidget()
-        self.editor_row = QHBoxLayout(self.editor)
-        self.editor_row.setContentsMargins(0, 0, 0, 0)
+        editor_col = QVBoxLayout(self.editor)
+        editor_col.setContentsMargins(0, 0, 0, 0)
+        editor_col.setSpacing(2)
+        self.editor_row = QHBoxLayout()
         self.editor_row.setSpacing(4)
+        editor_col.addLayout(self.editor_row)
+        #: Why the open editor's last Save was refused.
+        self.editor_error = _error_label()
+        editor_col.addWidget(self.editor_error)
         self.editor.setVisible(False)
         col.addWidget(self.editor)
 
-        self.error = _plain(error or "")
-        self.error.setWordWrap(True)
-        self.error.setStyleSheet(f"color: {_RED}; font-size: 9px;")
-        self.error.setVisible(bool(error))
-        col.addWidget(self.error)
+        #: Why the last card action, or a Save whose editor has closed, was refused.
+        self.error_row = QWidget()
+        error_line = QHBoxLayout(self.error_row)
+        error_line.setContentsMargins(0, 0, 0, 0)
+        error_line.setSpacing(4)
+        self.error = _error_label(error)
+        error_line.addWidget(self.error, 1)
+        self.dismiss_btn = _small_button("×", self.dismiss_error)
+        self.dismiss_btn.setToolTip("Dismiss")
+        error_line.addWidget(self.dismiss_btn, 0, Qt.AlignmentFlag.AlignTop)
+        self.error_row.setVisible(bool(error))
+        col.addWidget(self.error_row)
 
         self.history_rows: list[HistoryRow] = []
         self.older_btn: QPushButton | None = None
@@ -352,9 +381,15 @@ class TaskCard(QFrame):
     # MARK: inline editors
 
     def start(self, mode: str, *, focus: bool = True) -> None:
-        """Open the one inline editor: a link, a note (text and tags), or the tags."""
+        """Open the one inline editor: a link, a note (text and tags), or the tags. Asked
+        for again, the open editor stays as typed."""
+        if mode == self.mode:
+            return
         _clear(self.editor_row)
         self.mode = mode
+        self.editor_id = next(_EDITOR_IDS)
+        self.saving = False
+        self.editor_error.setVisible(False)
         self.fields: dict[str, QLineEdit] = {}
 
         def field(key: str, placeholder: str, text: str = "", stretch: int = 1) -> None:
@@ -388,10 +423,14 @@ class TaskCard(QFrame):
         return {"mode": self.mode, "texts": {k: f.text() for k, f in self.fields.items()},
                 "focus": focused,
                 "cursor": self.fields[focused].cursorPosition() if focused else 0,
-                "saving": self.saving}
+                "saving": self.saving, "editor_id": self.editor_id,
+                "error": None if self.editor_error.isHidden() else self.editor_error.text()}
 
     def restore(self, draft: dict) -> None:
         self.start(draft["mode"], focus=False)
+        self.editor_id = draft["editor_id"]
+        if draft["error"]:
+            self.editor_refused(draft["error"])
         for key, text in draft["texts"].items():
             self.fields[key].setText(text)
         if draft["focus"]:
@@ -402,6 +441,7 @@ class TaskCard(QFrame):
 
     def close_editor(self) -> None:
         self.mode = None
+        self.editor_id = None
         self.saving = False
         self.editor.setVisible(False)
 
@@ -422,19 +462,30 @@ class TaskCard(QFrame):
             op = {"op": "update", "id": self.id, "tags": split_tags(f["tags"])}
         self.saving = True
         self.save_btn.setEnabled(False)
-        self.apply(op, from_editor=True)
+        self.editor_error.setVisible(False)
+        self.store.edit_tracked_task_async(op, ("card", self.id, self.editor_id))
 
-    def apply(self, op: dict, *, from_editor: bool = False) -> None:
-        self.error.setVisible(False)
-        self.store.edit_tracked_task_async(op, ("card", self.id, from_editor))
+    def apply(self, op: dict) -> None:
+        """A card action: its answer replaces the card's last refusal."""
+        self.dismiss_error()
+        self.store.edit_tracked_task_async(op, ("card", self.id, None))
 
-    def refused(self, error: str, *, from_editor: bool) -> None:
-        """Why the edit did not apply, under the editor, which stays open."""
+    def refused(self, error: str) -> None:
         self.error.setText(error)
         self.error.setVisible(True)
-        if from_editor and self.mode is not None:
-            self.saving = False
-            self.save_btn.setEnabled(True)
+        self.error_row.setVisible(True)
+
+    def dismiss_error(self) -> None:
+        self.error.setVisible(False)
+        self.error_row.setVisible(False)
+        self._on_dismiss_error(self.id)
+
+    def editor_refused(self, error: str) -> None:
+        """Under the editor, which stays open with what was typed."""
+        self.editor_error.setText(error)
+        self.editor_error.setVisible(True)
+        self.saving = False
+        self.save_btn.setEnabled(True)
 
 
 class TasksView(QWidget):
@@ -454,7 +505,8 @@ class TasksView(QWidget):
         #: actions rebuild at once, each open editor carried over as typed.
         self._editing: set[str] = set()
         self._stale = False
-        #: Why each task's last edit did not apply, until one does.
+        #: Why each task's last card action, or a Save whose editor has closed, did not
+        #: apply; until dismissed or its next card action applies.
         self._errors: dict[str, str] = {}
         self.cards: list[TaskCard] = []
 
@@ -566,7 +618,8 @@ class TasksView(QWidget):
 
     def _edited(self, origin: object, error: str | None) -> None:
         """A ``tasks-edit``'s answer, routed to what asked: the form, or a card by its
-        id, since a rebuild may have replaced the card that asked."""
+        id, since a rebuild may have replaced the card that asked, and its editor by
+        the editor's id, since another may have taken its place."""
         if origin == ("new",):
             self.create_btn.setEnabled(True)
             self.new_error.setText(error or "")
@@ -578,20 +631,19 @@ class TasksView(QWidget):
             return
         if not (isinstance(origin, tuple) and origin[0] == "card"):
             return
-        _, task_id, from_editor = origin
+        _, task_id, editor_id = origin
         card = self.card(task_id)
-        if error:
+        if card is not None and editor_id is not None and card.editor_id == editor_id:
+            if error:
+                card.editor_refused(error)
+                return
+            card.close_editor()
+            self._editing.discard(task_id)
+        elif error:
             self._errors[task_id] = error
             if card is not None:
-                card.refused(error, from_editor=from_editor)
+                card.refused(error)
             return
-        self._errors.pop(task_id, None)
-        if card is not None:
-            # Drawn by the rebuild the edit's own change caused, before this answer.
-            card.error.setVisible(False)
-            if from_editor:
-                card.close_editor()
-                self._editing.discard(task_id)
         if self._stale:
             self.rebuild(force=True)
 
@@ -645,7 +697,8 @@ class TasksView(QWidget):
                             full_history=task_id in self._full_history,
                             error=self._errors.get(task_id),
                             on_toggle=self._toggle_history, on_older=self._show_older,
-                            on_editing=lambda on, i=task_id: self._note_editing(i, on))
+                            on_editing=lambda on, i=task_id: self._note_editing(i, on),
+                            on_dismiss_error=lambda i: self._errors.pop(i, None))
             self.cards.append(card)
             self.list_col.addWidget(card)
             if task_id in drafts:
