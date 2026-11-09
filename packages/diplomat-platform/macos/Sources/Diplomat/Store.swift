@@ -3293,7 +3293,7 @@ final class Store: ObservableObject {
             } else {
                 forgetRequested(entry.key)
                 AuditLog.log("panel", "queue-drop",
-                             "\(entry.label(roots: roots.count)) — \(entry.repo) is no longer "
+                             "\(entry.label(roots: roots.count)) - \(entry.repo) is no longer "
                              + "a repo root, not run")
                 refreshAudit()
             }
