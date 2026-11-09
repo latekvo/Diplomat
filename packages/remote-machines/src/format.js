@@ -9,6 +9,9 @@ function ago(iso, now) {
   return s < 120 ? `${s} s ago` : `${Math.round(s / 60)} min ago`;
 }
 
+// The local time of day, which is how the operator set it.
+const clock = (iso) => new Date(iso).toTimeString().slice(0, 5);
+
 function hardware(m) {
   const cpu = m.cpu?.model ? `${m.cpu.model}, ${m.cores} cores${m.cpu.perfCores ? ` (${m.cpu.perfCores} performance)` : ''}` : `${m.cores} cores`;
   const gpu = m.gpus?.length ? ` · GPU ${m.gpus.map((g) => g.name + (g.vramBytes ? `, ${gb(g.vramBytes)} VRAM` : '')).join('; ')}` : '';
@@ -93,7 +96,10 @@ export function formatSnapshot(s, now = Date.now()) {
   });
   if (stale) parts.push(`${stale} old known_hosts addresses not answering`);
   if (strangers) parts.push(`${strangers} other machines advertising SSH on the network, never vetted`);
-  if (parts.length) out.push('', `Not usable (${s.unavailable.length}) - ${parts.join('; ')}.`);
+  const excluded = (s.excluded ?? []).map((m) => (m.excluded?.until ? `${m.target} (until ${clock(m.excluded.until)})` : m.target));
+  if (excluded.length) parts.unshift(`taken out of the pool by the operator: ${excluded.join(', ')}`);
+  const count = s.unavailable.length + excluded.length;
+  if (parts.length) out.push('', `Not usable (${count}) - ${parts.join('; ')}.`);
   out.push('', `Load is re-read every ${Math.round(s.probeIntervalMs / 1000)} s; machines were last discovered ${ago(s.discoveredAt, now)}. Pass refresh: true for a fresh scan.`);
   return out.join('\n');
 }

@@ -64,8 +64,7 @@ name. Outside `remoteMachineHosts`, only hosts on this network count: single-lab
 and private or link-local addresses. Candidates naming the same host and port merge into
 one, keeping the target of the first source in the table's order (so an ssh-config alias,
 with the user it sets, beats the bare names known_hosts and mDNS give). After probing, two names
-reaching the same machine id merge too. `remoteMachineExclude` hides a target or host
-name, and the host an excluded alias resolves to under any other name.
+reaching the same machine id merge too.
 
 **Only a host whose key is already in `known_hosts` is ever contacted**, and every
 probe runs with `StrictHostKeyChecking=yes`, whatever the user's config says. A host
@@ -77,12 +76,28 @@ old key is removed from `known_hosts`. A host reached through a `ProxyJump` or
 `ProxyCommand` is listed as `proxied` and never probed: the hop is a second ssh that
 the probe's options do not reach, so it would accept a new key.
 
+## Taking a machine out of the pool
+
+Two keys in `~/.diplomat/config.json` take machines out of the pool, which Diplomat's
+Machines screen writes. An entry is a target or host name (case-insensitive), or an alias,
+which also catches its host under any other name it is found by.
+
+| key | |
+|---|---|
+| `remoteMachineExclude` | a list: for good. Such a machine is never contacted. |
+| `remoteMachineExcludeUntil` | `{name: ISO time}`: until then. Such a machine is still read, so its load stays on show. |
+
+The daemon checks the file every second (`RM_CONFIG_POLL_MS`) and republishes when it
+changes. An excluded machine is listed under `excluded`, not `machines`, and the agent
+output names it as not usable.
+
 ## Reading a machine
 
 [`src/probe.sh`](src/probe.sh) is fed to `ssh <target> sh -s` (and to a local `sh` for
 this machine). It installs nothing and changes nothing. A `load` probe reads the load
 averages, memory (macOS `kern.memorystatus_level` and pressure level, Linux
-`MemAvailable`), swap, free disk in `$HOME`, boot time, machine id and NVIDIA GPU usage.
+`MemAvailable`), swap, free disk in `$HOME`, boot time, machine id, NVIDIA GPU usage and
+the number of SSH sessions open on it (other than the probe's own).
 A `full` probe adds the OS, CPU, GPUs, Xcode, and the toolchains on the login shell's
 PATH (the one agents are told to run work under).
 
@@ -102,6 +117,14 @@ free), swap over 75% used where there is no pressure reading (Linux; macOS keeps
 files it grew, so its used/total stays high on a healthy machine), and under 20 GB of
 free disk. Machines without warnings come
 first, then the rest, each group ordered by spare cores.
+
+Each machine in the snapshot carries `usage`, the two fractions the ranking and the
+warnings judge it by: `cpu`, the 1-minute load per core (above 1 when overloaded), and
+`memory`, the share of RAM not available. Every reading of them, with the SSH session
+count, also goes into `history.json` as `{machines: {<id>: [[ms, cpu, memory, sessions],
+...]}}`, keyed by the `id` each machine in the snapshot carries and kept for a day
+(`RM_HISTORY_MS`). The daemon reads nothing while it is not running, so the history has
+gaps where no agent session was open.
 
 ## Lifetime
 

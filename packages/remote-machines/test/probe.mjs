@@ -46,6 +46,9 @@ try {
     const named = process.platform === 'darwin' || /^model name/m.test(fs.readFileSync('/proc/cpuinfo', 'utf8'));
     if (named) assert.ok(m.cpu.model, JSON.stringify(m.cpu));
     assert.ok(m.tools.git, 'git is on every CI runner and dev machine');
+    // Read locally there is no session of this probe's own to leave out; ps is on every
+    // CI runner and dev machine.
+    assert.ok(Number.isInteger(m.sshSessions) && m.sshSessions >= 0, String(m.sshSessions));
     assert.ok(Math.abs(m.bootTime - (Date.now() / 1000 - os.uptime())) < 120, 'boot time');
   });
 

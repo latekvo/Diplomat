@@ -10,6 +10,11 @@ echo "hostname=$(hostname 2>/dev/null)"
 echo "home=$HOME"
 echo "conn=$SSH_CONNECTION"
 df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print "disk_kb=" $2 " " $4}'
+# Authenticated SSH sessions: sshd names each one's process user@<tty> or user@notty.
+# Over ssh, this probe's own session is one of them.
+ps_out=$(ps -A -o args= 2>/dev/null) && ssh_n=$(printf '%s\n' "$ps_out" | grep -cE '^sshd(-session)?: [^ ]+@')
+[ -n "$ssh_n" ] && [ -n "$SSH_CONNECTION" ] && [ "$ssh_n" -gt 0 ] && ssh_n=$((ssh_n - 1))
+echo "ssh_sessions=$ssh_n"
 if [ "$os" = Darwin ]; then
   echo "loadavg=$(sysctl -n vm.loadavg | tr -d '{}')"
   echo "ncpu=$(sysctl -n hw.ncpu)"

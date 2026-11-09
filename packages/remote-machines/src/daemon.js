@@ -3,25 +3,33 @@
 //
 // It listens on a unix socket and exposes:
 //   POST /attach {ownerPid}       -> register an agent session's MCP server
-//   POST /scan   {ownerPid, full} -> probe now (full: discover and re-read capabilities too)
+//   POST /scan   {ownerPid, full} -> probe now (full: discover and re-read capabilities too);
+//                                    without ownerPid nothing is attached
 //   GET  /state                   -> the snapshot (after the first scan)
 //   GET  /health
 //
 // Every PROBE_INTERVAL_MS it re-reads the load of each machine that answered last time;
 // every DISCOVERY_INTERVAL_MS it also re-discovers candidates (discovery.js), re-reads
-// capabilities and retries the ones that did not answer. It exits once no session it
-// serves is alive for IDLE_EXIT_MS, so nothing is probed for nobody.
+// capabilities and retries the ones that did not answer. Each reading also goes into
+// history.json. It exits once no session it serves is alive for IDLE_EXIT_MS, so
+// nothing is probed for nobody.
+//
+// The operator can take a machine out of the pool in Diplomat's settings: for good
+// (remoteMachineExclude: it is not contacted at all) or until a time
+// (remoteMachineExcludeUntil: it is still read, so its load stays on show). Either is
+// applied within CONFIG_POLL_MS of the settings changing.
 
 import fs from 'node:fs';
 import { atomicWrite, pidAlive, procIdentity, readJson, sweepDeadTmp } from '../../daemon-core/src/fsio.js';
 import { createLog } from '../../daemon-core/src/log.js';
 import { NO_ROUTE, jsonServer, listenSingleton, socketHealthy } from '../../daemon-core/src/serve.js';
 import {
-  BASE_DIR, SOCKET_PATH, DISCOVERY_PATH, STATE_PATH, LOG_PATH, CONFIG_PATH,
+  BASE_DIR, SOCKET_PATH, DISCOVERY_PATH, STATE_PATH, HISTORY_PATH, LOG_PATH, CONFIG_PATH,
   PROBE_INTERVAL_MS, DISCOVERY_INTERVAL_MS, IDLE_EXIT_MS, CLIENT_CHECK_MS, LOAD_GAP_MIN_MS,
+  HISTORY_MS, CONFIG_POLL_MS,
 } from './paths.js';
-import { candidates, killAll, mapLimit, SOURCES } from './discovery.js';
-import { probe, describe, meanLoadBetween, spareCores, warnings } from './probe.js';
+import { candidates, killAll, mapLimit, nameMatcher, SOURCES } from './discovery.js';
+import { probe, describe, meanLoadBetween, spareCores, usage, warnings } from './probe.js';
 
 const log = createLog(LOG_PATH);
 
@@ -34,11 +42,66 @@ let scanning = false;
 let snapshot = null;
 const clients = new Map(); // MCP server pid -> its procIdentity
 let lastClientSeenAt = Date.now();
+const startedAt = new Date().toISOString();
 
 function settings() {
   const c = readJson(CONFIG_PATH);
   const list = (v) => (Array.isArray(v) ? v.filter((s) => typeof s === 'string' && s.trim()) : []);
-  return { hosts: list(c?.remoteMachineHosts), exclude: list(c?.remoteMachineExclude) };
+  const until = c?.remoteMachineExcludeUntil;
+  const paused = until && typeof until === 'object' && !Array.isArray(until)
+    ? Object.entries(until).map(([name, at]) => [name, typeof at === 'string' ? Date.parse(at) : NaN])
+      .filter(([name, at]) => name.trim() && at > Date.now())
+    : [];
+  return { hosts: list(c?.remoteMachineHosts), exclude: list(c?.remoteMachineExclude), paused };
+}
+
+// ---- exclusion --------------------------------------------------------------
+
+// The status a candidate has before any probe.
+function baseStatus(c) {
+  if (c.proxied) return { status: 'proxied', error: 'reached through a ProxyJump or ProxyCommand, which a probe cannot hold to known_hosts' };
+  if (!c.trusted) return { status: 'untrusted', error: 'its host key is not in known_hosts' };
+  return { status: 'new', error: undefined };
+}
+
+let exclusionRun = 0;
+
+/// Marks each record with the operator's exclusion, read from the settings now: rec.excluded
+/// is {until: null} for good, {until: iso} for a while, or null. A record excluded for good
+/// is not probed; one let back in is probed by the next scan.
+async function applyExclusions() {
+  const run = ++exclusionRun;
+  const s = settings();
+  const [forGood, paused] = await Promise.all([
+    nameMatcher(s.exclude),
+    Promise.all(s.paused.map(async ([name, at]) => ({ match: await nameMatcher([name]), at }))),
+  ]);
+  if (run !== exclusionRun) return; // a later call read newer settings
+  // Its other names reach the same machine: one read since this daemon started says so.
+  const goneIds = new Set([...records.values()].filter((r) => forGood(r) && r.info?.machineId).map((r) => r.info.machineId));
+  for (const rec of records.values()) {
+    const permanent = forGood(rec) || goneIds.has(rec.info?.machineId);
+    const at = Math.max(...paused.filter((p) => p.match(rec)).map((p) => p.at));
+    rec.excluded = permanent ? { until: null } : at > 0 ? { until: new Date(at).toISOString() } : null;
+    if (permanent && rec.status !== 'excluded') Object.assign(rec, { status: 'excluded', error: 'excluded in Diplomat' });
+    else if (!permanent && rec.status === 'excluded') Object.assign(rec, baseStatus(rec));
+  }
+}
+
+let configStamp = null;
+
+function watchConfig() {
+  const stamp = () => { try { const st = fs.statSync(CONFIG_PATH); return `${st.mtimeMs}:${st.size}:${st.ino}`; } catch { return null; } };
+  configStamp = stamp();
+  setInterval(async () => {
+    const now = stamp();
+    if (now === configStamp) return;
+    configStamp = now;
+    await applyExclusions();
+    publish();
+    // A machine let back in is read now rather than at the next interval.
+    if ([...records.values()].some((r) => r.status === 'new' && r.trusted)) scan();
+  }, CONFIG_POLL_MS).unref();
 }
 
 // ---- load since the last scan -----------------------------------------------
@@ -66,6 +129,8 @@ function sinceLastScan(rec, info, at) {
 async function probeInto(rec, mode) {
   const at = Date.now();
   const r = await probe(rec.target, mode);
+  // Excluded for good while the probe was out.
+  if (rec.status === 'excluded') return;
   rec.probedAt = new Date(at).toISOString();
   if (!r.ok) {
     if (rec.status === 'ok') log('lost', rec.target, r.status, r.error);
@@ -94,16 +159,11 @@ async function scanOnce(discover) {
     for (const c of found) {
       const rec = records.get(c.key) ?? { status: 'new' };
       records.set(c.key, Object.assign(rec, c));
-      if (c.proxied) {
-        rec.status = 'proxied';
-        rec.error = 'reached through a ProxyJump or ProxyCommand, which a probe cannot hold to known_hosts';
-      } else if (!c.trusted) {
-        rec.status = 'untrusted';
-        rec.error = 'its host key is not in known_hosts';
-      }
+      if (c.proxied || !c.trusted) Object.assign(rec, baseStatus(c));
     }
   }
-  const due = [...records.values()].filter((r) => r.trusted && (full || r.status === 'ok'));
+  await applyExclusions();
+  const due = [...records.values()].filter((r) => r.trusted && (full ? r.status !== 'excluded' : r.status === 'ok' || r.status === 'new'));
   await Promise.all([
     probeInto(localRecord, full || !localRecord.info?.os ? 'full' : 'load'),
     mapLimit(due, 16, (rec) => probeInto(rec, full || !rec.info?.os ? 'full' : 'load')),
@@ -133,6 +193,7 @@ function scan(discover = false) {
 
 function view(rec) {
   const m = {
+    id: rec.info?.machineId || rec.key,
     target: rec.target,
     ...(rec.names?.length > 1 ? { aliases: rec.names.filter((n) => n !== rec.target) } : {}),
     ...(rec.target ? { hostname: rec.hostname, user: rec.user, port: rec.port, sources: rec.sources } : {}),
@@ -142,37 +203,95 @@ function view(rec) {
     ...(rec.latencyMs != null ? { latencyMs: rec.latencyMs } : {}),
     probedAt: rec.probedAt ?? null,
     capabilitiesAt: rec.capabilitiesAt ?? null,
+    ...(rec.target ? { excluded: rec.excluded ?? null } : {}),
   };
   if (rec.status === 'ok') {
     m.spareCores = spareCores(rec);
+    m.usage = usage(rec);
     m.warnings = warnings(rec);
   }
   return m;
 }
 
+// ---- history ----------------------------------------------------------------
+
+// machine id -> [[at ms, cpu, memory, ssh sessions], ...], oldest first.
+const history = new Map(Object.entries(readJson(HISTORY_PATH)?.machines ?? {}).filter(([, v]) => Array.isArray(v)));
+
+/// Adds each machine's newest reading to the history, drops what is older than HISTORY_MS
+/// and writes it out when anything changed.
+function record(machines) {
+  let changed = false;
+  for (const m of machines) {
+    if (m.status !== 'ok' || !m.probedAt) continue;
+    const at = Date.parse(m.probedAt);
+    const rows = history.get(m.id) ?? [];
+    if (rows.length && rows.at(-1)[0] >= at) continue; // published again without a new reading
+    rows.push([at, m.usage.cpu, m.usage.memory, m.sshSessions ?? null]);
+    history.set(m.id, rows);
+    changed = true;
+  }
+  const cutoff = Date.now() - HISTORY_MS;
+  for (const [id, rows] of history) {
+    const keep = rows.findIndex((r) => r[0] >= cutoff);
+    if (keep === 0) continue;
+    changed = true;
+    if (keep === -1) history.delete(id);
+    else rows.splice(0, keep);
+  }
+  if (!changed) return;
+  try {
+    atomicWrite(HISTORY_PATH, { version: 1, intervalMs: PROBE_INTERVAL_MS, machines: Object.fromEntries(history) }, 0o644);
+  } catch (e) { log('history write failed', String(e)); }
+}
+
+// Best first: machines without warnings, then by spare cores.
+const byRank = (a, b) => (a.warnings.length > 0) - (b.warnings.length > 0) || (b.spareCores ?? 0) - (a.spareCores ?? 0);
+
+// The later of two exclusions; for good outlasts any time.
+function longer(a, b) {
+  if (!a || !b) return a ?? b;
+  if (a.until == null || b.until == null) return { until: null };
+  return a.until > b.until ? a : b;
+}
+
+// Adds a view to a map by machine id, so one machine reached under two names is listed
+// once, under the name from the most preferred source.
+function merge(byId, m) {
+  const prev = byId.get(m.id);
+  if (!prev) { byId.set(m.id, m); return; }
+  const [keep, drop] = SOURCES.indexOf(m.sources[0]) < SOURCES.indexOf(prev.sources[0]) ? [m, prev] : [prev, m];
+  keep.aliases = [...new Set([...(keep.aliases ?? []), drop.target, ...(drop.aliases ?? [])])];
+  keep.excluded = longer(keep.excluded, drop.excluded);
+  byId.set(m.id, keep);
+}
+
 function publish() {
   const local = view(localRecord);
   const localId = localRecord.info?.machineId;
-  const ready = new Map(); // machineId -> view: one machine reached under two names is listed once
+  const ready = new Map();
+  const forGood = new Map();
   const unavailable = [];
   for (const rec of records.values()) {
     const m = view(rec);
-    if (rec.status !== 'ok') { unavailable.push(m); continue; }
-    const id = m.machineId || rec.key;
-    if (id === localId) continue;
-    const prev = ready.get(id);
-    if (!prev) { ready.set(id, m); continue; }
-    const [keep, drop] = SOURCES.indexOf(m.sources[0]) < SOURCES.indexOf(prev.sources[0]) ? [m, prev] : [prev, m];
-    keep.aliases = [...new Set([...(keep.aliases ?? []), drop.target, ...(drop.aliases ?? [])])];
-    ready.set(id, keep);
+    if (rec.status === 'excluded') merge(forGood, m);
+    else if (rec.status !== 'ok') unavailable.push(m);
+    else if (m.id !== localId) merge(ready, m);
   }
+  const live = [...ready.values()];
+  record([local, ...live]);
   snapshot = {
     updatedAt: new Date().toISOString(),
     discoveredAt: lastDiscoveryAt ? new Date(lastDiscoveryAt).toISOString() : null,
     probeIntervalMs: PROBE_INTERVAL_MS,
+    daemon: { pid: process.pid, startedAt, sessions: clients.size },
     local,
-    machines: [...ready.values()].sort((a, b) =>
-      (a.warnings.length > 0) - (b.warnings.length > 0) || (b.spareCores ?? 0) - (a.spareCores ?? 0)),
+    machines: live.filter((m) => !m.excluded).sort(byRank),
+    // Excluded for a while (still read, best first), then for good.
+    excluded: [
+      ...live.filter((m) => m.excluded).sort(byRank),
+      ...[...forGood.values()].sort((a, b) => a.target.localeCompare(b.target)),
+    ],
     unavailable: unavailable.sort((a, b) => a.status.localeCompare(b.status) || a.target.localeCompare(b.target)),
   };
   try { atomicWrite(STATE_PATH, snapshot, 0o644); } catch (e) { log('state write failed', String(e)); }
@@ -217,6 +336,7 @@ function onListening() {
   }, 0o600);
   log('daemon listening', SOCKET_PATH, 'pid', process.pid);
   firstScan = scan(true);
+  watchConfig();
   setInterval(() => { if (!scanning) scan(); }, PROBE_INTERVAL_MS);
   setInterval(checkClients, CLIENT_CHECK_MS);
 }
@@ -235,7 +355,7 @@ function bye() {
 async function start() {
   fs.mkdirSync(BASE_DIR, { recursive: true });
   if (await socketHealthy(SOCKET_PATH)) { log('another daemon is already live; exiting'); process.exit(0); }
-  for (const f of [DISCOVERY_PATH, STATE_PATH]) sweepDeadTmp(f);
+  for (const f of [DISCOVERY_PATH, STATE_PATH, HISTORY_PATH]) sweepDeadTmp(f);
   listenSingleton({ server, socketPath: SOCKET_PATH, log, onListening });
   process.on('SIGINT', bye);
   process.on('SIGTERM', bye);

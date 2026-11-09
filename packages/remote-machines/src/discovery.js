@@ -238,11 +238,10 @@ const portTarget = ({ hostname, port }) => (port === 22 ? hostname : `ssh://${ho
 const SAFE_TARGET = /^(ssh:\/\/)?[A-Za-z0-9_][A-Za-z0-9._@%:[\]-]*$/;
 
 /// Every candidate machine, merged by host name and port:
-/// [{target, hostname, user, port, sources, names, proxied, trusted}].
+/// [{key, target, hostname, user, port, sources, names, proxied, trusted}].
 ///
 /// `hosts` are listed whatever their network; the other sources only on this network.
-/// A target or host name in `exclude` (case-insensitive) is dropped.
-export async function candidates({ hosts = [], exclude = [] } = {}) {
+export async function candidates({ hosts = [] } = {}) {
   const defaults = await resolveTarget('localhost');
   // Built in SOURCES order, so the first candidate for a host is the one to keep.
   const raw = [
@@ -251,20 +250,14 @@ export async function candidates({ hosts = [], exclude = [] } = {}) {
     ...knownHostsLan(defaults?.knownHostsFiles ?? []).map((h) => ({ target: portTarget(h), source: 'known-hosts' })),
     ...(await mdnsHosts()).map((h) => ({ target: portTarget(h), source: 'mdns' })),
   ];
-  const skip = new Set(exclude.map((e) => String(e).toLowerCase()));
   const self = os.hostname().toLowerCase();
   const safe = raw.filter((c) => SAFE_TARGET.test(c.target));
   const resolved = await mapLimit(safe, 8, async (c) => ({ ...c, r: await resolveTarget(c.target) }));
-  // An excluded alias hides its host under every other name it is found by, too. Resolved
-  // as written: ssh matches Host aliases case-sensitively.
-  const excluded = await mapLimit(exclude.map(String).filter((e) => SAFE_TARGET.test(e)), 8, resolveTarget);
-  const skipKeys = new Set(excluded.filter(Boolean).map((r) => `${r.hostname.toLowerCase()}:${r.port}`));
   const byKey = new Map();
   for (const { target, source, r } of resolved) {
     if (!r) continue;
     const hostname = r.hostname.toLowerCase();
     const key = `${hostname}:${r.port}`;
-    if (skip.has(target.toLowerCase()) || skip.has(hostname) || skipKeys.has(key)) continue;
     if (hostname === self || hostname === 'localhost' || hostname.startsWith('127.')) continue;
     if (source !== 'config' && !isLocalNetwork(hostname)) continue;
     const prev = byKey.get(key);
@@ -280,4 +273,14 @@ export async function candidates({ hosts = [], exclude = [] } = {}) {
   // accept a new key, or leave a ControlPersist master behind. Such hosts are not probed.
   await mapLimit(list, 8, async (c) => { c.trusted = !c.proxied && await hostKeyKnown(c); });
   return list;
+}
+
+/// A test for candidates named by `entries`: a target or host name (case-insensitive),
+/// or the host an alias resolves to, so excluding an alias catches its host under every
+/// other name it is found by. Aliases resolve as written: ssh matches them case-sensitively.
+export async function nameMatcher(entries) {
+  const names = new Set(entries.map((e) => String(e).toLowerCase()));
+  const resolved = await mapLimit(entries.map(String).filter((e) => SAFE_TARGET.test(e)), 8, resolveTarget);
+  const keys = new Set(resolved.filter(Boolean).map((r) => `${r.hostname.toLowerCase()}:${r.port}`));
+  return (c) => keys.has(c.key) || names.has(c.hostname.toLowerCase()) || c.names.some((n) => names.has(n.toLowerCase()));
 }

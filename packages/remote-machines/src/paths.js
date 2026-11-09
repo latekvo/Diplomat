@@ -11,10 +11,11 @@ export const BASE_DIR =
 export const SOCKET_PATH = path.join(BASE_DIR, 'daemon.sock');
 export const DISCOVERY_PATH = path.join(BASE_DIR, 'daemon.json'); // {pid, identity, startedAt, socket}
 export const STATE_PATH = path.join(BASE_DIR, 'state.json'); // the public snapshot
+export const HISTORY_PATH = path.join(BASE_DIR, 'history.json'); // each machine's usage over time
 export const LOG_PATH = path.join(BASE_DIR, 'daemon.log');
 
 // Diplomat's cross-process settings, relocated by the same DIPLOMAT_CONFIG the
-// applets honour: remoteMachineHosts / remoteMachineExclude.
+// applets honour: remoteMachineHosts, remoteMachineExclude and remoteMachineExcludeUntil.
 export const CONFIG_PATH = process.env.DIPLOMAT_CONFIG
   ? process.env.DIPLOMAT_CONFIG.replace(/^~(?=$|\/)/, os.homedir())
   : path.join(os.homedir(), '.diplomat', 'config.json');
@@ -40,4 +41,8 @@ export const LOAD_GAP_MIN_MS = Number(process.env.RM_LOAD_GAP_MIN_MS) || 45 * 10
 // The daemon exits once no agent session has been connected for this long; the next
 // session's MCP server starts it again.
 export const IDLE_EXIT_MS = Number(process.env.RM_IDLE_EXIT_MS) || 10 * 60 * 1000;
+// How far back history.json reaches.
+export const HISTORY_MS = Number(process.env.RM_HISTORY_MS) || 24 * 60 * 60 * 1000;
+// How often the settings file is checked for a changed exclusion.
+export const CONFIG_POLL_MS = Number(process.env.RM_CONFIG_POLL_MS) || 1000;
 export const CLIENT_CHECK_MS = Number(process.env.RM_CLIENT_CHECK_MS) || 30 * 1000;

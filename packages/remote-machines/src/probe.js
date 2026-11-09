@@ -100,6 +100,7 @@ export function describe(f) {
     machineId: one(f, 'machine_id'),
     bootTime: num(one(f, 'boottime')),
     cores: num(one(f, 'ncpu')),
+    sshSessions: num(one(f, 'ssh_sessions')),
     load: { last1m: l1 ?? null, last5m: l5 ?? null, last15m: l15 ?? null },
     memory,
     swap,
@@ -156,7 +157,21 @@ export function warnings({ info, load }) {
 }
 
 /// Cores left over once the current load (the freshest reading, the 1-minute one) is served.
+/// Machines are ranked by this.
 export function spareCores({ info, load }) {
   const used = load?.last1m;
   return info.cores == null || used == null ? null : Math.round(Math.max(0, info.cores - used) * 10) / 10;
+}
+
+const frac = (v) => Math.round(v * 1000) / 1000;
+
+/// The readings the ranking and the warnings judge a machine by, as fractions: `cpu` is
+/// the 1-minute load per core (above 1 when overloaded), `memory` the share of RAM not
+/// available.
+export function usage({ info, load }) {
+  const mem = info.memory;
+  return {
+    cpu: info.cores && load?.last1m != null ? frac(load.last1m / info.cores) : null,
+    memory: mem?.totalBytes && mem.availableBytes != null ? frac(1 - mem.availableBytes / mem.totalBytes) : null,
+  };
 }
