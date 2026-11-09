@@ -1,0 +1,21 @@
+{
+  "_comment": "Tasks, the long-running task tracker: the tunables of ../Sources/DiplomatCore/Tasks.swift, TasksStore.swift and TasksSync.swift. The Linux front-end reaches tasks only through the diplomat-core CLI (tasks-list, tasks-sync, tasks-edit) and reads this file itself for nothing but syncSecs, minSyncSecs and chunk (to bound how long tasks-sync may take).",
+
+  "_syncComment": "syncSecs is the front-ends' sync period while at least one task is not archived; minSyncSecs is the floor it is clamped to. A sync is one batched gh api graphql call per chunk linked GitHub items (graphql/task-item.graphql), each fetching its newest commentsPerItem comments and reviews.",
+  "syncSecs": 300,
+  "minSyncSecs": 60,
+  "chunk": 25,
+  "commentsPerItem": 20,
+
+  "_statusComment": "A task whose newest history event is more than staleDays old gets the stale reason.",
+  "staleDays": 7,
+
+  "_historyComment": "Past maxLogBytes, events.jsonl keeps the newest whole lines that fit in half of it, and at least its newest line. tasks-list shows each task's newest historyLimit events. excerptChars bounds the one-line excerpt of a comment or Slack message. A Slack ping that names a task waits up to commsHoldSecs for Comms' triage before it joins the task's history without one, and every ping logged after it waits with it: Comms triages in batches, up to its flush interval after the ping.",
+  "maxLogBytes": 2097152,
+  "historyLimit": 200,
+  "excerptChars": 200,
+  "commsHoldSecs": 172800,
+
+  "_noteComment": "A note's text longer than noteChars characters (Unicode code points) is refused, not cut: tasks-edit exits 1 saying so.",
+  "noteChars": 4000
+}

@@ -10,6 +10,7 @@ Qt-less mesh node can read it too.
 
 from __future__ import annotations
 
+import collections
 import dataclasses
 from dataclasses import dataclass
 from datetime import datetime
@@ -42,6 +43,7 @@ from diplomat_runtime import (
     review,
     reviewaudit,
     runner,
+    tasks,
     telemetry,
     tmuxwatch,
 )
@@ -266,6 +268,12 @@ class Store(QObject):
     _comms_ticked = Signal(object)
     # `comms-reply`'s answers: [(request, result)], back on the Qt thread.
     _comms_replied = Signal(object)
+    # Emitted when anything the Tasks screen (the long-running task tracker) draws
+    # changes. Not `tasks_changed`, which is the Agent-tasks queue's.
+    tracked_tasks_changed = Signal()
+    # A `tasks-edit`'s answer, on the Qt thread: (origin, why it did not apply or None).
+    # `origin` is the caller's own, handed back as given.
+    tracked_task_edited = Signal(object, object)
     # Emitted when the other checkouts listed in Settings change, so the wizards
     # re-judge a link they are already holding.
     local_repos_changed = Signal()
@@ -492,6 +500,29 @@ class Store(QObject):
         # The last tick's `comms.session_locked`: None until one has asked, or when
         # logind could not say.
         self._comms_locked: bool | None = None
+
+        # Tasks. `tracked_tasks` is `diplomat-core tasks-list`'s last answer ([TaskView]);
+        # replaced, never mutated, since the sync worker writes it.
+        self.tracked_tasks: list[dict] = []
+        self.tracker_show_archived = False
+        self.tracker_list_error: str | None = None
+        self.tracker_sync_error: str | None = None
+        self.tracker_last_sync: datetime | None = None
+        self.tracker_sync_events = 0
+        self.tracker_syncing = False
+        # Held over each list read plus the assignment of its answer, so an older read
+        # never lands over a newer one. Workers only: a read takes seconds.
+        self._tracker_lock = threading.RLock()
+        # Over the edit queue and the sync flags below, never over a CLI call, so the Qt
+        # thread may take it.
+        self._tracker_queue_lock = threading.Lock()
+        self._tracker_edits: collections.deque = collections.deque()
+        self._tracker_editing = False
+        self._tracker_sync_running = False
+        # A sync asked for while one runs: it follows that one, which may have read the
+        # tasks before the edit that asked. `_force` is any of those asks' `force`.
+        self._tracker_sync_again = False
+        self._tracker_sync_again_force = False
 
         # Pruned on every start — a Store outlives thousands of polls.
         self._workers: list[threading.Thread] = []
@@ -4249,6 +4280,123 @@ class Store(QObject):
         if wrote:
             self.refresh_comms_feed()
             self.comms_changed.emit()
+
+    # MARK: Tasks, the long-running task tracker
+
+    def _tracker_live(self) -> list[dict]:
+        return [v for v in self.tracked_tasks if not v["task"].get("archivedAt")]
+
+    @property
+    def tracker_blocked(self) -> int:
+        """The Tasks button's count: unarchived tasks whose status is ``blocked``."""
+        return sum(1 for v in self._tracker_live() if v.get("status") == "blocked")
+
+    def refresh_tracked_tasks(self) -> None:
+        """``tasks-list``, on a worker: it reads the whole event log. A core that cannot
+        answer leaves the rows as they were, and says why."""
+        with self._tracker_lock:
+            try:
+                views = tasks.views(archived=self.tracker_show_archived)
+            except tasks.Failure as exc:
+                self.tracker_list_error = str(exc)
+                return
+            self.tracked_tasks = views
+            self.tracker_list_error = None
+
+    def refresh_tracked_tasks_async(self) -> None:
+        def work() -> None:
+            self.refresh_tracked_tasks()
+            self.tracked_tasks_changed.emit()
+
+        self.start_background(work, name="tasks-list")
+
+    def run_tracker_sync_async(self, *, force: bool = False) -> None:
+        """Re-read the tasks, then sync them with GitHub and Comms when one is not
+        archived (always when ``force``d: "Sync now"), and re-read them. One asked for
+        while another runs follows it."""
+        with self._tracker_queue_lock:
+            if self._tracker_sync_running:
+                self._tracker_sync_again = True
+                self._tracker_sync_again_force |= force
+                return
+            self._tracker_sync_running = True
+
+        def work() -> None:
+            go, done = force, False
+            try:
+                while not done:
+                    self._sync_tracked_tasks(force=go)
+                    with self._tracker_queue_lock:
+                        done = not self._tracker_sync_again
+                        go = self._tracker_sync_again_force
+                        self._tracker_sync_again = self._tracker_sync_again_force = False
+                        if done:
+                            self._tracker_sync_running = False
+            finally:
+                if not done:
+                    with self._tracker_queue_lock:
+                        self._tracker_sync_running = False
+
+        self.start_background(work, name="tasks-sync")
+
+    def _sync_tracked_tasks(self, *, force: bool) -> None:
+        try:
+            self.refresh_tracked_tasks()
+            live = self._tracker_live()
+            if live or force:
+                self.tracker_syncing = True
+                self.tracked_tasks_changed.emit()
+                links = {link.get("url") for v in live for link in v["task"].get("links", [])
+                         if link.get("kind") in ("pr", "issue")}
+                result = tasks.sync(len(links))
+                self.tracker_last_sync = datetime.now().astimezone()
+                self.tracker_sync_error = result.get("error") or None
+                self.tracker_sync_events = int(result.get("events") or 0)
+                self.refresh_tracked_tasks()
+        finally:
+            self.tracker_syncing = False
+        self.tracked_tasks_changed.emit()
+
+    def edit_tracked_task_async(self, op: dict, origin: object = None) -> None:
+        """``tasks-edit`` on a worker, in the order asked: it re-reads the whole event
+        log. ``tracked_task_edited`` hands back ``origin`` with why it did not apply, or
+        None. A good create, link or unarchive is followed by a sync, so the new link's
+        state shows without waiting for the tick."""
+        with self._tracker_queue_lock:
+            self._tracker_edits.append((op, origin))
+            if self._tracker_editing:
+                return
+            self._tracker_editing = True
+        self.start_background(self._drain_tracker_edits, name="tasks-edit")
+
+    def _drain_tracker_edits(self) -> None:
+        try:
+            while True:
+                with self._tracker_queue_lock:
+                    if not self._tracker_edits:
+                        self._tracker_editing = False
+                        return
+                    op, origin = self._tracker_edits.popleft()
+                self.tracked_task_edited.emit(origin, self._edit_tracked_task(op))
+        except BaseException:
+            with self._tracker_queue_lock:
+                self._tracker_editing = False
+            raise
+
+    def _edit_tracked_task(self, op: dict) -> str | None:
+        try:
+            tasks.edit(op)
+        except tasks.Failure as exc:
+            return str(exc)
+        self.refresh_tracked_tasks()
+        self.tracked_tasks_changed.emit()
+        if op.get("op") in ("create", "link", "unarchive"):
+            self.run_tracker_sync_async()
+        return None
+
+    def set_tracker_show_archived(self, on: bool) -> None:
+        self.tracker_show_archived = on
+        self.refresh_tracked_tasks_async()
 
     # MARK: device allocator
 

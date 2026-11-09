@@ -34,7 +34,7 @@
   "classifierTimeoutSecs": 90,
   "classifierSecsPerMessage": 5,
 
-  "_logComment": "events.jsonl is rewritten to its newest half once it passes maxLogBytes. labelSummaryMax caps the triage summary in an investigation's queue label.",
+  "_logComment": "Past maxLogBytes, events.jsonl is rewritten to the newest whole lines that fit in half of it, and at least its newest line. labelSummaryMax caps the triage summary in an investigation's queue label.",
   "maxLogBytes": 2097152,
   "labelSummaryMax": 48,
 

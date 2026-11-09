@@ -1832,6 +1832,33 @@ private func foldSmoke() throws {
     check(after.last?.detail == "newest"
           && after.count == kept.split(separator: UInt8(ascii: "\n")).count && after.count < lines,
           "…cut at a line boundary, every kept line whole, the new one last: \(after.count) events")
+
+    // Equal lines, an even count: the newest half starts on a line, which is kept.
+    let even = scratchDir("rotate-even")
+    defer { try? FileManager.default.removeItem(at: even) }
+    let width = 1_000, count = (cap / width + 2) / 2 * 2
+    try (0..<count).map { String(format: "%07d", $0) + String(repeating: "x", count: width - 8) + "\n" }.joined()
+        .write(to: CommsLog.eventsURL(in: even), atomically: true, encoding: .utf8)
+    CommsLog.append(CommsEvent(at: t, kind: .error, id: "", detail: "newest"), in: even)
+    let evenLines = try String(contentsOf: CommsLog.eventsURL(in: even), encoding: .utf8).split(separator: "\n")
+    check(evenLines.count == count / 2 + 1 && evenLines.first?.hasPrefix(String(format: "%07d", count / 2)) == true,
+          "the newest whole lines that fit in half are kept, the one at the halfway mark too: "
+            + "\(evenLines.count) lines from \(evenLines.first?.prefix(7) ?? "")")
+
+    // One line longer than half the cap: the next append keeps it rather than leaving
+    // the new line alone.
+    let huge = scratchDir("rotate-huge")
+    defer { try? FileManager.default.removeItem(at: huge) }
+    CommsLog.append(CommsEvent(at: t, kind: .error, id: "", detail: "older"), in: huge)
+    CommsLog.append(CommsEvent(at: t, kind: .error, id: "", detail: String(repeating: "h", count: cap + cap / 10)),
+                    in: huge)
+    CommsLog.append(CommsEvent(at: t, kind: .error, id: "", detail: "newest"), in: huge)
+    let hugeAfter = CommsLog.read(in: huge)
+    check(hugeAfter.map { $0.detail?.count ?? 0 } == [cap + cap / 10, 6],
+          "a line past half the cap is the last line kept: \(hugeAfter.map { $0.detail?.prefix(8) ?? "" })")
+    CommsLog.append(CommsEvent(at: t, kind: .error, id: "", detail: "after"), in: huge)
+    check(CommsLog.read(in: huge).map(\.detail) == ["newest", "after"],
+          "…and goes on the next rotation, once it is no longer last")
 }
 
 private func classifierSmoke() throws {

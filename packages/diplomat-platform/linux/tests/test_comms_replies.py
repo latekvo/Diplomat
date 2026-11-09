@@ -429,7 +429,7 @@ def test_a_tick_with_no_extra_target_merges_nothing(monkeypatch):
     def refuse(*a, **k):
         raise AssertionError("no merge call is needed")
 
-    monkeypatch.setattr(comms, "_core", refuse)
+    monkeypatch.setattr(comms.promptcore, "cli", refuse)
     requests = _rows_of_one_message([1616])
     assert comms.merge_replies(requests) is requests
 
@@ -438,7 +438,7 @@ def test_a_merge_that_fails_leaves_the_requests_as_they_are(monkeypatch):
     def down(*a, **k):
         raise RuntimeError("no core")
 
-    monkeypatch.setattr(comms, "_core", down)
+    monkeypatch.setattr(comms.promptcore, "cli", down)
     requests = _rows_of_one_message([1, 2])
     assert comms.merge_replies(requests) is requests
 

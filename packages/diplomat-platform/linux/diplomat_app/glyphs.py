@@ -46,6 +46,8 @@ G_TELEMETRY = "◫" # telemetry screen header (the per-figure glyphs live in
                   # assets/telemetry.json, like the tool and category ones)
 G_COMMS = "✉"    # Comms screen header button (matches the comms activity
                  # category's linuxGlyph)
+G_TRACKER = "✓"  # Tasks (the long-running task tracker) screen header button
+G_NOTE = "✎"     # a Tasks history line the operator wrote
 
 # --- Devices screen glyphs -------------------------------------------------
 G_RECENT = "◴"     # the allocator's recent events

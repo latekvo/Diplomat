@@ -206,34 +206,13 @@ def session_locked() -> bool | None:
 # MARK: - the CLI
 
 
-def _core(args: list[str], *, stdin: object = None, timeout: float = 30) -> str:
-    """stdout, or :class:`RuntimeError` saying why not."""
-    full = dict(os.environ)
-    full.setdefault("DIPLOMAT_CORE", str(core.assets_dir()))
-    try:
-        proc = subprocess.run(  # noqa: S603 — argv is a literal list
-            [promptcore.core_bin(), *args],
-            input=None if stdin is None else json.dumps(stdin),
-            stdin=subprocess.DEVNULL if stdin is None else None,
-            capture_output=True, text=True, env=full, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"diplomat-core {args[0]} did not answer within "
-                           f"{int(timeout)}s") from exc
-    except OSError as exc:
-        raise RuntimeError(f"diplomat-core could not be run: {exc}") from exc
-    if proc.returncode != 0:
-        raise RuntimeError(f"diplomat-core {args[0]} failed: {proc.stderr.strip()}")
-    return proc.stdout
-
-
 def tick(settings: dict) -> dict:
     """``{"me", "pings": [message], "items": [{"message", "decision"}], "error",
     "notices"}``: ``pings`` the messages this tick took, ``items`` triage answers, each
     for a ping of this tick or an earlier one. Never raises: a CLI failure is the
     tick's ``error``."""
     try:
-        out = _core(["comms-tick"], stdin=settings,
+        out = promptcore.cli(["comms-tick"], stdin=settings,
                     timeout=tick_timeout(settings.get("batchSize")))
         result = json.loads(out)
     except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
@@ -251,7 +230,7 @@ def tick(settings: dict) -> dict:
 
 def feed(limit: int = 200) -> list[dict]:
     """The Comms screen's rows, newest ping first (``CommsLog.fold``)."""
-    rows = json.loads(_core(["comms-feed", "--limit", str(limit)]))
+    rows = json.loads(promptcore.cli(["comms-feed", "--limit", str(limit)]))
     return rows if isinstance(rows, list) else []
 
 
@@ -260,7 +239,7 @@ def effect(decision: dict, message: dict, toggles: dict, settings: dict) -> dict
     "none"}``, ``{"kind": "review" | "fix_issue" | "bump", "number": N}``,
     ``{"kind": "investigate", "config": InvestigateConfig}``, or ``{"kind": "ban",
     "ban": CommsBan}``."""
-    out = json.loads(_core(["comms-effect"], stdin={
+    out = json.loads(promptcore.cli(["comms-effect"], stdin={
         "decision": decision, "message": message, "toggles": toggles,
         "settings": settings}))
     return out if isinstance(out, dict) else {"kind": "none"}
@@ -271,7 +250,7 @@ def reply(request: dict) -> dict:
     "text"}``. Never raises: a CLI that could not answer is a ``failed`` outcome, though
     the core may have posted before it went quiet."""
     try:
-        out = json.loads(_core(["comms-reply"], stdin=request, timeout=reply_timeout()))
+        out = json.loads(promptcore.cli(["comms-reply"], stdin=request, timeout=reply_timeout()))
     except (RuntimeError, promptcore.CoreBinaryMissing, ValueError) as exc:
         return {"outcome": f"failed: {exc}", "text": None}
     if not isinstance(out, dict):
@@ -289,7 +268,7 @@ def merge_replies(requests: list[dict]) -> list[dict]:
     if not any(is_extra_target(r.get("message") or {}) for r in requests):
         return requests
     try:
-        out = json.loads(_core(["comms-reply-merge"], stdin={"requests": requests}))
+        out = json.loads(promptcore.cli(["comms-reply-merge"], stdin={"requests": requests}))
     except (RuntimeError, promptcore.CoreBinaryMissing, ValueError):
         return requests
     return out if isinstance(out, list) else requests
@@ -352,7 +331,7 @@ def auth() -> tuple[dict | None, str]:
     the tick can poll. ``team`` is the workspace's name, ``teamID`` the key a sender's
     workspace is matched on. Never raises."""
     try:
-        out = _core(["comms-auth"], timeout=_sign_in_secs(tunables()) + _MARGIN_SECS)
+        out = promptcore.cli(["comms-auth"], timeout=_sign_in_secs(tunables()) + _MARGIN_SECS)
     except (RuntimeError, promptcore.CoreBinaryMissing) as exc:
         return None, str(exc)
     try:

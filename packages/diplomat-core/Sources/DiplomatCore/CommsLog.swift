@@ -97,49 +97,21 @@ public enum CommsLog {
 
     static var maxBytes: Int { (try? CoreAssets.comms())?.maxLogBytes ?? 2 << 20 }
 
-    /// Made 0700 even if they already exist: the log holds the operator's DMs in full,
-    /// and their home may be readable by other local users.
+    /// Both made 0700 even if they already exist (`PrivateFiles.prepare`).
     public static func prepare(_ dir: URL = dir) {
-        let fm = FileManager.default
-        for d in [dir, reportsDir(in: dir)] {
-            try? fm.createDirectory(at: d, withIntermediateDirectories: true,
-                                    attributes: [.posixPermissions: 0o700])
-            chmod(d.path, 0o700)
-        }
+        PrivateFiles.prepare(dir)
+        PrivateFiles.prepare(reportsDir(in: dir))
     }
 
-    /// `O_APPEND`, so another writer's line is never overwritten; `write(2)`, so a full
-    /// disk costs the line instead of aborting the process. False when the line is not
-    /// all on disk.
+    /// Under the lock (`PrivateFiles.append`); false when the line is not all on disk.
     @discardableResult
     public static func append(_ event: CommsEvent, in dir: URL = dir) -> Bool {
         guard var line = try? encoder.encode(event) else { return false }
         line.append(UInt8(ascii: "\n"))
         prepare(dir)
-        let lock = open(lockURL(in: dir).path, O_RDWR | O_CREAT, 0o600)
-        guard lock >= 0 else { return false }
-        defer { close(lock) }
-        guard flock(lock, LOCK_EX) == 0 else { return false }
-        let url = eventsURL(in: dir)
-        rotateIfLarge(url)
-        let fd = open(url.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
-        guard fd >= 0 else { return false }
-        defer { close(fd) }
-        fchmod(fd, 0o600)
-        return line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) } == line.count
-    }
-
-    /// Whole or not at all, owner-only: a 0600 temp file renamed over `url`.
-    static func writePrivate(_ data: Data, to url: URL) {
-        let tmp = url.path + ".tmp-\(getpid())-\(UUID().uuidString)"
-        let fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0o600)
-        guard fd >= 0 else { return }
-        let wrote = data.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
-        close(fd)
-        guard wrote == data.count, rename(tmp, url.path) == 0 else {
-            unlink(tmp)
-            return
-        }
+        return PrivateFiles.locked(lockURL(in: dir)) {
+            PrivateFiles.append(line, to: eventsURL(in: dir), maxBytes: maxBytes)
+        } ?? false
     }
 
     /// Oldest first; a torn or foreign line costs only that line.
@@ -194,17 +166,6 @@ public enum CommsLog {
                     : ($0.item.at, $0.index) > ($1.item.at, $1.index)
             }
             .map(\.item)
-    }
-
-    /// Past `maxLogBytes`, keep the newest half, cut at a line boundary. Caller holds the
-    /// log's lock.
-    private static func rotateIfLarge(_ url: URL) {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attrs[.size] as? Int, size > maxBytes,
-              let data = try? Data(contentsOf: url) else { return }
-        let mid = data.index(data.startIndex, offsetBy: data.count / 2)
-        guard let nl = data[mid...].firstIndex(of: UInt8(ascii: "\n")) else { return }
-        writePrivate(Data(data[data.index(after: nl)...]), to: url)
     }
 
     // MARK: - JSON

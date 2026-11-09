@@ -122,9 +122,25 @@ public enum GH {
     /// hold both of them until the app restarts.
     public static let timeout: TimeInterval = 60
 
-    /// Run `gh` with the given argv. stdout/stderr are redirected to temp files so
-    /// large payloads can't deadlock a pipe buffer (and no cross-thread captures).
+    /// Run `gh` with the given argv: its stdout, or `GHError.process` when it exits
+    /// non-zero.
     public static func run(_ args: [String], timeout: TimeInterval = timeout) async throws -> Data {
+        let out = try await output(args, timeout: timeout)
+        guard out.status == 0 else { throw GHError.process(code: out.status, stderr: out.stderr) }
+        return out.stdout
+    }
+
+    /// How one `gh` call exited and what it printed. `gh api graphql` exits 1 on any
+    /// GraphQL error yet still prints the response, whose `data` may hold the rest.
+    struct Output {
+        let status: Int32
+        let stdout: Data
+        let stderr: String
+    }
+
+    /// `run`, whatever the exit status. stdout/stderr are redirected to temp files so
+    /// large payloads can't deadlock a pipe buffer (and no cross-thread captures).
+    static func output(_ args: [String], timeout: TimeInterval = timeout) async throws -> Output {
         let path = try ghPath()
         let tmp = FileManager.default.temporaryDirectory
         let outURL = tmp.appendingPathComponent("diplomat-\(UUID().uuidString).out")
@@ -140,7 +156,7 @@ public enum GH {
             try? FileManager.default.removeItem(at: errURL)
         }
 
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Output, Error>) in
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: path)
             proc.arguments = args
@@ -166,13 +182,8 @@ public enum GH {
                 }
                 let outData = (try? Data(contentsOf: outURL)) ?? Data()
                 let errData = (try? Data(contentsOf: errURL)) ?? Data()
-                if p.terminationStatus != 0 {
-                    cont.resume(throwing: GHError.process(
-                        code: p.terminationStatus,
-                        stderr: String(data: errData, encoding: .utf8) ?? ""))
-                } else {
-                    cont.resume(returning: outData)
-                }
+                cont.resume(returning: Output(status: p.terminationStatus, stdout: outData,
+                                              stderr: String(data: errData, encoding: .utf8) ?? ""))
             }
             // Darwin keeps the handler of a process that never ran until it is cleared.
             do { try proc.run() } catch {

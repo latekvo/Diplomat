@@ -32,6 +32,7 @@ from diplomat_runtime import activity, agentstate, autofix, core
 from diplomat_runtime.models import Fmt
 from . import deviceallocator, glyphs, szpont
 from .commsview import CommsView
+from .tasksview import TasksView
 from .devicesview import DevicesView
 from .settingsview import SettingsView
 from .store import Store, tool_by_id
@@ -305,6 +306,16 @@ class Panel(QWidget):
         comms_scroll.setWidget(self.comms_view)
         self._screens["comms"] = self.body.addWidget(comms_scroll)
 
+        # Page: Tasks (the long-running task tracker).
+        self.tasks_view = TasksView(store)
+        self.tasks_view.done.connect(lambda: self._set_screen("main"))
+        tasks_scroll = QScrollArea()
+        tasks_scroll.setWidgetResizable(True)
+        tasks_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        tasks_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        tasks_scroll.setWidget(self.tasks_view)
+        self._screens["tasks"] = self.body.addWidget(tasks_scroll)
+
         # Page: settings. Scrolled like the screens above, and for the same
         # reason: its left column is a stack of toggles each carrying the paragraph
         # that says what it does, and on a short window Qt buys the space back by
@@ -448,6 +459,12 @@ class Panel(QWidget):
         row.addWidget(self.comms_btn)
         self.store.comms_changed.connect(self._refresh_comms_button)
         self._refresh_comms_button()
+
+        self.tasks_btn = _icon_button(glyphs.G_TRACKER, "Tasks")
+        self.tasks_btn.clicked.connect(self._toggle_task_tracker)
+        row.addWidget(self.tasks_btn)
+        self.store.tracked_tasks_changed.connect(self._refresh_task_tracker_button)
+        self._refresh_task_tracker_button()
 
         self.telemetry_btn = _icon_button(glyphs.G_TELEMETRY, "Telemetry")
         self.telemetry_btn.clicked.connect(self._toggle_telemetry)
@@ -1006,8 +1023,8 @@ class Panel(QWidget):
         self._update_results()
 
     def _set_screen(self, name: str) -> None:
-        """Flip the body to one of the screens: Actions ("main"), Devices, Comms, Telemetry,
-        Settings, or — when the mesh add-on is installed — Mesh management."""
+        """Flip the body to one of the screens: Actions ("main"), Devices, Comms, Tasks,
+        Telemetry, Settings, or — when the mesh add-on is installed — Mesh management."""
         self._screen = name
         self.body.setCurrentIndex(self._screens[name])
         self.devices_btn.set_state(
@@ -1027,6 +1044,9 @@ class Panel(QWidget):
         if name == "comms":
             # Opening it is what reads the pings.
             self.comms_view.open()
+        if name == "tasks":
+            # Re-read on open: an agent may have edited them through the CLI.
+            self.tasks_view.open()
         if name == "main":
             self._rebuild_grid()
             self._update_results()
@@ -1050,6 +1070,14 @@ class Panel(QWidget):
         n = self.store.comms_unread
         self.comms_btn.setText(f"{glyphs.G_COMMS} {n}" if n else glyphs.G_COMMS)
         self.comms_btn.setToolTip(f"Comms — {n} unread" if n else "Comms")
+
+    def _toggle_task_tracker(self) -> None:
+        self._set_screen("main" if self._screen == "tasks" else "tasks")
+
+    def _refresh_task_tracker_button(self) -> None:
+        n = self.store.tracker_blocked
+        self.tasks_btn.setText(f"{glyphs.G_TRACKER} {n}" if n else glyphs.G_TRACKER)
+        self.tasks_btn.setToolTip(f"Tasks — {n} blocked" if n else "Tasks")
 
     def _focus_search(self) -> None:
         if self._screen != "main":

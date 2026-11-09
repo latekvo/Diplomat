@@ -1,0 +1,28 @@
+# One GitHub item a Tasks link names, as TaskSync mirrors it. Not a query of its own:
+# TaskSync assembles one around these fragments, an alias per item,
+#   iN: repository(owner: $oN, name: $rN) { issueOrPullRequest(number: $nN) {
+#         __typename ...TaskPR ...TaskIssue } }
+# with $c the per-item comment and review count (tasks.json `commentsPerItem`).
+fragment TaskPR on PullRequest {
+  title
+  url
+  state
+  isDraft
+  reviewDecision
+  mergeable
+  mergedAt
+  closedAt
+  commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+  closingIssuesReferences(first: 10) { nodes { url } }
+  comments(last: $c) { nodes { id url author { login } createdAt bodyText } }
+  reviews(last: $c) { nodes { id url author { login } state submittedAt } }
+}
+
+fragment TaskIssue on Issue {
+  title
+  url
+  state
+  closedAt
+  closedByPullRequestsReferences(first: 10, includeClosedPrs: true) { nodes { url } }
+  comments(last: $c) { nodes { id url author { login } createdAt bodyText } }
+}

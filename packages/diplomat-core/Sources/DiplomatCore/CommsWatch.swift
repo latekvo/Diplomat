@@ -318,7 +318,7 @@ public struct CommsState: Codable, Equatable, Sendable {
         enc.outputFormatting = [.sortedKeys]
         guard let data = try? enc.encode(self) else { return }
         CommsLog.prepare(dir)
-        CommsLog.writePrivate(data, to: Self.url(in: dir))
+        PrivateFiles.writeWhole(data, to: Self.url(in: dir))
     }
 }
 

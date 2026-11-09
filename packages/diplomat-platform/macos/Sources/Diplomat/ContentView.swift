@@ -5,25 +5,26 @@ import DiplomatCore
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
-    /// Which of the six screens the body shows: Actions ("main"), Devices, Comms, Mesh,
-    /// Telemetry or Settings.
+    /// Which of the seven screens the body shows: Actions ("main"), Devices, Comms, Tasks,
+    /// Mesh, Telemetry or Settings.
     @State private var screen: PanelScreen
 
-    enum PanelScreen { case main, devices, comms, mesh, telemetry, settings }
+    enum PanelScreen { case main, devices, comms, tasks, mesh, telemetry, settings }
 
-    /// `showSettings` / `showTelemetry` / `showDevices` / `showComms` seed the initial
+    /// `showSettings` / `showTelemetry` / `showDevices` / `showComms` / `showTasks` seed the initial
     /// screen — used by the headless render to snapshot those screens in context.
     /// Defaults to the main view.
     /// `seedPendingUnban` seeds the inline un-ban confirmation for a login (render only).
     /// `seedMutedAudit` pre-mutes Activity filter categories so the filtered feed can be
     /// snapshotted (render only).
     init(showSettings: Bool = false, showTelemetry: Bool = false, showDevices: Bool = false,
-         showComms: Bool = false,
+         showComms: Bool = false, showTasks: Bool = false,
          seedPendingUnban: String? = nil, seedMutedAudit: Set<AuditCategory> = []) {
         _screen = State(initialValue: showSettings ? .settings
                                     : showTelemetry ? .telemetry
                                     : showDevices ? .devices
-                                    : showComms ? .comms : .main)
+                                    : showComms ? .comms
+                                    : showTasks ? .tasks : .main)
         _pendingUnban = State(initialValue: seedPendingUnban)
         _mutedAuditCategories = State(initialValue: seedMutedAudit)
     }
@@ -62,6 +63,9 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .comms:
                 CommsView(isPresented: presenting(.comms))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            case .tasks:
+                TasksView(isPresented: presenting(.tasks))
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .devices:
                 DevicesScreen(isPresented: presenting(.devices))
@@ -134,6 +138,7 @@ struct ContentView: View {
             }.buttonStyle(.borderless).help("Refresh")
             devicesButton
             commsButton
+            tasksButton
             Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .mesh ? .main : .mesh } } label: {
                 Image(systemName: screen == .mesh ? "hexagon.fill" : "hexagon")
                     .foregroundStyle(screen == .mesh ? Color.accentColor : .primary)
@@ -166,6 +171,31 @@ struct ContentView: View {
                 .overlay(alignment: .topTrailing) {
                     if unread > 0 {
                         Text(badge).font(.system(size: 8, weight: .bold).monospacedDigit())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 3).padding(.vertical, 0.5)
+                            .background(Capsule().fill(Color.red))
+                            .offset(x: 7, y: -5)
+                    }
+                }
+        }
+        .buttonStyle(.borderless).help(help)
+    }
+
+    /// Badged with the tasks that are blocked.
+    private var tasksButton: some View {
+        let open = screen == .tasks
+        let blocked = store.blockedTaskCount
+        let help: String = blocked == 0 ? "Tasks"
+            : (blocked == 1 ? "Tasks: 1 blocked" : "Tasks: \(blocked) blocked")
+        return Button { withAnimation(.easeInOut(duration: 0.15)) { screen = open ? .main : .tasks } } label: {
+            // `checklist` has no filled variant.
+            Image(systemName: "checklist")
+                .fontWeight(open ? .bold : .regular)
+                .foregroundStyle(open ? Color.accentColor : .primary)
+                .overlay(alignment: .topTrailing) {
+                    if blocked > 0 {
+                        Text(blocked > 99 ? "99+" : String(blocked))
+                            .font(.system(size: 8, weight: .bold).monospacedDigit())
                             .foregroundStyle(.white)
                             .padding(.horizontal, 3).padding(.vertical, 0.5)
                             .background(Capsule().fill(Color.red))

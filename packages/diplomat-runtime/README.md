@@ -40,7 +40,12 @@ diplomat_runtime/
   configbase.py   what the four wizards' configs share
   prref.py        single-PR reference parsing (number / URL / owner-repo#337)
   prtarget.py     the whose-PRs axis shared by the wizards
-  promptcore.py   shells out to the diplomat-core binary — the ONLY prompt assembly
+  promptcore.py   shells out to the diplomat-core binary — the ONLY prompt assembly, and
+                  the one way every other module here runs a `diplomat-core` subcommand
+  comms.py        Comms, the Slack watcher, through `diplomat-core comms-*`, plus the
+                  front-end's own lines of its log
+  tasks.py        Tasks, the long-running task tracker, through `diplomat-core tasks-*`
+                  (list, sync, edit), and its sync period
   review.py       ReviewConfig + terminal spawner
   reviewaudit.py  a retired review run's review: left PENDING, or split over several
                   (ReviewAudit.swift's twin)
