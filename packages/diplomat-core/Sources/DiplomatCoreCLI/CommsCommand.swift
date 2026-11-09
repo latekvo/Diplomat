@@ -4,7 +4,8 @@ import Foundation
 /// The Linux front-end's whole reach into the Slack watcher, so each piece has one
 /// implementation.
 ///
-///   comms-tick    stdin = CommsSettings JSON. One tick with the
+///   comms-tick    stdin = CommsSettings JSON (`repos`: the watched slugs, primary first;
+///                 or the one repo as `owner`/`repo`). One tick with the
 ///                 real classifier; stdout = {"me": {...}|null, "pings": [message],
 ///                 "items": [{"message", "decision"}], "error": "..."|null,
 ///                 "notices": ["..."]}. Exits 0 when

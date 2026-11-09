@@ -1892,7 +1892,7 @@ private func classifierSmoke() throws {
     check(Array(argv.prefix(14)) == ["-p", "--model", "haiku", "--tools", "", "--strict-mcp-config",
                                      "--disable-slash-commands", "--setting-sources", "",
                                      "--no-session-persistence", "--output-format", "json",
-                                     "--json-schema", CommsClassifier.schema]
+                                     "--json-schema", CommsClassifier.schema(settings: settings)]
           && argv.count == 15 && argv.last == CommsClassifier.prompt(settings: settings),
           "claude gets no tools, no MCP, no slash commands, no settings, no session, the schema "
           + "and the prompt, and nothing else: \(Array(argv.prefix(14)))")

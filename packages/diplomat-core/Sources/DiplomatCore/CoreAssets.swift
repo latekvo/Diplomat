@@ -195,10 +195,17 @@ public enum CoreAssets {
             public let wildcard: Query
         }
         public struct Classifier: Decodable {
+            /// The instructions' repository wording: `one` for a single watched
+            /// repository, `many` for several, each value filled into `instructions`.
+            public struct Repos: Decodable {
+                public let one: [String: String]
+                public let many: [String: String]
+            }
             public let instructions: String
             public let input: String
             public let contextLabel: String
             public let messageLabel: String
+            public let repos: Repos
         }
         public struct Investigate: Decodable {
             public let intro: String
