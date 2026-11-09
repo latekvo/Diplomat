@@ -77,6 +77,8 @@ def test_the_running_applet_publishes_at_launch(monkeypatch):
     called = []
 
     class _Store:
+        autofix_poll_started = _Anything()
+
         def __getattr__(self, name):
             return lambda *args, **kwargs: called.append(name)
 

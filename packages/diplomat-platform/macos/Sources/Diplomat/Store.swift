@@ -238,6 +238,7 @@ final class Store: ObservableObject {
             // mesh node behind it — does not have.
             let clamped = AgentDispatchGate.clampAutoTaskLimit(autoTaskLimit)
             if clamped != autoTaskLimit { autoTaskLimit = clamped }
+            if autoTaskLimit > oldValue { bringPollForward(capLoad: autoTasksMeasured) }
             guard writesConfig, !readingConfig,
                   !configSaved(AppConfig.setInt(AppConfig.autoTaskLimitKey, clamped))
             else { return }
@@ -1529,9 +1530,9 @@ final class Store: ObservableObject {
         // `@Published` fires on assignment, not on difference, so an unconditional write
         // would redraw the panel on every tick of an idle machine.
         if agentRows != rows { agentRows = rows }
-        if autoTasksMeasured != pass.tick.capLoad.count {
-            autoTasksMeasured = pass.tick.capLoad.count
-        }
+        let load = pass.tick.capLoad.count
+        if load < autoTasksMeasured { bringPollForward(capLoad: load) }
+        if autoTasksMeasured != load { autoTasksMeasured = load }
         let failed = pass.tick.rows.filter { $0.1.state == .failed }.map { ($0.0.label, $0.1.reason) }
         noteCommsRuns(neverRan: Dictionary(failed, uniquingKeysWith: { first, _ in first }))
     }
@@ -1938,8 +1939,9 @@ final class Store: ObservableObject {
 
     /// How often the monitor polls GitHub. 3 min by default — the GraphQL rate limit
     /// (5000 points/hr) is real and these searches aren't cheap, so a tight cadence blows
-    /// the budget. Responsiveness comes from the immediate poll on wake / on enable, not
-    /// from a fast steady cadence. Override for testing.
+    /// the budget. Responsiveness comes from the immediate poll on wake / on enable, and
+    /// from the one a freed bay brings forward (`bringPollForward`), not from a fast
+    /// steady cadence. Override for testing.
     static var autofixPollInterval: TimeInterval {
         let secs = ProcessInfo.processInfo.environment["DIPLOMAT_AUTOFIX_SECS"].flatMap(Double.init)
         return max(60, secs ?? 3 * 60)
@@ -1951,9 +1953,13 @@ final class Store: ObservableObject {
         guard autofixMonitorTask == nil else { return }
         autofixMonitorTask = Task { [weak self] in
             while !Task.isCancelled {
-                await AppLog.timed("autofixPoll") { await self?.runAutofixPollOnce() }
-                let ns = UInt64(Store.autofixPollInterval * 1_000_000_000)
-                try? await Task.sleep(nanoseconds: ns)
+                guard let wait = self?.secondsUntilPoll(gap: Store.autofixPollInterval)
+                else { return }
+                if wait > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                } else {
+                    await AppLog.timed("autofixPoll") { await self?.runAutofixPollOnce() }
+                }
             }
         }
         // The poll loop's sleep is suspended while the Mac sleeps, so a review that arrives
@@ -1975,6 +1981,57 @@ final class Store: ObservableObject {
     /// one) could each see "no agent on #N" and double-dispatch. @MainActor makes
     /// this flag race-free.
     private var autofixPollInFlight = false
+
+    /// When the last poll started, whatever started it. Both the loop's next tick and a
+    /// poll brought forward are measured from it.
+    private var autofixPollStartedAt: Date?
+
+    /// Seconds until a poll may start, `gap` after the last one started — and a second
+    /// at a time while one is still running, which a poll started then would bounce off.
+    ///
+    /// Not private: the queue self-test reads when the loop's next tick is due.
+    func secondsUntilPoll(gap: TimeInterval) -> TimeInterval {
+        let due = autofixPollStartedAt.map { $0.addingTimeInterval(gap).timeIntervalSinceNow } ?? 0
+        return autofixPollInFlight ? max(due, 1) : due
+    }
+
+    /// Whether a freed bay or a fresh ask brings the next poll forward. Off in a headless
+    /// run, which polls nothing; the queue self-test turns it on over a stand-in `gh`.
+    var pollsEarly = !Headless.active
+
+    /// The least time from one poll's start to a poll brought forward. A poll is 17
+    /// GraphQL points (monitor-prs 12, issues 3, closed-prs 1, review-requests 1), so one
+    /// a minute is ~1000 of the 5000 an hour, beside the slow refresh's ~700.
+    var earlyPollFloor: TimeInterval = 60
+
+    /// The poll brought forward and not yet started.
+    private var earlyAutofixPoll: Task<Void, Never>?
+
+    /// Start the next poll early, for a bay that freed or work that was asked for: the
+    /// queue drains only at the top of a poll, so otherwise both wait out the rest of the
+    /// interval with room on the machine and work in the list. A whole poll rather than
+    /// the drain alone, because the drain reads the poll's fresh fetch (`drainQueuedTasks`).
+    ///
+    /// Only with something the drain may start and a bay to start it in, never sooner
+    /// than `earlyPollFloor` after the last poll started, and one waiting covers every
+    /// call until it starts.
+    private func bringPollForward(capLoad: Int) {
+        guard pollsEarly, earlyAutofixPoll == nil, drainHasRoom(capLoad: capLoad) else { return }
+        earlyAutofixPoll = Task { [weak self] in
+            while let wait = self?.secondsUntilPoll(gap: self?.earlyPollFloor ?? 0), wait > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            }
+            guard let self else { return }
+            earlyAutofixPoll = nil
+            // A poll that started while this one waited may have drained already.
+            guard drainHasRoom(capLoad: autoTasksMeasured) else { return }
+            await AppLog.timed("autofixPollEarly") { await self.runAutofixPollOnce() }
+        }
+    }
+
+    private func drainHasRoom(capLoad: Int) -> Bool {
+        capLoad < autoTaskLimit && !drainableTasks.isEmpty
+    }
 
     /// Work keys a peer's agent already owns, so the "claimed elsewhere" note is
     /// logged once per key rather than every poll (szpontnet-spec/docs/12).
@@ -2006,6 +2063,7 @@ final class Store: ObservableObject {
     func runAutofixPollOnce() async {
         guard !autofixPollInFlight else { return }
         autofixPollInFlight = true
+        autofixPollStartedAt = Date()
         defer { autofixPollInFlight = false }
         pollErrorThisCycle = nil
         if terminalUnpublished { publishSpawnTerminal() }
@@ -2903,6 +2961,7 @@ final class Store: ObservableObject {
         guard !fresh.isEmpty else { return (0, asks.count) }
         requestedWork += fresh
         publishRequested(fresh)
+        bringPollForward(capLoad: autoTasksMeasured)
         return (fresh.count, asks.count - fresh.count)
     }
 
