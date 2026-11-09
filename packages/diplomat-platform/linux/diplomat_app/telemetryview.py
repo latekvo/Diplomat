@@ -79,7 +79,7 @@ def _blurb(metric_id: str) -> str:
     return _METRIC.get(metric_id, {}).get("blurb", "")
 
 
-def _qcolor(hex_color: str, alpha: float = 1.0) -> QColor:
+def qcolor(hex_color: str, alpha: float = 1.0) -> QColor:
     """A paintable colour with an alpha channel. ``widgets.tint_bg`` builds the CSS
     ``rgba(...)`` spelling for stylesheets, which QColor does not parse — a chart
     fed one draws in default black, which looks like a paint bug rather than a
@@ -89,7 +89,7 @@ def _qcolor(hex_color: str, alpha: float = 1.0) -> QColor:
     return c
 
 
-def _legend(entries: list[tuple[str, str]]) -> QHBoxLayout:
+def legend(entries: list[tuple[str, str]]) -> QHBoxLayout:
     """A chart key: one swatch-coloured label per series. One label with several
     markers in it can only carry a single colour, which makes the key claim both
     series are the colour of the first — the one thing a key must not do."""
@@ -194,12 +194,12 @@ class SpreadChart(QWidget):
             if d.ci_high > d.ci_low:
                 lo, hi_ci = x_of(d.ci_low), x_of(d.ci_high)
                 painter.fillRect(QRectF(lo, pad_t, max(1.0, hi_ci - lo), h),
-                                 _qcolor(tint, 0.16))
+                                 qcolor(tint, 0.16))
 
         # Histogram bars, each series in its own half of every bin.
         painter.setPen(Qt.PenStyle.NoPen)
         for slot, (d, tint) in enumerate(drawn):
-            painter.setBrush(_qcolor(tint, 0.55))
+            painter.setBrush(qcolor(tint, 0.55))
             top = top_of(d)
             for b in d.bins:
                 if b.count <= 0:
@@ -323,7 +323,7 @@ class PendingChart(QWidget):
                     fill.lineTo(x_of(i), y_of(base[i]))
                 fill.closeSubpath()
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(_qcolor(color, 0.22))
+                painter.setBrush(qcolor(color, 0.22))
                 painter.drawPath(fill)
 
                 line = QPainterPath()
@@ -414,7 +414,7 @@ class FinishedChart(QWidget):
             t -= step * 86400.0
 
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(_qcolor(_tint("finishedWork")))
+        painter.setBrush(qcolor(_tint("finishedWork")))
         for i, point in enumerate(pts):
             bar_h = h * point.count / top
             painter.drawRect(QRectF(pad_l + slot * i + gap / 2, pad_t + h - bar_h,
@@ -551,7 +551,7 @@ class QuotaChart(QWidget):
             fill.lineTo(x_end(run), pad_t + h)
             fill.closeSubpath()
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(_qcolor(_tint("quotaLeft"), 0.30))
+            painter.setBrush(qcolor(_tint("quotaLeft"), 0.30))
             painter.drawPath(fill)
 
         for run in self._runs(pts, lambda p: p.week_pct):
@@ -918,7 +918,7 @@ class TelemetryView(QWidget):
         key = [(_tint("quotaWeek"), f"{_title('quotaWeek')} {week_text}")]
         if any(q.session_pct is not None for q in s.quota):
             key.append((_tint("quotaLeft"), "5-hour"))
-        self.quota_col.addLayout(_legend(key))
+        self.quota_col.addLayout(legend(key))
 
         # A gap is the probe failing to answer, not the window emptying. The chart
         # draws through a short one and breaks across a long one; saying how many
@@ -947,11 +947,11 @@ class TelemetryView(QWidget):
             self.tokens_col.addWidget(hint)
             return
 
-        bar = _SplitBar(s.repo_tokens, s.other_tokens,
+        bar = SplitBar(s.repo_tokens, s.other_tokens,
                        _tint("tokenShare"), "#8E8E93")
         self.tokens_col.addWidget(bar)
 
-        self.tokens_col.addLayout(_legend([
+        self.tokens_col.addLayout(legend([
             (_tint("tokenShare"), f"this repo {telemetry.tokens(s.repo_tokens)}"),
             ("#8E8E93", f"everything else {telemetry.tokens(s.other_tokens)}"),
         ]))
@@ -968,7 +968,7 @@ class TelemetryView(QWidget):
         self.pending_col.addWidget(chart)
         chart.set_series(s.pending, self._days)
 
-        self.pending_col.addLayout(_legend([
+        self.pending_col.addLayout(legend([
             (_tint("pendingReviews"),
              f"{_title('pendingReviews').lower()} (peak {s.peak_reviews})"),
             (_tint("pendingFixes"),
@@ -1060,14 +1060,15 @@ class TelemetryView(QWidget):
         self.coverage.setText(" · ".join(parts))
 
 
-class _SplitBar(QWidget):
-    """A single horizontal bar split between two quantities — the Diplomat share of
-    this machine's tokens against everything else."""
+class SplitBar(QWidget):
+    """A single horizontal bar split between two quantities: the Telemetry
+    screen's Diplomat share of this machine's tokens against everything else, and the
+    Machines screen's CPU or RAM use of one machine against what is left."""
 
     def __init__(self, left: float, right: float,
-                 left_color: str, right_color: str) -> None:
+                 left_color: str, right_color: str, *, height: int = 18) -> None:
         super().__init__()
-        self.setFixedHeight(18)
+        self.setFixedHeight(height)
         self._left = max(0.0, left)
         self._right = max(0.0, right)
         self._left_color = left_color
@@ -1087,5 +1088,5 @@ class _SplitBar(QWidget):
         painter.setClipPath(path)
         painter.fillRect(QRectF(0, 0, split, box.height()), QColor(self._left_color))
         painter.fillRect(QRectF(split, 0, box.width() - split, box.height()),
-                         _qcolor(self._right_color, 0.45))
+                         qcolor(self._right_color, 0.45))
         painter.end()

@@ -13,7 +13,7 @@ from __future__ import annotations
 import collections
 import dataclasses
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from PySide6.QtCore import QObject, QSettings, Signal
 
@@ -58,6 +58,7 @@ from . import (
     headless,
     issues,
     probes,
+    remotemachines,
     szpont,
 )
 
@@ -211,6 +212,18 @@ def stop_stray_node(exit_wait: float = 10.0) -> tuple[str, int, int, str]:
     return ("stopped", pid, port, "")
 
 
+class _InstallerGate:
+    """One Node installer's actions (install, uninstall, start, restart). One runs at
+    a time, the screens offer no other meanwhile, and a ``--check`` that overlaps one
+    is dropped: mid-restart no daemon answers, which would read as one to start."""
+
+    def __init__(self) -> None:
+        self.busy = False
+        #: Counts the actions, so a ``--check`` can tell that one ran while it did.
+        self.actions = 0
+        self.lock = threading.Lock()
+
+
 @dataclass(frozen=True)
 class RemoteCall:
     """A remote-pool call: idle, running, or its last ``reply`` and when (``at``,
@@ -237,6 +250,10 @@ class Store(QObject):
     remote_changed = Signal()
     # Emitted by reload_device_config.
     device_config_reloaded = Signal()
+    # The remote-machines snapshot or history changed; its install status changed, or
+    # a scan started or ended.
+    machines_changed = Signal()
+    machines_install_changed = Signal()
     # Emitted when the activity feed (audit.jsonl) or ban list snapshot changes.
     activity_changed = Signal()
     # Emitted when the mesh topology snapshot (state.json) meaningfully changes.
@@ -304,13 +321,15 @@ class Store(QObject):
         # Live device-allocator state (pool + holders) and install status.
         self.device_state: dict | None = None
         self.allocator_install: dict | None = None
-        # An install, uninstall, start or restart of the allocator is running. The
-        # screens offer no other meanwhile, and a --check that overlaps one is dropped:
-        # mid-restart no daemon answers, which would read as one to start.
-        self.allocator_busy = False
-        # Counts those actions, so a --check can tell that one ran while it did.
-        self._allocator_actions = 0
-        self._allocator_lock = threading.Lock()
+        self._allocator_gate = _InstallerGate()
+        # The remote-machines daemon's snapshot and history, its install status, and
+        # whether a scan the Machines screen asked for is under way.
+        self.machines_state: remotemachines.Snapshot | None = None
+        self.machines_history: remotemachines.History | None = None
+        self._machines_history_stamp: float | None = None
+        self.machines_install: dict | None = None
+        self._machines_gate = _InstallerGate()
+        self.machines_scanning = False
         # The Devices screen's two remote-pool calls. Here, not on the screen: a
         # sign-in runs for up to ten minutes and must outlive the screen being closed.
         self.remote_sign_in = RemoteCall()
@@ -4407,37 +4426,49 @@ class Store(QObject):
             self.device_state = new
             self.devices_changed.emit()
 
-    def refresh_allocator_install_async(self) -> None:
-        """Shell the installer's --check off the UI thread and signal when done,
-        unless an allocator action ran meanwhile."""
-        if self.allocator_busy:
+    @property
+    def allocator_busy(self) -> bool:
+        return self._allocator_gate.busy
+
+    def _check_async(self, gate: _InstallerGate, check, attr: str, changed) -> None:
+        """Shell an installer's --check off the UI thread into ``attr`` and signal
+        ``changed`` if it says anything new, unless one of ``gate``'s actions ran
+        meanwhile."""
+        if gate.busy:
             return
-        actions = self._allocator_actions
+        actions = gate.actions
 
         def work() -> None:
-            status = deviceallocator.check()
-            with self._allocator_lock:
-                if self.allocator_busy or actions != self._allocator_actions:
+            status = check()
+            with gate.lock:
+                if gate.busy or actions != gate.actions or status == getattr(self, attr):
                     return
-                self.allocator_install = status
-            self.allocator_changed.emit()
+                setattr(self, attr, status)
+            changed.emit()
         self.start_background(work)
 
-    def _allocator_action(self, work) -> None:
-        with self._allocator_lock:
-            if self.allocator_busy:
+    def _gated_action(self, gate: _InstallerGate, changed, work) -> None:
+        with gate.lock:
+            if gate.busy:
                 return
-            self.allocator_busy = True
-            self._allocator_actions += 1
-        self.allocator_changed.emit()
+            gate.busy = True
+            gate.actions += 1
+        changed.emit()
 
         def run() -> None:
             try:
                 work()
             finally:
-                self.allocator_busy = False
-                self.allocator_changed.emit()
+                gate.busy = False
+                changed.emit()
         self.start_background(run)
+
+    def refresh_allocator_install_async(self) -> None:
+        self._check_async(self._allocator_gate, deviceallocator.check, "allocator_install",
+                          self.allocator_changed)
+
+    def _allocator_action(self, work) -> None:
+        self._gated_action(self._allocator_gate, self.allocator_changed, work)
 
     def _after_device_action(self) -> None:
         self.refresh_activity()
@@ -4532,6 +4563,139 @@ class Store(QObject):
             self.allocator_changed.emit()
             self._after_device_action()
         self._allocator_action(work)
+
+    # MARK: remote machines
+
+    def refresh_machines_state(self) -> None:
+        """Re-read the daemon's snapshot, and its history whenever the snapshot is a
+        new one, and signal on change."""
+        state = remotemachines.read_state()
+        changed = state != self.machines_state
+        self.machines_state = state
+        stamp = state.updated_at if state else None
+        if self.machines_history is None or stamp != self._machines_history_stamp:
+            self._machines_history_stamp = stamp
+            history = remotemachines.read_history()
+            changed = changed or history != self.machines_history
+            self.machines_history = history
+        if changed:
+            self.machines_changed.emit()
+
+    @property
+    def machines_busy(self) -> bool:
+        return self._machines_gate.busy
+
+    def refresh_machines_install_async(self) -> None:
+        self._check_async(self._machines_gate, remotemachines.check, "machines_install",
+                          self.machines_install_changed)
+
+    def _machines_action(self, work) -> None:
+        self._gated_action(self._machines_gate, self.machines_install_changed, work)
+
+    def _after_machines_action(self) -> None:
+        self.refresh_activity()
+        self.refresh_machines_state()
+
+    def install_machines_async(self) -> None:
+        def work() -> None:
+            remotemachines.ensure_deps()
+            result = remotemachines.install()
+            self.machines_install = result
+            ok = "true" if (result or {}).get("installed") else "false"
+            activity.log("panel", "machines-install", f"Installed remote machines (ok: {ok})")
+            self._after_machines_action()
+        self._machines_action(work)
+
+    def uninstall_machines_async(self) -> None:
+        def work() -> None:
+            result = remotemachines.uninstall()
+            self.machines_install = result
+            ok = "true" if result is not None and result.get("installed") is False else "false"
+            activity.log("panel", "machines-uninstall",
+                         f"Uninstalled remote machines (ok: {ok})")
+            self._after_machines_action()
+        self._machines_action(work)
+
+    def start_machines_daemon_async(self) -> None:
+        def work() -> None:
+            result = remotemachines.start_daemon()
+            self.machines_install = deviceallocator.with_install_status(
+                result, self.machines_install)
+            running = "true" if (result or {}).get("daemonRunning") else "false"
+            error = (result or {}).get("error")
+            activity.log("panel", "machines-install",
+                         f"Started the remote-machines daemon (ok: {running})"
+                         + (f": {error}" if error else ""))
+            self._after_machines_action()
+        self._machines_action(work)
+
+    def restart_machines_daemon_async(self) -> None:
+        def work() -> None:
+            result = remotemachines.restart_daemon()
+            self.machines_install = deviceallocator.with_install_status(
+                result, self.machines_install)
+            error = (result or {}).get("error")
+            ok = "true" if (result or {}).get("daemonRunning") and not error else "false"
+            activity.log("panel", "machines-install",
+                         f"Restarted the remote-machines daemon (ok: {ok})"
+                         + (f": {error}" if error else ""))
+            self._after_machines_action()
+        self._machines_action(work)
+
+    def refresh_machines_async(self) -> None:
+        """A full scan by the running daemon; with none running, a start, whose first
+        act is one."""
+        if not (self.machines_install or {}).get("daemonRunning"):
+            self.start_machines_daemon_async()
+            return
+        if self.machines_scanning or self.machines_busy:
+            return
+        self.machines_scanning = True
+        self.machines_install_changed.emit()
+
+        def work() -> None:
+            ok = remotemachines.scan()
+            activity.log("panel", "machines-scan",
+                         "Rescanned the remote machines" if ok
+                         else "Rescan FAILED: the remote-machines daemon did not answer")
+            self.machines_scanning = False
+            self.machines_install_changed.emit()
+            self._after_machines_action()
+        self.start_background(work, name="machines-scan")
+
+    def _machine_exclusion_async(self, action: str, write, done: str, failed: str) -> None:
+        """``write(now)`` to the shared config, logged with what really happened."""
+        def work() -> None:
+            try:
+                write(time.time())
+            except OSError as exc:
+                activity.log("panel", action, f"{failed} ({exc.strerror or exc})")
+            else:
+                activity.log("panel", action, done)
+            self._after_machines_action()
+        self.start_background(work, name=action)
+
+    def pause_machine_async(self, m: remotemachines.Machine, seconds: float) -> None:
+        until = Fmt.clock(datetime.fromtimestamp(time.time() + seconds, tz=timezone.utc))
+        self._machine_exclusion_async(
+            "machine-pause", lambda now: remotemachines.pause(m, seconds, now),
+            f"Paused {m.target} until {until}", f"Pause FAILED for {m.target}")
+
+    def exclude_machine_async(self, m: remotemachines.Machine) -> None:
+        self._machine_exclusion_async(
+            "machine-exclude", lambda now: remotemachines.exclude(m, now),
+            f"Excluded {m.target} from the remote machines", f"Exclude FAILED for {m.target}")
+
+    def resume_machine_async(self, m: remotemachines.Machine) -> None:
+        self._machine_exclusion_async(
+            "machine-resume", lambda now: remotemachines.resume(m, now),
+            f"Resumed {m.target}", f"Resume FAILED for {m.target}")
+
+    def include_machine_async(self, m: remotemachines.Machine) -> None:
+        self._machine_exclusion_async(
+            "machine-include", lambda now: remotemachines.include(m, now),
+            f"Included {m.target} in the remote machines again",
+            f"Include FAILED for {m.target}")
 
     # MARK: activity feed + bans
 

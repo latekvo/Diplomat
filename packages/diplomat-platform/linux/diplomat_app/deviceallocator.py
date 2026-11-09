@@ -27,36 +27,36 @@ def _home() -> Path:
     return Path.home()
 
 
-def package_dir() -> str:
-    """Where the Node package lives; overridable for non-standard checkouts."""
-    env = os.environ.get("DIPLOMAT_DEVICE_ALLOCATOR_DIR")
-    if env:
-        return env
-    # A sibling package in this same checkout — resolved from our own path so it
-    # works wherever (and however cased) the repo is cloned. This file is
-    # packages/diplomat-platform/linux/diplomat_app/deviceallocator.py, so
-    # parents[3] = packages/.
-    sibling = Path(__file__).resolve().parents[3] / "device-allocator"
+def sibling_package(name: str, env: str) -> str:
+    """Where a Node package of this checkout lives: ``env`` when set, else the sibling
+    ``packages/<name>`` resolved from this file's own path, so it works wherever (and
+    however cased) the repo is cloned."""
+    override = os.environ.get(env)
+    if override:
+        return override
+    # This file is packages/diplomat-platform/linux/diplomat_app/deviceallocator.py,
+    # so parents[3] = packages/.
+    sibling = Path(__file__).resolve().parents[3] / name
     if sibling.exists():
         return str(sibling)
-    return str(_home() / "dev" / "diplomat" / "packages" / "device-allocator")
+    return str(_home() / "dev" / "diplomat" / "packages" / name)
+
+
+def package_dir() -> str:
+    """Where the Node package lives; overridable for non-standard checkouts."""
+    return sibling_package("device-allocator", "DIPLOMAT_DEVICE_ALLOCATOR_DIR")
 
 
 def install_js() -> str:
     return os.path.join(package_dir(), "src", "install.js")
 
 
-def node_modules_dir() -> str:
-    return os.path.join(package_dir(), "node_modules")
-
-
-def deps_installed() -> bool:
-    """True once the MCP server's one runtime dependency is present. The daemon
-    needs no deps, but ``mcp.js`` imports ``@modelcontextprotocol/sdk``, so the
+def deps_installed(package: str) -> bool:
+    """True once the MCP server's one runtime dependency is present in ``package``. The
+    daemon needs no deps, but ``mcp.js`` imports ``@modelcontextprotocol/sdk``, so the
     server Claude Code spawns is dead without it."""
-    return os.path.isdir(
-        os.path.join(node_modules_dir(), "@modelcontextprotocol", "sdk")
-    )
+    return os.path.isdir(os.path.join(
+        package, "node_modules", "@modelcontextprotocol", "sdk"))
 
 
 def base_dir() -> Path:
@@ -123,12 +123,14 @@ def resolve_npm() -> str | None:
     return shutil.which("npm")
 
 
-def ensure_deps() -> bool:
-    """Ensure the package's node_modules exist (``npm install``) so the MCP
-    server can start. No-op when already present. Returns True on success."""
-    if not package_available():
+def ensure_deps(package: str | None = None) -> bool:
+    """Ensure ``package``'s (default: the allocator's) node_modules exist (``npm
+    install``) so its MCP server can start. No-op when already present. Returns True
+    on success."""
+    package = package or package_dir()
+    if not os.path.exists(os.path.join(package, "src", "install.js")):
         return False
-    if deps_installed():
+    if deps_installed(package):
         return True
     npm = resolve_npm()
     node = resolve_node()
@@ -142,12 +144,12 @@ def ensure_deps() -> bool:
     try:
         subprocess.run(
             [npm, "install", "--omit=dev", "--no-audit", "--no-fund"],
-            cwd=package_dir(), env=child_env,
+            cwd=package, env=child_env,
             capture_output=True, text=True, timeout=300,
         )
     except Exception:  # noqa: BLE001
         return False
-    return deps_installed()
+    return deps_installed(package)
 
 
 def read_state() -> dict | None:
@@ -351,12 +353,13 @@ UNREACHABLE = "unreachable"
 NO_REPLY = "no reply"
 
 
-def exchange(endpoint: str, body: dict | None = None, *,
-             timeout_secs: float) -> DaemonReply | str:
-    """Any HTTP status is an answer; otherwise :data:`UNREACHABLE` or :data:`NO_REPLY`.
-    Blocking, so off the GUI thread. Each call is its own connection, so a long one (a
-    sign-in) holds up no other. Raises on a body JSON cannot encode."""
-    path = socket_path()
+def exchange(endpoint: str, body: dict | None = None, *, timeout_secs: float,
+             sock: Path | None = None) -> DaemonReply | str:
+    """POST to the daemon on ``sock`` (default: the allocator's). Any HTTP status is
+    an answer; otherwise :data:`UNREACHABLE` or :data:`NO_REPLY`. Blocking, so off the
+    GUI thread. Each call is its own connection, so a long one (a sign-in) holds up no
+    other. Raises on a body JSON cannot encode."""
+    path = sock or socket_path()
     if not path.exists():
         return UNREACHABLE
     payload = json.dumps(body or {})
@@ -481,18 +484,24 @@ def devices_reply(reply: DaemonReply | None) -> RemoteReply:
     ))
 
 
-def _run_installer(arg: str) -> dict | None:
+def run_installer(script: str, arg: str) -> dict | None:
+    """``node <script> <arg>``'s JSON reply, or None when node, the script or a
+    parseable reply is missing."""
     node = resolve_node()
-    if not node or not package_available():
+    if not node or not os.path.exists(script):
         return None
     try:
         out = subprocess.run(
-            [node, install_js(), arg],
+            [node, script, arg],
             capture_output=True, text=True, timeout=90,
         )
         return json.loads(out.stdout)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _run_installer(arg: str) -> dict | None:
+    return run_installer(install_js(), arg)
 
 
 def check() -> dict | None:
