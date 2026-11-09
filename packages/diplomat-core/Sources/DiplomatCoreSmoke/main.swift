@@ -1589,6 +1589,12 @@ check(IssueConfig(me: goldenMeSeed, openPRs: false).forIssue(302).buildPrompt()
 check(iDefault.contains("gh issue comment 302"), "the outcome is reported on the issue")
 check(!IssueConfig(me: goldenMeSeed, commentOnIssue: false).forIssue(302).buildPrompt()
         .contains("gh issue comment"), "no comment when the toggle is off")
+// The thank-you rides on the issue comment of a run that opens a PR, and on nothing else.
+check(iDefault.contains("ALSO THANKS THE REPORTER"), "a PR-opening run thanks the reporter")
+check(!IssueConfig(me: goldenMeSeed, openPRs: false).forIssue(302).buildPrompt()
+        .contains("THANKS THE REPORTER"), "no thanks when no PR is opened")
+check(!IssueConfig(me: goldenMeSeed, commentOnIssue: false).forIssue(302).buildPrompt()
+        .contains("THANKS THE REPORTER"), "no thanks when nothing is posted on the issue")
 // The run ends by accounting for the one issue it was handed, in one bucket.
 check(iDefault.contains("one report on issue #302"), "the report is about that issue")
 print("issue prompt assertions passed")

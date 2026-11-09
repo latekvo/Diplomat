@@ -116,7 +116,9 @@ every issue in that fetch already.
   would fail, and checked against the repo's open PRs by real `gh pr diff` content
   so it never files a duplicate. Off = nothing reaches the remote.
 - **Comment the outcome on the issue** - *(on by default)* one comment per issue
-  actually worked: what was reproduced, the cause, and where the fix is.
+  actually worked: what was reproduced, the cause, and where the fix is. When the
+  run also opened a PR, the comment opens by thanking the reporter (unless the issue
+  is your own).
 - **✨ Also take on feature requests** - *(highlighted, off by default)* by default
   only real bug reports are worked and every feature request, question and
   wishlist item is skipped. Ticked, enhancements are in scope too, but held to a

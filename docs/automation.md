@@ -39,7 +39,7 @@ nudge opens no window at all - it types into a session that already exists.)
   ban wins where both apply.
 - **New community issues** - on each poll, reads the repo's newest open issues and
   queues a [Fix-issues](actions.md#fix-issues) fix (default depth, bugs only, a draft PR
-  and a comment on the issue) for each one filed from outside the org (author
+  and a comment on the issue thanking the reporter) for each one filed from outside the org (author
   association other than `MEMBER` / `OWNER`) that nobody is assigned to and nobody on the
   team (`MEMBER` / `OWNER` / `COLLABORATOR`) has commented on. The fix claims the issue, reproduces it, and fixes it only if it
   reproduces. Only issues filed after the monitor's first scan count: the mark is the

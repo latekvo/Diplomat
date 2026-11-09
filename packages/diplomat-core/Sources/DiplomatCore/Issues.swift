@@ -201,6 +201,7 @@ public struct IssueConfig: Codable, Equatable {
             out.append(fill(b))
         }
         if commentOnIssue, let b = blocks["comment"] { out.append(fill(b)) }
+        if openPRs && commentOnIssue, let b = blocks["thankReporter"] { out.append(fill(b)) }
         // Commit-authoring guidance only when we might actually commit.
         if openPRs, let b = blocks["noAttribution"] { out.append(fill(b)) }
         // The attribution tag only when this run posts something to wear it.
