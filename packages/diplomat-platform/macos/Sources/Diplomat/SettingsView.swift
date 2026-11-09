@@ -205,7 +205,9 @@ struct SettingsView: View {
     private var repoSection: some View {
         let env = RepoPaths.agentRepoEnvOverride
         let paths = store.repoRootPaths
-        let broken = env == nil && paths.enumerated().contains { rootStatus($0.offset, $0.element).warn }
+        let broken = env == nil && (paths.isEmpty
+            ? RepoPaths.rootState(RepoPaths.defaultAgentRepo) != .ok
+            : paths.enumerated().contains { rootStatus($0.offset, $0.element).warn })
         let count = store.roots.count
         let pill: StatusPill
         if env != nil {
@@ -263,6 +265,7 @@ struct SettingsView: View {
                 + "your home directory. Add the clone of \(repoSlug)."
         return Text(line).font(.caption)
             .foregroundStyle(ok ? Color.secondary : Color.orange)
+            .fixedSize(horizontal: false, vertical: true)
             .padding(7)
     }
 
