@@ -626,8 +626,10 @@ class MachinesView(QWidget):
                 return (f"{pid} · started {rm.ago(now - started)}" if started is not None
                         else pid)
             self._ages.append((self._daemon_row.set_summary, summary))
-        elif running:
+        elif running and state is None:
             self._daemon_row.set_summary("Running; its first snapshot is on the way.")
+        elif running:
+            self._daemon_row.set_summary("Running.")
         elif s is None:
             self._daemon_row.set_summary("Asking the installer…")
         elif s.get("installed"):

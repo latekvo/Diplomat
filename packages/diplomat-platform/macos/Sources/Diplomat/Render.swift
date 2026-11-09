@@ -1426,7 +1426,7 @@ enum Render {
         let min = 60_000.0, hour = 3_600_000.0
         store.auditEntries = [
             AuditEntry(at: at(4 * min), source: "panel", action: MachinesScan.action,
-                       detail: MachinesScan.auditText(ok: true)),
+                       detail: MachinesScan.auditText(failure: nil)),
             AuditEntry(at: at(25 * min), source: "panel", action: "machine-pause",
                        detail: "Paused gpu-box.lan until \(Fmt.clock(Date(timeIntervalSince1970: (now + 2.6 * hour) / 1000)))"),
             AuditEntry(at: at(3 * hour), source: "panel", action: "machine-exclude",

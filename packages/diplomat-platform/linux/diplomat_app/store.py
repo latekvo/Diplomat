@@ -4667,7 +4667,8 @@ class Store(QObject):
 
     def _machine_exclusion_async(self, action: str, write, what: str) -> None:
         """``write(now)`` to the shared config, logged with what really happened. A
-        daemon that is not running applies nothing, so an installed one is started."""
+        daemon that is not running applies nothing, so an installed one is started; the
+        socket says whether one runs, as ``daemonRunning`` may be 15 s old."""
         def work() -> None:
             try:
                 write(time.time())
@@ -4676,7 +4677,7 @@ class Store(QObject):
             else:
                 activity.log("panel", action, what)
                 install = self.machines_install or {}
-                if install.get("installed") and not install.get("daemonRunning"):
+                if install.get("installed") and not remotemachines.daemon_listening():
                     self.start_machines_daemon_async()
             self._after_machines_action()
         self.start_background(work, name=action)

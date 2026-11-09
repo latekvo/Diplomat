@@ -3806,6 +3806,10 @@ do {
           && (pauseEdits[0](cfgIn)[MachineExclusions.untilKey] as? [String: String])?["b"]
              == "2026-11-09T13:00:00.000Z", "a pause writes only the pause map")
     check(MachinesScan.body == ["full": true], "a scan asks for discovery and every probe, with no ownerPid")
+    check(MachinesScan.auditText(failure: nil) == "Rescanned the remote machines"
+          && MachinesScan.auditText(failure: "HTTP 500")
+             == "Rescanned the remote machines FAILED: HTTP 500",
+          "a scan's audit line matches Linux's and carries why it failed")
 
     let agoCases: [(Double, String)] = [
         (-5, "0 s ago"), (119.4, "119 s ago"), (119.5, "2 min ago"), (150, "3 min ago"),

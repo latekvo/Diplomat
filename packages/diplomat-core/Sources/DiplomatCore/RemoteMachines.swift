@@ -232,9 +232,11 @@ public enum MachinesScan {
     public static let timeoutSecs = 120
     public static let action = "machines-scan"
 
-    public static func auditText(ok: Bool) -> String {
-        ok ? "Rescanned the remote machines" : "Rescan FAILED: the remote-machines daemon did not answer"
+    /// `failure` is the daemon's `error`, else `HTTP <status>`, or nil when it succeeded.
+    public static func auditText(failure: String?) -> String {
+        "Rescanned the remote machines" + (failure.map { " FAILED: \($0)" } ?? "")
     }
+    public static let unanswered = "the daemon did not answer"
 }
 
 /// How a usage fraction is coloured: `over` where the daemon warns, `high` from 75 %.

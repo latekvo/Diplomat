@@ -358,16 +358,19 @@ def test_each_exclusion_action_is_logged(app, method, line):
     assert activity.read()[0].detail == line
 
 
-@pytest.mark.parametrize("install, starts", [
-    ({"installed": True, "daemonRunning": False}, True),
-    ({"installed": True, "daemonRunning": True}, False),
-    ({"installed": False, "daemonRunning": False}, False),
-    (None, False),
+@pytest.mark.parametrize("install, listening, starts", [
+    ({"installed": True, "daemonRunning": False}, False, True),
+    # daemonRunning is a check up to 15 s old; the socket decides.
+    ({"installed": True, "daemonRunning": True}, False, True),
+    ({"installed": True, "daemonRunning": False}, True, False),
+    ({"installed": False, "daemonRunning": False}, False, False),
+    (None, False, False),
 ])
 def test_an_exclusion_starts_an_installed_daemon_that_is_not_running(
-        app, monkeypatch, install, starts):
+        app, monkeypatch, install, listening, starts):
     from diplomat_app.store import Store
 
+    monkeypatch.setattr(rm, "daemon_listening", lambda: listening)
     shelled = []
     monkeypatch.setattr(da, "run_installer", lambda script, arg: shelled.append(arg) or {
         "daemonRunning": True})
@@ -432,6 +435,14 @@ def daemon(monkeypatch):
     yield make
     for d in made:
         d.close()
+
+
+def test_a_daemon_is_listening_when_its_socket_answers_with_any_status(daemon, monkeypatch, tmp_path):
+    monkeypatch.setenv("RM_BASE_DIR", str(tmp_path))
+    assert rm.daemon_listening() is False
+    # The daemon's /health is a GET, so this POST is answered 404: still a daemon.
+    daemon({})
+    assert rm.daemon_listening() is True
 
 
 RUNNING = {"installed": True, "daemonRunning": True, "version": "0.1.0"}
@@ -781,6 +792,8 @@ def test_an_older_daemons_snapshot_says_so_in_the_status_card(screen):
     assert not view._old_daemon.isHidden()
     assert view._old_daemon.text() == ("The daemon predates this screen; restart it to read "
                                        "usage and apply exclusions.")
+    # Its snapshot is on screen, so the daemon row does not say one is on the way.
+    assert view._daemon_row._summary.text() == "Running."
     view.store.machines_state = None
     view.store.machines_changed.emit()
     assert view._old_daemon.isHidden()

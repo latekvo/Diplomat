@@ -20,15 +20,24 @@ enum RemoteMachines {
         return try? JSONDecoder().decode(MachineHistory.self, from: data)
     }
 
-    /// Whether the daemon answered the scan with success; nil when none is listening.
-    static func scan() -> Bool? {
+    enum Scanned: Equatable {
+        case done
+        case failed(String)
+        case unreachable
+    }
+
+    static func scan() -> Scanned {
         switch package.send(MachinesScan.endpoint, body: MachinesScan.body,
                             timeoutSecs: MachinesScan.timeoutSecs) {
-        case .unreachable: return nil
-        case .unanswered: return false
-        case .reply(let r): return (200..<300).contains(r.status)
+        case .unreachable: return .unreachable
+        case .unanswered: return .failed(MachinesScan.unanswered)
+        case .reply(let r) where (200..<300).contains(r.status): return .done
+        case .reply(let r): return .failed(r.json?["error"]?.string ?? "HTTP \(r.status)")
         }
     }
+
+    /// Whether a daemon answers on the socket at all, whatever the status.
+    static func listening() -> Bool { package.send("health", timeoutSecs: 2) != .unreachable }
 
     // MARK: installer (blocking — call off the main thread)
 

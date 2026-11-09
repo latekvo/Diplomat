@@ -90,6 +90,12 @@ def scan() -> da.DaemonReply | str:
                        sock=socket_path())
 
 
+def daemon_listening() -> bool:
+    """Whether a daemon answers on the socket now. Any status counts: the client only
+    POSTs, and the daemon's /health is a GET."""
+    return da.exchange("health", timeout_secs=2, sock=socket_path()) != da.UNREACHABLE
+
+
 # MARK: the snapshot
 
 @dataclass(frozen=True)

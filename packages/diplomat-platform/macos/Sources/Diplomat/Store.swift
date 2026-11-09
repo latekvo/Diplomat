@@ -1289,9 +1289,12 @@ final class Store: ObservableObject {
     func refreshMachines() async {
         await whileMachinesBusy {
             let scanned = await Task.detached(priority: .userInitiated) { RemoteMachines.scan() }.value
-            if let ok = scanned {
-                AuditLog.log("panel", MachinesScan.action, MachinesScan.auditText(ok: ok))
-            } else {
+            switch scanned {
+            case .done:
+                AuditLog.log("panel", MachinesScan.action, MachinesScan.auditText(failure: nil))
+            case .failed(let why):
+                AuditLog.log("panel", MachinesScan.action, MachinesScan.auditText(failure: why))
+            case .unreachable:
                 await runMachinesInstaller({ RemoteMachines.startDaemon() }, action: "machines-install",
                                            log: Self.startedLog)
             }
@@ -1306,8 +1309,11 @@ final class Store: ObservableObject {
         let now = Date()
         let ok = RemoteMachines.applyExclusion(action, target: target, names: machine.names, now: now)
         machineExclusionFailed = !ok
-        if ok, let s = machinesInstall, s.installed, !s.daemonRunning {
-            Task { await startMachinesDaemon() }
+        if ok, machinesInstall?.installed == true {
+            Task {
+                let listening = await Task.detached { RemoteMachines.listening() }.value
+                if !listening { await startMachinesDaemon() }
+            }
         }
         let verb: String, what: String
         switch action {
