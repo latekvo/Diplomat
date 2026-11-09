@@ -75,7 +75,8 @@ enum ToolDataCommand {
             reviewThreads: (d["reviewThreads"] as? [[String: Any]] ?? []).map {
                 ReviewThread(isResolved: JSONInput.flag($0["isResolved"]),
                              viewerCanResolve: JSONInput.flag($0["viewerCanResolve"], true),
-                             lastCommentAuthor: $0["lastCommentAuthor"] as? String)
+                             lastCommentAuthor: $0["lastCommentAuthor"] as? String,
+                             unansweredRunFinding: JSONInput.flag($0["unansweredRunFinding"]))
             })
     }
 

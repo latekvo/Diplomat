@@ -37,8 +37,8 @@ struct MeshSpawnRow: View {
             }
             .padding(.horizontal, 9).padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 7).fill(Color.gray.opacity(0.08)))
-            .help("Hand the job to the Diplomat Mesh: the node picks the machine per this duty's "
-                  + "placement policy (with failover) instead of always spawning locally.")
+            .tooltip("Hand the job to the Diplomat Mesh: the node picks the machine per this duty's "
+                     + "placement policy (with failover) instead of always spawning locally.")
         }
     }
 

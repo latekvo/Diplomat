@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from . import core, gh
 from .issuetarget import IssueTarget
+from .reviewaudit import TAG
 
 
 # MARK: - Datetime helpers
@@ -44,6 +45,7 @@ class ReviewThread:
     is_resolved: bool
     viewer_can_resolve: bool
     last_comment_author: str | None
+    unanswered_run_finding: bool = False
 
 
 @dataclass(frozen=True)
@@ -76,18 +78,33 @@ class OpenPR:
         return self.mergeable == "CONFLICTING"
 
     def unaddressed_threads(self, me: str) -> list[ReviewThread]:
-        """Threads on *my* PR I still owe a response on: resolvable, unresolved,
-        and whose most-recent comment isn't mine."""
-        # Mirrors ThreadTriage.owed in Models.swift: login compare is
-        # case-insensitive (GitHub logins are), and a missing viewer_can_resolve
-        # defaults to owed.
+        """Threads on *my* PR I still owe a response on (:func:`thread_owed`)."""
         return [
             t
             for t in self.review_threads
-            if (t.viewer_can_resolve if t.viewer_can_resolve is not None else True)
-            and not t.is_resolved
-            and (t.last_comment_author or "").lower() != me.lower()
+            if thread_owed(t.is_resolved, t.viewer_can_resolve, t.last_comment_author, me,
+                           t.unanswered_run_finding)
         ]
+
+
+def thread_owed(is_resolved: bool, viewer_can_resolve: bool | None,
+                last_comment_author: str | None, me: str,
+                unanswered_run_finding: bool) -> bool:
+    """Mirrors ThreadTriage.owed in Models.swift: unresolved, resolvable by me, and
+    either the latest comment isn't mine or the thread is a run's unanswered finding
+    (a run posts under my login). Login compare is case-insensitive (GitHub logins
+    are), and a missing viewer_can_resolve defaults to owed."""
+    if is_resolved or not (True if viewer_can_resolve is None else viewer_can_resolve):
+        return False
+    return unanswered_run_finding or (last_comment_author or "").lower() != me.lower()
+
+
+def is_unanswered_run_finding(thread: dict) -> bool:
+    """Mirrors ThreadTriage.isUnansweredRunFinding: one tagged comment and nothing else."""
+    comments = thread.get("comments") or {}
+    nodes = comments.get("nodes") or []
+    body = (nodes[-1] or {}).get("body") if nodes else None
+    return comments.get("totalCount") == 1 and (body or "").lstrip().startswith(TAG)
 
 
 @dataclass(frozen=True)
@@ -344,6 +361,7 @@ class API:
                     is_resolved=t["isResolved"],
                     viewer_can_resolve=t["viewerCanResolve"],
                     last_comment_author=_last_comment_author(t),
+                    unanswered_run_finding=is_unanswered_run_finding(t),
                 )
                 for t in n["reviewThreads"]["nodes"]
             ]

@@ -268,13 +268,16 @@ enum TrackTest {
              {"isResolved":false,"viewerCanResolve":true,"comments":{"nodes":[{"author":{"login":"reviewer"}}]}},
              {"isResolved":false,"viewerCanResolve":true,"comments":{"nodes":[{"author":{"login":"me"}}]}},
              {"isResolved":true,"viewerCanResolve":true,"comments":{"nodes":[{"author":{"login":"reviewer"}}]}},
-             {"isResolved":false,"viewerCanResolve":false,"comments":{"nodes":[{"author":{"login":"reviewer"}}]}}
+             {"isResolved":false,"viewerCanResolve":false,"comments":{"nodes":[{"author":{"login":"reviewer"}}]}},
+             {"isResolved":false,"viewerCanResolve":true,"comments":{"totalCount":1,"nodes":[{"author":{"login":"me"},"body":"\\\\[[Diplomat](x)\\\\]: finding"}]}},
+             {"isResolved":false,"viewerCanResolve":true,"comments":{"totalCount":2,"nodes":[{"author":{"login":"me"},"body":"\\\\[[Diplomat](x)\\\\]: Fixed in abc"}]}}
            ]}}
         ]}}}
         """
         let parsed = (try? AutofixMonitor.parse(Data(parseJSON.utf8), me: "me"))?.first
-        check("parse counts all unresolved threads", parsed?.threadsUnresolved == 3)
-        check("parse counts only threads I owe a reply on", parsed?.threadsIOwe == 1)
+        check("parse counts all unresolved threads", parsed?.threadsUnresolved == 5)
+        check("parse counts only threads I owe a reply on, a run's unanswered finding among them",
+              parsed?.threadsIOwe == 2)
 
         // 6. Live cycle against a real, self-closing terminal window.
         await liveCycle(check: check)

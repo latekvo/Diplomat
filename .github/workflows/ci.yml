@@ -179,6 +179,15 @@ jobs:
           test -z "$missing" || echo "::error::dispatched but not in Headless.modes: $missing"
           test -z "$orphans" || echo "::error::in Headless.modes but dispatched nowhere: $orphans"
           test -z "$missing$orphans"
+      # SwiftUI's `.help` gives the window a dynamic tooltip that reads its text out of
+      # the view graph on AppKit's hover timer, which crashed the app once the hovered
+      # view was gone (#238). Tooltips go through `.tooltip`; a menu item's `.help`
+      # (a `.tag(...)` before it) is its NSMenuItem's tooltip and stays.
+      - name: No SwiftUI .help tooltips
+        working-directory: packages/diplomat-platform/macos/Sources/Diplomat
+        run: |
+          found="$(grep -nE '\.help\(' *.swift | grep -vE '\.tag\([^)]*\)\.help\(' || true)"
+          test -z "$found" || { echo "::error::use .tooltip(...), not .help(...):"; echo "$found"; exit 1; }
       # Every gh call is recorded and refused, so a self-test that reads GitHub fails
       # here instead of spending the operator's rate limit when run locally.
       - name: Headless helper self-tests
@@ -486,4 +495,25 @@ jobs:
       - name: Daemon, MCP, installer drift, agent-kill, repair, wipe and full-disk tests
         env:
           DIPLOMAT_FULL_VOLUME_REQUIRED: '1'
+        run: npm test
+
+  # The remote-machines MCP server + daemon, on the same shared daemon-core as the
+  # allocator. Its tests stand in a fake ssh (test/lib/fake-ssh.mjs) for every host, so
+  # nothing reaches a real machine; probe.sh itself runs for real on the runner.
+  node-remote-machines:
+    name: Node (remote machines) · discovery, probe, daemon + MCP tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/remote-machines
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: packages/remote-machines/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Discovery, probe, daemon, MCP and installer tests
         run: npm test

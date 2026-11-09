@@ -42,7 +42,8 @@ enum Render {
             return false
         }
 
-        let renderer = ImageRenderer(content: chrome(view(for: what, store: store), store: store))
+        let renderer = ImageRenderer(content: chrome(view(for: what, store: store), store: store)
+            .environment(\.isImageRendering, true))
         renderer.scale = 2
         guard let cg = renderer.cgImage else { print("RENDER ERROR: nil cgImage"); return true }
         let rep = NSBitmapImageRep(cgImage: cg)

@@ -746,7 +746,7 @@ struct SpawnAgentButton: View {
         }
         .buttonStyle(.plain)
         .disabled(!isValid)
-        .help("Open a new \(terminalTitle) window running the agent runner with this prompt.")
+        .tooltip("Open a new \(terminalTitle) window running the agent runner with this prompt.")
     }
 }
 
@@ -952,7 +952,7 @@ struct ReviewWizardView: View {
         case .pr:
             VStack(alignment: .leading, spacing: 3) {
                 WizardTextField(systemImage: "number", placeholder: "PR # or URL", text: $specificPR)
-                    .help("Review just this one PR — paste its number or GitHub URL.")
+                    .tooltip("Review just this one PR — paste its number or GitHub URL.")
                 if let warning = prWarning {
                     Text(warning)
                         .font(.system(size: 10))
@@ -1000,28 +1000,28 @@ struct ReviewWizardView: View {
                 Toggle(isOn: $markReady) {
                     Text("Mark clean PRs ready for review").font(.caption)
                 }
-                .help("Mark perfectly-clean PRs ready for review.")
+                .tooltip("Mark perfectly-clean PRs ready for review.")
                 .transition(rowTransition)
             }
             if config.canLeaveReviews {
                 Toggle(isOn: $leaveReviews) {
                     Text("Leave reviews (CLAUDE.md format)").font(.caption)
                 }
-                .help("Post per-line reviews on these PRs.")
+                .tooltip("Post per-line reviews on these PRs.")
                 .transition(rowTransition)
             }
             if config.canReplyToReviews {
                 Toggle(isOn: $replyToReviews) {
                     Text("Reply to others' review threads").font(.caption)
                 }
-                .help("Reply \"Fixed in <hash>\" on threads others left.")
+                .tooltip("Reply \"Fixed in <hash>\" on threads others left.")
                 .transition(rowTransition)
             }
             if config.canSoftApprove {
                 Toggle(isOn: $softApprove) {
                     Text("Soft-approve clean PRs (thank-you review)").font(.caption)
                 }
-                .help("On a perfectly-clean PR, submit a COMMENT review with a friendly thank-you body — never an APPROVE action.")
+                .tooltip("On a perfectly-clean PR, submit a COMMENT review with a friendly thank-you body — never an APPROVE action.")
                 .transition(rowTransition)
             }
         }

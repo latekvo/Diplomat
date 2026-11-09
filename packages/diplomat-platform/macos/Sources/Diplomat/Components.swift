@@ -271,7 +271,7 @@ struct EscalationToggle: View {
         .background(RoundedRectangle(cornerRadius: 7).fill(fill.opacity(isOn ? 0.28 : 0.14)))
         .overlay(RoundedRectangle(cornerRadius: 7).stroke(.orange.opacity(isOn ? 0.9 : 0.5),
                                                           lineWidth: isOn ? 1.4 : 1))
-        .help(help)
+        .tooltip(help)
     }
 }
 
@@ -512,7 +512,7 @@ struct ToggleChip: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help(help)
+        .tooltip(help)
     }
 }
 
@@ -582,5 +582,46 @@ extension View {
             if scrolls { ScrollView { self } } else { self }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    /// The hover tooltip, in place of SwiftUI's `.help`, which reads its text out of the
+    /// view graph on AppKit's hover timer and crashed the app once the hovered view was
+    /// gone (#238). An NSView's `toolTip` is a plain string that leaves with its view.
+    func tooltip(_ text: String) -> some View { modifier(Tooltip(text: text)) }
+}
+
+extension EnvironmentValues {
+    /// Set under `ImageRenderer`, which draws an AppKit-backed view as a placeholder box.
+    var isImageRendering: Bool {
+        get { self[ImageRenderingKey.self] }
+        set { self[ImageRenderingKey.self] = newValue }
+    }
+}
+
+private struct ImageRenderingKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private struct Tooltip: ViewModifier {
+    let text: String
+    @Environment(\.isImageRendering) private var isImageRendering
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if !isImageRendering { AppKitTooltip(text: text).allowsHitTesting(false) }
+            }
+            .accessibilityHint(text)
+    }
+}
+
+private struct AppKitTooltip: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        let tip = text.isEmpty ? nil : text
+        if view.toolTip != tip { view.toolTip = tip }
     }
 }

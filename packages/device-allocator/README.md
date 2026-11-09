@@ -16,7 +16,9 @@ on top rather than a dependency underneath.
 
 One runtime dependency — `@modelcontextprotocol/sdk`, and only `src/mcp.js` imports
 it, so the daemon runs on a bare Node with nothing installed. No build step, no
-transpile: `src/*.js` is what runs.
+transpile: `src/*.js` is what runs, with the socket daemon, its client and the Claude
+Code install it shares with [remote machines](../remote-machines/README.md) imported
+from the sibling [`daemon-core`](../daemon-core/README.md).
 
 ```bash
 npm ci

@@ -170,13 +170,32 @@ check(look.onLists.map { $0.rawValue } == ["skillPRs"], "lookup #101 lists")
 section("thread triage (shared 'I owe a reply' rule)")
 // Case-insensitive me-comparison (GitHub logins are case-insensitive): a thread whose
 // last comment is mine — however my login is cased — is NOT owed.
-check(!ThreadTriage.owed(isResolved: false, viewerCanResolve: true, lastCommentAuthor: "LateKVO", me: "latekvo"))
-check(ThreadTriage.owed(isResolved: false, viewerCanResolve: true, lastCommentAuthor: "reviewer", me: "latekvo"))
-check(!ThreadTriage.owed(isResolved: true, viewerCanResolve: true, lastCommentAuthor: "reviewer", me: "latekvo"))
-check(!ThreadTriage.owed(isResolved: false, viewerCanResolve: false, lastCommentAuthor: "reviewer", me: "latekvo"))
+check(!ThreadTriage.owed(isResolved: false, viewerCanResolve: true, lastCommentAuthor: "LateKVO", me: "latekvo",
+                         unansweredRunFinding: false))
+check(ThreadTriage.owed(isResolved: false, viewerCanResolve: true, lastCommentAuthor: "reviewer", me: "latekvo",
+                        unansweredRunFinding: false))
+check(!ThreadTriage.owed(isResolved: true, viewerCanResolve: true, lastCommentAuthor: "reviewer", me: "latekvo",
+                         unansweredRunFinding: false))
+check(!ThreadTriage.owed(isResolved: false, viewerCanResolve: false, lastCommentAuthor: "reviewer", me: "latekvo",
+                         unansweredRunFinding: false))
 // Missing viewerCanResolve (older payloads) defaults to owed; nil author (deleted user) is owed.
-check(ThreadTriage.owed(isResolved: false, viewerCanResolve: nil, lastCommentAuthor: "reviewer", me: "latekvo"))
-check(ThreadTriage.owed(isResolved: false, viewerCanResolve: true, lastCommentAuthor: nil, me: "latekvo"))
+check(ThreadTriage.owed(isResolved: false, viewerCanResolve: nil, lastCommentAuthor: "reviewer", me: "latekvo",
+                        unansweredRunFinding: false))
+check(ThreadTriage.owed(isResolved: false, viewerCanResolve: true, lastCommentAuthor: nil, me: "latekvo",
+                        unansweredRunFinding: false))
+// A run posts its findings under my login, so its unanswered finding is owed although the
+// last comment is mine; once anyone replies, or the thread is resolved, it is not.
+let runFinding = #"\[[Diplomat](https://github.com/latekvo/Diplomat), Opus 5.5\]: a finding"#
+check(ThreadTriage.isUnansweredRunFinding(commentCount: 1, lastCommentBody: "\n " + runFinding))
+check(!ThreadTriage.isUnansweredRunFinding(commentCount: 2, lastCommentBody: runFinding),
+      "a run's finding someone replied to is answered")
+check(!ThreadTriage.isUnansweredRunFinding(commentCount: 1, lastCommentBody: "a note of my own"),
+      "an untagged comment of mine is not a run's finding")
+check(!ThreadTriage.isUnansweredRunFinding(commentCount: nil, lastCommentBody: runFinding))
+check(ThreadTriage.owed(isResolved: false, viewerCanResolve: true, lastCommentAuthor: "latekvo",
+                        me: "latekvo", unansweredRunFinding: true), "a run's unanswered finding is owed")
+check(!ThreadTriage.owed(isResolved: true, viewerCanResolve: true, lastCommentAuthor: "latekvo",
+                         me: "latekvo", unansweredRunFinding: true), "a resolved run finding is not owed")
 // OpenPR.unaddressedThreads flows through the same rule.
 check(prs[4].unaddressedThreads(me: "LATEKVO").count == 1, "unaddressedThreads is case-insensitive on me")
 print("thread-triage assertions passed")
@@ -3015,6 +3034,26 @@ for (label, cfg) in [("soft-approve", ReviewConfig(depth: "deep", target: .speci
     check(!p[caseA..<caseB].contains("APPROVE it") && !p[caseA..<caseB].contains("thanking them"),
           "\(label): CASE A carries no verdict")
 }
+// A clean pass's LOW findings are fixed on my own PR and posted on someone else's. Each
+// prompt carries its own disposition's block only, and the gated one puts each in its case.
+let lowsMine = "it is FIXED on the branch", lowsTheirs = "the LOW findings of that clean pass are posted"
+for (label, p) in [("known-mine", km),
+                   ("mine sweep", ReviewConfig(depth: "max", target: .mine, me: "latekvo").buildPrompt())] {
+    check(p.contains(lowsMine) && p.contains("ZERO pending findings") && !p.contains(lowsTheirs),
+          "\(label): LOW findings must be fixed, not posted")
+    check(!p.contains("post the LOW"), "\(label): the swarm loop still says to post LOW findings")
+}
+for (label, p) in [("known-theirs", ReviewConfig(depth: "max", target: .specific, me: "latekvo",
+                                                 specificPR: "500", specificAuthor: .theirs).buildPrompt()),
+                   ("theirs sweep", ReviewConfig(depth: "max", target: .someone, username: "other",
+                                                 me: "latekvo").buildPrompt())] {
+    check(p.contains(lowsTheirs) && !p.contains(lowsMine), "\(label): LOW findings must be posted")
+}
+let gatedA = gated.range(of: "▸ CASE A")!.lowerBound, gatedB = gated.range(of: "▸ CASE B")!.lowerBound
+check(gated.range(of: lowsMine).map { gatedA < $0.lowerBound && $0.lowerBound < gatedB } == true,
+      "gated: the fix-every-LOW block belongs to CASE A")
+check(gated.range(of: lowsTheirs).map { $0.lowerBound > gatedB } == true,
+      "gated: the post-the-LOWs block belongs to CASE B")
 print("known-mine review prompt assertions passed")
 
 // ---- known-theirs comprehensive review (review-request monitor) ----

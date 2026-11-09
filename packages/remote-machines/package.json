@@ -1,0 +1,20 @@
+{
+  "name": "diplomat-remote-machines",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Lists the machines on the local network an agent can reach over SSH, with their capabilities and live load, and steers agents to offload artifact-producing work onto them.",
+  "bin": {
+    "diplomat-remote-machines": "src/mcp.js"
+  },
+  "scripts": {
+    "daemon": "node src/daemon.js",
+    "mcp": "node src/mcp.js",
+    "install-remote-machines": "node src/install.js --install",
+    "check": "node src/install.js --check",
+    "test": "node test/run-all.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

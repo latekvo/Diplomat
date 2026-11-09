@@ -21,10 +21,9 @@ public struct PRSnapshot: Equatable {
     public let mergeable: String        // "MERGEABLE" / "CONFLICTING" / "UNKNOWN"
     public let reviewDecision: String   // "" / "CHANGES_REQUESTED" / "APPROVED" / …
     public let threadsUnresolved: Int
-    /// Unresolved threads I still OWE a reply on (resolvable, not resolved, last comment
-    /// isn't mine) — the "My Unaddressed Reviews" signal. Drives the offline-review
-    /// reconcile so we don't dispatch a fix agent for a PR where the ball is with the
-    /// reviewer. `threadsUnresolved` (raw count) still drives the edge-trigger.
+    /// Unresolved threads I still OWE a reply on (`ThreadTriage.owed`) — the "My
+    /// Unaddressed Reviews" signal. Drives the offline-review reconcile so we don't
+    /// dispatch a fix agent for a PR where the ball is with the reviewer. `threadsUnresolved` (raw count) still drives the edge-trigger.
     public let threadsIOwe: Int
     /// Head commit sha (`headRefOid`) — the "which push" part of the mesh work key,
     /// so two nodes observing the same commit derive the same key (szpontnet-spec/docs/12).

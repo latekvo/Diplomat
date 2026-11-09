@@ -268,7 +268,7 @@ private struct PingRow: View {
                 StatusPill(text: reply.word, tint: reply.tint,
                            symbol: "arrowshape.turn.up.left.fill")
                     .fixedSize()
-                    .help(item.reply ?? reply.word)
+                    .tooltip(item.reply ?? reply.word)
             }
             Text(Fmt.clock(item.at)).font(.system(size: 9).monospacedDigit())
                 .foregroundStyle(.secondary).fixedSize()
@@ -414,11 +414,11 @@ private struct BannedSenderRow: View {
             Text("banned \(when)").font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.red)
                 .fixedSize()
-                .help("Banned \(absolute)")
+                .tooltip("Banned \(absolute)")
             Text(quoted).font(.system(size: 10)).lineLimit(1).truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(-1)
-                .help(evidence)
+                .tooltip(evidence)
             if let link {
                 Button("Open in Slack") { NSWorkspace.shared.open(link) }
                     .buttonStyle(.link).font(.system(size: 10))
@@ -470,7 +470,7 @@ private struct JobRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardChrome(padding: 5)
-        .help(times)
+        .tooltip(times)
     }
 
     private var timesText: String {

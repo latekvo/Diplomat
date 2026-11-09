@@ -28,7 +28,6 @@
 // (reaper) or when its screen shows zero motion past the leased idle limit, and a
 // booted device nobody holds is shut down past the free idle limit (idleSweep).
 
-import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, execFile } from 'node:child_process';
@@ -53,6 +52,7 @@ import {
   atomicWrite, sweepDeadTmp,
 } from './state.js';
 import { log } from './log.js';
+import { NO_ROUTE, jsonServer, listenSingleton, socketHealthy } from '../../daemon-core/src/serve.js';
 import * as dev from './devices.js';
 import * as remote from './remote.js';
 import { openRepairWindow, shq } from './terminal.js';
@@ -1012,69 +1012,24 @@ async function handleReportInjection(p) {
 
 // ---- http server ----------------------------------------------------------
 
-const server = http.createServer((req, res) => {
-  const send = (code, obj) => {
-    const s = JSON.stringify(obj);
-    res.writeHead(code, { 'content-type': 'application/json' });
-    res.end(s);
-  };
-  if (req.method === 'GET' && req.url === '/health') return send(200, { ok: true, pid: process.pid });
-  if (req.method === 'GET' && req.url === '/state') return send(200, lastState);
-
-  let body = '';
-  // Decode as UTF-8 via a StringDecoder so a multi-byte character split across two
-  // socket 'data' chunks is reassembled, not turned into U+FFFD. Without this, a
-  // large unicode report-prompt-injection `evidence` payload (verbatim forensic
-  // capture) is silently corrupted at every chunk boundary. (The client sets the
-  // same on its response in ipc.js.)
-  req.setEncoding('utf8');
-  req.on('data', (c) => {
-    body += c;
-    // No legitimate request body approaches 1MB; cap the buffer so a runaway
-    // (or hostile local) writer can't balloon the daemon's memory.
-    if (body.length > 1_000_000) { req.destroy(); }
-  });
-  req.on('end', async () => {
-    let p = {};
-    try { p = body ? JSON.parse(body) : {}; } catch { return send(400, { error: 'invalid json' }); }
-    try {
-      let result;
-      switch (req.url) {
-        case '/request': result = await handleRequest(p); break;
-        case '/await': result = await handleAwait(p); break;
-        case '/release': result = await handleRelease(p); break;
-        case '/change': result = await handleChange(p); break;
-        case '/broken': result = await handleBroken(p); break;
-        case '/repaired': result = await handleRepaired(p); break;
-        case '/report-injection': result = await handleReportInjection(p); break;
-        case '/unban': result = await handleUnban(p); break;
-        case '/kill': result = await handleKill(p); break;
-        case '/remote/sign-in': result = await remote.signIn(); publish(); break;
-        case '/remote/devices': result = await remote.devices(); break;
-        default: return send(404, { error: `unknown route ${req.url}` });
-      }
-      send(200, result);
-    } catch (e) {
-      send(e.statusCode || 500, { error: e.message || String(e) });
-    }
-  });
+const server = jsonServer(async (route, p) => {
+  switch (route) {
+    case 'GET /health': return { ok: true, pid: process.pid };
+    case 'GET /state': return lastState;
+    case 'POST /request': return handleRequest(p);
+    case 'POST /await': return handleAwait(p);
+    case 'POST /release': return handleRelease(p);
+    case 'POST /change': return handleChange(p);
+    case 'POST /broken': return handleBroken(p);
+    case 'POST /repaired': return handleRepaired(p);
+    case 'POST /report-injection': return handleReportInjection(p);
+    case 'POST /unban': return handleUnban(p);
+    case 'POST /kill': return handleKill(p);
+    case 'POST /remote/sign-in': { const r = await remote.signIn(); publish(); return r; }
+    case 'POST /remote/devices': return remote.devices();
+    default: return NO_ROUTE;
+  }
 });
-
-// Is a *live* daemon already answering on the socket? (vs. a stale socket file
-// left by a crashed one.) Resolves false on any connection error/timeout.
-function socketHealthy() {
-  return new Promise((resolve) => {
-    const req = http.request(
-      // 3s, not 1s: this probe also gates the stale-socket takeover — a live peer
-      // whose event loop is briefly blocked must not get its socket unlinked.
-      { socketPath: SOCKET_PATH, path: '/health', method: 'GET', timeout: 3000 },
-      (res) => { res.resume(); resolve(res.statusCode === 200); },
-    );
-    req.on('error', () => resolve(false));
-    req.on('timeout', () => { req.destroy(); resolve(false); });
-    req.end();
-  });
-}
 
 // Best-effort synchronous shutdown of devices we booted, on daemon exit, so a
 // SIGTERM (e.g. uninstall) doesn't leave orphaned simulators/emulators running.
@@ -1106,102 +1061,13 @@ function onListening() {
   setInterval(idleSweep, IDLE_INTERVAL_MS);
 }
 
-// Startup-takeover lock. The stale-socket reclaim ("unlink the dead socket file, then
-// re-listen") is unavoidably two steps, so two daemons that both see the socket as stale
-// each unlink + bind — and the second unlinks the first's FRESHLY bound socket, leaving
-// two live daemons (split-brain: each runs its own reap/idle/reclaim loops against the
-// shared lease files). Serialize the reclaim behind an exclusive lock so exactly one
-// daemon takes over. Held only for the few ms of takeover, then released; a crash while
-// holding it leaves a stale lock the next daemon reclaims by pid-liveness.
-const LOCK_PATH = `${SOCKET_PATH}.lock`;
-const LOCK_FRESH_MS = 5000; // far past the few ms a takeover holds it
-
-function lockAgeMs() {
-  try { return Date.now() - fs.statSync(LOCK_PATH).mtimeMs; } catch { return Infinity; }
-}
-
-function acquireTakeoverLock() {
-  // An open fd (lock held) or null if a LIVE daemon already holds it. Throws when the
-  // lock cannot be created at all (a full disk), which is no sign of a holder.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const fd = fs.openSync(LOCK_PATH, 'wx'); // atomic O_CREAT | O_EXCL
-      try { fs.writeSync(fd, String(process.pid)); } catch {}
-      return fd;
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      let holder = 0;
-      try { holder = Number(fs.readFileSync(LOCK_PATH, 'utf8').trim()) || 0; } catch {}
-      if (holder && holder !== process.pid && pidAlive(holder)) return null; // a live holder
-      // No pid yet: a peer between its create and its write, or one whose write a full
-      // disk refused. Either is taking over right now, so a young empty lock is held.
-      if (!holder && lockAgeMs() < LOCK_FRESH_MS) return null;
-      // Stale lock (holder dead/unreadable): drop it and retry the exclusive create once.
-      // If another recoverer wins the re-create, our second attempt sees a live holder and
-      // returns null (defers) — so the O_EXCL create, not the unlink, decides the winner.
-      try { fs.unlinkSync(LOCK_PATH); } catch {}
-    }
-  }
-  return null;
-}
-
-function releaseTakeoverLock(fd) {
-  try { fs.closeSync(fd); } catch {}
-  try { fs.unlinkSync(LOCK_PATH); } catch {}
-}
-
-// A full disk loses the log line, so the client that spawned this daemon (spawnDaemon in
-// ipc.js) also gets the reason over the IPC channel.
-function startFailed(...why) {
-  log(...why);
-  if (process.connected) process.send(why.join(' '), () => process.exit(1));
-  else process.exit(1);
-}
-
-// Singleton acquisition without a pre-emptive unlink (which would clobber a live peer's
-// socket). We let listen() fail with EADDRINUSE and use a /health probe to distinguish "a
-// live daemon owns it" (defer + exit) from "a stale socket file remains" (take the lock,
-// unlink + retry once). A second EADDRINUSE means a fresh daemon bound in the gap — defer
-// to it rather than take over again.
-let retriedListen = false;
-let takeoverLock = null; // held across the takeover's re-listen
-server.on('error', async (e) => {
-  // That re-listen failed (a peer bound in the gap, or a full disk): the lock goes too.
-  if (takeoverLock != null) { releaseTakeoverLock(takeoverLock); takeoverLock = null; }
-  if (e.code === 'EADDRINUSE') {
-    if (await socketHealthy()) { log('a live daemon already owns the socket; exiting'); process.exit(0); }
-    if (retriedListen) { log('could not acquire the socket (contended); deferring'); process.exit(0); }
-    retriedListen = true;
-    let lockFd;
-    try { lockFd = acquireTakeoverLock(); }
-    catch (err) { startFailed('cannot take the startup lock', String(err)); return; }
-    if (lockFd == null) {
-      // Another daemon is (or just finished) taking over. Give it a beat, then defer to it.
-      await delay(300);
-      if (await socketHealthy()) { log('another daemon took the socket; exiting'); process.exit(0); }
-      log('the startup lock is held by a live daemon; deferring'); process.exit(0);
-    }
-    // Re-probe UNDER the lock: a peer may have bound between our first probe and the lock.
-    if (await socketHealthy()) {
-      releaseTakeoverLock(lockFd);
-      log('a live daemon already owns the socket; exiting'); process.exit(0);
-    }
-    try { fs.unlinkSync(SOCKET_PATH); } catch {}
-    takeoverLock = lockFd;
-    server.listen(SOCKET_PATH, () => { releaseTakeoverLock(takeoverLock); takeoverLock = null; onListening(); });
-    return;
-  }
-  startFailed('server error', String(e));
-});
-
 async function start() {
   ensureDirs();
   // If a healthy daemon is already serving, never start a second one.
-  if (await socketHealthy()) { log('another daemon is already live; exiting'); process.exit(0); }
+  if (await socketHealthy(SOCKET_PATH)) { log('another daemon is already live; exiting'); process.exit(0); }
   for (const f of [DISCOVERY_PATH, STATE_PATH, LEASES_PATH, BANNED_PATH, REMOTE_RELEASES_PATH]) sweepDeadTmp(f);
   rehydrateLeases();
-  // NB: no pre-listen unlink — see the error handler above.
-  server.listen(SOCKET_PATH, onListening);
+  listenSingleton({ server, socketPath: SOCKET_PATH, log, onListening });
   const bye = async () => {
     const leased = [...allocations.values()].filter((a) => a.source === 'remote');
     await Promise.race([Promise.all(leased.map((a) => remote.release(a.remoteProvider, a.remote))), delay(3000)]);

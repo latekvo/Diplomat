@@ -134,25 +134,25 @@ struct ContentView: View {
             Text("upd \(Fmt.clock(store.lastUpdated))").font(.caption2).foregroundStyle(.secondary)
             Button { Task { await store.refresh() } } label: {
                 Image(systemName: "arrow.clockwise")
-            }.buttonStyle(.borderless).help("Refresh")
+            }.buttonStyle(.borderless).tooltip("Refresh")
             devicesButton
             commsButton
             tasksButton
             Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .mesh ? .main : .mesh } } label: {
                 Image(systemName: screen == .mesh ? "hexagon.fill" : "hexagon")
                     .foregroundStyle(screen == .mesh ? Color.accentColor : .primary)
-            }.buttonStyle(.borderless).help("Mesh management")
+            }.buttonStyle(.borderless).tooltip("Mesh management")
             Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .telemetry ? .main : .telemetry } } label: {
                 Image(systemName: screen == .telemetry ? "chart.bar.xaxis" : "chart.bar")
                     .foregroundStyle(screen == .telemetry ? Color.accentColor : .primary)
-            }.buttonStyle(.borderless).help("Telemetry")
+            }.buttonStyle(.borderless).tooltip("Telemetry")
             Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .settings ? .main : .settings } } label: {
                 Image(systemName: screen == .settings ? "gearshape.fill" : "gearshape")
                     .foregroundStyle(screen == .settings ? Color.accentColor : .primary)
-            }.buttonStyle(.borderless).help("Settings")
+            }.buttonStyle(.borderless).tooltip("Settings")
             Button { QuitFlow.confirm() } label: {
                 Image(systemName: "power")
-            }.buttonStyle(.borderless).help("Quit")
+            }.buttonStyle(.borderless).tooltip("Quit")
         }
     }
 
@@ -177,7 +177,7 @@ struct ContentView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("The repo the lists, search and wizards work on")
+            .tooltip("The repo the lists, search and wizards work on")
         } else {
             Text(current).font(.caption2).foregroundStyle(.secondary)
         }
@@ -204,7 +204,7 @@ struct ContentView: View {
                     }
                 }
         }
-        .buttonStyle(.borderless).help(help)
+        .buttonStyle(.borderless).tooltip(help)
     }
 
     /// Badged with the tasks that are blocked.
@@ -229,7 +229,7 @@ struct ContentView: View {
                     }
                 }
         }
-        .buttonStyle(.borderless).help(help)
+        .buttonStyle(.borderless).tooltip(help)
     }
 
     /// Opens the Devices screen; the badge counts the devices in use.
@@ -251,7 +251,7 @@ struct ContentView: View {
                 }
         }
         .buttonStyle(.borderless)
-        .help(inUse > 0 ? "Devices · \(inUse) in use" : "Devices")
+        .tooltip(inUse > 0 ? "Devices · \(inUse) in use" : "Devices")
     }
 
     private func toggleDevices() {
@@ -299,9 +299,9 @@ struct ContentView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(live
-                  ? "A monitor is watching your open PRs and auto-fixing conflicts & new reviews. Click to manage in Settings."
-                  : "Auto-fix is enabled but no monitor is currently running. Click to manage in Settings.")
+            .tooltip(live
+                     ? "A monitor is watching your open PRs and auto-fixing conflicts & new reviews. Click to manage in Settings."
+                     : "Auto-fix is enabled but no monitor is currently running. Click to manage in Settings.")
         }
     }
 
@@ -412,7 +412,7 @@ struct ContentView: View {
                     .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .help(on ? "Hide \(cat.title.lowercased())" : "Show \(cat.title.lowercased())")
+                .tooltip(on ? "Hide \(cat.title.lowercased())" : "Show \(cat.title.lowercased())")
             }
         }
         .padding(.bottom, 2)
@@ -579,7 +579,7 @@ struct ContentView: View {
             if !query.isEmpty {
                 Button { query = ""; searchFocused = true } label: {
                     Image(systemName: "xmark.circle.fill")
-                }.buttonStyle(.borderless).foregroundStyle(.secondary).help("Clear")
+                }.buttonStyle(.borderless).foregroundStyle(.secondary).tooltip("Clear")
             }
         }
         .padding(6)
@@ -724,7 +724,7 @@ struct ContentView: View {
                 Spacer()
                 Button { if let u = URL(string: link) { NSWorkspace.shared.open(u) } } label: {
                     Image(systemName: "arrow.up.forward.square")
-                }.buttonStyle(.borderless).help("Open #\(n) on GitHub")
+                }.buttonStyle(.borderless).tooltip("Open #\(n) on GitHub")
             }
             Text(r.presence).font(.caption).foregroundStyle(.secondary)
             VStack(spacing: 5) {
@@ -857,7 +857,7 @@ private struct AgentRunRow: View {
             : "Running on mesh node \(node). Nothing to focus here — the agent is on that machine."
     }
     /// Why a row cannot be clicked: nothing here can reach its terminal.
-    private static func help(for record: AgentState.RunRecord) -> String {
+    private static func helpText(for record: AgentState.RunRecord) -> String {
         switch record.placement {
         case .meshPeer:          return meshHelp(record.node)
         case .meshHere, .local:  return noTerminalHelp
@@ -879,11 +879,11 @@ private struct AgentRunRow: View {
             // missing. The two answers differ because the status line says "on mesh" for a
             // peer row, which a local "no terminal here" would contradict.
             if !row.isFocusable {
-                content.help(AgentRunRow.help(for: row.record))
+                content.tooltip(AgentRunRow.helpText(for: row.record))
             } else {
                 Button(action: onTap) { content.contentShape(Rectangle()) }
                     .buttonStyle(.plain)
-                    .help(AgentRunRow.localHelp)
+                    .tooltip(AgentRunRow.localHelp)
             }
 
             // Only a run this applet booked can be forgotten. One nobody dispatched is
@@ -896,7 +896,7 @@ private struct AgentRunRow: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.borderless)
-                .help("Stop tracking — remove from the list.")
+                .tooltip("Stop tracking — remove from the list.")
             }
         }
         .padding(6)
@@ -1026,7 +1026,7 @@ private struct QueueAutoRunRow: View {
                 .toggleStyle(.switch)
                 .controlSize(.small)
         }
-        .help(QueueAutoRunRow.help)
+        .tooltip(QueueAutoRunRow.help)
     }
 }
 
@@ -1051,7 +1051,7 @@ private struct QueuedTaskRow: View {
     @State private var targeted = false
 
     // Resolved out of the ViewBuilder's way: a ternary over concatenations inside a
-    // `Text(...)`/`.help(...)` is what tips a SwiftUI file over the type-checker's
+    // `Text(...)`/`.tooltip(...)` is what tips a SwiftUI file over the type-checker's
     // time limit on a CI runner while still compiling on a dev machine.
     private static let pausedHelp = """
         Start this agent now. Its monitor is switched off, so nothing else will — but \
@@ -1084,7 +1084,7 @@ private struct QueuedTaskRow: View {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(.secondary)
-                .help("Drag to set the order the queue runs in.")
+                .tooltip("Drag to set the order the queue runs in.")
             // Dimmed against a session's solid badge — nothing is running yet.
             IconBadge(symbol: kindIcon, tint: tint.opacity(0.45))
             VStack(alignment: .leading, spacing: 1) {
@@ -1109,7 +1109,7 @@ private struct QueuedTaskRow: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help(QueuedTaskRow.cancelHelp)
+                .tooltip(QueuedTaskRow.cancelHelp)
             }
             Button(action: onRun) {
                 Text("execute now")
@@ -1119,7 +1119,7 @@ private struct QueuedTaskRow: View {
                     .background(Capsule().fill(tint.opacity(0.16)))
             }
             .buttonStyle(.plain)
-            .help(runHelp)
+            .tooltip(runHelp)
         }
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
@@ -1176,7 +1176,7 @@ private struct StartingTaskRow: View {
         }
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
-        .help(StartingTaskRow.help)
+        .tooltip(StartingTaskRow.help)
     }
 }
 
@@ -1210,7 +1210,7 @@ private struct FreeSlotRow: View {
         .overlay(RoundedRectangle(cornerRadius: 6)
             .strokeBorder(Color.secondary.opacity(0.35),
                           style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
-        .help(FreeSlotRow.help)
+        .tooltip(FreeSlotRow.help)
     }
 }
 
@@ -1277,7 +1277,7 @@ struct DevicesView: View {
             }
             .buttonStyle(.plain)
             .disabled(onOpen == nil)
-            .help("Open the Devices screen")
+            .tooltip("Open the Devices screen")
             if !inUse.isEmpty {
                 section("In use", color: .green, expanded: $inUseExpanded, devices: inUse)
             }
@@ -1338,7 +1338,7 @@ private struct DeviceRow: View {
             if focusable {
                 Image(systemName: "macwindow")
                     .font(.system(size: 9)).foregroundStyle(.secondary.opacity(0.7))
-                    .help("Focus the terminal running \(dev.owner?.agentName ?? "this agent")")
+                    .tooltip("Focus the terminal running \(dev.owner?.agentName ?? "this agent")")
             }
             DeviceStatusBadge(dev: dev)
             if killable {
@@ -1346,9 +1346,9 @@ private struct DeviceRow: View {
                     Image(systemName: "xmark.circle.fill").font(.system(size: 12))
                 }
                 .buttonStyle(.borderless).foregroundStyle(.red.opacity(0.7))
-                .help(dev.isRemote
-                      ? "Return this device to the remote pool — the agent loses it."
-                      : "Kill this device — free it and shut the simulator/emulator down.")
+                .tooltip(dev.isRemote
+                         ? "Return this device to the remote pool — the agent loses it."
+                         : "Kill this device — free it and shut the simulator/emulator down.")
             }
         }
         .padding(6)
@@ -1512,7 +1512,7 @@ private struct BanRow: View {
                     if !when.isEmpty {
                         Text("banned \(when)").font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(.red)
-                            .help("Banned \(absolute)")
+                            .tooltip("Banned \(absolute)")
                     }
                 }
                 if let whereText {
@@ -1525,7 +1525,7 @@ private struct BanRow: View {
                             .font(.system(size: 9))
                         }
                         .buttonStyle(.link)
-                        .help("Open \(link.absoluteString)")
+                        .tooltip("Open \(link.absoluteString)")
                     } else {
                         Text(whereText).font(.system(size: 9)).foregroundStyle(.secondary)
                     }
@@ -1535,7 +1535,7 @@ private struct BanRow: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .contentShape(Rectangle())
                     .onTapGesture { expanded.toggle() }
-                    .help(expanded ? "Click to collapse" : "Click to read it all")
+                    .tooltip(expanded ? "Click to collapse" : "Click to read it all")
                 if !footer.isEmpty {
                     Text(footer).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
                 }
@@ -1546,11 +1546,11 @@ private struct BanRow: View {
                     Image(systemName: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.borderless).foregroundStyle(.secondary)
-                .help(ban.isSlack ? "Open the captured evidence (the quoted words)"
-                      : "Open the captured evidence (gh content\(ban.screenshot == true ? " + screenshot" : ""))")
+                .tooltip(ban.isSlack ? "Open the captured evidence (the quoted words)"
+                         : "Open the captured evidence (gh content\(ban.screenshot == true ? " + screenshot" : ""))")
             }
             Button(action: onUnban) { Image(systemName: "xmark.circle.fill") }
-                .buttonStyle(.borderless).foregroundStyle(.secondary).help("Un-ban \(ban.displayName)")
+                .buttonStyle(.borderless).foregroundStyle(.secondary).tooltip("Un-ban \(ban.displayName)")
         }
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.06)))
@@ -1587,8 +1587,8 @@ private struct MergeButton: View {
         }
         .buttonStyle(.plain)
         .disabled(busy)
-        .help(conflicts ? "Merge main into this PR and resolve the conflicts."
-                        : "Squash-merge this PR from here.")
+        .tooltip(conflicts ? "Merge main into this PR and resolve the conflicts."
+                           : "Squash-merge this PR from here.")
     }
 }
 
@@ -1625,6 +1625,6 @@ private struct ResultRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Open #\(item.id) in browser")
+        .tooltip("Open #\(item.id) in browser")
     }
 }

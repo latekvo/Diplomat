@@ -17,9 +17,8 @@ import pytest
 from test_autofix import _spawn_recorder, store  # noqa: F401 — fixture
 from test_comms_core import MESSAGE, _Slack, _tools, slack  # noqa: F401 — fixture
 from test_comms_store import (  # noqa: F401 — fixture
-    qkey,
     DISPATCHED, _ask, _decision, _feed_lines, _item, _logged, _message, _rows, _sweep_review,
-    _tick, comms_store, needs_core)
+    _tick, comms_store, needs_core, qkey)
 
 from diplomat_app import bans
 from diplomat_app.store import Store, app_settings

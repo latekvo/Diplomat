@@ -533,6 +533,35 @@ def test_unaddressed_threads_login_compare_is_case_insensitive():
     assert len(pr2.unaddressed_threads("alice")) == 1
 
 
+def test_a_runs_unanswered_finding_on_my_pr_is_owed():
+    # A run posts under my login, so the finding it left reads as my own last word;
+    # it is owed until someone replies or resolves it. Mirrors the TrackTest parse.
+    from diplomat_app.autofixmonitor import _parse_snapshots
+
+    tag = "\\[[Diplomat](https://github.com/latekvo/Diplomat), Opus 5.5\\]: "
+
+    def thread(login, body="", count=1, resolved=False, can_resolve=True):
+        return {"isResolved": resolved, "viewerCanResolve": can_resolve,
+                "comments": {"totalCount": count,
+                             "nodes": [{"author": {"login": login}, "body": body}]}}
+
+    threads = [
+        thread("reviewer"),                              # owed
+        thread("me"),                                    # mine, untagged: answered
+        thread("me", "\n " + tag + "a finding"),           # a run's finding: owed
+        thread("me", tag + "Fixed in abc", count=2),     # replied to: answered
+        thread("me", tag + "a finding", resolved=True),  # resolved: not owed
+        thread("me", tag + "a finding", can_resolve=False),
+    ]
+    env = {"data": {"search": {"nodes": [{"number": 7, "reviewThreads": {"nodes": threads}}]}}}
+    assert _parse_snapshots(env, "ME")[0].threads_i_owe == 2
+
+    run_finding = ReviewThread(is_resolved=False, viewer_can_resolve=True,
+                               last_comment_author="me", unanswered_run_finding=True)
+    pr = OpenPR(1, "t", "u", False, "me", NOW, None, [], None, [run_finding])
+    assert pr.unaddressed_threads("me") == [run_finding]
+
+
 def test_repo_path_resolution(tmp_path):
     """Settings → REPO ROOTS drives the `cd` in every spawned session.
 
