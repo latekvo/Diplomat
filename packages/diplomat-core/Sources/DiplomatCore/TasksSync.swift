@@ -68,7 +68,7 @@ public struct TaskItem: Equatable, Sendable {
     }
 
     /// Of one `issueOrPullRequest` node.
-    init?(node: [String: Any]) {
+    public init?(node: [String: Any]) {
         guard let type = node["__typename"] as? String, let title = node["title"] as? String,
               let url = node["url"] as? String, let state = node["state"] as? String else { return nil }
         func nodes(_ key: String) -> [[String: Any]] {

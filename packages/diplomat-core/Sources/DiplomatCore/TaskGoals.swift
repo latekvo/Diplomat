@@ -379,7 +379,7 @@ public enum TaskGrouper {
         return finish(applied ?? Result(ok: false, error: "could not lock \(lock.path)", created: 0, added: 0))
     }
 
-    static func arguments(_ model: CoreAssets.TasksModel.Grouper) -> [String] {
+    public static func arguments(_ model: CoreAssets.TasksModel.Grouper) -> [String] {
         ["-p", "--model", model.model,
          "--tools", "",
          "--strict-mcp-config",
@@ -440,7 +440,7 @@ public enum TaskGrouper {
 
     /// The answer in `claude`'s output (its `structured_output`, or a JSON `result`); a
     /// bare `{"goals": …}` counts too. Nil when none is there.
-    static func parse(_ output: Data) -> Swift.Result<[Answer], ParseError>? {
+    public static func parse(_ output: Data) -> Swift.Result<[Answer], ParseError>? {
         guard let object = CommsDecision.answerObject(in: output, key: "goals") else { return nil }
         let root: [String: Any]
         switch object {

@@ -3433,6 +3433,7 @@ try commsSmoke()
 print("comms assertions passed")
 
 try await tasksSmoke()
+try await goalsSmoke()
 print("tasks assertions passed")
 
 // ---- Golden prompts (cross-platform parity) ----
