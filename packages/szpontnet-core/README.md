@@ -54,11 +54,14 @@ class MyHost(szpontnet.host.Host):
     def model(self):
         return {"duties": [{"id": "render", "placement": {"tokenAware": False, "spread": []}}]}
 
-    def run_job(self, prompt, done_path):
-        ...  # your machine, your rules
+    def run_job(self, prompt, done_path, work_key=None):
+        ...  # your machine, your rules; work_key is None for a job without one
 
 szpontnet.host.set_host(MyHost())
 ```
+
+A `run_job` whose signature has no `work_key` is called with the first two arguments
+alone, so a host written against the two-argument form keeps working.
 
 ## Its own tests
 

@@ -37,7 +37,8 @@ def spawned(monkeypatch):
     from szpontnet import node as node_mod
 
     monkeypatch.setattr(node_mod.spawnjob, "spawn_job",
-                        lambda prompt, done_path=None: calls.append(prompt) or "/p")
+                        lambda prompt, done_path=None, work_key=None:
+                            calls.append(prompt) or "/p")
     return calls
 
 
@@ -72,6 +73,21 @@ def test_a_machine_with_room_runs_it(node, spawned):
     host.set_host(_Busy(full=False))
     assert node._spawn_local(_job())[0] == "spawned"
     assert spawned == ["p"]
+
+
+def test_the_spawn_is_handed_the_jobs_work_key(node, monkeypatch):
+    """A host whose machine runs different work in different places picks the place
+    by it; a job dispatched without one hands over ``None``."""
+    from szpontnet import node as node_mod
+
+    keys: list = []
+    monkeypatch.setattr(node_mod.spawnjob, "spawn_job",
+                        lambda prompt, done_path=None, work_key=None:
+                            keys.append(work_key) or "/p")
+    host.set_host(_Busy(full=False))
+    node._spawn_local(_job())
+    node._spawn_local(_job(work_key=""))
+    assert keys == ["review:github.com/o/r#1@sha", None]
 
 
 def test_work_already_running_here_is_deduped_not_declined(node, spawned):
