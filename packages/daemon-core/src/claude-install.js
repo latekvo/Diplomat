@@ -107,9 +107,9 @@ export function claudeCodeInstall({ name, mcpJs, skillSrc, ruleSrc, claudeMd, ba
   /// deliberately NOT on `command` matching the node running right now: Diplomat's two
   /// front-ends, which both install the allocator, resolve node slightly differently, and
   /// an equality check there would have each of them see the other's registration as
-  /// drift and reinstall on every
-  /// launch, forever. A registration pointing at a deleted node, or at another
-  /// checkout's mcp.js, is the real breakage — and both of those this catches.
+  /// drift and reinstall on every launch, forever. A registration pointing at a deleted
+  /// node, or at another checkout's mcp.js, is the real breakage — and both of those
+  /// this catches.
   function drift() {
     const stale = [];
     if (!sameBytes(skillSrc, path.join(skillDir, 'SKILL.md'))) stale.push('skill');
