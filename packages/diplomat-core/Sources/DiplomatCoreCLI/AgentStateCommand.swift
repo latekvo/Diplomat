@@ -22,7 +22,8 @@ import Foundation
 /// { "now": 1000000.0, "limit": 2, "deadline": 14400.0,
 ///   "records": [ {"runId": …, "dispatchedAt": …, "pid": …, …} ],
 ///   "evidence": { "processes": {"status": "present", "value": {"4242": {…}}},
-///                 "liveAgents": {"status": "present", "value": {"404": "pts/3"}}, … } }
+///                 "mergedPrs": {"status": "present", "value": ["o/r#12"]},
+///                 "liveAgents": {"status": "present", "value": {"o/r#404": "pts/3"}}, … } }
 /// ```
 /// Output: the resolved rows in display order, every record's verdict whether drawn or
 /// not, every projection, and the records as the pipeline left them — so a claim
@@ -40,8 +41,8 @@ enum AgentStateCommand {
                                 now: now, limit: limit, deadline: deadline)
 
         var inFlight: [String: Bool] = [:]
-        for pr in Set(t.records.compactMap(\.prNumber)) {
-            inFlight[String(pr)] = t.inFlight(prNumber: pr)
+        for item in Set(t.records.compactMap(\.item)) {
+            inFlight[item] = t.inFlight(item: item)
         }
         func verdict(_ s: AgentState.Resolution) -> [String: Any] {
             ["state": s.state.rawValue, "reason": s.reason, "wedged": s.wedged,
@@ -106,11 +107,6 @@ enum AgentStateCommand {
         return .present(coerced)
     }
 
-    private static func intSet(_ v: Any) -> Set<Int>? {
-        guard let a = v as? [Any] else { return nil }
-        return Set(a.compactMap { ($0 as? NSNumber)?.intValue })
-    }
-
     private static func decodeEvidence(_ d: [String: Any]) -> AgentState.Evidence {
         AgentState.Evidence(
             processes: decodeObs(d["processes"]) { v in
@@ -128,15 +124,9 @@ enum AgentStateCommand {
             sentinels: decodeObs(d["sentinels"]) { ($0 as? [String]).map(Set.init) },
             tails: decodeObs(d["tails"]) { $0 as? [String: String] },
             claims: decodeObs(d["claims"]) { ($0 as? [String]).map(Set.init) },
-            mergedPRs: decodeObs(d["mergedPrs"]) { intSet($0) },
+            mergedPRs: decodeObs(d["mergedPrs"]) { ($0 as? [String]).map(Set.init) },
             liveAgents: decodeObs(d["liveAgents"]) { v in
-                guard let m = v as? [String: Any] else { return nil }
-                var out: [Int: String] = [:]
-                for (k, tty) in m {
-                    guard let pr = Int(k) else { continue }
-                    out[pr] = tty as? String ?? ""
-                }
-                return out
+                (v as? [String: Any])?.mapValues { $0 as? String ?? "" }
             },
             sessions: decodeObs(d["sessions"]) { v in
                 guard let m = v as? [String: Any] else { return nil }

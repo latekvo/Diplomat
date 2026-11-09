@@ -35,4 +35,51 @@ extension PRRef.LocalRepo {
             .map(\.element.repo)
             .filter { seen.insert($0.slug.lowercased()).inserted }
     }
+
+    /// The coordinates a config with this home targets: the home's, else
+    /// `assets/config.json`'s.
+    static func coordinates(home: PRRef.LocalRepo?) -> (owner: String, repo: String) {
+        home.map { ($0.owner, $0.repo) } ?? CoreAssets.repoCoordinates()
+    }
+}
+
+/// The repo roots the operator loaded, each read as the one GitHub repo every automated
+/// job works there. Python twin: `localrepos.resolve_roots`.
+public enum RepoRoots {
+    /// Each of `paths` (a leading `~` expanded) as the repo it is a checkout of, in order.
+    ///
+    /// `remotes` maps an expanded path to its `git config --local --get-regexp
+    /// '^remote\..*\.url$'` output; a path missing from it is no checkout. A fork clone
+    /// names the configured repo when one of its remotes is that repo, and otherwise its
+    /// first remote (`LocalRepo.entries` order). A path with no GitHub remote is skipped,
+    /// and a repo two paths name keeps the first. When nothing resolves, the first path
+    /// stands for the configured repo, which is how a single missing or remote-less
+    /// checkout has always been worked.
+    public static func resolve(paths: [String], remotes: [String: String],
+                               configured: (owner: String, repo: String)) -> [PRRef.LocalRepo] {
+        let want = "\(configured.owner)/\(configured.repo)".lowercased()
+        var seen = Set<String>()
+        var out: [PRRef.LocalRepo] = []
+        for raw in paths {
+            let path = expand(raw)
+            guard let config = remotes[path] else { continue }
+            let entries = PRRef.LocalRepo.entries(path: path, remotes: config)
+            guard let pick = entries.first(where: { $0.slug.lowercased() == want }) ?? entries.first,
+                  seen.insert(pick.slug.lowercased()).inserted else { continue }
+            out.append(pick)
+        }
+        if out.isEmpty, let first = paths.first {
+            return [PRRef.LocalRepo(owner: configured.owner, repo: configured.repo,
+                                    path: expand(first))]
+        }
+        return out
+    }
+
+    /// `path` with a leading `~` (alone or before a `/`) replaced by `$HOME`, as Python's
+    /// `os.path.expanduser` does, and otherwise byte for byte as given.
+    public static func expand(_ path: String) -> String {
+        guard path == "~" || path.hasPrefix("~/") else { return path }
+        let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+        return home + path.dropFirst()
+    }
 }

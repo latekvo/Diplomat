@@ -106,3 +106,63 @@ public struct PRRef: Equatable {
         }
     }
 }
+
+// MARK: - Item identity across repos
+
+extension PRRef {
+    /// One PR or issue across every repo this machine works: `owner/repo#n`, lowercased.
+    /// GitHub numbers PRs and issues in one space per repo, so the key carries no kind.
+    /// Python twin: `prref.item_key`.
+    public static func itemKey(owner: String, repo: String, number: Int) -> String {
+        "\(owner.lowercased())/\(repo.lowercased())#\(number)"
+    }
+
+    /// The item key of a github.com PR or issue URL (any trailing path or query), or nil
+    /// for anything else.
+    public static func itemKey(url: String) -> String? {
+        guard let g = firstMatch(url.trimmingCharacters(in: .whitespacesAndNewlines),
+                                 #"^(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues)/([0-9]+)(?:[/?#]|$)"#),
+              let n = Int(g[3]), n > 0 else { return nil }
+        return itemKey(owner: g[1], repo: g[2], number: n)
+    }
+
+    /// An item key's slug and number, or nil when `key` is not one.
+    public static func splitItemKey(_ key: String) -> (slug: String, number: Int)? {
+        guard let hash = key.lastIndex(of: "#") else { return nil }
+        let slug = String(key[..<hash])
+        let digits = String(key[key.index(after: hash)...])
+        let halves = slug.split(separator: "/", omittingEmptySubsequences: false)
+        guard halves.count == 2, !halves[0].isEmpty, !halves[1].isEmpty,
+              isDigits(digits), let n = Int(digits), n > 0 else { return nil }
+        return (slug, n)
+    }
+
+    /// A key persisted by a single-repo build, a bare `"N"`, as the item key of `N` in the
+    /// `primary` root (its slug); any other key unchanged.
+    public static func migrateItemKey(_ key: String, primary: String) -> String {
+        isDigits(key) ? "\(primary.lowercased())#\(key)" : key
+    }
+
+    /// A queue key persisted by a single-repo build, `"verb:N"`, as `"verb:<primary>#N"`;
+    /// any other key unchanged. An investigation's key is numbered by a Slack ts, never
+    /// by a repo, so it is never migrated.
+    public static func migrateQueueKey(_ key: String, primary: String) -> String {
+        guard let colon = key.firstIndex(of: ":") else { return key }
+        let verb = String(key[..<colon])
+        let rest = String(key[key.index(after: colon)...])
+        guard verb != AgentTaskQueue.investigateAction, isDigits(rest) else { return key }
+        return "\(verb):\(migrateItemKey(rest, primary: primary))"
+    }
+
+    /// How a job label names an item: `#N` while one root is loaded, `<repo>#N` (the repo
+    /// name alone) once several are.
+    public static func itemLabel(item: String, roots: Int) -> String {
+        guard let (slug, n) = splitItemKey(item) else { return item }
+        guard roots > 1, let repo = slug.split(separator: "/").last else { return "#\(n)" }
+        return "\(repo)#\(n)"
+    }
+
+    private static func isDigits(_ s: String) -> Bool {
+        !s.isEmpty && s.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+}

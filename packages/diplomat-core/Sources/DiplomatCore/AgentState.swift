@@ -352,6 +352,10 @@ public enum AgentState {
         /// Does this run's agent execute on THIS machine? What the device's cap counts
         /// — the cap bounds what this box runs, not what it dispatched.
         public var runsHere: Bool { placement != .meshPeer }
+
+        /// The item this run is about (`PRRef.itemKey`), read off `prURL`; nil for a run
+        /// about no PR, which nothing dedups against.
+        public var item: String? { prNumber == nil ? nil : PRRef.itemKey(url: prURL) }
     }
 
     /// Everything the outside world had to say this tick, each part able to say it had
@@ -365,13 +369,14 @@ public enum AgentState {
         public var tails: Observation<[String: String]>
         /// Work keys currently claimed somewhere on the mesh.
         public var claims: Observation<Set<String>>
-        /// PR numbers GitHub reports as MERGED.
-        public var mergedPRs: Observation<Set<Int>>
-        /// PR number → the tty of an agent found by its prompt text in the process
-        /// table. The pre-registry identity mechanism, and still the only evidence
-        /// about a run whose terminal this applet did not open — a mesh placement that
-        /// landed back here, whose pid file belongs to the node that spawned it.
-        public var liveAgents: Observation<[Int: String]>
+        /// The items (`PRRef.itemKey`) of the PRs GitHub reports as MERGED.
+        public var mergedPRs: Observation<Set<String>>
+        /// Item → the tty of an agent found by its prompt text in the process table
+        /// (`promptItems`). The pre-registry identity mechanism, and still the only
+        /// evidence about a run whose terminal this applet did not open — a mesh
+        /// placement that landed back here, whose pid file belongs to the node that
+        /// spawned it.
+        public var liveAgents: Observation<[String: String]>
         /// run id → what that run's own agent session says about it. Only a runner
         /// that serves one appears here, so a run's absence is ordinary and reads as
         /// "ask the screen" rather than as anything about the run.
@@ -397,8 +402,8 @@ public enum AgentState {
                     sentinels: Observation<Set<String>> = .unavailable("not probed"),
                     tails: Observation<[String: String]> = .unavailable("not probed"),
                     claims: Observation<Set<String>> = .unavailable("not probed"),
-                    mergedPRs: Observation<Set<Int>> = .unavailable("not probed"),
-                    liveAgents: Observation<[Int: String]> = .unavailable("not probed"),
+                    mergedPRs: Observation<Set<String>> = .unavailable("not probed"),
+                    liveAgents: Observation<[String: String]> = .unavailable("not probed"),
                     sessions: Observation<[String: SessionState]> = .unavailable("not probed"),
                     activity: Observation<[String: TurnReport]> = .unavailable("not probed"),
                     tokensLeft: Observation<Bool> = .unavailable("not probed")) {
@@ -716,7 +721,7 @@ public enum AgentState {
             Resolution(runID: record.runID, state: state, reason: reason)
         }
         if !record.untracked, let merged = evidence.mergedPRs.value,
-           let pr = record.prNumber, merged.contains(pr) {
+           let item = record.item, merged.contains(item), let pr = record.prNumber {
             return done(.merged, "PR #\(pr) is merged")
         }
         if let sentinels = evidence.sentinels.value, sentinels.contains(record.runID) {
@@ -949,7 +954,7 @@ public enum AgentState {
                 ? "failed" : evidence.liveAgents.reason
             return done(.unknown, "no pid, and the agent scan \(why)")
         }
-        if let pr = record.prNumber, live[pr] != nil {
+        if let item = record.item, live[item] != nil, let pr = record.prNumber {
             return classifyActivity(record, evidence: evidence, now: now, done: done,
                                     aliveReason: "an agent is up on PR #\(pr)")
         }
@@ -965,9 +970,9 @@ public enum AgentState {
             return done(.failed, "its terminal never ran the command "
                                  + "(no pid file \(secs(age)) after dispatch)")
         }
-        guard let pr = record.prNumber else {
+        guard record.item != nil, let pr = record.prNumber else {
             // Nothing to look for: a mesh-here run has no pid file to be missing, and
-            // with no PR either it cannot be found by the scan, so its absence is not
+            // with no item either it cannot be found by the scan, so its absence is not
             // evidence of anything. The one rung that stamps `unfindable`; see
             // `Resolution.unfindable`.
             var nowhere = done(.unknown, "no pid recorded \(secs(age)) after dispatch")
@@ -995,7 +1000,7 @@ public enum AgentState {
                 ? "failed" : evidence.liveAgents.reason
             return done(.unknown, "the agent scan \(why)")
         }
-        if let pr = record.prNumber, live[pr] != nil {
+        if let item = record.item, live[item] != nil {
             return classifyActivity(record, evidence: evidence, now: now, done: done,
                                     aliveReason: released(record, "found in process table"))
         }
@@ -1091,6 +1096,27 @@ public enum AgentState {
 
     // MARK: - Untracked agents
 
+    /// The items an agent's prompt names, in order: each `PR #<n> in <owner>/<repo>` whose
+    /// repo is one of `slugs` (lowercase slugs). What the process-table scan matches.
+    ///
+    /// The prompts end that sentence with a period, which a repo name may also contain,
+    /// so a trailing `.` the roots do not account for is dropped before the slug is
+    /// looked up.
+    public static func promptItems(_ text: String, slugs: Set<String>) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: #"PR #([0-9]+) in ([\w.-]+)/([\w.-]+)"#)
+        else { return [] }
+        var out: [String] = []
+        for m in re.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let n = Range(m.range(at: 1), in: text).flatMap({ Int(text[$0]) }),
+                  let o = Range(m.range(at: 2), in: text),
+                  let r = Range(m.range(at: 3), in: text) else { continue }
+            var slug = "\(text[o])/\(text[r])".lowercased()
+            while !slugs.contains(slug), slug.hasSuffix(".") { slug.removeLast() }
+            if slugs.contains(slug) { out.append("\(slug)#\(n)") }
+        }
+        return out
+    }
+
     /// Fill in each run's tty, from whichever source can reach its agent.
     ///
     /// Nothing tells the applet a run's tty at spawn time — it opens a terminal and walks
@@ -1105,11 +1131,11 @@ public enum AgentState {
     /// scan, which is looser but is the same evidence that says it is alive at all.
     ///
     /// A tty is adopted once and then left alone: it is a property of the process, and a
-    /// process does not change ttys. The scan names one tty per PR, so one another record
-    /// already holds is that record's agent and is not taken off it.
+    /// process does not change ttys. The scan names one tty per item, so one another
+    /// record already holds is that record's agent and is not taken off it.
     public static func adoptTTYs(_ records: [RunRecord],
                                  processes: Observation<[Int: ProcInfo]>,
-                                 liveAgents: Observation<[Int: String]>) -> [RunRecord] {
+                                 liveAgents: Observation<[String: String]>) -> [RunRecord] {
         let table = processes.value ?? [:]
         let scan = liveAgents.value ?? [:]
         let held = Set(records.map(\.tty).filter { !$0.isEmpty })
@@ -1118,7 +1144,7 @@ public enum AgentState {
             let found: String
             if let pid = r.pid, let proc = table[pid] {
                 found = proc.tty
-            } else if let pr = r.prNumber, let seen = scan[pr], !held.contains(seen) {
+            } else if let item = r.item, let seen = scan[item], !held.contains(seen) {
                 found = seen
             } else {
                 found = ""
@@ -1133,7 +1159,7 @@ public enum AgentState {
     /// Records for live agents nobody dispatched, so they are deduped against and drawn
     /// rather than merely subtracted from a slot count.
     ///
-    /// `liveAgents` maps a PR number to the tty its agent runs on. The tty is what lets
+    /// `liveAgents` maps an item to the tty its agent runs on. The tty is what lets
     /// one of these be classified as working or idle at all — without it every untracked
     /// agent would read as running and hold a bay until its window closed, which is the
     /// state the cap exists to prevent.
@@ -1151,13 +1177,13 @@ public enum AgentState {
     /// One is made once and then kept in the book like any other run, because the
     /// stillness backstop measures a screen against the last one seen and a record
     /// re-derived every tick remembers none: its clock never leaves zero, so it can never
-    /// be found wedged and its window is never closed. The dedup on PR number is what
-    /// keeps the next tick from making a second.
+    /// be found wedged and its window is never closed. The dedup on item is what keeps
+    /// the next tick from making a second.
     ///
     /// They count as automatic. An agent whose trigger is unknown spending a bay defers
     /// work; the opposite error dispatches a second agent onto a PR that has one.
     public static func synthesizeUntracked(_ records: [RunRecord],
-                                           liveAgents: Observation<[Int: String]>,
+                                           liveAgents: Observation<[String: String]>,
                                            now: TimeInterval) -> [RunRecord] {
         guard let live = liveAgents.value else { return records }
         let held = Set(records.map(\.tty).filter { !$0.isEmpty })
@@ -1169,7 +1195,7 @@ public enum AgentState {
             // inherits the old one's stillness. A released run with a pid is held to
             // that process instead, whose tty never changes, and no record takes
             // another's tty.
-            guard r.untracked, r.pid == nil, let pr = r.prNumber, let tty = live[pr],
+            guard r.untracked, r.pid == nil, let item = r.item, let tty = live[item],
                   !tty.isEmpty, tty != r.tty, !held.contains(tty)
             else { out.append(r); continue }
             var moved = r
@@ -1178,12 +1204,13 @@ public enum AgentState {
             moved.quietSince = nil
             out.append(moved)
         }
-        let known = Set(out.compactMap { $0.prNumber })
-        for pr in Set(live.keys).subtracting(known).sorted() {
-            out.append(RunRecord(runID: "untracked:\(pr)", dispatchedAt: now,
-                                 prNumber: pr,
+        let known = Set(out.compactMap(\.item))
+        for item in Set(live.keys).subtracting(known).sorted() {
+            guard let (slug, pr) = PRRef.splitItemKey(item) else { continue }
+            out.append(RunRecord(runID: "untracked:\(item)", dispatchedAt: now,
+                                 prNumber: pr, prURL: "https://github.com/\(slug)/pull/\(pr)",
                                  source: AgentDispatchGate.Source.auto.rawValue,
-                                 placement: .local, tty: live[pr] ?? "",
+                                 placement: .local, tty: live[item] ?? "",
                                  untracked: true))
         }
         return out
@@ -1203,30 +1230,30 @@ public enum AgentState {
     /// Only where the scan would re-book once the PR's other records are gone: a run on
     /// this machine, on a PR the scan sees. One with no pid is held to the scan's
     /// sighting, which cannot tell two agents apart, so it is released only alone on its
-    /// PR. Beside a record already named `untracked:<pr>` (the run itself, if a hand edit
-    /// made it a dispatch), its run ID carries its pid, and without one it is not released.
-    /// Not a run a backstop ended, whose window is being closed. And only while the
-    /// released record resolves to a live agent, or to one the stillness backstop ends
-    /// at once, so that its window is closed.
+    /// PR. Beside a record already named `untracked:<item>` (the run itself, if a hand
+    /// edit made it a dispatch), its run ID carries its pid, and without one it is not
+    /// released. Not a run a backstop ended, whose window is being closed. And only while
+    /// the released record resolves to a live agent, or to one the stillness backstop
+    /// ends at once, so that its window is closed.
     public static func releaseEnded(_ records: [RunRecord], states: [String: Resolution],
                                     evidence: Evidence, now: TimeInterval,
                                     deadline: TimeInterval? = nil) -> [(RunRecord, Resolution)] {
         let live = evidence.liveAgents.value ?? [:]
-        var count: [Int: Int] = [:]
-        for pr in records.compactMap(\.prNumber) { count[pr, default: 0] += 1 }
+        var count: [String: Int] = [:]
+        for item in records.compactMap(\.item) { count[item, default: 0] += 1 }
         var taken = Set(records.map(\.runID))
         var out: [(RunRecord, Resolution)] = []
         for r in records {
             guard let v = states[r.runID], ended.contains(v.state), !v.wedged, !v.expired,
-                  r.runsHere, let pr = r.prNumber, live[pr] != nil,
-                  r.pid != nil || count[pr] == 1 else { continue }
-            var runID = "untracked:\(pr)"
+                  r.runsHere, let item = r.item, live[item] != nil,
+                  r.pid != nil || count[item] == 1 else { continue }
+            var runID = "untracked:\(item)"
             if taken.contains(runID) {
                 guard let pid = r.pid else { continue }
                 runID += ":\(pid)"
             }
             let heir = RunRecord(runID: runID, dispatchedAt: r.dispatchedAt,
-                                 prNumber: pr, prURL: r.prURL, source: r.source,
+                                 prNumber: r.prNumber, prURL: r.prURL, source: r.source,
                                  placement: r.placement, pid: r.pid, tty: r.tty,
                                  quietDigest: r.quietDigest, quietSince: r.quietSince,
                                  reapRefusedAt: r.reapRefusedAt,
@@ -1246,12 +1273,12 @@ public enum AgentState {
     // re-derives a state, which is the whole point: the answers can disagree with each
     // other only if this file is wrong, not if one call site of five drifted.
 
-    /// Does this PR already have an agent, for the dispatch gate's dedup? A released one
-    /// does not count: its work on the PR is done.
+    /// Does this item already have an agent, for the dispatch gate's dedup? A released
+    /// one does not count: its work on the PR is done.
     public static func inFlight(records: [RunRecord], states: [String: Resolution],
-                                prNumber: Int) -> Bool {
+                                item: String) -> Bool {
         records.contains { r in
-            guard r.prNumber == prNumber, !r.released, let s = states[r.runID]
+            guard r.item == item, !r.released, let s = states[r.runID]
             else { return false }
             return blocking.contains(s.state)
         }
@@ -1389,8 +1416,8 @@ public enum AgentState {
         /// The instant every verdict below was resolved against.
         public var now: TimeInterval = 0
 
-        public func inFlight(prNumber: Int) -> Bool {
-            AgentState.inFlight(records: records, states: states, prNumber: prNumber)
+        public func inFlight(item: String) -> Bool {
+            AgentState.inFlight(records: records, states: states, item: item)
         }
     }
 
