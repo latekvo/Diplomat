@@ -3502,27 +3502,87 @@ def test_the_terminals_own_clock_does_not_keep_a_window_open(store, monkeypatch)
     assert killed == ["pts/73"]
 
 
-def test_a_run_that_merely_finished_keeps_its_window(store, monkeypatch):
-    """Its agent is alive at its prompt holding the whole task, and the operator may
-    still want to read it or type into it. Closing this one is the mistake the
-    backstop must not make on the way to closing the wedged one."""
-    import time as _time
+def _reported_done(number, *, source=autofix.SOURCE_AUTO, ledger_key=""):
+    """One run at its prompt whose CLI reported the turn over, as the probes see it."""
+    now = time.time()
+    rec = register_run(number, pid=7000 + number, tty=f"pts/{number}", source=source,
+                       dispatched_at=now - 60, ledger_key=ledger_key)
+    return rec, dict(processes=agent_alive(7000 + number, tty=f"pts/{number}", elapsed=60),
+                     tails={f"pts/{number}": AT_PROMPT},
+                     activity={rec.run_id: ("idle", now - 5)})
+
+
+def test_an_automatic_run_its_cli_reported_done_has_its_window_closed(store, monkeypatch):
+    """What it did is on GitHub, not on its screen, so the agent left at its prompt is
+    nobody's. Its own session is the route, as the reaper's is, and the feed says so
+    beside the retirement."""
+    from diplomat_runtime import activity, agentregistry
+
+    killed = _killed(monkeypatch, by_name=True)
+    rec, probes_ = _reported_done(701)
+    fake_probes(monkeypatch, **probes_)
+
+    store._settle_agents()
+
+    assert killed == [tmuxwatch.session_name(rec.run_id)]
+    assert agentregistry.load() == []
+    assert [(e.action, e.detail) for e in reversed(activity.read())
+            if e.action in ("retire", "kill-device")] == [
+        ("retire", f"{rec.run_id} — its CLI reported the turn over"),
+        ("kill-device", f"closed {rec.run_id}'s window — its CLI reported the turn over")]
+
+
+def test_a_finished_run_in_a_session_it_did_not_name_is_closed_by_its_tty(
+        store, monkeypatch):
+    """When its own session does not answer — one the mesh placed here, whose terminal
+    the node opened — its tty does: the reaper's second route."""
     from diplomat_runtime import agentregistry
-    from diplomat_runtime import agentstate as A
 
     killed = _killed(monkeypatch)
-    now = _time.time()
-    rec = register_run(701, pid=7001, tty="pts/71", dispatched_at=now - 60)
-    fake_probes(monkeypatch, processes=agent_alive(7001, tty="pts/71", elapsed=60),
-                tails={"pts/71": AT_PROMPT},
-                activity={rec.run_id: ("idle", now - 5)})
+    _rec, probes_ = _reported_done(704)
+    fake_probes(monkeypatch, **probes_)
 
-    tick = store._agent_tick()
-
-    assert tick.states[rec.run_id].state == A.FINISHED, \
-        "the run must actually be finished, or this pins nothing"
     store._settle_agents()
-    assert killed == [], "a finished run's window is not the reaper's to close"
+
+    assert killed == ["pts/704"]
+    assert agentregistry.load() == []
+
+
+def test_a_run_the_operator_started_keeps_its_window_when_it_finishes(store, monkeypatch):
+    """A panel click is the operator's own session: they may still want to read it
+    or type into it."""
+    from diplomat_runtime import activity, agentregistry
+
+    killed = _killed(monkeypatch, by_name=True)
+    _rec, probes_ = _reported_done(702, source=autofix.SOURCE_PANEL)
+    fake_probes(monkeypatch, **probes_)
+
+    store._settle_agents()
+
+    assert agentregistry.load() == [], "the run must actually retire, or this pins nothing"
+    assert killed == []
+    assert [e for e in activity.read() if e.action == "kill-device"] == []
+
+
+def test_a_finished_runs_window_that_would_not_close_does_not_keep_the_run(
+        store, monkeypatch):
+    """Unlike a backstop's, this close is no licence: the agent is done whatever its
+    window does, so the run retires and is priced, holds no bay, and its refusal is
+    said once rather than stamped for a retry."""
+    from diplomat_runtime import activity, agentregistry
+
+    asked = _refused(monkeypatch)
+    rec, probes_ = _reported_done(703, ledger_key="review:o/r#703")
+    fake_probes(monkeypatch, **probes_)
+
+    store._settle_agents()
+
+    assert asked, "the close must actually have been attempted"
+    assert agentregistry.load() == []
+    assert [t.key for t in telemetry.load().tasks] == ["review:o/r#703"]
+    assert [e.detail for e in activity.read() if e.action == "kill-device"] == [
+        f"could not close {rec.run_id}'s window; it stays open"]
+    assert store.free_auto_slots == 2
 
 
 def test_a_finished_runs_agent_is_not_rebooked_against_its_pr(store, monkeypatch):
@@ -3613,11 +3673,10 @@ def test_a_run_whose_agent_left_while_nobody_could_look_keeps_its_hands_off_the_
 
 # MARK: - …including the window of an agent nobody dispatched
 #
-# The ordinary end state, not a rare one: a run retired by its runner's turn report
-# keeps its window on purpose, its record is forgotten, and its still-live agent is
-# re-derived as `untracked:<pr>` on the very next tick. Everything below is about the
-# record that re-derivation leaves — which has to be remembered long enough for the
-# stillness clock to run, and dropped the moment the agent it describes is gone.
+# An agent this applet finds with no run behind it is re-derived as `untracked:<pr>`
+# on every tick. Everything below is about the record that re-derivation leaves —
+# which has to be remembered long enough for the stillness clock to run, and dropped
+# the moment the agent it describes is gone.
 
 
 def test_an_untracked_runs_stillness_clock_runs_across_ticks(store, monkeypatch):

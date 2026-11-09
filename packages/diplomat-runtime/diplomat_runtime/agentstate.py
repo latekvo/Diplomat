@@ -5,11 +5,12 @@ the same evidence: is this PR in flight, how many bays of the device's cap are f
 what rows does the panel draw, and which record is retired. Patching one moved the
 bug into the others, and the macOS front-end answered all four differently again.
 
-Here they are one function and five projections of its result:
+Here they are one function and six projections of its result:
 
     resolve(records, evidence, now, deadline) -> {run_id: Resolution}
 
     in_flight(...)  cap_load(...)  rows(...)  retirable(...)  reapable(...)
+    close_on_retire(...)
 
 Everything in this module is **pure** — no clock, no subprocess, no filesystem. The
 impure half is each front-end's own probe layer — :mod:`diplomat_app.probes` on Linux,
@@ -621,9 +622,9 @@ class Resolution:
     #: same reason :attr:`wedged` is one: a clock answers about a record whatever
     #: ended it. :func:`past_deadline` still returns an age for a run that a rung
     #: ABOVE the deadline ended — a sentinel, or the agent's own turn report — and
-    #: that run finished the ordinary way, alive at its prompt with the task on the
-    #: screen. Reaping it closes the window over the very thing the operator asked
-    #: for.
+    #: that run ended for a reason of its own. Reaping one whose agent exited walks a
+    #: tty that may be somebody else's by then, and one that reported its turn over is
+    #: :func:`close_on_retire`'s, which retires it whether or not its window closes.
     expired: bool = False
     #: Whether nothing on this machine had anything to LOOK FOR — set by the one rung
     #: that answers UNKNOWN about the record rather than about a probe.
@@ -1321,7 +1322,8 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
     scan as a fresh untracked run, holding the PR and, while its screen is unreadable,
     a bay. A relaunch does this to every finished window still open. The released
     record carries the run's pid (still the identity), tty and stillness clock, and
-    nothing that made it a dispatch.
+    nothing that made it a dispatch. A run whose window :func:`close_on_retire` closes
+    is released too: its agent can outlive the tick, and the close can reach nothing.
 
     Only where the scan would re-book once the PR's other records are gone: a run on
     this machine, on a PR the scan sees. One with no pid is held to the scan's
@@ -1440,9 +1442,9 @@ def reapable(records: list[RunRecord],
     whatever ended it. Both of them are still true of runs the rungs above them ended:
     :func:`went_quiet` keeps maturing across an evidence outage, and
     :func:`past_deadline` holds for the whole life of a long run that then reports its
-    turn over the ordinary way. Those runs are absent from here — their agent is alive
-    at its prompt holding the finished task, and the operator may still want to read
-    it. So is a merged one, for the same reason.
+    turn over the ordinary way. Those runs are absent from here: a run that reported its
+    turn over is :func:`close_on_retire`'s, and one that exited or merged left nothing
+    this verdict can vouch for.
 
     The deadline's own exception is the run nothing could find
     (:attr:`Resolution.unfindable`): a clock ended that one too, but no probe ever saw
@@ -1457,6 +1459,22 @@ def reapable(records: list[RunRecord],
             if r.run_id in states
             and (states[r.run_id].wedged
                  or (states[r.run_id].expired and not states[r.run_id].unfindable))]
+
+
+def close_on_retire(records: list[RunRecord],
+                    states: dict[str, Resolution]) -> list[RunRecord]:
+    """The automatic runs on this machine whose own runner reported the turn over
+    (:attr:`Resolution.reported`): their window is closed as they retire, their work
+    being on GitHub or in a report. A panel run is the operator's session, and an
+    untracked agent's ``auto`` is the cap's assumption, not a dispatch.
+
+    Unlike :func:`reapable`, a close that reaches nothing withholds no retirement: the
+    record a live agent is released to (:func:`release_ended`) is the stillness
+    backstop's.
+    """
+    return [r for r in records
+            if r.runs_here and not r.untracked and r.source == SOURCE_AUTO
+            and r.run_id in states and states[r.run_id].reported]
 
 
 def free_slots(limit: int, occupied: int) -> int:
@@ -1483,6 +1501,9 @@ class Tick:
     #: Of those, the ones a backstop ended — whose window is closed as well as
     #: forgotten. See :func:`reapable`.
     reapable: list[RunRecord]
+    #: Of those, the automatic ones whose runner reported them done — whose window is
+    #: closed as they retire. See :func:`close_on_retire`.
+    close_on_retire: list[RunRecord]
     free_slots: int
     #: The instant every verdict below was resolved against.
     now: float = 0.0
@@ -1518,4 +1539,5 @@ def tick(records: list[RunRecord], evidence: Evidence, now: float, limit: int,
     return Tick(records=records, states=states, rows=rows(records, states),
                 cap_load=load, retirable=retirable(records, states),
                 reapable=reapable(records, states),
+                close_on_retire=close_on_retire(records, states),
                 free_slots=free_slots(limit, len(load)), now=now)

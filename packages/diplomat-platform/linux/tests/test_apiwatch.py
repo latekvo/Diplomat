@@ -595,6 +595,15 @@ def test_scan_noop_when_disabled(store, monkeypatch):
 # MARK: - Closing a run's own window (tmuxwatch.kill_session)
 
 
+@pytest.fixture
+def real_kills(no_host_window_closed, monkeypatch):
+    """The real pair the conftest guard stands in for: each test below closes only
+    a session it opened itself, or runs no tmux at all."""
+    kill_session, kill_window_for_tty = no_host_window_closed
+    monkeypatch.setattr(tmuxwatch, "kill_session", kill_session)
+    monkeypatch.setattr(tmuxwatch, "kill_window_for_tty", kill_window_for_tty)
+
+
 def _live_sessions() -> set[str]:
     out = subprocess.run(["tmux", "list-sessions", "-F", "#{session_name}"],
                          capture_output=True, text=True, check=False)
@@ -612,6 +621,7 @@ def _close_sessions(*names: str) -> None:
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+@pytest.mark.usefixtures("real_kills")
 def test_a_runs_own_session_is_closed_by_its_name():
     """Against the real tmux: the name the spawn opened is the name the reaper computes,
     and killing it takes the window with it."""
@@ -626,6 +636,7 @@ def test_a_runs_own_session_is_closed_by_its_name():
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+@pytest.mark.usefixtures("real_kills")
 def test_a_reap_whose_own_session_is_gone_does_not_take_a_neighbours():
     """The target SYNTAX, which is the whole of this call's safety. tmux resolves a bare
     target exactly, then by PREFIX, then by fnmatch — so a reap of a run whose session
@@ -648,6 +659,7 @@ def test_a_reap_whose_own_session_is_gone_does_not_take_a_neighbours():
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+@pytest.mark.usefixtures("real_kills")
 def test_a_session_that_is_not_there_is_not_a_kill():
     """The reaper reads the answer: False is what sends it on to the tty walk, and a
     True here would let a run be retired with its window still open."""
@@ -655,6 +667,7 @@ def test_a_session_that_is_not_there_is_not_a_kill():
         tmuxwatch.session_name(f"never-opened-{uuid.uuid4().hex[:8]}")) is False
 
 
+@pytest.mark.usefixtures("real_kills")
 def test_a_run_with_no_name_is_never_killed_by_one(monkeypatch):
     """A mesh-placed run has no session of ours; an empty name must reach no tmux at
     all rather than becoming a target that matches whatever tmux feels like."""
@@ -664,6 +677,7 @@ def test_a_run_with_no_name_is_never_killed_by_one(monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+@pytest.mark.usefixtures("real_kills")
 def test_a_client_outside_tmux_under_a_c_locale_still_reads_its_panes(monkeypatch):
     """Where launchd, an autostart entry and CI put the applet: no ``$TMUX`` and no
     UTF-8 in the locale, so tmux sanitizes every control byte of a command's output
@@ -689,6 +703,7 @@ def test_a_client_outside_tmux_under_a_c_locale_still_reads_its_panes(monkeypatc
 # MARK: - the reap closes a window, not the session around it
 
 
+@pytest.mark.usefixtures("real_kills")
 def test_the_tty_route_kills_the_panes_window_and_no_session(monkeypatch):
     """An agent the operator ran by hand sits in a window of THEIR session; reaping
     it must take that window and nothing else of theirs. A session this applet or a
@@ -717,6 +732,7 @@ def test_the_tty_route_kills_the_panes_window_and_no_session(monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="no tmux on this machine")
+@pytest.mark.usefixtures("real_kills")
 def test_a_window_of_a_two_window_session_goes_alone():
     """An agent the operator started in a second window of their own session: the
     reap closes that window and leaves the session and its first window up."""

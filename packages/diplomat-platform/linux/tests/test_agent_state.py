@@ -169,6 +169,29 @@ CASES = [
      rec(), ev(processes={4242: proc()}, tails={"pts/3": WORKING},
                activity=A.Observation.unavailable("could not be read")),
      A.RUNNING, "working"),
+    # The same report from runs whose window is not this applet's to close at retirement
+    # (`close_on_retire`): the operator's own session, an agent nobody dispatched, and
+    # one executing on a peer. The last one a mesh placed here is.
+    ("a run the operator started reporting the turn over is over too",
+     rec(source=A.SOURCE_PANEL),
+     ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+        activity={"r1": ("idle", T0 - 5)}),
+     A.FINISHED, "its CLI reported the turn over"),
+    ("an untracked agent's own turn report ends it like any other",
+     rec(run_id="untracked:337", untracked=True, label="", kind=""),
+     ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+        activity={"untracked:337": ("idle", T0 - 5)}),
+     A.FINISHED, "its CLI reported the turn over"),
+    ("a peer's run whose CLI reported the turn over is over",
+     rec(placement=A.PLACEMENT_MESH_PEER, node="brick", work_key="review:337:sha",
+         pid=None, tty="", claim_seen_at=T0 - 1),
+     ev(claims={"review:337:sha"}, activity={"r1": ("idle", T0 - 5)}),
+     A.FINISHED, "its CLI reported the turn over"),
+    ("a mesh run placed here reporting the turn over is over",
+     rec(placement=A.PLACEMENT_MESH_HERE, work_key="review:337:sha"),
+     ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
+        activity={"r1": ("idle", T0 - 5)}),
+     A.FINISHED, "its CLI reported the turn over"),
 
     # --- the quiescence backstop, for the runs no report reaches ------------
     ("a screen unchanged for twenty minutes is over whatever the status bar says",
@@ -812,15 +835,16 @@ def test_a_refused_reap_never_silences_a_rung_above_the_backstops():
 
 
 def test_the_reap_gate_is_the_verdict_rather_than_the_clocks():
-    """Closing a window is the one destructive thing a tick does, and the run it must
-    never do it to is the long one that finished the ordinary way.
+    """The reaper's licence is the backstop's verdict, and the run it must never take
+    is the long one that ended the ordinary way.
 
     Both clocks stay true after a rung above them ends a run: :func:`past_deadline`
     holds for the rest of a long run's life, and :func:`went_quiet` keeps maturing
     across an evidence outage. So the gate reads which rung actually fired. A
-    five-hour review whose agent reports its turn over is sitting at its prompt with
-    the finished task on the screen — reaping it takes that away, and the audit line
-    would even quote "its CLI reported the turn over" as the reason for closing it."""
+    five-hour review whose agent reports its turn over is :func:`A.close_on_retire`'s,
+    which retires it whether or not its window closes; reaped, a refused close would
+    keep a finished run holding its bay. One whose exit code landed has left its tty,
+    which may be somebody else's by now."""
     def reaped(**evidence_kw) -> bool:
         record = rec(dispatched_at=T0 - PAST_DEADLINE)
         evidence = ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, **evidence_kw)
@@ -847,6 +871,33 @@ def test_a_reaped_window_always_belongs_to_a_retired_run():
         states = {record.run_id: A.resolve_one(record, evidence, T0, A.RUN_DEADLINE)}
         reaped = {r.run_id for r in A.reapable([record], states)}
         assert reaped <= {r.run_id for r in A.retirable([record], states)}, name
+
+
+#: The CASES whose run's window is closed as it retires: an automatic run on this
+#: machine whose own runner reported its turn over and gone well.
+CLOSED_ON_RETIRE = {
+    "its CLI reporting the turn over ends a run whose process is still alive",
+    "a mesh run placed here reporting the turn over is over",
+    "a session that finished its turn ends the run though the hint is stale",
+    "a session answer needs no screen at all",
+    "its CLI reporting the turn over ends a run nobody can look at",
+}
+
+
+def test_only_an_automatic_run_its_runner_reported_done_closes_its_window():
+    """Asked of the whole tick, as the stores ask it. Every other run that reported
+    its turn over keeps its window: the panel's, the untracked agent's and the peer's
+    cases above are each one guard of :func:`A.close_on_retire`, and a session that
+    ENDED, a sentinel, a merge and a gone pid are not the agent saying it is done."""
+    closed = set()
+    for name, record, evidence, _state, _reason in CASES:
+        t = A.tick([record], evidence, T0, 2, A.RUN_DEADLINE)
+        ids = {r.run_id for r in t.close_on_retire}
+        assert ids <= {r.run_id for r in t.retirable}, f"{name}: closed but kept"
+        assert not ids & {r.run_id for r in t.reapable}, f"{name}: closed twice"
+        if ids:
+            closed.add(name)
+    assert closed == CLOSED_ON_RETIRE
 
 
 def test_every_state_is_reachable_from_the_table():

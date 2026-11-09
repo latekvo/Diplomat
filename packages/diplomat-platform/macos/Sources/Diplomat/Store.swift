@@ -1611,15 +1611,19 @@ final class Store: ObservableObject {
     /// leaves, no backstop stamps the verdict at all and it retires and prices on the
     /// ordinary road.
     ///
-    /// An OpenCode 2.x run whose window a backstop closed, or whose TUI is gone, is
+    /// An automatic run its own runner reported done has its window closed as it
+    /// retires (`closeFinishedWindows`), and retires whether or not it closed.
+    ///
+    /// An OpenCode 2.x run whose window is closed here, or whose TUI is gone, is
     /// interrupted (`OpenCodeProbe.interrupts`): its turn outlives the TUI, and would go on
     /// spending tokens after the ledger has closed its entry.
     private func retireFinished(_ pass: AgentPass) async {
         let t = pass.tick
         let refused = reapWedgedWindows(t)
         let gone = t.retirable.filter { !refused.contains($0.runID) }
-        let stops = OpenCodeProbe.interrupts(reaped: t.reapable, retired: gone,
-                                             attached: pass.attached)
+        let closed = closeFinishedWindows(t)
+        let stops = OpenCodeProbe.interrupts(closing: t.reapable + t.closeOnRetire,
+                                             retired: gone, attached: pass.attached)
         guard !gone.isEmpty else {
             await Store.interrupt(stops)
             return
@@ -1652,6 +1656,12 @@ final class Store: ObservableObject {
             let verdict = t.states[r.runID]
             AuditLog.log(r.source, verdict?.state == .failed ? "spawn-failed" : "retire",
                          "\(r.label.isEmpty ? r.runID : r.label) — \(verdict?.reason ?? "no verdict")")
+        }
+        for (r, ok) in closed {
+            let who = r.label.isEmpty ? r.runID : r.label
+            let why = t.states[r.runID]?.reason.components(separatedBy: "; ").last ?? ""
+            AuditLog.log("auto", "kill-device", ok ? "closed \(who)'s window — \(why)"
+                         : "could not close \(who)'s window; it stays open")
         }
         if !audited.isEmpty { Store.auditReviews(audited, me: me) }
         OpenCodeProbe.forgetAdopted(Set(gone.map(\.runID)))
@@ -1686,15 +1696,30 @@ final class Store: ObservableObject {
         }.value
     }
 
+    /// Close each `AgentState.closeOnRetire` run's window, before `forget` deletes its
+    /// handle. `retireFinished` logs the result once the book lets the run go; a run it
+    /// keeps is closed again next tick.
+    private func closeFinishedWindows(_ t: AgentState.Tick) -> [(AgentState.RunRecord, Bool)] {
+        t.closeOnRetire.map { ($0, Store.closeWindow(of: $0)) }
+    }
+
+    /// Hang up a run's agent and close its window: by the handle its spawn recorded,
+    /// else by walking its process out to the window showing it.
+    private static func closeWindow(of record: AgentState.RunRecord) -> Bool {
+        TerminalFocus.hangUp(pid: record.pid, tty: record.tty)
+        let byHandle = AgentWindows.handle(record.runID).map(AgentWindows.close) ?? false
+        return byHandle || TerminalFocus.close(tty: record.tty, pid: record.pid)
+    }
+
     /// Close the terminal of every run a backstop ended — the stillness clock, or the
     /// operator's run deadline.
     ///
     /// Only those, and the verdict is asked rather than reconstructed
-    /// (`AgentState.reapable`). A run that finished the ordinary way keeps its window —
-    /// its agent is alive at its prompt holding the whole task, and the operator may
-    /// still want to read it. One whose screen has not changed in twenty minutes is
+    /// (`AgentState.reapable`). One whose screen has not changed in twenty minutes is
     /// nobody's, and so is one that has been going for four hours with nothing able to
-    /// say it ever stopped.
+    /// say it ever stopped. A run its runner reported done is `closeFinishedWindows`'s,
+    /// which retires it either way; a panel run that finished keeps its window, being
+    /// the operator's own session.
     ///
     /// "`.finished`, and its stillness clock is past the timeout" is a WIDER set than
     /// that, because the clock advances only on ticks that saw the screen and so keeps
@@ -1727,9 +1752,7 @@ final class Store: ObservableObject {
     private func reapWedgedWindows(_ t: AgentState.Tick) -> Set<String> {
         var refused: Set<String> = []
         for record in t.reapable {
-            let byHandle = AgentWindows.handle(record.runID).map(AgentWindows.close) ?? false
-            guard byHandle || TerminalFocus.close(tty: record.tty, pid: record.pid)
-            else {
+            guard Store.closeWindow(of: record) else {
                 refused.insert(record.runID)
                 // Once per episode: the stamp is nil only before the first refusal.
                 // A window nothing can close is retried for the life of the app, and

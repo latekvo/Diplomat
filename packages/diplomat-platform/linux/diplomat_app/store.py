@@ -3064,15 +3064,19 @@ class Store(QObject):
         run is a RUNNING one holding its bay again until the next attempt. When its
         agent finally leaves, no backstop stamps the verdict at all and it retires and
         prices on the ordinary road.
+
+        An automatic run its own runner reported done has its window closed as it
+        retires (:meth:`_close_finished_windows`), and retires whether or not it closed.
         """
         refused = self._reap_wedged_windows(t)
         gone = [r for r in t.retirable if r.run_id not in refused]
         if not gone:
             return
+        closed = self._close_finished_windows(t)
         # A 2.x OpenCode turn outlives its TUI (:func:`opencodeapi.interrupt`). Stopped
         # before pricing, so the export is final, and only with no TUI attached to it;
-        # the reaper has already stopped the ones it closed.
-        reaped = {r.run_id for r in t.reapable}
+        # the reaper and the closer have already stopped the ones whose window they shut.
+        reaped = {r.run_id for r in t.reapable + t.close_on_retire}
         sessions = [probes.service_session(r) for r in gone if r.run_id not in reaped]
         attached = set(probes.live_service_sessions()) if any(sessions) else set()
         for session_id in sessions:
@@ -3121,6 +3125,12 @@ class Store(QObject):
             activity.log(r.source, action,
                          f"{r.label or r.run_id} — "
                          f"{verdict.reason if verdict else 'no verdict'}")
+        for r, ok in closed:
+            who = r.label or r.run_id
+            activity.log("auto", "kill-device",
+                         f"closed {who}'s window — "
+                         f"{t.states[r.run_id].reason.split('; ')[-1]}"
+                         if ok else f"could not close {who}'s window; it stays open")
         self.refresh_activity()
         if audited:
             me = self.me
@@ -3152,16 +3162,33 @@ class Store(QObject):
         if logged:
             self.refresh_activity()
 
+    def _close_finished_windows(
+            self, t: agentstate.Tick) -> list[tuple[agentstate.RunRecord, bool]]:
+        """Close each :func:`agentstate.close_on_retire` run's window by the reaper's
+        two routes, before ``forget`` deletes the directory its 2.x session binding is
+        read from. :meth:`_retire_finished` logs the result once the book lets the run
+        go; a run it keeps is closed again next tick.
+        """
+        out = []
+        for record in t.close_on_retire:
+            session_id = probes.service_session(record)
+            if session_id:
+                opencodeapi.interrupt(session_id)
+            out.append((record,
+                        tmuxwatch.kill_session(tmuxwatch.session_name(record.run_id))
+                        or tmuxwatch.kill_window_for_tty(record.tty)))
+        return out
+
     def _reap_wedged_windows(self, t: agentstate.Tick) -> set[str]:
         """Close the terminal of every run a backstop ended — the quiescence clock, or
         the operator's run deadline.
 
         Only those, and the verdict is asked rather than reconstructed
-        (:func:`agentstate.reapable`). A run that finished the ordinary way keeps its
-        window — its agent is alive at its prompt holding the whole task, and the
-        operator may still want to read it. One whose screen has not changed in twenty
+        (:func:`agentstate.reapable`). One whose screen has not changed in twenty
         minutes is nobody's, and so is one that has been going for four hours with
-        nothing able to say it ever stopped.
+        nothing able to say it ever stopped. A run its runner reported done is
+        :meth:`_close_finished_windows`'s, which retires it either way; a panel run
+        that finished keeps its window, being the operator's own session.
 
         "FINISHED, and its stillness clock is past the timeout" is a WIDER set than
         that, because the clock advances only on ticks that saw the screen and so

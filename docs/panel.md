@@ -63,7 +63,8 @@ in status order: *awaiting input*, *running*, *starting*, *unknown*, *free slot*
 *queued*, so the sessions asking to be read sit at the top and everything not
 started yet is at the bottom. A run that is over is not on the list at all - the
 pass that resolves one retires it, so its row would be up for a single redraw;
-what it leaves behind is its activity line and its ledger entry. An agent it leaves
+what it leaves behind is its activity line and its ledger entry. An automatic run
+its runner reported done has its window closed as it retires. An agent a run leaves
 at its prompt is drawn again only if it starts working, and is otherwise closed by
 the [stillness backstop](automation.md#autonomous-monitors). The list is
 always there: an idle machine with a cap of two reads `0 · 2 free` over two empty

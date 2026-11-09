@@ -208,3 +208,31 @@ def test_the_dump_marks_an_ended_run_as_off_the_panel_too(monkeypatch, capsys):
     out = capsys.readouterr().out
 
     assert "  finished       #500 (not drawn)\n" in out
+
+
+def test_the_dump_names_the_window_a_runs_own_report_closes(monkeypatch, capsys):
+    """The other answer to "why did my terminal close": an automatic run whose CLI
+    reported its turn over has its window closed as it retires."""
+    import time
+
+    from diplomat_runtime import agentregistry, appconfig
+    from diplomat_app import probes
+
+    now = time.time()
+    rec = A.RunRecord(run_id="r1", pr_number=512, pid=4242, tty="pts/3",
+                      dispatched_at=now - 600, source=A.SOURCE_AUTO)
+    monkeypatch.setattr(agentregistry, "load", lambda: [rec])
+    monkeypatch.setattr(agentregistry, "adopt_pids", lambda rs: rs)
+    monkeypatch.setattr(appconfig, "run_deadline", lambda: None)
+    monkeypatch.setattr(appconfig, "auto_task_limit", lambda: 2)
+    monkeypatch.setattr(probes, "marker_stats", lambda: (0, 0))
+    monkeypatch.setattr(probes, "gather", lambda records, now, **_: A.Evidence(
+        processes=A.Observation.present(
+            {4242: A.ProcInfo(tty="pts/3", elapsed=600, is_agent=True)}),
+        activity=A.Observation.present({"r1": ("idle", now - 5)})))
+
+    agentdump.run()
+    out = capsys.readouterr().out
+
+    assert "windows reaped   []" in out
+    assert "windows closed   ['r1']" in out

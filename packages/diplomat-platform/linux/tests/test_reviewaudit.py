@@ -191,7 +191,7 @@ def _retire(monkeypatch, records, failed=(), me="alice", answer=None, merged=(),
         for r in records}
     store._retire_finished(agentstate.Tick(records=[], states=states, rows=[],
                                            cap_load=set(), retirable=list(records),
-                                           reapable=[], free_slots=0))
+                                           reapable=[], close_on_retire=[], free_slots=0))
     warns = [e.detail for e in activity.read() if e.action == "warn"]
     return asked, warns
 
@@ -280,7 +280,7 @@ def test_a_merged_run_is_judged_done_by_the_sentinel_retiring_it_deletes(monkeyp
     states = {"done": agentstate.Resolution("done", agentstate.MERGED, "test")}
     store._retire_finished(agentstate.Tick(records=[], states=states, rows=[],
                                            cap_load=set(), retirable=[rec],
-                                           reapable=[], free_slots=0))
+                                           reapable=[], close_on_retire=[], free_slots=0))
     assert agentregistry.load() == []
     assert asked == [URL]
 

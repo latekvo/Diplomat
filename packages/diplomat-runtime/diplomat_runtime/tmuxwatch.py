@@ -195,14 +195,15 @@ def kill_window_for_tty(tty: str) -> bool:
     name: one spawned before sessions were named, and one the mesh placed here, whose
     terminal the node opened.
 
-    The window is reaped only for a run a BACKSTOP ended (:func:`agentstate.reapable`),
-    which is two verdicts. The quiescence one is twenty minutes of a screen that has not
-    moved, so nothing is being read and nothing is being typed. The run deadline is the
-    operator's own instruction to give up on a task at four hours — and there the agent
-    may well be working, which is the point: they asked for the bay back anyway. A run
-    that ends the ordinary way keeps its window either way: its agent is alive at its
-    prompt with the whole task in context, and that is a session the operator may still
-    want to read or type into.
+    The window is closed for a run a BACKSTOP ended (:func:`agentstate.reapable`), and
+    for an automatic run its own runner reported done
+    (:func:`agentstate.close_on_retire`), whose work is on GitHub or in a report rather
+    than on its screen. The quiescence backstop is twenty minutes of a screen that has
+    not moved, so nothing is being read and nothing is being typed. The run deadline is
+    the operator's own instruction to give up on a task at four hours — and there the
+    agent may well be working, which is the point: they asked for the bay back anyway. A
+    run the operator started from the panel that ends the ordinary way keeps its window:
+    that is a session they may still want to read or type into.
 
     The WINDOW, not the session. A session this applet or a mesh node opened holds
     that one window (:func:`review.terminal_argv`), and tmux ends a session with its

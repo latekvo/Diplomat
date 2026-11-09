@@ -53,10 +53,11 @@ enum AgentStateCommand {
             "states": t.states.mapValues(verdict),
             "capLoad": t.capLoad.sorted(),
             "retirable": t.retirable.map(\.runID).sorted(),
-            // The one destructive projection, so the two sides have to agree on it by
-            // name: a window closed on one platform and left open on the other is a
+            // The two destructive projections, so the two sides have to agree on them
+            // by name: a window closed on one platform and left open on the other is a
             // machine that behaves differently depending on which applet is running.
             "reapable": t.reapable.map(\.runID).sorted(),
+            "closeOnRetire": t.closeOnRetire.map(\.runID).sorted(),
             "freeSlots": t.freeSlots,
             "inFlight": inFlight,
             // Three timing constants, so the parity diff covers the NUMBERS and not

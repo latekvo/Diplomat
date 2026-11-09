@@ -27,9 +27,10 @@ runner, and the untracked-agent scan is what re-attaches it afterwards.
 
 **One answer about what the agents are doing.** Whether a PR is in flight, how
 many bays of the device's [task cap](automation.md#autonomous-monitors) are full, which rows
-the panel draws, which record is retired and whose window is closed with it are
-five *projections* of a single resolved tick (`AgentState` / `agentstate.py`), not
-five derivations that can drift apart. Evidence reaches it typed - each probe
+the panel draws, which record is retired and whose window is closed with it (a
+backstop's verdict, or an automatic run's own report) are six *projections* of a
+single resolved tick (`AgentState` / `agentstate.py`), not
+six derivations that can drift apart. Evidence reaches it typed - each probe
 answers *present*, *unavailable* or *unsupported* - and the ladder never reads
 "I could not look" as "it is gone": a run ends only on positive evidence (its
 sentinel, its pid missing from a process table that was actually read, or its

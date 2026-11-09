@@ -102,6 +102,25 @@ def no_host_agent_spawn(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_host_window_closed(monkeypatch):
+    """Close no tmux window on the machine running the tests, and yield the real
+    ``(kill_session, kill_window_for_tty)`` for the tests of those two.
+
+    Every automatic run a test retires on its own turn report has its window closed
+    (:meth:`Store._close_finished_windows`), and the fixtures' ttys (``pts/3``) are
+    real ones on a Linux box. Both routes answer "nothing closed" here, as on a machine
+    with no tmux; a test about the close says what it closed itself (``_killed`` in
+    test_autofix.py).
+    """
+    from diplomat_runtime import tmuxwatch
+
+    real = (tmuxwatch.kill_session, tmuxwatch.kill_window_for_tty)
+    monkeypatch.setattr(tmuxwatch, "kill_session", lambda name: False)
+    monkeypatch.setattr(tmuxwatch, "kill_window_for_tty", lambda tty: False)
+    yield real
+
+
+@pytest.fixture(autouse=True)
 def outside_a_user_service(tmp_path, monkeypatch):
     """Launch a tray the plain way whatever cgroup the suite runs in.
 

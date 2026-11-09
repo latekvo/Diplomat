@@ -7,10 +7,10 @@ import Foundation
 // what rows does the panel draw, and which record is retired. Patching one moved the
 // bug into the others, and the two front-ends answered all four differently again.
 //
-// Here they are one function and five projections of its result:
+// Here they are one function and six projections of its result:
 //
 //     AgentState.resolve(records:evidence:now:deadline:) -> [runID: Resolution]
-//     AgentState.inFlight / capLoad / rows / retirable / reapable
+//     AgentState.inFlight / capLoad / rows / retirable / reapable / closeOnRetire
 //
 // Everything here is PURE — no clock, no subprocess, no filesystem. The impure half is
 // the front-end's probe layer, whose only job is to turn the outside world into an
@@ -445,8 +445,9 @@ public enum AgentState {
         /// same reason `wedged` is one: a clock answers about a record whatever ended
         /// it. `pastDeadline` still returns an age for a run that a rung ABOVE the
         /// deadline ended — a sentinel, or the agent's own turn report — and that run
-        /// finished the ordinary way, alive at its prompt with the task on the screen.
-        /// Reaping it closes the window over the very thing the operator asked for.
+        /// ended for a reason of its own. Reaping one whose agent exited walks a tty
+        /// that may be somebody else's by then, and one that reported its turn over is
+        /// `closeOnRetire`'s, which retires it whether or not its window closes.
         public var expired: Bool = false
         /// Whether nothing on this machine had anything to LOOK FOR — set by the one
         /// rung that answers `.unknown` about the record rather than about a probe.
@@ -1196,7 +1197,8 @@ public enum AgentState {
     /// scan as a fresh untracked run, holding the PR and, while its screen is unreadable,
     /// a bay. A relaunch does this to every finished window still open. The released
     /// record carries the run's pid (still the identity), tty and stillness clock, and
-    /// nothing that made it a dispatch.
+    /// nothing that made it a dispatch. A run whose window `closeOnRetire` closes is
+    /// released too: its agent can outlive the tick, and the close can reach nothing.
     ///
     /// Only where the scan would re-book once the PR's other records are gone: a run on
     /// this machine, on a PR the scan sees. One with no pid is held to the scan's
@@ -1321,9 +1323,8 @@ public enum AgentState {
     /// it. Both of them are still true of runs the rungs above them ended: `wentQuiet`
     /// keeps maturing across an evidence outage, and `pastDeadline` holds for the whole
     /// life of a long run that then reports its turn over the ordinary way. Those runs
-    /// are absent from here — their agent is alive at its prompt holding the finished
-    /// task, and the operator may still want to read it. So is a merged one, for the
-    /// same reason.
+    /// are absent from here: a run that reported its turn over is `closeOnRetire`'s,
+    /// and one that exited or merged left nothing this verdict can vouch for.
     ///
     /// The deadline's own exception is the run nothing could find
     /// (`Resolution.unfindable`): a clock ended that one too, but no probe ever saw its
@@ -1339,6 +1340,23 @@ public enum AgentState {
         records.filter { r in
             guard let s = states[r.runID] else { return false }
             return s.wedged || (s.expired && !s.unfindable)
+        }
+    }
+
+    /// The automatic runs on this machine whose own runner reported the turn over
+    /// (`Resolution.reported`): their window is closed as they retire, their work being
+    /// on GitHub or in a report. A panel run is the operator's session, and an untracked
+    /// agent's `auto` is the cap's assumption, not a dispatch.
+    ///
+    /// Unlike `reapable`, a close that reaches nothing withholds no retirement: the
+    /// record a live agent is released to (`releaseEnded`) is the stillness backstop's.
+    public static func closeOnRetire(records: [RunRecord],
+                                     states: [String: Resolution]) -> [RunRecord] {
+        records.filter { r in
+            guard r.runsHere, !r.untracked,
+                  r.source == AgentDispatchGate.Source.auto.rawValue,
+                  let s = states[r.runID] else { return false }
+            return s.reported
         }
     }
 
@@ -1364,6 +1382,9 @@ public enum AgentState {
         /// Of those, the ones a backstop ended — whose window is closed as well as
         /// forgotten. See `reapable(records:states:)`.
         public var reapable: [RunRecord]
+        /// Of those, the automatic ones whose runner reported them done — whose window
+        /// is closed as they retire. See `closeOnRetire(records:states:)`.
+        public var closeOnRetire: [RunRecord]
         public var freeSlots: Int
         /// The instant every verdict below was resolved against.
         public var now: TimeInterval = 0
@@ -1403,6 +1424,7 @@ public enum AgentState {
                     rows: rows(records: recs, states: states),
                     capLoad: load, retirable: retirable(records: recs, states: states),
                     reapable: reapable(records: recs, states: states),
+                    closeOnRetire: closeOnRetire(records: recs, states: states),
                     freeSlots: freeSlots(limit: limit, occupied: load.count), now: now)
     }
 }

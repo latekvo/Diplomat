@@ -118,7 +118,9 @@ enum TerminalFocus {
     /// (`AgentState.reapable`) — twenty minutes of a screen that has not moved, so
     /// nothing is being read and nothing is being typed, or the four-hour deadline the
     /// operator left on, where the agent may well be working and the bay was asked for
-    /// anyway. (`TrackTest` also closes the throwaway window it opened.)
+    /// anyway — and so does retirement, for an automatic run its own runner reported done
+    /// (`AgentState.closeOnRetire`). (`TrackTest` also closes the throwaway window it
+    /// opened.)
     /// What it performs is the act the operator would: a wrapped session's
     /// window belongs to the tmux CLIENT, so closing it detaches the session exactly as a
     /// hand on that window would, rather than reaching past it to kill something the
@@ -149,6 +151,22 @@ enum TerminalFocus {
         if isRunning("com.apple.Terminal"),
            OSAScript.runSilently(terminalCloseScript(paths)) { return true }
         return ownSession(on: walk.ttys, panes).map(endGhostty(session:)) ?? false
+    }
+
+    /// Hang up the job `pid` runs in, as Terminate in a closing window's sheet would, and
+    /// wait up to a second for it to go. Terminal.app answers `close` on a window running
+    /// anything but its login shell with that sheet, and AppleScript reports the close
+    /// as done while the window and the agent both stay.
+    ///
+    /// The group rather than the pid: that is the agent and whatever it started, and
+    /// under a shell that forks the agent (`ReviewWizard.shellCommand`) the pid is the
+    /// wrapper. Only while `pid` is still on `tty`, so a recycled pid is never signalled.
+    static func hangUp(pid: Int?, tty: String) {
+        guard let pid, pid > 1, processes()[pid]?.tty == AgentProbes.shortTTY(tty) else { return }
+        let group = getpgid(pid_t(pid))
+        guard group > 1, group != getpgrp() else { return }
+        killpg(group, SIGHUP)
+        for _ in 0..<20 where killpg(group, 0) == 0 { usleep(50_000) }
     }
 
     /// End a Ghostty run this applet named: the session, which takes the agent with it,
