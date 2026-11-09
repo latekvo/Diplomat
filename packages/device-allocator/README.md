@@ -81,6 +81,10 @@ and a lease that lands after it is handed straight back. A remote device:
 * is idle-swept like a local device, with the frame hashed on the device so only the
   hash crosses the tunnel.
 
+The snapshot lists the devices the pool has free (`devices()` rows in state `ready`,
+listed every 30 s, `DA_REMOTE_POOL_INTERVAL_MS`) as `source: 'remote'`, `status: 'free'`
+rows ahead of the local ones; a device leased here leaves that listing at once.
+
 `state.json` carries `remote: {provider, state, ...}` and a `source` on every device;
 `POST /remote/sign-in` and `POST /remote/devices` let a UI drive the pool. Tests use
 [`test/lib/fake-provider.mjs`](test/lib/fake-provider.mjs), and a fake device pool

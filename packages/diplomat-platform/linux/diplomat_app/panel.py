@@ -706,12 +706,10 @@ class Panel(QWidget):
         head.clicked.connect(self._toggle_devices)
         self.devices_col.addWidget(head)
 
-        # Within a section: by platform, then name.
-        def sort_key(d: dict):
-            return (d.get("platform", ""), d.get("name") or "")
-
-        in_use = sorted((d for d in devices if deviceallocator.is_allocated(d)), key=sort_key)
-        free = sorted((d for d in devices if not deviceallocator.is_allocated(d)), key=sort_key)
+        in_use = sorted((d for d in devices if deviceallocator.is_allocated(d)),
+                        key=deviceallocator.display_order)
+        free = sorted((d for d in devices if not deviceallocator.is_allocated(d)),
+                      key=deviceallocator.display_order)
 
         if in_use:
             self._device_section("In use", "#34C759", self._inuse_expanded,

@@ -2,7 +2,8 @@
 // (test/lib/fake-provider.mjs): a remote device comes first, is attached, stays out of
 // the local quota and goes back when freed, reaped, reported broken or the daemon stops;
 // every way of not getting one falls back to a local device and says why; a lease the
-// pool ends drops the allocation; a restarted daemon reattaches on the same port.
+// pool ends drops the allocation; a restarted daemon reattaches on the same port; the
+// pool's free devices are listed in the snapshot first.
 // Run: node test/remote-pool.mjs
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -122,6 +123,8 @@ function echoes(serial) {
 }
 
 const stateOf = async (d) => d.call('GET', '/state');
+// The snapshot's rows other than the remote pool's free listing.
+const heldRows = async (d) => (await stateOf(d)).devices.filter((x) => !(x.source === 'remote' && x.status === 'free'));
 const ME = process.pid;
 let ok = 0;
 const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
@@ -203,7 +206,7 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   assert.equal(att.source, 'local');
   assert.equal(att.remoteSkipped, 'Pixel (pool) was leased but could not be attached: tunnel refused');
   assert.deepEqual(box.events().slice(-2), ['lease pool:P16', 'release pool:P16']);
-  assert.equal((await stateOf(d)).devices.some((x) => x.key === 'pool:P16'), false);
+  assert.equal((await heldRows(d)).some((x) => x.key === 'pool:P16'), false);
   pass('a lease that cannot be attached is returned and the request falls back');
   await d.call('POST', '/release', { ownerPid: ME });
 
@@ -274,7 +277,7 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   const changed = await changing;
   assert.deepEqual([changed.outcome, changed.reason], ['remote-unavailable', 'Test Pool did not answer within 2 s']);
   assert.equal(changed.keptDevice, undefined, 'an ended lease is not kept');
-  assert.equal((await stateOf(d)).devices.some((x) => x.key === 'pool:P11'), false);
+  assert.equal((await heldRows(d)).some((x) => x.key === 'pool:P11'), false);
   assert.match(auditOf(), /"remote-lease-ended","detail":"POCO \(pool\) taken from pid:\d+: lease expired"/);
   pass('change-device does not restore a lease the pool ended while it looked for a replacement');
   await d.stop();
@@ -290,7 +293,7 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   box.mode('release-fails');
   await d.call('POST', '/release', { ownerPid: ME });
   await until('the failed release to be recorded', () => box.unconfirmed().join() === 'pool:P16');
-  assert.equal((await stateOf(d)).devices.some((x) => x.key === 'pool:P16'), false);
+  assert.equal((await heldRows(d)).some((x) => x.key === 'pool:P16'), false);
   await until('a retry', () => box.events().filter((e) => e === 'release-failed pool:P16').length >= 2);
   box.mode('ok');
   await until('the retry to land', () => box.events().at(-1) === 'release pool:P16');
@@ -367,7 +370,7 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   const a = await d.call('POST', '/request', { ownerPid: ME, platform: 'android', version: '16' });
   const leaseId = box.leases().find((l) => l.key === 'pool:P16').remote.id;
   box.end(leaseId, 'the device dropped off its host');
-  await until('the allocation to go', async () => !(await stateOf(d)).devices.some((x) => x.key === 'pool:P16'));
+  await until('the allocation to go', async () => !(await heldRows(d)).some((x) => x.key === 'pool:P16'));
   const audit = fs.readFileSync(path.join(box.dir, 'ban', 'audit.jsonl'), 'utf8');
   assert.match(audit, /"remote-lease-ended","detail":"Pixel \(pool\) taken from pid:\d+: the device dropped off its host"/);
   assert.equal(box.events().at(-1), 'release pool:P16', 'released too, in case only contact was lost');
@@ -387,7 +390,7 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   assert.equal(swapped.returnedToPool, true);
   assert.equal(swapped.key, 'pool:P11', 'the broken device is not handed straight back');
   assert.ok(box.events().includes('release pool:P16'));
-  assert.equal((await stateOf(d)).devices.find((x) => x.key === 'pool:P16'), undefined, 'not quarantined: its pool resets it');
+  assert.equal((await heldRows(d)).find((x) => x.key === 'pool:P16'), undefined, 'not quarantined: its pool resets it');
   pass('report-device-broken returns a remote device to its pool and hands over another');
   await d.call('POST', '/release', { ownerPid: ME });
 
@@ -407,7 +410,7 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   const stopped = box.events().length;
   d = startDaemon(box);
   await healthy(d);
-  assert.deepEqual((await stateOf(d)).devices.filter((x) => x.source === 'remote'), []);
+  assert.deepEqual((await heldRows(d)).filter((x) => x.source === 'remote'), []);
   assert.deepEqual(box.leases(), []);
   assert.deepEqual(box.events().slice(stopped), [], 'nothing reattached');
   pass('stopping the daemon returns its leases, and the next one does not restore them');
@@ -434,7 +437,7 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   await healthy(d);
   await until('a later daemon to finish the release', () => box.events().slice(before).join() === 'release pool:P16');
   await until('the record to clear', () => box.unconfirmed().length === 0);
-  assert.equal((await stateOf(d)).devices.some((x) => x.key === 'pool:P16'), false);
+  assert.equal((await heldRows(d)).some((x) => x.key === 'pool:P16'), false);
   pass('a lease whose release outlasts the stop is given back by a later daemon');
 
   // An owner that died while no daemon was running: the lease goes back at startup.
@@ -464,6 +467,66 @@ const pass = (m) => { ok++; console.log(`  PASS ${m}`); };
   assert.deepEqual(await none.call('POST', '/remote/devices'), { reason: 'no remote device pool is configured' });
   pass('/remote/devices lists the pool; /remote/sign-in says when there is nothing to sign in to');
   await none.stop();
+}
+
+// 6. The pool's free devices are listed in the snapshot, ahead of the local ones.
+{
+  const pool = [...REMOTE, { key: 'pool:P9', platform: 'android', name: 'Galaxy (pool)', version: '9', apiVersion: '28', format: 'phone', free: false }];
+  const box = sandbox({ remote: pool });
+  const sources = (s) => s.devices.map((x) => x.source);
+  let d = startDaemon(box, { DA_REMOTE_POOL_INTERVAL_MS: '999999' });
+  await healthy(d);
+  const first = await until('the free listing', async () => {
+    const s = await stateOf(d);
+    return s.devices.some((x) => x.source === 'remote') && s;
+  });
+  assert.deepEqual(first.devices.slice(0, 2), ['P16', 'P11'].map((id) => {
+    const { free, ...x } = REMOTE.find((r) => r.key === `pool:${id}`);
+    return { ...x, source: 'remote', handle: null, status: 'free', owner: null, allocatedAt: null, idleMs: null, brokenReason: null, repairLog: null };
+  }));
+  assert.deepEqual(sources(first), ['remote', 'remote', 'local', 'local'], 'a device the pool has not free is not listed');
+  assert.equal(first.counts.free, 4);
+  pass("the pool's free devices are listed first, as free remote rows");
+
+  const r = await d.call('POST', '/request', { ownerPid: ME, platform: 'android' });
+  assert.equal(r.key, 'pool:P16');
+  const leased = await stateOf(d);
+  assert.deepEqual(leased.devices.filter((x) => x.key === 'pool:P16').map((x) => [x.status, x.owner?.ownerPid]), [['ready', ME]],
+    'leased here: one row, held, without waiting for the next listing');
+  assert.deepEqual(leased.devices.map((x) => x.key), ['pool:P11', 'pool:P16', 'ios:A', 'android:Pixel_6_API_34']);
+  await d.call('POST', '/release', { ownerPid: ME });
+  await until('the returned device to be listed free again', async () =>
+    (await stateOf(d)).devices.find((x) => x.key === 'pool:P16')?.status === 'free');
+  pass('a device leased here leaves the listing at once, and is listed again once returned');
+  await d.stop();
+
+  d = startDaemon(box, { DA_REMOTE_POOL_INTERVAL_MS: '200' });
+  await healthy(d);
+  await until('the free listing', async () => sources(await stateOf(d)).includes('remote'));
+  fs.writeFileSync(path.join(box.dir, 'pool', 'devices.json'), JSON.stringify(pool.map((x) => ({ ...x, free: x.key !== 'pool:P16' }))));
+  await until('the pool change to show', async () =>
+    (await stateOf(d)).devices.filter((x) => x.source === 'remote').map((x) => x.key).join() === 'pool:P11,pool:P9');
+  const held = await d.call('POST', '/request', { ownerPid: ME, platform: 'android', version: '11' });
+  fs.writeFileSync(path.join(box.dir, 'pool', 'devices.json'), JSON.stringify(pool.map((x) => ({ ...x, free: true }))));
+  await until('the lagging listing to land', async () => (await stateOf(d)).devices.some((x) => x.key === 'pool:P16'));
+  assert.deepEqual((await stateOf(d)).devices.filter((x) => x.key === 'pool:P11').map((x) => x.status), ['ready'],
+    'a pool still listing a device leased here as free does not list it twice');
+  await d.call('POST', '/release', { ownerPid: ME, deviceId: held.deviceId });
+  box.mode('list-fails');
+  await until('a failed listing to empty it', async () => !sources(await stateOf(d)).includes('remote'));
+  pass('the listing follows the pool, never doubles a device leased here, and a pool that cannot be listed shows nothing free');
+  await d.stop();
+
+  box.mode('ok');
+  fs.writeFileSync(path.join(box.dir, 'pool', 'signed-out'), '');
+  d = startDaemon(box, { DA_REMOTE_POOL_INTERVAL_MS: '999999', FAKE_POOL_SIGN_IN: '1' });
+  await healthy(d);
+  await delay(500);
+  assert.equal(sources(await stateOf(d)).includes('remote'), false);
+  assert.deepEqual(await d.call('POST', '/remote/sign-in'), { ok: true });
+  await until('the listing after the sign-in', async () => sources(await stateOf(d)).includes('remote'));
+  pass('a sign-in lists the pool at once, not at the next interval');
+  await d.stop();
 }
 
 console.log(`\nremote-pool: ${ok} checks passed`);

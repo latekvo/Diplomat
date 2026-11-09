@@ -21,7 +21,8 @@
 //   GET  /health
 //
 // A request tries the remote device pool (src/remote.js), when one is configured, before
-// the local simulators/emulators; `source` pins it to one of the two.
+// the local simulators/emulators; `source` pins it to one of the two. The snapshot lists
+// the pool's free devices first, then the local ones.
 //
 // Reclamation: a device is freed when the owning agent's MCP-server PID dies
 // (reaper) or when its screen shows zero motion past the leased idle limit, and a
@@ -719,7 +720,13 @@ async function refreshPool() {
 }
 
 function publish() {
-  const devices = lastPool.map((d) => {
+  // The remote pool's free devices, which a request tries first.
+  const devices = remote.listedFree().filter((d) => !allocations.has(d.key)).map((d) => ({
+    key: d.key, platform: d.platform, source: 'remote', format: d.format || null,
+    name: d.name, version: d.version ?? null, apiVersion: d.apiVersion ?? null, handle: null,
+    status: 'free', owner: null, allocatedAt: null, idleMs: null, brokenReason: null, repairLog: null,
+  }));
+  devices.push(...lastPool.map((d) => {
     const a = allocations.get(d.key);
     return {
       key: d.key, platform: d.platform, source: 'local', format: d.format || null,
@@ -734,7 +741,7 @@ function publish() {
       brokenReason: a?.brokenReason || null,
       repairLog: a?.repairLog || null,
     };
-  });
+  }));
   // Quarantined/repairing devices may have dropped out of the live pool listing.
   for (const [key, a] of allocations) {
     if (!devices.find((d) => d.key === key)) {
@@ -749,6 +756,7 @@ function publish() {
       });
     }
   }
+  devices.sort((a, b) => (a.source === 'remote' ? 0 : 1) - (b.source === 'remote' ? 0 : 1));
   const counts = devices.reduce((m, d) => {
     const bucket = d.owner ? 'allocated' : (d.status === 'free' ? 'free' : 'free-running');
     m[bucket] = (m[bucket] || 0) + 1; return m;
@@ -1092,6 +1100,7 @@ function onListening() {
   remote.watch(publish);
   remote.load();
   remote.startRetrying();
+  remote.startListing();
   setInterval(reapDeadOwners, REAP_INTERVAL_MS);
   setInterval(refreshPool, POOL_INTERVAL_MS);
   setInterval(idleSweep, IDLE_INTERVAL_MS);

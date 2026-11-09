@@ -93,3 +93,5 @@ export const REMOTE_ACQUIRE_BUDGET_MS = Number(process.env.DA_REMOTE_ACQUIRE_BUD
 export const REMOTE_RELEASE_RETRY_MS = Number(process.env.DA_REMOTE_RELEASE_RETRY_MS) || 60 * 1000;
 // The longest attaching a leased device may take before it is given back.
 export const REMOTE_ATTACH_BUDGET_MS = Number(process.env.DA_REMOTE_ATTACH_BUDGET_MS) || 3 * 60 * 1000;
+// How often the remote pool's free devices are listed for the snapshot.
+export const REMOTE_POOL_INTERVAL_MS = Number(process.env.DA_REMOTE_POOL_INTERVAL_MS) || 30 * 1000;

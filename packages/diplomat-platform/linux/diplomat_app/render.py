@@ -100,9 +100,10 @@ def _device_fixture(store: Store) -> None:
 
 def _devices_screen_fixture(store: Store, mode: str) -> None:
     """Each mode builds a different tree. Plain: a daemon with no remote pool.
-    ``-remote``: a provider mid-sign-in with two remote leases (one still attaching)
-    and a pool listing. ``-remote-away``: the sign-in went unanswered, plus a key this
-    applet does not know. ``-off``: installed, the daemon not running, no snapshot.
+    ``-remote``: a provider mid-sign-in with two remote leases (one still attaching),
+    a device the pool has free, and a pool listing. ``-remote-away``: the sign-in went
+    unanswered, plus a key this applet does not know. ``-off``: installed, the daemon
+    not running, no snapshot.
     Twin of ``Render.seedDevicesScreen``."""
     from diplomat_runtime import activity
     from . import deviceallocator as da
@@ -146,6 +147,12 @@ def _devices_screen_fixture(store: Store, mode: str) -> None:
          "owner": {"agentName": "onboarding flow", "ownerPid": 4633},
          "allocatedAt": now * 1000 - 40_000, "format": "phone", "source": "remote"},
     ]
+    listed = [] if away else [
+        {"key": "lab-pool:tab-s9-01", "platform": "android", "name": "Galaxy Tab S9",
+         "version": "14", "apiVersion": "34", "handle": None, "status": "free",
+         "owner": None, "allocatedAt": None, "idleMs": None, "format": "tablet",
+         "source": "remote"},
+    ]
     status = (
         da.RemoteStatus(state="sign-in-unanswered", provider="lab-pool",
                         url="https://lab-pool.example/devices", retry_at=now + 47 * 60,
@@ -154,7 +161,7 @@ def _devices_screen_fixture(store: Store, mode: str) -> None:
         da.RemoteStatus(state="signing-in", provider="lab-pool",
                         url="https://lab-pool.example/devices",
                         login_url="https://lab-pool.example/login?session=7f3a"))
-    store.device_state = {"devices": local["devices"] + leases, "daemonPid": 51734,
+    store.device_state = {"devices": listed + leases + local["devices"], "daemonPid": 51734,
                           "remote": status}
     store.device_remote_provider = "~/.diplomat/remote/lab-pool.mjs"
     store.audit_entries.insert(0, activity.AuditEntry(

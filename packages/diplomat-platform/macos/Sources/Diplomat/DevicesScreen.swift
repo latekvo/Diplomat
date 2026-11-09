@@ -316,7 +316,7 @@ struct DevicesScreen: View {
 
     @ViewBuilder
     private var remoteLeases: some View {
-        let leases = (store.deviceState?.devices ?? []).filter(\.isRemote)
+        let leases = (store.deviceState?.devices ?? []).filter { $0.isRemote && $0.isAllocated }
         if !leases.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 Text("LEASED HERE · \(leases.count)").font(.system(size: 9, weight: .bold))
@@ -577,9 +577,11 @@ struct DeviceScreenRow: View {
     private var actions: some View {
         HStack(spacing: 4) {
             if dev.isRemote {
-                // A remote row exists only while leased.
-                actionButton("Return", "arrow.uturn.backward.circle", .indigo, onKill,
-                             "Hand the lease back to the remote pool. The agent loses the device.")
+                // A free remote row is the pool's to lend: nothing here acts on it.
+                if dev.isAllocated {
+                    actionButton("Return", "arrow.uturn.backward.circle", .indigo, onKill,
+                                 "Hand the lease back to the remote pool. The agent loses the device.")
+                }
             } else {
                 if dev.owner?.ownerPid != nil, dev.status != "repairing" {
                     actionButton("Free", "arrow.uturn.backward.circle", .blue, onFree,

@@ -21,13 +21,17 @@
 //   release(lease)                gives it back; resolves once the pool has it (or no longer
 //                                 knows the lease), rejects when that is not certain
 //   signIn()          (optional)  re-prompts a sign-in; null when signed in, else why not
-//   devices()         (optional)  {devices} the pool lists now, or {reason}
+//   devices()         (optional)  {devices: [{key, platform, name, version, apiVersion, format,
+//                                 state}]} the pool lists now, or {reason}; never prompts a
+//                                 sign-in. state 'ready' = free to lease: those rows are listed
+//                                 in the snapshot, ahead of the local devices.
 
 import fs from 'node:fs';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import {
-  ADB_BIN, BASE_DIR, REMOTE_ACQUIRE_BUDGET_MS, REMOTE_ATTACH_BUDGET_MS, REMOTE_RELEASES_PATH, REMOTE_RELEASE_RETRY_MS,
+  ADB_BIN, BASE_DIR, REMOTE_ACQUIRE_BUDGET_MS, REMOTE_ATTACH_BUDGET_MS, REMOTE_POOL_INTERVAL_MS, REMOTE_RELEASES_PATH,
+  REMOTE_RELEASE_RETRY_MS,
 } from './paths.js';
 import { atomicWrite, readConfig } from './state.js';
 import { run, matchesRequirements, androidApi } from './devices.js';
@@ -37,7 +41,8 @@ import * as wsock from './wsock.js';
 const instances = new Map(); // module path -> {provider, error, ready}
 let onChange = null;
 
-// Called whenever a provider finishes loading, so the snapshot can follow.
+// Called whenever a provider finishes loading or the free listing changes, so the
+// snapshot can follow.
 export function watch(fn) { onChange = fn; }
 
 function configuredPath() {
@@ -98,7 +103,11 @@ export async function acquire(req, exclude) {
   });
   const got = await Promise.race([work, late]);
   clearTimeout(timer);
-  if (got) return got.lease ? { ...got, provider: path } : got;
+  if (got?.lease) {
+    free = free.filter((d) => d.key !== got.device.key);
+    return { ...got, provider: path };
+  }
+  if (got) return got;
   work.then((g) => { if (g.lease) release(path, g.lease); });
   return { applies: true, reason: `${p.name} did not answer within ${Math.round(REMOTE_ACQUIRE_BUDGET_MS / 1000)} s` };
 }
@@ -149,6 +158,7 @@ export async function release(path, lease) {
   const had = list.find((x) => idOf(x.path, x.lease) === id);
   if (ok && had) saveUnconfirmed(list.filter((x) => x !== had));
   if (!ok && !had) saveUnconfirmed([...list, { path, lease, since: Date.now() }]);
+  if (ok) relist();
   return ok;
 }
 
@@ -189,7 +199,9 @@ export async function signIn() {
   if (!p) return { ok: false, reason: 'no remote device pool is configured' };
   if (!p.signIn) return { ok: false, reason: `${p.name} has no sign-in` };
   const reason = await p.signIn();
-  return reason ? { ok: false, reason } : { ok: true };
+  if (reason) return { ok: false, reason };
+  relist();
+  return { ok: true };
 }
 
 export async function devices() {
@@ -198,4 +210,27 @@ export async function devices() {
   if (!p) return { reason: 'no remote device pool is configured' };
   if (!p.devices) return { reason: `${p.name} does not list its devices` };
   return p.devices();
+}
+
+// The pool's devices free to lease, as last listed. A listing that fails or outlasts
+// the interval empties it: a device shown free must be one the pool lends now.
+let free = [];
+let listing = null;
+export const listedFree = () => free;
+
+function relist() {
+  listing ||= (async () => {
+    let timer;
+    const late = new Promise((r) => { timer = setTimeout(r, REMOTE_POOL_INTERVAL_MS, {}); });
+    const got = await Promise.race([devices().catch(() => ({})), late]);
+    clearTimeout(timer);
+    const next = Array.isArray(got.devices) ? got.devices.filter((d) => d?.key && d.state === 'ready') : [];
+    if (JSON.stringify(next) !== JSON.stringify(free)) { free = next; onChange?.(); }
+  })().finally(() => { listing = null; });
+  return listing;
+}
+
+export function startListing() {
+  relist();
+  setInterval(relist, REMOTE_POOL_INTERVAL_MS).unref();
 }

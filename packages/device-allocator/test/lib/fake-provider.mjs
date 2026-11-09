@@ -5,7 +5,10 @@
 //                  | 'slow-attach' (attaches after FAKE_POOL_SLOW_MS, reporting an end that came meanwhile)
 //                  | 'slow-attach-strict' (the same, but fails if released or ended meanwhile)
 //                  | 'slow-release' (releases after FAKE_POOL_SLOW_MS) | 'release-fails'
+//                  | 'list-fails' (devices() answers with a reason)
 //   end-<lease id> written by a test to end that lease; its content is the reason
+//   signed-out     while present, devices() answers with a reason; with FAKE_POOL_SIGN_IN
+//                  set, the provider has a signIn() that removes it
 //   events.log     what the provider did, one line each: "lease <key>", "release <key>", ...
 // An attached device is a local TCP port that echoes, standing in for an adb transport.
 
@@ -76,6 +79,11 @@ export default function create(ctx) {
       fs.writeFileSync(path.join(DIR, 'devices.json'), JSON.stringify(devices));
       event(`release ${lease.key}`);
     },
-    async devices() { return { devices: JSON.parse(read('devices.json', '[]')) }; },
+    ...(process.env.FAKE_POOL_SIGN_IN ? { async signIn() { fs.rmSync(path.join(DIR, 'signed-out'), { force: true }); return null; } } : {}),
+    async devices() {
+      if (read('mode', 'ok').trim() === 'list-fails') return { reason: 'pool unreachable' };
+      if (read('signed-out', null) != null) return { reason: 'signed out' };
+      return { devices: JSON.parse(read('devices.json', '[]')).map(({ free, ...d }) => ({ ...d, state: free ? 'ready' : 'leased' })) };
+    },
   };
 }
