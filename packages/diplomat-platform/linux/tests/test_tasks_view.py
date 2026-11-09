@@ -430,6 +430,9 @@ def test_the_applet_reads_the_tasks_and_starts_their_tick_and_first_sync(tstore,
     monkeypatch.setattr(Store, "ensure_allocator_installed_async", lambda self: None)
     monkeypatch.setattr(Store, "settle_mesh_on_launch", lambda self: None)
     monkeypatch.setattr(Store, "refresh_tracked_tasks_async", lambda self: reads.append(1))
+    ticks: list = []
+    monkeypatch.setattr(Store, "run_tracker_sync_async", lambda self: ticks.append("sync"))
+    monkeypatch.setattr(Store, "run_goal_grouper_async", lambda self: ticks.append("group"))
     monkeypatch.setattr(app_module.DiplomatApp, "trigger_refresh", lambda self: None)
     monkeypatch.setattr(app_module.QTimer, "singleShot",
                         staticmethod(lambda ms, fn: later.append((ms, fn))))
@@ -441,6 +444,10 @@ def test_the_applet_reads_the_tasks_and_starts_their_tick_and_first_sync(tstore,
         assert launched.tasks_timer.interval() == 90_000
         assert reads == [1]
         assert (12000, launched.store.run_tracker_sync_async) in later
+        # The grouper rides the same tick, and asks the core whether it is due.
+        assert (12000, launched.store.run_goal_grouper_async) in later
+        launched.tasks_timer.timeout.emit()
+        assert ticks == ["sync", "group"]
     finally:
         for timer in (launched.timer, launched.autofix_timer, launched.telemetry_timer,
                       launched.apiwatch_timer, launched.comms_timer, launched.tasks_timer):

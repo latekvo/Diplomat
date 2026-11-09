@@ -766,6 +766,11 @@ final class Store: ObservableObject {
     var tasksMonitorTask: Task<Void, Never>?
     /// Bumped per reload, so a slower, older read never lands over a newer one.
     var tasksReloadGeneration = 0
+    /// `TaskGrouper.mark()`: when goals were last looked for, and why that failed.
+    @Published var tasksGrouperMark: TaskGrouper.Mark?
+    @Published var tasksGrouping = false
+    /// Issue numbers whose goal fix (`startGoalFix`) is spawning.
+    @Published var goalFixesStarting: Set<Int> = []
 
     /// Every dispatched agent run the panel draws, in reading order: the sessions this
     /// machine spawned, the work it handed to a mesh node, and any live agent nobody
@@ -2302,6 +2307,7 @@ final class Store: ObservableObject {
             if let snaps { await pollMyPRs(snaps: snaps) }
             await pollReviewRequests(polled)
             await pollCommunityIssues(polled)
+            await runGoalPass()
             // Last, so the monitors' finds keep the places they were found in: the
             // operator's own sweep bands behind them anyway, and a fifty-item ask
             // offered first would otherwise decide the arrangement of a queue it is
@@ -3348,10 +3354,14 @@ final class Store: ObservableObject {
     /// nothing automatic starts it. It waits for "execute now", or for the toggle to
     /// come back on. That is the whole difference the two toggles make: they decide
     /// who starts the work, not whether it is known.
-    func isPaused(_ counter: AutoCounter?) -> Bool {
+    ///
+    /// A review-thread fix on a PR an `auto` goal holds (`goalFindingItems`) runs whatever
+    /// the PR toggle says: switching the goal to auto asked for it.
+    func isPaused(_ counter: AutoCounter?, item: String? = nil) -> Bool {
         switch counter {
         case .reviewRequests:        return !reviewRequestsEnabled
-        case .myReviews, .conflicts: return !prAutofixEnabled
+        case .myReviews:             return !prAutofixEnabled && !goalFindingItems.contains(item ?? "")
+        case .conflicts:             return !prAutofixEnabled
         // A review the operator asked for: no monitor owns it, so neither toggle
         // speaks for it. Switching the monitors off says what this machine may go
         // looking for, not that it should stop doing what it was told — for an ask,
@@ -3377,7 +3387,7 @@ final class Store: ObservableObject {
     /// Paused, unless a Slack ping took it as its ask: then it is asked-for work, which
     /// switching a monitor off never stops (`isPaused`).
     func isHeld(_ task: QueuedAgentTask, owned: Set<String>? = nil) -> Bool {
-        isPaused(task.job.counter) && !(owned ?? commsOwnedKeys).contains(task.id)
+        isPaused(task.job.counter, item: task.job.item) && !(owned ?? commsOwnedKeys).contains(task.id)
     }
 
     /// Dispatch one queued task past the capacity check its caller already made, and
@@ -3829,7 +3839,7 @@ final class Store: ObservableObject {
             // the dispatch gate both front-ends mirror. The queue switch has to hold
             // HERE and not only at the drain: a find that meets a free bay never
             // reaches the queue at all.
-            paused = isPaused(job.counter) || !queueAutoRun
+            paused = isPaused(job.counter, item: job.item) || !queueAutoRun
             atCapacity = full || paused
         }
         // Measured after capacity and under the same conditions: a device with no free

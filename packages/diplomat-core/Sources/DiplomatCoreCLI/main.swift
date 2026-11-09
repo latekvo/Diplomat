@@ -22,6 +22,7 @@ import Foundation
 //   diplomat-core tasks-list        [--archived]     # the Tasks screen's rows (see TasksCommand)
 //   diplomat-core tasks-sync                         # one GitHub + Comms sync of every task
 //   diplomat-core tasks-edit        < edit.json      # one operator edit of a task
+//   diplomat-core tasks-group       [--if-due]       # one goal-grouper run
 //
 // build-prompt: the JSON config's "kind" field ("review" | "conflicts" | "audit" |
 // "issues" | "investigate") selects the builder; remaining fields mirror the Swift
@@ -83,15 +84,16 @@ let args = CommandLine.arguments
 guard args.count >= 2,
       ["build-prompt", "tool-data", "telemetry", "agent-state", "agent-registry",
        "comms-tick", "comms-auth", "comms-feed", "comms-effect", "comms-reply", "comms-reply-merge",
-       "opencode-session-model", "tasks-list", "tasks-sync", "tasks-edit"].contains(args[1]) else {
+       "opencode-session-model", "tasks-list", "tasks-sync", "tasks-edit", "tasks-group"].contains(args[1]) else {
     die("usage: diplomat-core (build-prompt | tool-data | telemetry | agent-state"
         + " | agent-registry | comms-tick | comms-effect | comms-reply | comms-reply-merge"
         + " | tasks-edit)  (JSON on stdin)"
         + "\n       diplomat-core comms-feed [--limit N]"
         + "\n       diplomat-core comms-auth"
         + "\n       diplomat-core opencode-session-model"
-        + "\n       diplomat-core tasks-list [--archived]"
-        + "\n       diplomat-core tasks-sync", 1)
+        + "\n       diplomat-core tasks-list [--archived] [--me LOGIN]"
+        + "\n       diplomat-core tasks-sync"
+        + "\n       diplomat-core tasks-group [--if-due]", 1)
 }
 
 // These read no stdin, so a caller leaving it attached to a terminal must not hang them.
@@ -113,6 +115,10 @@ if args[1] == "tasks-list" {
 }
 if args[1] == "tasks-sync" {
     TasksCommand.sync()
+    exit(0)
+}
+if args[1] == "tasks-group" {
+    TasksCommand.group(Array(args.dropFirst(2)))
     exit(0)
 }
 

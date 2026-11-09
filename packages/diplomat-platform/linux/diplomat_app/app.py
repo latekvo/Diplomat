@@ -155,14 +155,17 @@ class DiplomatApp:
         self.store.start_background(self._load_comms, name="comms-feed")
         QTimer.singleShot(10000, self.store.run_comms_poll_async)
 
-        # Tasks: each tick re-reads the tasks, and syncs only while one is not archived.
-        # The rows load up front, like Comms', for the header's count.
+        # Tasks: each tick re-reads the tasks, and syncs only while one is not archived;
+        # and runs the goal grouper once it is due. The rows load up front, like
+        # Comms', for the header's count.
         self.tasks_timer = QTimer()
         self.tasks_timer.setInterval(int(tasks.sync_secs() * 1000))
         self.tasks_timer.timeout.connect(self.store.run_tracker_sync_async)
+        self.tasks_timer.timeout.connect(self.store.run_goal_grouper_async)
         self.tasks_timer.start()
         self.store.refresh_tracked_tasks_async()
         QTimer.singleShot(12000, self.store.run_tracker_sync_async)
+        QTimer.singleShot(12000, self.store.run_goal_grouper_async)
 
         # Resolve identity + first fetch eagerly.
         self.store.start_background(self.store.fetch_me)
