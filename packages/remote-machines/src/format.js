@@ -52,11 +52,12 @@ const STATUS = {
   unreachable: 'not answering',
   untrusted: 'host key never accepted',
   'key-changed': 'host key changed since it was accepted (ask its owner before trusting it again)',
+  proxied: 'behind a ProxyJump or ProxyCommand (not probed)',
   error: 'probe failed',
 };
 
 export function formatSnapshot(s, now = Date.now()) {
-  if (!s) return 'The remote-machines daemon has not finished its first scan yet; call list-machines again in a few seconds.';
+  if (!s?.machines) return 'The remote-machines daemon has not finished its first scan yet; call list-machines again in a few seconds.';
   const out = [];
   const local = s.local;
   out.push(local?.status === 'ok'
@@ -75,13 +76,22 @@ export function formatSnapshot(s, now = Date.now()) {
   }
   const groups = {};
   let stale = 0;
+  let strangers = 0;
   for (const u of s.unavailable) {
+    const only = (src) => u.sources.length === 1 && u.sources[0] === src;
     // An address known_hosts alone remembers is usually a lease long since handed on.
-    if (u.status === 'unreachable' && u.sources.length === 1 && u.sources[0] === 'known-hosts') stale++;
+    if (u.status === 'unreachable' && only('known-hosts')) stale++;
+    // Any peer on the network picks its own mDNS name, so those are counted, never quoted.
+    else if (u.status === 'untrusted' && only('mdns')) strangers++;
     else (groups[u.status] ??= []).push(u.target);
   }
-  const parts = Object.entries(groups).map(([status, targets]) => `${STATUS[status] ?? status}: ${targets.join(', ')}`);
+  const MAX_NAMES = 8;
+  const parts = Object.entries(groups).map(([status, targets]) => {
+    const more = targets.length > MAX_NAMES ? ` and ${targets.length - MAX_NAMES} more` : '';
+    return `${STATUS[status] ?? status}: ${targets.slice(0, MAX_NAMES).join(', ')}${more}`;
+  });
   if (stale) parts.push(`${stale} old known_hosts addresses not answering`);
+  if (strangers) parts.push(`${strangers} other machines advertising SSH on the network, never vetted`);
   if (parts.length) out.push('', `Not usable (${s.unavailable.length}) - ${parts.join('; ')}.`);
   out.push('', `Load is re-read every ${Math.round(s.probeIntervalMs / 1000)} s; machines were last discovered ${ago(s.discoveredAt, now)}. Pass refresh: true for a fresh scan.`);
   return out.join('\n');

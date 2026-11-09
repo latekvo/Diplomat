@@ -31,7 +31,7 @@ comparison, then the usable remote machines best first, then one line on the res
    macOS 27.0 arm64 · Apple M3 Pro, 11 cores (5 performance) · GPU Apple M3 Pro (14-core) · 18 GB RAM
    load 1.04 now, 1.72 over 5 min, 1.21 since the last scan (0.16 per core over 5 min) · 10 spare cores · 5.9 GB RAM available · swap 5.0 GB of 6.0 GB used · 14 GB disk free
    tools on the login PATH: git, gh, node v26.7.0, npm, python3, docker, swift, java, ffmpeg, Xcode 27.1 · home /Users/radoniusz
-   WARNING: swap 83% used; low disk: 14 GB free
+   WARNING: low disk: 14 GB free
    load read 12 s ago
 ```
 
@@ -65,7 +65,7 @@ and private or link-local addresses. Candidates naming the same host and port me
 one, keeping the target of the first source in the table's order (so an ssh-config alias,
 with the user it sets, beats the bare names known_hosts and mDNS give). After probing, two names
 reaching the same machine id merge too. `remoteMachineExclude` hides a target or host
-name.
+name, and the host an excluded alias resolves to under any other name.
 
 **Only a host whose key is already in `known_hosts` is ever contacted**, and every
 probe runs with `StrictHostKeyChecking=yes`, whatever the user's config says. A host
@@ -73,7 +73,9 @@ nobody vetted could accept any client key and receive whatever an agent offloads
 Probing would also offer our keys to every laptop advertising SSH on an office network.
 Such hosts are listed as `untrusted`; `ssh <host>` once by hand to vet one. A host whose
 key changed since it was accepted is listed as `key-changed`, and stays unused until its
-old key is removed from `known_hosts`.
+old key is removed from `known_hosts`. A host reached through a `ProxyJump` or
+`ProxyCommand` is listed as `proxied` and never probed: the hop is a second ssh that
+the probe's options do not reach, so it would accept a new key.
 
 ## Reading a machine
 
@@ -96,7 +98,9 @@ between them ([`meanLoadBetween`](src/probe.js)). Readings closer than 45 s apar
 coarse for this, so a refresh right after a scan keeps the previous value.
 
 A machine gets warnings for load above its core count, memory pressure (or under 10%
-free), swap over 75% used, and under 20 GB of free disk. Machines without warnings come
+free), swap over 75% used where there is no pressure reading (Linux; macOS keeps the swap
+files it grew, so its used/total stays high on a healthy machine), and under 20 GB of
+free disk. Machines without warnings come
 first, then the rest, each group ordered by spare cores.
 
 ## Lifetime
@@ -104,8 +108,10 @@ first, then the rest, each group ordered by spare cores.
 The daemon has no work of its own: it serves agent sessions. Each session's MCP server
 attaches its pid when it starts, which also starts the daemon, so the table is warm by
 the first call. The daemon exits once no attached session has been alive for 10 minutes
-(`RM_IDLE_EXIT_MS`), and kills any ssh it still has in flight on the way out. Probes
-never use ControlMaster, so no ssh connection outlives the probe that opened it.
+(`RM_IDLE_EXIT_MS`), and kills any ssh it still has in flight on the way out. Each
+probe runs in its own process group, killed whole at `RM_PROBE_TIMEOUT_MS`, and never
+uses ControlMaster or the user's forwards. A remote command a timed-out probe started
+can still finish on the remote, since a channel without a pty gets no hangup.
 
 ## Tests
 

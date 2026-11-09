@@ -19,7 +19,7 @@ machines best first, each with:
 - how loaded it is: load average now, over 5 minutes and since the last scan, spare
   cores, available RAM, swap, free disk;
 - `WARNING:` lines for what makes it a poor choice right now (overloaded, memory
-  pressure, swap nearly full, low disk).
+  pressure, swap nearly full on Linux, low disk).
 
 Take the first machine without warnings that has the toolchain your job needs and the
 disk for its inputs and outputs. Load is re-read every minute; pass `refresh: true` only

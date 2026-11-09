@@ -20,8 +20,8 @@ import {
   BASE_DIR, SOCKET_PATH, DISCOVERY_PATH, STATE_PATH, LOG_PATH, CONFIG_PATH,
   PROBE_INTERVAL_MS, DISCOVERY_INTERVAL_MS, IDLE_EXIT_MS, CLIENT_CHECK_MS, LOAD_GAP_MIN_MS,
 } from './paths.js';
-import { candidates, mapLimit, SOURCES } from './discovery.js';
-import { probe, describe, meanLoadBetween } from './probe.js';
+import { candidates, killAll, mapLimit, SOURCES } from './discovery.js';
+import { probe, describe, meanLoadBetween, spareCores, warnings } from './probe.js';
 
 const log = createLog(LOG_PATH);
 
@@ -32,7 +32,6 @@ let firstScan = null; // resolves once the table has been filled
 let scanChain = Promise.resolve();
 let scanning = false;
 let snapshot = null;
-const inFlight = new Set(); // ssh children, killed on exit
 const clients = new Map(); // MCP server pid -> its procIdentity
 let lastClientSeenAt = Date.now();
 
@@ -66,10 +65,7 @@ function sinceLastScan(rec, info, at) {
 
 async function probeInto(rec, mode) {
   const at = Date.now();
-  const r = await probe(rec.target, mode, (child) => {
-    inFlight.add(child);
-    child.on('close', () => inFlight.delete(child));
-  });
+  const r = await probe(rec.target, mode);
   rec.probedAt = new Date(at).toISOString();
   if (!r.ok) {
     if (rec.status === 'ok') log('lost', rec.target, r.status, r.error);
@@ -98,7 +94,10 @@ async function scanOnce(discover) {
     for (const c of found) {
       const rec = records.get(c.key) ?? { status: 'new' };
       records.set(c.key, Object.assign(rec, c));
-      if (!c.trusted) {
+      if (c.proxied) {
+        rec.status = 'proxied';
+        rec.error = 'reached through a ProxyJump or ProxyCommand, which a probe cannot hold to known_hosts';
+      } else if (!c.trusted) {
         rec.status = 'untrusted';
         rec.error = 'its host key is not in known_hosts';
       }
@@ -112,43 +111,25 @@ async function scanOnce(discover) {
   publish();
 }
 
+let queued = null; // the scan waiting behind the one in flight, which later callers join
+let queuedDiscover = false;
+
 /// Scans after any scan in flight. `discover` forces discovery and capabilities.
 function scan(discover = false) {
-  const run = scanChain.then(async () => {
+  if (queued) { queuedDiscover ||= discover; return queued; }
+  queuedDiscover = discover;
+  const next = scanChain.then(async () => {
+    const d = queuedDiscover;
+    queued = null;
     scanning = true;
-    try { await scanOnce(discover); } catch (e) { log('scan failed', String(e)); } finally { scanning = false; }
+    try { await scanOnce(d); } catch (e) { log('scan failed', String(e)); } finally { scanning = false; }
   });
-  scanChain = run;
-  return run;
+  queued = next;
+  scanChain = next;
+  return next;
 }
 
 // ---- snapshot ---------------------------------------------------------------
-
-const GB = 2 ** 30;
-
-/// What makes this machine a poor place to run something right now.
-function warnings({ info, load }) {
-  const out = [];
-  const now = load?.last1m;
-  if (info.cores && now != null && now / info.cores > 1) out.push(`overloaded: load ${now} on ${info.cores} cores`);
-  const mem = info.memory;
-  if (mem?.pressure === 'warning' || mem?.pressure === 'critical') out.push(`memory pressure ${mem.pressure}`);
-  else if (mem?.totalBytes && mem.availableBytes != null && mem.availableBytes / mem.totalBytes < 0.1) {
-    out.push(`low memory: ${(mem.availableBytes / GB).toFixed(1)} GB available`);
-  }
-  const swap = info.swap;
-  if (swap?.totalBytes && swap.usedBytes / swap.totalBytes > 0.75) {
-    out.push(`swap ${Math.round((100 * swap.usedBytes) / swap.totalBytes)}% used`);
-  }
-  if (info.disk && info.disk.freeBytes < 20 * GB) out.push(`low disk: ${(info.disk.freeBytes / GB).toFixed(0)} GB free`);
-  return out;
-}
-
-/// Cores left over once the current load (the freshest reading, the 1-minute one) is served.
-function spareCores({ info, load }) {
-  const used = load?.last1m;
-  return info.cores == null || used == null ? null : Math.round(Math.max(0, info.cores - used) * 10) / 10;
-}
 
 function view(rec) {
   const m = {
@@ -241,7 +222,7 @@ function onListening() {
 }
 
 function bye() {
-  for (const child of inFlight) { try { child.kill('SIGKILL'); } catch {} }
+  killAll();
   // Unless a daemon that took over owns them by now.
   const owner = readJson(DISCOVERY_PATH)?.pid;
   if (!owner || owner === process.pid || !pidAlive(owner)) {

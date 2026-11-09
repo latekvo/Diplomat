@@ -1,6 +1,7 @@
 // The daemon over its real unix socket, against fake hosts: one machine reached under two
 // names is listed once, failures are classified, an untrusted host is never contacted,
 // machines are ranked by spare cores with warned ones last, a refresh re-reads the load,
+// refreshes arriving together share a scan,
 // the snapshot reaches state.json, and the daemon exits once its last session is gone.
 // Run: node test/daemon.mjs
 
@@ -93,7 +94,7 @@ try {
 
   await check('every probe is unattended and refuses a new or changed host key', () => {
     for (const args of sb.probes()) {
-      for (const opt of ['BatchMode=yes', 'StrictHostKeyChecking=yes', 'ControlMaster=no']) {
+      for (const opt of ['BatchMode=yes', 'StrictHostKeyChecking=yes', 'ControlMaster=no', 'ClearAllForwardings=yes']) {
         assert.ok(args.includes(opt), `${opt} missing from ${JSON.stringify(args)}`);
       }
       assert.equal(args.at(-3), '--', `the target can be read as an option: ${JSON.stringify(args)}`);
@@ -118,6 +119,14 @@ try {
   await check('the snapshot reaches state.json', () => {
     const disk = JSON.parse(fs.readFileSync(path.join(sb.env.RM_BASE_DIR, 'state.json'), 'utf8'));
     assert.deepEqual(disk.machines.map((m) => m.target), ['idle', 'busy', 'full']);
+  });
+
+  await check('refreshes that arrive together share one scan rather than queueing', async () => {
+    const before = sb.probed().filter((t) => t === 'idle').length;
+    await Promise.all(Array.from({ length: 6 }, () => callDaemon('POST', '/scan', { ownerPid: session.pid, full: true })));
+    // The one in flight plus the one they all joined; a periodic scan may slip in too.
+    const scans = sb.probed().filter((t) => t === 'idle').length - before;
+    assert.ok(scans >= 1 && scans <= 3, `${scans} scans for 6 refreshes`);
   });
 
   await check('a refresh re-reads the load and re-ranks', async () => {

@@ -19,6 +19,7 @@ const SSH_OPTS = [
   '-o', 'ServerAliveInterval=5',
   '-o', 'ServerAliveCountMax=2',
   '-o', 'ControlMaster=no',
+  '-o', 'ClearAllForwardings=yes',
 ];
 
 /// Why ssh failed, from its stderr: unreachable, auth-failed, untrusted, key-changed or error.
@@ -37,18 +38,17 @@ export function classify(stderr, timedOut) {
 }
 
 /// {ok: true, fields, latencyMs} or {ok: false, status, error}. `target` null probes
-/// this machine. `mode` is 'full' (capabilities and load) or 'load'. `onSpawn` sees
-/// the child, so a stopping daemon can kill what it has in flight.
-export async function probe(target, mode, onSpawn) {
+/// this machine. `mode` is 'full' (capabilities and load) or 'load'.
+export async function probe(target, mode) {
   const started = Date.now();
   const [bin, args] = target == null
     ? ['sh', ['-s', '--', mode]]
     : [SSH_BIN, [...sshConfigArgs(), ...SSH_OPTS, '--', target, `sh -s -- ${mode}`]];
-  const r = await run(bin, args, { timeout: PROBE_TIMEOUT_MS, input: SCRIPT, onSpawn });
+  const r = await run(bin, args, { timeout: PROBE_TIMEOUT_MS, input: SCRIPT });
   const i = r.stdout.indexOf('__RM_BEGIN__\n');
   const j = r.stdout.indexOf('__RM_END__', i);
   if (i === -1 || j === -1) return { ok: false, ...classify(r.stderr, r.code === null) };
-  const fields = {};
+  const fields = Object.create(null); // keys come from the remote: `__proto__=` is just a key
   for (const line of r.stdout.slice(i + 13, j).split('\n')) {
     const k = line.indexOf('=');
     if (k > 0) (fields[line.slice(0, k)] ??= []).push(line.slice(k + 1).trim());
@@ -129,4 +129,34 @@ export function describe(f) {
 export function meanLoadBetween(prevL5, l5, dt) {
   const decay = Math.exp(-dt / 300);
   return Math.max(0, Math.round(((l5 - prevL5 * decay) / (1 - decay)) * 100) / 100);
+}
+
+// ---- ranking ----------------------------------------------------------------
+
+const GB = 2 ** 30;
+
+/// What makes this machine a poor place to run something right now.
+export function warnings({ info, load }) {
+  const out = [];
+  const now = load?.last1m;
+  if (info.cores && now != null && now / info.cores > 1) out.push(`overloaded: load ${now} on ${info.cores} cores`);
+  const mem = info.memory;
+  if (mem?.pressure === 'warning' || mem?.pressure === 'critical') out.push(`memory pressure ${mem.pressure}`);
+  else if (mem?.totalBytes && mem.availableBytes != null && mem.availableBytes / mem.totalBytes < 0.1) {
+    out.push(`low memory: ${(mem.availableBytes / GB).toFixed(1)} GB available`);
+  }
+  // Only without a pressure reading (Linux): macOS grows swap a file at a time and keeps
+  // it, so its used/total stays high on a machine whose pressure is normal.
+  const swap = info.swap;
+  if (mem?.pressure == null && swap?.totalBytes && swap.usedBytes / swap.totalBytes > 0.75) {
+    out.push(`swap ${Math.round((100 * swap.usedBytes) / swap.totalBytes)}% used`);
+  }
+  if (info.disk && info.disk.freeBytes < 20 * GB) out.push(`low disk: ${(info.disk.freeBytes / GB).toFixed(0)} GB free`);
+  return out;
+}
+
+/// Cores left over once the current load (the freshest reading, the 1-minute one) is served.
+export function spareCores({ info, load }) {
+  const used = load?.last1m;
+  return info.cores == null || used == null ? null : Math.round(Math.max(0, info.cores - used) * 10) / 10;
 }

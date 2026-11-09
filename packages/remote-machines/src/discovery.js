@@ -16,21 +16,47 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { SSH_BIN, SSH_KEYGEN_BIN, SSH_CONFIG, USER_SSH_CONFIG, MDNS_BROWSE_MS } from './paths.js';
 
-/// {code, stdout, stderr}; never rejects. A process still running at `timeout` is
-/// killed and reported with code null.
-export function run(bin, args, { timeout = 5000, input, onSpawn } = {}) {
+const running = new Set(); // every child of run(), as its own process group
+
+// SIGKILL a child's whole group: a ProxyCommand, or a subshell of probe.sh, outlives a
+// kill of the child alone and keeps its stdio open.
+function killGroup(child) {
+  try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+}
+
+/// Kills everything run() has in flight, for a daemon on its way out.
+export function killAll() {
+  for (const child of running) killGroup(child);
+}
+
+/// {code, stdout, stderr}; never rejects. At `timeout` the process group is killed and
+/// the call returns at once with code null, whatever still holds its output open.
+export function run(bin, args, { timeout = 5000, input } = {}) {
   return new Promise((resolve) => {
     let child;
-    try { child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] }); }
+    try { child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'], detached: true }); }
     catch (e) { resolve({ code: -1, stdout: '', stderr: String(e) }); return; }
-    onSpawn?.(child);
+    running.add(child);
     let stdout = '';
     let stderr = '';
+    let done = false;
+    const finish = (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      running.delete(child);
+      resolve({ code, stdout, stderr });
+    };
     child.stdout.setEncoding('utf8').on('data', (c) => { if (stdout.length < 1_000_000) stdout += c; });
     child.stderr.setEncoding('utf8').on('data', (c) => { if (stderr.length < 100_000) stderr += c; });
-    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, timeout);
+    const timer = setTimeout(() => {
+      killGroup(child);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      finish(null);
+    }, timeout);
     child.on('error', (e) => { stderr += String(e); });
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+    child.on('close', (code) => finish(code));
     child.stdin.on('error', () => {});
     child.stdin.end(input ?? '');
   });
@@ -105,7 +131,7 @@ export function sshConfigAliases(file = USER_SSH_CONFIG, seen = new Set()) {
   const out = [];
   for (const raw of text.split('\n')) {
     const line = raw.replace(/#.*/, '').trim();
-    const m = /^(\S+)\s*=?\s*(.*)$/.exec(line);
+    const m = /^([^\s=]+)\s*(?:=\s*)?(.*)$/.exec(line);
     if (!m) continue;
     const key = m[1].toLowerCase();
     const values = m[2].split(/\s+/).map((v) => v.replace(/^"|"$/g, '')).filter(Boolean);
@@ -133,6 +159,7 @@ export async function resolveTarget(target) {
     user: opt.user || os.userInfo().username,
     port: Number(opt.port) || 22,
     hostKeyAlias: opt.hostkeyalias && opt.hostkeyalias !== 'none' ? opt.hostkeyalias : null,
+    proxied: [opt.proxyjump, opt.proxycommand].some((v) => v && v !== 'none'),
     knownHostsFiles: [
       ...(opt.userknownhostsfile || '').split(/\s+/),
       ...(opt.globalknownhostsfile || '').split(/\s+/),
@@ -187,8 +214,8 @@ export function knownHostsLan(files) {
 
 /// Whether this resolved candidate's host key is already in one of its known_hosts files.
 export async function hostKeyKnown(c) {
-  const name = c.hostKeyAlias || c.hostname;
-  const key = c.port === 22 ? name : `[${name}]:${c.port}`;
+  // ssh looks a HostKeyAlias up as it is, without the port.
+  const key = c.hostKeyAlias ?? (c.port === 22 ? c.hostname : `[${c.hostname}]:${c.port}`);
   for (const f of c.knownHostsFiles) {
     if (!fs.existsSync(f)) continue;
     const r = await run(SSH_KEYGEN_BIN, ['-F', key, '-f', f]);
@@ -211,7 +238,7 @@ const portTarget = ({ hostname, port }) => (port === 22 ? hostname : `ssh://${ho
 const SAFE_TARGET = /^(ssh:\/\/)?[A-Za-z0-9_][A-Za-z0-9._@%:[\]-]*$/;
 
 /// Every candidate machine, merged by host name and port:
-/// [{target, hostname, user, port, sources, names, trusted}].
+/// [{target, hostname, user, port, sources, names, proxied, trusted}].
 ///
 /// `hosts` are listed whatever their network; the other sources only on this network.
 /// A target or host name in `exclude` (case-insensitive) is dropped.
@@ -228,14 +255,17 @@ export async function candidates({ hosts = [], exclude = [] } = {}) {
   const self = os.hostname().toLowerCase();
   const safe = raw.filter((c) => SAFE_TARGET.test(c.target));
   const resolved = await mapLimit(safe, 8, async (c) => ({ ...c, r: await resolveTarget(c.target) }));
+  // An excluded alias hides its host under every other name it is found by, too.
+  const excluded = await mapLimit([...skip].filter((e) => SAFE_TARGET.test(e)), 8, resolveTarget);
+  const skipKeys = new Set(excluded.filter(Boolean).map((r) => `${r.hostname.toLowerCase()}:${r.port}`));
   const byKey = new Map();
   for (const { target, source, r } of resolved) {
     if (!r) continue;
     const hostname = r.hostname.toLowerCase();
-    if (skip.has(target.toLowerCase()) || skip.has(hostname)) continue;
+    const key = `${hostname}:${r.port}`;
+    if (skip.has(target.toLowerCase()) || skip.has(hostname) || skipKeys.has(key)) continue;
     if (hostname === self || hostname === 'localhost' || hostname.startsWith('127.')) continue;
     if (source !== 'config' && !isLocalNetwork(hostname)) continue;
-    const key = `${hostname}:${r.port}`;
     const prev = byKey.get(key);
     if (!prev) {
       byKey.set(key, { ...r, key, sources: [source], names: [target] });
@@ -245,6 +275,8 @@ export async function candidates({ hosts = [], exclude = [] } = {}) {
     if (!prev.names.includes(target)) prev.names.push(target);
   }
   const list = [...byKey.values()];
-  await mapLimit(list, 8, async (c) => { c.trusted = await hostKeyKnown(c); });
+  // A ProxyJump hop is a separate ssh that this probe's options never reach: it would
+  // accept a new key, or leave a ControlPersist master behind. Such hosts are not probed.
+  await mapLimit(list, 8, async (c) => { c.trusted = !c.proxied && await hostKeyKnown(c); });
   return list;
 }

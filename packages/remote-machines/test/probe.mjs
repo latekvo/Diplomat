@@ -1,16 +1,27 @@
 // The probe: probe.sh run for real on this machine (the Darwin branch on a Mac, the
 // Linux one in CI), what describe() makes of each OS's fields, how ssh failures are
-// told apart, and the load-since-last-scan estimate against a simulated kernel.
+// told apart, that a hung probe is cut off at its timeout, what makes a machine a poor
+// pick, and the load-since-last-scan estimate against a simulated kernel.
 // Run: node test/probe.mjs
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
-import { sandbox } from './lib/sandbox.mjs';
+import { execFileSync } from 'node:child_process';
+import { sandbox, inSandbox } from './lib/sandbox.mjs';
 
-const sb = sandbox();
+const HANG_S = 677; // a sleep this test can find again by its argument
+const sb = sandbox({
+  hosts: {
+    hung: { hostname: 'hung.local', behavior: 'hang', sleep: HANG_S },
+    odd: { hostname: 'odd.local', inject: ['__proto__=x', 'constructor=y', 'hasOwnProperty=z'] },
+  },
+});
 Object.assign(process.env, sb.env);
-const { probe, describe, classify, meanLoadBetween } = await import('../src/probe.js');
+const { probe, describe, classify, meanLoadBetween, warnings, spareCores } = await import('../src/probe.js');
+const sleepers = () => {
+  try { return execFileSync('pgrep', ['-f', `sleep ${HANG_S}`], { encoding: 'utf8' }).trim(); } catch { return ''; }
+};
 
 let checks = 0;
 const check = async (name, fn) => { await fn(); checks++; console.log(`  PASS ${name}`); };
@@ -81,6 +92,43 @@ try {
     assert.equal(classify('ssh: Could not resolve hostname x: nodename nor servname provided\n', false).status, 'unreachable');
     assert.equal(classify('', true).status, 'unreachable');
     assert.deepEqual(classify('zsh: command not found: sh\n', false), { status: 'error', error: 'zsh: command not found: sh' });
+  });
+
+  await check('a hung probe returns at its timeout and leaves nothing running', async () => {
+    // The hung probe's grandchild holds its stderr open, as a ProxyCommand does.
+    const r = inSandbox({ ...sb.env, RM_PROBE_TIMEOUT_MS: '1000' }, `
+      const { probe } = await import('./probe.js');
+      const t = Date.now();
+      const r = await probe('hung', 'load');
+      console.log(JSON.stringify({ ms: Date.now() - t, status: r.status }));
+      process.exit(0);`);
+    assert.equal(r.status, 'unreachable');
+    assert.ok(r.ms < 4000, `took ${r.ms} ms`);
+    assert.equal(sleepers(), '', 'the probe left its process group running');
+  });
+
+  await check('probe output keys are data, whatever they are named', async () => {
+    const r = await probe('odd', 'load');
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.fields.__proto__, ['x']);
+    assert.deepEqual(r.fields.constructor, ['y']);
+    assert.ok(describe(r.fields).cores > 0);
+  });
+
+  await check('a machine is a poor pick for load, memory, swap without a pressure reading, and disk', () => {
+    const GB = 2 ** 30;
+    const base = { cores: 8, memory: { totalBytes: 16 * GB, availableBytes: 8 * GB, pressure: 'normal' }, disk: { freeBytes: 100 * GB } };
+    const fullSwap = { totalBytes: 4 * GB, usedBytes: 3.9 * GB };
+    const load = { last1m: 2 };
+    assert.deepEqual(warnings({ info: base, load }), []);
+    // macOS keeps the swap files it grew, so with a pressure reading swap is not a signal.
+    assert.deepEqual(warnings({ info: { ...base, swap: fullSwap }, load }), []);
+    const linux = { ...base, memory: { ...base.memory, pressure: null }, swap: fullSwap };
+    assert.deepEqual(warnings({ info: linux, load }), ['swap 98% used']);
+    assert.deepEqual(warnings({ info: base, load: { last1m: 9 } }), ['overloaded: load 9 on 8 cores']);
+    assert.deepEqual(warnings({ info: { ...base, memory: { ...base.memory, pressure: 'critical' } }, load }), ['memory pressure critical']);
+    assert.deepEqual(warnings({ info: { ...base, disk: { freeBytes: 5 * GB } }, load }), ['low disk: 5 GB free']);
+    assert.equal(spareCores({ info: base, load: { last1m: 2.04 } }), 6);
   });
 
   await check('load since the last scan matches a simulated kernel', () => {

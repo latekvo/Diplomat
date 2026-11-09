@@ -15,16 +15,20 @@ const sb = sandbox({
     pinned: { hostname: 'pinned.example.com' },
     other: { hostname: '10.0.0.9', port: 2222 },
     gone: { hostname: 'gone.local' },
+    eqbox: { hostname: 'eqbox.local' },
+    jumped: { hostname: 'jumped.local', extra: ['proxyjump bastion'] },
+    aliased: { hostname: '10.0.0.20', port: 2200, extra: ['hostkeyalias keyalias.example.com'] },
   },
   sshConfig: [
     'Host alpha',
     '  HostName alpha.local',
     'Host *.internal !nope',
-    'Host cloud other gone',
+    'Host cloud other gone jumped aliased',
+    'Host=eqbox',
     'Include conf.d/*.conf',
     '',
   ].join('\n'),
-  known: ['alpha.local', '[10.0.0.9]:2222', 'pinned.example.com', 'fresh.lan'],
+  known: ['alpha.local', '[10.0.0.9]:2222', 'pinned.example.com', 'fresh.lan', 'jumped.local', 'keyalias.example.com'],
   settings: { remoteMachineHosts: ['pinned'], remoteMachineExclude: ['GONE'] },
 });
 fs.mkdirSync(path.join(sb.dir, 'conf.d'));
@@ -48,7 +52,7 @@ try {
   });
 
   check('ssh config aliases follow Include globs and skip patterns', () => {
-    assert.deepEqual(d.sshConfigAliases(), ['alpha', 'cloud', 'other', 'gone', 'included']);
+    assert.deepEqual(d.sshConfigAliases(), ['alpha', 'cloud', 'other', 'gone', 'jumped', 'aliased', 'eqbox', 'included']);
   });
 
   check('known_hosts yields plain local-network entries only', () => {
@@ -56,6 +60,7 @@ try {
       { hostname: 'alpha.local', port: 22 },
       { hostname: '10.0.0.9', port: 2222 },
       { hostname: 'fresh.lan', port: 22 },
+      { hostname: 'jumped.local', port: 22 },
     ]);
   });
 
@@ -77,7 +82,7 @@ try {
   const list = await d.candidates({ hosts: ['pinned', '-oProxyCommand=touch pwned', 'two words'], exclude: ['GONE'] });
   const byTarget = Object.fromEntries(list.map((c) => [c.target, c]));
   check('candidates merge sources, keep the config alias, drop off-network and excluded hosts', () => {
-    assert.deepEqual(list.map((c) => c.target).sort(), ['alpha', 'fresh.lan', 'included', 'other', 'pinned']);
+    assert.deepEqual(list.map((c) => c.target).sort(), ['aliased', 'alpha', 'eqbox', 'fresh.lan', 'included', 'jumped', 'other', 'pinned']);
     // alpha comes from the ssh config and known_hosts; the alias, with its user, wins.
     assert.deepEqual(byTarget.alpha.sources, ['ssh-config', 'known-hosts']);
     assert.deepEqual(byTarget.alpha.names, ['alpha', 'alpha.local']);
@@ -96,6 +101,20 @@ try {
     assert.equal(byTarget.pinned.trusted, true);
     assert.equal(byTarget['fresh.lan'].trusted, true);
     assert.equal(byTarget.included.trusted, false);
+    // ssh looks a HostKeyAlias up bare, whatever the port.
+    assert.equal(byTarget.aliased.trusted, true);
+  });
+
+  check('a host behind a ProxyJump is never trusted, whatever known_hosts holds', () => {
+    assert.equal(byTarget.jumped.proxied, true);
+    assert.equal(byTarget.jumped.trusted, false);
+    assert.equal(byTarget.alpha.proxied, false);
+  });
+
+  const withoutAlpha = await d.candidates({ exclude: ['alpha'] });
+  check('excluding an alias hides its host under every other name too', () => {
+    assert.ok(!withoutAlpha.some((c) => c.hostname === 'alpha.local'), JSON.stringify(withoutAlpha.map((c) => c.target)));
+    assert.ok(withoutAlpha.some((c) => c.target === 'fresh.lan'));
   });
 
   check('a name that is not a plain host token is dropped', () => {
