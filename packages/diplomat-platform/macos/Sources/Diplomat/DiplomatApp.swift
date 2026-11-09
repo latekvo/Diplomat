@@ -986,8 +986,8 @@ enum Dump {
         print("version: \(s.version ?? "(none)") upToDate=\(!s.outdated && s.installed) "
             + "outdated=\(s.outdated) drift=[\(s.drift.joined(separator: ", "))]")
         print("packageDir: \(DeviceAllocator.packageDir)")
-        print("node: \(DeviceAllocator.resolveNode() ?? "(not found)")")
-        print("npm: \(DeviceAllocator.resolveNpm() ?? "(not found)") deps=\(DeviceAllocator.depsInstalled)")
+        print("node: \(NodePackage.resolveNode() ?? "(not found)")")
+        print("npm: \(NodePackage.resolveNpm() ?? "(not found)") deps=\(DeviceAllocator.depsInstalled)")
         if let st = DeviceAllocator.readState() {
             print("state: devices=\(st.devices.count) "
                 + "· \(st.allocatedCount) in use · \(st.freeCount) free")

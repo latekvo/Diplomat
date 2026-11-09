@@ -46,6 +46,18 @@ final class Store: ObservableObject {
     /// Counts those actions, so a `--check` can tell that one ran while it did.
     private var allocatorActions = 0
 
+    /// The remote-machines daemon's last snapshot and usage history; nil until it has
+    /// written one.
+    @Published var machinesState: MachinesSnapshot?
+    @Published var machinesHistory: MachineHistory?
+    /// Its installer's `--check`; nil until one completes.
+    @Published var machinesInstall: AllocatorInstall?
+    /// `allocatorBusy` for the remote-machines installer and its scan.
+    @Published private(set) var machinesBusy = false
+    private var machinesActions = 0
+    /// Whether the last exclusion change failed to reach config.json.
+    @Published private(set) var machineExclusionFailed = false
+
     // MARK: persisted settings
 
     /// Persist a settings value — EXCEPT in a one-shot headless mode. A self-test seeds
@@ -1187,6 +1199,111 @@ final class Store: ObservableObject {
             refreshAudit()
             await refreshDeviceState()
         }
+    }
+
+    // MARK: remote machines
+
+    /// Re-read the snapshot, and the history only when the snapshot moved on: the daemon
+    /// writes both in one publish, and the history is the larger file.
+    func refreshMachinesState() async {
+        let known = machinesState?.updatedAt
+        let haveHistory = machinesHistory != nil
+        let (state, history) = await Task.detached(priority: .utility) {
+            () -> (MachinesSnapshot?, MachineHistory??) in
+            let s = RemoteMachines.readState()
+            let stale = s?.updatedAt != known || !haveHistory
+            return (s, stale ? .some(RemoteMachines.readHistory()) : nil)
+        }.value
+        if state != machinesState { machinesState = state }
+        if let history, history != machinesHistory { machinesHistory = history }
+    }
+
+    func refreshMachinesInstall() async {
+        guard !machinesBusy else { return }
+        let actions = machinesActions
+        let status = await Task.detached(priority: .utility) { RemoteMachines.check() }.value
+        guard !machinesBusy, actions == machinesActions else { return }
+        if status != machinesInstall { machinesInstall = status }
+    }
+
+    /// One installer verb under the busy flag, logged with its outcome.
+    private func machinesInstaller(_ run: @escaping @Sendable () -> AllocatorInstall,
+                                   action: String,
+                                   log: (AllocatorInstall) -> String) async {
+        guard !machinesBusy else { return }
+        machinesBusy = true
+        machinesActions += 1
+        let result = await Task.detached(priority: .userInitiated) { run() }.value
+        machinesInstall = result.installStatus(over: machinesInstall)
+        AuditLog.log("panel", action, log(result))
+        refreshAudit()
+        await refreshMachinesState()
+        machinesBusy = false
+    }
+
+    func installMachines() async {
+        await machinesInstaller({
+            // As for the allocator: without its dependency the MCP server dies on spawn.
+            RemoteMachines.package.ensureDeps()
+            return RemoteMachines.install()
+        }, action: "machines-install") { "Installed remote machines (ok: \($0.installed))" }
+    }
+
+    func uninstallMachines() async {
+        await machinesInstaller(RemoteMachines.uninstall, action: "machines-uninstall") {
+            "Uninstalled remote machines (ok: \($0.reportsInstalled && !$0.installed))"
+        }
+    }
+
+    func startMachinesDaemon() async {
+        await machinesInstaller(RemoteMachines.startDaemon, action: "machines-install") {
+            let why = $0.error.map { ": \($0)" } ?? ""
+            return "Started the remote-machines daemon (ok: \($0.daemonRunning))\(why)"
+        }
+    }
+
+    func restartMachinesDaemon() async {
+        await machinesInstaller(RemoteMachines.restartDaemon, action: "machines-install") {
+            let why = $0.error.map { ": \($0)" } ?? ""
+            return "Restarted the remote-machines daemon (ok: \($0.daemonRunning && $0.error == nil))\(why)"
+        }
+    }
+
+    /// A running daemon re-discovers and re-reads every machine; an idle one is started,
+    /// which scans as it comes up.
+    func refreshMachines() async {
+        guard machinesInstall?.daemonRunning == true else { return await startMachinesDaemon() }
+        guard !machinesBusy else { return }
+        machinesBusy = true
+        machinesActions += 1
+        _ = await Task.detached(priority: .userInitiated) { RemoteMachines.scan() }.value
+        await refreshMachinesState()
+        machinesBusy = false
+    }
+
+    /// Writes the change to config.json, which the daemon applies within a second.
+    func setMachineExclusion(_ action: MachineExclusions.Action, for machine: RemoteMachine) {
+        guard writesConfig, let target = machine.target else { return }
+        let now = Date()
+        let ok = RemoteMachines.applyExclusion(action, target: target, names: machine.names, now: now)
+        machineExclusionFailed = !ok
+        let verb: String, what: String
+        switch action {
+        case .pause(let d):
+            verb = "machine-pause"
+            what = "Paused \(target) until \(Fmt.clock(now.addingTimeInterval(d)))"
+        case .exclude:
+            verb = "machine-exclude"
+            what = "Excluded \(target) from the pool"
+        case .resume:
+            verb = "machine-resume"
+            what = "Resumed \(target)"
+        case .include:
+            verb = "machine-include"
+            what = "Put \(target) back in the pool"
+        }
+        AuditLog.log("panel", verb, ok ? what : "\(what) FAILED: config.json was not written")
+        refreshAudit()
     }
 
     func fetchMe() async {

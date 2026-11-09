@@ -558,6 +558,34 @@ struct SliderSetting: View {
     }
 }
 
+/// A single horizontal bar split between two quantities: Telemetry's Diplomat share of
+/// the machine's tokens, a machine's CPU and RAM use against what is left.
+struct SplitBar: View {
+    let left: Double
+    let right: Double
+    let leftColor: Color
+    let rightColor: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            let total = max(0, left) + max(0, right)
+            let split = total > 0 ? geo.size.width * max(0, left) / total : 0
+            HStack(spacing: 0) {
+                Rectangle().fill(leftColor).frame(width: split)
+                Rectangle().fill(rightColor.opacity(0.45))
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+        }
+    }
+}
+
+/// Chart axis labels, one styling for every tick on every hand-drawn chart.
+/// `.foregroundColor` (not `.foregroundStyle`) so this stays a `Text`, which is what
+/// `GraphicsContext.draw(_:at:)` takes.
+func axisText(_ s: String) -> Text {
+    Text(s).font(.system(size: 8)).foregroundColor(Color(white: 0.55))
+}
+
 extension View {
     /// The panel's card chrome: padded content on a soft rounded tint. Every grouped
     /// block in the panel wears it — the activity feed, the ongoing-sessions list, the
@@ -600,6 +628,19 @@ extension EnvironmentValues {
 
 private struct ImageRenderingKey: EnvironmentKey {
     static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// The instant a render draws "now" at, so its ages and chart axes come out the same
+    /// on every run; nil in the app.
+    var renderNow: Date? {
+        get { self[RenderNowKey.self] }
+        set { self[RenderNowKey.self] = newValue }
+    }
+}
+
+private struct RenderNowKey: EnvironmentKey {
+    static let defaultValue: Date? = nil
 }
 
 private struct Tooltip: ViewModifier {

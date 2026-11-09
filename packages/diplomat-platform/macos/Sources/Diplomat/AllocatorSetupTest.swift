@@ -201,11 +201,11 @@ enum AllocatorSetupTest {
         // ---- the daemon's replies to the remote-pool calls ----
 
         func reply(_ body: String, _ code: Int) -> DaemonReply? {
-            DeviceAllocator.parseReply(Data("\(body)\n\(code)".utf8))
+            NodePackage.parseReply(Data("\(body)\n\(code)".utf8))
         }
         check("a reply carries its status and body",
               reply(#"{"ok":true}"#, 200) == DaemonReply(status: 200, json: .object(["ok": .bool(true)])))
-        check("output without a status line is no reply", DeviceAllocator.parseReply(Data("{}".utf8)) == nil)
+        check("output without a status line is no reply", NodePackage.parseReply(Data("{}".utf8)) == nil)
         check("no answer is said so",
               DeviceAllocator.signInReply(nil) == .reason("the allocator daemon did not answer"))
         check("a daemon without the route says it has no remote pool",

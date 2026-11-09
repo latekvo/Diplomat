@@ -904,7 +904,7 @@ enum CommsTest {
         // MARK: a ban the daemon records
         // The real allocator daemon over fake devices, its ban list beside the feed as in
         // ~/.diplomat/pr-monitor. Its base is short: a unix socket path is held to 104 bytes.
-        if let node = DeviceAllocator.resolveNode() {
+        if let node = NodePackage.resolveNode() {
             let daBase = URL(fileURLWithPath: "/tmp/dct-\(getpid())")
             let feedDir = scratch.appendingPathComponent("audit")
             try? FileManager.default.createDirectory(at: daBase, withIntermediateDirectories: true)
