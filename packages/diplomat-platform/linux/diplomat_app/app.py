@@ -115,7 +115,11 @@ class DiplomatApp:
         self.autofix_timer = QTimer()
         self.autofix_timer.setInterval(int(autofix_poll_secs() * 1000))
         self.autofix_timer.timeout.connect(self.store.run_autofix_poll_async)
+        # Restarted by every poll, so the next periodic one is due an interval after
+        # the last, including one a freed bay brought forward.
+        self.store.autofix_poll_started.connect(self.autofix_timer.start)
         self.autofix_timer.start()
+        self.store.polls_early = True
         # First poll shortly after launch, once identity has had a moment to resolve.
         QTimer.singleShot(3000, self.store.run_autofix_poll_async)
 

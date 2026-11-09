@@ -245,6 +245,9 @@ class Store(QObject):
     update_changed = Signal()
     # Emitted after each PR auto-fix monitor poll (status pill, counts, poll error).
     autofix_changed = Signal()
+    # Emitted as each monitor poll starts, whatever started it: the poll timer runs
+    # from here, so a poll brought forward moves the next periodic one back.
+    autofix_poll_started = Signal()
     # Emitted when the Agent-tasks list changes: the queue behind the automatic-task
     # cap, or how many slots of that cap are standing empty.
     tasks_changed = Signal()
@@ -423,6 +426,20 @@ class Store(QObject):
         # thread and released by the worker (see run_autofix_poll_async), so it must
         # be a plain Lock (cross-thread release), never nested with _autofix_lock.
         self._poll_lock = threading.Lock()
+        # When the last poll started (time.monotonic()), whatever started it.
+        self._autofix_poll_started: float | None = None
+        # Whether a freed bay or a fresh ask brings the next poll forward
+        # (:meth:`_bring_poll_forward`). Off unless the app's poll timer is running.
+        self.polls_early = False
+        # The least time from one poll's start to a poll brought forward. A poll is 17
+        # GraphQL points (monitor-prs 12, issues 3, closed-prs 1, review-requests 1),
+        # so one a minute is ~1000 of the 5000 an hour, beside the slow refresh's ~700.
+        self.early_poll_floor = 60.0
+        # The poll brought forward and not yet started, and its guard.
+        self._early_poll: threading.Timer | None = None
+        self._early_poll_lock = threading.Lock()
+        # The bays held as of the last settle: a settle that finds fewer freed one.
+        self._settled_load = 0
         # One settle at a time: the poll and the panel's refresh both retire, price
         # and audit what a tick found, and two at once did it twice.
         self._settle_lock = threading.Lock()
@@ -764,9 +781,12 @@ class Store(QObject):
 
     @auto_task_limit.setter
     def auto_task_limit(self, value: int) -> None:
+        old = self.auto_task_limit
         appconfig.set_int(
             appconfig.AUTO_TASK_LIMIT, autofix.clamp_auto_task_limit(int(value))
         )
+        if self.auto_task_limit > old:
+            self._bring_poll_forward(self._settled_load)
 
     @property
     def device_idle_free_minutes(self) -> int:
@@ -1238,6 +1258,8 @@ class Store(QObject):
         answers it automatically."""
         if not self._poll_lock.acquire(blocking=False):
             return  # a poll is already running
+        self._autofix_poll_started = time.monotonic()
+        self.autofix_poll_started.emit()
 
         def work() -> None:
             try:
@@ -1247,6 +1269,54 @@ class Store(QObject):
                 self.autofix_changed.emit()
 
         self.start_background(work)
+
+    def _bring_poll_forward(self, load: int) -> None:
+        """Start the next poll early, for a bay that freed or work that was asked for:
+        the queue drains only at the top of a poll, so otherwise both wait out the rest
+        of the interval with room on the machine and work in the list. A whole poll
+        rather than the drain alone, because the drain reads the poll's fresh fetch.
+
+        Only with something the drain may start and a bay to start it in, never sooner
+        than :attr:`early_poll_floor` after the last poll started, and one waiting
+        covers every call until it starts.
+
+        The settle that finds a bay free runs on every panel tick while the window is
+        on screen, and otherwise only at the top of a poll, which drains it there and
+        then."""
+        with self._early_poll_lock:
+            if (not self.polls_early or self._early_poll is not None
+                    or not self._drain_has_room(load)):
+                return
+            self._arm_early_poll(self._early_poll_wait())
+
+    def _early_poll_wait(self) -> float:
+        """Seconds until a poll brought forward may start: the floor after the last
+        poll started, and a second at a time while one is still running, which a poll
+        started then would bounce off."""
+        started = self._autofix_poll_started
+        wait = 0.0 if started is None else started + self.early_poll_floor - time.monotonic()
+        return max(wait, 1.0) if self._poll_lock.locked() else wait
+
+    def _arm_early_poll(self, wait: float) -> None:
+        """Under ``_early_poll_lock``."""
+        self._early_poll = threading.Timer(max(wait, 0.0), self._early_poll_due)
+        self._early_poll.daemon = True
+        self._early_poll.start()
+
+    def _early_poll_due(self) -> None:
+        with self._early_poll_lock:
+            # Another poll may have started while this one waited.
+            wait = self._early_poll_wait()
+            if wait > 0:
+                self._arm_early_poll(wait)
+                return
+            self._early_poll = None
+        # That poll may have drained already.
+        if self._drain_has_room(self._auto_tasks_running()):
+            self.run_autofix_poll_async()
+
+    def _drain_has_room(self, load: int) -> bool:
+        return load < self.auto_task_limit and bool(self.drainable_tasks)
 
     def _autofix_poll_once(self) -> None:
         self._poll_error_this_cycle = None
@@ -2059,6 +2129,11 @@ class Store(QObject):
         self._settle_agents()
         if self._state_signature() != before:
             self.tasks_changed.emit()
+        with self._tick_lock:
+            load = len(self._tick.cap_load) if self._tick is not None else 0
+        if load < self._settled_load:
+            self._bring_poll_forward(load)
+        self._settled_load = load
 
     def _state_signature(self) -> frozenset:
         """What "the agent picture changed" means, for the redraw: every run and the
@@ -2315,6 +2390,7 @@ class Store(QObject):
                 fresh = [a for a in fresh if a.key not in taken]
                 self.requested_work = stored + fresh
             self._publish_requested([built[a.key] for a in fresh])
+            self._bring_poll_forward(self._settled_load)
         return len(fresh), len(asks) - len(fresh)
 
     def request_sweep_async(self, cfg, done) -> None:

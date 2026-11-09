@@ -798,6 +798,105 @@ enum QueueTest {
               settled["review:q#32@aa"]?.tokens == 700)
         unsetenv("DIPLOMAT_CLAUDE_DIR")
 
+        // 20. A freed bay, or an ask, brings the next poll forward: the queue drains only
+        //     at the top of one. Never sooner than the floor after the last poll started,
+        //     and one poll for every bay that frees while it waits. `gh` is a stand-in
+        //     that logs each call and names no login, so a poll stops at its viewer
+        //     read and every line it logs is one poll.
+        let ghLog = feed.appendingPathComponent("gh.log")
+        let ghStub = feed.appendingPathComponent("gh")
+        try? "#!/bin/sh\necho call >> '\(ghLog.path)'\necho '{\"data\":{\"viewer\":{\"login\":\"\"}}}'\n"
+            .write(to: ghStub, atomically: true, encoding: .utf8)
+        chmod(ghStub.path, 0o755)
+        let realGH = ProcessInfo.processInfo.environment["DIPLOMAT_GH"]
+        setenv("DIPLOMAT_GH", ghStub.path, 1)
+        func polls() -> Int {
+            ((try? String(contentsOf: ghLog, encoding: .utf8)) ?? "")
+                .split(separator: "\n").count
+        }
+        /// When the poll count reached `n`, or nil if it had not inside `seconds`.
+        func pollNumber(_ n: Int, within seconds: Double) async -> Date? {
+            let deadline = Date().addingTimeInterval(seconds)
+            while polls() < n, Date() < deadline {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            return polls() >= n ? Date() : nil
+        }
+        func ask(_ number: Int) {
+            store.requestOne(Store.RequestedWork(
+                number: number, url: "https://github.com/software-mansion/argent/pull/\(number)",
+                author: "", config: .review(sweep.forPR(number))))
+        }
+        emptyBook()
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.usernameOverride = ""
+        store.queueAutoRun = true
+        store.autoTaskLimit = 3
+        let floor: TimeInterval = 3
+        store.earlyPollFloor = floor
+        store.pollsEarly = true
+        for n in 61...63 { bookAgent(n) }
+        _ = await store.settleAgents()
+        ask(64)
+        check("an ask with no bay free brings no poll forward",
+              await pollNumber(1, within: 1) == nil)
+
+        let started = Date()
+        await store.runAutofixPollOnce()
+        // Each agent ends the way a real one does - its process gone, past the spawn
+        // grace - and is retired by the settle that sees it.
+        for _ in 61...63 {
+            guard let run = AgentRegistry.load().first(where: { $0.pid == nil }) else { break }
+            AgentRegistry.update {
+                $0.map { r in
+                    guard r.runID == run.runID else { return r }
+                    var gone = r
+                    gone.pid = 4242
+                    gone.dispatchedAt -= 600
+                    return gone
+                }
+            }
+            _ = await store.settleAgents()
+        }
+        check("three bays freed and their runs retired",
+              AgentRegistry.load().isEmpty && store.autoTasksMeasured == 0)
+        let early = await pollNumber(2, within: floor + 3)
+        check("a freed bay brings the next poll forward to the floor",
+              early.map { $0.timeIntervalSince(started) >= floor } == true)
+        check("…not to the loop's interval",
+              early.map { $0.timeIntervalSince(started) < floor + 3 } == true)
+        check("three bays freed while it waited are one poll, not three",
+              await pollNumber(3, within: 2 * floor + 1) == nil)
+        let tick = Date().addingTimeInterval(store.secondsUntilPoll(gap: Store.autofixPollInterval))
+        check("the loop's next tick is an interval after that poll, not after the one before",
+              early.map { abs(tick.timeIntervalSince($0) - Store.autofixPollInterval) < 1 } == true)
+
+        // The ask arriving with room is the other trigger. The last poll started over a
+        // floor ago, so nothing holds it.
+        let asked = Date()
+        ask(65)
+        let forAsk = await pollNumber(3, within: 2)
+        check("an ask with a bay free brings the next poll forward",
+              forAsk.map { $0.timeIntervalSince(asked) < 2 } == true)
+
+        // So is the operator raising the cap over a machine that is full.
+        bookAgent(66)
+        _ = await store.settleAgents()
+        store.autoTaskLimit = 1
+        ask(67)
+        let raised = Date()
+        store.autoTaskLimit = 2
+        let forLimit = await pollNumber(4, within: floor + 2)
+        check("a raised cap brings the next poll forward",
+              forLimit.map { $0.timeIntervalSince(raised) < floor + 2 } == true)
+
+        store.pollsEarly = false
+        emptyBook()
+        store.requestedWork = []
+        store.queuedTasks = []
+        if let realGH { setenv("DIPLOMAT_GH", realGH, 1) } else { unsetenv("DIPLOMAT_GH") }
+
         // 13. The redirect above is the only thing between a run of this test and the
         //    operator's real activity log, so prove it caught the writes.
         check("the at-capacity lines it provoked went to the scratch feed",
