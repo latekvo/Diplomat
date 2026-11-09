@@ -291,6 +291,8 @@ def test_a_question_has_its_own_word_and_tint():
 
     assert action_chip({"action": "question", "number": 0}) == ("QUESTION", "#AF52DE")
     assert action_chip({"action": "review", "number": 4})[0] == "REVIEW #4"
+    assert action_chip({"action": "review", "number": 4, "targets": [
+        {"action": "review", "number": 4, "repo": "acme/widget"}]})[0] == "REVIEW WIDGET#4"
     assert action_chip(None)[0] == "AWAITING TRIAGE"
 
 

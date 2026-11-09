@@ -47,8 +47,8 @@ from diplomat_runtime import (
     tmuxwatch,
 )
 from diplomat_runtime.models import API, Filters, Fmt, OpenIssue, OpenPR
-from diplomat_runtime.prref import (LocalRepo, item_key_from_url, migrate_item_key,
-                                    migrate_queue_key, split_item_key)
+from diplomat_runtime.prref import (LocalRepo, item_key, item_key_from_url, item_label,
+                                    migrate_item_key, migrate_queue_key, split_item_key)
 from diplomat_runtime.prtarget import PRTarget
 from . import (
     autofixmonitor,
@@ -2488,6 +2488,7 @@ class Store(QObject):
         # that happens to share it. What keeps two agents off one issue instead is the
         # assignee claim, which every machine can see rather than just this one.
         is_pr = entry.action == autofix.QUEUE_REVIEW_ACTION
+        where = (entry.config.get("home") or {}).get("path") or entry.config.get("checkout")
         task = autofix.QueuedTask(
             id=entry.key,
             job=autofix.AgentJob(
@@ -2499,6 +2500,7 @@ class Store(QObject):
                 pr_number=entry.number if is_pr else None,
                 author_login=entry.author or None,
                 duty=entry.action,
+                checkout=where if where != review.repo_path() else None,
             ),
             attempt=1,
         )
@@ -3591,15 +3593,13 @@ class Store(QObject):
 
     def comms_settings_payload(self) -> dict:
         """The ``CommsSettings`` JSON a tick and a plan are given."""
-        cfg = core.config()
         return {
             "keywordsRaw": self.comms_keywords_raw,
             "senderAllowlistRaw": self.comms_sender_allowlist_raw,
             "model": self.comms_model,
             "batchSize": self.comms_batch_size,
             "flushAfterSecs": self.comms_flush_after_secs,
-            "owner": cfg["owner"],
-            "repo": cfg["repo"],
+            "repos": [r.slug for r in review.repo_roots()],
             "login": self.effective_me,
             "bannedSenders": bans.slack_ids(bans.read()),
         }
@@ -3652,12 +3652,17 @@ class Store(QObject):
 
     def refresh_comms_feed(self) -> None:
         """A core that cannot answer leaves the rows as they were: an unreadable log is
-        not an empty one."""
+        not an empty one. A queue key a single-repo build logged is read as the primary
+        root's."""
         with self._comms_feed_lock:
             try:
                 items = comms.feed()
             except (RuntimeError, promptcore.CoreBinaryMissing, ValueError):
                 return
+            primary = self._primary().slug
+            for i in items:
+                if i.get("queueKey"):
+                    i["queueKey"] = migrate_queue_key(str(i["queueKey"]), primary)
             self.comms_items = items
             owned: dict[str, set[str]] = {}
             for i in items:
@@ -3700,8 +3705,10 @@ class Store(QObject):
                 effect = {"kind": "none", "error": str(exc)}
             entry = {"message": message, "decision": decision, "effect": effect}
             if effect.get("kind") in ("review", "fix_issue"):
-                entry["target"] = self._comms_lookup(effect["kind"],
-                                                     int(effect.get("number") or 0))
+                entry["root"] = root = self._comms_root(str(effect.get("repo") or ""))
+                if root is not None:
+                    entry["target"] = self._comms_lookup(
+                        effect["kind"], int(effect.get("number") or 0), root)
             elif effect.get("kind") == "ban":
                 entry["reported"] = self._comms_report_ban(effect["ban"])
             items.append(entry)
@@ -3727,22 +3734,40 @@ class Store(QObject):
                 if not i.get("outcome") and i.get("decision")
                 and str(i["message"].get("id", "")) not in skip]
 
-    def _comms_lookup(self, kind: str, number: int) -> dict | None:
-        """``{number, url, author, state}``, open or not; ``None`` when GitHub does not
-        know it; ``{"error": why}`` when GitHub could not be asked. The panel's last
-        fetch holds only some open work, so ``gh`` answers the rest. ``gh issue view``
-        answers a PR's number too, with its ``/pull/`` url."""
+    @staticmethod
+    def _comms_root(repo: str) -> LocalRepo | None:
+        """The repo root an effect's ``repo`` names ("" for the primary), or ``None``
+        when Settings dropped it after the ping was triaged."""
+        roots = review.repo_roots()
+        if not repo:
+            return roots[0]
+        return next((r for r in roots if r.slug.lower() == repo.lower()), None)
+
+    @staticmethod
+    def _comms_ref(root: LocalRepo, number: int) -> str:
+        """``#N``, or ``repo#N`` beside another repo root (:func:`item_label`)."""
+        return item_label(item_key(root.owner, root.repo, number), len(review.repo_roots()))
+
+    @staticmethod
+    def _comms_repo_name(root: LocalRepo) -> str:
+        return "this repo" if len(review.repo_roots()) == 1 else root.slug
+
+    def _comms_lookup(self, kind: str, number: int, root: LocalRepo) -> dict | None:
+        """``{number, url, author, state}`` of ``root``'s ``#number``, open or not;
+        ``None`` when GitHub does not know it; ``{"error": why}`` when GitHub could not
+        be asked. The panel's last fetch holds only some open work, so ``gh`` answers
+        the rest. ``gh issue view`` answers a PR's number too, with its ``/pull/`` url."""
+        want = item_key(root.owner, root.repo, number)
         listed = self.prs if kind == "review" else self.issues
-        hit = next((i for i in listed if i.number == number), None)
+        hit = next((i for i in listed if item_key_from_url(i.url) == want), None)
         if hit is not None:
             return {"number": hit.number, "url": hit.url, "author": hit.author,
                     "state": "OPEN"}
         from diplomat_runtime import gh
 
-        primary = self._primary()
         try:
             obj = json.loads(gh.run(["pr" if kind == "review" else "issue", "view",
-                                     str(number), "--repo", primary.slug,
+                                     str(number), "--repo", root.slug,
                                      "--json", "number,url,author,state"], timeout=30))
         except Exception as exc:  # noqa: BLE001 — gh's own failures are all GHError
             # Both views' "no such number"; "Could not resolve to a Repository" shares
@@ -3818,6 +3843,7 @@ class Store(QObject):
         if effect.get("kind") in ("review", "fix_issue", "investigate") and key:
             ids = [t.id for t in self.queued_tasks]
             queued = {"kind": effect["kind"], "number": int(entry.get("work_number") or 0),
+                      "repo": str(effect.get("repo") or ""),
                       "ahead": ids.index(key) if key in ids else 0,
                       "bays": self.auto_task_limit}
             running = entry.get("running")
@@ -3886,8 +3912,8 @@ class Store(QObject):
     def apply_comms_item(self, entry: dict) -> str:
         """Act on one triaged ping; returns the outcome its `action` line records.
 
-        ``entry`` is ``{message, decision, effect}``, plus ``target``
-        (:meth:`_comms_lookup`) for a review or a fix, and ``sender_banned`` for a sender
+        ``entry`` is ``{message, decision, effect}``, plus ``root`` (:meth:`_comms_root`)
+        and ``target`` (:meth:`_comms_lookup`) for a review or a fix, and ``sender_banned`` for a sender
         on the ban list (:meth:`_apply_comms_tick`); it gains ``queue_key``, ``running``
         and ``work_number`` for :meth:`_comms_reply_request`. Every ping ends in exactly
         one `action` line, even from a tick landing after Comms was switched off: the
@@ -3915,26 +3941,22 @@ class Store(QObject):
             comms.append_event("action", msg_id, outcome=self.COMMS_SENDER_BANNED_OUTCOME)
             return self.COMMS_SENDER_BANNED_OUTCOME
         number = int(effect.get("number") or 0)
+        repo = str(effect.get("repo") or "")
         verb, work, front = None, None, True
         if kind == "review":
             verb = "comms-review"
-            outcome, work = self._comms_review(number, entry.get("target"))
+            outcome, work = self._comms_review(number, repo, entry.get("root"),
+                                               entry.get("target"))
         elif kind == "fix_issue":
             verb = "comms-fix"
-            outcome, work = self._comms_fix(number, entry.get("target"))
+            outcome, work = self._comms_fix(number, repo, entry.get("root"),
+                                            entry.get("target"))
         elif kind == "investigate":
             verb, front = "comms-investigate", False
-            cfg = effect["config"]
-            outcome = "investigation"
-            # The sender is its ban dimension (``InvestigateConfig.banLogin``), so a ban
-            # landing while the ask waits stops it at dispatch.
-            sender_id = str(cfg.get("senderID") or "")
-            work = autofix.RequestedWork(
-                number=int(cfg["number"]), url=str(cfg.get("permalink", "")),
-                author=bans.slack_login(sender_id) if sender_id else "", config=cfg)
+            outcome, work = self._comms_investigate(effect["config"])
         elif kind == "bump":
             verb = "comms-bump"
-            outcome = self._comms_bump(number)
+            outcome = self._comms_bump(number, repo)
         else:
             outcome = self._comms_none_outcome(entry)
         # The ask, its owner and its line under one lock: a drain's dispatch or a
@@ -4035,61 +4057,89 @@ class Store(QObject):
     def _comms_banned(self, login: str) -> bool:
         return bool(login) and bans.is_banned(login, bans.read())
 
-    def _comms_review(self, number: int,
+    def _comms_review(self, number: int, repo: str, root: LocalRepo | None,
                       found: dict | None) -> tuple[str, autofix.RequestedWork | None]:
         """``("review of #N", the ask)`` (the Review wizard's single-PR default) or
-        ``(why there is none, None)``. ``found`` is :meth:`_comms_lookup`'s answer."""
+        ``(why there is none, None)``. ``root`` is :meth:`_comms_root`'s answer for
+        ``repo``, ``found`` :meth:`_comms_lookup`'s."""
+        if root is None:
+            return f"{repo}#{number} is not in a repo root", None
+        ref = self._comms_ref(root, number)
         if found is None:
-            return f"#{number} is not a PR of this repo", None
+            return f"{ref} is not a PR of {self._comms_repo_name(root)}", None
         if "error" in found:
-            return f"couldn't ask GitHub about PR #{number} ({found['error']})", None
+            return f"couldn't ask GitHub about PR {ref} ({found['error']})", None
         state = str(found.get("state", ""))
         if state.upper() != "OPEN":
-            return f"PR #{number} is {state.lower()}", None
+            return f"PR {ref} is {state.lower()}", None
         author = str(found.get("author", ""))
         if self._comms_banned(author):
-            return f"PR #{number} is by @{author}, who is banned; not queued", None
+            return f"PR {ref} is by @{author}, who is banned; not queued", None
         me = self.effective_me
         mine = bool(me) and author.lower() == me.lower()
         cfg = review.ReviewConfig(
             target=PRTarget.SPECIFIC, specific_pr=str(number), me=me,
             specific_author=(review.SpecificAuthor.MINE if mine
-                             else review.SpecificAuthor.THEIRS))
-        return f"review of #{number}", autofix.RequestedWork(
+                             else review.SpecificAuthor.THEIRS), home=root)
+        return f"review of {ref}", autofix.RequestedWork(
             number=number, url=str(found.get("url", "")), author="" if mine else author,
-            config=cfg.prompt_payload(), repo=self._primary().slug.lower())
+            config=cfg.prompt_payload(), repo=root.slug.lower())
 
-    def _comms_fix(self, number: int,
+    def _comms_fix(self, number: int, repo: str, root: LocalRepo | None,
                    found: dict | None) -> tuple[str, autofix.RequestedWork | None]:
         """``("fix of issue #N", the ask)`` (the Fix-issues wizard's) or ``(why there is
-        none, None)``. Unlike a wizard fix it carries the issue's author as the ban
-        dimension: somebody on Slack named the issue, not the operator."""
+        none, None)``, as :meth:`_comms_review`. Unlike a wizard fix it carries the
+        issue's author as the ban dimension: somebody on Slack named the issue, not the
+        operator."""
+        if root is None:
+            return f"{repo}#{number} is not in a repo root", None
+        ref = self._comms_ref(root, number)
         if found is None:
-            return f"#{number} is not an issue of this repo", None
+            return f"{ref} is not an issue of {self._comms_repo_name(root)}", None
         if "error" in found:
-            return f"couldn't ask GitHub about issue #{number} ({found['error']})", None
+            return f"couldn't ask GitHub about issue {ref} ({found['error']})", None
         if "/issues/" not in str(found.get("url", "")):
-            return f"#{number} is a pull request, not an issue", None
+            return f"{ref} is a pull request, not an issue", None
         if str(found.get("state", "")).upper() != "OPEN":
-            return f"issue #{number} is {str(found.get('state', '')).lower()}", None
+            return f"issue {ref} is {str(found.get('state', '')).lower()}", None
         author = str(found.get("author", ""))
         if self._comms_banned(author):
-            return f"issue #{number} is by @{author}, who is banned; not queued", None
+            return f"issue {ref} is by @{author}, who is banned; not queued", None
         me = self.effective_me
         mine = bool(me) and author.lower() == me.lower()
         cfg = issues.IssueConfig(target=issues.Target.SPECIFIC,
-                                 specific_issue=str(number), me=me)
-        return f"fix of issue #{number}", autofix.RequestedWork(
+                                 specific_issue=str(number), me=me, home=root)
+        return f"fix of issue {ref}", autofix.RequestedWork(
             number=number, url=str(found.get("url", "")), author="" if mine else author,
-            config=cfg.prompt_payload(), repo=self._primary().slug.lower())
+            config=cfg.prompt_payload(), repo=root.slug.lower())
 
-    def _comms_bump(self, number: int) -> str:
-        moved = [t.id for t in self.queued_tasks
-                 if (self._comms_key_parts(t.id) or ("", 0))[1] == number]
+    def _comms_investigate(self, cfg: dict) -> tuple[str, autofix.RequestedWork | None]:
+        """``("investigation", the ask)`` in the checkout of the repo root the message
+        is about (``InvestigateConfig.owner``/``repo``), or ``(why there is none,
+        None)``."""
+        slug = f"{cfg.get('owner', '')}/{cfg.get('repo', '')}"
+        root = self._comms_root(slug)
+        if root is None:
+            return f"investigation of {slug} not queued: it is not a repo root", None
+        if root != self._primary():
+            cfg = {**cfg, "checkout": root.path}
+        # The sender is its ban dimension (``InvestigateConfig.banLogin``), so a ban
+        # landing while the ask waits stops it at dispatch.
+        sender_id = str(cfg.get("senderID") or "")
+        return "investigation", autofix.RequestedWork(
+            number=int(cfg["number"]), url=str(cfg.get("permalink", "")),
+            author=bans.slack_login(sender_id) if sender_id else "", config=cfg,
+            repo=root.slug.lower())
+
+    def _comms_bump(self, number: int, repo: str) -> str:
+        """Moves whatever is queued for that item ("" = the primary root's)."""
+        owner, _, name = (repo or self._primary().slug).partition("/")
+        item = item_key(owner, name, number)
+        moved = [t.id for t in self.queued_tasks if autofix.item_of_key(t.id) == item]
         for key in moved:
             self._move_to_band_front(key)
         if not moved:
-            return f"nothing queued for #{number}"
+            return f"nothing queued for {item_label(item, len(review.repo_roots()))}"
         return f"moved {', '.join(moved)} to the front of its band"
 
     def request_one(self, work: autofix.RequestedWork, *, front: bool = False) -> bool:
@@ -4134,17 +4184,21 @@ class Store(QObject):
                          ) -> autofix.RunningAgent | None:
         """Twin of ``commsRow``: any review agent on that PR (the dispatch gate treats
         every agent on a PR as that PR's), or a fix of that issue, known only by its
-        label (:attr:`autofix.RequestedWork.label`)."""
-        parts = Store._comms_key_parts(key)
-        if parts is None:
+        label (:attr:`autofix.RequestedWork.label`).
+
+        A :class:`autofix.RunningAgent` carries a PR number and no repo, so a review
+        agent on another root's PR of the same number matches too."""
+        item = autofix.item_of_key(key)
+        if item is None:
             return None
-        verb, n = parts
+        verb = key.partition(":")[0]
         if verb in (autofix.QUEUE_REVIEW_ACTION, REVIEW_REQ_ACTION):
-            return next((a for a in rows if a.pr_number == n
+            return next((a for a in rows if a.pr_number == split_item_key(item)[1]
                          and a.kind == autofix.QUEUE_REVIEW_ACTION), None)
         if verb == autofix.QUEUE_ISSUES_ACTION:
+            named = f"Issues · {item_label(item, len(review.repo_roots()))} · "
             return next((a for a in rows if a.kind == autofix.QUEUE_ISSUES_ACTION
-                         and f"Issues · #{n} · " in a.label), None)
+                         and named in a.label), None)
         return None
 
     @staticmethod
