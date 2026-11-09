@@ -515,7 +515,7 @@ def test_a_comms_run_records_when_it_started_and_finished(comms_store, monkeypat
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", started["at"])
     comms_store.refresh_comms_feed()
 
-    running = [autofix.RunningAgent(12, started["label"], "review", True)]
+    running = [autofix.RunningAgent(12, started["label"], "review", True, item=_item(12))]
     monkeypatch.setattr(Store, "running_tasks", property(lambda s: running))
     comms_store._note_comms_runs()
     assert _events()[-1]["kind"] == "started", "still running"
@@ -1053,6 +1053,10 @@ def test_a_run_that_ends_while_comms_is_off_is_still_finished(comms_store, monke
 DISPATCHED = 1761500000.0
 
 
+def _item(number: int) -> str:
+    return f"{PRIMARY.lower()}#{number}"
+
+
 def _rows(monkeypatch, rows: list) -> list:
     monkeypatch.setattr(Store, "running_tasks", property(lambda s: list(rows)))
     return rows
@@ -1072,7 +1076,7 @@ def _review_req(number: int, author: str = "bob") -> autofix.QueuedTask:
 @needs_core
 def test_a_review_an_agent_is_already_on_is_not_asked_for_again(comms_store, monkeypatch):
     row = autofix.RunningAgent(12, "Auto · Review-req · #12 (@bob) +verdict", "review", True,
-                               started_at=DISPATCHED)
+                               started_at=DISPATCHED, item=_item(12))
     rows = _rows(monkeypatch, [row])
     m, d = _ask(1, "review", 12)
     _tick(comms_store, monkeypatch, (m, d))
@@ -1137,7 +1141,7 @@ def test_a_review_the_monitor_has_queued_is_not_asked_for_again(comms_store, mon
     started = _events()[-1]
     assert (started["kind"], started["label"]) == ("started", "Auto · " + twin.job.label)
     rows.append(autofix.RunningAgent(12, "Auto · " + twin.job.label, "review", True,
-                                     started_at=DISPATCHED))
+                                     started_at=DISPATCHED, item=_item(12)))
     comms_store._note_comms_runs()
     assert _kinds_by_id()[m["id"]] == ["action", "started"], "still running"
     rows.clear()
@@ -1151,7 +1155,7 @@ def test_a_review_the_monitor_has_queued_is_not_asked_for_again(comms_store, mon
     assert _events()[-1]["queueKey"] == qkey("review-req", 13)
     comms_store.queued_tasks = []
     row = autofix.RunningAgent(13, "Auto · Review-req · #13 (@alice) +verdict", "review",
-                               True, started_at=DISPATCHED)
+                               True, started_at=DISPATCHED, item=_item(13))
     rows.append(row)
     comms_store._note_comms_runs()
     started = _events()[-1]
@@ -1219,7 +1223,7 @@ def test_a_ping_whose_run_never_started_is_started_by_its_retry(comms_store, mon
     label = "Auto · " + twin.job.label
     # The 8-second poll publishes the run's row while its spawn waits for the pid file.
     comms_store.queued_tasks = []
-    rows.append(autofix.RunningAgent(12, label, "review", True, started_at=DISPATCHED))
+    rows.append(autofix.RunningAgent(12, label, "review", True, started_at=DISPATCHED, item=_item(12)))
     comms_store._note_comms_runs()
     rows.clear()
 
@@ -1233,7 +1237,7 @@ def test_a_ping_whose_run_never_started_is_started_by_its_retry(comms_store, mon
     assert qkey("review-req", 12) in comms_store._comms_owned
 
     retry = autofix.RunningAgent(12, label + " · retry 2", "review", True,
-                                 started_at=DISPATCHED + 60)
+                                 started_at=DISPATCHED + 60, item=_item(12))
     rows.append(retry)
     comms_store._note_comms_runs()
     [item] = comms_store.comms_items
@@ -1313,7 +1317,7 @@ def test_only_a_monitors_find_that_left_the_queue_starts_from_the_rows(comms_sto
                                                                        waiting):
     """A find still queued has not started, whoever is on its PR; an ask starts at its
     own dispatch (`_note_comms_started`), never from somebody else's agent."""
-    _rows(monkeypatch, [autofix.RunningAgent(12, "Review · #12 · deep", "review", True)])
+    _rows(monkeypatch, [autofix.RunningAgent(12, "Review · #12 · deep", "review", True, item=_item(12))])
     comms_store.comms_items = [{"message": {"id": "D1:1.1"}, "queueKey": key,
                                 "label": "Review-req · #12 (@bob)", "at": "x"}]
     comms_store.queued_tasks = [_review_req(12)] if waiting else []

@@ -1219,6 +1219,8 @@ class RunningAgent:
     # guesswork this whole mechanism replaced.
     state: str = "running"
     reason: str = ""
+    # The run's `owner/repo#n` (`agentstate.RunRecord.item`); None for a run about no PR.
+    item: str | None = None
 
     @property
     def awaiting_input(self) -> bool:

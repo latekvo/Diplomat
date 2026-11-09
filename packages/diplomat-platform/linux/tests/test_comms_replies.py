@@ -18,7 +18,7 @@ from test_autofix import _spawn_recorder, store  # noqa: F401 — fixture
 from test_comms_core import MESSAGE, _Slack, _tools, slack  # noqa: F401 — fixture
 from test_comms_store import (  # noqa: F401 — fixture
     qkey,
-    DISPATCHED, _ask, _decision, _feed_lines, _logged, _message, _rows, _sweep_review,
+    DISPATCHED, _ask, _decision, _feed_lines, _item, _logged, _message, _rows, _sweep_review,
     _tick, comms_store, needs_core)
 
 from diplomat_app import bans
@@ -229,7 +229,8 @@ def test_a_fix_counts_the_tasks_ahead_of_its_band(comms_store, replies, monkeypa
 @needs_core
 def test_work_already_running_says_when_it_started(comms_store, replies, monkeypatch):
     _rows(monkeypatch, [autofix.RunningAgent(12, "Auto · Review-req · #12 (@bob) +verdict",
-                                             "review", True, started_at=DISPATCHED)])
+                                             "review", True, started_at=DISPATCHED,
+                                             item=_item(12))])
     _replied(comms_store, monkeypatch, _ask(1, "review", 12))
     [request] = replies
     assert request["queued"] == {

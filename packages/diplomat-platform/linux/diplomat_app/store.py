@@ -2340,6 +2340,7 @@ class Store(QObject):
                 mesh=r.placement != agentstate.PLACEMENT_LOCAL,
                 state=s.state,
                 reason=s.reason,
+                item=r.item,
             )
             for r, s in self._agent_tick().rows
             if s.state not in agentstate.ENDED
@@ -4318,16 +4319,13 @@ class Store(QObject):
                          ) -> autofix.RunningAgent | None:
         """Twin of ``commsRow``: any review agent on that PR (the dispatch gate treats
         every agent on a PR as that PR's), or a fix of that issue, known only by its
-        label (:attr:`autofix.RequestedWork.label`).
-
-        A :class:`autofix.RunningAgent` carries a PR number and no repo, so a review
-        agent on another root's PR of the same number matches too."""
+        label (:attr:`autofix.RequestedWork.label`)."""
         item = autofix.item_of_key(key)
         if item is None:
             return None
         verb = key.partition(":")[0]
         if verb in (autofix.QUEUE_REVIEW_ACTION, REVIEW_REQ_ACTION):
-            return next((a for a in rows if a.pr_number == split_item_key(item)[1]
+            return next((a for a in rows if a.item == item
                          and a.kind == autofix.QUEUE_REVIEW_ACTION), None)
         if verb == autofix.QUEUE_ISSUES_ACTION:
             named = f"Issues · {item_label(item, len(review.repo_roots()))} · "

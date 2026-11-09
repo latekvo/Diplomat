@@ -434,3 +434,19 @@ def test_the_roots_list_adds_raises_and_removes_through_the_config(app, tmp_path
     assert appconfig.repo_roots() == [second]
     assert names() == ["o/other"]
     view.deleteLater()
+
+
+def test_a_comms_review_ask_matches_only_the_agent_on_its_own_repos_pr():
+    """Two review agents on #12, one per root: the ask about the second root's #12 is
+    the second agent's, not whichever comes first."""
+    from diplomat_app.store import Store
+
+    def row(item):
+        return autofix.RunningAgent(pr_number=12, label="", kind=autofix.QUEUE_REVIEW_ACTION,
+                                    tracked=True, item=item)
+
+    rows = [row("o/r#12"), row("o/other#12")]
+    key = autofix.queue_key(autofix.QUEUE_REVIEW_ACTION, "o/other#12")
+    assert Store._comms_row_doing(key, rows) is rows[1]
+    assert Store._comms_row_doing(autofix.queue_key(autofix.QUEUE_REVIEW_ACTION, "o/x#12"),
+                                  rows) is None
