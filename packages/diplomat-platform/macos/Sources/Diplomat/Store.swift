@@ -3045,7 +3045,8 @@ final class Store: ObservableObject {
                           prURL: isPR ? entry.url : nil,
                           prNumber: isPR ? entry.number : nil,
                           authorLogin: entry.author.isEmpty ? nil : entry.author,
-                          duty: action, workKey: "", counter: nil),
+                          duty: action, workKey: "", counter: nil,
+                          directory: entry.config.checkout),
             attemptNumber: 1)
     }
 
