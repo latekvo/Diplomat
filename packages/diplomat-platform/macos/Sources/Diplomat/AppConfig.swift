@@ -19,7 +19,9 @@ import DiplomatCore
 /// And four are for the device-allocator daemon, a Node process: the terminal spawns
 /// resolve to, published rather than set here, for it to open its repair agents in,
 /// the two idle limits it shuts devices down and takes them back by, and the module
-/// its remote device pool is lent through.
+/// its remote device pool is lent through. Two more are for the remote-machines daemon,
+/// another Node process: the machines the operator took out of its pool, for good or
+/// until a time.
 ///
 /// So those knobs live in the shared `~/.diplomat` tree, alongside the ban list and
 /// the mesh snapshot both front-ends already exchange there. Every reader re-reads on
@@ -66,6 +68,12 @@ enum AppConfig {
     /// device pool (`~` allowed); absent = no remote pool. Re-read by the daemon on
     /// every request.
     static let deviceRemoteProviderKey = "deviceRemoteProvider"
+    /// Machines the remote-machines daemon never contacts, by name. Same key on the
+    /// Linux side.
+    static let remoteMachineExcludeKey = "remoteMachineExclude"
+    /// Machine name -> ISO-8601 time it stays out of the remote-machines pool until; it is
+    /// still read meanwhile. Same key on the Linux side.
+    static let remoteMachineExcludeUntilKey = "remoteMachineExcludeUntil"
 
     /// The runner every spawn on this machine uses, resolved here rather than at each
     /// call site because there are two, in different processes: this app's spawner and
@@ -113,6 +121,16 @@ enum AppConfig {
         return n.intValue
     }
 
+    /// One list-of-names key; entries that are not strings are dropped.
+    static func strings(_ key: String) -> [String] {
+        (read()[key] as? [Any])?.compactMap { $0 as? String } ?? []
+    }
+
+    /// One string-to-string object key; entries whose value is not a string are dropped.
+    static func stringMap(_ key: String) -> [String: String] {
+        (read()[key] as? [String: Any])?.compactMapValues { $0 as? String } ?? [:]
+    }
+
     /// Read-modify-write, atomically (Foundation writes to a temp file and renames), so a
     /// node reading concurrently never sees a torn file. Keys the file already holds
     /// survive a normal write; a file that failed to parse (see `read`) is rewritten from
@@ -121,6 +139,22 @@ enum AppConfig {
     /// an unwritable HOME is the `false` it returns, which a caller may ignore.
     @discardableResult
     static func set(_ key: String, _ value: String) -> Bool {
+        var obj = read()
+        if value.isEmpty { obj.removeValue(forKey: key) } else { obj[key] = value }
+        return write(obj)
+    }
+
+    /// `set` for a list; an empty one removes the key.
+    @discardableResult
+    static func setStrings(_ key: String, _ value: [String]) -> Bool {
+        var obj = read()
+        if value.isEmpty { obj.removeValue(forKey: key) } else { obj[key] = value }
+        return write(obj)
+    }
+
+    /// `set` for an object; an empty one removes the key.
+    @discardableResult
+    static func setStringMap(_ key: String, _ value: [String: String]) -> Bool {
         var obj = read()
         if value.isEmpty { obj.removeValue(forKey: key) } else { obj[key] = value }
         return write(obj)

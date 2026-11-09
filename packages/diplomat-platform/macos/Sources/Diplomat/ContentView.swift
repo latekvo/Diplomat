@@ -5,24 +5,26 @@ import DiplomatCore
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
-    /// Which of the seven screens the body shows: Actions ("main"), Devices, Comms, Tasks,
-    /// Mesh, Telemetry or Settings.
+    /// Which of the eight screens the body shows: Actions ("main"), Devices, Machines, Comms,
+    /// Tasks, Mesh, Telemetry or Settings.
     @State private var screen: PanelScreen
 
-    enum PanelScreen { case main, devices, comms, tasks, mesh, telemetry, settings }
+    enum PanelScreen { case main, devices, machines, comms, tasks, mesh, telemetry, settings }
 
-    /// `showSettings` / `showTelemetry` / `showDevices` / `showComms` / `showTasks` seed the initial
-    /// screen — used by the headless render to snapshot those screens in context.
+    /// `showSettings` / `showTelemetry` / `showDevices` / `showMachines` / `showComms` /
+    /// `showTasks` seed the initial screen — used by the headless render to snapshot those
+    /// screens in context.
     /// Defaults to the main view.
     /// `seedPendingUnban` seeds the inline un-ban confirmation for a login (render only).
     /// `seedMutedAudit` pre-mutes Activity filter categories so the filtered feed can be
     /// snapshotted (render only).
     init(showSettings: Bool = false, showTelemetry: Bool = false, showDevices: Bool = false,
-         showComms: Bool = false, showTasks: Bool = false,
+         showMachines: Bool = false, showComms: Bool = false, showTasks: Bool = false,
          seedPendingUnban: String? = nil, seedMutedAudit: Set<AuditCategory> = []) {
         _screen = State(initialValue: showSettings ? .settings
                                     : showTelemetry ? .telemetry
                                     : showDevices ? .devices
+                                    : showMachines ? .machines
                                     : showComms ? .comms
                                     : showTasks ? .tasks : .main)
         _pendingUnban = State(initialValue: seedPendingUnban)
@@ -69,6 +71,9 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .devices:
                 DevicesScreen(isPresented: presenting(.devices))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            case .machines:
+                MachinesScreen(isPresented: presenting(.machines))
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .mesh:
                 MeshView(isPresented: presenting(.mesh))
@@ -137,6 +142,7 @@ struct ContentView: View {
                 Image(systemName: "arrow.clockwise")
             }.buttonStyle(.borderless).tooltip("Refresh")
             devicesButton
+            machinesButton
             commsButton
             tasksButton
             Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .mesh ? .main : .mesh } } label: {
@@ -230,6 +236,19 @@ struct ContentView: View {
 
     private func toggleDevices() {
         withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .devices ? .main : .devices }
+    }
+
+    private var machinesButton: some View {
+        let open = screen == .machines
+        return Button {
+            withAnimation(.easeInOut(duration: 0.15)) { screen = open ? .main : .machines }
+        } label: {
+            Image(systemName: "server.rack")
+                .fontWeight(open ? .bold : .regular)
+                .foregroundStyle(open ? Color.accentColor : .primary)
+        }
+        .buttonStyle(.borderless)
+        .tooltip("Machines")
     }
 
     // MARK: auto-fix monitor status pill
@@ -1404,6 +1423,8 @@ struct AuditRow: View {
         case "ban":                  return "hand.raised.fill"
         case "repair-done":          return "wrench.and.screwdriver"
         case "allocator-install", "allocator-uninstall": return "shippingbox.fill"
+        case "machine-pause", "machine-resume", "machine-exclude", "machine-include",
+             "machines-install", "machines-uninstall": return "server.rack"
         case "merge-failed", "spawn-failed", "poll-failed", "warn":
             return "exclamationmark.triangle.fill"
         case "poll-recovered":       return "checkmark.circle.fill"

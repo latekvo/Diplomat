@@ -792,31 +792,60 @@ struct AllocatorButtons: View {
     var offersDaemon = false
 
     var body: some View {
+        InstallerButtons(status: status, busy: store.allocatorBusy, ready: AllocatorUI.ready,
+                         offersDaemon: offersDaemon, restartHelp: AllocatorUI.restartHelp,
+                         install: { Task { await store.installAllocator() } },
+                         uninstall: { Task { await store.uninstallAllocator() } },
+                         start: { Task { await store.startAllocatorDaemon() } },
+                         restart: { Task { await store.restartAllocatorDaemon() } },
+                         recheck: { Task { await store.refreshAllocatorInstall() } })
+    }
+}
+
+/// Install / Uninstall / Start / Restart for a `NodePackage`, by what its `--check` said.
+struct InstallerButtons: View {
+    let status: AllocatorInstall?
+    let busy: Bool
+    /// The package and node are both there to run the installer.
+    let ready: Bool
+    let offersDaemon: Bool
+    let restartHelp: String
+    let install: () -> Void
+    let uninstall: () -> Void
+    let start: () -> Void
+    let restart: () -> Void
+    var recheck: (() -> Void)? = nil
+
+    var body: some View {
         let s = status
-        let busy = store.allocatorBusy
         HStack(spacing: 8) {
-            Button { Task { await store.installAllocator() } } label: {
+            Button(action: install) {
                 Text(s?.outdated ?? false ? "Update"
                      : (s?.installed ?? false) ? "Reinstall" : "Install").bold()
             }
             .buttonStyle(.borderedProminent).controlSize(.small)
-            .disabled(!AllocatorUI.ready || busy)
+            .disabled(!ready || busy)
             if s?.installed ?? false {
-                Button { Task { await store.uninstallAllocator() } } label: { Text("Uninstall") }
+                Button(action: uninstall) { Text("Uninstall") }
                     .buttonStyle(.bordered).controlSize(.small)
                     .disabled(busy)
             }
             if offersDaemon, let s, s.installed, !s.daemonRunning {
-                StartDaemonButton()
+                Button(action: start) { Text("Start daemon") }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(!ready || busy)
             }
             if offersDaemon, let s, s.installed, s.daemonRunning {
-                RestartDaemonButton()
+                Button(action: restart) { Text("Restart daemon") }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(!ready || busy)
+                    .tooltip(restartHelp)
             }
-            Button { Task { await store.refreshAllocatorInstall() } } label: {
-                Image(systemName: "arrow.clockwise")
+            if let recheck {
+                Button(action: recheck) { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.borderless).controlSize(.small).tooltip("Re-check status")
+                    .disabled(busy)
             }
-            .buttonStyle(.borderless).controlSize(.small).tooltip("Re-check status")
-            .disabled(busy)
             Spacer(minLength: 0)
         }
     }
