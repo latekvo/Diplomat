@@ -282,7 +282,7 @@ struct SettingsView: View {
                     .lineLimit(1)
                 Text(status.text).font(.caption2)
                     .foregroundStyle(status.warn ? Color.orange : Color.secondary)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
             Button { store.repoRootPaths.swapAt(i, i - 1) } label: {
