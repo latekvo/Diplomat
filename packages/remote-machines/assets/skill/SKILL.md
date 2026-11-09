@@ -42,7 +42,9 @@ ssh "$T" "rm -rf $D"
 - Run commands through a login shell (`'$SHELL -l -s'`, fed on stdin as above). A plain
   `ssh <target> <command>` is not one: its PATH lacks Homebrew and the other toolchains
   `list-machines` reports. Quote the heredoc marker (`<<'EOF'`) when the commands should
-  expand `$VARS` on the remote rather than here.
+  expand `$VARS` on the remote rather than here. The script is the shell's stdin, so a
+  command in it that reads stdin (`ssh`, `docker run -i`, `read`) needs `</dev/null`, or it
+  swallows the lines after it and the run still exits 0.
 - A machine on a port other than 22 is printed with the `ssh -p` and `rsync -e` forms to
   use for it.
 - Pushed work can be cloned or fetched there instead of rsynced.

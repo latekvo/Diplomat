@@ -25,6 +25,8 @@ dataset, a benchmark - **prefer running it on a remote machine**:
    cd offload/<task> && <command>
    EOF
    ```
+   The script is the shell's stdin, so give any command that reads stdin (`ssh`,
+   `docker run -i`, `read`) `</dev/null`, or it swallows the lines after it.
 4. Copy back only the artifacts and results you need, then `ssh <target> 'rm -rf offload/<task>'`.
 
 Run it on this machine instead when `list-machines` shows no usable machine, when the work

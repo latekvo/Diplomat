@@ -40,7 +40,8 @@ function machine(m, now) {
   if (m.target) lines.push(`   tools on the login PATH: ${tools(m)} · home ${m.home}`);
   // rsync reads `ssh://host:port:path` as host "ssh", so spell out both forms.
   if (m.target?.startsWith('ssh://')) {
-    lines.push(`   port ${m.port}: use \`ssh -p ${m.port} ${m.hostname}\` and \`rsync -e 'ssh -p ${m.port}' ... ${m.hostname}:offload/<task>/\``);
+    const at = `${m.user}@${m.hostname}`;
+    lines.push(`   port ${m.port}: use \`ssh -p ${m.port} ${at}\` and \`rsync -e 'ssh -p ${m.port}' ... ${at}:offload/<task>/\``);
   }
   if (m.warnings?.length) lines.push(`   WARNING: ${m.warnings.join('; ')}`);
   lines.push(`   load read ${ago(m.probedAt, now)}`);

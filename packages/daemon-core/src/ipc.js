@@ -78,7 +78,7 @@ export function createDaemonClient({ socketPath, daemonJs, baseDir, logPath, lab
       const deadline = Date.now() + budgetMs;
       while (Date.now() < deadline) {
         const status = await Promise.race([delay(200), failed]);
-        // A daemon that lost a startup race to a sibling exits non-zero; the sibling serves.
+        // A start can fail on a bind race (EEXIST) that a sibling won; then the sibling serves.
         if (status && !(await daemonHealth(1000))) {
           throw new Error(`${label} daemon failed to start (${status}): ${reason || `see ${logPath}`}`);
         }

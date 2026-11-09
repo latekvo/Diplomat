@@ -255,8 +255,9 @@ export async function candidates({ hosts = [], exclude = [] } = {}) {
   const self = os.hostname().toLowerCase();
   const safe = raw.filter((c) => SAFE_TARGET.test(c.target));
   const resolved = await mapLimit(safe, 8, async (c) => ({ ...c, r: await resolveTarget(c.target) }));
-  // An excluded alias hides its host under every other name it is found by, too.
-  const excluded = await mapLimit([...skip].filter((e) => SAFE_TARGET.test(e)), 8, resolveTarget);
+  // An excluded alias hides its host under every other name it is found by, too. Resolved
+  // as written: ssh matches Host aliases case-sensitively.
+  const excluded = await mapLimit(exclude.map(String).filter((e) => SAFE_TARGET.test(e)), 8, resolveTarget);
   const skipKeys = new Set(excluded.filter(Boolean).map((r) => `${r.hostname.toLowerCase()}:${r.port}`));
   const byKey = new Map();
   for (const { target, source, r } of resolved) {

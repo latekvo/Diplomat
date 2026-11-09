@@ -40,14 +40,20 @@ function sameFile(a, b) {
 }
 
 // Remove every block delimited by (begin, end) — loop, so install/uninstall and
-// a legacy-marker cleanup always converge to zero copies.
+// a legacy-marker cleanup always converge to zero copies. A begin marker without its
+// end loses only its own line: where the block ended is unknown, and what follows may
+// be the user's.
 export function stripBlock(text, begin, end) {
   let out = text;
   for (;;) {
     const i = out.indexOf(begin);
     if (i === -1) break;
     const j = out.indexOf(end, i);
-    if (j === -1) { out = out.slice(0, i); break; }
+    if (j === -1) {
+      const eol = out.indexOf('\n', i);
+      out = out.slice(0, i) + (eol === -1 ? '' : out.slice(eol + 1));
+      continue;
+    }
     out = out.slice(0, i) + out.slice(j + end.length);
   }
   return out.replace(/\n{3,}/g, '\n\n').replace(/\s+$/, out.trim() ? '\n' : '');
@@ -83,7 +89,7 @@ export function claudeCodeInstall({ name, mcpJs, skillSrc, ruleSrc, claudeMd, ba
       skillInstalled: fs.existsSync(path.join(skillDir, 'SKILL.md')),
       ruleInstalled: fs.existsSync(ruleDest),
       // The begin marker alone: a block that lost its end marker is a damaged install
-      // (drift, repaired on launch), not a deliberate uninstall (left alone).
+      // (drift, reinstalled on launch), not a deliberate uninstall (left alone).
       claudeMdInjected: claudeMdText()?.includes(begin) ?? false,
       nodePath: node,
       mcpJs,

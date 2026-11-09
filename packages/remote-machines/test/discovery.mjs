@@ -18,6 +18,7 @@ const sb = sandbox({
     eqbox: { hostname: 'eqbox.local' },
     jumped: { hostname: 'jumped.local', extra: ['proxyjump bastion'] },
     aliased: { hostname: '10.0.0.20', port: 2200, extra: ['hostkeyalias keyalias.example.com'] },
+    MixedBox: { hostname: 'fresh.lan' },
   },
   sshConfig: [
     'Host alpha',
@@ -112,9 +113,12 @@ try {
   });
 
   const withoutAlpha = await d.candidates({ exclude: ['alpha'] });
+  // ssh matches Host aliases case-sensitively, so a mixed-case one must resolve as written.
+  const withoutMixed = await d.candidates({ exclude: ['MixedBox'] });
   check('excluding an alias hides its host under every other name too', () => {
     assert.ok(!withoutAlpha.some((c) => c.hostname === 'alpha.local'), JSON.stringify(withoutAlpha.map((c) => c.target)));
     assert.ok(withoutAlpha.some((c) => c.target === 'fresh.lan'));
+    assert.ok(!withoutMixed.some((c) => c.hostname === 'fresh.lan'), JSON.stringify(withoutMixed.map((c) => c.target)));
   });
 
   check('a name that is not a plain host token is dropped', () => {
