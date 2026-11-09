@@ -174,13 +174,13 @@ enum SweepTest {
         """)
         var asked: [String] = []
         let openings = ["ses_mesh": "Review PR #9 in o/r", "ses_other": "Review PR #9 in x/y"]
-        let scanned = AgentProbes.scan(dump, owner: "o", repo: "r") {
+        let scanned = AgentProbes.scan(dump, slugs: ["o/r"]) {
             asked.append($0)
             return openings[$0]
         }
         check("a 2.x agent is found by its session's opening prompt, on its own tty",
-              scanned.agents.value == [9: "ttys031", 11: "ttys034"]
-                && scanned.sessions == [9: "ses_mesh"])
+              scanned.agents.value == ["o/r#9": "ttys031", "o/r#11": "ttys034"]
+                && scanned.sessions == ["o/r#9": "ses_mesh"])
         check("…only a TUI's own line names a session: no wrapper is asked about or attached",
               asked == ["ses_mesh", "ses_later", "ses_other"]
                 && scanned.attached.value == ["ses_mesh", "ses_later", "ses_other"])
@@ -189,9 +189,9 @@ enum SweepTest {
         let claudeFirst = AgentProbes.scan(.present("""
           780 ttys029    00:50 claude Review PR #9 in o/r
           801 ttys031    00:40 opencode --session ses_mesh
-        """), owner: "o", repo: "r") { openings[$0] }
+        """), slugs: ["o/r"]) { openings[$0] }
         check("…and a PR first seen on another agent's line is given no session",
-              claudeFirst.agents.value == [9: "ttys029"] && claudeFirst.sessions.isEmpty)
+              claudeFirst.agents.value == ["o/r#9": "ttys029"] && claudeFirst.sessions.isEmpty)
         // A released run is held by its pid, so the PR's sighting, and with it the PR's
         // session, is another agent's whenever one is up.
         let twoTUIs = Observation.present("""
@@ -200,21 +200,25 @@ enum SweepTest {
           805 ttys035    00:30 opencode --session ses_again
         """)
         let again = openings.merging(["ses_again": "Review PR #9 in o/r"]) { own, _ in own }
-        let heldOne = AgentProbes.scan(twoTUIs, owner: "o", repo: "r",
+        let heldOne = AgentProbes.scan(twoTUIs, slugs: ["o/r"],
                                        heldPIDs: [780, 801]) { again[$0] }
         let heldAll = AgentProbes.scan(.present("""
           801 ttys031    00:40 opencode --session ses_mesh
           805 ttys035    00:30 opencode --session ses_again
-        """), owner: "o", repo: "r", heldPIDs: [801, 805]) { again[$0] }
+        """), slugs: ["o/r"], heldPIDs: [801, 805]) { again[$0] }
         check("…a held agent's line is its PR's sighting only when no other is up on it",
-              heldOne.agents.value == [9: "ttys035"] && heldOne.sessions == [9: "ses_again"]
-                && heldAll.agents.value == [9: "ttys031"] && heldAll.sessions == [9: "ses_mesh"]
+              heldOne.agents.value == ["o/r#9": "ttys035"]
+                && heldOne.sessions == ["o/r#9": "ses_again"]
+                && heldAll.agents.value == ["o/r#9": "ttys031"]
+                && heldAll.sessions == ["o/r#9": "ses_mesh"]
                 && heldOne.byPID == [801: "ses_mesh", 805: "ses_again"])
-        let releasedTUI = AgentState.RunRecord(runID: "untracked:9:801",
+        let releasedTUI = AgentState.RunRecord(runID: "untracked:o/r#9:801",
                                                dispatchedAt: dispatched, prNumber: 9,
+                                               prURL: "https://github.com/o/r/pull/9",
                                                pid: 801, untracked: true, released: true)
-        let releasedClaude = AgentState.RunRecord(runID: "untracked:9:780",
+        let releasedClaude = AgentState.RunRecord(runID: "untracked:o/r#9:780",
                                                   dispatchedAt: dispatched, prNumber: 9,
+                                                  prURL: "https://github.com/o/r/pull/9",
                                                   pid: 780, untracked: true, released: true)
         OpenCodeProbe.adopt([releasedTUI, releasedClaude], sessions: heldOne.sessions,
                             byPID: heldOne.byPID, attached: []) { again[$0] }
@@ -244,10 +248,12 @@ enum SweepTest {
         // placement keep these two unbound.
         let meshOld = booked(9, .meshHere, port: 4096, prompt: "Review PR #9 in x/y")
         let local = booked(9, .local, prompt: "Review PR #9 in x/y")
-        let untracked = AgentState.RunRecord(runID: "untracked:9", dispatchedAt: dispatched,
-                                             prNumber: 9, untracked: true)
-        let unseen = AgentState.RunRecord(runID: "untracked:12", dispatchedAt: dispatched,
-                                          prNumber: 12, untracked: true)
+        let untracked = AgentState.RunRecord(runID: "untracked:o/r#9", dispatchedAt: dispatched,
+                                             prNumber: 9, prURL: "https://github.com/o/r/pull/9",
+                                             untracked: true)
+        let unseen = AgentState.RunRecord(runID: "untracked:o/r#12", dispatchedAt: dispatched,
+                                          prNumber: 12, prURL: "https://github.com/o/r/pull/12",
+                                          untracked: true)
         OpenCodeProbe.adopt([meshHere, meshTwin, meshOther, meshOld, local, untracked, unseen],
                             sessions: scanned.sessions, byPID: scanned.byPID,
                             attached: scanned.attached.value ?? []) { openings[$0] }

@@ -155,7 +155,7 @@ enum LowDiskTest {
               } == true, lines.first?.detail ?? "none")
         store.commitQueue()
         check("held, not dropped: the jobs are queued",
-              store.queuedTasks.map(\.id) == ["review-req:3", "review-req:4", "review-req:5"],
+              store.queuedTasks.map(\.id) == [3, 4, 5].map { QueueTest.key("review-req", $0) },
               "\(store.queuedTasks.map(\.id))")
         // With the bay free, only the disk stands between the drain and a spawn: guarded,
         // so a volume that somehow reads above its floor fails here instead of opening one.
@@ -165,7 +165,7 @@ enum LowDiskTest {
               drainHeld && AgentRegistry.load().isEmpty)
         if drainHeld { await store.drainQueuedTasks(snaps: [], closed: []) }
         check("the drain stops at the first task the disk holds, leaving the rest unasked",
-              store.queuedTasks.map(\.id) == ["review-req:4", "review-req:5"],
+              store.queuedTasks.map(\.id) == [4, 5].map { QueueTest.key("review-req", $0) },
               "\(store.queuedTasks.map(\.id))")
 
         check("drain: full-volume.sh frees the volume", volume("drain") == 0)
@@ -247,9 +247,10 @@ enum LowDiskTest {
         // before a terminal opens.
         _ = await store.dispatchAgent(job(13), source: .auto)
         store.commitQueue()
-        check("a job the disk holds is queued", store.queuedTasks.contains { $0.id == "review-req:13" })
+        check("a job the disk holds is queued",
+              store.queuedTasks.contains { $0.id == QueueTest.key("review-req", 13) })
         store.error = nil
-        if bookRefuses { await store.executeQueuedTask("review-req:13") }
+        if bookRefuses { await store.executeQueuedTask(QueueTest.key("review-req", 13)) }
         check("execute now goes past the disk floor",
               store.error?.contains("failed to spawn") == true, store.error ?? "no error")
 

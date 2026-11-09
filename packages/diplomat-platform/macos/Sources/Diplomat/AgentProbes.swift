@@ -255,8 +255,9 @@ enum AgentProbes {
                                            clients: listings.clients))
     }
 
-    /// PR number → the tty of an agent visible in `ps` by its prompt: the text on its
-    /// command line, or for a 2.x agent its session's opening message (`scan`).
+    /// Item → the tty of an agent visible in `ps` by its prompt: the text on its command
+    /// line, or for a 2.x agent its session's opening message (`scan`), naming a PR in
+    /// one of `slugs` (`AgentState.promptItems`).
     ///
     /// The pre-registry identity mechanism, kept for the two questions a pid cannot answer:
     /// agents this applet has no record of at all (`AgentState.synthesizeUntracked`), and
@@ -269,19 +270,19 @@ enum AgentProbes {
     ///
     /// The tty rides along because it is the only handle such an agent has: without it
     /// nothing can read its screen, so it would count as working until its window closed
-    /// however long ago it finished. First sighting of a PR wins — a set of PR numbers is
+    /// however long ago it finished. First sighting of an item wins — a set of items is
     /// all this scan can honestly produce — save that an agent in `heldPIDs` is named only
     /// when no other is up on its PR. Its record reads its tty off the process; the run
     /// that needs this scan's is one with no pid, and named its neighbour's it has no
     /// screen at all.
-    static func liveAgents(_ dump: Observation<String>, owner: String, repo: String,
-                           heldPIDs: Set<Int> = []) -> Observation<[Int: String]> {
-        scan(dump, owner: owner, repo: repo, heldPIDs: heldPIDs).agents
+    static func liveAgents(_ dump: Observation<String>, slugs: Set<String>,
+                           heldPIDs: Set<Int> = []) -> Observation<[String: String]> {
+        scan(dump, slugs: slugs, heldPIDs: heldPIDs).agents
     }
 
-    /// `liveAgents`, plus PR number → the session of the 2.x TUI whose line is that PR's
+    /// `liveAgents`, plus item → the session of the 2.x TUI whose line is that item's
     /// sighting, every session a 2.x TUI in the table is attached to, in `ps` order, and
-    /// pid → the session of the 2.x TUI at that pid. A PR first seen on any other agent's
+    /// pid → the session of the 2.x TUI at that pid. An item first seen on any other agent's
     /// line gets no session: the row's state is read from its session, so that session has
     /// to be the agent on the row's tty.
     ///
@@ -291,25 +292,19 @@ enum AgentProbes {
     /// not seen, like a line that names no PR.
     ///
     /// `openingPrompt` is the sweep self-test's seam.
-    static func scan(_ dump: Observation<String>, owner: String, repo: String,
+    static func scan(_ dump: Observation<String>, slugs: Set<String>,
                      heldPIDs: Set<Int> = [],
                      openingPrompt: (String) -> String? = {
                          OpenCodeProbe.openingPrompt(sessionID: $0)
-                     }) -> (agents: Observation<[Int: String]>, sessions: [Int: String],
+                     }) -> (agents: Observation<[String: String]>, sessions: [String: String],
                             attached: Observation<[String]>, byPID: [Int: String]) {
         guard let text = dump.value else {
             return (.unavailable(dump.reason), [:], .unavailable(dump.reason), [:])
         }
-        guard let re = try? NSRegularExpression(
-            pattern: "PR #(\\d+) in \(NSRegularExpression.escapedPattern(for: "\(owner)/\(repo)"))")
-        else {
-            let reason = "the prompt pattern would not compile"
-            return (.unavailable(reason), [:], .unavailable(reason), [:])
-        }
-        var out: [Int: String] = [:]
-        var held: [Int: String] = [:]
-        var sessions: [Int: String] = [:]
-        var heldSessions: [Int: String] = [:]
+        var out: [String: String] = [:]
+        var held: [String: String] = [:]
+        var sessions: [String: String] = [:]
+        var heldSessions: [String: String] = [:]
         var attached: [String] = []
         var byPID: [Int: String] = [:]
         for line in text.split(separator: "\n") {
@@ -324,22 +319,19 @@ enum AgentProbes {
             }
             let searched = session.map { openingPrompt($0) ?? "" } ?? cols.args
             let isHeld = Int(cols.pid).map(heldPIDs.contains) == true
-            for m in re.matches(in: searched, range: NSRange(searched.startIndex...,
-                                                             in: searched)) {
-                guard let r = Range(m.range(at: 1), in: searched),
-                      let pr = Int(searched[r]) else { continue }
+            for item in AgentState.promptItems(searched, slugs: slugs) {
                 if isHeld {
-                    guard held[pr] == nil else { continue }
-                    held[pr] = cols.tty
-                    if let session { heldSessions[pr] = session }
+                    guard held[item] == nil else { continue }
+                    held[item] = cols.tty
+                    if let session { heldSessions[item] = session }
                 } else {
-                    guard out[pr] == nil else { continue }
-                    out[pr] = cols.tty
-                    if let session { sessions[pr] = session }
+                    guard out[item] == nil else { continue }
+                    out[item] = cols.tty
+                    if let session { sessions[item] = session }
                 }
             }
         }
-        for (pr, session) in heldSessions where out[pr] == nil { sessions[pr] = session }
+        for (item, session) in heldSessions where out[item] == nil { sessions[item] = session }
         return (.present(held.merging(out) { _, own in own }), sessions, .present(attached),
                 byPID)
     }
@@ -458,12 +450,12 @@ enum AgentProbes {
     /// is always the agent's own — the kind the walk above exists for — is the one kind
     /// never walked, and it holds its bay of the cap for the life of its session.
     ///
-    /// Selected by `synthesizeUntracked`'s own rule, on PR number, so these are exactly
-    /// the ttys the records about to be made will carry.
+    /// Selected by `synthesizeUntracked`'s own rule, on item, so these are exactly the
+    /// ttys the records about to be made will carry.
     static func unbookedTTYs(_ records: [AgentState.RunRecord],
-                             _ liveAgents: Observation<[Int: String]>) -> [String] {
+                             _ liveAgents: Observation<[String: String]>) -> [String] {
         guard let scan = liveAgents.value else { return [] }
-        let known = Set(records.compactMap(\.prNumber))
+        let known = Set(records.compactMap(\.item))
         return scan.filter { !known.contains($0.key) }.map(\.value)
     }
 
@@ -553,18 +545,21 @@ enum AgentProbes {
 
     // MARK: - GitHub
 
-    /// Which of these PRs GitHub calls MERGED — the one terminal outcome that outranks
-    /// anything a process is doing.
+    /// Which of these items (`PRRef.itemKey`) GitHub calls MERGED — the one terminal
+    /// outcome that outranks anything a process is doing. Each is asked of its own repo.
     ///
     /// One `gh` call per PR, so this belongs on the slow refresh, not the process poll. A
     /// PR whose probe fails is simply absent from the answer; a partial answer is still
     /// positive evidence about the PRs it covers.
-    static func mergedPRs(_ numbers: Set<Int>) async -> Observation<Set<Int>> {
-        guard !numbers.isEmpty else { return .present([]) }
-        var merged = Set<Int>()
-        for n in numbers.sorted() {
-            if let state = try? await API.fetchPRState(number: n), state == "MERGED" {
-                merged.insert(n)
+    static func mergedPRs(_ items: Set<String>) async -> Observation<Set<String>> {
+        guard !items.isEmpty else { return .present([]) }
+        var merged = Set<String>()
+        for item in items.sorted() {
+            guard let (slug, n) = PRRef.splitItemKey(item) else { continue }
+            let parts = slug.split(separator: "/").map(String.init)
+            if let state = try? await API.fetchPRState(number: n, owner: parts[0], repo: parts[1]),
+               state == "MERGED" {
+                merged.insert(item)
             }
         }
         return .present(merged)
@@ -610,14 +605,14 @@ enum AgentProbes {
     /// Beside the evidence, the 2.x sessions a TUI in this pass's process table is
     /// attached to, for retiring runs (`OpenCodeProbe.interrupts`).
     static func gather(records: [AgentState.RunRecord], now: TimeInterval,
-                       owner: String, repo: String, directory: String,
+                       slugs: Set<String>, directory: String,
                        meshEnabled: Bool, meshState: MeshSnapshot?,
-                       merged: Observation<Set<Int>>,
+                       merged: Observation<Set<String>>,
                        tokens: Observation<Bool>)
         -> (evidence: AgentState.Evidence, attached: Observation<[String]>) {
         let dump = psDump(now: now)
         let table = note("processes", processTable(dump))
-        let scanned = scan(dump, owner: owner, repo: repo,
+        let scanned = scan(dump, slugs: slugs,
                            heldPIDs: Set(records.compactMap(\.pid)))
         let scan = note("agent scan", scanned.agents)
         OpenCodeProbe.adopt(records, sessions: scanned.sessions, byPID: scanned.byPID,

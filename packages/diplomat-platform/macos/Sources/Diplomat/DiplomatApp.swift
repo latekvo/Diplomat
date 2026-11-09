@@ -461,8 +461,9 @@ enum Dump {
     static func run() async {
         do {
             let me = try await API.fetchViewerLogin()
-            let prs = try await API.fetchOpenPRs()
-            let issues = try await API.fetchOpenIssues()
+            let (owner, repo) = CoreAssets.repoCoordinates()
+            let prs = try await API.fetchOpenPRs(owner: owner, repo: repo)
+            let issues = try await API.fetchOpenIssues(owner: owner, repo: repo)
             print("== viewer: @\(me) · open PRs: \(prs.count) · open issues: \(issues.count) ==\n")
 
             let t1 = Filters.skillPRs(prs).sorted { $0.number > $1.number }
@@ -512,8 +513,9 @@ enum Dump {
     static func lookup(_ n: Int) async {
         do {
             let me = try await API.fetchViewerLogin()
-            let prs = try await API.fetchOpenPRs()
-            let issues = try await API.fetchOpenIssues()
+            let (owner, repo) = CoreAssets.repoCoordinates()
+            let prs = try await API.fetchOpenPRs(owner: owner, repo: repo)
+            let issues = try await API.fetchOpenIssues(owner: owner, repo: repo)
             let r = await MainActor.run { () -> LookupResult in
                 let s = Store()
                 s.me = me
@@ -927,7 +929,7 @@ enum Dump {
 
             // New community issues: the scan the monitor runs, against a mark a week back
             // (a live mark is the newest issue, which would show nothing).
-            let open = try await API.fetchOpenIssues()
+            let open = try await API.fetchOpenIssues(owner: owner, repo: repo)
             let weekAgo = Date().addingTimeInterval(-7 * 86400)
             let scan = Filters.newCommunityIssues(open, since: weekAgo, now: Date())
             print("\n== new community issues: \(scan.fresh.count) of \(open.count) open issue(s) "

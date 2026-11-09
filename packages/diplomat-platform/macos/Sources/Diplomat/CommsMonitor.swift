@@ -542,15 +542,16 @@ extension Store {
         guard let parts = commsKeyParts(key), parts.verb == AgentTaskQueue.reviewAction else {
             return []
         }
-        return [AgentTaskQueue.key(auditAction: reviewRequestAction, number: parts.number)]
+        return [AgentTaskQueue.key(auditAction: reviewRequestAction, item: parts.item)]
     }
 
     private static let reviewRequestAction = "review-req"
 
-    private static func commsKeyParts(_ key: String) -> (verb: String, number: Int)? {
-        let parts = key.split(separator: ":", maxSplits: 1)
-        guard parts.count == 2, let n = Int(parts[1]) else { return nil }
-        return (String(parts[0]), n)
+    /// A queue key about a PR or an issue, split; nil for any other (an investigation's).
+    private static func commsKeyParts(_ key: String) -> (verb: String, item: String, number: Int)? {
+        guard let item = AgentTaskQueue.item(ofKey: key),
+              let number = PRRef.splitItemKey(item)?.number else { return nil }
+        return (String(key.prefix(while: { $0 != ":" })), item, number)
     }
 
     /// Any review agent on that PR (the dispatch gate treats every agent on a PR as that
@@ -562,7 +563,7 @@ extension Store {
         switch parts.verb {
         case AgentTaskQueue.reviewAction, Store.reviewRequestAction:
             return agentRows.first {
-                $0.record.prNumber == n && $0.record.kind == AgentTaskQueue.reviewAction
+                $0.record.item == parts.item && $0.record.kind == AgentTaskQueue.reviewAction
             }
         case AgentTaskQueue.issuesAction:
             return agentRows.first {

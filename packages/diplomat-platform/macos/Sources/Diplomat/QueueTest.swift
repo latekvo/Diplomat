@@ -28,6 +28,11 @@ import DiplomatCore
 /// resolved against is a fixture whose answers depend on what else the developer
 /// happens to be running.
 enum QueueTest {
+    /// The queue key of `verb` on argent's PR or issue `n`, the repo every fixture names.
+    static func key(_ verb: String, _ n: Int) -> String {
+        AgentTaskQueue.key(auditAction: verb, item: "software-mansion/argent#\(n)")
+    }
+
     /// Returns overall pass/fail so the launcher can exit non-zero — a FAIL that
     /// still exits 0 can't gate anything.
     @discardableResult
@@ -130,7 +135,7 @@ enum QueueTest {
         check("an over-cap auto job is refused", await offer(job(2)) == .atCapacity)
         store.commitQueue()
         check("…and lands in the queue rather than vanishing",
-              store.queuedTasks.map(\.id) == ["review-req:2"])
+              store.queuedTasks.map(\.id) == [key("review-req", 2)])
 
         // 2. One unit offered twice in a cycle is one task. The review edge-trigger and
         //    the level-triggered reconciler both reach the same PR in one poll; two
@@ -156,29 +161,32 @@ enum QueueTest {
         _ = await offer(job(4))
         store.commitQueue()
         check("one PR owing two monitors is two tasks",
-              store.queuedTasks.map(\.id) == ["review-req:2", "review-req:4", "conflicts:2"])
+              store.queuedTasks.map(\.id)
+                  == [key("review-req", 2), key("review-req", 4), key("conflicts", 2)])
         // …and the conflict fix is last though it was offered second: the band
         // outranks the order the monitors found things in (`AgentTaskQueue.band`).
 
         // 4. The drag order is the execution order, and it survives the poll that
         //    rebuilds the list — the queue is re-derived from GitHub every cycle, so an
         //    arrangement that didn't outlive one would be undone within 3 minutes.
-        store.moveQueuedTask("review-req:4", onto: "review-req:2")
+        store.moveQueuedTask(key("review-req", 4), onto: key("review-req", 2))
         check("a task dragged onto the first row runs first",
-              store.queuedTasks.map(\.id) == ["review-req:4", "review-req:2", "conflicts:2"])
+              store.queuedTasks.map(\.id)
+                  == [key("review-req", 4), key("review-req", 2), key("conflicts", 2)])
         _ = await offer(job(2))
         _ = await offer(job(2, action: "conflicts", label: "Resolve · #2"))
         _ = await offer(job(4))
         store.commitQueue()
         check("…and the next poll re-offers them in that order",
-              store.queuedTasks.map(\.id) == ["review-req:4", "review-req:2", "conflicts:2"])
+              store.queuedTasks.map(\.id)
+                  == [key("review-req", 4), key("review-req", 2), key("conflicts", 2)])
 
         // 5. Work GitHub stops owing drops out. A queue that outlived its evidence
         //    would offer "execute now" on a review that has already been answered.
         _ = await offer(job(4))
         store.commitQueue()
         check("a unit no longer offered leaves the queue",
-              store.queuedTasks.map(\.id) == ["review-req:4"])
+              store.queuedTasks.map(\.id) == [key("review-req", 4)])
 
         // 6. Only work a monitor will offer again may be queued. The queue is a view
         //    of what the monitors owe, never a record of its own: a job no monitor
@@ -203,14 +211,14 @@ enum QueueTest {
                             counter: .conflicts))
         store.commitQueue()
         check("both monitors on ⇒ both kinds queue",
-              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.queuedTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
         check("…and both are the drain's to run",
-              store.drainableTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.drainableTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
         store.prAutofixEnabled = false
         check("switching off PR auto-fix keeps its queued work on the list",
-              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.queuedTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
         check("…but the drain will no longer start it",
-              store.drainableTasks.map(\.id) == ["review-req:4"])
+              store.drainableTasks.map(\.id) == [key("review-req", 4)])
 
         // 8. A switched-off monitor keeps FINDING work: the poll runs both monitors
         //    either way and the queue is where the off one puts what it found. This is
@@ -221,7 +229,7 @@ enum QueueTest {
                             counter: .conflicts))
         store.commitQueue()
         check("a paused monitor's find is queued, not dropped",
-              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.queuedTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
         store.reviewRequestsEnabled = false
         check("with both monitors off, nothing is the drain's to run",
               store.drainableTasks.isEmpty)
@@ -256,7 +264,7 @@ enum QueueTest {
         store.autoTaskLimit = 1
         store.queueAutoRun = true
         check("switched back on, the queue is the drain's again",
-              store.drainableTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.drainableTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
 
         // 9. The empty slots the panel draws under the tasks. The seeded agent is up
         //    against a cap of one, so this device has no room; the panel must not
@@ -295,15 +303,15 @@ enum QueueTest {
         await offerBoth()
         store.commitQueue()
         check("two tasks queued, ready to start",
-              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.queuedTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
         let starting = store.queuedTasks[0]
         store.beginStarting(starting)
         check("a task being started leaves the queue…",
-              store.queuedTasks.map(\.id) == ["conflicts:6"])
+              store.queuedTasks.map(\.id) == [key("conflicts", 6)])
         check("…for the band that keeps it a row while it spawns",
-              store.startingTasks.map(\.id) == ["review-req:4"])
+              store.startingTasks.map(\.id) == [key("review-req", 4)])
         check("…and the drain no longer sees it either",
-              store.drainableTasks.map(\.id) == ["conflicts:6"])
+              store.drainableTasks.map(\.id) == [key("conflicts", 6)])
 
         // The work stays owed until the spawn answers and the attempt is recorded, so
         // a poll committing mid-dispatch re-offers it. Published as queued as well, it
@@ -312,8 +320,8 @@ enum QueueTest {
         await offerBoth()
         store.commitQueue()
         check("a poll landing mid-dispatch does not put the row back in the queue",
-              store.queuedTasks.map(\.id) == ["conflicts:6"])
-        check("…and it is still starting", store.startingTasks.map(\.id) == ["review-req:4"])
+              store.queuedTasks.map(\.id) == [key("conflicts", 6)])
+        check("…and it is still starting", store.startingTasks.map(\.id) == [key("review-req", 4)])
 
         // A start that comes to nothing is re-offered by the next poll, so its key has
         // to keep its PLACE in the arrangement, rather than coming back at the end of a
@@ -323,7 +331,7 @@ enum QueueTest {
         await offerBoth()
         store.commitQueue()
         check("a start that did not take comes back where it was, not at the back",
-              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.queuedTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
 
         // Its bay is spoken for from the moment it starts. Drawn free, the panel would
         // stand a row that is launching next to the empty slot it is launching into —
@@ -335,7 +343,7 @@ enum QueueTest {
         check("one agent up under a cap of three leaves two bays", store.freeAutoSlots == 2)
         store.beginStarting(store.queuedTasks[0])
         check("…and a task starting takes one of them", store.freeAutoSlots == 1)
-        store.endStarting("review-req:4")
+        store.endStarting(key("review-req", 4))
 
         // The `ps` count and the rows are each a lower bound on what is running, and a
         // starting task is outside BOTH — nothing has registered its spawn anywhere. So
@@ -359,9 +367,9 @@ enum QueueTest {
         store.autoTaskLimit = 1
         _ = await offer(job(7))
         store.commitQueue()
-        check("#7 is queued", store.queuedTasks.map(\.id) == ["review-req:7"])
+        check("#7 is queued", store.queuedTasks.map(\.id) == [key("review-req", 7)])
         bookAgent(7, label: "Auto · Review-req · #7")
-        await store.executeQueuedTask("review-req:7")
+        await store.executeQueuedTask(key("review-req", 7))
         check("a refused start leaves no row spinning behind it",
               store.startingTasks.isEmpty && store.queuedTasks.isEmpty)
         check("…and says why nothing opened",
@@ -440,7 +448,8 @@ enum QueueTest {
         _ = await offer(job(23))
         store.commitQueue()
         check("three tasks queued, two of them conflict fixes",
-              store.queuedTasks.map(\.id) == ["review-req:23", "conflicts:21", "conflicts:22"])
+              store.queuedTasks.map(\.id)
+                  == [key("review-req", 23), key("conflicts", 21), key("conflicts", 22)])
         func snap(_ number: Int, mergeable: String, iOwe: Int = 0) -> PRSnapshot {
             PRSnapshot(number: number, title: "t",
                        url: "https://github.com/software-mansion/argent/pull/\(number)",
@@ -452,20 +461,20 @@ enum QueueTest {
                                              snap(22, mergeable: "MERGEABLE")],
                                      closed: [])
         check("a conflict fix the branch no longer needs leaves the list",
-              store.queuedTasks.map(\.id) == ["review-req:23", "conflicts:21"])
+              store.queuedTasks.map(\.id) == [key("review-req", 23), key("conflicts", 21)])
         check("…and one it still needs keeps its place",
-              store.queuedTasks.contains { $0.id == "conflicts:21" })
+              store.queuedTasks.contains { $0.id == key("conflicts", 21) })
         // A review requested of me is not in that fetch at all. Read as answered, every
         // review request on the panel would vanish the first time the drain ran.
         check("a review request is not retired by a fetch that cannot see it",
-              store.queuedTasks.contains { $0.id == "review-req:23" })
+              store.queuedTasks.contains { $0.id == key("review-req", 23) })
         // What does retire it is its PR leaving the open state — the one answer that
         // reaches a verb the my-PRs fetch cannot speak for. #21 stays: it is the
         // arrangement, not the closure, that decides the rest of the list.
         await store.drainQueuedTasks(snaps: [snap(21, mergeable: "CONFLICTING")],
-                                     closed: [23])
+                                     closed: ["software-mansion/argent#23"])
         check("…and one whose PR has closed leaves the list all the same",
-              store.queuedTasks.map(\.id) == ["conflicts:21"])
+              store.queuedTasks.map(\.id) == [key("conflicts", 21)])
         emptyBook()
         store.queuedTasks = []
 
@@ -493,7 +502,7 @@ enum QueueTest {
         let fanOut = store.requestReviewSweep(sweep)
         check("a sweep queues one review per PR in scope, not one agent for all",
               fanOut.queued == 2 && fanOut.already == 0
-                  && store.queuedTasks.map(\.id) == ["review:31", "review:32"])
+                  && store.queuedTasks.map(\.id) == [key("review", 31), key("review", 32)])
         check("…each scoped to its own PR",
               store.queuedTasks.map(\.job.prNumber) == [31, 32])
         check("…owned by no monitor, so no toggle pauses it and no counter counts it",
@@ -520,7 +529,7 @@ enum QueueTest {
         store.offerRequestedWork()
         store.commitQueue()
         check("a poll re-offers every ask nothing has started",
-              store.queuedTasks.map(\.id) == ["review:31", "review:32", "review:33"])
+              store.queuedTasks.map(\.id) == [key("review", 31), key("review", 32), key("review", 33)])
 
         // …and the band puts them behind what GitHub is already owed, ahead of the
         // conflict fix another agent's run may make unnecessary. Back over the cap
@@ -535,45 +544,46 @@ enum QueueTest {
         store.commitQueue()
         check("a requested review waits behind a monitor's find and ahead of a conflict fix",
               store.queuedTasks.map(\.id)
-                  == ["review-req:35", "review:31", "review:32", "review:33", "conflicts:36"])
+                  == [key("review-req", 35), key("review", 31), key("review", 32),
+                      key("review", 33), key("conflicts", 36)])
 
         // Cancel is the way out of an ask the sweep should never have caught — nothing
         // GitHub does retires one while its PR is open, so a mis-aimed sweep would
         // otherwise be a day of agents nobody can call off.
-        store.cancelRequestedWork("review:32")
+        store.cancelRequestedWork(key("review", 32))
         store.offerRequestedWork()
         store.commitQueue()
         check("a cancelled ask does not come back on the next poll",
               store.requestedWork.map(\.number) == [31, 33]
-                  && !store.queuedTasks.contains { $0.id == "review:32" })
+                  && !store.queuedTasks.contains { $0.id == key("review", 32) })
         // Cancel refuses a row no ask stands behind. The monitor's find has to be
         // offered again to be in the queue at all: the commit above rebuilt it from
         // that cycle's offers, and that cycle offered only the asks.
         _ = await offer(job(35))
         store.offerRequestedWork()
         store.commitQueue()
-        store.cancelRequestedWork("review-req:35")
+        store.cancelRequestedWork(key("review-req", 35))
         check("…and a monitor's row is not cancellable at all",
-              store.queuedTasks.contains { $0.id == "review-req:35" })
+              store.queuedTasks.contains { $0.id == key("review-req", 35) })
 
         // The other way out, and the only one nobody pressed: #33 landed while it
         // waited. The ask has to go with the row — the row is rebuilt from the ask on
         // every poll, so a list that kept it would offer the same review straight back.
         // (Still at capacity, so the drain sweeps and then returns without spawning.)
-        await store.drainQueuedTasks(snaps: [], closed: [33])
+        await store.drainQueuedTasks(snaps: [], closed: ["software-mansion/argent#33"])
         check("a swept PR that landed before its turn takes its ask with it",
               store.requestedWork.map(\.number) == [31]
-                  && !store.queuedTasks.contains { $0.id == "review:33" })
+                  && !store.queuedTasks.contains { $0.id == key("review", 33) })
         store.offerRequestedWork()
         store.commitQueue()
         check("…so the next poll has nothing left to offer for it",
-              !store.queuedTasks.contains { $0.id == "review:33" })
+              !store.queuedTasks.contains { $0.id == key("review", 33) })
 
         // The dispatch is what answers an ask. #31's PR gains an agent, so the dispatch
         // is refused and the ask stands; a refusal that dropped it would silently
         // abandon the review.
         bookAgent(31)
-        await store.executeQueuedTask("review:31")
+        await store.executeQueuedTask(key("review", 31))
         check("an ask refused because the PR is busy is still asked for",
               store.requestedWork.map(\.number) == [31])
         store.error = nil
@@ -596,7 +606,7 @@ enum QueueTest {
         let issueFanOut = store.requestIssueSweep(IssueConfig(depth: "deep", me: "alice"))
         check("a scope queues one fix per unclaimed issue, not one agent for all",
               issueFanOut.queued == 2 && issueFanOut.already == 0
-                  && store.queuedTasks.map(\.id) == ["issues:31", "issues:41"])
+                  && store.queuedTasks.map(\.id) == [key("issues", 31), key("issues", 41)])
         check("…each labelled as the operator's own fix of that one issue",
               store.queuedTasks.map(\.job.label) == ["Issues · #31 · deep",
                                                      "Issues · #41 · deep"]
@@ -610,11 +620,11 @@ enum QueueTest {
                                                   includeDrafts: true, includeReady: false))
         check("a review of the PR with the same number is a row of its own",
               store.requestedWork.map(\.key).sorted()
-                  == ["issues:31", "issues:41", "review:31", "review:32"])
-        store.cancelRequestedWork("issues:31")
+                  == [key("issues", 31), key("issues", 41), key("review", 31), key("review", 32)])
+        store.cancelRequestedWork(key("issues", 31))
         check("…and cancelling the fix leaves the review of that number standing",
               store.requestedWork.map(\.key).sorted()
-                  == ["issues:41", "review:31", "review:32"])
+                  == [key("issues", 41), key("review", 31), key("review", 32)])
         store.requestedWork = []
         store.queuedTasks = []
         store.issues = []
@@ -639,13 +649,13 @@ enum QueueTest {
               store.requestedWork.isEmpty)
         store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)])
         check("an outsider's issue filed after it is queued as a fix of that one issue",
-              store.requestedWork.map(\.key) == ["issues:71"]
+              store.requestedWork.map(\.key) == [key("issues", 71)]
                   && store.requestedWork.first?.author == "outsider71"
                   && store.queuedTasks.map(\.job.label) == ["Issues · #71 · deep"]
                   && store.queuedTasks.first?.job.prompt.contains("issue #71") == true)
         check("…which re-checks its issue when its turn comes, as a swept fix does",
               store.queuedTasks.first?.job.prompt.contains("CAME OUT OF A SWEEP") == true)
-        store.cancelRequestedWork("issues:71")
+        store.cancelRequestedWork(key("issues", 71))
         store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)])
         check("…and only once, even after its ask is gone", store.requestedWork.isEmpty)
         store.communityIssuesEnabled = false
@@ -655,7 +665,7 @@ enum QueueTest {
               store.requestedWork.isEmpty)
         store.queueCommunityIssues([filed(72, minutes: 2), filed(73, minutes: 3)])
         check("…and what is filed after it as before",
-              store.requestedWork.map(\.key) == ["issues:73"])
+              store.requestedWork.map(\.key) == [key("issues", 73)])
         store.requestedWork = []
         store.queuedTasks = []
 
@@ -759,7 +769,7 @@ enum QueueTest {
         // stands, so a row would promise an "execute now" the gate refuses again.
         store.commitQueue()
         check("the held find left no row behind it",
-              !store.queuedTasks.contains { $0.id == "review-req:52" })
+              !store.queuedTasks.contains { $0.id == key("review-req", 52) })
         store.reviewAllowlistRaw = ""
         store.queuedTasks = []
         emptyBook()

@@ -17,9 +17,15 @@ enum LocalRepos {
         paths.map { raw in
             let path = (raw as NSString).expandingTildeInPath
             guard RepoPaths.isCheckout(path) else { return Checkout(path: raw, repos: []) }
-            let remotes = git(["-C", path, "config", "--local", "--get-regexp", #"^remote\..*\.url$"#]) ?? ""
-            return Checkout(path: raw, repos: PRRef.LocalRepo.entries(path: path, remotes: remotes))
+            return Checkout(path: raw, repos: PRRef.LocalRepo.entries(path: path,
+                                                                      remotes: remotes(of: path)))
         }
+    }
+
+    /// The checkout's `remote.*.url` lines (`git config --local --get-regexp`), or "" when
+    /// git cannot read them.
+    static func remotes(of path: String) -> String {
+        git(["-C", path, "config", "--local", "--get-regexp", #"^remote\..*\.url$"#]) ?? ""
     }
 
     private static func git(_ arguments: [String]) -> String? {

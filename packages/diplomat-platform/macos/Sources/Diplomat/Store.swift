@@ -94,9 +94,10 @@ final class Store: ObservableObject {
                                              AgentSpawner.resolved(terminal).rawValue)
     }
     private var terminalUnpublished = false
-    /// The repo root every spawned agent `cd`s into (Settings → REPO ROOT). Empty ⇒
-    /// fall back to `~/dev/<repo>`; `DIPLOMAT_REPO` outranks both. Stored raw (a typed
-    /// `~/…` is expanded at use), so the field shows back exactly what was entered.
+    /// The primary repo root, where a spawned agent `cd`s by default (Settings → REPO
+    /// ROOT); the other roots stay in place behind it. Empty ⇒ fall back to
+    /// `~/dev/<repo>`; `DIPLOMAT_REPO` outranks both. Stored raw (a typed `~/…` is
+    /// expanded at use), so the field shows back exactly what was entered.
     ///
     /// The one setting NOT in UserDefaults: a mesh node spawns agents from its own
     /// stdlib-only process and can't read them, so it lives in the shared
@@ -104,9 +105,9 @@ final class Store: ObservableObject {
     @Published var repoPathOverride: String {
         didSet {
             guard writesConfig, !readingConfig,
-                  !configSaved(AppConfig.set(AppConfig.repoRootKey, repoPathOverride))
+                  !configSaved(AppConfig.setPrimaryRepoRoot(repoPathOverride))
             else { return }
-            readBack { repoPathOverride = AppConfig.string(AppConfig.repoRootKey) }
+            readBack { repoPathOverride = AppConfig.primaryRepoRoot }
         }
     }
     /// Checkouts besides the repo root whose PR and issue links the wizards accept
@@ -903,7 +904,7 @@ final class Store: ObservableObject {
         // would have resolved to anyway.
         terminalChoice = defaults.string(forKey: Keys.terminalChoice)
             ?? AgentSpawner.resolved(.ghostty).rawValue
-        repoPathOverride = AppConfig.string(AppConfig.repoRootKey)
+        repoPathOverride = AppConfig.primaryRepoRoot
         localRepoPaths = defaults.stringArray(forKey: Keys.localRepoPaths) ?? []
         agentRunner = AppConfig.agentRunner
         agentModel = AppConfig.agentModel
@@ -968,7 +969,9 @@ final class Store: ObservableObject {
         // Absent, everything already logged reads as seen: an upgrade must not open on a
         // badge for history the operator never saw being kept.
         commsSeenAt = defaults.object(forKey: Keys.commsSeenAt) as? Date ?? Date()
-        queuedTaskOrder = defaults.stringArray(forKey: Keys.queuedTaskOrder) ?? []
+        let slug = Store.coreSlug
+        queuedTaskOrder = (defaults.stringArray(forKey: Keys.queuedTaskOrder) ?? [])
+            .map { PRRef.migrateQueueKey($0, primary: slug) }
         requestedWork = Store.loadRequestedWork()
         refreshLocalRepos()
         if hiddenTools.contains(selected.rawValue),
@@ -1213,8 +1216,9 @@ final class Store: ObservableObject {
         error = nil
         do {
             async let m = API.fetchViewerLogin()
-            async let p = API.fetchOpenPRs()
-            async let i = API.fetchOpenIssues()
+            let (owner, repo) = coreRepo
+            async let p = API.fetchOpenPRs(owner: owner, repo: repo)
+            async let i = API.fetchOpenIssues(owner: owner, repo: repo)
             let (mm, pp, ii) = try await (m, p, i)
             me = mm
             prs = pp
@@ -1243,7 +1247,7 @@ final class Store: ObservableObject {
     /// the scan that made it.
     func refreshMergedStatuses() async {
         mergedPRs = await AgentProbes.mergedPRs(
-            Set(AgentRegistry.load().filter { !$0.untracked }.compactMap(\.prNumber)))
+            Set(AgentRegistry.load().filter { !$0.untracked }.compactMap(\.item)))
     }
 
     /// Ask whether the account still has room to spend — the precondition on the
@@ -1482,15 +1486,15 @@ final class Store: ObservableObject {
     /// off the main actor.
     func agentTick() async -> AgentPass {
         let limit = autoTaskLimit
-        let (owner, repo) = coreRepo
+        let slugs: Set<String> = [Store.coreSlug]
         let (mesh, snapshot, merged) = (meshEnabled, meshState, mergedPRs)
         let (tokens, deadline) = (tokensLeft, AppConfig.runDeadline)
         let directory = AgentSpawner.repoPath
         return await Task.detached(priority: .userInitiated) {
             let now = Date().timeIntervalSince1970
             let records = AgentRegistry.adoptPids(AgentRegistry.load())
-            let gathered = AgentProbes.gather(records: records, now: now, owner: owner,
-                                              repo: repo, directory: directory,
+            let gathered = AgentProbes.gather(records: records, now: now, slugs: slugs,
+                                              directory: directory,
                                               meshEnabled: mesh, meshState: snapshot,
                                               merged: merged, tokens: tokens)
             let tick = AgentState.tick(records: records, evidence: gathered.evidence,
@@ -1972,7 +1976,7 @@ final class Store: ObservableObject {
     /// Which of the tracked PRs GitHub calls MERGED, carried forward by the fast ticks
     /// between the slow refreshes that probe it. `.unavailable` until the first, which
     /// reads as "nothing is known about any PR" rather than as "none of them landed".
-    private var mergedPRs: Observation<Set<Int>> = .unavailable("have not been probed yet")
+    private var mergedPRs: Observation<Set<String>> = .unavailable("have not been probed yet")
 
     /// Whether the account still has room to spend, carried forward the same way and for
     /// the same reason: the probe behind it dials an endpoint, and the tick runs on every
@@ -2196,7 +2200,7 @@ final class Store: ObservableObject {
     /// This cycle's read of the PRs that have merged or closed, or `nil` if the read
     /// failed — which is not the same as an empty set, and is why the failure stands
     /// the drain down rather than letting it read every PR as open.
-    private func fetchClosedPRs(owner: String, repo: String) async -> Set<Int>? {
+    private func fetchClosedPRs(owner: String, repo: String) async -> Set<String>? {
         do {
             return try await AutofixMonitor.fetchClosedPRs(owner: owner, repo: repo)
         } catch {
@@ -2247,8 +2251,8 @@ final class Store: ObservableObject {
         var attempts = loadMyReviewAttempts()
         let owed = snaps.filter { $0.threadsIOwe > 0 }
         for s in owed {
-            let key = String(s.number)
-            let inFlight = await self.inFlight(s.number)
+            let key = Store.item(url: s.url, number: s.number)
+            let inFlight = await self.inFlight(key)
             let decision = ReviewReconcile.decide(prior: attempts[key],
                                                   stamp: AttemptStamp.unresolvedReview,
                                                   inFlight: inFlight, banned: false, now: now)
@@ -2259,7 +2263,7 @@ final class Store: ObservableObject {
                 }
             }
         }
-        let owedKeys = Set(owed.map { String($0.number) })
+        let owedKeys = Set(owed.map { Store.item(url: $0.url, number: $0.number) })
         attempts = attempts.filter { owedKeys.contains($0.key) }
         saveMyReviewAttempts(attempts)
     }
@@ -2277,8 +2281,8 @@ final class Store: ObservableObject {
         var attempts = loadMyConflictAttempts()
         let conflicted = snaps.filter { $0.mergeable == "CONFLICTING" }
         for s in conflicted {
-            let key = String(s.number)
-            let inFlight = await self.inFlight(s.number)
+            let key = Store.item(url: s.url, number: s.number)
+            let inFlight = await self.inFlight(key)
             let decision = ReviewReconcile.decide(prior: attempts[key],
                                                   stamp: AttemptStamp.conflicting,
                                                   inFlight: inFlight, banned: false, now: now)
@@ -2295,7 +2299,8 @@ final class Store: ObservableObject {
         // UNKNOWN while recomputing mergeability (after any push to main) — pruning on
         // that flap would reset the backoff and double-count the same conflict when it
         // comes back as CONFLICTING a poll later.
-        let keepKeys = Set(snaps.filter { $0.mergeable != "MERGEABLE" }.map { String($0.number) })
+        let keepKeys = Set(snaps.filter { $0.mergeable != "MERGEABLE" }
+            .map { Store.item(url: $0.url, number: $0.number) })
         attempts = attempts.filter { keepKeys.contains($0.key) }
         saveMyConflictAttempts(attempts)
     }
@@ -2304,7 +2309,7 @@ final class Store: ObservableObject {
         guard let data = UserDefaults.standard.data(forKey: Keys.myConflictAttempts),
               let decoded = try? JSONDecoder().decode([String: ReviewAttempt].self, from: data)
         else { return [:] }
-        return decoded
+        return Store.migrated(decoded)
     }
     private func saveMyConflictAttempts(_ map: [String: ReviewAttempt]) {
         persistJSON(map, forKey: Keys.myConflictAttempts)
@@ -2313,7 +2318,8 @@ final class Store: ObservableObject {
     private func pollCommunityIssues() async {
         guard communityIssuesEnabled else { return }
         do {
-            queueCommunityIssues(try await API.fetchOpenIssues())
+            let (owner, repo) = coreRepo
+            queueCommunityIssues(try await API.fetchOpenIssues(owner: owner, repo: repo))
         } catch {
             notePollFailure(error)
         }
@@ -2374,7 +2380,7 @@ final class Store: ObservableObject {
         }
         let banned = BanList.read()
         let now = Date()
-        let prior = loadReviewReqAttempts()   // prNumber -> our attempt record
+        let prior = loadReviewReqAttempts()
         // An author outside the allowlist is dropped here rather than carried down as a
         // decision the way a ban is, because there is nothing further to say about them:
         // the ledger, the backoff ladder and the "owed" count all describe work this
@@ -2394,19 +2400,19 @@ final class Store: ObservableObject {
                 (AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
                                        prURL: $0.url, headSha: $0.headSha), $0.number)
             }, uniquingKeysWith: { first, _ in first }))
-        var concluded: Set<Int> = []
+        var concluded: Set<String> = []
         var dispatched: [String: ReviewAttempt] = [:]
         for r in owed {
-            let key = String(r.number)
+            let key = Store.item(url: r.url, number: r.number)
             let stamp = AttemptStamp.reviewRequest(r)
             let decision = ReviewReconcile.decide(
-                prior: prior[key], stamp: stamp, inFlight: await inFlight(r.number),
+                prior: prior[key], stamp: stamp, inFlight: await inFlight(key),
                 banned: BanList.isBanned(r.author, in: banned), now: now)
             switch decision {
             case .skipBanned, .skipInFlight, .skipCoolingDown:
                 continue
             case .skipConcluded:
-                concluded.insert(r.number)
+                concluded.insert(key)
             case .dispatch(let attemptNumber):
                 // Record the attempt (start the retry backoff) only if an agent actually
                 // launched — a transient spawn failure should retry next tick, not sit out
@@ -2423,7 +2429,8 @@ final class Store: ObservableObject {
         // re-request is fresh (`ReviewReconcile.retained`).
         let attempts = ReviewReconcile.retained(
             loadReviewReqAttempts().merging(dispatched) { _, new in new },
-            owed: Dictionary(owed.map { (String($0.number), AttemptStamp.reviewRequest($0)) },
+            owed: Dictionary(owed.map { (Store.item(url: $0.url, number: $0.number),
+                                         AttemptStamp.reviewRequest($0)) },
                              uniquingKeysWith: { first, _ in first }),
             now: now)
         saveReviewReqAttempts(attempts)
@@ -2431,8 +2438,9 @@ final class Store: ObservableObject {
         // spawned agent didn't cover (cooling down between retries, or a spawn that failed).
         // Excludes banned authors, which we never auto-review, and requests a run concluded.
         var unaddressed = 0
-        for r in owed where !BanList.isBanned(r.author, in: banned) && !concluded.contains(r.number) {
-            if await !inFlight(r.number) { unaddressed += 1 }
+        for r in owed where !BanList.isBanned(r.author, in: banned) {
+            let item = Store.item(url: r.url, number: r.number)
+            if !concluded.contains(item), await !inFlight(item) { unaddressed += 1 }
         }
         unaddressedReviews = unaddressed
     }
@@ -2487,8 +2495,8 @@ final class Store: ObservableObject {
     /// session holds the PR's context) and one nothing is known about — releasing a PR on
     /// missing evidence is how two agents end up on it. A released agent does not: its
     /// run ended.
-    private func inFlight(_ prNumber: Int) async -> Bool {
-        await agentTick().tick.inFlight(prNumber: prNumber)
+    private func inFlight(_ item: String) async -> Bool {
+        await agentTick().tick.inFlight(item: item)
     }
 
     /// How many bays of this device's cap the last tick found held, published so the panel
@@ -2668,9 +2676,9 @@ final class Store: ObservableObject {
         // (Every automatic job is both. Work the operator asked for is neither, and
         // is re-offered from the list that remembers the ask instead —
         // `offerRequestedWork`. A wizard click is uncapped and never refused.)
-        guard let number = job.prNumber, job.counter != nil else { return }
+        guard let item = job.item, job.counter != nil else { return }
         let entry = QueuedAgentTask(
-            id: AgentTaskQueue.key(auditAction: job.auditAction, number: number),
+            id: AgentTaskQueue.key(auditAction: job.auditAction, item: item),
             job: job, attemptNumber: attemptNumber)
         if let i = stagedQueue.firstIndex(where: { $0.id == entry.id }) {
             stagedQueue[i] = entry
@@ -2733,9 +2741,9 @@ final class Store: ObservableObject {
     /// Not private: the refresh pass is what `QueueTest` drives. It runs before the
     /// capacity guard and starts nothing by itself, so a self-test at capacity — the
     /// state that whole test sets up — exercises it without a spawn.
-    func drainQueuedTasks(snaps: [PRSnapshot], closed: Set<Int>) async {
-        let conflicting = Set(snaps.filter { $0.mergeable == "CONFLICTING" }.map(\.number))
-        let owingReply = Set(snaps.filter { $0.threadsIOwe > 0 }.map(\.number))
+    func drainQueuedTasks(snaps: [PRSnapshot], closed: Set<String>) async {
+        let conflicting = Set(snaps.filter { $0.mergeable == "CONFLICTING" }.compactMap(\.item))
+        let owingReply = Set(snaps.filter { $0.threadsIOwe > 0 }.compactMap(\.item))
         // Dropped here rather than left for this cycle's commit to omit: the commit is
         // the far side of two monitor runs, and a row already known to be answered
         // should not be sitting in the list underneath them, one "execute now" away
@@ -2746,9 +2754,9 @@ final class Store: ObservableObject {
         // in the issue space, and pricing issue #421 against the PRs closed this cycle
         // would retire it for something that happened to the PR of the same number.
         let answered = queuedTasks.filter { entry in
-            guard let number = entry.job.prNumber else { return false }
+            guard let item = entry.job.item else { return false }
             return !AgentTaskQueue.stillOwed(auditAction: entry.job.auditAction,
-                                             prNumber: number,
+                                             item: item,
                                              conflicting: conflicting,
                                              owingReply: owingReply,
                                              closed: closed)
@@ -2871,7 +2879,9 @@ final class Store: ObservableObject {
         /// This ask's identity everywhere it has one: the queued task's id, the row
         /// the panel draws it as, and what `forgetRequested` drops it by.
         var key: String {
-            AgentTaskQueue.key(auditAction: config.action, number: number)
+            let item = config.action == AgentTaskQueue.investigateAction ? String(number)
+                : Store.item(url: url, number: number)
+            return AgentTaskQueue.key(auditAction: config.action, item: item)
         }
 
         /// The row this task wears in the panel and the activity feed. Carries the
@@ -3225,8 +3235,7 @@ final class Store: ObservableObject {
     /// per-monitor ledger that monitor writes itself: `AgentJob.counter` names the
     /// ledger, `attemptStamp` is the stamp that monitor compares against.
     private func recordQueuedAttempt(_ entry: QueuedAgentTask) {
-        guard let number = entry.job.prNumber, let counter = entry.job.counter else { return }
-        let key = String(number)
+        guard let key = entry.job.item, let counter = entry.job.counter else { return }
         let record = ReviewAttempt(requestedAt: entry.job.attemptStamp,
                                    lastDispatchedAt: Date(), attempts: entry.attemptNumber)
         switch counter {
@@ -3452,6 +3461,9 @@ final class Store: ObservableObject {
         /// sweep a click queued. It decides the label (`AgentDispatchGate.label`) and,
         /// in the panel, which queued rows can be cancelled.
         var requested: Bool { AgentTaskQueue.requestedActions.contains(auditAction) }
+
+        /// The PR this job is about, as `RunRecord.item` reads the run it becomes.
+        var item: String? { prNumber == nil ? nil : prURL.flatMap(PRRef.itemKey(url:)) }
     }
 
     enum AutoCounter { case reviewRequests, myReviews, conflicts }
@@ -3561,7 +3573,7 @@ final class Store: ObservableObject {
         let outsideAllowlist = job.counter == .reviewRequests
             && !AuthorAllowlist.allows(job.authorLogin ?? "", in: reviewAllowlist)
         var agentOnPR = false
-        if let n = job.prNumber { agentOnPR = await inFlight(n) }
+        if let item = job.item { agentOnPR = await inFlight(item) }
         // First: a low disk holds the job whatever the cap or the budget would say. Off
         // the main actor, since a volume can be a network mount.
         var disk: DiskFloor.Reading?
@@ -3754,13 +3766,13 @@ final class Store: ObservableObject {
         get { UserDefaults.standard.integer(forKey: Keys.reviewRequestsHandled) }
         set { persist(newValue, forKey: Keys.reviewRequestsHandled) }
     }
-    /// prNumber(String) -> our attempt record (request stamp, last dispatch, attempt count).
+    /// Item key -> our attempt record (request stamp, last dispatch, attempt count).
     /// Persisted as JSON so the retry backoff survives an applet restart.
     private func loadReviewReqAttempts() -> [String: ReviewAttempt] {
         guard let data = UserDefaults.standard.data(forKey: Keys.reviewReqAttempts),
               let decoded = try? JSONDecoder().decode([String: ReviewAttempt].self, from: data)
         else { return [:] }
-        return decoded
+        return Store.migrated(decoded)
     }
     private func saveReviewReqAttempts(_ map: [String: ReviewAttempt]) {
         persistJSON(map, forKey: Keys.reviewReqAttempts)
@@ -3823,13 +3835,13 @@ final class Store: ObservableObject {
         return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
     }
 
-    /// prNumber(String) -> our attempt record for reviews received on my own PRs (unresolved
+    /// Item key -> our attempt record for reviews received on my own PRs (unresolved
     /// threads). Persisted as JSON so the retry backoff survives an applet restart.
     private func loadMyReviewAttempts() -> [String: ReviewAttempt] {
         guard let data = UserDefaults.standard.data(forKey: Keys.myReviewAttempts),
               let decoded = try? JSONDecoder().decode([String: ReviewAttempt].self, from: data)
         else { return [:] }
-        return decoded
+        return Store.migrated(decoded)
     }
     private func saveMyReviewAttempts(_ map: [String: ReviewAttempt]) {
         persistJSON(map, forKey: Keys.myReviewAttempts)
@@ -3837,6 +3849,24 @@ final class Store: ObservableObject {
 
     private var coreRepo: (owner: String, repo: String) {
         CoreAssets.repoCoordinates()
+    }
+    /// The configured repo's slug: what a key stored as a bare number belongs to.
+    nonisolated private static var coreSlug: String {
+        let (owner, repo) = CoreAssets.repoCoordinates()
+        return "\(owner)/\(repo)".lowercased()
+    }
+    /// The item a fetched PR's URL names, else `number` in the configured repo.
+    nonisolated private static func item(url: String, number: Int) -> String {
+        let (owner, repo) = CoreAssets.repoCoordinates()
+        return PRRef.itemKey(url: url) ?? PRRef.itemKey(owner: owner, repo: repo, number: number)
+    }
+    /// A persisted attempts map with its legacy bare-number keys read as the configured
+    /// repo's items.
+    nonisolated private static func migrated(_ map: [String: ReviewAttempt])
+        -> [String: ReviewAttempt] {
+        let slug = coreSlug
+        return Dictionary(map.map { (PRRef.migrateItemKey($0.key, primary: slug), $0.value) },
+                          uniquingKeysWith: { kept, _ in kept })
     }
 
     // MARK: - Approved-PR actions (merge / resolve conflicts from the panel)
@@ -3898,16 +3928,16 @@ final class Store: ObservableObject {
         get { UserDefaults.standard.integer(forKey: Keys.autofixReviews) }
         set { persist(newValue, forKey: Keys.autofixReviews) }
     }
-    private func loadAutofixFingerprints() -> [Int: PRFingerprint] {
+    private func loadAutofixFingerprints() -> [String: PRFingerprint] {
         guard let data = UserDefaults.standard.data(forKey: Keys.autofixFingerprints),
               let decoded = try? JSONDecoder().decode([String: PRFingerprint].self, from: data)
         else { return [:] }
-        return Dictionary(uniqueKeysWithValues: decoded.compactMap { k, v in Int(k).map { ($0, v) } })
+        let slug = Store.coreSlug
+        return Dictionary(decoded.map { (PRRef.migrateItemKey($0.key, primary: slug), $0.value) },
+                          uniquingKeysWith: { kept, _ in kept })
     }
-    private func saveAutofixFingerprints(_ fps: [Int: PRFingerprint]) {
-        // JSON object keys must be strings; `loadAutofixFingerprints` parses them back to Int.
-        persistJSON(Dictionary(uniqueKeysWithValues: fps.map { (String($0.key), $0.value) }),
-                    forKey: Keys.autofixFingerprints)
+    private func saveAutofixFingerprints(_ fps: [String: PRFingerprint]) {
+        persistJSON(fps, forKey: Keys.autofixFingerprints)
     }
 
     // MARK: Claude API-error terminal watcher

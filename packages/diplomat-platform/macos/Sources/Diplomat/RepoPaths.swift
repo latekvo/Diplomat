@@ -1,10 +1,11 @@
 import Foundation
 import DiplomatCore
 
-/// The two repository roots the app cares about: its OWN checkout (`root` — the source
-/// tree behind self-update and the mesh node) and the TARGET repo the agents work in
-/// (`agentRepo` — Settings → REPO ROOT). They are unrelated paths; keeping both here
-/// keeps the two resolutions from being confused for each other.
+/// The repository roots the app cares about: its OWN checkout (`root` — the source tree
+/// behind self-update and the mesh node) and the TARGET repos the agents work in
+/// (`roots`, the first of which is `agentRepo` — Settings → REPO ROOT). They are
+/// unrelated paths; keeping both here keeps the two resolutions from being confused for
+/// each other.
 ///
 /// `root` is the source tree behind both the self-update (git pull + rebuild) and the
 /// mesh node (`python3 -m szpontnet`, which runs from `runtimePackage` with
@@ -108,32 +109,67 @@ enum RepoPaths {
             && fm.fileExists(atPath: runtimePackage.appendingPathComponent("diplomat_runtime").path)
     }
 
-    // MARK: - the TARGET repo (where the agents work)
+    // MARK: - the TARGET repos (where the agents work)
 
-    /// The checkout every spawned agent `cd`s into — the local clone of the *target*
-    /// repo from `assets/config.json` (`software-mansion/argent`), NOT Diplomat's own
-    /// source tree (`root`).
+    /// The repo roots, as stored (a `~` left unexpanded), the first being the primary —
+    /// local clones of the *target* repos, NOT Diplomat's own source tree (`root`).
     ///
-    /// Strongest first: the `DIPLOMAT_REPO` env override (every other `DIPLOMAT_*`
-    /// knob wins over stored state, and the Linux front-end reads the same variable),
-    /// the path picked in Settings, then `~/dev/<repo>`. The Settings hint calls the
-    /// env override out when it's set, so a shadowed field is never a silent no-op.
+    /// Strongest first: the `DIPLOMAT_REPO` env override, a single root (every other
+    /// `DIPLOMAT_*` knob wins over stored state, and the Linux front-end reads the same
+    /// variable), the roots picked in Settings (`AppConfig.repoRoots`), then
+    /// `~/dev/<repo>`. The Settings hint calls the env override out when it's set, so a
+    /// shadowed field is never a silent no-op.
     ///
     /// Re-read on every use (a spawn, a hint refresh): the pick lives in the shared
     /// `AppConfig` file precisely so a change reaches a *running* mesh node too.
-    static var agentRepo: String {
-        if let env = agentRepoEnvOverride { return env }
-        let stored = storedAgentRepo
-        return stored.isEmpty ? defaultAgentRepo : expand(stored)
+    static var rootPaths: [String] {
+        let env = ProcessInfo.processInfo.environment["DIPLOMAT_REPO"] ?? ""
+        if !env.isEmpty { return [env] }
+        let stored = AppConfig.repoRoots
+        return stored.isEmpty ? [defaultAgentRepo] : stored
     }
 
-    /// The user's pick from Settings, trimmed; empty when unset (⇒ fall back).
-    /// Newlines are trimmed too — one would otherwise break the spawn's AppleScript
-    /// string literal (the Linux twin's `.strip()` does the same).
-    private static var storedAgentRepo: String {
-        AppConfig.string(AppConfig.repoRootKey)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    /// `rootPaths`, each resolved to the GitHub repo it is a checkout of
+    /// (`RepoRoots.resolve`); never empty.
+    ///
+    /// Reading the remotes costs a `git` call per root, so the answer is cached until the
+    /// setting changes. A miss on the main thread does not wait for git: it answers as
+    /// though no root had a remote — the primary path standing for the configured repo,
+    /// which is what a single root has always meant — and resolves in the background for
+    /// the next read.
+    static var roots: [PRRef.LocalRepo] {
+        let paths = rootPaths
+        rootsLock.lock()
+        let hit = rootsCache.flatMap { $0.paths == paths ? $0.roots : nil }
+        rootsLock.unlock()
+        if let hit { return hit }
+        guard !Thread.isMainThread else {
+            Task.detached(priority: .utility) { _ = resolveRoots(paths) }
+            return RepoRoots.resolve(paths: paths, remotes: [:],
+                                     configured: CoreAssets.repoCoordinates())
+        }
+        return resolveRoots(paths)
     }
+
+    private static let rootsLock = NSLock()
+    private static var rootsCache: (paths: [String], roots: [PRRef.LocalRepo])?
+
+    private static func resolveRoots(_ paths: [String]) -> [PRRef.LocalRepo] {
+        var remotes: [String: String] = [:]
+        for path in paths.map(RepoRoots.expand) where isCheckout(path) {
+            remotes[path] = LocalRepos.remotes(of: path)
+        }
+        let resolved = RepoRoots.resolve(paths: paths, remotes: remotes,
+                                         configured: CoreAssets.repoCoordinates())
+        rootsLock.lock()
+        rootsCache = (paths, resolved)
+        rootsLock.unlock()
+        return resolved
+    }
+
+    /// The checkout every spawned agent `cd`s into when nothing names another: the
+    /// primary root's.
+    static var agentRepo: String { roots.first?.path ?? defaultAgentRepo }
 
     /// `~/dev/<repo>` — the conventional checkout path for whichever repo `assets/config.json`
     /// targets, so the fallback follows a retargeted config instead of naming one repo.

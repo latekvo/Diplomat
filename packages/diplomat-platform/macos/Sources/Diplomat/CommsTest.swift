@@ -207,45 +207,45 @@ enum CommsTest {
         store.requestOne(review(90001))
         store.requestOne(review(90002))
         store.requestOne(fix(90004))
-        check("the fixture queues two reviews and a fix", ids() == ["review:90001", "review:90002",
-                                                                   "issues:90004"])
+        check("the fixture queues two reviews and a fix",
+              ids() == ["review:o/r#90001", "review:o/r#90002", "issues:o/r#90004"])
 
         // MARK: review
         let askReview = item(.review, 90010, summary: "Review the server PR")
         await apply([askReview])
         check("a review ask lands first in the review band, ahead of a sweep's",
-              band(1) == ["review:90010", "review:90001", "review:90002"])
+              band(1) == ["review:o/r#90010", "review:o/r#90001", "review:o/r#90002"])
         check("…as a stored ask, so a poll re-offers it",
-              store.requestedWork.contains { $0.key == "review:90010" })
-        let reviewAsk = store.requestedWork.first { $0.key == "review:90010" }
+              store.requestedWork.contains { $0.key == "review:o/r#90010" })
+        let reviewAsk = store.requestedWork.first { $0.key == "review:o/r#90010" }
         check("…carrying someone else's PR author as its ban dimension",
               reviewAsk?.author == "alice")
         check("…and its outcome, key and label are what the screen folds",
               folded(askReview)?.outcome == "queued, at the front of its band"
-                && folded(askReview)?.queueKey == "review:90010"
+                && folded(askReview)?.queueKey == "review:o/r#90010"
                 && folded(askReview)?.label == reviewAsk?.label)
         check("…in one activity line", feed("comms-review").count == 1)
 
         let askMine = item(.review, 90011)
         await apply([askMine])
         check("a review of my own PR carries no author to ban-check",
-              store.requestedWork.first { $0.key == "review:90011" }?.author == "")
+              store.requestedWork.first { $0.key == "review:o/r#90011" }?.author == "")
 
         let again = item(.review, 90010)
         await apply([again])
         check("asking again for queued work leaves one row",
-              ids().filter { $0 == "review:90010" }.count == 1
+              ids().filter { $0 == "review:o/r#90010" }.count == 1
                 && outcome(again) == "already queued, at the front of its band")
 
         // MARK: fix
         let askFix = item(.fixIssue, 90020)
         await apply([askFix])
         check("a fix ask lands first in the issue band",
-              band(2) == ["issues:90020", "issues:90004"])
-        check("…behind every review", ids().firstIndex(of: "issues:90020")!
-                > ids().firstIndex(of: "review:90002")!)
+              band(2) == ["issues:o/r#90020", "issues:o/r#90004"])
+        check("…behind every review", ids().firstIndex(of: "issues:o/r#90020")!
+                > ids().firstIndex(of: "review:o/r#90002")!)
         check("…carrying the issue's author", store.requestedWork.first {
-            $0.key == "issues:90020" }?.author == "bob")
+            $0.key == "issues:o/r#90020" }?.author == "bob")
 
         // MARK: bump
         store.requestOne(review(90003))
@@ -255,8 +255,8 @@ enum CommsTest {
         let askBump = item(.bump, 90003)
         await apply([askBump])
         check("a bump moves each queued item for that number to the front of its band",
-              band(1).first == "review:90003" && band(2).first == "issues:90003")
-        check("…and nothing whose number merely ends in it", band(1).last == "review:190003")
+              band(1).first == "review:o/r#90003" && band(2).first == "issues:o/r#90003")
+        check("…and nothing whose number merely ends in it", band(1).last == "review:o/r#190003")
         check("…adding no work of its own", Set(ids()) == Set(beforeBump)
                 && folded(askBump)?.queueKey == nil)
         let askBumpNothing = item(.bump, 90077)
@@ -401,7 +401,7 @@ enum CommsTest {
                 == ["messages before 09:00 were not triaged"])
 
         // MARK: started / finished
-        guard let entry = store.queuedTasks.first(where: { $0.id == "review:90010" }) else {
+        guard let entry = store.queuedTasks.first(where: { $0.id == "review:o/r#90010" }) else {
             check("the review ask is still queued for the dispatch half", false)
             print(pass ? "COMMS TEST OK" : "COMMS TEST FAILED")
             return pass
@@ -419,7 +419,7 @@ enum CommsTest {
 
         store.noteCommsRuns()
         check("a run still in the queue has not finished", folded(askReview)?.finishedAt == nil)
-        store.queuedTasks.removeAll { $0.id == "review:90010" }
+        store.queuedTasks.removeAll { $0.id == "review:o/r#90010" }
         let record = AgentState.RunRecord(runID: "r1", dispatchedAt: Date().timeIntervalSince1970,
                                           prNumber: 90010, prURL: entry.job.prURL ?? "",
                                           kind: "review", label: entry.job.label,
@@ -453,7 +453,7 @@ enum CommsTest {
         }
         func monitorFind(_ verb: String, _ n: Int, _ label: String) -> Store.QueuedAgentTask {
             Store.QueuedAgentTask(
-                id: AgentTaskQueue.key(auditAction: verb, number: n),
+                id: AgentTaskQueue.key(auditAction: verb, item: "o/r#\(n)"),
                 job: Store.AgentJob(kind: "review", auditAction: verb, label: label, prompt: "",
                                     prURL: "https://github.com/o/r/pull/\(n)", prNumber: n,
                                     authorLogin: "dave", duty: "review", workKey: "",
@@ -469,61 +469,61 @@ enum CommsTest {
         let askTwin = item(.review, 90040)
         await apply([askTwin])
         check("a review the monitor has queued as requested of me is not queued again",
-              !ids().contains("review:90040")
-                && !store.requestedWork.contains { $0.key == "review:90040" })
+              !ids().contains("review:o/r#90040")
+                && !store.requestedWork.contains { $0.key == "review:o/r#90040" })
         check("…the ping takes the monitor's key and label",
-              folded(askTwin)?.queueKey == "review-req:90040"
+              folded(askTwin)?.queueKey == "review-req:o/r#90040"
                 && folded(askTwin)?.label == requested.job.label
                 && outcome(askTwin) == "already queued, at the front of its band")
-        check("…and moves it to the front of its band", band(0).first == "review-req:90040")
+        check("…and moves it to the front of its band", band(0).first == "review-req:o/r#90040")
 
         // Switched off, the monitor still queues its finds but starts none of them.
         store.reviewRequestsEnabled = false
         let held = monitorFind("review-req", 90043, "Review-req · #90043 (@dave)")
         store.queuedTasks = [held] + store.queuedTasks
         check("a switched-off monitor's find is held", store.isHeld(held)
-                && !store.drainableTasks.map(\.id).contains("review-req:90043"))
+                && !store.drainableTasks.map(\.id).contains("review-req:o/r#90043"))
         let askHeld = item(.review, 90043)
         await apply([askHeld])
         check("a review the switched-off monitor holds is taken, not asked for a second time",
-              !ids().contains("review:90043")
-                && !store.requestedWork.contains { $0.key == "review:90043" }
-                && folded(askHeld)?.queueKey == "review-req:90043"
+              !ids().contains("review:o/r#90043")
+                && !store.requestedWork.contains { $0.key == "review:o/r#90043" }
+                && folded(askHeld)?.queueKey == "review-req:o/r#90043"
                 && outcome(askHeld) == "already queued, at the front of its band")
         check("…and drains though its monitor is off: the ping asked for it",
-              !store.isHeld(held) && store.drainableTasks.map(\.id).contains("review-req:90043"))
+              !store.isHeld(held) && store.drainableTasks.map(\.id).contains("review-req:o/r#90043"))
 
         // A commit whose monitor no longer offers the find (the request was withdrawn).
         store.offerRequestedWork()
         store.commitQueue()
         check("a find a ping took stays queued when its monitor stops offering it",
-              ids().contains("review-req:90043") && ids().contains("review:90010")
+              ids().contains("review-req:o/r#90043") && ids().contains("review:o/r#90010")
                 && outcome(askHeld) == "already queued, at the front of its band")
         store.commsAdopted = [:]                // as after a relaunch
         store.offerRequestedWork()
         store.commitQueue()
         check("…and with nothing to put back, the ping says it left the queue",
-              !ids().contains("review-req:90043")
+              !ids().contains("review-req:o/r#90043")
                 && outcome(askHeld) == "\(Store.commsLeftQueueOutcome) (review-req:90043)"
-                && !store.commsOwnedKeys.contains("review-req:90043"))
+                && !store.commsOwnedKeys.contains("review-req:o/r#90043"))
         store.queuedTasks = [held] + store.queuedTasks
         check("…after which it holds the monitor's find no more", store.isHeld(held))
         store.reviewRequestsEnabled = true
-        store.queuedTasks.removeAll { $0.id == "review-req:90043" }
+        store.queuedTasks.removeAll { $0.id == "review-req:o/r#90043" }
 
         // The queue's dispatch of a find a ping took starts it, under its row's label.
         let queuedTwin = monitorFind("review-req", 90046, "Review-req · #90046 (@dave)")
         store.queuedTasks = [queuedTwin] + store.queuedTasks
         let askQueuedTwin = item(.review, 90046)
         await apply([askQueuedTwin])
-        store.queuedTasks.removeAll { $0.id == "review-req:90046" }
+        store.queuedTasks.removeAll { $0.id == "review-req:o/r#90046" }
         store.commsSettled(queuedTwin, .spawned(terminal: "iterm"))
         check("a find a ping took starts when the queue dispatches it, under its row's label",
               folded(askQueuedTwin)?.startedAt != nil
                 && folded(askQueuedTwin)?.label == "Auto · Review-req · #90046 (@dave)")
 
         // The monitor dispatches its own finds, not through the asks' settle.
-        store.queuedTasks.removeAll { $0.id == "review-req:90040" }
+        store.queuedTasks.removeAll { $0.id == "review-req:o/r#90040" }
         let monitorRun = run("r2", 90040, "review", "Auto · Review-req · #90040 (@dave)")
         store.pinAgentRows([monitorRun])
         store.noteCommsRuns()
@@ -539,10 +539,10 @@ enum CommsTest {
         let askFixRunning = item(.fixIssue, 90050)
         await apply([askRunning, askFixRunning])
         check("a review of a PR an agent is already reviewing is not queued",
-              !ids().contains("review:90041") && outcome(askRunning) == "already running")
+              !ids().contains("review:o/r#90041") && outcome(askRunning) == "already running")
         check("…nor a fix of an issue an agent is already fixing",
-              !ids().contains("issues:90050")
-                && !store.requestedWork.contains { $0.key == "issues:90050" }
+              !ids().contains("issues:o/r#90050")
+                && !store.requestedWork.contains { $0.key == "issues:o/r#90050" }
                 && outcome(askFixRunning) == "already running")
         check("…each recording that run's start, under the label its row wears",
               folded(askRunning)?.startedAt == Date(timeIntervalSince1970: whole - 5)
@@ -559,7 +559,7 @@ enum CommsTest {
         store.queuedTasks = [failing] + store.queuedTasks
         let askFailing = item(.review, 90044)
         await apply([askFailing])
-        store.queuedTasks.removeAll { $0.id == "review-req:90044" }
+        store.queuedTasks.removeAll { $0.id == "review-req:o/r#90044" }
         let startingRow = Store.AgentRow(
             record: run("r6", 90044, "review", "Auto · Review-req · #90044 (@dave)").record,
             state: .starting, reason: "dispatched 3s ago, no pid yet", window: nil)
@@ -582,7 +582,8 @@ enum CommsTest {
         store.commsSpawnFailed(label: startingRow.record.label, why: neverRan)
         check("…once", CommsLog.read().filter {
             $0.kind == .action && $0.id == askFailing.message.id }.count == 2)
-        check("…and is still waiting on its find", store.commsOwnedKeys.contains("review-req:90044"))
+        check("…and is still waiting on its find",
+              store.commsOwnedKeys.contains("review-req:o/r#90044"))
         // The monitor finds it again, and this time it starts.
         let retryRow = run("r7", 90044, "review", "Auto · Review-req · #90044 (@dave) · retry 2")
         store.pinAgentRows([retryRow])
@@ -599,7 +600,7 @@ enum CommsTest {
         store.queuedTasks = [doomed] + store.queuedTasks
         let askDoomed = item(.review, 90045)
         await apply([askDoomed])
-        store.queuedTasks.removeAll { $0.id == "review-req:90045" }
+        store.queuedTasks.removeAll { $0.id == "review-req:o/r#90045" }
         let doomedRun = run("r8", 90045, "review", "Auto · Review-req · #90045 (@dave)")
         store.pinAgentRows([Store.AgentRow(record: doomedRun.record, state: .starting,
                                            reason: "", window: nil)])
@@ -630,7 +631,7 @@ enum CommsTest {
         lookups = []
         await apply([])
         check("the next tick acts on a ping an earlier apply never finished",
-              lookups == [90010] && folded(stranded)?.queueKey == "review:90010"
+              lookups == [90010] && folded(stranded)?.queueKey == "review:o/r#90010"
                 && outcome(stranded).hasPrefix("already queued"))
         await apply([])
         check("…once", CommsLog.read().filter {
@@ -641,14 +642,16 @@ enum CommsTest {
         let askPRAsIssue = item(.fixIssue, 90060)
         await apply([askPRAsIssue])
         check("a fix asked for by an open PR's number queues nothing",
-              lookups == [90060] && !ids().contains("issues:90060")
+              lookups == [90060] && !ids().contains("issues:o/r#90060")
                 && outcome(askPRAsIssue) == "no issue #90060 in this repo, so nothing was queued")
 
         // MARK: a dispatch while the tick is still being applied
         let first = item(.review, 90070)
         let second = item(.review, 90071)
         duringLookup[90071] = {
-            guard let e = store.queuedTasks.first(where: { $0.id == "review:90070" }) else { return }
+            guard let e = store.queuedTasks.first(where: { $0.id == "review:o/r#90070" }) else {
+                return
+            }
             store.commsSettled(e, .spawned(terminal: "iterm"))
         }
         await apply([first, second])
@@ -1212,7 +1215,7 @@ enum CommsTest {
                 && post?["thread_ts"] as? String == parent
                 && post?["reply_broadcast"] as? Bool == false)
         let r = (try? CoreAssets.comms())?.replies
-        let ahead = store.queuedTasks.firstIndex { $0.id == "review:90090" } ?? -1
+        let ahead = store.queuedTasks.firstIndex { $0.id == "review:o/r#90090" } ?? -1
         func ack(_ at: Date) -> String {
             let work = CommsQueuedWork(kind: "review", number: 90090, ahead: ahead, bays: 2)
             let eta = CommsReplier.etaText(
@@ -1329,11 +1332,11 @@ enum CommsTest {
         await store.applyComms(CommsTickResult(me: nil, pings: [several.message], items: rows,
                                                error: nil))
         await settled()
-        let order = store.queuedTasks.map(\.id).filter { $0.hasPrefix("review:9010") }
+        let order = store.queuedTasks.map(\.id).filter { $0.hasPrefix("review:o/r#9010") }
         check("a message asking for three PRs queues all three, the first asked for first: \(order)",
-              order == ["review:90101", "review:90102", "review:90103"])
+              order == ["review:o/r#90101", "review:o/r#90102", "review:o/r#90103"])
         check("…each its own row, wearing its own queue key",
-              rows.allSatisfy { folded($0)?.queueKey == "review:\($0.decision.number)" })
+              rows.allSatisfy { folded($0)?.queueKey == "review:o/r#\($0.decision.number)" })
         let severalText = slack.posts.last?["message"] as? String ?? ""
         check("…one reply naming all three, in the message's language: \(severalText.debugDescription)",
               slack.posts.count == 4
@@ -1428,12 +1431,12 @@ enum CommsTest {
             mixedRows.first { $0.decision.number == n }.map(outcome) ?? "<no row>"
         }
         check("a message asking for a review and a fix queues both: \(ids())",
-              ids().contains("review:90105") && ids().contains("issues:90106")
+              ids().contains("review:o/r#90105") && ids().contains("issues:o/r#90106")
                 && !ids().contains { $0.hasSuffix(":90107") || $0.hasSuffix(":90108") })
         check("…each row wearing its own kind: \(mixedRows.map { "\($0.decision.action.rawValue) #\($0.decision.number)" })",
               mixedRows.map(\.decision.action) == [.fixIssue, .review, .fixIssue, .review]
-                && folded(mixedRows[3])?.queueKey == "review:90105"
-                && folded(mixedRows[2])?.queueKey == "issues:90106")
+                && folded(mixedRows[3])?.queueKey == "review:o/r#90105"
+                && folded(mixedRows[2])?.queueKey == "issues:o/r#90106")
         check("…a review of an issue's number and a fix of a PR's each say so: "
               + "\(mixedOutcome(90107)) / \(mixedOutcome(90108))",
               mixedOutcome(90107) == "no PR #90107 in this repo, so nothing was queued"

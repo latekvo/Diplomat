@@ -12,18 +12,18 @@ enum AutofixMonitor {
     /// diff and the reconcilers need, in a single request (`assets/graphql/monitor-prs`).
     static func fetchSnapshots(owner: String, repo: String, me: String) async throws -> [PRSnapshot] {
         let q = "repo:\(owner)/\(repo) author:\(me) is:pr is:open"
-        let data = try await GH.graphql("monitor-prs", withRepo: false, variables: [("q", q)])
+        let data = try await GH.graphql("monitor-prs", repo: nil, variables: [("q", q)])
         return try parse(data, me: me)
     }
 
-    /// The PRs this repo has recently merged or closed — what the queue is re-checked
-    /// against (`assets/graphql/closed-prs`).
+    /// The items (`PRRef.itemKey`) of the PRs this repo has recently merged or closed —
+    /// what the queue is re-checked against (`assets/graphql/closed-prs`).
     ///
     /// Not scoped to me, to my queue, or to a monitor's verb: any PR can be sitting in
     /// the queue (a sweep asks for whoever's PRs the operator aimed it at), and a
     /// search cannot be given a list of numbers to ask about. So it asks the cheap
     /// question the other way round — who closed lately — and the caller intersects.
-    static func fetchClosedPRs(owner: String, repo: String) async throws -> Set<Int> {
+    static func fetchClosedPRs(owner: String, repo: String) async throws -> Set<String> {
         let q = "repo:\(owner)/\(repo) is:pr is:closed sort:updated-desc"
         let query = try CoreAssets.graphql("closed-prs")
         let data = try await GH.run(["api", "graphql", "-f", "query=\(query)", "-f", "q=\(q)"])
@@ -34,7 +34,9 @@ enum AutofixMonitor {
             struct Node: Decodable { let number: Int? }
         }
         let r = try JSONDecoder().decode(Resp.self, from: data)
-        return Set(r.data.search.nodes.compactMap(\.number))
+        return Set(r.data.search.nodes.compactMap(\.number).map {
+            PRRef.itemKey(owner: owner, repo: repo, number: $0)
+        })
     }
 
     /// A PR that has requested my review, with the timestamps needed to decide whether I
@@ -77,7 +79,7 @@ enum AutofixMonitor {
     static func fetchReviewRequests(owner: String, repo: String, me: String,
                                     includeFiles: Bool = false) async throws -> [ReviewRequest] {
         let q = "repo:\(owner)/\(repo) review-requested:\(me) is:pr is:open"
-        let data = try await GH.graphql("review-requests", withRepo: false,
+        let data = try await GH.graphql("review-requests", repo: nil,
                                         variables: [("q", q)],
                                         typedVariables: [("withFiles", "\(includeFiles)")])
         struct Resp: Decodable {

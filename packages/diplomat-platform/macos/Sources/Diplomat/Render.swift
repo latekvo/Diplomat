@@ -652,7 +652,7 @@ enum Render {
         log(flaky, minutesAgo: 190,
             CommsDecision(action: .fixIssue, number: 431, summary: "Fix the flaky simulator test",
                           reason: "Asks for issue #431 to be fixed."),
-            outcome: "queued, at the front of its band", key: "issues:431",
+            outcome: "queued, at the front of its band", key: "issues:software-mansion/argent#431",
             label: "Issues · #431 · deep", started: 186, finished: 140)
         replied(flaky, minutesAgo: 190, "failed: Slack refused it (channel_not_found)",
                 "[Diplomat]: Queued a fix for issue #431, should be done by 17:50 today (±1h).")
@@ -719,7 +719,7 @@ enum Render {
         log(review, minutesAgo: 3,
             CommsDecision(action: .review, number: 512, summary: "Review the streaming server PR",
                           reason: "Asks for a review of PR #512."),
-            outcome: "queued, at the front of its band", key: "review:512",
+            outcome: "queued, at the front of its band", key: "review:software-mansion/argent#512",
             label: "Review · #512 · deep")
         replied(review, minutesAgo: 3, "sent",
                 "[Diplomat]: Queued a review of #512, should be done by 19:15 today (±1h).")
@@ -1092,7 +1092,8 @@ enum Render {
                                       attemptNumber: Int = 1) -> Store.QueuedAgentTask {
         let isPR = kind != "issues"
         return Store.QueuedAgentTask(
-            id: AgentTaskQueue.key(auditAction: auditAction, number: number),
+            id: AgentTaskQueue.key(auditAction: auditAction,
+                                   item: "software-mansion/argent#\(number)"),
             job: Store.AgentJob(
                 kind: kind, auditAction: auditAction, label: label, prompt: "",
                 prURL: isPR ? "https://github.com/software-mansion/argent/pull/\(number)" : nil,
