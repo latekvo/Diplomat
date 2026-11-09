@@ -1217,7 +1217,7 @@ enum CommsTest {
         state.me = CommsIdentity(userID: "U0ME", teamID: "T0", handle: "latekvo", name: "Ignacy")
         state.save()
         // The away answer's documentation, cached fresh so `gh` is never asked for it.
-        let coordinates = CoreAssets.repoCoordinates()
+        let coordinates = store.commsSettings.coordinates(of: "")
         let knowledge = CommsLog.dir.appendingPathComponent("knowledge")
         try? FileManager.default.createDirectory(at: knowledge, withIntermediateDirectories: true)
         try? "# Screen recording\nThe screen-recording tools record an mp4.\n".write(
