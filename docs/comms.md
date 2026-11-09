@@ -27,11 +27,11 @@ conversations, so "can you review it?" after "#412 is ready" is understood as a 
 | **injection** | [bans the sender](#bans): the message tries to hijack an agent instead of asking you for something, including an order to delete someone else's account or hand over data or keys, and a DM claiming you already agreed |
 
 A message listing several PRs or issues acts on all of them, up to twenty: each gets its own row and
-its own place in the queue, the first it names first. One message is one kind of work: "review #12 and
-fix issue #34" does only what triage picks. Comms acts only on the watched repo: triage is told to
-leave out references to other repositories, and GitHub links to their PRs, issues, discussions and
-commits, and `owner/repo#N` for another repo of this one's owner, are removed before its numbers are
-checked.
+its own place in the queue, the first it names first. Each also gets its own kind of work, so
+"review #12 and fix issue #34" queues a review of #12 and a fix of #34. Comms acts only on the
+watched repo: triage is told to leave out references to other repositories, and GitHub links to
+their PRs, issues, discussions and commits, and `owner/repo#N` for another repo of this one's owner,
+are removed before its numbers are checked.
 
 So a "can you look at #412 when you get a chance?" lands #412's review ahead of every review you
 asked for - behind only what the monitors owe GitHub - and a "the installer dies on Node 22 for me"
@@ -168,7 +168,8 @@ All of them are on the **Comms (Slack)** card.
 - **Reply to…** **questions** (**default on**) / **reviews** / **fixes** / **investigations** (**default
   off**) - which kinds get one. A question is answered from the project's documentation, when that
   settles it plainly. The other three get an estimate of when the work should be done. Off, the work is
-  still queued; only the reply is held.
+  still queued; only the reply is held, and a reply to a message that asked for several kinds names
+  only those switched on.
 - **Away after** (**default 3h**) - how long your session must have been locked before Comms replies
   for you. A message that arrives while you are here gets no reply, then or later.
 - **Notify on new pings** (**default on**) - a system notification per new ping, as it lands,

@@ -81,6 +81,14 @@ enum CommsTest {
                              author: "dave", isOpen: true, state: "OPEN"),
             90104: CommsTarget(number: 90104, url: "https://github.com/o/r/pull/90104",
                              author: "dave", isOpen: true, state: "OPEN"),
+            90105: CommsTarget(number: 90105, url: "https://github.com/o/r/pull/90105",
+                             author: "dave", isOpen: true, state: "OPEN"),
+            90106: CommsTarget(number: 90106, url: "https://github.com/o/r/issues/90106",
+                             author: "dave", isOpen: true, state: "OPEN"),
+            90107: CommsTarget(number: 90107, url: "https://github.com/o/r/issues/90107",
+                             author: "dave", isOpen: true, state: "OPEN"),
+            90108: CommsTarget(number: 90108, url: "https://github.com/o/r/pull/90108",
+                             author: "dave", isOpen: true, state: "OPEN"),
             90090: CommsTarget(number: 90090, url: "https://github.com/o/r/pull/90090",
                                author: "ivan", isOpen: true, state: "OPEN"),
             90091: CommsTarget(number: 90091, url: "https://github.com/o/r/issues/90091",
@@ -1396,6 +1404,46 @@ enum CommsTest {
         check("a lock keeps the time it began until the unlock clears it",
               heldStart && store.commsLockedSince == nil)
         print("     this session reads as locked: \(String(describing: Store.sessionLocked()))")
+
+        // One message asking for different work on different numbers, as the tick hands
+        // it over: a review of a PR and a fix of an issue queue, a review of an issue's
+        // number and a fix of a PR's each find nothing, and one reply names what queued.
+        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
+        store.commsReplyToFixes = true
+        let twoKinds = inChannel("U0RITA001", "rita", CommsDecision(
+            action: .review,
+            targets: [CommsAsk(.review, 90105), CommsAsk(.fixIssue, 90106),
+                      CommsAsk(.review, 90107), CommsAsk(.fixIssue, 90108)],
+            summary: "s", reason: "r"))
+        let mixedRows = CommsTickResult.Item.targets(twoKinds.message, twoKinds.decision, maxTargets: 20)
+        CommsLog.append(CommsEvent(kind: .ping, id: twoKinds.message.id, message: twoKinds.message))
+        for row in mixedRows {
+            CommsLog.append(CommsEvent(kind: .decision, id: row.message.id, decision: row.decision))
+        }
+        let mixedPosts = slack.posts.count
+        await store.applyComms(CommsTickResult(me: nil, pings: [twoKinds.message], items: mixedRows,
+                                               error: nil))
+        await settled()
+        func mixedOutcome(_ n: Int) -> String {
+            mixedRows.first { $0.decision.number == n }.map(outcome) ?? "<no row>"
+        }
+        check("a message asking for a review and a fix queues both: \(ids())",
+              ids().contains("review:90105") && ids().contains("issues:90106")
+                && !ids().contains { $0.hasSuffix(":90107") || $0.hasSuffix(":90108") })
+        check("…each row wearing its own kind: \(mixedRows.map { "\($0.decision.action.rawValue) #\($0.decision.number)" })",
+              mixedRows.map(\.decision.action) == [.fixIssue, .review, .fixIssue, .review]
+                && folded(mixedRows[3])?.queueKey == "review:90105"
+                && folded(mixedRows[2])?.queueKey == "issues:90106")
+        check("…a review of an issue's number and a fix of a PR's each say so: "
+              + "\(mixedOutcome(90107)) / \(mixedOutcome(90108))",
+              mixedOutcome(90107) == "no PR #90107 in this repo, so nothing was queued"
+                && mixedOutcome(90108) == "no issue #90108 in this repo, so nothing was queued")
+        let mixedText = slack.posts.last?["message"] as? String ?? ""
+        check("…and one reply names the review and the fix: \(mixedText.debugDescription)",
+              slack.posts.count == mixedPosts + 1
+                && mixedText.hasPrefix("[Diplomat]: Ignacy is away, I queued a review of #90105 "
+                                       + "and a fix for issue #90106, should be done by "))
+        store.commsLockedSince = nil
 
         slack.fail = "channel_not_found"
         store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)

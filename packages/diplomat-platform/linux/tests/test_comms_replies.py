@@ -425,6 +425,26 @@ def test_one_message_asking_for_several_gets_one_reply_in_its_language(
     assert [p["message"] for p in posts] == [result["text"]]
 
 
+@needs_core
+def test_one_message_asking_for_two_kinds_gets_one_reply_naming_both(
+        slack, no_comms_replies, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(comms, "reply", no_comms_replies)
+    monkeypatch.setenv(comms.TOKEN_ENV, "x")
+    _Slack.token = "x"
+    review, fix = _rows_of_one_message([12, 34], language="en")[::-1]
+    fix["decision"] = {**fix["decision"], "action": "fix_issue"}
+    fix["queued"] = {**fix["queued"], "kind": "fix_issue"}
+    for row in (review, fix):
+        row["toggles"] = {**row["toggles"], "replyToFixes": True}
+    merged = comms.merge_replies([fix, review])
+    assert len(merged) == 1
+    result = comms.reply(merged[0])
+    assert result["outcome"] == "sent", result
+    assert result["text"].startswith(
+        "[Diplomat]: The operator is away, I queued a review of #12 and a fix for issue #34, "
+        "should be done by ")
+
+
 def test_a_tick_with_no_extra_target_merges_nothing(monkeypatch):
     def refuse(*a, **k):
         raise AssertionError("no merge call is needed")
