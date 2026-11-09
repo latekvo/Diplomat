@@ -18,7 +18,9 @@ read by the ``DIPLOMAT_AGENTS`` dump, a front-end-free path with no store of its
 The device-allocator daemon, a Node process, reads four more: the terminal spawns
 resolve to (published rather than set here), to open its repair agents in, the two
 idle limits after which it takes a device back from its agent or shuts down one no
-agent holds, and the module its remote device pool is lent through.
+agent holds, and the module its remote device pool is lent through. The
+remote-machines daemon, also Node, reads the machines the operator took out of its
+pool, for good or until a time.
 
 So those knobs live in the shared ``~/.diplomat`` tree, the way the ban list,
 the activity feed and the mesh snapshot already cross process *and* front-end
@@ -75,6 +77,12 @@ DEVICE_IDLE_LEASED_MINUTES = "deviceIdleLeasedMinutes"
 #: every request.
 DEVICE_REMOTE_PROVIDER = "deviceRemoteProvider"
 
+#: Target or host names (case-insensitive) the remote-machines daemon never contacts.
+REMOTE_MACHINE_EXCLUDE = "remoteMachineExclude"
+#: ``{name: ISO-8601 instant}``: machines the remote-machines daemon still reads but
+#: offers no agent until then.
+REMOTE_MACHINE_EXCLUDE_UNTIL = "remoteMachineExcludeUntil"
+
 DEFAULT_DEVICE_IDLE_FREE_MINUTES = 5
 MAX_DEVICE_IDLE_FREE_MINUTES = 60
 DEFAULT_DEVICE_IDLE_LEASED_MINUTES = 30
@@ -123,6 +131,38 @@ def set_value(key: str, value: str) -> None:
     data = read()
     if value:
         data[key] = value
+    else:
+        data.pop(key, None)
+    write_atomic(path(), data)
+
+
+def get_list(key: str) -> list:
+    """One array key, or ``[]`` when it's absent or isn't one."""
+    value = read().get(key)
+    return value if isinstance(value, list) else []
+
+
+def get_dict(key: str) -> dict:
+    """One object key, or ``{}`` when it's absent or isn't one."""
+    value = read().get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def set_list(key: str, value: list) -> None:
+    """:func:`set_value` for an array: empty removes the key."""
+    data = read()
+    if value:
+        data[key] = list(value)
+    else:
+        data.pop(key, None)
+    write_atomic(path(), data)
+
+
+def set_dict(key: str, value: dict) -> None:
+    """:func:`set_value` for an object: empty removes the key."""
+    data = read()
+    if value:
+        data[key] = dict(value)
     else:
         data.pop(key, None)
     write_atomic(path(), data)
