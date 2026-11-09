@@ -360,12 +360,43 @@ def test_a_book_one_parser_refuses_is_refused_by_both(body, expected):
     assert [r["runId"] for r in _swift({"mode": "read"})] == expected
 
 
-@pytest.mark.parametrize("first,second", [("true", "1"), ("1", "true")])
-def test_a_duplicated_key_keeps_its_first_value_on_both_sides(first, second):
-    """`json` keeps the last; `JSONSerialization` on Darwin keeps the first."""
+#: (members a hand edit gave one record, the field to read, what both sides read).
+#: `json` keeps a repeated key's last value, `JSONSerialization` its first on Darwin
+#: and its last on corelibs.
+_REPEATED = [
+    ('"untracked": true, "untracked": 1', "untracked", True),
+    ('"untracked": 1, "untracked": true', "untracked", False),
+    ('"prNumber": 5, "pid": 1, "prNumber": 7, "pid": 2, "tty": "t"', "prNumber", 5),
+    ('"prNumber": 5, "pid": 1, "prNumber": 7, "pid": 2, "tty": "t"', "pid", 1),
+    ('"prNumber": 5, "pid": 1, "prNumber": 7, "pid": 2, "tty": "t"', "tty", "t"),
+    ('"prNumber": 5, "pr\\u004eumber": 7', "prNumber", 5),
+    ('"prNumber": 5, "prNumber": {"x": 1, "x": 2}, "tty": "t"', "prNumber", 5),
+]
+
+
+@pytest.mark.parametrize("members,key,expected", _REPEATED,
+                         ids=[f"{m} -> {k}" for m, k, _ in _REPEATED])
+def test_a_duplicated_key_keeps_its_first_value_on_both_sides(members, key, expected):
     R.runs_path().parent.mkdir(parents=True, exist_ok=True)
-    R.runs_path().write_text('{"version": 1, "runs": [{"runId": "r", '
-                             f'"untracked": {first}, "untracked": {second}}}]}}')
-    expected = [first == "true"]
-    assert [r.untracked for r in R.load()] == expected
-    assert [r.get("untracked", False) for r in _swift({"mode": "read"})] == expected
+    R.runs_path().write_text('{"version": 1, "runs": [{"runId": "r", %s}]}' % members)
+    python = [r.to_json() for r in R.load()]
+    swift = [A.RunRecord.from_json(r).to_json() for r in _swift({"mode": "read"})]
+    assert python == swift
+    got = python[0][key]
+    assert (got, type(got)) == (expected, type(expected))
+
+
+#: Numbers a `JSONSerialization` reads an ulp or more off, as no `float` does: corelibs
+#: all three, Darwin the last two. The integer is past UInt64, so it is no `Int64` either.
+_MISROUNDED = ["1791274860.7710276", "0.026461970522229095", "680352917189831768722810"]
+
+
+@pytest.mark.parametrize("literal", _MISROUNDED)
+def test_a_double_reads_as_its_correctly_rounded_value_on_both_sides(literal):
+    R.runs_path().parent.mkdir(parents=True, exist_ok=True)
+    R.runs_path().write_text('{"version": 1, "runs": [{"runId": "q"}, {"runId": "r", '
+                             f'"dispatchedAt": {literal}, "quietSince": {literal}}}]}}')
+    python = [r.to_json() for r in R.load()]
+    swift = [A.RunRecord.from_json(r).to_json() for r in _swift({"mode": "read"})]
+    assert python == swift
+    assert python[1]["dispatchedAt"] == python[1]["quietSince"] == float(literal)

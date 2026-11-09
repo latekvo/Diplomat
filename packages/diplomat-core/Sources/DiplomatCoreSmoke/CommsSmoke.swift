@@ -395,7 +395,7 @@ func commsSmoke() throws {
           "the schema's action enum is the CommsAction cases: \(assets.schema)")
     check(CommsAction.allCases.map(\.rawValue)
           == ["none", "bump", "review", "fix_issue", "investigate", "question", "injection"])
-    check(assets.schema.contains("\"required\":[\"message\",\"action\",\"numbers\",\"language\",\"summary\",\"reason\",\"evidence\"]")
+    check(assets.schema.contains("\"required\":[\"message\",\"action\",\"targets\",\"language\",\"summary\",\"reason\",\"evidence\"]")
           && assets.schema.contains("\"required\":[\"decisions\"]"),
           "the schema requires a decisions list, each naming its message and carrying evidence: \(assets.schema)")
 
@@ -769,6 +769,7 @@ func commsSmoke() throws {
     try batchAnswerSmoke()
     try replySmoke()
     try severalTargetsSmoke()
+    try mixedKindsSmoke()
     wildcardSmoke()
     knowledgeSmoke()
     answererSmoke()
@@ -2657,6 +2658,136 @@ private func replySmoke() throws {
           "away defaults to three hours, set in quarter hours up to twelve")
 }
 
+/// "please review #12 and fix issue #34": one message asking for two kinds of work, each
+/// target read, checked, split, acted on and acknowledged as its own kind.
+private func mixedKindsSmoke() throws {
+    let text = "please review #12 and fix issue #34"
+    let read = decision(#"{"action":"review","targets":[{"action":"review","number":12},"#
+        + #"{"action":"fix_issue","number":34}],"summary":"s","reason":"r"}"#)
+
+    section("comms: reading targets of several kinds")
+    check(read.action == .review && read.targets == [CommsAsk(.review, 12), CommsAsk(.fixIssue, 34)]
+          && read.numbers == [12, 34] && read.number == 12,
+          "each target keeps its own action: \(read.targets)")
+    let led = decision(#"{"action":"bump","targets":[{"action":"fix_issue","number":34},"#
+        + #"{"action":"review","number":12}],"summary":"s","reason":"r"}"#)
+    check(led.action == .fixIssue && led.number == 34, "the action is the first target's: \(led.action)")
+    let odd = decision(#"{"action":"review","targets":[{"action":"fix_issue","number":34},"#
+        + #"{"action":"review","number":34},{"number":12},{"action":"investigate","number":56},"#
+        + #"{"action":"fix_issue","number":0},{"action":"merge","number":78}],"summary":"s","reason":"r"}"#)
+    check(odd.targets == [CommsAsk(.fixIssue, 34), CommsAsk(.review, 12)],
+          "a number named twice keeps its first action, a target without one takes the answer's, and "
+          + "one whose action needs no number or is unknown, or whose number is not positive, drops: \(odd.targets)")
+    let noneLeft = decision(#"{"action":"review","targets":[{"action":"investigate","number":12}],"summary":"s","reason":"r"}"#)
+    check(noneLeft.action == .none && noneLeft.targets.isEmpty
+          && noneLeft.reason.contains("without a positive PR or issue number (investigate #12)"),
+          "targets none of which can be acted on are none: \(noneLeft.reason)")
+    check(decision(#"{"action":"question","targets":[{"action":"review","number":12}],"summary":"s","reason":"r"}"#)
+            .targets.isEmpty,
+          "an action that needs no number holds no target")
+    check(decision(#"{"action":"fix_issue","numbers":[34,35],"summary":"s","reason":"r"}"#).targets
+            == [CommsAsk(.fixIssue, 34), CommsAsk(.fixIssue, 35)],
+          "an answer logged with numbers reads as targets of its action")
+    let wire = String(decoding: try CommsLog.encoder.encode(read), as: UTF8.self)
+    check(wire.contains(#""number":12"#)
+          && wire.contains(#""targets":[{"action":"review","number":12},{"action":"fix_issue","number":34}]"#)
+          && !wire.contains("numbers")
+          && (try? CommsLog.decoder.decode(CommsDecision.self, from: Data(wire.utf8))) == read,
+          "a decision is written with its targets and its first number, and reads back as itself: \(wire)")
+
+    section("comms: a number no message names drops with its own kind")
+    let m = CommsMessage(id: "D0MIXED001:1793064601.000001", channelID: "D0MIXED001", channelName: "U1",
+                         isDM: true, userID: "U1", userName: "t", teamID: "T", text: text,
+                         ts: "1793064601.000001", permalink: "p", reasons: [.dm])
+    let guessed = CommsDecision(action: .review,
+                                targets: [CommsAsk(.review, 12), CommsAsk(.fixIssue, 34),
+                                          CommsAsk(.fixIssue, 78), CommsAsk(.bump, 90),
+                                          CommsAsk(.bump, 91)],
+                                summary: "s", reason: "r").checked(against: m)
+    check(guessed.targets == [CommsAsk(.review, 12), CommsAsk(.fixIssue, 34)]
+          && guessed.reason.hasPrefix("answered fix_issue #78, bump #90, #91, numbers neither"),
+          "the rest keep their own kinds, and the reason names each dropped one's: \(guessed.reason)")
+
+    section("comms: each kind a message asks for is an item, a row and an effect of its own")
+    let dir = scratchDir("mixed")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let slack = StubSlack()
+    let w = 1_793_064_600
+    CommsState(watermark: "\(w).000000", me: slackMe).save(in: dir)
+    slack.messages = [dm("\(w + 10).000100", text)]
+    let r = CommsWatch.tick(settings: CommsSettings(flushAfterSecs: 0),
+                            now: Date(timeIntervalSince1970: TimeInterval(w + 700)), dir: dir,
+                            api: slack.api) { batch in batch.messages.map { _ in read } }
+    let base = "\(slack.messages[0].channel):\(w + 10).000100"
+    check(r.items.map(\.message.id) == [base + "#34", base]
+          && r.items.map(\.decision.action) == [.fixIssue, .review]
+          && r.items.map(\.decision.number) == [34, 12]
+          && r.items.allSatisfy { $0.decision.targets.count == 1 },
+          "the fix of #34 and the review of #12 are an item each: "
+          + "\(r.items.map { "\($0.message.id) \($0.decision.action.rawValue) #\($0.decision.number)" })")
+    let effects = r.items.map {
+        CommsPlan.effect(for: $0.decision, message: $0.message, toggles: CommsToggles(), reportDir: dir)
+    }
+    check(effects == [.fixIssue(34), .review(12)], "…so one queues a fix, the other a review: \(effects)")
+    let rows = CommsLog.fold(CommsLog.read(in: dir))
+    check(rows.first { $0.message.id == base }?.decision?.action == .review
+          && rows.first { $0.message.id == base + "#34" }?.decision?.action == .fixIssue,
+          "…and the log folds into a review row and a fix row")
+    let one = CommsTickResult.Item.targets(m, CommsDecision(action: .review, numbers: [12, 34],
+                                                            summary: "s", reason: "r"),
+                                           maxTargets: 20)
+    check(one.map(\.decision.action) == [.review, .review] && one.map(\.decision.number) == [34, 12],
+          "a message asking for one kind of several is split as it always was")
+
+    section("comms: one reply naming every kind")
+    let now = Date(timeIntervalSince1970: 1_793_700_000)   // 2026-11-03 11:00 Warsaw
+    func row(_ kind: String, _ n: Int, first: Bool = false, ahead: Int = 0,
+             language: String = "en", toggles: CommsToggles) -> CommsReplyRequest {
+        var msg = m
+        if !first { msg.id += "#\(n)" }
+        msg.senderTimezone = "Europe/Warsaw"
+        let action = CommsAction(rawValue: kind) ?? .none
+        return CommsReplyRequest(
+            message: msg,
+            decision: CommsDecision(action: action, number: n, summary: "s", reason: "r", language: language),
+            queued: CommsQueuedWork(kind: kind, number: n, ahead: ahead, bays: 1),
+            away: true, toggles: toggles)
+    }
+    func say(_ requests: [CommsReplyRequest]) -> [String] {
+        let d = scratchDir("mixed-reply")
+        defer { try? FileManager.default.removeItem(at: d) }
+        CommsState(me: CommsIdentity(userID: "UME", teamID: "Ours", handle: "h", name: "Ignacy")).save(in: d)
+        let s = StubSlack()
+        return requests.compactMap { CommsReplier.reply($0, now: now, dir: d, api: s.api).text }
+    }
+    let on = CommsToggles(replyToReviews: true, replyToFixes: true)
+    check(say(CommsReplyRequest.merged([row("fix_issue", 34, toggles: on), row("review", 12, first: true, toggles: on)]))
+            == ["[Diplomat]: Ignacy is away, I queued a review of #12 and a fix for issue #34, should be done by 12:30 today (±1h)."],
+          "one reply names both, in the message's order, due when the fix should end")
+    check(say(CommsReplyRequest.merged([row("fix_issue", 34, language: "pl", toggles: on),
+                                        row("review", 12, first: true, language: "pl", toggles: on)]))
+            == ["[Diplomat]: Ignacy jest teraz offline. W kolejce: review #12 i poprawka issue #34, przewidywany koniec: dziś o 12:30 (±1h)."],
+          "…in Polish too")
+    let three = say(CommsReplyRequest.merged([row("fix_issue", 34, ahead: 1, toggles: on),
+                                              row("review", 13, toggles: on),
+                                              row("review", 12, first: true, toggles: on)]))
+    check(three == ["[Diplomat]: Ignacy is away, I queued reviews of #12 and #13 and a fix for issue #34, should be done by 14:00 today (±1h)."],
+          "each kind waits in its own band: two reviews one behind the other end at 12:30, a fix "
+          + "with one ahead at 14:00: \(three)")
+    let fixesOff = CommsToggles(replyToReviews: true, replyToFixes: false)
+    let reviewsOff = CommsToggles(replyToReviews: false, replyToFixes: true)
+    check(say(CommsReplyRequest.merged([row("fix_issue", 34, toggles: fixesOff),
+                                        row("review", 12, first: true, toggles: fixesOff)]))
+            == ["[Diplomat]: Ignacy is away, I queued a review of #12, should be done by 11:45 today (±1h)."]
+          && say(CommsReplyRequest.merged([row("review", 12, first: true, toggles: reviewsOff),
+                                           row("fix_issue", 34, toggles: reviewsOff)]))
+            == ["[Diplomat]: Ignacy is away, I queued a fix for issue #34, should be done by 12:30 today (±1h)."],
+          "a kind whose replies are off goes unnamed, whichever row leads")
+    check(say(CommsReplyRequest.merged([row("fix_issue", 34, toggles: CommsToggles()),
+                                        row("review", 12, first: true, toggles: CommsToggles())])).isEmpty,
+          "with both off, nothing is posted")
+}
+
 /// A message asking for several PRs, in Polish: what triage hands over, what the log
 /// folds into, the one reply, and the switches and stops around it.
 private func severalTargetsSmoke() throws {
@@ -2901,13 +3032,20 @@ private func severalTargetsSmoke() throws {
           "an away answer's framing follows the question's language: \(answered.text ?? "nil")")
     check(Set(assets.replies.languages.keys) == ["en", "pl"]
           && assets.schema.contains(#""language":{"enum":["en","pl"],"type":"string"}"#)
-          && assets.schema.contains(#""numbers":{"items":{"type":"integer"},"type":"array"}"#),
-          "the schema offers exactly the languages the replies hold, and a list of numbers: \(assets.schema)")
+          && assets.schema.contains(#""targets":{"items":{"additionalProperties":false,"properties":{"action":{"enum":["review","fix_issue","bump"],"type":"string"},"number":{"type":"integer"}},"required":["action","number"],"type":"object"},"type":"array"}"#),
+          "the schema offers exactly the languages the replies hold, and a list of targets, "
+          + "each a number with an action of its own that needs one: \(assets.schema)")
+    check(CommsAction.allCases.filter(\.needsNumber).map(\.rawValue).sorted() == ["bump", "fix_issue", "review"],
+          "…the actions that need a number")
     let prompt = CommsClassifier.prompt(settings: own)
     check(prompt.contains("give every number it lists, in its order, not only the first")
           && prompt.contains("language: pl when the message is written in Polish")
           && !prompt.contains("number is that PR"),
           "the prompt asks for every number and for the language")
+    check(prompt.contains("each with the action the message asks for that one")
+          && prompt.contains(#""please review #12 and fix issue #34" is review 12 and fix_issue 34, never one action for both"#)
+          && !prompt.contains("numbers lists every one"),
+          "the prompt gives each target its own action, with a mixed ask as the example")
 
     section("comms: what a reply goes to is the operator's choice")
     let defaults = CommsToggles()

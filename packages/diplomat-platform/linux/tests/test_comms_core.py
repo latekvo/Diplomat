@@ -359,16 +359,17 @@ def slack(monkeypatch):
     server.server_close()
 
 
-def _stub_claude(tmp_path: Path) -> Path:
+def _stub_claude(tmp_path: Path, decision: dict | None = None) -> Path:
     """A ``claude`` that answers like ``-p --output-format json``, recording its stdin in
     ``stdin.txt`` and its arguments, one call a line, in ``args.txt``. It answers a
-    batch's first message only."""
+    batch's first message only, with ``decision`` (a review of #12 by default)."""
     answer = json.dumps([
         {"type": "system", "subtype": "init", "tools": ["StructuredOutput"]},
         {"type": "result", "is_error": False, "result": "",
          "structured_output": {"decisions": [
-             {"message": 1, "action": "review", "number": 12, "summary": "Review PR 12",
-              "reason": "a direct ask"}]}},
+             {"message": 1, **(decision or {"action": "review", "number": 12,
+                                            "summary": "Review PR 12",
+                                            "reason": "a direct ask"})}]}},
     ])
     # Not tmp_path/claude: that is conftest's DIPLOMAT_CLAUDE_DIR.
     stub = tmp_path / "bin" / "claude"
@@ -433,8 +434,8 @@ def test_comms_tick_runs_end_to_end_through_the_binary(tmp_path, slack, monkeypa
         "UALICE", "alice", "Ours", True,
         f"https://ours.slack.test/archives/D1/p{secs + 5}000100")
     assert result["items"][0]["decision"] == {
-        "action": "review", "number": 12, "numbers": [12], "language": "en",
-        "summary": "Review PR 12", "reason": "a direct ask",
+        "action": "review", "number": 12, "targets": [{"action": "review", "number": 12}],
+        "language": "en", "summary": "Review PR 12", "reason": "a direct ask",
         "evidence": ""}
     searches = _tools("slack_search_public_and_private")
     assert [(s.get("filters"), s.get("keywords"), s["after"]) for s in searches] == [
@@ -485,6 +486,33 @@ def test_a_ping_is_triaged_in_a_later_tick_once_its_queue_is_stale(tmp_path, sla
     assert _triage_calls(tmp_path) == 1
     [row] = json.loads(_core("comms-feed").stdout)
     assert row["decision"]["number"] == 12
+
+
+def test_one_message_asking_for_two_kinds_is_a_row_and_an_effect_for_each(tmp_path, slack,
+                                                                          monkeypatch):
+    """"review #12 and fix issue #34": the review and the fix are each their own item, kind
+    and effect, the fix's row first so the review, named first, lands in front."""
+    monkeypatch.setenv("DIPLOMAT_CLAUDE", str(_stub_claude(tmp_path, {
+        "action": "review", "targets": [{"action": "review", "number": 12},
+                                        {"action": "fix_issue", "number": 34}],
+        "language": "en", "summary": "Review 12, fix 34", "reason": "two asks",
+        "evidence": ""})))
+    settings = {"flushAfterSecs": 0}
+    secs = _first_tick(settings)
+    _Slack.messages = [_message(f"{secs + 5}.000100", "UALICE",
+                                "please review #12 and fix issue #34")]
+    result = json.loads(_core("comms-tick", stdin=settings).stdout)
+    assert result["error"] is None
+    base = result["pings"][0]["id"]
+    assert [(i["message"]["id"], i["decision"]["action"], i["decision"]["number"],
+             i["decision"]["targets"]) for i in result["items"]] == [
+        (base + "#34", "fix_issue", 34, [{"action": "fix_issue", "number": 34}]),
+        (base, "review", 12, [{"action": "review", "number": 12}])]
+    effects = [comms.effect(i["decision"], i["message"], {}, {}) for i in result["items"]]
+    assert effects == [{"kind": "fix_issue", "number": 34}, {"kind": "review", "number": 12}]
+    rows = json.loads(_core("comms-feed").stdout)
+    assert sorted((r["message"]["id"], r["decision"]["action"]) for r in rows) == [
+        (base, "review"), (base + "#34", "fix_issue")]
 
 
 def test_a_full_queue_is_triaged_in_one_call(tmp_path, slack, monkeypatch):

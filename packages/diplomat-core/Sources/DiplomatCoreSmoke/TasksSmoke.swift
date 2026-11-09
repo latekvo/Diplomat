@@ -313,8 +313,33 @@ func tasksSmoke() async throws {
     check(unlinked.mirror.items.isEmpty && unlinked.mirror.commsWatermark == epoch,
           "the mirror drops what no task links, and keeps its watermark")
 
+    section("tasks: two syncs at once")
+    // B fetched after a merge and applied first; A's fetch is from before it.
+    let started = TaskMirror(items: [pr(12): snap()])
+    let fresher = sync([task("t-a", [pr(12)])], started, [pr(12): .found(item(pr(12), "MERGED"))])
+    check(tags(fresher.events) == [["pr:merged"]], "the newer answer is told: \(tags(fresher.events))")
+    let older = TaskSync.apply(tasks: fresher.tasks, mirror: fresher.mirror, base: started.items,
+                               fetched: [pr(12): .found(item(pr(12)))], now: at(61), excerptChars: 20)
+    check(older.events.isEmpty && older.mirror == fresher.mirror && older.tasks == fresher.tasks,
+          "an answer fetched before another sync rewrote its item is not applied: \(tags(older.events))")
+    let current = TaskSync.apply(tasks: fresher.tasks, mirror: fresher.mirror, base: fresher.mirror.items,
+                                 fetched: [pr(12): .found(item(pr(12)))], now: at(61), excerptChars: 20)
+    check(tags(current.events) == [["pr:reopened"]], "…one fetched after it is: \(tags(current.events))")
+    let firstSeen = TaskSync.apply(tasks: fresher.tasks, mirror: fresher.mirror, base: [:],
+                                   fetched: [pr(12): .found(item(pr(12)))], now: at(61), excerptChars: 20)
+    check(firstSeen.events.isEmpty, "…nor one whose item another sync saw first since: \(tags(firstSeen.events))")
+    // A task linked #7 as an issue after B read the tasks; GitHub answers it as PR 7, which
+    // B rewrote under its own URL.
+    let byGitHubURL = TaskSync.apply(tasks: [task("t-new", [issue(7)]), task("t-old", [pr(7)])],
+                                     mirror: TaskMirror(items: [pr(7): snap("pr", "MERGED")]),
+                                     base: [pr(7): snap()], fetched: [issue(7): .found(item(pr(7))),
+                                                                      pr(7): .found(item(pr(7)))],
+                                     now: at(61), excerptChars: 20)
+    check(byGitHubURL.events.isEmpty && byGitHubURL.tasks[0].links.map(\.url) == [issue(7)],
+          "…nor one rewritten under the URL GitHub answers it by: \(tags(byGitHubURL.events))")
+
     section("tasks: status")
-    func status(_ t: TrackedTask, _ snaps: [String: GitHubSnapshot], last: Date? = at(0), now: Date = at(60))
+    func status(_ t: TrackedTask, _ snaps: [String: GitHubSnapshot], last: Date = at(0), now: Date = at(60))
         -> String {
         let (s, r) = TaskStatus.derive(t, snapshots: snaps, lastEventAt: last, now: now, staleDays: 7,
                                        watched: watched)
@@ -355,8 +380,6 @@ func tasksSmoke() async throws {
           == "in-review #13:awaiting-review stale", "stale past 7 days")
     check(status(task("t", [pr(13)]), [pr(13): snap()], last: at(0), now: at(7 * 86_400 - 1))
           == "in-review #13:awaiting-review", "not stale within 7 days")
-    check(status(task("t", []), [:], last: nil, now: at(30 * 86_400)) == "open no-github-links",
-          "no history is not stale")
 
     section("tasks: Comms folding")
     let held = [task("t-a", [pr(12)]), task("t-b", [pr(123)]), task("t-c", [pr(5, repo: "o/r")]),
@@ -447,6 +470,95 @@ func tasksSmoke() async throws {
     try await tasksRunSmoke()
     try tasksCLISmoke()
     try tasksCLISyncSmoke()
+    try tasksOverlapSmoke()
+    try tasksActivitySmoke()
+}
+
+/// Two `tasks-sync` processes whose fetches straddle a merge, the older one held until the
+/// newer has written: the older answer is not told backwards.
+private func tasksOverlapSmoke() throws {
+    section("tasks: two tasks-sync processes at once")
+    let dir = taskScratch("overlap"), stub = taskScratch("overlap-gh")
+    defer { for d in [dir, stub] { try? FileManager.default.removeItem(at: d) } }
+    try FileManager.default.createDirectory(at: stub, withIntermediateDirectories: true)
+    // Reads the state, then, with HOLD set, says so and waits (30 s at most) to be let go.
+    let gh = stub.appendingPathComponent("gh")
+    try ##"""
+    #!/bin/sh
+    state=$(cat "$0.state")
+    if [ -n "$HOLD" ]; then
+      : > "$HOLD.read"; i=0
+      while [ ! -e "$HOLD.go" ] && [ $i -lt 300 ]; do sleep 0.1; i=$((i+1)); done
+    fi
+    printf '{"data":{"i0":{"issueOrPullRequest":{"__typename":"PullRequest","title":"P5","url":"https://github.com/o/r/pull/5","state":"%s","isDraft":false,"closingIssuesReferences":{"nodes":[]},"comments":{"nodes":[]},"reviews":{"nodes":[]}}}}}' "$state"
+    """##.write(to: gh, atomically: true, encoding: .utf8)
+    chmod(gh.path, 0o755)
+    func state(_ s: String) throws { try s.write(toFile: gh.path + ".state", atomically: true, encoding: .utf8) }
+    let env = ["DIPLOMAT_TASKS_DIR": dir.path, "DIPLOMAT_COMMS_DIR": dir.appendingPathComponent("comms").path,
+               "DIPLOMAT_GH": gh.path, "DA_BAN_DIR": stub.path]
+    func events(_ out: Data) -> Int? { (json(out) as? [String: Any])?["events"] as? Int }
+
+    try TaskStore.edit(.create(title: "Race", tags: [], links: ["https://github.com/o/r/pull/5"]), in: dir)
+    try state("OPEN")
+    _ = try cli(["tasks-sync"], env: env)
+
+    let hold = stub.appendingPathComponent("a").path
+    let a = Process(), aOut = Pipe()
+    a.executableURL = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
+        .appendingPathComponent("diplomat-core")
+    a.arguments = ["tasks-sync"]
+    a.environment = ProcessInfo.processInfo.environment.merging(env.merging(["HOLD": hold]) { $1 }) { $1 }
+    a.standardOutput = aOut
+    try a.run()
+    var waited = 0
+    while !FileManager.default.fileExists(atPath: hold + ".read") && waited < 300 {
+        usleep(100_000)
+        waited += 1
+    }
+    check(waited < 300, "the held sync reached gh")
+    try state("MERGED")
+    let (_, bOut, _) = try cli(["tasks-sync"], env: env)
+    FileManager.default.createFile(atPath: hold + ".go", contents: nil)
+    let aData = aOut.fileHandleForReading.readDataToEndOfFile()
+    a.waitUntilExit()
+    let told = TaskStore.events(in: dir).filter { $0.source == "github" }.map(\.tags)
+    check(events(bOut) == 1 && events(aData) == 0 && told == [["linked", "pr:open"], ["pr:merged"]]
+          && TaskStore.mirror(in: dir).items["https://github.com/o/r/pull/5"]?.state == "MERGED",
+          "the sync that fetched before the merge, finishing after, tells nothing: \(told)")
+    let (_, cOut, _) = try cli(["tasks-sync"], env: env)
+    check(events(cOut) == 0, "…and the next sync has nothing to tell either")
+}
+
+/// A task's last activity outlives the history's rotation.
+private func tasksActivitySmoke() throws {
+    section("tasks: last activity past rotation")
+    let dir = taskScratch("activity")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let day = 86_400.0
+    let quiet = try TaskStore.edit(.create(title: "Quiet", tags: [], links: []), now: at(0), in: dir)
+    check(quiet.lastEventAt == at(0), "a task's creation is its first activity: \(String(describing: quiet.lastEventAt))")
+    let busy = try TaskStore.edit(.create(title: "Busy", tags: [], links: []), now: at(1), in: dir)
+    try TaskStore.edit(.note(id: quiet.id, text: "later", tags: [], url: nil), now: at(20 * day), in: dir)
+    try TaskStore.edit(.note(id: quiet.id, text: "backdated", tags: [], url: nil), now: at(5 * day), in: dir)
+    check(try TaskStore.tasks(in: dir).first { $0.id == quiet.id }?.lastEventAt == at(20 * day),
+          "an older event does not move it back")
+    // Rotation has dropped every line of the quiet task.
+    var kept = try CommsLog.encoder.encode(TaskEvent(at: at(10 * day), task: busy.id, source: "note", tags: [], text: "x"))
+    kept.append(UInt8(ascii: "\n"))
+    try kept.write(to: dir.appendingPathComponent("events.jsonl"))
+    let soon = try TaskStore.views(now: at(21 * day), in: dir)
+    check(soon.map(\.task.title) == ["Quiet", "Busy"] && soon[0].lastEventAt == at(20 * day) && soon[0].history.isEmpty,
+          "it sorts by its activity with none of it left in the history: \(soon.map { ($0.task.title, $0.lastEventAt) })")
+    let late = try TaskStore.views(now: at(28 * day), in: dir)
+    check(late.map(\.reasons) == [["no-github-links", "stale"], ["no-github-links", "stale"]],
+          "and goes stale by it: \(late.map(\.reasons))")
+
+    // A task written before it was kept, whose history is all gone, counts from its creation.
+    let legacy = TrackedTask(id: "t-legacy", title: "Legacy", createdAt: at(0))
+    try CommsLog.encoder.encode(["tasks": [legacy]]).write(to: dir.appendingPathComponent("tasks.json"))
+    let old = try TaskStore.views(now: at(8 * day), in: dir)
+    check(old.first?.lastEventAt == at(0) && old.first?.reasons == ["no-github-links", "stale"],
+          "a task with no activity on record counts from its creation: \(old.map(\.reasons))")
 }
 
 /// `TaskSync.run` end to end over a stub gh.
@@ -497,6 +609,7 @@ private func tasksRunSmoke() async throws {
     let history = TaskStore.events(in: dir).filter { $0.source == "github" }
     check(history.map(\.tags) == [["linked", "pr:open"], ["link:missing"]] && history.allSatisfy { $0.task == created.id },
           "first sight and the missing one: \(history.map(\.tags))")
+    check(synced[0].lastEventAt == at(60), "a sync records the task's activity: \(String(describing: synced[0].lastEventAt))")
     let mirror = TaskStore.mirror(in: dir)
     check(mirror.items["https://github.com/o/r/pull/7"]?.ci == "SUCCESS"
           && mirror.items["https://github.com/o/r/pull/7"]?.seenIDs == ["C1"] && mirror.commsWatermark == at(60),

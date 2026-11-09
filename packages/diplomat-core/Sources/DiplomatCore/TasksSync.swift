@@ -107,11 +107,12 @@ public enum TaskSync {
 
     /// Fetches every GitHub link of every unarchived task (one `gh api graphql` call per
     /// `chunk` of them), then, under the lock, diffs the answers against the mirror
-    /// (`apply`), folds Comms' log (`slack`), drops from the history the Slack events of
-    /// senders on the ban list now (`withoutBanned`), appends the events and writes the
-    /// tasks and the mirror. A failed fetch writes nothing. An item GitHub answered with an
-    /// error of its own is left as it was, and the answer is `ok` with `error` naming each
-    /// such item.
+    /// (`apply`, its `base` the mirror read before fetching), folds Comms' log (`slack`),
+    /// drops from the history the Slack events of senders on the ban list now
+    /// (`withoutBanned`), appends the events and writes the tasks, each one's
+    /// `lastEventAt` moved up to its events, and the mirror. A failed fetch writes nothing.
+    /// An item GitHub answered with an error of its own is left as it was, and the answer
+    /// is `ok` with `error` naming each such item.
     public static func run(now: Date = Date(), dir: URL = TaskStore.dir,
                            commsDir: URL = CommsLog.dir) async -> Result {
         func failed(_ message: String) -> Result { Result(ok: false, error: message, events: 0) }
@@ -123,6 +124,7 @@ public enum TaskSync {
         } catch {
             return failed(error.localizedDescription)
         }
+        let base = TaskStore.mirror(in: dir).items
         var urls: [String] = []
         for link in tasks.filter({ $0.archivedAt == nil }).flatMap(\.links)
         where link.isGitHub && !urls.contains(link.url) {
@@ -149,8 +151,8 @@ public enum TaskSync {
         let result = PrivateFiles.locked(lock) { () -> Result in
             let before: [TrackedTask]
             do { before = try TaskStore.tasks(in: dir) } catch { return failed(error.localizedDescription) }
-            let gh = apply(tasks: before, mirror: TaskStore.mirror(in: dir), fetched: fetched, now: now,
-                           excerptChars: assets.excerptChars)
+            let gh = apply(tasks: before, mirror: TaskStore.mirror(in: dir), base: base, fetched: fetched,
+                           now: now, excerptChars: assets.excerptChars)
             var mirror = gh.mirror
             let slack = self.slack(tasks: gh.tasks, comms: comms, watermark: mirror.commsWatermark,
                                    handled: mirror.commsHandled, now: now, watched: watched, banned: banned,
@@ -168,7 +170,8 @@ public enum TaskSync {
             guard TaskStore.append(events, in: dir, maxBytes: assets.maxLogBytes) else {
                 return failed("could not append to \(TaskStore.eventsURL(in: dir).path)")
             }
-            guard gh.tasks == before || TaskStore.save(gh.tasks, in: dir) else {
+            let after = TaskStore.noting(events, in: gh.tasks)
+            guard after == before || TaskStore.save(after, in: dir) else {
                 return failed("could not write \(TaskStore.tasksURL(in: dir).path)")
             }
             guard let data = try? CommsLog.encoder.encode(mirror),
@@ -265,8 +268,13 @@ public enum TaskSync {
     /// `linked`, `via:closes` event; that item is first fetched by the next sync. The
     /// mirror keeps the items some task links, archived ones included, so an archived task
     /// keeps its status and its unarchiving tells only what changed meanwhile.
-    public static func apply(tasks: [TrackedTask], mirror: TaskMirror, fetched: [String: TaskFetch],
-                             now: Date, excerptChars: Int)
+    ///
+    /// `base` is `mirror.items` as they were when `fetched` was asked for (nil: `mirror`'s
+    /// own). An item whose entry another sync has rewritten since is left as that sync
+    /// wrote it, links and all: its answer may be the newer one, and applying an older one
+    /// over it would tell its changes backwards. The next sync brings it up to date.
+    public static func apply(tasks: [TrackedTask], mirror: TaskMirror, base: [String: GitHubSnapshot]? = nil,
+                             fetched: [String: TaskFetch], now: Date, excerptChars: Int)
         -> (tasks: [TrackedTask], mirror: TaskMirror, events: [TaskEvent]) {
         var tasks = tasks
         var items = mirror.items
@@ -276,6 +284,9 @@ public enum TaskSync {
             for link in tasks[t].links {
                 guard let answer = fetched[link.url], let ref = GitHubRef(url: link.url),
                       done.insert(ref.key).inserted else { continue }
+                var keys = [link.url]
+                if case let .found(item) = answer { keys.append(item.url) }
+                if let base, keys.contains(where: { base[$0] != mirror.items[$0] }) { continue }
                 let holders = tasks.indices.filter { h in
                     tasks[h].archivedAt == nil
                         && tasks[h].links.contains { GitHubRef(url: $0.url)?.key == ref.key }

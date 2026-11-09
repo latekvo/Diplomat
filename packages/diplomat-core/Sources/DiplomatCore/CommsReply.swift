@@ -142,8 +142,14 @@ public enum CommsReplier {
             r.settings.bannedSenders.contains(r.message.userID)
                 || CommsBan.bannedNow().contains(r.message.userID.uppercased())
         }
+        // Work of a kind whose replies are off goes unnamed.
+        let acting = [.review, .fixIssue, .investigate].contains(r.decision.action)
+        let work = !acting ? [] : ([r.queued].compactMap { $0 } + r.alsoQueued).filter {
+            CommsAction(rawValue: $0.kind).map(r.toggles.repliesTo) ?? false
+        }
+        let answers = r.decision.action == .question && r.toggles.repliesTo(.question)
         guard r.away, let assets = try? CoreAssets.comms(), r.toggles.replies,
-              r.toggles.repliesTo(r.decision.action), !barred(),
+              !work.isEmpty || answers, !barred(),
               let words = assets.replies.language(r.decision.language),
               let to = destination(for: r.message) else { return CommsReplyResult() }
         // The raw lines, not the fold: rotation can cut a ping whose reply survives.
@@ -154,10 +160,10 @@ public enum CommsReplier {
         let name = me?.name ?? me.map { $0.handle } ?? ""
         let who = name.isEmpty ? words.operator : name
         let body: String
-        if let q = r.queued, [.review, .fixIssue, .investigate].contains(r.decision.action) {
-            body = acknowledgement([q] + r.alsoQueued, name: who, sender: r.message,
+        if !work.isEmpty {
+            body = acknowledgement(work, name: who, sender: r.message,
                                    now: now, words: words, assets: assets)
-        } else if r.decision.action == .question {
+        } else if answers {
             var settings = r.settings
             settings.bannedSenders += CommsBan.bannedNow()
             let asked = CommsTS.number(r.message.ts) ?? 0
@@ -233,32 +239,38 @@ public enum CommsReplier {
         return ts
     }
 
-    /// `work` is everything one message asked for, all of one kind. Queued targets went to
-    /// the front of their band one after the other, so the last of them runs behind the
-    /// rest and whatever the longest wait was ahead of.
+    /// `work` is everything one message asked for: one `what` or `whatMany` per kind, in
+    /// the order it first names each, joined by `and`. A kind's queued targets went to the
+    /// front of its band one after the other, so the last of them runs behind the rest and
+    /// whatever the longest wait was ahead of; the estimate is the latest kind's.
     static func acknowledgement(_ work: [CommsQueuedWork], name: String,
                                 sender: CommsMessage, now: Date,
                                 words: CoreAssets.CommsModel.Replies.Language,
                                 assets: CoreAssets.CommsModel) -> String {
         let r = assets.replies
-        let kind = work.first?.kind ?? ""
-        let what: String
-        if work.count == 1 {
-            what = CommsText.fill(words.what[kind] ?? "", ["number": String(work[0].number)])
-        } else {
-            let tags = work.map { "#\($0.number)" }
-            let numbers = tags.dropLast().joined(separator: ", ")
-                + " \(words.and) " + (tags.last ?? "")
-            what = CommsText.fill(words.whatMany[kind] ?? "", ["numbers": numbers])
+        func list(_ items: [String]) -> String {
+            items.count < 2 ? items.joined()
+                : items.dropLast().joined(separator: ", ") + " \(words.and) " + (items.last ?? "")
+        }
+        var kinds: [String] = []
+        for q in work where !kinds.contains(q.kind) { kinds.append(q.kind) }
+        var whats: [String] = []
+        var due = now
+        for kind in kinds {
+            let group = work.filter { $0.kind == kind }
+            whats.append(group.count == 1
+                ? CommsText.fill(words.what[kind] ?? "", ["number": String(group[0].number)])
+                : CommsText.fill(words.whatMany[kind] ?? "",
+                                 ["numbers": list(group.map { "#\($0.number)" })]))
+            var last = group.filter { $0.startedAt == nil }.max { $0.ahead < $1.ahead }
+            last?.ahead += group.filter { $0.startedAt == nil }.count - 1
+            due = (group.filter { $0.startedAt != nil } + (last.map { [$0] } ?? []))
+                .map { eta($0, now: now, assets: assets) }.reduce(due, max)
         }
         let allRunning = work.allSatisfy { $0.startedAt != nil }
         let template = allRunning ? words.runningAway : words.queuedAway
-        var last = work.filter { $0.startedAt == nil }.max { $0.ahead < $1.ahead }
-        last?.ahead += work.filter { $0.startedAt == nil }.count - 1
-        let due = (work.filter { $0.startedAt != nil } + (last.map { [$0] } ?? []))
-            .map { eta($0, now: now, assets: assets) }.max() ?? now
         return CommsText.fill(template, [
-            "name": name, "what": what,
+            "name": name, "what": list(whats),
             "eta": etaText(due, now: now, timezone: sender.senderTimezone, roundMins: r.roundMins,
                            words: words),
         ])

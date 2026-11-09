@@ -16,10 +16,13 @@ public struct TrackedTask: Codable, Equatable, Sendable {
     /// linking one again takes it off. Compared by `TaskLinks.identity`; written only when
     /// not empty.
     public var dismissed: [String]
+    /// The `at` of the newest event appended to its history: what outlives the history's
+    /// rotation. Nil when none was recorded.
+    public var lastEventAt: Date?
 
     public init(id: String, title: String, tags: [String] = [], links: [TaskLink] = [],
                 createdAt: Date, pinnedStatus: TaskStatus? = nil, archivedAt: Date? = nil,
-                dismissed: [String] = []) {
+                dismissed: [String] = [], lastEventAt: Date? = nil) {
         self.id = id
         self.title = title
         self.tags = tags
@@ -28,10 +31,11 @@ public struct TrackedTask: Codable, Equatable, Sendable {
         self.pinnedStatus = pinnedStatus
         self.archivedAt = archivedAt
         self.dismissed = dismissed
+        self.lastEventAt = lastEventAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, tags, links, createdAt, pinnedStatus, archivedAt, dismissed
+        case id, title, tags, links, createdAt, pinnedStatus, archivedAt, dismissed, lastEventAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -42,7 +46,8 @@ public struct TrackedTask: Codable, Equatable, Sendable {
                   createdAt: try c.decode(Date.self, forKey: .createdAt),
                   pinnedStatus: try c.decodeIfPresent(TaskStatus.self, forKey: .pinnedStatus),
                   archivedAt: try c.decodeIfPresent(Date.self, forKey: .archivedAt),
-                  dismissed: try c.decodeIfPresent([String].self, forKey: .dismissed) ?? [])
+                  dismissed: try c.decodeIfPresent([String].self, forKey: .dismissed) ?? [],
+                  lastEventAt: try c.decodeIfPresent(Date.self, forKey: .lastEventAt))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -55,6 +60,7 @@ public struct TrackedTask: Codable, Equatable, Sendable {
         try c.encodeIfPresent(pinnedStatus, forKey: .pinnedStatus)
         try c.encodeIfPresent(archivedAt, forKey: .archivedAt)
         if !dismissed.isEmpty { try c.encode(dismissed, forKey: .dismissed) }
+        try c.encodeIfPresent(lastEventAt, forKey: .lastEventAt)
     }
 }
 
@@ -177,7 +183,9 @@ public struct TaskView: Codable, Equatable, Sendable {
     public var reasons: [String]
     /// Newest first, at most `historyLimit`.
     public var history: [TaskEvent]
-    public var lastEventAt: Date?
+    /// Its last activity: the newer of its own `lastEventAt` and its newest event still in
+    /// the history, else its `createdAt`.
+    public var lastEventAt: Date
     /// Each synced GitHub link's state by its url: `open`, `draft`, `merged`, `closed` or
     /// `missing`. A link not synced yet has none.
     public var linkStates: [String: String]
@@ -355,13 +363,13 @@ public enum TaskStatus: String, Codable, CaseIterable, Sendable {
     /// 6. else `in-progress`, `<item>:draft` / `:open` per open item, `:missing` per item
     ///    GitHub does not have and `:unsynced` per item no sync has fetched yet
     /// `<item>` is `#n`, or `owner/repo#n` outside `watched`. A task that is neither done
-    /// nor paused also gets `stale` when its newest event is over `staleDays` old.
+    /// nor paused also gets `stale` when `lastEventAt` is over `staleDays` old.
     public static func derive(_ task: TrackedTask, snapshots: [String: GitHubSnapshot],
-                              lastEventAt: Date?, now: Date, staleDays: Int,
+                              lastEventAt: Date, now: Date, staleDays: Int,
                               watched: (owner: String, repo: String)) -> (status: TaskStatus, reasons: [String]) {
         let (status, reasons) = rule(task, snapshots, watched)
-        guard status != .done, status != .paused, let last = lastEventAt,
-              now.timeIntervalSince(last) > Double(staleDays) * 86_400 else { return (status, reasons) }
+        guard status != .done, status != .paused,
+              now.timeIntervalSince(lastEventAt) > Double(staleDays) * 86_400 else { return (status, reasons) }
         return (status, reasons + ["stale"])
     }
 

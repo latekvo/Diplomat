@@ -333,7 +333,7 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
         }
 
         /// One item per target of `decision`, at most `maxTargets` of them, so each has its
-        /// own row in the log and its own queue entry; last first, as each goes to the
+        /// own action, row in the log and queue entry; last first, as each goes to the
         /// front of its band and the first asked for should run first. A decision with one
         /// target or none is one item, as it stands.
         public static func targets(_ message: CommsMessage, _ decision: CommsDecision,
@@ -341,11 +341,11 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
             guard decision.numbers.count > 1 else {
                 return [Item(message: message, decision: decision)]
             }
-            let kept = decision.numbers.prefix(max(1, maxTargets))
-            return kept.enumerated().reversed().map { i, n in
+            let kept = decision.targets.prefix(max(1, maxTargets))
+            return kept.enumerated().reversed().map { i, t in
                 var row = message
-                if i > 0 { row.id += String(CommsMessage.targetSeparator) + String(n) }
-                return Item(message: row, decision: decision.targeting(n))
+                if i > 0 { row.id += String(CommsMessage.targetSeparator) + String(t.number) }
+                return Item(message: row, decision: decision.targeting(t))
             }
         }
     }
@@ -665,7 +665,7 @@ public enum CommsWatch {
                                           settings: settings)
             // The marker is the tick's alone: a reason the model wrote cannot claim it.
             guard decision.reason.hasPrefix(bannedPrefix) else { return decision }
-            return CommsDecision(action: decision.action, numbers: decision.numbers,
+            return CommsDecision(action: decision.action, targets: decision.targets,
                                  summary: decision.summary, reason: "triage: " + decision.reason,
                                  evidence: decision.evidence, language: decision.language)
         }

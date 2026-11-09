@@ -7,7 +7,7 @@
   "chunk": 25,
   "commentsPerItem": 20,
 
-  "_statusComment": "A task whose newest history event is more than staleDays old gets the stale reason.",
+  "_statusComment": "A task whose last activity (its newest event, kept on the task past the history's rotation) is more than staleDays old gets the stale reason.",
   "staleDays": 7,
 
   "_historyComment": "Past maxLogBytes, events.jsonl keeps the newest whole lines that fit in half of it, and at least its newest line. tasks-list shows each task's newest historyLimit events. excerptChars bounds the one-line excerpt of a comment or Slack message. A Slack ping that names a task waits up to commsHoldSecs for Comms' triage before it joins the task's history without one, and every ping logged after it waits with it: Comms triages in batches, up to its flush interval after the ping.",

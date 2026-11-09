@@ -51,7 +51,7 @@ a badge counting the blocked tasks.
 - **Status line** - when the last sync finished, failed or not, and how often it runs; then that
   sync's error, if any: a `gh` failure (nothing is written, the task files stay as they were), or
   the links it had to skip while syncing the rest.
-- **Tasks** - not-done ones first, then by their newest event. Each row shows the status, the title,
+- **Tasks** - not-done ones first, then by their last activity. Each row shows the status, the title,
   the reason tags, the task's own tags, and its links as chips: `#123` for the watched repo,
   `owner/repo#12` elsewhere, `slack`, or the site's host name. A GitHub link's chip has a dot for its
   state as of the last sync (open, draft, merged, closed, missing); none before its first sync. A
@@ -84,14 +84,16 @@ The first rule that holds decides the status:
 | **in-review** | an open PR is ready for review | `#12:approved` / `#12:awaiting-review` per ready PR |
 | **in-progress** | otherwise | `#12:draft` / `#12:open` per open item, `#12:missing`, `#12:unsynced` (not fetched yet) |
 
-A task that is neither done nor paused also gets `stale` once its newest event is more than seven
-days old. Items outside the watched repo read `owner/repo#12`.
+A task that is neither done nor paused also gets `stale` once its last activity is more than seven
+days old: its newest event, which the task keeps even after the history has dropped it. Items
+outside the watched repo read `owner/repo#12`.
 
 ## Where it keeps things
 
 `~/.diplomat/tasks/` (`DIPLOMAT_TASKS_DIR` moves it), readable by you alone:
 
-- `tasks.json` - the tasks: title, tags, links, pin, archived, and the links you removed.
+- `tasks.json` - the tasks: title, tags, links, pin, archived, the links you removed, and when
+  its newest event happened.
 - `events.jsonl` - the history, one event per line. Past 2 MB it keeps the newest lines that fit in
   1 MB, and always at least the newest one.
 - `mirror.json` - what the last sync saw of each linked item, and how far into Comms' log it read.
@@ -146,3 +148,5 @@ screen picks up a CLI edit on its next sync, or when it is opened.
   (it keeps its newest 1-2 MB): an older one stays.
 - GitHub only: other forges are plain links, with no state and no history.
 - A link chip's dot is what the last sync saw, so a link added since has none yet.
+- Two syncs at once (the app's and an agent's `tasks-sync`): an item the other one wrote while this
+  one was fetching is left as the other wrote it, and catches up on the next sync.

@@ -205,6 +205,31 @@ def test_a_message_naming_several_queues_each_first_named_first_under_one_ping_l
     assert [e["action"] for e in _feed_lines()].count("comms-ping") == 1
 
 
+@needs_core
+def test_a_message_asking_for_two_kinds_queues_each_as_its_own(comms_store, monkeypatch):
+    """Rows as the core splits "review #12 and fix issue #7, review #8 and fix #13": the
+    review of a PR and the fix of an issue queue; the review of an issue's number and the
+    fix of a PR's each say what they found instead."""
+    asked: list = []
+    monkeypatch.setattr("diplomat_runtime.gh.run", _github({
+        ("issue", 13): ("OPEN", "https://github.com/o/r/pull/13", "alice"),
+    }, asked))
+    first = _message(1, "review #12 and fix issue #7, review #8 and fix #13")
+
+    def row(n):
+        return {**first, "id": first["id"] + f"#{n}"}
+
+    _tick(comms_store, monkeypatch, (row(13), _decision("fix_issue", 13)),
+          (row(8), _decision("review", 8)), (row(7), _decision("fix_issue", 7)),
+          (first, _decision("review", 12)), pings=[first])
+    keys = [t.id for t in comms_store.queued_tasks]
+    assert "review:12" in keys and "issues:7" in keys
+    assert not any(k.endswith((":8", ":13")) for k in keys)
+    outcomes = {e["id"]: e["outcome"] for e in _events() if e["kind"] == "action"}
+    assert outcomes[row(8)["id"]] == "#8 is not a PR of this repo"
+    assert outcomes[row(13)["id"]] == "#13 is a pull request, not an issue"
+
+
 def test_the_tick_is_handed_the_settings(comms_store, monkeypatch):
     comms_store.comms_keywords_raw = "argent"
     comms_store.comms_sender_allowlist_raw = "kacper"

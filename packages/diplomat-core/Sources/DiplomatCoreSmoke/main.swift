@@ -2354,6 +2354,19 @@ do {
           "a version that wraps to 1 in Int64 is no schema")
     check(JSONInput.parse(Data("{\"title\": \"\u{FEFF}Fix\", \"body\": \"\\uFEFF\"}".utf8)) != nil,
           "a CLI payload holding a PR title that opens with U+FEFF is read")
+    // corelibs keeps a repeated key's last value, and both platforms' parsers misround
+    // some numbers (corelibs the first literal, both the other two); `json` does neither.
+    let repeated = read("{\"runId\": \"r\", \"prNumber\": 5, \"pid\": 1, \"prNumber\": 7, "
+                        + "\"pid\": 2, \"tty\": \"t\"}")
+    check(repeated.map(\.prNumber) == [5] && repeated.map(\.pid) == [1]
+            && repeated.map(\.tty) == ["t"], "a key given twice keeps its first value")
+    let nested = JSONInput.parse(Data("{\"a\": 1, \"a\": {\"b\": 2, \"b\": 3}, \"c\": [\"t\", \"t\", \"t\"]}".utf8))
+    check(nested?["a"] as? Int == 1 && nested?["c"] as? [String] == ["t", "t", "t"],
+          "a repeat holding a repeat goes whole, and an array's equal strings all stay")
+    for literal in ["1791274860.7710276", "0.026461970522229095", "680352917189831768722810"] {
+        check(read("{\"runId\": \"r\", \"dispatchedAt\": \(literal)}").map(\.dispatchedAt)
+                == [Double(literal)!], "`\(literal)` reads as its correctly rounded double")
+    }
 
     let ledger = Telemetry.fold(lines: [
         "{\"at\": 100, \"ev\": \"started\", \"key\": \"k1\", \"remote\": 1}",
@@ -2367,6 +2380,10 @@ do {
     check(ledger.tasks.map(\.key) == ["k1", "k2", "k6"] && ledger.tasks.map(\.remote) == [false, true, false],
           "the ledger reads `\"remote\": 1` as local, `\"at\": true` or `\"100\\0\"` as no "
             + "timestamp, and JSON's whitespace alone around a line")
+    let line = Telemetry.fold(lines: ["{\"at\": 100, \"ev\": \"done\", \"key\": \"k\", \"pr\": 5, "
+                                      + "\"pr\": 7, \"tokens\": 1791274860.7710276}"])
+    check(line.tasks.map(\.pr) == [5] && line.tasks.map(\.tokens) == [1791274860.7710276],
+          "a ledger line keeps a repeated key's first value and reads a double exactly")
     print("hand-edited run book and ledger assertions passed")
 }
 
