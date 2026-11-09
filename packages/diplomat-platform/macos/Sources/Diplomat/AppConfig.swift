@@ -153,25 +153,22 @@ enum AppConfig {
         return write(obj)
     }
 
-    /// The primary repo root exactly as stored, blank included: what Settings shows.
-    static var primaryRepoRoot: String {
+    /// The repo roots exactly as stored, blanks included, else the legacy `repoRoot` as a
+    /// one-entry list: what Settings edits. A blank row stays in place while it is typed
+    /// over, so editing a field cannot reorder the list.
+    static var editableRepoRoots: [String] {
         let obj = read()
-        return storedRoots(obj).first ?? (obj[repoRootKey] as? String ?? "")
+        let listed = (obj[repoRootsKey] as? [Any] ?? []).compactMap { $0 as? String }
+        if !listed.isEmpty { return listed }
+        let legacy = obj[repoRootKey] as? String ?? ""
+        return legacy.isEmpty ? [] : [legacy]
     }
 
-    /// Replace the primary repo root, keeping the others in place. A blank `path` stays
-    /// stored in first place while others follow, so typing over the field cannot
-    /// reorder the list; with none following it removes both keys.
+    /// Store the list Settings edits; one with nothing but blanks removes both keys.
     @discardableResult
-    static func setPrimaryRepoRoot(_ path: String) -> Bool {
-        var list = storedRoots(read())
-        if list.isEmpty { list = [path] } else { list[0] = path }
-        let blank = list.allSatisfy { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        return setRepoRoots(blank ? [] : list)
-    }
-
-    private static func storedRoots(_ obj: [String: Any]) -> [String] {
-        (obj[repoRootsKey] as? [Any] ?? []).compactMap { $0 as? String }
+    static func setEditableRepoRoots(_ paths: [String]) -> Bool {
+        let blank = paths.allSatisfy { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return setRepoRoots(blank ? [] : paths)
     }
 
     /// `set` for a number, which has no "empty means remove" spelling of its own.

@@ -50,7 +50,8 @@ struct ConflictWizardView: View {
             username: username,
             me: store.effectiveMe,
             specificPR: specificPR)
-        cfg.localRepos = store.localRepos
+        cfg.home = store.selectedRoot
+        cfg.localRepos = store.wizardRepos
         return cfg
     }
 
@@ -106,7 +107,8 @@ struct ConflictWizardView: View {
 
     /// A hint under the PR field when a pasted URL points at an unknown repo.
     private var prWarning: String? {
-        config.prRef.mismatchWarning("PR", anyListed: !store.localRepos.isEmpty)
+        config.prRef.mismatchWarning("PR", home: store.selectedRoot.slug,
+                                     anyListed: store.wizardRepos.count > 1)
     }
 
     private var blurbRow: some View {
@@ -118,7 +120,7 @@ struct ConflictWizardView: View {
                             isValid: config.isValid && !meshDispatching,
                             tint: tint,
                             terminalTitle: AgentSpawner.resolved(store.terminal).title,
-                            routable: config.checkout == nil,
+                            routable: store.wizardMeshRoutable(config.checkout),
                             action: spawn)
     }
 
@@ -130,7 +132,7 @@ struct ConflictWizardView: View {
             let u = username.trimmingCharacters(in: .whitespaces)
             return "Resolve · @\(u.isEmpty ? "user" : u)"
         case .specific:
-            return "Resolve · \(config.prRef.label ?? "PR")"
+            return "Resolve · \(itemLabel ?? "PR")"
         }
     }
 
@@ -142,10 +144,15 @@ struct ConflictWizardView: View {
         return "https://github.com/\(owner)/\(repo)/pull/\(n)"
     }
 
-    /// The single PR's number (single-PR mode only) — the pipeline's dedup key. Nil
-    /// for a PR in a listed repo: the key is a bare number, read as the configured repo's.
+    /// The single PR's number (single-PR mode only) — with `trackingPRURL`, the
+    /// pipeline's dedup key. Nil for a PR outside the repo roots, which no monitor keys.
     private var specificNumber: Int? {
-        target == .specific && config.checkout == nil ? config.prRef.number : nil
+        target == .specific && store.isRootCheckout(config.checkout) ? config.prRef.number : nil
+    }
+
+    private var itemLabel: String? {
+        let (owner, repo) = config.targetRepo
+        return linkedNumber.map { store.itemLabel(owner: owner, repo: repo, number: $0) }
     }
 
     /// The single PR's number whichever repo it is in — the tracking link.
@@ -157,7 +164,7 @@ struct ConflictWizardView: View {
         let cfg = config
         // Mesh path: hand the job to the local node (it picks the executor, with
         // failover) instead of opening a terminal here — mirrors the Linux wizards.
-        if MeshSpawnRow.isLive(store), useMesh, cfg.checkout == nil {
+        if MeshSpawnRow.isLive(store), useMesh, store.wizardMeshRoutable(cfg.checkout) {
             meshDispatching = true
             status = "Dispatching over the mesh…"
             AuditLog.log("panel", "conflicts", "\(trackingLabel) · via mesh")

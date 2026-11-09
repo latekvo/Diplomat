@@ -1024,10 +1024,9 @@ enum Dump {
         print("visibleTools     : \(s.visibleTools.map { $0.rawValue })")
         print("colorOverrides   : \(s.colorOverrides)")
         print("terminalChoice   : '\(s.terminalChoice)' -> resolved \(AgentSpawner.resolved(s.terminal).title)")
-        print("repoPathOverride : '\(s.repoPathOverride)'   (shared file: \(AppConfig.url.path))")
-        print("repoRoot         : \(AgentSpawner.repoPath)   "
-            + "(env \(RepoPaths.agentRepoEnvOverride ?? "unset") · default \(RepoPaths.defaultAgentRepo) · "
-            + "state \(RepoPaths.agentRepoState))")
+        print("repoRootPaths    : \(s.repoRootPaths)   (shared file: \(AppConfig.url.path))")
+        print("repoRoots        : \(RepoPaths.roots.map { "\($0.slug)=\($0.path)" })   "
+            + "(env \(RepoPaths.agentRepoEnvOverride ?? "unset") · default \(RepoPaths.defaultAgentRepo))")
         print("tints            : \(ToolKind.allCases.map { "\($0.rawValue)=\(s.tint(for: $0).hexRGB)" })")
     }
 }

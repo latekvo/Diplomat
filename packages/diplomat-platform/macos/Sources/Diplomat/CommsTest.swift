@@ -272,7 +272,8 @@ enum CommsTest {
         let invKey = "investigate:\(CommsTS.number(askInvestigate.message.ts)!)"
         check("an investigation lands in its own band, after the fixes",
               band(3) == [invKey] && ids().last == invKey)
-        let stored = Store.decodeRequestedWork(try? JSONEncoder().encode(store.requestedWork))
+        let stored = Store.decodeRequestedWork(try? JSONEncoder().encode(store.requestedWork),
+                                                primary: "o/r")
         let reloaded = stored.first { $0.key == invKey }
         let live = store.requestedWork.first { $0.key == invKey }
         check("…and survives the encode a restart reads back",

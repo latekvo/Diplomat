@@ -85,7 +85,8 @@ struct IssueWizardView: View {
             openPRs: openPRs,
             commentOnIssue: commentOnIssue,
             includeFeatures: includeFeatures)
-        cfg.localRepos = store.localRepos
+        cfg.home = store.selectedRoot
+        cfg.localRepos = store.wizardRepos
         return cfg
     }
 
@@ -176,7 +177,8 @@ struct IssueWizardView: View {
 
     /// A hint under the issue field when a pasted URL points at an unknown repo.
     private var issueWarning: String? {
-        config.issueRef.mismatchWarning("issue", anyListed: !store.localRepos.isEmpty)
+        config.issueRef.mismatchWarning("issue", home: store.selectedRoot.slug,
+                                        anyListed: store.wizardRepos.count > 1)
     }
 
     private var blurbRow: some View {
@@ -241,7 +243,8 @@ struct IssueWizardView: View {
                             // Only a named issue is a session the mesh could place: a
                             // sweep opens none, it queues one fix per issue for this
                             // machine's own cap to start.
-                            routable: target == .specific && config.checkout == nil,
+                            routable: target == .specific
+                                && store.wizardMeshRoutable(config.checkout),
                             action: spawn)
     }
 
@@ -250,7 +253,9 @@ struct IssueWizardView: View {
     /// sweep is queued an issue at a time and each of those rows is labelled by its own
     /// `Store.RequestedWork`.
     private var trackingLabel: String {
-        return "Issues · \(config.issueRef.label ?? "issue") · \(depth.title)"
+        let (owner, repo) = config.targetRepo
+        let item = config.issueRef.number.map { store.itemLabel(owner: owner, repo: repo, number: $0) }
+        return "Issues · \(item ?? "issue") · \(depth.title)"
     }
 
     private func spawn() {
@@ -265,7 +270,7 @@ struct IssueWizardView: View {
         }
         // Mesh path: hand the job to the local node (it picks the executor, with
         // failover) instead of opening a terminal here — mirrors the Linux wizards.
-        if MeshSpawnRow.isLive(store), useMesh, cfg.checkout == nil {
+        if MeshSpawnRow.isLive(store), useMesh, store.wizardMeshRoutable(cfg.checkout) {
             meshDispatching = true
             status = "Dispatching over the mesh…"
             AuditLog.log("panel", "issues", "\(trackingLabel) · via mesh")

@@ -412,6 +412,15 @@ enum Render {
             // height, proving the content sizes to its content.
             let _ = seedProcessesIfNeeded(s, store: store)
             ContentView()
+        case "panel-roots":
+            // Two repo roots, the second selected: the header draws its picker.
+            let _ = store.pinRoots([
+                PRRef.LocalRepo(owner: "software-mansion", repo: "argent", path: "/render/argent"),
+                PRRef.LocalRepo(owner: "software-mansion", repo: "radon", path: "/render/radon"),
+            ])
+            let _ = { store.selectedRepo = "software-mansion/radon" }()
+            let _ = seedAutofix(store)
+            ContentView().frame(height: 580)
         default: // "panel" — the whole content view; "panel-procs" seeds the
                  // Agent-tasks list (persist is suppressed in headless modes).
             let _ = seedProcessesIfNeeded(what, store: store)
