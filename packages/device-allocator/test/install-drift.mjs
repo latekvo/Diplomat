@@ -97,6 +97,12 @@ try {
       const older = `${text.slice(0, begin)}<!-- diplomat-device-allocator (managed — installed by Diplomat; remove via the installer) -->\nold coercion text\n${endMark}${text.slice(end + endMark.length)}`;
       fs.writeFileSync(CLAUDE_MD, older);
     }],
+    ['claudeMd', () => {
+      // A block that lost its end marker (a hand edit): damaged, so drift, never read
+      // as uninstalled - the applets leave an uninstall alone and would not repair it.
+      const text = fs.readFileSync(CLAUDE_MD, 'utf8');
+      fs.writeFileSync(CLAUDE_MD, text.replace('<!-- end diplomat-device-allocator -->', ''));
+    }],
     ['mcp', () => {
       const j = readClaudeJson();
       j.mcpServers[MCP_KEY].args = ['/somewhere/else/device-allocator/src/mcp.js'];

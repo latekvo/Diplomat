@@ -66,13 +66,15 @@ export function claudeCodeInstall({ name, mcpJs, skillSrc, ruleSrc, claudeMd, ba
   const end = lines[lines.length - 1];
   const node = process.execPath;
 
+  function claudeMdText() {
+    try { return fs.readFileSync(claudeMdPath, 'utf8'); } catch { return null; }
+  }
+
   function installedBlock() {
-    try {
-      const text = fs.readFileSync(claudeMdPath, 'utf8');
-      const i = text.indexOf(begin);
-      const j = text.indexOf(end, i);
-      return i === -1 || j === -1 ? null : text.slice(i, j + end.length);
-    } catch { return null; }
+    const text = claudeMdText();
+    const i = text?.indexOf(begin) ?? -1;
+    const j = i === -1 ? -1 : text.indexOf(end, i);
+    return j === -1 ? null : text.slice(i, j + end.length);
   }
 
   function status() {
@@ -80,7 +82,9 @@ export function claudeCodeInstall({ name, mcpJs, skillSrc, ruleSrc, claudeMd, ba
       mcpRegistered: !!readJson(claudeJson)?.mcpServers?.[name],
       skillInstalled: fs.existsSync(path.join(skillDir, 'SKILL.md')),
       ruleInstalled: fs.existsSync(ruleDest),
-      claudeMdInjected: installedBlock() != null,
+      // The begin marker alone: a block that lost its end marker is a damaged install
+      // (drift, repaired on launch), not a deliberate uninstall (left alone).
+      claudeMdInjected: claudeMdText()?.includes(begin) ?? false,
       nodePath: node,
       mcpJs,
     };
