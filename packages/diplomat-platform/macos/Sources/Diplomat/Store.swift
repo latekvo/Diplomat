@@ -1226,19 +1226,35 @@ final class Store: ObservableObject {
         if status != machinesInstall { machinesInstall = status }
     }
 
-    /// One installer verb under the busy flag, logged with its outcome.
-    private func machinesInstaller(_ run: @escaping @Sendable () -> AllocatorInstall,
-                                   action: String,
-                                   log: (AllocatorInstall) -> String) async {
+    /// `work` under the busy flag, then the feed and the snapshot re-read.
+    private func whileMachinesBusy(_ work: () async -> Void) async {
         guard !machinesBusy else { return }
         machinesBusy = true
         machinesActions += 1
-        let result = await Task.detached(priority: .userInitiated) { run() }.value
-        machinesInstall = result.installStatus(over: machinesInstall)
-        AuditLog.log("panel", action, log(result))
+        await work()
         refreshAudit()
         await refreshMachinesState()
         machinesBusy = false
+    }
+
+    /// One installer verb, logged with its outcome.
+    private func runMachinesInstaller(_ run: @escaping @Sendable () -> AllocatorInstall,
+                                      action: String,
+                                      log: (AllocatorInstall) -> String) async {
+        let result = await Task.detached(priority: .userInitiated) { run() }.value
+        machinesInstall = result.installStatus(over: machinesInstall)
+        AuditLog.log("panel", action, log(result))
+    }
+
+    private func machinesInstaller(_ run: @escaping @Sendable () -> AllocatorInstall,
+                                   action: String,
+                                   log: (AllocatorInstall) -> String) async {
+        await whileMachinesBusy { await runMachinesInstaller(run, action: action, log: log) }
+    }
+
+    private static func startedLog(_ r: AllocatorInstall) -> String {
+        let why = r.error.map { ": \($0)" } ?? ""
+        return "Started the remote-machines daemon (ok: \(r.daemonRunning))\(why)"
     }
 
     func installMachines() async {
@@ -1250,43 +1266,49 @@ final class Store: ObservableObject {
     }
 
     func uninstallMachines() async {
-        await machinesInstaller(RemoteMachines.uninstall, action: "machines-uninstall") {
+        await machinesInstaller({ RemoteMachines.uninstall() }, action: "machines-uninstall") {
             "Uninstalled remote machines (ok: \($0.reportsInstalled && !$0.installed))"
         }
     }
 
     func startMachinesDaemon() async {
-        await machinesInstaller(RemoteMachines.startDaemon, action: "machines-install") {
-            let why = $0.error.map { ": \($0)" } ?? ""
-            return "Started the remote-machines daemon (ok: \($0.daemonRunning))\(why)"
-        }
+        await machinesInstaller({ RemoteMachines.startDaemon() }, action: "machines-install",
+                                log: Self.startedLog)
     }
 
     func restartMachinesDaemon() async {
-        await machinesInstaller(RemoteMachines.restartDaemon, action: "machines-install") {
+        await machinesInstaller({ RemoteMachines.restartDaemon() }, action: "machines-install") {
             let why = $0.error.map { ": \($0)" } ?? ""
             return "Restarted the remote-machines daemon (ok: \($0.daemonRunning && $0.error == nil))\(why)"
         }
     }
 
-    /// A running daemon re-discovers and re-reads every machine; an idle one is started,
-    /// which scans as it comes up.
+    /// A listening daemon re-discovers and re-reads every machine; with none, one is
+    /// started, which scans as it comes up. The socket decides, not `--check`, whose
+    /// answer is up to a poll old.
     func refreshMachines() async {
-        guard machinesInstall?.daemonRunning == true else { return await startMachinesDaemon() }
-        guard !machinesBusy else { return }
-        machinesBusy = true
-        machinesActions += 1
-        _ = await Task.detached(priority: .userInitiated) { RemoteMachines.scan() }.value
-        await refreshMachinesState()
-        machinesBusy = false
+        await whileMachinesBusy {
+            let scanned = await Task.detached(priority: .userInitiated) { RemoteMachines.scan() }.value
+            if let ok = scanned {
+                AuditLog.log("panel", MachinesScan.action, MachinesScan.auditText(ok: ok))
+            } else {
+                await runMachinesInstaller({ RemoteMachines.startDaemon() }, action: "machines-install",
+                                           log: Self.startedLog)
+            }
+        }
     }
 
-    /// Writes the change to config.json, which the daemon applies within a second.
+    /// Writes the change to config.json, which a running daemon applies within a second.
+    /// One that is not running is started, or the screen would keep showing its last
+    /// snapshot, which predates the change.
     func setMachineExclusion(_ action: MachineExclusions.Action, for machine: RemoteMachine) {
         guard writesConfig, let target = machine.target else { return }
         let now = Date()
         let ok = RemoteMachines.applyExclusion(action, target: target, names: machine.names, now: now)
         machineExclusionFailed = !ok
+        if ok, let s = machinesInstall, s.installed, !s.daemonRunning {
+            Task { await startMachinesDaemon() }
+        }
         let verb: String, what: String
         switch action {
         case .pause(let d):

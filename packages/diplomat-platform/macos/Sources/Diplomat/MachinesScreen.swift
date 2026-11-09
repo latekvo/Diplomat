@@ -115,6 +115,9 @@ struct MachinesScreen: View {
                     .disabled(!refreshable)
                 }
             }
+            if let snap = snapshot, snap.daemon == nil {
+                note(MachinesText.daemonPredatesScreen, tint: .orange)
+            }
             if store.machineExclusionFailed {
                 note(AllocatorUI.saveError, tint: .red)
             }
@@ -170,7 +173,7 @@ struct MachinesScreen: View {
 
     static let eventActions: Set<String> = [
         "machine-pause", "machine-resume", "machine-exclude", "machine-include",
-        "machines-install", "machines-uninstall",
+        "machines-install", "machines-uninstall", MachinesScan.action,
     ]
 
     private var eventsCard: some View {
@@ -226,9 +229,7 @@ struct MachinesScreen: View {
 
     @ViewBuilder
     private func unavailable(_ snap: MachinesSnapshot) -> some View {
-        let parts = snap.unavailableSummary()
-        if !parts.isEmpty {
-            let text = "Not usable (\(snap.unavailable.count)): " + parts.joined(separator: "; ") + "."
+        if let text = snap.unavailableLine() {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: "network.slash").font(.system(size: 9)).foregroundStyle(.secondary)
                 Text(text).font(.system(size: 10)).foregroundStyle(.secondary)
@@ -273,7 +274,7 @@ enum MachinesUI {
         func age(_ iso: String?) -> String {
             iso.flatMap(MachinesSnapshot.date).map { ago($0, now: now) } ?? "never"
         }
-        let sessions = running ? s.daemon?.sessions.map { String(clampedInt($0)) } ?? "unknown" : "0"
+        let sessions = running ? s.daemon?.sessions.map { String(clampedInt($0)) } ?? "—" : "—"
         let every = s.probeIntervalMs.map { "every \(number($0 / 1000)) s" } ?? "unknown"
         return [("Agent sessions", sessions), ("Last scan", age(s.updatedAt)),
                 ("Last discovery", age(s.discoveredAt)), ("Load read", every)]
@@ -298,13 +299,8 @@ enum MachinesUI {
         return "Agents list these machines and run builds and tests on the least loaded one."
     }
 
-    /// `12 s ago`, `14 min ago`, `3 h ago`, `2 d ago`.
     static func ago(_ date: Date, now: Date) -> String {
-        let s = max(0, clampedInt(now.timeIntervalSince(date)))
-        if s < 120 { return "\(s) s ago" }
-        if s < 7200 { return "\(s / 60) min ago" }
-        if s < 172_800 { return "\(s / 3600) h ago" }
-        return "\(s / 86400) d ago"
+        MachinesText.ago(seconds: now.timeIntervalSince(date))
     }
 
     /// At most two decimals, none when whole.
@@ -345,8 +341,6 @@ enum MachinesUI {
         guard !counts.isEmpty else { return nil }
         return counts.map { $0.1 > 1 ? "\($0.1)× \($0.0)" : $0.0 }.joined(separator: ", ")
     }
-
-    static func percent(_ v: Double) -> String { "\(clampedInt((v * 100).rounded()))%" }
 
     static func cpuDetail(_ m: RemoteMachine) -> String {
         let load = m.load?.last1m.map(number) ?? "?"
@@ -403,6 +397,10 @@ struct MachinePanel: View {
             let specs = MachinesUI.specs(machine)
             if !specs.isEmpty {
                 Text(specs).font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let problem = machine.problem {
+                Text(problem).font(.system(size: 10)).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
             bars
@@ -545,7 +543,7 @@ private struct UsageBar: View {
 
     var body: some View {
         let share = min(1, max(0, fill ?? 0))
-        let percent = fill.map(MachinesUI.percent) ?? "–"
+        let percent = fill.map(MachinesText.percent) ?? "–"
         let tint = MachinesUI.color(tone)
         HStack(spacing: 8) {
             Text(label).font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
