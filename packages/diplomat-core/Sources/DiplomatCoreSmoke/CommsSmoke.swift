@@ -773,6 +773,7 @@ func commsSmoke() throws {
     wildcardSmoke()
     knowledgeSmoke()
     answererSmoke()
+    try multiRepoSmoke()
 }
 
 private func bannedSenderSmoke() {
@@ -3250,4 +3251,204 @@ private func answererSmoke() {
     check(!CommsAnswerer.parse(Data(#"[{"type":"result","is_error":true,"result":"boom"}]"#.utf8)).answers
           && !CommsAnswerer.parse(Data("not json".utf8)).answers,
           "an error or no answer declines")
+}
+
+private func multiRepoSmoke() throws {
+    let primary = "software-mansion/argent", second = "latekvo/diplomat"
+    let two = CommsSettings(repos: [primary, second], login: "testuser")
+    let lone = CommsSettings(owner: "software-mansion", repo: "argent", login: "testuser")
+    func asked(_ text: String) -> CommsMessage {
+        CommsMessage(id: "D0MULTI001:1793064601.000001", channelID: "D0MULTI001", channelName: "U1",
+                     isDM: true, userID: "U1", userName: "t", teamID: "Ours", text: text,
+                     ts: "1793064601.000001", permalink: "p", reasons: [.dm])
+    }
+    func review(_ text: String, _ targets: [CommsAsk], settings: CommsSettings) -> CommsDecision {
+        CommsDecision(action: .review, targets: targets, summary: "s", reason: "r")
+            .checked(against: asked(text), settings: settings)
+    }
+
+    section("comms: the watched repositories")
+    func settings(_ json: String) throws -> CommsSettings {
+        try JSONDecoder().decode(CommsSettings.self, from: Data(json.utf8))
+    }
+    check(try settings(#"{"owner":"Software-Mansion","repo":"Argent"}"#).repos == [primary]
+          && (try settings("{}")).repos == [primary],
+          "settings saved before several repos read as the one they name, else config.json's")
+    check(try settings(#"{"repos":["Software-Mansion/Argent"," latekvo/diplomat ","bad","","a/b/c","#
+                       + #""software-mansion/argent"],"owner":"x","repo":"y"}"#).repos == [primary, second],
+          "repos win over owner/repo, lowercased, without the blank, malformed and repeated")
+    let encoded = String(decoding: try JSONEncoder().encode(two), as: UTF8.self)
+    check(try encoded.contains(#""repos":["software-mansion\/argent","latekvo\/diplomat"]"#)
+          && (JSONDecoder().decode(CommsSettings.self, from: Data(encoded.utf8))) == two,
+          "settings round-trip their repos: \(encoded)")
+    check(two.owner == "software-mansion" && two.repo == "argent"
+          && two.canonical("Software-Mansion/ARGENT") == "" && two.canonical("") == ""
+          && two.canonical("LATEKVO/Diplomat") == second && two.canonical("other/radon") == nil,
+          "the primary is written \"\", another watched repo as its slug, an unwatched one not at all")
+
+    section("comms: one number in two repositories")
+    let both = review("review argent#12 and diplomat#12 please",
+                      [CommsAsk(.review, 12), CommsAsk(.review, 12, repo: second)], settings: two)
+    check(both.targets == [CommsAsk(.review, 12), CommsAsk(.review, 12, repo: second)],
+          "the same number in two watched repos is two targets: \(both.targets) \(both.reason)")
+    let rows = CommsTickResult.Item.targets(asked("x"), both, maxTargets: 20)
+    let base = asked("x").id
+    check(rows.map(\.message.id) == [base + "#" + second + "#12", base]
+          && rows.allSatisfy { $0.message.messageID == base },
+          "…each its own row, the other repo's id naming it: \(rows.map(\.message.id))")
+    let reports = scratchDir("multi-reports")
+    defer { try? FileManager.default.removeItem(at: reports) }
+    let effects = rows.map {
+        CommsPlan.effect(for: $0.decision, message: $0.message, toggles: CommsToggles(),
+                         settings: two, reportDir: reports)
+    }
+    check(effects == [.review(12, repo: second), .review(12, repo: "")],
+          "…and its own effect: \(effects)")
+    let effectJSON = try effects.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+    check(try effectJSON[0].contains(#""repo":"latekvo\/diplomat""#) && !effectJSON[1].contains("repo")
+          && (JSONDecoder().decode(CommsEffect.self, from: Data(#"{"kind":"bump","number":3}"#.utf8)))
+              == .bump(3, repo: ""),
+          "an effect names a repo only outside the primary, and an older one reads as the primary's: \(effectJSON)")
+
+    section("comms: a target is checked in its own repository")
+    let link = "please review https://github.com/latekvo/diplomat/pull/7"
+    check(review(link, [CommsAsk(.review, 7, repo: second)], settings: two).targets
+          == [CommsAsk(.review, 7, repo: second)],
+          "a link into the second watched repo is a target there")
+    let misfiled = review(link, [CommsAsk(.review, 7)], settings: two)
+    check(misfiled.action == .none && misfiled.targets.isEmpty
+          && misfiled.reason.hasPrefix("answered review #7, a number neither the message nor its "
+                                       + "conversation names in that watched repository"),
+          "…and not the primary's #7: \(misfiled.reason)")
+    for (text, target) in [("review https://github.com/other/radon/pull/7", CommsAsk(.review, 7)),
+                           ("review https://github.com/other/radon/pull/7", CommsAsk(.review, 7, repo: "other/radon")),
+                           ("review other/radon#7", CommsAsk(.review, 7, repo: "other/radon"))] {
+        let d = review(text, [target], settings: two)
+        check(d.action == .none && d.targets.isEmpty,
+              "\(text) as \(target.repo.isEmpty ? "the primary's" : target.repo) names nothing: \(d.reason)")
+    }
+    check(review("can you review #12?", [CommsAsk(.review, 12, repo: second)], settings: two).targets.isEmpty
+          && review("can you review #12 in diplomat?", [CommsAsk(.review, 12, repo: second)], settings: two)
+              .targets == [CommsAsk(.review, 12, repo: second)],
+          "a bare number is another watched repo's only when the message names that repo")
+    check(review("review #12 in diplomat", [CommsAsk(.review, 12, repo: "LATEKVO/Diplomat")], settings: two)
+              .targets.first?.repo == second
+          && review("review #12", [CommsAsk(.review, 12, repo: "Software-Mansion/Argent")], settings: two)
+              .targets == [CommsAsk(.review, 12)],
+          "a repo written in any case comes back canonical, the primary as \"\"")
+    check(CommsDecision.ownRepoText("see diplomat#12 and argent#13", settings: two, repo: second)
+              == "see diplomat#12 and ",
+          "another watched repo's name#N is not this one's number")
+    check(CommsDecision.ownRepoText("see diplomat#12 and argent#13", settings: lone) == "see diplomat#12 and argent#13",
+          "with one repo nothing more is taken out")
+
+    section("comms: investigations and questions name their repository")
+    let about = CommsDecision(action: .investigate, summary: "crash", reason: "r", repo: "LateKvo/Diplomat")
+        .checked(against: asked("diplomat crashes on start"), settings: two)
+    check(about.repo == second, "an investigation keeps the watched repo it is about: \(about.repo)")
+    if case .investigate(let cfg) = CommsPlan.effect(for: about, message: asked("x"), toggles: CommsToggles(),
+                                                     settings: two, reportDir: reports) {
+        check(cfg.owner == "latekvo" && cfg.repo == "diplomat" && cfg.checkout == nil
+              && cfg.buildPrompt().contains("reported something about latekvo/diplomat"),
+              "…and its agent is told that repo: \(cfg.owner)/\(cfg.repo)")
+    } else {
+        check(false, "an investigation's effect is an investigation")
+    }
+    check(CommsDecision(action: .question, summary: "s", reason: "r", repo: "other/radon")
+              .checked(against: asked("x"), settings: two).repo == ""
+          && CommsDecision(action: .review, number: 1, summary: "s", reason: "r", repo: second).repo == "",
+          "an unwatched repo is the primary's question, and only investigate and question carry one")
+
+    section("comms: decisions written before several repos")
+    let old = #"{"action":"review","evidence":"","language":"en","number":12,"reason":"r","summary":"s","targets":[{"action":"review","number":12}]}"#
+    let read = try JSONDecoder().decode(CommsDecision.self, from: Data(old.utf8))
+    let enc = JSONEncoder()
+    enc.outputFormatting = [.sortedKeys]
+    check(try read.targets == [CommsAsk(.review, 12)] && read.repo == ""
+          && String(decoding: enc.encode(read), as: UTF8.self) == old,
+          "an older decision reads as the primary's and writes back byte for byte")
+    let twoJSON = String(decoding: try enc.encode(both), as: UTF8.self)
+    check(try twoJSON.contains(#"{"action":"review","number":12,"repo":"latekvo\/diplomat"}"#)
+          && (JSONDecoder().decode(CommsDecision.self, from: Data(twoJSON.utf8))) == both,
+          "a target outside the primary round-trips its repo: \(twoJSON)")
+    let queued = try JSONDecoder().decode(CommsQueuedWork.self, from: Data(#"{"kind":"review","number":4}"#.utf8))
+    check(queued.repo == "" && queued.ahead == 0 && queued.bays == 1,
+          "queued work sent without a repo is the primary's")
+
+    section("comms: the classifier is told every watched repository")
+    let many = CommsClassifier.prompt(settings: two)
+    check(many.contains("who maintains the GitHub repositories software-mansion/argent and latekvo/diplomat, "
+                        + "of which software-mansion/argent is the primary one.")
+          && many.contains("pull requests of one of these repositories.")
+          && many.contains("a bare number is software-mansion/argent's unless the message")
+          && many.contains("(\"diplomat#123\", \"#123 in diplomat\")")
+          && many.contains("A link into any other repository names no number of these")
+          && many.contains("\n\nrepo: for investigate or question, which of software-mansion/argent and "
+                           + "latekvo/diplomat the message is about"),
+          "several repos are each named, the primary as the bare numbers' home: \(many)")
+    let single = CommsClassifier.prompt(settings: lone)
+    check(!single.contains("latekvo") && !single.contains("repositories") && !single.contains("{")
+          && !single.contains("repo: for investigate")
+          && single.contains("who maintains the GitHub repository software-mansion/argent.")
+          && single.contains("A link into any repository other than software-mansion/argent names no number"),
+          "one repo's prompt names that one alone, as it always has")
+    check(CommsClassifier.schema(settings: lone) == (try CoreAssets.comms()).schema,
+          "one repo's schema is comms.json's")
+    let schema = CommsClassifier.schema(settings: two)
+    let repoEnum = #""repo":{"enum":["software-mansion\/argent","latekvo\/diplomat"],"type":"string"}"#
+    check(schema.components(separatedBy: repoEnum).count == 3
+          && schema.contains(#""required":["action","number","repo"]"#)
+          && schema.contains(#""required":["message","action","targets","language","summary","reason","evidence","repo"]"#),
+          "with several, each decision and target must name one of them: \(schema)")
+    check(CommsClassifier.arguments(settings: two).contains(schema),
+          "…and that schema is the one the call is given")
+
+    section("comms: a tick across two repositories")
+    let dir = scratchDir("multi-tick")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let slack = StubSlack()
+    let w = 1_793_064_600
+    CommsState(watermark: "\(w).000000", me: slackMe).save(in: dir)
+    slack.messages = [dm("\(w + 10).000100", "review argent#12 and diplomat#12 please")]
+    var flushing = two
+    flushing.flushAfterSecs = 0
+    let r = CommsWatch.tick(settings: flushing, now: Date(timeIntervalSince1970: TimeInterval(w + 700)),
+                            dir: dir, api: slack.api) { batch in
+        batch.messages.map { _ in
+            CommsDecision(action: .review, targets: [CommsAsk(.review, 12, repo: primary),
+                                                     CommsAsk(.review, 12, repo: second)],
+                          summary: "s", reason: "r")
+        }
+    }
+    check(r.items.map(\.decision.targets) == [[CommsAsk(.review, 12, repo: second)], [CommsAsk(.review, 12)]]
+          && Set(r.items.map(\.message.id)).count == 2,
+          "a tick hands over one row per repo's #12: \(r.items.map(\.message.id))")
+    let folded = CommsLog.fold(CommsLog.read(in: dir))
+    check(folded.count == 2 && folded.filter { !$0.message.isExtraTarget }.count == 1,
+          "the log folds them into two rows of one message: \(folded.map(\.message.id))")
+
+    section("comms: replies and answers about another repository")
+    let assets = try CoreAssets.comms()
+    let replyDir = scratchDir("multi-reply")
+    defer { try? FileManager.default.removeItem(at: replyDir) }
+    CommsState(me: CommsIdentity(userID: "UME", teamID: "Ours", handle: "h", name: "Ignacy")).save(in: replyDir)
+    let replySlack = StubSlack()
+    let ack = CommsReplier.reply(
+        CommsReplyRequest(message: asked("review diplomat#12"),
+                          decision: CommsDecision(action: .review, targets: [CommsAsk(.review, 12, repo: second)],
+                                                  summary: "s", reason: "r"),
+                          queued: CommsQueuedWork(kind: "review", number: 12, repo: second),
+                          away: true, toggles: CommsToggles(replyToReviews: true), settings: two),
+        now: Date(timeIntervalSince1970: 1_793_700_000), dir: replyDir, api: replySlack.api)
+    check(ack.text?.contains("a review of diplomat#12") == true,
+          "an acknowledgement names the other repo's PR by its repo: \(ack.text ?? "nil")")
+    let answer = "See https://github.com/latekvo/diplomat/blob/main/README.md and https://argent.swmansion.com/docs"
+    let there = CommsReplier.sanitize(answer, settings: two, repo: second, assets: assets)
+    let home = CommsReplier.sanitize(answer, settings: two, assets: assets)
+    check(there == "See https://github.com/latekvo/diplomat/blob/main/README.md and [link removed]"
+          && home == "See [link removed] and https://argent.swmansion.com/docs",
+          "an answer links to its own repo, and only an answer about argent to argent's site: \(there) / \(home)")
+    check(CommsAnswerer.prompt(settings: two, repo: second, name: "Ignacy")
+              .contains("who maintains the GitHub repository latekvo/diplomat"),
+          "the away answer is about the question's repo")
 }
