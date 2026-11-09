@@ -534,7 +534,7 @@ def test_unaddressed_threads_login_compare_is_case_insensitive():
 
 
 def test_repo_path_resolution(tmp_path):
-    """Settings → REPO ROOT drives the `cd` in every spawned session.
+    """Settings → REPO ROOTS drives the `cd` in every spawned session.
 
     It lives in the shared appconfig file rather than QSettings so a mesh node — its
     own stdlib-only process, no Qt, no Store — resolves the same value on its next
@@ -558,24 +558,24 @@ def test_repo_path_resolution(tmp_path):
         # exact bytes a node (which has no Store to ask) reads back.
         store = Store()
         picked = str(tmp_path / "clone")
-        store.repo_path_override = picked
-        assert store.repo_path_override == picked
+        store.repo_root_paths = [picked]
+        assert store.repo_root_paths == [picked]
         assert appconfig.read() == {"repoRoots": [picked]}
         assert review.repo_root_paths() == [picked]
         assert review.repo_path() == picked
 
         # A hand-typed "~/…" expands like the shell would — the spawn single-quotes
         # the path, so the shell itself never gets the chance.
-        store.repo_path_override = "~/dev/typed"
+        store.repo_root_paths = ["~/dev/typed"]
         assert review.repo_path() == os.path.expanduser("~/dev/typed")
         assert review.shell_command("/tmp/p.txt").startswith(
             f"cd {shlex.quote(os.path.expanduser('~/dev/typed'))} 2>/dev/null;"
         )
 
         # Whitespace-only is blank; blank drops the key rather than storing "".
-        store.repo_path_override = "  "
+        store.repo_root_paths = ["  "]
         assert review.repo_path() == review.default_repo_path()
-        store.repo_path_override = ""
+        store.repo_root_paths = []
         assert appconfig.read() == {}
         assert review.repo_path() == review.default_repo_path()
 
@@ -585,7 +585,7 @@ def test_repo_path_resolution(tmp_path):
         assert review.repo_path() == review.default_repo_path()
 
         # The env override outranks the stored pick.
-        store.repo_path_override = picked
+        store.repo_root_paths = [picked]
         os.environ["DIPLOMAT_REPO"] = str(tmp_path / "env-clone")
         assert review.repo_path() == str(tmp_path / "env-clone")
     finally:
@@ -617,12 +617,8 @@ def test_repo_roots_fall_back_to_the_single_root_older_builds_wrote(monkeypatch)
     assert appconfig.repo_roots() == ["/a", "/b"]
 
     path.write_text(json.dumps({"repoRoot": "/legacy", "autoTaskLimit": 3}))
-    Store().repo_path_override = "/picked"
+    Store().repo_root_paths = ["/picked"]
     assert appconfig.read() == {"repoRoots": ["/picked"], "autoTaskLimit": 3}
-    appconfig.set_repo_roots(["/picked", "/second"])
-    store = Store()
-    store.repo_path_override = "/primary"
-    assert appconfig.repo_roots() == ["/primary", "/second"], "only the primary changes"
     appconfig.set_repo_roots(["  "])
     assert appconfig.read() == {"autoTaskLimit": 3}
 

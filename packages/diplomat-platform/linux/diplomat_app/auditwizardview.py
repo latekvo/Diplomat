@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 
 from . import audit, glyphs, widgets
 from .store import Store
-from .wizardbase import SpawnWizard
+from .wizardbase import SpawnWizard, mesh_applicable
 
 _TINT = "#5856D6"  # indigo, matching the macOS Full-E2E-test card
 
@@ -70,7 +70,7 @@ class AuditWizardView(SpawnWizard):
         # Mesh routing — the audit's spread means one Linux AND one macOS node
         # each run the bundle E2E (visible only while the mesh is enabled + running).
         self._add_dispatch_controls(root)
-        self._restyle_spawn()
+        self._sync()
 
         root.addStretch(1)
 
@@ -86,7 +86,12 @@ class AuditWizardView(SpawnWizard):
         return audit.AuditConfig(
             fix_issues=self.fix_issues.isChecked(),
             open_prs=self.open_prs.isChecked(),
+            home=self.store.selected_repo,
         )
+
+    def _sync(self) -> None:
+        self.mesh_row.set_applicable(mesh_applicable(self._config(), True))
+        self._restyle_spawn()
 
     def _label(self) -> str:
         """Names the escalations that are on, so the sessions list says what this

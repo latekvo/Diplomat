@@ -72,6 +72,7 @@ class ConflictWizardView(SpawnWizard):
             me=self.store.effective_me,
             specific_pr=self.specific_pr.text(),
             local_repos=self.store.local_repos,
+            home=self.store.selected_repo,
         )
 
     def _sync(self) -> None:

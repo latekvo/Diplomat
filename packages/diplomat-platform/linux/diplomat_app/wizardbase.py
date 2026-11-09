@@ -36,18 +36,20 @@ from .store import Store
 
 def mismatch_warning(noun: str, cfg) -> str:
     """The line under a single-item field whose link names a repo nothing here works
-    in: neither the configured one nor, once any are listed, the other checkouts."""
-    owner, repo = cfg.configured_repo
-    listed = " or any repo listed in Settings" if cfg.local_repos else ""
-    return f"That {noun} isn't in {owner}/{repo}{listed}."
+    in: neither the home root's nor any other listed in Settings."""
+    owner, repo = cfg.home_repo
+    home = f"{owner}/{repo}"
+    listed = (" or any repo listed in Settings"
+              if any(r.slug.lower() != home.lower() for r in cfg.local_repos) else "")
+    return f"That {noun} isn't in {home}{listed}."
 
 
 def mesh_applicable(cfg, opens_session: bool) -> bool:
     """Whether the mesh row may route this spawn: only one that opens a session (a
     Review or Fix-issues scope opens none, it queues one per item for this machine's
-    own cap), and never one in another listed checkout, which a peer would start in
-    its own repo root."""
-    return opens_session and cfg.checkout is None
+    own cap), and only one in the primary root, the checkout a peer starts a job with
+    no work key in."""
+    return opens_session and cfg.checkout in (None, review.repo_path())
 
 
 class SpawnWizard(QWidget):
@@ -84,8 +86,9 @@ class SpawnWizard(QWidget):
         # and so does the panel's own periodic refresh_identity().
         self._dispatch_inflight = False
         # A link already in the single-item field may name a checkout that was just
-        # listed or removed in Settings.
+        # listed or removed in Settings, and a bare number names the selected root.
         store.local_repos_changed.connect(self._sync)
+        store.selected_repo_changed.connect(self._sync)
 
     # ---- hooks the subclasses fill in ------------------------------------
 
@@ -173,14 +176,22 @@ class SpawnWizard(QWidget):
                 label=label,
                 prompt=cfg.build_prompt(),
                 pr_url=cfg.single_pr_url,
-                pr_number=cfg.single_pr_number,
+                pr_number=self._pr_number(cfg),
                 author_login=self._author_login(),
                 duty=self._kind,
-                checkout=cfg.checkout,
+                checkout=None if cfg.checkout == review.repo_path() else cfg.checkout,
             ),
             autofix.SOURCE_PANEL,
         )
         self.status.setText(widgets.dispatch_status_text(verdict, term.title))
+
+    def _pr_number(self, cfg) -> int | None:
+        """The PR this run is deduped on: the config's own, or the one a link to another
+        repo root names. A link to an other-repo checkout takes no dedup."""
+        if cfg.single_pr_url is None or cfg.single_pr_number is not None:
+            return cfg.single_pr_number
+        ref = cfg.single_ref
+        return ref.number if self.store.is_root(ref.repo) else None
 
     def _queue_sweep(self) -> None:
         """Expand a scope into one queued task per item it covers.
