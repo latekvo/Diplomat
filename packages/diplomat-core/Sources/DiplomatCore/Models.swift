@@ -43,12 +43,12 @@ public struct OpenPR: Identifiable {
         self.reviewThreads = reviewThreads
     }
 
-    /// Review threads on *my* PR that I still owe a response on: resolvable, not
-    /// resolved, and whose most-recent comment isn't mine.
+    /// Review threads on *my* PR that I still owe a response on (`ThreadTriage.owed`).
     public func unaddressedThreads(me: String) -> [ReviewThread] {
         reviewThreads.filter {
             ThreadTriage.owed(isResolved: $0.isResolved, viewerCanResolve: $0.viewerCanResolve,
-                              lastCommentAuthor: $0.lastCommentAuthor, me: me)
+                              lastCommentAuthor: $0.lastCommentAuthor, me: me,
+                              unansweredRunFinding: $0.unansweredRunFinding)
         }
     }
 }
@@ -58,13 +58,21 @@ public struct OpenPR: Identifiable {
 /// with divergent semantics (one case-sensitive, one not) so the panel and the
 /// automation could disagree about the same thread.
 public enum ThreadTriage {
-    /// Owed = unresolved, resolvable by me, and the latest comment isn't mine (so the
-    /// reviewer is waiting on me). Login comparison is case-insensitive — GitHub logins
-    /// are — and a missing `viewerCanResolve` defaults to owed.
+    /// Owed = unresolved, resolvable by me, and either the latest comment isn't mine (so the
+    /// reviewer is waiting on me) or the thread is a run's unanswered finding: a run posts
+    /// under my login, so its finding would otherwise read as answered. Login comparison is
+    /// case-insensitive — GitHub logins are — and a missing `viewerCanResolve` defaults to owed.
     public static func owed(isResolved: Bool, viewerCanResolve: Bool?,
-                            lastCommentAuthor: String?, me: String) -> Bool {
+                            lastCommentAuthor: String?, me: String,
+                            unansweredRunFinding: Bool) -> Bool {
         guard !isResolved, viewerCanResolve ?? true else { return false }
-        return lastCommentAuthor?.lowercased() != me.lowercased()
+        return unansweredRunFinding || lastCommentAuthor?.lowercased() != me.lowercased()
+    }
+
+    /// A thread that is one tagged comment and nothing else: a finding a run opened that
+    /// no one has replied to.
+    public static func isUnansweredRunFinding(commentCount: Int?, lastCommentBody: String?) -> Bool {
+        commentCount == 1 && (lastCommentBody ?? "").drop(while: \.isWhitespace).hasPrefix(ReviewAudit.tag)
     }
 }
 
@@ -73,11 +81,14 @@ public struct ReviewThread {
     public let isResolved: Bool
     public let viewerCanResolve: Bool
     public let lastCommentAuthor: String?
+    public let unansweredRunFinding: Bool
 
-    public init(isResolved: Bool, viewerCanResolve: Bool, lastCommentAuthor: String?) {
+    public init(isResolved: Bool, viewerCanResolve: Bool, lastCommentAuthor: String?,
+                unansweredRunFinding: Bool = false) {
         self.isResolved = isResolved
         self.viewerCanResolve = viewerCanResolve
         self.lastCommentAuthor = lastCommentAuthor
+        self.unansweredRunFinding = unansweredRunFinding
     }
 }
 
@@ -323,7 +334,10 @@ public enum API {
                     ReviewThread(
                         isResolved: t.isResolved,
                         viewerCanResolve: t.viewerCanResolve,
-                        lastCommentAuthor: t.comments.nodes.last?.author?.login
+                        lastCommentAuthor: t.comments.nodes.last?.author?.login,
+                        unansweredRunFinding: ThreadTriage.isUnansweredRunFinding(
+                            commentCount: t.comments.totalCount,
+                            lastCommentBody: t.comments.nodes.last?.body)
                     )
                 }
             )
@@ -426,8 +440,9 @@ private struct PRResponse: Decodable {
         let comments: ThreadComments
     }
     struct ThreadComments: Decodable {
+        let totalCount: Int?
         let nodes: [ThreadComment]
-        struct ThreadComment: Decodable { let author: Author? }
+        struct ThreadComment: Decodable { let author: Author?; let body: String? }
     }
 }
 

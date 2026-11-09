@@ -297,6 +297,7 @@ public struct ReviewConfig: Codable, Equatable {
         out += reviewBlocks(blocks)
         if effReplyToReviews, let b = blocks["reply"] { out.append(b) }
         if let trailer = blocks["trailer"] { out.append(trailer) }
+        if let b = blocks[isReviewOnly ? "lowsTheirs" : "lowsMine"] { out.append(b) }
         // Commit-authoring guidance only when we might actually commit — never
         // for someone else's branch, which we don't touch.
         if !isReviewOnly, let b = blocks["noAttribution"] { out.append(b) }
@@ -338,6 +339,7 @@ public struct ReviewConfig: Codable, Equatable {
         if effMarkReady, let b = blocks["markReady"] { out.append(b) }
         if let b = blocks["noAttribution"] { out.append(b) }
         if let trailer = blocks["trailer"] { out.append(trailer) }
+        if let b = blocks["lowsMine"] { out.append(b) }
         // No final verdict for my own PR — I don't approve my own work. The reviewer-
         // findings block above already covers replying to threads (so the separate reply
         // block is redundant here).
@@ -382,6 +384,7 @@ public struct ReviewConfig: Codable, Equatable {
             out.append(fill(b))
         }
         if let trailer = blocks["trailer"] { out.append(trailer) }
+        if let b = blocks["lowsTheirs"] { out.append(b) }
         // Every review/comment this run posts carries the Diplomat attribution tag.
         if let b = diplomatTag(blocks) { out.append(b) }
         return out.filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -423,6 +426,7 @@ public struct ReviewConfig: Codable, Equatable {
         if let ob = chosen.onBranch, !ob.isEmpty { out.append(ob) }
         if effMarkReady, let b = blocks["markReady"] { out.append(b) }
         if effReplyToReviews, let b = blocks["reply"] { out.append(b) }
+        if let b = blocks["lowsMine"] { out.append(b) }
         if let b = blocks["noAttribution"] { out.append(b) }
 
         // CASE B — it's someone else's: review only, hands off the branch.
@@ -430,6 +434,7 @@ public struct ReviewConfig: Codable, Equatable {
         if let b = blocks["reviewOnly"] { out.append(b) }
         out += reviewBlocks(blocks)
         out.append(fill(specific["otherNoMarkReady"] ?? ""))
+        if let b = blocks["lowsTheirs"] { out.append(b) }
         if effFinalPass, let b = blocks["finalPass"] {
             out.append(b)
         } else if effSoftApprove, let b = blocks["softApprove"] {
