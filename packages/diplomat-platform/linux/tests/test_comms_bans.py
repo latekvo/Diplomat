@@ -19,7 +19,7 @@ from test_autofix import _spawn_recorder, store  # noqa: F401 — fixture
 from test_comms_core import PROFILES, _Slack, _stub_claude, slack  # noqa: F401 — fixture
 from test_comms_core import _message as _posted
 from test_comms_store import (  # noqa: F401 — fixture
-    _decision, _events, _feed_lines, _logged, _message, _tick, comms_store, needs_core)
+    _decision, _events, _feed_lines, _logged, _message, _tick, comms_store, needs_core, qkey)
 
 from diplomat_app import bans, deviceallocator
 from diplomat_app.store import Store
@@ -485,7 +485,7 @@ def test_a_ban_recorded_between_tick_and_apply_stops_the_ask(comms_store, monkey
           between=lambda: _seed({"login": "slack:UMAL123", "source": "slack"}))
     assert [e["outcome"] for e in _events()] == [Store.COMMS_SENDER_BANNED_OUTCOME,
                                                  "review of #13 queued, at the front of its band"]
-    assert _asks(comms_store) == ["review:13"]
+    assert _asks(comms_store) == [qkey("review", 13)]
     assert pinged == ["Slack · DM from kacper"]
 
 

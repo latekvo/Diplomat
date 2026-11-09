@@ -9,7 +9,7 @@ is still running.
 So every case in ``test_agent_state.py`` is driven through both here, and the whole
 tick is diffed: every record's resolved state and *reason text*, drawn or not, the
 display order of the rows, the cap load, what is retirable, the free-slot count and
-the per-PR dedup answer. Reasons are compared verbatim rather than loosely, because
+the per-item dedup answer. Reasons are compared verbatim rather than loosely, because
 the reason is what a future debugging session reads — two sides that agree on the
 verdict and disagree on why are two sides that will diverge on the next rung.
 
@@ -84,9 +84,8 @@ def _python(records, evidence, now=T0, limit=LIMIT,
         "constants": {"runDeadline": A.RUN_DEADLINE,
                       "quietTimeout": A.QUIET_TIMEOUT,
                       "spawnGrace": A.SPAWN_GRACE},
-        "inFlight": {str(pr): t.in_flight(pr)
-                     for pr in {r.pr_number for r in t.records
-                                if r.pr_number is not None}},
+        "inFlight": {item: t.in_flight(item)
+                     for item in {r.item for r in t.records if r.item is not None}},
         # quietDigest is compared because the two languages COMPUTE it, rather than
         # merely carrying it: it is persisted into the one book both front-ends read,
         # so a digest that differed would restart the stillness clock on every
@@ -265,11 +264,11 @@ def _mixed():
         rec(run_id="reported", pid=7, tty="pts/11", dispatched_at=T0 - 1100,
             pr_number=313),
         # Untracked, working, and first seen past the deadline: RUNNING without a bay.
-        rec(run_id="untracked:314", pid=None, tty="pts/12", untracked=True,
+        rec(run_id="untracked:o/r#314", pid=None, tty="pts/12", untracked=True,
             dispatched_at=T0 - PAST_DEADLINE, pr_number=314),
         # Released on an earlier tick, and somebody typed into it since. The scan names a
         # second session on its PR, which a pid-held record does not follow.
-        rec(run_id="untracked:315", pid=8, tty="pts/13", untracked=True, released=True,
+        rec(run_id="untracked:o/r#315", pid=8, tty="pts/13", untracked=True, released=True,
             dispatched_at=T0 - 1200, pr_number=315),
         # Reported its turn over on a PR "working" still holds: released all the same.
         rec(run_id="reported-beside", pid=9, tty="pts/15", dispatched_at=T0 - 1300,
@@ -277,7 +276,7 @@ def _mixed():
         # The same with no pid, which only the scan could hold it to: not released.
         rec(run_id="pidless-beside", pid=None, tty="", dispatched_at=T0 - 1600,
             pr_number=301),
-        # Reported over beside the released "untracked:315", whose run id is taken.
+        # Reported over beside the released "untracked:o/r#315", whose run id is taken.
         rec(run_id="reported-past-released", pid=12, tty="pts/19",
             dispatched_at=T0 - 1250, pr_number=315),
         # A peer's run whose PR landed seconds after dispatch, while this box's scan
@@ -298,13 +297,13 @@ def _mixed():
             reap_refused_at=T0 - 60),
         # Placed here by the mesh on a released agent's PR, which the scan still names
         # by the released agent's tty: it adopts none.
-        rec(run_id="untracked:319", pid=13, tty="pts/20", untracked=True, released=True,
+        rec(run_id="untracked:o/r#319", pid=13, tty="pts/20", untracked=True, released=True,
             dispatched_at=T0 - 1700, pr_number=319),
         rec(run_id="placed-beside-released", pid=None, tty="",
             placement=A.PLACEMENT_MESH_HERE, dispatched_at=T0 - 30, pr_number=319),
         # A pid-less untracked record whose PR's sighting is another record's tty: it
         # stays where it is.
-        rec(run_id="untracked:320", pid=None, tty="pts/21", untracked=True,
+        rec(run_id="untracked:o/r#320", pid=None, tty="pts/21", untracked=True,
             dispatched_at=T0 - 1800, pr_number=320),
         rec(run_id="placed-holding", pid=None, tty="pts/22",
             placement=A.PLACEMENT_MESH_HERE, dispatched_at=T0 - 40, pr_number=320),
@@ -375,25 +374,25 @@ def test_the_fixture_exercises_every_projection(mixed_results):
         "the untracked synthesis never ran"
     assert any(r["claimSeenAt"] is not None for r in python["records"]), \
         "no claim sighting was taken — observe_claims is untested"
-    assert any(r["runId"] == "untracked:313" and r["released"] and r["pid"] == 7
+    assert any(r["runId"] == "untracked:o/r#313" and r["released"] and r["pid"] == 7
                for r in python["records"]), "no ended run released its agent"
     heirs = {r["runId"]: r["pid"] for r in python["records"] if r["released"]}
-    assert (heirs.get("untracked:301"), heirs.get("untracked:315:12")) == (9, 12), \
+    assert (heirs.get("untracked:o/r#301"), heirs.get("untracked:o/r#315:12")) == (9, 12), \
         "no run that ended beside another record released its agent"
     assert None not in heirs.values(), "a pid-less run was released beside another"
     assert any(r["lapsed"] for r in python["rows"]), "no untracked bay lapsed"
-    assert python["inFlight"]["315"] is False and "untracked:315" not in python["capLoad"], \
+    assert python["inFlight"]["o/r#315"] is False and "untracked:o/r#315" not in python["capLoad"], \
         "a released agent mid-turn must hold neither its PR nor a bay"
     drawn = {r["runId"]: r["state"] for r in python["rows"]}
-    assert (drawn.get("untracked:315"), "untracked:319" in drawn) == (A.RUNNING, False), \
+    assert (drawn.get("untracked:o/r#315"), "untracked:o/r#319" in drawn) == (A.RUNNING, False), \
         "a released agent is drawn while working, and only then"
-    assert "untracked:317" in python["reapable"], "no released agent was closed at once"
-    refused = next(r for r in python["records"] if r["runId"] == "untracked:318")
+    assert "untracked:o/r#317" in python["reapable"], "no released agent was closed at once"
+    refused = next(r for r in python["records"] if r["runId"] == "untracked:o/r#318")
     assert (refused["source"], refused["reapRefusedAt"]) == (A.SOURCE_PANEL, T0 - 60)
-    assert "untracked:318" not in python["reapable"], \
+    assert "untracked:o/r#318" not in python["reapable"], \
         "a released agent must wait out its run's refused close"
     ttys = {r["runId"]: r["tty"] for r in python["records"]}
-    assert (ttys["placed-beside-released"], ttys["untracked:320"]) == ("", "pts/21"), \
+    assert (ttys["placed-beside-released"], ttys["untracked:o/r#320"]) == ("", "pts/21"), \
         "a pid-less record took another record's tty off the scan"
 
 
@@ -409,15 +408,15 @@ def test_the_tick_after_a_release_agrees_too():
     swift, again = _swift(_payload(book, evidence, now=later)), \
         _python(book, evidence, now=later)
     assert swift == again
-    assert [r["runId"] for r in again["records"]].count("untracked:313") == 1
-    assert "untracked:313" not in again["capLoad"] and again["inFlight"]["313"] is False
+    assert [r["runId"] for r in again["records"]].count("untracked:o/r#313") == 1
+    assert "untracked:o/r#313" not in again["capLoad"] and again["inFlight"]["o/r#313"] is False
 
 
 #: A merge ending a pid-less run already named `untracked:<pr>` (a hand edit made it a
 #: dispatch: `"untracked": 1` is no flag), whose agent the scan still sees.
 _RELEASE_INTO_ITS_OWN_NAME = {
     "now": 1000000.0, "limit": 2, "deadline": 14400.0,
-    "records": [{"runId": "untracked:337", "dispatchedAt": 1000000.0, "prNumber": 337,
+    "records": [{"runId": "untracked:o/r#337", "dispatchedAt": 1000000.0, "prNumber": 337,
                  "prUrl": "https://github.com/o/r/pull/337", "kind": "review",
                  "label": "Auto · Review · #337", "source": "auto", "placement": "local",
                  "node": "", "workKey": "", "ledgerKey": "", "pid": None, "tty": "pts/3",
@@ -438,14 +437,14 @@ def test_a_run_whose_release_has_no_name_of_its_own_retires_on_both():
     """Its heir's name is taken by the run itself, and with no pid there is nothing to
     tell the two apart: Swift kept the clashing id, whose verdict hid the run's own so
     it never retired and its PR stayed in flight; Python named the heir
-    `untracked:337:None`. No heir: the run retires, and the next tick's scan books the
+    `untracked:o/r#337:None`. No heir: the run retires, and the next tick's scan books the
     agent it still sees."""
     payload = _RELEASE_INTO_ITS_OWN_NAME
     swift, python = _swift(payload), _python_decoding(payload)
     assert swift == python
-    assert [r["runId"] for r in python["records"]] == ["untracked:337"]
-    assert python["retirable"] == ["untracked:337"]
-    assert python["inFlight"] == {"337": False}
+    assert [r["runId"] for r in python["records"]] == ["untracked:o/r#337"]
+    assert python["retirable"] == ["untracked:o/r#337"]
+    assert python["inFlight"] == {"o/r#337": False}
 
 
 @pytest.mark.parametrize("record, evidence, state", RELEASED_UNSEEN)

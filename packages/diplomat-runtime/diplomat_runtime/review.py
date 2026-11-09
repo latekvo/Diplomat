@@ -26,7 +26,7 @@ import tempfile
 from dataclasses import dataclass, replace
 from enum import Enum
 
-from . import appconfig, comms, core, runner
+from . import appconfig, comms, core, localrepos, runner
 from .configbase import PRSweepConfig, listed_payload
 from .depths import DepthLadder
 from .prref import LocalRepo
@@ -111,6 +111,8 @@ class ReviewConfig(PRSweepConfig):
     specific_pr: str = ""
     # The checkouts listed in Settings that a pasted link in ``specific_pr`` may name.
     local_repos: tuple[LocalRepo, ...] = ()
+    # The repo root a bare number targets; None = the configured repo.
+    home: LocalRepo | None = None
     # The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     final_pass: bool = False
     # Soft-approve: when a review-only PR comes back perfectly clean, submit a COMMENT
@@ -199,7 +201,8 @@ class ReviewConfig(PRSweepConfig):
         only the scope changes. The disposition comes from the sweep's own target
         rather than a fresh ``gh`` poll: a sweep already knows whose PRs it asked for,
         and polling per PR would be one shell-out apiece to re-learn it. No listed
-        checkouts: a bare number never reaches one, so they would only be stored."""
+        checkouts: a bare number never reaches one, so they would only be stored. The
+        home root stays, being what the bare number names."""
         return replace(
             self,
             target=PRTarget.SPECIFIC,
@@ -229,7 +232,7 @@ class ReviewConfig(PRSweepConfig):
             "finalPass": self.final_pass,
             "softApprove": self.soft_approve,
             "specificAuthor": self.disposition.value,
-            **listed_payload(self.local_repos),
+            **listed_payload(self.local_repos, self.home),
         }
 
     def build_prompt(self) -> str:
@@ -296,24 +299,53 @@ def default_repo_path() -> str:
     return os.path.expanduser(f"~/dev/{core.config()['repo']}")
 
 
-def stored_repo_path() -> str:
-    """The repo root picked in Settings, or "" when unset.
+def repo_root_paths() -> list[str]:
+    """The repo roots as entered, primary first: the ``DIPLOMAT_REPO`` env override
+    (one root, the escape hatch every other ``DIPLOMAT_*`` knob follows), else the
+    roots picked in Settings, else :func:`default_repo_path`.
 
     Read from the shared :mod:`appconfig` file rather than this front-end's QSettings:
     a mesh node spawns agents from its own stdlib-only process, which has no Store and
     no Qt to ask. Re-read per call, so changing the setting reaches a running node."""
-    return appconfig.get(appconfig.REPO_ROOT).strip()
+    env = os.environ.get("DIPLOMAT_REPO")
+    if env:
+        return [env]
+    return appconfig.repo_roots() or [default_repo_path()]
+
+
+_roots_cache: tuple[tuple, list[LocalRepo]] | None = None
+
+
+def _git_config_mtime(path: str) -> int | None:
+    try:
+        return os.stat(os.path.join(path, ".git", "config")).st_mtime_ns
+    except OSError:
+        return None
+
+
+def repo_roots() -> list[LocalRepo]:
+    """:func:`repo_root_paths` resolved to the repos they check out
+    (:func:`localrepos.resolve_roots`), never empty.
+
+    Cached on the paths and each one's ``.git/config`` mtime, so a caller on a tick
+    pays a ``git`` call per root only when a root or its remotes changed."""
+    global _roots_cache
+    paths = repo_root_paths()
+    expanded = [os.path.expanduser(p) for p in paths]
+    cfg = core.config()
+    configured = (cfg["owner"], cfg["repo"])
+    key = (tuple(paths), tuple(_git_config_mtime(p) for p in expanded), configured)
+    if _roots_cache is None or _roots_cache[0] != key:
+        remotes = {p: out for p in expanded
+                   if (out := localrepos.remote_config(p)) is not None}
+        _roots_cache = (key, localrepos.resolve_roots(paths, remotes, configured))
+    return list(_roots_cache[1])
 
 
 def repo_path() -> str:
-    """The local checkout the agent works in — the ``cd`` in every spawned session.
-
-    Strongest first: the ``DIPLOMAT_REPO`` env override (the escape hatch every other
-    ``DIPLOMAT_*`` knob follows), the repo root picked in Settings, then
-    :func:`default_repo_path`.
-    """
-    chosen = os.environ.get("DIPLOMAT_REPO") or stored_repo_path()
-    return os.path.expanduser(chosen) if chosen else default_repo_path()
+    """The primary root's checkout: where an agent works when nothing names another
+    repo, and the ``cd`` of every spawned session that has no checkout of its own."""
+    return repo_roots()[0].path
 
 
 class SpawnError(RuntimeError):

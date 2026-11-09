@@ -189,7 +189,7 @@ def no_open_issues(monkeypatch):
     from diplomat_app import autofixmonitor
 
     real = autofixmonitor.fetch_open_issues
-    monkeypatch.setattr(autofixmonitor, "fetch_open_issues", lambda: [])
+    monkeypatch.setattr(autofixmonitor, "fetch_open_issues", lambda *a, **k: [])
     yield real
 
 

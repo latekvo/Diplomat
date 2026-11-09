@@ -32,6 +32,8 @@ _URL = {
 _SHORTHAND = re.compile(r"^([\w.-]+)/([\w.-]+)#([0-9]+)$")
 # A bare PR number (after any leading '#' is stripped).
 _BARE_NUMBER = re.compile(r"^[0-9]+$")
+_ITEM_KEY = re.compile(r"([\w.-]+/[\w.-]+)#([0-9]+)")
+_DIGITS = re.compile(r"[0-9]+")
 
 # Swift's ``Int`` is 64-bit, so ``Int("9223372036854775808")`` (2^63, one past
 # Int64.max) overflows to nil and PRRef.swift rejects it. Python's ``int()`` is
@@ -55,6 +57,57 @@ class LocalRepo:
     owner: str
     repo: str
     path: str
+
+    @property
+    def slug(self) -> str:
+        return f"{self.owner}/{self.repo}"
+
+
+def item_key(owner: str, repo: str, number: int) -> str:
+    """``owner/repo#n``, lowercased: one PR or issue across every repo root. GitHub
+    numbers a repo's PRs and issues in one space, so the key carries no kind."""
+    return f"{owner.lower()}/{repo.lower()}#{number}"
+
+
+def item_key_from_url(url: str) -> str | None:
+    """:func:`item_key` of a github.com PR or issue link, or ``None`` for any other."""
+    for kind in ("pull", "issues"):
+        m = _URL[kind].search(url)
+        if m:
+            n = _int64(m.group(3))
+            return item_key(m.group(1), m.group(2), n) if n else None
+    return None
+
+
+def split_item_key(key: str) -> tuple[str, int] | None:
+    """``(slug, number)`` of an :func:`item_key`, or ``None`` when ``key`` is not one."""
+    m = _ITEM_KEY.fullmatch(key)
+    n = _int64(m.group(2)) if m else None
+    return (m.group(1), n) if m and n else None
+
+
+def migrate_item_key(key: str, primary: str) -> str:
+    """A bare ``"N"`` that single-repo builds persisted, as the primary root's
+    ``"<primary>#N"``; any other key unchanged."""
+    return f"{primary.lower()}#{key}" if _DIGITS.fullmatch(key) else key
+
+
+def migrate_queue_key(key: str, primary: str) -> str:
+    """``"verb:N"`` as ``"verb:<primary>#N"``; any other key unchanged. An
+    investigation is numbered by a Slack ts, not by a repo, so it is never migrated."""
+    verb, sep, rest = key.partition(":")
+    if not sep or verb == "investigate":
+        return key
+    return f"{verb}:{migrate_item_key(rest, primary)}"
+
+
+def item_label(item: str, roots: int) -> str:
+    """``#N`` while one repo is loaded, else ``repo#N`` by the repo's name alone."""
+    split = split_item_key(item)
+    if split is None:
+        return item
+    slug, n = split
+    return f"#{n}" if roots <= 1 else f"{slug.split('/', 1)[1]}#{n}"
 
 
 @dataclass(frozen=True)

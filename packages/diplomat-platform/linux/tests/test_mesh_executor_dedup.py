@@ -52,7 +52,7 @@ def _start_live_agent(tmp: Path) -> subprocess.Popen:
     for PR #7 — what ``ps`` shows for an agent already at work on this host, but
     which the executor node did NOT spawn (so it's absent from ``_agents``)."""
     # exec -a sets argv[0]; ps then shows `claude Review PR #7 in acme/widgets …`,
-    # the exact shape live_pr_numbers() keys on.
+    # the exact shape live_pr_items() keys on.
     title = f"claude {_PROMPT}"
     return subprocess.Popen(
         ["bash", "-c", f'exec -a {title!r} sleep 600'],

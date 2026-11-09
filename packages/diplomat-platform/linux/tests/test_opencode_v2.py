@@ -809,6 +809,10 @@ def _ps(*argvs: str) -> probes.Observation:
         f"{900 + i} pts/{i} 30 {argv}\n" for i, argv in enumerate(argvs)))
 
 
+#: The repo roots the scans here are asked about: the one ``repo_o_r`` configures.
+ROOTS = {"o/r"}
+
+
 @pytest.fixture
 def repo_o_r(monkeypatch):
     from diplomat_runtime import core
@@ -821,7 +825,7 @@ def test_a_2x_tui_is_found_by_the_prompt_its_session_opened_on(service, repo_o_r
     reads a mesh-placed 2.x agent as no agent and retires it mid-turn."""
     _opening(service, SID, PROMPT)
     dump = _ps(f"opencode --session {SID}")
-    assert probes.live_agents(dump).value == {7: "pts/0"}
+    assert probes.live_agents(dump, ROOTS).value == {"o/r#7": "pts/0"}
 
 
 #: What the process table holds around one 2.x TUI (2.0.18, one tmux pane): the
@@ -859,7 +863,7 @@ def test_the_shells_around_a_2x_tui_are_not_its_sighting(service, repo_o_r):
     dump = probes.Observation.present(
         "".join(f"{100 + i} ? 9 {w}\n" for i, w in enumerate(WRAPPERS))
         + f"200 pts/5 8 opencode --session {SID}\n")
-    assert probes.live_agents(dump).value == {7: "pts/5"}
+    assert probes.live_agents(dump, ROOTS).value == {"o/r#7": "pts/5"}
 
 
 def test_the_mesh_node_takes_a_2x_tuis_tty_not_its_wrappers(service):
@@ -868,23 +872,23 @@ def test_the_mesh_node_takes_a_2x_tuis_tty_not_its_wrappers(service):
     _opening(service, SID, PROMPT)
     dump = ("".join(f"?? 00:09 {w}\n" for w in WRAPPERS)
             + f"ttys005 00:08 /opt/npm/bin/opencode --session {SID}\n")
-    assert autofix.agent_ttys(dump, "o", "r") == {"ttys005"}
-    assert autofix.agent_ttys(f"opencode --session {SID}\n", "o", "r") == {"opencode"}
+    assert autofix.agent_ttys(dump, ROOTS) == {"ttys005"}
+    assert autofix.agent_ttys(f"opencode --session {SID}\n", ROOTS) == {"opencode"}
 
 
 def test_the_mesh_dedup_sees_a_2x_tui_too(service):
     from diplomat_runtime import autofix
 
     _opening(service, SID, PROMPT)
-    assert autofix.live_pr_numbers(f"pts/3 00:30 opencode --session {SID}\n",
-                                   "o", "r") == {7}
+    assert autofix.live_pr_items(f"pts/3 00:30 opencode --session {SID}\n",
+                                 ROOTS) == {"o/r#7"}
 
 
 def test_an_opening_prompt_is_asked_once_per_session(service, repo_o_r):
     _opening(service, SID, PROMPT)
     dump = _ps(f"opencode --session {SID}")
     for _ in range(3):
-        assert probes.live_agents(dump).value == {7: "pts/0"}
+        assert probes.live_agents(dump, ROOTS).value == {"o/r#7": "pts/0"}
     assert len(service.seen) == 1
 
 
@@ -896,12 +900,12 @@ def test_a_session_not_yet_prompted_is_asked_again_after_a_while(service, repo_o
     monkeypatch.setattr(opencodeapi.time, "monotonic", lambda: now[0])
     _opening(service, SID, None)
     dump = _ps(f"opencode --session {SID}")
-    assert probes.live_agents(dump).value == {}
+    assert probes.live_agents(dump, ROOTS).value == {}
     _opening(service, SID, PROMPT)
     now[0] += opencodeapi.MISS_TTL - 1
-    assert probes.live_agents(dump).value == {}
+    assert probes.live_agents(dump, ROOTS).value == {}
     now[0] += 1
-    assert probes.live_agents(dump).value == {7: "pts/0"}
+    assert probes.live_agents(dump, ROOTS).value == {"o/r#7": "pts/0"}
 
 
 def test_a_service_that_hangs_is_not_asked_on_every_scan(repo_o_r, monkeypatch):
@@ -912,13 +916,13 @@ def test_a_service_that_hangs_is_not_asked_on_every_scan(repo_o_r, monkeypatch):
                         lambda path, method="GET": asked.append(path))
     dump = _ps(f"opencode --session {SID}", f"opencode --session {OTHER}")
     for _ in range(3):
-        assert probes.live_agents(dump).value == {}
+        assert probes.live_agents(dump, ROOTS).value == {}
     assert len(asked) == 2
 
 
 def test_a_service_that_will_not_answer_matches_nothing(repo_o_r):
     _service_json(f"http://127.0.0.1:{opencodeapi.free_port()}")
-    assert probes.live_agents(_ps(f"opencode --session {SID}")).value == {}
+    assert probes.live_agents(_ps(f"opencode --session {SID}"), ROOTS).value == {}
 
 
 def _mesh_here_run(run_id: str = "m1") -> RunRecord:
@@ -1012,8 +1016,9 @@ def test_a_2x_run_retired_with_no_tui_seen_on_its_session_is_interrupted(monkeyp
 
 def _untracked(pr: int = 7) -> RunRecord:
     """A row synthesized from the process table: no run directory, no runner."""
-    return RunRecord(run_id=f"untracked:{pr}", dispatched_at=T0, pr_number=pr,
-                     tty="pts/0", untracked=True)
+    return RunRecord(run_id=f"untracked:o/r#{pr}", dispatched_at=T0, pr_number=pr,
+                     pr_url=f"https://github.com/o/r/pull/{pr}", tty="pts/0",
+                     untracked=True)
 
 
 def _gather(monkeypatch, records: list[RunRecord], *argvs: str):
@@ -1030,12 +1035,12 @@ def test_an_untracked_2x_agent_is_asked_of_the_service(service, repo_o_r, monkey
     _opening(service, SID, PROMPT)
     _busy(service)
     evidence = _gather(monkeypatch, [_untracked()], f"opencode --session {SID}")
-    assert evidence.sessions.value == {"untracked:7": SessionState(busy=True)}
+    assert evidence.sessions.value == {"untracked:o/r#7": SessionState(busy=True)}
     probes._sessions_cache = None
     service.routes[("GET", f"/api/session/{SID}")] = _session(idle=9.0)
     service.routes[("GET", "/api/session/active")] = (200, {"data": {}})
     evidence = _gather(monkeypatch, [_untracked()], f"opencode --session {SID}")
-    assert evidence.sessions.value == {"untracked:7": SessionState(busy=False)}
+    assert evidence.sessions.value == {"untracked:o/r#7": SessionState(busy=False)}
 
 
 def test_the_scan_names_a_prs_session_only_when_a_2x_tui_is_its_sighting(service,
@@ -1045,18 +1050,19 @@ def test_the_scan_names_a_prs_session_only_when_a_2x_tui_is_its_sighting(service
     its bay."""
     _opening(service, SID, PROMPT)
     _opening(service, OTHER, PROMPT)
-    tui_first: dict[int, str] = {}
-    claude_first: dict[int, str] = {}
+    tui_first: dict[str, str] = {}
+    claude_first: dict[str, str] = {}
     probes.live_agents(_ps(f"opencode --session {SID}", "claude 'Review PR #7 in o/r'",
-                           f"opencode --session {OTHER}"), tui_first)
+                           f"opencode --session {OTHER}"), ROOTS, tui_first)
     probes.live_agents(_ps("claude 'Review PR #7 in o/r'", f"opencode --session {SID}"),
-                       claude_first)
-    assert (tui_first, claude_first) == ({7: SID}, {})
+                       ROOTS, claude_first)
+    assert (tui_first, claude_first) == ({"o/r#7": SID}, {})
 
 
 def test_only_an_untracked_run_is_given_the_session_on_its_pr(service, repo_o_r,
                                                               monkeypatch):
-    local = RunRecord(run_id="r1", dispatched_at=T0, pr_number=7, pid=4242)
+    local = RunRecord(run_id="r1", dispatched_at=T0, pr_number=7,
+                      pr_url="https://github.com/o/r/pull/7", pid=4242)
     _opening(service, SID, PROMPT)
     _gather(monkeypatch, [local, _untracked(), _untracked(8)], f"opencode --session {SID}")
     assert [probes.service_session(r) for r in (local, _untracked(), _untracked(8))] == [
@@ -1068,12 +1074,13 @@ def test_a_held_tuis_session_is_its_prs_only_when_no_other_agent_is_up(service,
     _opening(service, SID, PROMPT)
     _opening(service, OTHER, PROMPT)
     dump = _ps(f"opencode --session {SID}", f"opencode --session {OTHER}")
-    held_one: dict[int, str] = {}
-    held_all: dict[int, str] = {}
+    held_one: dict[str, str] = {}
+    held_all: dict[str, str] = {}
     by_pid: dict[int, str] = {}
-    one = probes.live_agents(dump, held_one, held_pids={900}, by_pid=by_pid)
-    probes.live_agents(dump, held_all, held_pids={900, 901})
-    assert (one.value, held_one, held_all) == ({7: "pts/1"}, {7: OTHER}, {7: SID})
+    one = probes.live_agents(dump, ROOTS, held_one, held_pids={900}, by_pid=by_pid)
+    probes.live_agents(dump, ROOTS, held_all, held_pids={900, 901})
+    assert (one.value, held_one, held_all) == (
+        {"o/r#7": "pts/1"}, {"o/r#7": OTHER}, {"o/r#7": SID})
     assert by_pid == {900: SID, 901: OTHER}
 
 
@@ -1083,10 +1090,13 @@ def test_a_released_run_is_given_the_session_at_its_pid(service, repo_o_r, monke
     turn that is not its own."""
     _opening(service, SID, PROMPT)
     _opening(service, OTHER, PROMPT)
-    released_tui = RunRecord(run_id="untracked:7:900", dispatched_at=T0, pr_number=7,
-                             pid=900, tty="pts/0", untracked=True, released=True)
-    released_claude = RunRecord(run_id="untracked:7:902", dispatched_at=T0, pr_number=7,
-                                pid=902, tty="pts/2", untracked=True, released=True)
+    url = "https://github.com/o/r/pull/7"
+    released_tui = RunRecord(run_id="untracked:o/r#7:900", dispatched_at=T0, pr_number=7,
+                             pr_url=url, pid=900, tty="pts/0", untracked=True,
+                             released=True)
+    released_claude = RunRecord(run_id="untracked:o/r#7:902", dispatched_at=T0,
+                                pr_number=7, pr_url=url, pid=902, tty="pts/2",
+                                untracked=True, released=True)
     _gather(monkeypatch, [released_tui, released_claude], f"opencode --session {SID}",
             f"opencode --session {OTHER}", "claude 'Review PR #7 in o/r'")
     assert [probes.service_session(r) for r in (released_tui, released_claude)] == [
@@ -1111,7 +1121,7 @@ def test_an_untracked_2x_agent_is_interrupted_when_its_window_is_reaped(
     _opening(service, SID, PROMPT)
     _gather(monkeypatch, [_untracked()], f"opencode --session {SID}")
     assert _reap(monkeypatch, [_untracked()]) == [
-        ("interrupt", SID), ("kill", tmuxwatch.session_name("untracked:7"))]
+        ("interrupt", SID), ("kill", tmuxwatch.session_name("untracked:o/r#7"))]
 
 
 # MARK: - Where the CLI and its state are

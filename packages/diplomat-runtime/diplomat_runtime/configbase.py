@@ -4,9 +4,10 @@ The Full-E2E-test (:mod:`audit`), Fix-issues (:mod:`diplomat_app.issues`),
 Resolve-conflicts (:mod:`conflicts`) and Review (:mod:`review`) wizards each carry
 a small ``*Config`` dataclass. A few properties were byte-identical across them:
 
-* ``target_repo`` / ``checkout`` — all four target the shared core repo, except a
-  single-item run whose pasted link named one of the checkouts listed in Settings
-  (:mod:`localrepos`), which targets that repo and works in that checkout, and
+* ``target_repo`` / ``checkout`` — all four target their ``home`` repo root (the
+  shared core repo when unset), except a single-item run whose pasted link named one
+  of the checkouts listed in Settings (:mod:`localrepos`), which targets that repo and
+  works in that checkout, and
 * ``author_handle`` / ``is_single_pr`` / ``pr_ref`` — both the conflicts and
   review configs sweep a *whose-PRs* axis with an optional single-PR override.
 
@@ -27,14 +28,26 @@ from .prtarget import PRTarget
 
 
 class RepoConfig:
-    """A config that targets the shared core repository — by default the whole of
-    it, not one pull request."""
+    """A config that targets one repo root — by default the whole of it, not one pull
+    request.
+
+    The inheriting dataclass supplies ``home``: the root a bare number, a sweep or an
+    audit targets, or ``None`` for the shared core config's repo and the default root.
+    """
+
+    home: LocalRepo | None
 
     @property
     def configured_repo(self) -> tuple[str, str]:
         """The configured target repo (owner, repo), from the shared core config."""
         cfg = core.config()
         return cfg["owner"], cfg["repo"]
+
+    @property
+    def home_repo(self) -> tuple[str, str]:
+        """The repo a bare number names (owner, repo): :attr:`home`'s, else the
+        configured one."""
+        return (self.home.owner, self.home.repo) if self.home else self.configured_repo
 
     @property
     def single_ref(self) -> PRRef | None:
@@ -50,22 +63,23 @@ class RepoConfig:
 
     @property
     def target_repo(self) -> tuple[str, str]:
-        """The repo this run works on (owner, repo): :attr:`listed_repo`'s, else the
-        configured one. What the prompt names, ``gh`` asks about, and links point at."""
+        """The repo this run works on (owner, repo): :attr:`listed_repo`'s, else
+        :attr:`home_repo`. What the prompt names, ``gh`` asks about, and links point at."""
         local = self.listed_repo
-        return (local.owner, local.repo) if local else self.configured_repo
+        return (local.owner, local.repo) if local else self.home_repo
 
     @property
     def checkout(self) -> str | None:
-        """Where the agent works when that is not the repo root
-        (:func:`review.repo_path`): :attr:`listed_repo`'s path, or ``None``."""
-        local = self.listed_repo
+        """Where the agent works when that is not the primary root
+        (:func:`review.repo_path`): :attr:`listed_repo`'s path, else :attr:`home`'s, or
+        ``None``."""
+        local = self.listed_repo or self.home
         return local.path if local else None
 
     @property
     def listed_scope(self) -> str | None:
         """``owner/repo#N`` for a run in a listed checkout, which a bare ``#N`` would
-        misname as the configured repo's; ``None`` otherwise."""
+        misname as the home repo's; ``None`` otherwise."""
         ref = self.single_ref
         if ref is None or ref.repo is None:
             return None
@@ -86,13 +100,21 @@ class RepoConfig:
         return None
 
 
-def listed_payload(local_repos: Sequence[LocalRepo]) -> dict:
-    """The listed checkouts as the ``localRepos`` of a prompt payload, or nothing when
-    there are none, so a payload stored before the list existed reads the same."""
-    if not local_repos:
-        return {}
-    return {"localRepos": [{"owner": r.owner, "repo": r.repo, "path": r.path}
-                           for r in local_repos]}
+def _repo_json(r: LocalRepo) -> dict:
+    return {"owner": r.owner, "repo": r.repo, "path": r.path}
+
+
+def listed_payload(local_repos: Sequence[LocalRepo],
+                   home: LocalRepo | None = None) -> dict:
+    """The listed checkouts as the ``localRepos`` of a prompt payload and the home
+    root as its ``home``, each left out when there is none, so a payload stored before
+    either existed reads the same."""
+    out: dict = {}
+    if local_repos:
+        out["localRepos"] = [_repo_json(r) for r in local_repos]
+    if home is not None:
+        out["home"] = _repo_json(home)
+    return out
 
 
 class PRSweepConfig(RepoConfig):
@@ -100,7 +122,7 @@ class PRSweepConfig(RepoConfig):
 
     The inheriting dataclass supplies the ``target`` (MINE/SOMEONE/SPECIFIC),
     ``me`` (authenticated viewer login), ``username`` (the "someone" handle),
-    ``specific_pr`` and ``local_repos`` fields these properties read.
+    ``specific_pr``, ``local_repos`` and ``home`` fields these properties read.
     """
 
     # Declared for readers / type-checkers only — the concrete dataclass owns the
@@ -127,8 +149,8 @@ class PRSweepConfig(RepoConfig):
     @property
     def pr_ref(self) -> PRRef:
         """The single-PR field parsed as a number / URL / ``owner/repo#n`` shorthand,
-        checked against the configured repo, then ``local_repos``."""
-        owner, repo = self.configured_repo
+        checked against :attr:`home_repo`, then ``local_repos``."""
+        owner, repo = self.home_repo
         return parse_pr_ref(self.specific_pr, owner, repo, also=self.local_repos)
 
     @property
@@ -140,9 +162,8 @@ class PRSweepConfig(RepoConfig):
         """The PR this run is scoped to, in single-PR mode only. A sweep across
         someone's PRs stays unscoped even when the PR field holds a leftover value.
 
-        ``None`` for a PR in a listed checkout too: the dedup and the merged-PR
-        retirement key on bare numbers of the configured repo, where ``radon#291``
-        would read as ``argent#291``. Its :attr:`single_pr_url` still names it."""
+        ``None`` for a PR in a listed checkout too, which never takes the dedup or the
+        merged-PR retirement. Its :attr:`single_pr_url` still names it."""
         ref = self.single_ref
         return ref.number if ref is not None and ref.repo is None else None
 

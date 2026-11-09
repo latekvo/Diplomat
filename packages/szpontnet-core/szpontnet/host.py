@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import functools
 import importlib
+import inspect
 import json
 from pathlib import Path
 
@@ -85,12 +86,17 @@ class Host:
         """Record one node event. Discarded by default — a node is not entitled
         to pick a log file on a machine it knows nothing about."""
 
-    def run_job(self, prompt: str, done_path: str | None) -> str:
+    def run_job(self, prompt: str, done_path: str | None,
+                work_key: str | None = None) -> str:
         """Run a personal (trusted-peer) job on this machine and return a handle
         for it — conventionally the path the prompt was staged at.
 
         ``done_path``, when given, is the completion sentinel the executor watches
         to free its work-claim; whatever runs the job must create it on exit.
+
+        ``work_key`` is the job's work key (``None`` for a job dispatched without
+        one), for a host whose machine runs different work in different places. A
+        host that leaves it out of its signature is called without it.
 
         Raising :class:`NoRunner` is a legitimate answer and the default one: this
         machine cannot take the job, so the dispatcher fails over to the next
@@ -201,6 +207,27 @@ def host() -> Host:
 
 
 _NULL_HOST = Host()
+
+
+@functools.lru_cache(maxsize=None)
+def _takes_work_key(run_job) -> bool:
+    """Whether a ``run_job`` accepts the ``work_key`` keyword, asked once per
+    implementation: a host written before it existed takes two arguments."""
+    try:
+        params = inspect.signature(run_job).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any((p.name == "work_key" and p.kind != p.POSITIONAL_ONLY)
+               or p.kind == p.VAR_KEYWORD for p in params)
+
+
+def run_job(prompt: str, done_path: str | None, work_key: str | None) -> str:
+    """Hand a job to the current host's :meth:`Host.run_job`, with its work key when
+    the host takes one."""
+    impl = host().run_job
+    if _takes_work_key(getattr(impl, "__func__", impl)):
+        return impl(prompt, done_path, work_key=work_key)
+    return impl(prompt, done_path)
 
 
 def log(action: str, detail: str) -> None:

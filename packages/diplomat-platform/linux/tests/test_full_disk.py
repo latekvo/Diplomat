@@ -391,7 +391,7 @@ def test_an_agent_found_on_a_full_disk_is_booked_once_it_drains(
     finally:
         loop.stop()
     assert crashes == []
-    assert [r.run_id for r in agentregistry.load()] == ["untracked:337"]
+    assert [r.run_id for r in agentregistry.load()] == ["untracked:o/r#337"]
 
 
 def test_a_refused_reap_on_a_full_disk_is_stamped_once_it_drains(

@@ -246,7 +246,8 @@ def _queue_fixture(store: Store) -> None:
     per machine — and the panel re-measures on show, which in a one-shot render is a
     background thread racing the grab.
     """
-    from diplomat_runtime import appconfig, autofix
+    from diplomat_runtime import appconfig, autofix, core
+    from diplomat_runtime.prref import item_key
 
     # Before the first `create_run` below, and here rather than at either call site:
     # the LIVE gate does not cover this arm, so a live render reaches the same two
@@ -255,19 +256,21 @@ def _queue_fixture(store: Store) -> None:
 
     appconfig.auto_task_limit = lambda: 4
 
+    slug = f"{core.config()['owner']}/{core.config()['repo']}"
+
     def task(number: int, kind: str, action: str, label: str, counter: str | None,
              attempt=1):
         # A Fix-issues row carries no PR, matching what the sweep queues: the number
         # is an issue's, and the pipeline's dedup is PR-shaped.
         is_pr = kind != "issues"
         return autofix.QueuedTask(
-            id=autofix.queue_key(action, number),
+            id=autofix.queue_key(action, item_key(*slug.split("/"), number)),
             job=autofix.AgentJob(
                 kind=kind, audit_action=action, label=label,
                 # No prompt: a render never dispatches, and an assembled one here
                 # would only be a second, drifting copy of the golden fixtures.
                 prompt="",
-                pr_url=f"https://github.com/x/pull/{number}" if is_pr else None,
+                pr_url=f"https://github.com/{slug}/pull/{number}" if is_pr else None,
                 pr_number=number if is_pr else None, duty=kind, counter=counter,
             ),
             attempt=attempt,
@@ -306,7 +309,7 @@ def _queue_fixture(store: Store) -> None:
         agentregistry.create_run(
             agentstate.RunRecord(
                 run_id=agentregistry.new_run_id(now - age), dispatched_at=now - age,
-                pr_number=number, pr_url=f"https://github.com/x/pull/{number}",
+                pr_number=number, pr_url=f"https://github.com/{slug}/pull/{number}",
                 kind=kind, label=label, source=autofix.SOURCE_AUTO, pid=pid, tty=tty),
             "")
     # Pinned rather than probed: read for real, this would report whichever of the
@@ -331,7 +334,8 @@ def _queue_fixture(store: Store) -> None:
             # #351 is the third way the panel learns of an agent: one nothing here
             # dispatched, found only by the prompt scan (what an applet restart or
             # a hand-started session leaves behind).
-            live_agents=agentstate.Observation.present({351: "pts/35"}),
+            live_agents=agentstate.Observation.present(
+                {item_key(*slug.split("/"), 351): "pts/35"}),
             # Read, and positive: the deadline's precondition is met for this whole
             # picture, so it doubles as the proof that nothing here is old enough and
             # occupied enough to be given up on. #377 is exactly four hours old and

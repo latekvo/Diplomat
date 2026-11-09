@@ -2785,7 +2785,7 @@ class MeshNode:
             return "declined", "at job capacity", False
         done_path = self._agent_done_path(wk) if wk else None
         try:
-            spawnjob.spawn_job(job.prompt, done_path=done_path)
+            spawnjob.spawn_job(job.prompt, done_path=done_path, work_key=wk or None)
         except spawnjob.JobSpawnError as exc:
             log("spawn-failed", f"Mesh job {job.duty} failed here: {exc}")
             if done_path:

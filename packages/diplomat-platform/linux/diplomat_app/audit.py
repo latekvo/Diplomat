@@ -18,13 +18,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from diplomat_runtime.configbase import RepoConfig
+from diplomat_runtime.configbase import RepoConfig, listed_payload
+from diplomat_runtime.prref import LocalRepo
 
 
 @dataclass
 class AuditConfig(RepoConfig):
     fix_issues: bool = False
     open_prs: bool = False
+    # The repo root a bare number targets; None = the configured repo.
+    home: LocalRepo | None = None
 
     # target_repo is inherited from RepoConfig (shared with Conflict/Review configs).
 
@@ -41,4 +44,5 @@ class AuditConfig(RepoConfig):
             "kind": "audit",
             "fixIssues": self.fix_issues,
             "openPRs": self.open_prs,
+            **listed_payload((), self.home),
         })

@@ -69,7 +69,7 @@ def test_the_startup_sweep_clears_the_whole_agents_dir(node):
 def test_a_launch_that_fails_leaves_nothing_staged(node, monkeypatch):
     """The host stages its hook settings before it launches, so a launch that fails
     has already put a file beside a sentinel no watcher will ever reclaim."""
-    def fail(prompt, done_path=None):
+    def fail(prompt, done_path=None, work_key=None):
         Path(done_path).with_suffix(".hooks.json").write_text("")
         raise node_mod.spawnjob.JobSpawnError("no runner")
 

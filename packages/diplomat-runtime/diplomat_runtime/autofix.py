@@ -13,6 +13,8 @@ import math
 import re
 from dataclasses import dataclass, replace
 
+from .prref import item_key, item_key_from_url, split_item_key
+
 # MARK: - Snapshot + fingerprint
 
 
@@ -33,6 +35,11 @@ class PRSnapshot:
     # so two nodes observing the same commit derive the same key (szpontnet-spec/docs/12).
     head_sha: str = ""
 
+    @property
+    def item(self) -> str | None:
+        """This PR's item key (:func:`prref.item_key`), read off its link."""
+        return item_key_from_url(self.url)
+
 
 @dataclass(frozen=True)
 class PRFingerprint:
@@ -44,19 +51,23 @@ class PRFingerprint:
 
 
 def compute_diff(
-    prior: dict[int, PRFingerprint], now: list[PRSnapshot]
-) -> tuple[list[tuple[str, PRSnapshot]], dict[int, PRFingerprint]]:
-    """Edge-triggered diff (mirrors AutofixDiff.compute).
+    prior: dict[str, PRFingerprint], now: list[PRSnapshot]
+) -> tuple[list[tuple[str, PRSnapshot]], dict[str, PRFingerprint]]:
+    """Edge-triggered diff (mirrors AutofixDiff.compute), fingerprints keyed by item.
 
     Returns ``(events, fingerprints)`` where each event is ``("conflict", snap)``
     or ``("review", snap)``. A PR with no prior fingerprint is seeded silently
     (never fires on first sighting). A transient ``UNKNOWN`` mergeable carries the
-    prior value forward so a conflict is neither lost nor faked.
+    prior value forward so a conflict is neither lost nor faked. A snapshot whose
+    link names no PR has no key to remember it by, and is passed over.
     """
     events: list[tuple[str, PRSnapshot]] = []
-    fingerprints: dict[int, PRFingerprint] = {}
+    fingerprints: dict[str, PRFingerprint] = {}
     for s in now:
-        p = prior.get(s.number)
+        item = s.item
+        if item is None:
+            continue
+        p = prior.get(item)
         mergeable = s.mergeable
         if s.mergeable in ("UNKNOWN", "") and p is not None:
             mergeable = p.mergeable
@@ -70,7 +81,7 @@ def compute_diff(
             )
             if more_threads or now_changes:
                 events.append(("review", s))
-        fingerprints[s.number] = PRFingerprint(
+        fingerprints[item] = PRFingerprint(
             mergeable=mergeable,
             review_decision=s.review_decision,
             threads_unresolved=s.threads_unresolved,
@@ -110,7 +121,7 @@ def retry_delay(attempts: int) -> float:
 
 @dataclass
 class ReviewAttempt:
-    """A record of the last dispatch for one PR (keyed by PR number as a string)."""
+    """A record of the last dispatch for one PR (keyed by its item key)."""
 
     requested_at: str  # ISO8601 stamp, or the sentinel "unresolved"/"conflicting"
     last_dispatched_at: float  # epoch seconds
@@ -155,22 +166,22 @@ def decide(
     return ("dispatch", 1)
 
 
-def concluded(retired, verdicts: dict) -> set[int]:
-    """The review requests whose run ended on its agent's own word: retired runs
-    dispatched for a review requested of me (:data:`WORK_REVIEW_REQ`) whose verdict is
-    ``reported``. A run that died, failed, was reaped or ran on a peer says nothing
-    about whether it meant to post, so its request stays on the retry ladder. Twin of
-    ``ReviewReconcile.concluded``."""
-    return {r.pr_number for r in retired
+def concluded(retired, verdicts: dict) -> set[str]:
+    """The review requests, by item key, whose run ended on its agent's own word:
+    retired runs dispatched for a review requested of me (:data:`WORK_REVIEW_REQ`) whose
+    verdict is ``reported``. A run that died, failed, was reaped or ran on a peer says
+    nothing about whether it meant to post, so its request stays on the retry ladder.
+    Twin of ``ReviewReconcile.concluded``."""
+    return {r.item for r in retired
             if r.ledger_key.startswith(WORK_REVIEW_REQ + ":")
-            and r.pr_number is not None
+            and r.item is not None
             and getattr(verdicts.get(r.run_id), "reported", False)}
 
 
-def conclude(attempts: dict, prs: set[int], now_ts: float) -> dict:
-    """``attempts`` with each of ``prs``' records stamped concluded, keyed by PR
-    number as the review-request monitor keys them."""
-    return {k: (replace(a, concluded_at=now_ts) if k in {str(p) for p in prs} else a)
+def conclude(attempts: dict, prs: set[str], now_ts: float) -> dict:
+    """``attempts`` with each of ``prs``' records (item keys, as the review-request
+    monitor keys them) stamped concluded."""
+    return {k: (replace(a, concluded_at=now_ts) if k in prs else a)
             for k, a in attempts.items()}
 
 
@@ -179,7 +190,7 @@ def retained(attempts: dict, owed: dict, now_ts: float) -> dict:
     backoff ceiling, not the moment the review lands: a force-push dismisses my review
     (briefly un-owing it) then re-requests, and the record is what lets
     :data:`RE_REQUEST_COOLDOWN` read that as churn. A concluded record is kept for as
-    long as that same request is still owed (``owed``: PR key -> stamp), because
+    long as that same request is still owed (``owed``: item key -> stamp), because
     dropping it re-dispatches the request. Twin of ``ReviewReconcile.retained``."""
     return {k: a for k, a in attempts.items()
             if now_ts - a.last_dispatched_at < RETRY_MAX_BACKOFF
@@ -204,6 +215,11 @@ class ReviewRequest:
     my_last_review_at: str | None  # my latest review submission (ISO8601)
     head_sha: str = ""  # head commit sha — the mesh work key's "@sha" part
     my_last_comment_at: str | None = None  # my latest top-level comment (ISO8601)
+
+    @property
+    def item(self) -> str | None:
+        """This PR's item key, read off its link."""
+        return item_key_from_url(self.url)
 
     @property
     def my_last_response_at(self) -> str | None:
@@ -386,7 +402,7 @@ def parse_work_key(key: str) -> tuple[str, str, str, int] | None:
     work key (empty, or any shape :func:`work_key` never emits).
 
     The executor's ps ground-truth floor uses this to learn which PR a dispatched
-    unit of work is for, then asks :func:`live_pr_numbers` whether an agent for it
+    unit of work is for, then asks :func:`live_pr_items` whether an agent for it
     is already alive on the host — so it dedups on the PR (like the ps-scan), never
     on the exact key, and a fresh push (new ``@sha``) can't sneak a second agent
     onto a PR already under review."""
@@ -538,11 +554,11 @@ def clamp_auto_task_limit(value: int) -> int:
 
 
 def running_auto_prs(
-    live_prs: set[int], auto_prs: set[int], manual_prs: set[int],
-    idle_prs: set[int] | None = None,
-) -> set[int]:
-    """Which PRs have an automatic agent *working* on this device (one agent per PR
-    is what the in-flight dedup guarantees, so a PR *is* an agent here).
+    live_prs: set[str], auto_prs: set[str], manual_prs: set[str],
+    idle_prs: set[str] | None = None,
+) -> set[str]:
+    """Which PRs (item keys) have an automatic agent *working* on this device (one
+    agent per PR is what the in-flight dedup guarantees, so a PR *is* an agent here).
 
     Four inputs, because no single one of them is both complete and attributable:
 
@@ -583,8 +599,8 @@ def running_auto_prs(
 
 
 def running_auto_tasks(
-    live_prs: set[int], auto_prs: set[int], manual_prs: set[int],
-    idle_prs: set[int] | None = None,
+    live_prs: set[str], auto_prs: set[str], manual_prs: set[str],
+    idle_prs: set[str] | None = None,
 ) -> int:
     """How many automatic agents are working on this device — the number the cap is
     compared against, and the size of :func:`running_auto_prs`."""
@@ -820,18 +836,25 @@ def dispatch_bumps_counter(source: str, attempt: int) -> bool:
 # one task per item on each poll until each is dispatched.
 
 
-def queue_key(audit_action: str, number: int) -> str:
+def queue_key(audit_action: str, item: str) -> str:
     """A queued task's identity, stable across polls and applet restarts: the
-    monitor's verb plus the item it is about. Not the mesh work key — that one is
-    scoped to a head sha, so a push during the wait would read as a different task and
-    lose the operator's place for it.
+    monitor's verb plus the item key (:func:`prref.item_key`) it is about. Not the mesh
+    work key — that one is scoped to a head sha, so a push during the wait would read
+    as a different task and lose the operator's place for it.
 
     The verb is part of the key because a PR can owe two different monitors at once
     (a conflict *and* an unaddressed review); they are two tasks, and the one that
     dispatches first makes the other read as in-flight rather than overwriting it. It
     is also what keeps the two numbering spaces apart: issue #421 and PR #421 are
     unrelated pieces of work, and only the verb says which one a key names."""
-    return f"{audit_action}:{number}"
+    return f"{audit_action}:{item}"
+
+
+def item_of_key(key: str) -> str | None:
+    """The item key a queue key (:func:`queue_key`) is about, or ``None`` for one about
+    no item: an investigation's, numbered by a Slack ts."""
+    _, _, rest = key.partition(":")
+    return rest if split_item_key(rest) is not None else None
 
 
 # The verbs asked-for work is queued under. The first two are a sweep's — the same
@@ -887,8 +910,8 @@ def queue_band(key: str) -> int:
     return next((i + 1 for i, band in enumerate(QUEUE_LAST_BANDS) if verb in band), 0)
 
 
-def still_owed(audit_action: str, pr_number: int, conflicting: set[int],
-               owing_reply: set[int], closed: set[int]) -> bool:
+def still_owed(audit_action: str, item: str, conflicting: set[str],
+               owing_reply: set[str], closed: set[str]) -> bool:
     """Does the evidence of THIS poll still owe a task the queue is holding?
 
     A queued task carries the prompt and the verdict of the poll that staged it, which
@@ -911,18 +934,19 @@ def still_owed(audit_action: str, pr_number: int, conflicting: set[int],
     A review the operator asked for is owed for the same reason, by their word rather
     than GitHub's. Unanswerable is not stale, so it stands.
 
-    Only ever asked about a task whose number is a PR's. A Fix-issues ask the operator
-    made is numbered in the other space entirely, and the caller stands it down rather
-    than pricing issue #421 against the PRs closed this cycle. An investigation is
+    ``item`` and the sets are item keys. Only ever asked about a task whose number is
+    a PR's. A Fix-issues ask the operator made is numbered in the other space entirely,
+    and the caller stands it down rather than pricing issue #421 against the PRs closed
+    this cycle. An investigation is
     numbered by a Slack ts and is about no PR, so it always stands."""
     if audit_action == QUEUE_INVESTIGATE_ACTION:
         return True
-    if pr_number in closed:
+    if item in closed:
         return False
     if audit_action == "conflicts":
-        return pr_number in conflicting
+        return item in conflicting
     if audit_action == "review-reply":
-        return pr_number in owing_reply
+        return item in owing_reply
     return True
 
 
@@ -1009,8 +1033,8 @@ class AgentJob:
     label: str  # label core (source prefix / retry suffix added by dispatch_label)
     prompt: str
     pr_url: str | None = None  # the PR's link, for the sessions list; None = not PR-scoped
-    # The dedup key: a PR number of the configured repo, never an issue's, and None for
-    # a PR in another listed checkout, which the bare number would confuse with ours.
+    # Set for a PR-scoped job only, never an issue's, and None for a PR in another
+    # listed checkout; with ``pr_url`` it makes :attr:`item`, the dedup key.
     pr_number: int | None = None
     author_login: str | None = None  # whose PR we'd review - the ban dimension
     duty: str = ""  # mesh duty, for auto-origination gating
@@ -1032,6 +1056,11 @@ class AgentJob:
     # another checkout listed in Settings. Never set on a job the mesh may route, since
     # a peer would start it in its own repo root.
     checkout: str | None = None
+
+    @property
+    def item(self) -> str | None:
+        """The PR this job is on, as an item key, or ``None`` when it is on none."""
+        return item_key_from_url(self.pr_url or "") if self.pr_number is not None else None
 
     @property
     def requested(self) -> bool:
@@ -1074,6 +1103,17 @@ class RequestedWork:
     #: The wizard config's ``prompt_payload`` for this one item. Its ``kind`` is also
     #: the queue verb the ask waits under, so the payload carries its own discriminator.
     config: dict
+    #: The repo the item is in, as a slug; "" in a row single-repo builds stored.
+    repo: str = ""
+
+    @property
+    def item(self) -> str | None:
+        """The item key of the PR or issue asked about, or ``None`` for a row that names
+        no repo: an investigation, or a legacy row not yet given one."""
+        if self.action == QUEUE_INVESTIGATE_ACTION or not self.repo:
+            return None
+        owner, _, repo = self.repo.partition("/")
+        return item_key(owner, repo, self.number)
 
     @property
     def action(self) -> str:
@@ -1085,8 +1125,9 @@ class RequestedWork:
     @property
     def key(self) -> str:
         """This ask's identity everywhere it has one: the queued task's id, the row the
-        panel draws it as, and what ``_forget_requested`` drops it by."""
-        return queue_key(self.action, self.number)
+        panel draws it as, and what ``_forget_requested`` drops it by. An
+        investigation keeps its Slack ts, being about no repo."""
+        return queue_key(self.action, self.item or str(self.number))
 
     @property
     def label(self) -> str:
@@ -1103,7 +1144,7 @@ class RequestedWork:
 
     def to_json(self) -> dict:
         return {"number": self.number, "url": self.url, "author": self.author,
-                "config": self.config}
+                "config": self.config, "repo": self.repo}
 
     @staticmethod
     def from_json(obj: dict) -> "RequestedWork | None":
@@ -1121,7 +1162,8 @@ class RequestedWork:
         if not isinstance(config, dict):
             return None
         return RequestedWork(number=number, url=str(obj.get("url", "")),
-                             author=str(obj.get("author", "")), config=config)
+                             author=str(obj.get("author", "")), config=config,
+                             repo=str(obj.get("repo", "")))
 
 
 @dataclass(frozen=True)
@@ -1180,41 +1222,57 @@ class RunningAgent:
         return self.state == "awaiting_input"
 
 
-_LIVE_AGENT_RE_TMPL = r"PR #(\d+) in {repo}"
+_LIVE_AGENT_RE = re.compile(r"PR #([0-9]+) in ([\w.-]+)/([\w.-]+)")
 
 
-def live_pr_numbers(ps_output: str, owner: str, repo: str) -> set[int]:
-    """PR numbers of ``claude`` agents alive in a ``ps`` args dump — the
-    tracking-independent half of the monitor's in-flight dedup (twin of
-    ProcessMonitor.liveAgentPRNumbers on macOS).
+def prompt_items(text: str, slugs: set[str]):
+    """Yield the item key of every ``PR #<n> in <owner>/<repo>`` in a prompt whose repo
+    is one of ``slugs``. Every single-PR prompt the applet dispatches opens that way.
 
-    Every single-PR prompt the applet dispatches opens with
-    ``… PR #<n> in <owner>/<repo> …`` and ``claude`` receives the whole prompt as
-    one argv, so a live agent is visible in ``ps`` no matter what happened to the
-    in-memory ``_autofix_inflight`` list (an applet restart wipes it while the
-    agents run on). Only lines containing ``claude`` count: the spawning shell's
-    argv holds the unexpanded ``$(cat …)``, never the prompt text."""
-    return {a.pr_number for a in agent_lines(ps_output, owner, repo)}
+    The prompt goes on ``. Use the `gh` CLI``, and ``.`` is a repo-name character, so
+    a name read with a trailing dot is taken without it when only that is in ``slugs``.
+    """
+    wanted = {s.lower() for s in slugs}
+    for m in _LIVE_AGENT_RE.finditer(text):
+        owner, repo = m.group(2).lower(), m.group(3).lower()
+        if f"{owner}/{repo}" not in wanted:
+            repo = repo.rstrip(".")
+        if f"{owner}/{repo}" in wanted:
+            yield item_key(owner, repo, int(m.group(1)))
 
 
-def agent_ttys(ps_output: str, owner: str, repo: str) -> set[str]:
-    """The ttys the live agents of :func:`live_pr_numbers` are running on, spelled as
+def live_pr_items(ps_output: str, slugs: set[str]) -> set[str]:
+    """Item keys of ``claude`` agents alive in a ``ps`` args dump, on a PR of one of
+    the repos in ``slugs`` — the tracking-independent half of the monitor's in-flight
+    dedup (twin of ProcessMonitor.liveAgentPRNumbers on macOS).
+
+    Every single-PR prompt the applet dispatches names its PR (:func:`prompt_items`)
+    and ``claude`` receives the whole prompt as one argv, so a live agent is visible
+    in ``ps`` no matter what happened to the in-memory ``_autofix_inflight`` list (an
+    applet restart wipes it while the agents run on). Only lines containing ``claude``
+    count: the spawning shell's argv holds the unexpanded ``$(cat …)``, never the
+    prompt text."""
+    return {a.item for a in agent_lines(ps_output, slugs)}
+
+
+def agent_ttys(ps_output: str, slugs: set[str]) -> set[str]:
+    """The ttys the live agents of :func:`live_pr_items` are running on, spelled as
     ``ps`` spells them (``pts/13``, no ``/dev/``).
 
     Which panes are worth capturing, and nothing more: reading every tmux pane to
     find two agents would put a ``capture-pane`` per pane on the panel's 8-second
     tick, where this puts one per agent. A process with no controlling tty appears
     as ``?``, matches no pane, and is simply never asked about."""
-    return {a.tty for a in agent_lines(ps_output, owner, repo)}
+    return {a.tty for a in agent_lines(ps_output, slugs)}
 
 
-def idle_pr_numbers(
-    ps_output: str, pane_tails: dict[str, str], owner: str, repo: str
-) -> set[int]:
-    """Of the agents alive in ``ps``, the PR numbers whose session has finished its
+def idle_pr_items(
+    ps_output: str, pane_tails: dict[str, str], slugs: set[str]
+) -> set[str]:
+    """Of the agents alive in ``ps``, the item keys whose session has finished its
     turn and is waiting at its prompt.
 
-    ``ps_output`` must be a ``tty=,etime=,args=`` dump (``live_pr_numbers`` reads the
+    ``ps_output`` must be a ``tty=,etime=,args=`` dump (``live_pr_items`` reads the
     same lines — the regex finds the prompt wherever on the line it sits — so one scan
     answers all three). ``pane_tails`` maps a tty to that pane's visible buffer,
     spelled as ``ps`` spells a tty (:func:`tmuxwatch.pane_tails_for_ttys`).
@@ -1238,13 +1296,13 @@ def idle_pr_numbers(
     agent this machine has no book entry for at all. An age that could not be parsed
     counts as too young, because a bay is freed on positive evidence or not at all.
     """
-    return {a.pr_number for a in agent_lines(ps_output, owner, repo)
+    return {a.item for a in agent_lines(ps_output, slugs)
             if _at_prompt(a.elapsed, pane_tails.get(a.tty))}
 
 
 def _at_prompt(elapsed: float | None, tail: str | None) -> bool:
     """Has an agent this old, showing this screen, finished its turn? Positive
-    evidence only (:func:`idle_pr_numbers`)."""
+    evidence only (:func:`idle_pr_items`)."""
     from . import agentstate, apiwatch
 
     if elapsed is None or elapsed <= agentstate.FIRST_TURN_GRACE:
@@ -1253,11 +1311,10 @@ def _at_prompt(elapsed: float | None, tail: str | None) -> bool:
 
 
 def unscoped_auto_ttys(records, ps_output: str) -> set[str]:
-    """The ttys of the automatic runs in this machine's run book that name no PR of the
-    configured repo (an issue fix, a sweep, an audit, a PR in another checkout) and
-    whose agent is alive on that tty in a ``ps`` dump. The prompt scan behind
-    :func:`live_pr_numbers` cannot see these, yet each holds a bay of the cap
-    (:func:`agentstate.cap_load`)."""
+    """The ttys of the automatic runs in this machine's run book that name no PR (an
+    issue fix, a sweep, an audit, a PR in another checkout) and whose agent is alive on
+    that tty in a ``ps`` dump. The prompt scan behind :func:`live_pr_items` cannot see
+    these, yet each holds a bay of the cap (:func:`agentstate.cap_load`)."""
     alive = {tty for tty, _elapsed, _argv in _agent_processes(ps_output)}
     return {r.tty for r in _unscoped_auto(records) if r.tty in alive}
 
@@ -1267,7 +1324,7 @@ def _unscoped_auto(records) -> list:
 
     return [r for r in records
             if r.runs_here and r.source == agentstate.SOURCE_AUTO and not r.released
-            and r.pr_number is None]
+            and r.item is None]
 
 
 def running_unscoped_auto_runs(records, ps_output: str, pane_tails: dict[str, str],
@@ -1312,17 +1369,19 @@ class AgentLine:
     """One live agent, as a ``ps`` dump shows it."""
 
     tty: str
-    pr_number: int
+    #: The PR its prompt names, as an item key.
+    item: str
     #: Seconds since the process started, or ``None`` if the dump carried no
     #: readable ``etime`` (a bare ``args=`` dump, or a spelling of ``ps`` that
     #: dropped the column).
     elapsed: float | None
 
 
-def agent_lines(ps_output: str, owner: str, repo: str):
-    """Yield an :class:`AgentLine` for every live agent in a ``ps`` dump — the one
-    parse the answers above are each a projection of, so they can never come to
-    disagree about what counts as an agent.
+def agent_lines(ps_output: str, slugs: set[str]):
+    """Yield an :class:`AgentLine` for every live agent in a ``ps`` dump whose prompt
+    names a PR of a repo in ``slugs`` (:func:`prompt_items`) — the one parse the
+    answers above are each a projection of, so they can never come to disagree about
+    what counts as an agent.
 
     The tty is whatever leads the line, normalised free of ``/dev/`` (``ps`` omits it,
     tmux does not), and the elapsed time is the token after it. On a bare ``args=``
@@ -1335,10 +1394,9 @@ def agent_lines(ps_output: str, owner: str, repo: str):
     """
     from . import opencodeapi
 
-    pat = re.compile(_LIVE_AGENT_RE_TMPL.format(repo=re.escape(f"{owner}/{repo}")))
     for tty, elapsed, argv in _agent_processes(ps_output):
-        for m in pat.finditer(opencodeapi.scan_text(argv)):
-            yield AgentLine(tty=tty, pr_number=int(m.group(1)), elapsed=elapsed)
+        for item in prompt_items(opencodeapi.scan_text(argv), slugs):
+            yield AgentLine(tty=tty, item=item, elapsed=elapsed)
 
 
 def _agent_processes(ps_output: str):

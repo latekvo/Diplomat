@@ -9,11 +9,12 @@ repo's PR of the same number.
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
 
-from diplomat_runtime import autofix, core, localrepos, review
+from diplomat_runtime import appconfig, autofix, core, localrepos, prref, review
 from diplomat_runtime.prref import LocalRepo, PRRef, parse_pr_ref
 from diplomat_runtime.prtarget import PRTarget
 from diplomat_app import conflicts, issues
@@ -135,6 +136,132 @@ def test_listed_order_decides_which_checkout_a_shared_repo_resolves_to(tmp_path)
     assert ref.repo.path == str(b)
 
 
+# ---- repo roots --------------------------------------------------------------
+
+
+def _remotes(**urls: str) -> str:
+    """``remote_config`` output for these remotes, in this order."""
+    return "".join(f"remote.{name}.url {url}\n" for name, url in urls.items())
+
+
+def test_entries_rank_upstream_then_origin_then_config_order_and_skip_the_rest():
+    out = localrepos.entries("/p", _remotes(
+        zeta="https://github.com/zeta/radon", origin="git@github.com:me/radon.git",
+        lab="git@gitlab.com:x/y.git", upstream="https://github.com/Software-Mansion/Radon",
+        again="https://github.com/software-mansion/radon") + "garbage\n")
+    assert out == [LocalRepo("Software-Mansion", "Radon", "/p"), LocalRepo("me", "radon", "/p"),
+                   LocalRepo("zeta", "radon", "/p")]
+
+
+def test_a_root_answers_for_the_configured_repo_when_it_has_that_remote():
+    """A fork checkout of the configured repo is that repo's root, whichever remote
+    git ranks first: it is the repo every automatic job of a single-root setup ran on."""
+    remotes = {"/a": _remotes(origin="git@github.com:me/argent.git",
+                              sm="https://github.com/Software-Mansion/Argent")}
+    assert localrepos.resolve_roots(["/a"], remotes, (OWNER, REPO)) == [
+        LocalRepo("Software-Mansion", "Argent", "/a")]
+    assert localrepos.resolve_roots(["/a"], remotes, ("x", "y")) == [
+        LocalRepo("me", "argent", "/a")]
+
+
+def test_roots_skip_a_path_with_no_github_remote_and_keep_the_first_of_a_repo():
+    remotes = {"/lab": _remotes(origin="git@gitlab.com:x/y.git"),
+               "/b": _remotes(origin="git@github.com:software-mansion/radon.git"),
+               "/a": _remotes(origin="https://github.com/Software-Mansion/radon"),
+               "/c": _remotes(origin="https://github.com/o/other")}
+    assert localrepos.resolve_roots(["/lab", "/missing", "/b", "/a", "/c"], remotes,
+                                    (OWNER, REPO)) == [
+        LocalRepo("software-mansion", "radon", "/b"), LocalRepo("o", "other", "/c")]
+
+
+def test_roots_that_resolve_to_nothing_are_the_configured_repo_at_the_first_path():
+    """A checkout that is missing or has no remote yet: the single root it always was."""
+    assert localrepos.resolve_roots(["~/x", "/y"], {"/y": ""}, (OWNER, REPO)) == [
+        LocalRepo(OWNER, REPO, os.path.expanduser("~/x"))]
+    assert localrepos.resolve_roots([], {}, (OWNER, REPO)) == []
+
+
+def test_repo_roots_resolve_the_stored_paths_and_re_read_only_what_changed(
+        tmp_path, monkeypatch):
+    monkeypatch.delenv("DIPLOMAT_REPO", raising=False)
+    a = _checkout(tmp_path, "a", origin="git@github.com:software-mansion/radon.git")
+    b = _checkout(tmp_path, "b", origin="git@github.com:o/other.git")
+    asked: list[str] = []
+    real = localrepos.remote_config
+    monkeypatch.setattr(localrepos, "remote_config",
+                        lambda path: asked.append(path) or real(path))
+    appconfig.set_repo_roots([str(a), str(b)])
+
+    want = [LocalRepo("software-mansion", "radon", str(a)), LocalRepo("o", "other", str(b))]
+    assert review.repo_roots() == want and review.repo_path() == str(a)
+    assert len(asked) == 2
+    assert review.repo_roots() == want and len(asked) == 2, "an unchanged root is cached"
+
+    _git(b, "remote", "set-url", "origin", "https://github.com/o/renamed")
+    config = b / ".git" / "config"
+    bumped = config.stat().st_mtime_ns + 1_000_000_000
+    os.utime(config, ns=(bumped, bumped))
+    assert review.repo_roots()[1] == LocalRepo("o", "renamed", str(b))
+
+    appconfig.set_repo_roots([str(b)])
+    assert review.repo_roots() == [LocalRepo("o", "renamed", str(b))]
+
+
+def test_the_env_override_is_the_one_root(tmp_path, monkeypatch):
+    appconfig.set_repo_roots([str(tmp_path / "a"), str(tmp_path / "b")])
+    monkeypatch.setenv("DIPLOMAT_REPO", str(tmp_path / "env"))
+    assert review.repo_root_paths() == [str(tmp_path / "env")]
+    assert review.repo_roots() == [LocalRepo(OWNER, REPO, str(tmp_path / "env"))]
+
+
+# ---- item keys --------------------------------------------------------------
+
+
+def test_an_item_key_is_its_repo_lowercased_and_its_number():
+    assert prref.item_key("Software-Mansion", "Argent", 12) == "software-mansion/argent#12"
+
+
+@pytest.mark.parametrize("url, want", [
+    ("https://github.com/O/R.js/pull/12", "o/r.js#12"),
+    ("https://github.com/o/r/issues/12", "o/r#12"),
+    ("https://github.com/o/r/pull/12/files?w=1", "o/r#12"),
+    ("https://ghe.example.com/o/r/pull/12", None),
+    ("https://github.com/o/r/pull/0", None),
+    ("https://github.com/o/r", None),
+    ("", None),
+])
+def test_an_item_key_from_a_link(url, want):
+    assert prref.item_key_from_url(url) == want
+
+
+@pytest.mark.parametrize("key, want", [
+    ("o/r.js#12", ("o/r.js", 12)),
+    ("o/r", None), ("#12", None), ("o/r#", None), ("o/r#x", None), ("o/r#12x", None),
+    ("a/b/c#1", None), ("12", None),
+])
+def test_splitting_an_item_key(key, want):
+    assert prref.split_item_key(key) == want
+
+
+def test_a_bare_number_older_builds_stored_becomes_the_primarys_item():
+    assert prref.migrate_item_key("12", "Software-Mansion/Argent") == \
+        "software-mansion/argent#12"
+    for unchanged in ("o/r#12", "x12", ""):
+        assert prref.migrate_item_key(unchanged, "p/q") == unchanged
+
+
+def test_a_queue_key_older_builds_stored_becomes_the_primarys_and_a_ts_does_not():
+    assert prref.migrate_queue_key("review-req:12", "P/Q") == "review-req:p/q#12"
+    for unchanged in ("investigate:1508284197000015", "review:o/r#12", "review:", "nonsense"):
+        assert prref.migrate_queue_key(unchanged, "p/q") == unchanged
+
+
+def test_an_item_label_names_the_repo_only_beside_another_root():
+    assert prref.item_label("o/argent#12", 1) == "#12"
+    assert prref.item_label("o/argent#12", 2) == "argent#12"
+    assert prref.item_label("not an item", 2) == "not an item"
+
+
 # ---- parsing a link against the listed repos -------------------------------
 
 
@@ -230,6 +357,30 @@ def test_the_payload_hands_the_core_the_listed_repos():
     assert payload["localRepos"] == [{"owner": "software-mansion", "repo": "radon",
                                       "path": "/src/radon"}]
     assert "localRepos" not in _review("291", also=()).prompt_payload()
+
+
+HOME_ROOT = LocalRepo("o", "other", "/src/other")
+
+
+def test_a_bare_number_targets_the_home_root_and_runs_in_its_checkout():
+    cfg = review.ReviewConfig(target=PRTarget.SPECIFIC, specific_pr="12", me="latekvo",
+                              home=HOME_ROOT)
+    assert cfg.target_repo == ("o", "other") and cfg.checkout == "/src/other"
+    assert cfg.single_pr_url == "https://github.com/o/other/pull/12"
+    assert cfg.for_pr(13).home == HOME_ROOT
+
+
+def test_the_payload_names_the_home_root_only_when_there_is_one():
+    """Absent, the core targets the configured repo, which keeps every golden prompt
+    byte-identical."""
+    assert "home" not in _review("291", also=()).prompt_payload()
+    payload = review.ReviewConfig(target=PRTarget.SPECIFIC, specific_pr="12", me="latekvo",
+                                  home=HOME_ROOT).prompt_payload()
+    assert payload["home"] == {"owner": "o", "repo": "other", "path": "/src/other"}
+    issue = issues.IssueConfig(target=issues.Target.SPECIFIC, specific_issue="7",
+                               home=HOME_ROOT)
+    assert issue.prompt_payload()["home"] == payload["home"]
+    assert issue.target_repo == ("o", "other")
 
 
 def test_one_review_of_a_sweep_carries_no_listed_repos():
