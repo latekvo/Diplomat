@@ -16,15 +16,18 @@ public enum TaskGraph {
         public var author: String?
         /// An `add` node's: when its fix was last asked for (`TrackedTask.dispatched`).
         public var dispatchedAt: Date?
+        /// An `add` node's `GoalWork.key`: what a `dispatched` edit records its fix by.
+        public var work: String?
 
         public init(kind: String, url: String, label: String, state: String? = nil,
-                    author: String? = nil, dispatchedAt: Date? = nil) {
+                    author: String? = nil, dispatchedAt: Date? = nil, work: String? = nil) {
             self.kind = kind
             self.url = url
             self.label = label
             self.state = state
             self.author = author
             self.dispatchedAt = dispatchedAt
+            self.work = work
         }
     }
 
@@ -67,8 +70,9 @@ public enum TaskGraph {
         }
         func add(_ i: Int) -> Node {
             let url = g.links[i].url
-            return Node(kind: "add", url: url, label: "+",
-                        dispatchedAt: GitHubRef(url: url).flatMap { task.dispatched[GoalWork.fixKey($0)] })
+            let key = GitHubRef(url: url).map(GoalWork.fixKey)
+            return Node(kind: "add", url: url, label: "+", author: snapshots[url]?.author,
+                        dispatchedAt: key.flatMap { task.dispatched[$0] }, work: key)
         }
         var rows = paths.map { path -> [Node] in
             path.map(node) + (needing.contains(path.last!) ? [add(path.last!)] : [])
