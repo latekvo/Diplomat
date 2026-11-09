@@ -1,7 +1,7 @@
 import Foundation
 
 /// One operator edit, as `tasks-edit` reads it: `{"op": "create" | "update" | "link" |
-/// "unlink" | "note" | "archive" | "unarchive" | "mode" | "dispatched", …}`.
+/// "unlink" | "note" | "archive" | "unarchive" | "mode" | "dispatched" | "withdrawn", …}`.
 public enum TaskEdit: Decodable, Equatable, Sendable {
     case create(title: String, tags: [String], links: [String])
     /// Nil leaves a field as it is; a `pinnedStatus` of `""` unpins.
@@ -15,6 +15,8 @@ public enum TaskEdit: Decodable, Equatable, Sendable {
     case mode(id: String, mode: String?, reviewOnPush: Bool?)
     /// The `GoalWork.key`s a front-end just started.
     case dispatched(id: String, work: [String])
+    /// `dispatched` keys whose work was withdrawn before it started: wanted again.
+    case withdrawn(id: String, work: [String])
 
     private enum Key: String, CodingKey {
         case op, id, title, tags, links, pinnedStatus, url, text, mode, reviewOnPush, work
@@ -33,6 +35,7 @@ public enum TaskEdit: Decodable, Equatable, Sendable {
         "create": [.title, .tags, .links], "update": [.id, .title, .tags, .pinnedStatus],
         "link": [.id, .url], "unlink": [.id, .url], "note": [.id, .text, .tags, .url],
         "archive": [.id], "unarchive": [.id], "mode": [.id, .mode, .reviewOnPush], "dispatched": [.id, .work],
+        "withdrawn": [.id, .work],
     ]
 
     public init(from decoder: Decoder) throws {
@@ -68,11 +71,12 @@ public enum TaskEdit: Decodable, Equatable, Sendable {
             self = .mode(id: try id(), mode: try c.decodeIfPresent(String.self, forKey: .mode),
                          reviewOnPush: try c.decodeIfPresent(Bool.self, forKey: .reviewOnPush))
         case "dispatched": self = .dispatched(id: try id(), work: try c.decode([String].self, forKey: .work))
+        case "withdrawn": self = .withdrawn(id: try id(), work: try c.decode([String].self, forKey: .work))
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .op, in: c,
                 debugDescription: "unknown op \"\(op)\" (expected create | update | link | unlink"
-                    + " | note | archive | unarchive | mode | dispatched)")
+                    + " | note | archive | unarchive | mode | dispatched | withdrawn)")
         }
     }
 }
@@ -187,8 +191,7 @@ public enum TaskStore {
                             history: Array(mine.prefix(assets.historyLimit)), lastEventAt: last,
                             linkStates: TaskView.states(of: task, snapshots: snapshots),
                             graph: TaskGraph.rows(task, snapshots: snapshots, watched: watched),
-                            work: GoalWork.plan(task, snapshots: snapshots, me: me, now: now,
-                                                fixRetrySecs: assets.fixRetrySecs, watched: watched))
+                            work: GoalWork.plan(task, snapshots: snapshots, me: me, watched: watched))
         }
         return views.sorted { a, b in
             if (a.status == .done) != (b.status == .done) { return b.status == .done }
@@ -385,6 +388,17 @@ public enum TaskStore {
                 let url = tasks[i].links.first { GitHubRef(url: $0.url)?.key == ref.key }?.url
                 events.append(TaskEvent(at: now, task: id, source: "diplomat", tags: ["dispatch:\(kind)"],
                                         url: url, subject: url))
+            }
+            return (tasks[i], events)
+
+        case let .withdrawn(id, work):
+            let i = try index(id)
+            let events = work.compactMap { key -> TaskEvent? in
+                guard tasks[i].dispatched.removeValue(forKey: key) != nil,
+                      let (kind, ref, _) = GoalWork.parse(key) else { return nil }
+                let url = tasks[i].links.first { GitHubRef(url: $0.url)?.key == ref.key }?.url
+                return TaskEvent(at: now, task: id, source: "diplomat", tags: ["withdraw:\(kind)"],
+                                 url: url, subject: url)
             }
             return (tasks[i], events)
         }

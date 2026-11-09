@@ -316,9 +316,6 @@ public enum CoreAssets {
         public let excerptChars: Int
         public let commsHoldSecs: Int
         public let noteChars: Int
-        /// How long after a goal asked for an issue's fix it asks again, while no PR of it
-        /// closes the issue.
-        public let fixRetrySecs: Int
         public var grouper: Grouper
 
         /// `TaskGrouper`'s.

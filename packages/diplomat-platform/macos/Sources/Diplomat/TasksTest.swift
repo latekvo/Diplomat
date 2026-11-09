@@ -238,17 +238,25 @@ enum TasksTest {
 
         print("the automatic pass")
         let asksBefore = Set(store.requestedWork.map(\.key))
+        store.goalFixesStarting = [1820]
         await store.runGoalPass()
+        store.goalFixesStarting = []
         let asked = store.requestedWork.filter { !asksBefore.contains($0.key) }
-        check("asks for exactly the fix and the two reviews",
-              asked.map(\.key) == ["issues:1820", "review:1821", "review:1822"], "\(asked.map(\.key))")
-        if case .issues(let cfg)? = asked.first?.config {
-            check("the fix names its issue", cfg.target == .specific && cfg.specificIssue == "1820"
-                    && asked.first?.author == "tv-user", "\(cfg.target) \(cfg.specificIssue)")
-        } else {
-            check("the fix is an issues ask", false, "\(String(describing: asked.first?.config))")
+        check("asks for exactly the two reviews, the fix's issue having an agent",
+              asked.map(\.key) == ["review:1821", "review:1822"], "\(asked.map(\.key))")
+        let fixAsk = store.goalFixAsk(number: 1820, url: "", author: "tv-user")
+        if case .issues(let cfg) = fixAsk.config {
+            check("a fix is the one issue, features included, re-checked for closed and assigned when its turn comes",
+                  cfg.target == .all && cfg.specificIssue == "1820" && cfg.includeFeatures && cfg.unassignedOnly
+                    && !cfg.isSingleIssue && fixAsk.key == "issues:1820",
+                  "\(cfg.target) \(cfg.specificIssue) \(cfg.includeFeatures)")
         }
-        let reviews = asked.dropFirst().compactMap { ask -> (ReviewConfig, String)? in
+        if case .issues(let cfg) = store.goalPlusAsk(number: 1802, url: "", author: nil).config {
+            check("the + names its issue, features included", cfg.target == .specific
+                    && cfg.specificIssue == "1802" && cfg.includeFeatures && cfg.isSingleIssue,
+                  "\(cfg.target) \(cfg.specificIssue) \(cfg.includeFeatures)")
+        }
+        let reviews = asked.compactMap { ask -> (ReviewConfig, String)? in
             if case .review(let cfg) = ask.config { return (cfg, ask.author) }
             return nil
         }
@@ -262,11 +270,35 @@ enum TasksTest {
         check("so the goal wants only the findings now",
               view(fixture.auto)?.work.map(\.kind) == [.findings])
         await store.runGoalPass()
-        check("a second pass asks for nothing more", store.requestedWork.count == asksBefore.count + 3,
+        check("a second pass asks for nothing more", store.requestedWork.count == asksBefore.count + 2,
               "\(store.requestedWork.count - asksBefore.count) asks")
         let overlay = store.goalOverlay
-        check("the asks show as queued", overlay.queuedIssues == [1820] && overlay.queuedPRs == [1821, 1822],
+        check("the asks show as queued", overlay.queuedIssues == [] && overlay.queuedPRs == [1821, 1822],
               "\(overlay)")
+        _ = await store.setGoalMode(fixture.auto, mode: .observe)
+        check("switching the goal to observe withdraws its asks not started",
+              !store.requestedWork.contains { ["review:1821", "review:1822"].contains($0.key) }
+                && !store.queuedTasks.contains { ["review:1821", "review:1822"].contains($0.id) },
+              "\(store.requestedWork.map(\.key))")
+        check("and forgets them, the fix whose agent started kept",
+              view(fixture.auto)?.task.dispatched.keys.sorted() == ["fix:\(ref(1820))"],
+              "\(view(fixture.auto)?.task.dispatched.keys.sorted() ?? [])")
+        _ = await store.setGoalMode(fixture.auto, mode: .auto)
+        await store.runGoalPass()
+        check("back in auto, its reviews are asked for again",
+              Set(["review:1821", "review:1822"]).isSubset(of: Set(store.requestedWork.map(\.key))),
+              "\(store.requestedWork.map(\.key))")
+        _ = await store.editTask(.archive(id: fixture.auto))
+        check("archiving the goal withdraws them too",
+              !store.requestedWork.contains { ["review:1821", "review:1822"].contains($0.key) },
+              "\(store.requestedWork.map(\.key))")
+        _ = await store.editTask(.unarchive(id: fixture.auto))
+        _ = await store.setGoalMode(fixture.observe, mode: .auto, reviewOnPush: true)
+        check("the grouper's goal, automated, asks for its PR's review",
+              store.requestedWork.contains { $0.key == "review:1831" }, "\(store.requestedWork.map(\.key))")
+        _ = await store.setGoalMode(fixture.observe, mode: .dismissed)
+        check("dismissing it, which hides it, withdraws that too",
+              !store.requestedWork.contains { $0.key == "review:1831" }, "\(store.requestedWork.map(\.key))")
 
         print("the agent overlay")
         func run(_ id: String, _ pr: Int?, _ kind: String, _ label: String, _ state: AgentState.RunState,

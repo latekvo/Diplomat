@@ -16,7 +16,7 @@ import Foundation
 ///                (the last run's mark) with --if-due before `groupSecs` have passed.
 ///                Exits 0 either way.
 ///   tasks-edit   stdin = a TaskEdit ({"op": "create" | "update" | "link" | "unlink" |
-///                "note" | "archive" | "unarchive" | "mode" | "dispatched", …}); stdout =
+///                "note" | "archive" | "unarchive" | "mode" | "dispatched" | "withdrawn", …}); stdout =
 ///                the task as it now is.
 ///                Exits 1 with the reason on stderr for an unknown op, key or task, or an
 ///                edit that does not apply. An edit saved without its history line exits

@@ -92,6 +92,8 @@ extension Store {
     @discardableResult
     func editTask(_ edit: TaskEdit, sync: Bool = false) async -> String? {
         let dir = TaskStore.dir
+        // Read first: a dismissed goal leaves the list.
+        let withdrawn = goalAsks(stoppedBy: edit)
         let refusal = await Task.detached(priority: .userInitiated) { () -> String? in
             do {
                 try TaskStore.edit(edit, in: dir)
@@ -107,6 +109,7 @@ extension Store {
         guard refusal == nil else { return refusal }
         // Not left to the sync, whose read may come before the timer's next turn.
         await reloadTasks()
+        await withdrawGoalAsks(withdrawn)
         if sync { Task { [weak self] in await self?.syncTasks() } }
         return nil
     }
@@ -219,12 +222,56 @@ extension Store {
         Set(taskViews.flatMap(\.work).filter { $0.kind == .findings }.map(\.number))
     }
 
-    /// A goal issue's fix: that issue, named, feature requests included, since the goal it
-    /// serves is often one.
+    /// The automatic pass's fix of a goal issue: feature requests included, since the goal
+    /// it serves is often one, and, as a sweep's, re-checked when its turn comes: one closed
+    /// or assigned by then is left alone.
     func goalFixAsk(number: Int, url: String, author: String?) -> RequestedWork {
+        RequestedWork(number: number, url: url, author: author ?? "",
+                      config: .issues(IssueConfig(target: .all, me: effectiveMe, includeFeatures: true)
+                                        .forIssue(number)))
+    }
+
+    /// The `+` press's fix: named, as the Fix-issues wizard's press names it, since the
+    /// operator asked for this one.
+    func goalPlusAsk(number: Int, url: String, author: String?) -> RequestedWork {
         RequestedWork(number: number, url: url, author: author ?? "",
                       config: .issues(IssueConfig(target: .specific, me: effectiveMe,
                                                   specificIssue: String(number), includeFeatures: true)))
+    }
+
+    /// The goal and its `dispatched` fixes and reviews by queue key, when `edit` stops it
+    /// acting (a mode other than auto, a pin, an archive).
+    func goalAsks(stoppedBy edit: TaskEdit) -> (task: String, asks: [String: String])? {
+        let id: String
+        switch edit {
+        case let .mode(task, mode?, _) where mode != TaskMode.auto.rawValue: id = task
+        case let .update(task, _, _, pin?) where !pin.isEmpty: id = task
+        case let .archive(task): id = task
+        default: return nil
+        }
+        guard let task = taskViews.first(where: { $0.task.id == id })?.task else { return nil }
+        var asks: [String: String] = [:]
+        for key in task.dispatched.keys {
+            guard let work = GoalWork.parse(key) else { continue }
+            let verb = work.kind == GoalWork.Kind.fixIssue.rawValue ? AgentTaskQueue.issuesAction
+                                                                     : AgentTaskQueue.reviewAction
+            asks[key] = AgentTaskQueue.key(auditAction: verb, number: work.ref.number)
+        }
+        return asks.isEmpty ? nil : (id, asks)
+    }
+
+    /// Cancels the asks of `goal` not started yet, and has the goal forget them, so they
+    /// are asked for again should it go back to auto.
+    func withdrawGoalAsks(_ goal: (task: String, asks: [String: String])?) async {
+        guard let goal else { return }
+        let waiting = goal.asks.filter { _, queueKey in
+            queuedTasks.contains { $0.id == queueKey && $0.job.requested }
+        }
+        guard !waiting.isEmpty else { return }
+        waiting.values.forEach(cancelRequestedWork)
+        if let refusal = await editTask(.withdrawn(id: goal.task, work: waiting.keys.sorted())) {
+            AppLog.log("tasks", "goal \(goal.task): could not forget \(waiting.keys.sorted().joined(separator: " ")): \(refusal)")
+        }
     }
 
     /// A goal PR's review at the review-request monitor's settings (the most thorough
@@ -277,7 +324,7 @@ extension Store {
         guard goalOverlay.badge(node, watched: CoreAssets.repoCoordinates()) == nil else { return nil }
         goalFixesStarting.insert(ref.number)
         defer { goalFixesStarting.remove(ref.number) }
-        let ask = goalFixAsk(number: ref.number, url: node.url, author: node.author)
+        let ask = goalPlusAsk(number: ref.number, url: node.url, author: node.author)
         let action = ask.config.action
         let job = AgentJob(kind: action, auditAction: action, label: ask.label,
                            prompt: ask.config.buildPrompt(), prURL: nil, prNumber: nil,

@@ -1653,10 +1653,16 @@ class Store(QObject):
         """Queue each ``auto`` goal's issue fixes and reviews as asks (the cap, the ban
         list and the queue switch apply), then record them on their task, the ones
         already queued too. One whose prompt will not assemble is left for the next
-        pass, as :meth:`_offer_requested_work` leaves an ask."""
+        pass, as :meth:`_offer_requested_work` leaves an ask. A fix whose issue has an
+        agent on it already is recorded, not asked for."""
         done: dict[str, list[str]] = {}
+        fixes = any(w["kind"] == "fix-issue" for _, w in work)
+        agent_issues = self.goal_overlay().agent_issues if fixes else frozenset()
         for task_id, w in work:
             number, url, author = int(w["number"]), str(w["url"]), str(w.get("author") or "")
+            if w["kind"] == "fix-issue" and number in agent_issues:
+                done.setdefault(task_id, []).append(str(w["key"]))
+                continue
             if w["kind"] == "fix-issue":
                 config = self._goal_fix_config(number)
             else:
@@ -1677,10 +1683,44 @@ class Store(QObject):
                 activity.log("auto", "goal", f"could not record {', '.join(keys)}: {error}")
 
     def _goal_fix_config(self, number: int) -> issues.IssueConfig:
-        """A goal issue's fix: that issue, named, feature requests included, since the
-        goal it serves is often one."""
-        return issues.IssueConfig(target=issues.Target.SPECIFIC, me=self.effective_me,
-                                  specific_issue=str(number), include_features=True)
+        """The automatic pass's fix of a goal issue: feature requests included, since
+        the goal it serves is often one, and, as a sweep's, re-checked when its turn
+        comes: one closed or assigned by then is left alone."""
+        return issues.IssueConfig(target=issues.Target.ALL, me=self.effective_me,
+                                  include_features=True).for_issue(number)
+
+    def _goal_asks(self, op: dict) -> tuple[str, dict[str, str]] | None:
+        """The goal and its ``dispatched`` fixes and reviews by queue key, when ``op``
+        stops it acting (a mode other than auto, a pin, an archive)."""
+        kind = op.get("op")
+        if not (kind == "mode" and op.get("mode") not in (None, "auto")
+                or kind == "update" and op.get("pinnedStatus")
+                or kind == "archive"):
+            return None
+        task = next((v["task"] for v in self.tracked_tasks if v["task"].get("id") == op.get("id")), None)
+        asks = {}
+        for key in (task or {}).get("dispatched") or {}:
+            m = re.fullmatch(r"(fix|review):[^#]+#(\d+)(@.+)?", key)
+            if m:
+                verb = autofix.QUEUE_ISSUES_ACTION if m[1] == "fix" else autofix.QUEUE_REVIEW_ACTION
+                asks[key] = f"{verb}:{m[2]}"
+        return (str(op["id"]), asks) if asks else None
+
+    def _withdraw_goal_asks(self, goal: tuple[str, dict[str, str]] | None) -> None:
+        """Cancel the asks of ``goal`` not started yet, and have the goal forget them, so
+        they are asked for again should it go back to auto."""
+        if goal is None:
+            return
+        task_id, asks = goal
+        waiting = {key: q for key, q in asks.items()
+                   if any(e.id == q and e.job.requested for e in self.queued_tasks)}
+        if not waiting:
+            return
+        for queue_key in waiting.values():
+            self.cancel_requested_work(queue_key)
+        error = self._edit_tracked_task({"op": "withdrawn", "id": task_id, "work": sorted(waiting)})
+        if error:
+            activity.log("auto", "goal", f"could not forget {', '.join(sorted(waiting))}: {error}")
 
     def _poll_review_requests(self, owner: str, repo: str) -> None:
         try:
@@ -4508,15 +4548,19 @@ class Store(QObject):
             raise
 
     def _edit_tracked_task(self, op: dict) -> str | None:
+        # Read first: an archived or dismissed goal leaves the list.
+        withdrawn = self._goal_asks(op)
         try:
             tasks.edit(op)
         except tasks.Failure as exc:
             return str(exc)
         self.refresh_tracked_tasks()
         self.tracked_tasks_changed.emit()
+        self._withdraw_goal_asks(withdrawn)
         if op.get("op") in ("create", "link", "unarchive"):
             self.run_tracker_sync_async()
-        if op.get("op") == "mode" and op.get("mode") == "auto":
+        if op.get("op") == "mode" and any(v["task"].get("id") == op.get("id") and v.get("work")
+                                          for v in self.tracked_tasks):
             # Its automatic pass now: a poll already running may have read the task
             # before the switch. The poll is what fixes its findings.
             self._request_goal_work(self._read_goal_work())
@@ -4582,7 +4626,9 @@ class Store(QObject):
 
         def work() -> None:
             try:
-                cfg = self._goal_fix_config(number)
+                # Named, as the wizard's press names it: the operator asked for this one.
+                cfg = issues.IssueConfig(target=issues.Target.SPECIFIC, me=self.effective_me,
+                                         specific_issue=str(number), include_features=True)
                 verdict = self.dispatch_agent(autofix.AgentJob(
                     kind=autofix.QUEUE_ISSUES_ACTION, audit_action=autofix.QUEUE_ISSUES_ACTION,
                     label=f"Issues · #{number} · {issues.depth_by_id(cfg.depth)['title']}",

@@ -84,8 +84,9 @@ quoted, never as instructions, and the answer can only name the numbers it was s
 - A new goal needs at least three items no other unarchived task links; at most five are proposed
   per run. It arrives as a **proposed** task tagged `goal`, its history saying `created`,
   `via:grouper`.
-- The grouper can also add newly filed items to a goal it proposed earlier (`linked`, `via:grouper`),
-  never to a task you made yourself, and never a link you removed from it.
+- The grouper can also add newly filed items to a goal it proposed that you have not answered yet
+  (`linked`, `via:grouper`): never to one you observe, automate or archived, never to a task you
+  made yourself, and never a link you removed from it.
 - **Find goals** on the Tasks screen runs it at once.
 
 ### Modes
@@ -101,17 +102,19 @@ A proposed goal shows its graph and three choices:
 Any task with GitHub links, including your own, can switch between **Observe** and **Auto**. In
 **auto**, on every poll of the [automatic-work monitors](automation.md):
 
-- each open issue that no open, draft or merged PR of the task closes gets a [Fix-issues](actions.md#fix-issues)
-  fix of that one issue, feature requests included (a goal's issues often are), in the issue-fix band
-  of the queue, under the task cap like any queued work; while still no PR closes it, it is asked for
-  again a day later (`fixRetrySecs`)
+- each open issue that no open, draft or merged PR of the task closes gets one [Fix-issues](actions.md#fix-issues)
+  fix, feature requests included (a goal's issues often are), in the issue-fix band of the queue,
+  under the task cap like any queued work. As a sweep's fix, it leaves the issue alone if it is
+  closed or assigned by the time its turn comes. It is asked for once; `+` asks again
 - with **Review on new commits** on, each open PR is reviewed once per head commit, at max depth with
   per-line comments and no verdict (your own PR as yours)
 - your own open PRs get their unresolved review threads fixed, through the PR auto-fix path and its
   backoff, even with that monitor switched off
 
 Only items in the watched repo are worked on; the others are shown. A pinned task does nothing.
-What was started is history (`dispatch:fix-issue`, `dispatch:review`).
+What was started is history (`dispatch:fix-issue`, `dispatch:review`). Leaving auto, pinning or
+archiving the task (or dismissing the goal) withdraws what is still waiting in the queue
+(`withdraw:…`), to be asked for again if it goes back to auto.
 
 ### The graph
 
@@ -127,8 +130,8 @@ what, left to right:
 A pill's dot is its state as of the last sync. A pill opens its item; `+` starts the same fix agent
 for that issue at once, outside the cap, as the Fix-issues wizard's single-issue press does. A PR
 pill shows **agent** while an agent works on it and **queued** while one waits for a slot; for an
-issue, the `+` after it does. Rows whose items are all merged
-or closed come last.
+issue, the `+` after it does. Rows whose items are all merged or closed come last. Only issues in
+the watched repo get a `+`.
 
 ## Statuses and reason tags
 
@@ -194,7 +197,8 @@ echo '{"op":"create","title":"Tor transport","tags":["area:mesh"],"links":["#160
 `title`, `tags`, `pinnedStatus`: `done`, `paused`, or `""` to unpin), `link` / `unlink` (`id`, `url`),
 `note` (`id`, and any of `text`, `tags`, `url`), `archive` / `unarchive` (`id`), `mode` (`id`, and
 any of `mode`: `observe`, `auto` or `dismissed`, and `reviewOnPush`), `dispatched` (`id`, `work`: the
-`key`s of `work` items just started). `work` is what an auto task wants started: `fix-issue`,
+`key`s of `work` items just started), `withdrawn` (`id`, `work`: `dispatched` keys whose work was
+withdrawn before it started, wanted again). `work` is what an auto task wants started: `fix-issue`,
 `review`, and `findings` for `LOGIN`'s own PRs. An unknown op, key
 or task, a note over 4000 characters, or an edit that does not apply exits 1 with the reason on
 stderr. An edit saved whose history line could not be written exits 0 with the task, and a warning

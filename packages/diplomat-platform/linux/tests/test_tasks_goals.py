@@ -229,26 +229,29 @@ def test_observe_auto_and_review_on_new_commits(tstore, github, no_agents, monke
     assert "font-weight: 700" not in card.goal_buttons["auto"].styleSheet()
     sent = _edits(monkeypatch)
 
+    def mode():
+        return [op for op in sent if op["op"] == "mode"][-1]
+
     def click(key: str):
         view.card(task_id).goal_buttons[key].click()
         settle(tstore)
         return view.card(task_id)
 
     card = click("auto")
-    assert sent[-1] == {"op": "mode", "id": task_id, "mode": "auto"}
+    assert mode() == {"op": "mode", "id": task_id, "mode": "auto"}
     assert list(card.goal_buttons) == ["observe", "auto", "review"]
     assert card.goal_buttons["review"].text() == "Review on new commits"
     assert "font-weight: 700" in card.goal_buttons["auto"].styleSheet()
     assert "font-weight: 700" not in card.goal_buttons["review"].styleSheet()
     card = click("review")
-    assert sent[-1] == {"op": "mode", "id": task_id, "reviewOnPush": True}
+    assert mode() == {"op": "mode", "id": task_id, "reviewOnPush": True}
     assert _task(task_id)["task"]["reviewOnPush"] is True
     assert "font-weight: 700" in card.goal_buttons["review"].styleSheet()
     card = click("review")
-    assert sent[-1] == {"op": "mode", "id": task_id, "reviewOnPush": False}
+    assert mode() == {"op": "mode", "id": task_id, "reviewOnPush": False}
     assert "reviewOnPush" not in _task(task_id)["task"]
     card = click("observe")
-    assert sent[-1] == {"op": "mode", "id": task_id, "mode": "observe"}
+    assert mode() == {"op": "mode", "id": task_id, "mode": "observe"}
     assert list(card.goal_buttons) == ["observe", "auto"]
 
 
@@ -296,7 +299,12 @@ def _left_click():
                        Qt.KeyboardModifier.NoModifier)
 
 
-def test_the_plus_starts_a_fix_now_and_records_it(tstore, github, claude, no_agents):
+def test_the_plus_starts_a_fix_now_and_records_it(tstore, github, claude, no_agents,
+                                                  monkeypatch):
+    from diplomat_runtime import promptcore
+
+    configs, built = [], promptcore.build_prompt
+    monkeypatch.setattr(promptcore, "build_prompt", lambda cfg: configs.append(cfg) or built(cfg))
     task_id = _propose(tstore, github)
     view, card = _expanded(tstore, task_id)
     plus = card.graph_rows[1][1]
@@ -306,6 +314,8 @@ def test_the_plus_starts_a_fix_now_and_records_it(tstore, github, claude, no_age
     settle(tstore)
     # Started outside the cap, as the Fix-issues wizard's one-issue press starts it.
     assert [c["prompt"] for c in no_agents] == ["PROMPT:issues:1802"]
+    assert [(c["target"], c["specificIssue"], c["includeFeatures"]) for c in configs] == [
+        ("specific", "1802", True)]
     [run] = agentregistry.load()
     assert (run.kind, run.pr_number, run.source) == ("issues", None, autofix.SOURCE_PANEL)
     assert run.label.startswith("Issues · #1802 · ")
@@ -416,8 +426,10 @@ def test_an_auto_goal_queues_its_fixes_and_reviews_and_fixes_my_findings(
     asks = {r.key: r for r in tstore.requested_work}
     assert sorted(asks) == ["issues:1802", "review:1810", "review:1812"]
     fix = asks["issues:1802"]
+    # The issue, re-checked as a sweep's is when its turn comes.
     assert (fix.url, fix.author, fix.config["target"], fix.config["specificIssue"],
-            fix.config["includeFeatures"]) == (LONE, "kacper", "specific", "1802", True)
+            fix.config["includeFeatures"], fix.config["unassignedOnly"]) == (
+        LONE, "kacper", "all", "1802", True, True)
     review = asks["review:1810"]
     assert (review.author, review.config["depth"], review.config["specificPR"],
             review.config["leaveReviews"], review.config["specificAuthor"]) == (
@@ -508,3 +520,61 @@ def test_a_dispatched_record_that_fails_is_logged_not_fatal(tstore, github, no_a
     assert ("auto", "goal", "could not record " + ", ".join([
         f"fix:{_key(1802)}", f"review:{_key(1810)}@aaa1810", f"review:{_key(1812)}@aaa1812"])
         + ": diplomat-core tasks-edit failed: locked") in logged
+
+
+def test_a_fix_whose_issue_has_an_agent_is_recorded_not_asked(tstore, github, no_agents,
+                                                              monkeypatch):
+    task_id = _auto_goal(tstore, github, "auto")
+    tstore._goal_fixes_starting.add(1802)
+    _poll(tstore, monkeypatch)
+    assert sorted(r.key for r in tstore.requested_work) == ["review:1810", "review:1812"]
+    assert f"fix:{_key(1802)}" in _task(task_id)["task"]["dispatched"]
+
+
+def _asked(store) -> list[str]:
+    return sorted(r.key for r in store.requested_work)
+
+
+def test_leaving_auto_withdraws_the_goals_asks_and_forgets_them(tstore, github, no_agents,
+                                                                monkeypatch):
+    monkeypatch.setattr(type(tstore), "run_autofix_poll_async", lambda self: None)
+    task_id = _auto_goal(tstore, github, "auto")
+    _poll(tstore, monkeypatch)
+    assert _asked(tstore) == ["issues:1802", "review:1810", "review:1812"]
+    assert tstore._edit_tracked_task({"op": "mode", "id": task_id, "mode": "observe"}) is None
+    assert _asked(tstore) == [] and not [t for t in tstore.queued_tasks if t.job.requested]
+    assert "dispatched" not in _task(task_id)["task"]
+    # So going back to auto asks for them again.
+    assert tstore._edit_tracked_task({"op": "mode", "id": task_id, "mode": "auto"}) is None
+    assert _asked(tstore) == ["issues:1802", "review:1810", "review:1812"]
+
+
+@pytest.mark.parametrize("op", [{"op": "archive"}, {"op": "update", "pinnedStatus": "paused"}])
+def test_archiving_or_pinning_an_auto_goal_withdraws_its_asks(tstore, github, no_agents,
+                                                              monkeypatch, op):
+    task_id = _auto_goal(tstore, github, "auto")
+    _poll(tstore, monkeypatch)
+    assert tstore._edit_tracked_task({**op, "id": task_id}) is None
+    assert _asked(tstore) == []
+    assert "dispatched" not in _task(task_id)["task"]
+
+
+def test_dismissing_an_automated_proposal_withdraws_its_asks(tstore, github, claude, no_agents,
+                                                             monkeypatch):
+    monkeypatch.setattr(type(tstore), "run_autofix_poll_async", lambda self: None)
+    task_id = _propose(tstore, github)
+    assert tstore._edit_tracked_task({"op": "mode", "id": task_id, "mode": "auto"}) is None
+    assert _asked(tstore) == ["issues:1802"]
+    assert tstore._edit_tracked_task({"op": "mode", "id": task_id, "mode": "dismissed"}) is None
+    assert _asked(tstore) == []
+
+
+def test_turning_review_on_new_commits_on_asks_for_the_reviews_at_once(tstore, github,
+                                                                       no_agents, monkeypatch):
+    monkeypatch.setattr(type(tstore), "run_autofix_poll_async", lambda self: None)
+    _github(github, candidates=False)
+    task_id = _create(tstore, "Duo", links=[PR])
+    assert tstore._edit_tracked_task({"op": "mode", "id": task_id, "mode": "auto"}) is None
+    assert _asked(tstore) == []
+    assert tstore._edit_tracked_task({"op": "mode", "id": task_id, "reviewOnPush": True}) is None
+    assert _asked(tstore) == ["review:1810"]

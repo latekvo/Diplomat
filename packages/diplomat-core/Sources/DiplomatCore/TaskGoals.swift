@@ -37,10 +37,10 @@ public enum TaskGraph {
     /// - issue -> the PR that closes it (either side's closing reference)
     /// - PR -> the PR whose base branch is its head branch (same repository)
     /// - `task.edges`
-    /// An open issue that no open, draft or merged PR of the task closes ends in an `add`
-    /// node: appended to each row it ends, or on a row of its own when it leads only to
-    /// closed PRs. Every item is on some row. Rows whose items are all merged or closed
-    /// come last; at most `maxRows`.
+    /// An open issue of `watched` (where fixes can be started) that no open, draft or
+    /// merged PR of the task closes ends in an `add` node: appended to each row it ends,
+    /// or on a row of its own when it leads elsewhere. Every item is on some row. Rows
+    /// whose items are all merged or closed come last; at most `maxRows`.
     public static func rows(_ task: TrackedTask, snapshots: [String: GitHubSnapshot],
                             watched: (owner: String, repo: String)) -> [[Node]] {
         let g = Graph(task, snapshots)
@@ -61,7 +61,7 @@ public enum TaskGraph {
         // A cycle has no source: start it from its first item.
         for i in g.links.indices where !covered.contains(i) { walk([i]) }
 
-        let needing = Set(g.links.indices.filter(g.needsPR))
+        let needing = Set(g.links.indices.filter { g.needsPR($0) && isLocal(g.links[$0].url, watched) })
         func node(_ i: Int) -> Node {
             let link = g.links[i], snap = snapshots[link.url]
             return Node(kind: g.kind(i), url: link.url,
@@ -85,10 +85,16 @@ public enum TaskGraph {
         return Array((rows.filter { !settled($0) } + rows.filter(settled)).prefix(maxRows))
     }
 
-    /// The open issues no open, draft or merged PR of `task` closes.
-    static func issuesNeedingPR(_ task: TrackedTask, _ snapshots: [String: GitHubSnapshot]) -> [TaskLink] {
+    /// The open issues of `watched` no open, draft or merged PR of `task` closes.
+    static func issuesNeedingPR(_ task: TrackedTask, _ snapshots: [String: GitHubSnapshot],
+                                watched: (owner: String, repo: String)) -> [TaskLink] {
         let g = Graph(task, snapshots)
-        return g.links.indices.filter(g.needsPR).map { g.links[$0] }
+        return g.links.indices.filter { g.needsPR($0) && isLocal(g.links[$0].url, watched) }.map { g.links[$0] }
+    }
+
+    static func isLocal(_ url: String, _ watched: (owner: String, repo: String)) -> Bool {
+        guard let ref = GitHubRef(url: url) else { return false }
+        return ref.owner.lowercased() == watched.owner.lowercased() && ref.repo.lowercased() == watched.repo.lowercased()
     }
 
     private static func word(_ s: GitHubSnapshot) -> String {
@@ -100,6 +106,8 @@ public enum TaskGraph {
         let snaps: [GitHubSnapshot?]
         var out: [Int: [Int]] = [:]
         var into: [Int: Int] = [:]
+        /// Per issue, the PRs a closing reference says close it.
+        var closers: [Int: Set<Int>] = [:]
 
         init(_ task: TrackedTask, _ snapshots: [String: GitHubSnapshot]) {
             links = task.links.filter(\.isGitHub)
@@ -110,7 +118,9 @@ public enum TaskGraph {
             for i in links.indices {
                 for c in snaps[i]?.closes ?? [] {
                     guard let j = at(c) else { continue }
-                    if kind(i) == "pr" { edge(j, i) } else { edge(i, j) }
+                    let (issue, pr) = kind(i) == "pr" ? (j, i) : (i, j)
+                    edge(issue, pr)
+                    closers[issue, default: []].insert(pr)
                 }
             }
             for i in links.indices where kind(i) == "pr" {
@@ -137,7 +147,7 @@ public enum TaskGraph {
 
         func needsPR(_ i: Int) -> Bool {
             guard kind(i) == "issue", snaps[i]?.state == "OPEN" else { return false }
-            return !(out[i] ?? []).contains { j in
+            return !(closers[i] ?? []).contains { j in
                 kind(j) == "pr" && ["OPEN", "MERGED"].contains(snaps[j]?.state ?? "")
             }
         }
@@ -168,7 +178,7 @@ public struct GoalWork: Codable, Equatable, Sendable {
     static func reviewKey(_ ref: GitHubRef, head: String) -> String { "review:\(ref.key)@\(head)" }
 
     /// A recordable key's kind (`fix-issue` / `review`), item and, for a review, head.
-    static func parse(_ key: String) -> (kind: String, ref: GitHubRef, head: String?)? {
+    public static func parse(_ key: String) -> (kind: String, ref: GitHubRef, head: String?)? {
         func ref(_ s: Substring) -> GitHubRef? {
             guard let hash = s.lastIndex(of: "#"), let slash = s[..<hash].firstIndex(of: "/"),
                   let n = TaskLinks.number(String(s[s.index(after: hash)...])) else { return nil }
@@ -184,13 +194,12 @@ public struct GoalWork: Codable, Equatable, Sendable {
 
     /// What `task` wants started now; nothing unless its mode is `auto` and it is neither
     /// archived nor pinned. Only items in `watched` (the repo the agents work in):
-    /// - `fix-issue` per open issue no open, draft or merged PR of it closes, unless one
-    ///   was asked for within `fixRetrySecs`
+    /// - `fix-issue` per open issue no open, draft or merged PR of it closes, once: a fix
+    ///   that ends without a PR is not asked for again (the graph's `+` asks by hand)
     /// - with `reviewOnPush`, `review` per open PR whose head commit no review was asked
     ///   for yet
     /// - `findings` per open PR `me` wrote
     public static func plan(_ task: TrackedTask, snapshots: [String: GitHubSnapshot], me: String,
-                            now: Date, fixRetrySecs: Int,
                             watched: (owner: String, repo: String)) -> [GoalWork] {
         guard task.effectiveMode == .auto, task.archivedAt == nil, task.pinnedStatus == nil else { return [] }
         let home = GitHubRef(owner: watched.owner, repo: watched.repo, number: 1)
@@ -201,10 +210,10 @@ public struct GoalWork: Codable, Equatable, Sendable {
             return ref
         }
         var out: [GoalWork] = []
-        for link in TaskGraph.issuesNeedingPR(task, snapshots) {
+        for link in TaskGraph.issuesNeedingPR(task, snapshots, watched: watched) {
             guard let ref = local(link.url) else { continue }
             let key = fixKey(ref)
-            if let at = task.dispatched[key], now.timeIntervalSince(at) < Double(fixRetrySecs) { continue }
+            if task.dispatched[key] != nil { continue }
             out.append(GoalWork(kind: .fixIssue, url: link.url, number: ref.number,
                                 author: snapshots[link.url]?.author, key: key))
         }
@@ -225,13 +234,13 @@ public struct GoalWork: Codable, Equatable, Sendable {
 
 /// Proposes goal tasks: one sandboxed `claude -p` over the watched repo's open issues and
 /// PRs, asked which of them serve one goal ("iPhone Duo support"). Each answer becomes a
-/// `proposed` task, or adds items to a grouper goal the operator has not dismissed.
+/// `proposed` task, or adds items to one the operator has not answered yet.
 ///
 /// Issue and PR text is untrusted: it reaches the model only on stdin, every line quoted,
 /// and the call runs with no tools, MCP servers, settings or session, like
 /// `CommsClassifier`. What the answer can do is bounded here: it only names numbers of
-/// the candidates it was shown, and a proposal only becomes a task the operator then
-/// approves or dismisses.
+/// the candidates it was shown, and it only makes or grows `proposed` goals, which
+/// nothing acts on until the operator approves one.
 public enum TaskGrouper {
     public struct Result: Codable, Equatable, Sendable {
         public var ok: Bool
@@ -411,10 +420,10 @@ public enum TaskGrouper {
             let status: String
             if t.effectiveMode == .dismissed {
                 status = "dismissed: never propose it again"
-            } else if t.origin == TrackedTask.grouperOrigin {
-                status = "grouper goal: you may add items to it"
+            } else if acceptsAdditions(t) {
+                status = "proposed goal: you may add items to it"
             } else {
-                status = "the operator's own task: do not add to it or repeat it"
+                status = "tracked: do not add to it or repeat it"
             }
             out.append("goal \(t.id) (\(status)), items \(numbers.joined(separator: " ")):")
             out.append(quote(t.title))
@@ -469,9 +478,15 @@ public enum TaskGrouper {
 
     static let titleChars = 80
 
+    /// A goal the grouper proposed that the operator has not answered yet: once observed
+    /// or automated, what it holds is the operator's call.
+    static func acceptsAdditions(_ t: TrackedTask) -> Bool {
+        t.origin == TrackedTask.grouperOrigin && t.effectiveMode == .proposed && t.archivedAt == nil
+    }
+
     /// `answers` applied to `tasks`, trusting only numbers among `candidates`:
-    /// - with `task`, a grouper goal not dismissed: its new items join it (`via: grouper`),
-    ///   but not those it `dismissed`; a `linked`, `via:grouper` event each
+    /// - with `task`, a goal still `proposed` (`acceptsAdditions`): its new items join it
+    ///   (`via: grouper`), but not those it `dismissed`; a `linked`, `via:grouper` event each
     /// - else a `proposed` task (origin `grouper`, tags as given, plus `goal`) of its items
     ///   no other unarchived task links, kept when at least `minItems` remain and at most
     ///   half of them belong to one dismissed goal; at most `maxNew` of them
@@ -504,8 +519,7 @@ public enum TaskGrouper {
             var seen = Set<Int>()
             let items = a.items.filter { seen.insert($0).inserted }.compactMap { byNumber[$0] }
             if let id = a.task {
-                guard let i = tasks.firstIndex(where: { $0.id == id && $0.origin == TrackedTask.grouperOrigin
-                                                         && $0.effectiveMode != .dismissed }) else { continue }
+                guard let i = tasks.firstIndex(where: { $0.id == id && acceptsAdditions($0) }) else { continue }
                 let refused = Set(tasks[i].dismissed.map(TaskLinks.identity))
                 for c in items {
                     let identity = TaskLinks.identity(c.url)

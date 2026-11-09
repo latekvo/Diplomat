@@ -941,14 +941,21 @@ func goalsSmoke() async throws {
     check(drawn(TaskGraph.rows(other, snapshots: [pr(40): goalSnap("pr", head: "b"),
                                                   pr(41, repo: "x/y"): goalSnap("pr", base: "b")], watched: watched))
           == ["#40", "x/y#41"], "a branch name stacks PRs of one repository only")
+    var blocked = task("t-b", [issue(60), pr(61), issue(62, repo: "x/y")])
+    blocked.edges = [TaskEdge(from: issue(60), to: pr(61))]
+    check(drawn(TaskGraph.rows(blocked, snapshots: [issue(60): goalSnap("issue"), pr(61): goalSnap("pr"),
+                                                    issue(62, repo: "x/y"): goalSnap("issue")], watched: watched))
+          == ["#60->#61", "x/y#62", "#60->+"],
+          "only a closing reference resolves an issue, and an issue elsewhere gets no +: "
+            + "\(drawn(TaskGraph.rows(blocked, snapshots: [issue(60): goalSnap("issue"), pr(61): goalSnap("pr"), issue(62, repo: "x/y"): goalSnap("issue")], watched: watched)))")
     check(TaskGraph.rows(task("t-s", ["https://ours.slack.com/archives/C1/p1"]), snapshots: [:], watched: watched).isEmpty,
           "no GitHub links, no graph")
 
     section("goals: the auto-mode plan")
-    func plan(_ t: TrackedTask, me: String = "me", now: Date = at(100)) -> [String] {
+    func plan(_ t: TrackedTask, me: String = "me") -> [String] {
         GoalWork.plan(t, snapshots: snaps.merging([pr(10): goalSnap("pr", closes: [issue(1)], author: "Me", oid: "aaa"),
                                                    pr(11): goalSnap("pr", base: "fix-a", oid: "bbb")]) { $1 },
-                      me: me, now: now, fixRetrySecs: 1_000, watched: watched)
+                      me: me, watched: watched)
             .map { "\($0.kind.rawValue) #\($0.number) \($0.key)" }
     }
     check(plan(t).isEmpty, "a task in observe mode (no mode) wants nothing")
@@ -964,15 +971,14 @@ func goalsSmoke() async throws {
     t.dispatched = ["fix:acme/app#3": at(0), "review:acme/app#10@aaa": at(0), "review:acme/app#11@old": at(0)]
     check(!plan(t).contains { $0.contains("#3 ") } && !plan(t).contains { $0.contains("@aaa") }
             && plan(t).contains { $0.contains("@bbb") },
-          "a fix asked for within the retry and a reviewed head are not asked again; a new head is: \(plan(t))")
-    check(plan(t, now: at(1_000)).contains("fix-issue #3 fix:acme/app#3"), "a fix is asked again once the retry passed")
+          "a fix asked for once and a reviewed head are not asked again; a new head is: \(plan(t))")
     var pinned = t
     pinned.pinnedStatus = .paused
     check(plan(pinned).isEmpty, "a pinned task wants nothing")
     let foreign = TrackedTask(id: "t-f", title: "f", links: [TaskLink(url: issue(1, repo: "x/y"), kind: "issue", addedAt: epoch)],
                               createdAt: epoch, mode: .auto)
-    check(GoalWork.plan(foreign, snapshots: [issue(1, repo: "x/y"): goalSnap("issue")], me: "me", now: at(0),
-                        fixRetrySecs: 1, watched: watched).isEmpty,
+    check(GoalWork.plan(foreign, snapshots: [issue(1, repo: "x/y"): goalSnap("issue")], me: "me",
+                        watched: watched).isEmpty,
           "an item outside the watched repo is shown, never worked on")
 
     section("goals: the sync keeps what the graph needs")
@@ -1022,10 +1028,15 @@ func goalsSmoke() async throws {
     check(((twice["dispatched"] as? [String: Any]) ?? [:]).keys.sorted()
             == ["fix:\(owner)/\(repo)#12", "review:\(owner)/\(repo)#30@bbb"].map { $0.lowercased() }.sorted(),
           "one review is kept per PR, its newest head's: \(twice["dispatched"] ?? "-")")
+    let fixKey = ((twice["dispatched"] as? [String: Any]) ?? [:]).keys.first { $0.hasPrefix("fix:") } ?? "-"
+    let withdrawn = try edit(#"{"op":"withdrawn","id":"\#(manual)","work":["\#(fixKey)","review:\#(owner)/\#(repo)#30@aaa"]}"#)
+    check(((withdrawn["dispatched"] as? [String: Any]) ?? [:]).keys.sorted() == ["review:\(owner)/\(repo)#30@bbb".lowercased()],
+          "withdrawn forgets the keys it names, and only those: \(withdrawn["dispatched"] ?? "-")")
     let (_, listed, _) = try cli(["tasks-list"], env: env)
     let manualView = (json(listed) as? [[String: Any]])?.first ?? [:]
     let manualHistory = (manualView["history"] as? [[String: Any]] ?? []).compactMap { ($0["tags"] as? [String])?.joined(separator: ",") }
-    check(manualHistory.prefix(4) == ["dispatch:fix-issue", "dispatch:review", "dispatch:review", "mode:auto,review-on-push:on"],
+    check(manualHistory.prefix(5) == ["withdraw:fix-issue", "dispatch:fix-issue", "dispatch:review", "dispatch:review",
+                                      "mode:auto,review-on-push:on"],
           "each change is history: \(manualHistory)")
     check(manualView["graph"] is [Any] && manualView["work"] is [Any], "tasks-list carries graph and work: \(manualView.keys.sorted())")
 
@@ -1089,7 +1100,6 @@ func goalsSmoke() async throws {
     check(apply(twoGoals, [], maxNew: 1).created == 1, "at most maxProposals per run")
     check(apply([TaskGrouper.Answer(title: "  ", items: [1, 2, 3])], []).created == 0, "a goal needs a title")
     var existing = goal!
-    existing.mode = .auto
     existing.dismissed = [pr(11)]
     existing.links.removeAll { $0.url == pr(10) || $0.url == pr(11) }
     let addition = apply([TaskGrouper.Answer(task: existing.id, title: "", items: [10, 11, 20])], [existing])
@@ -1100,6 +1110,13 @@ func goalsSmoke() async throws {
                           [existing, task("t-x", [issue(20)])])
     check(contested.added == 1 && contested.tasks[0].links.last?.url == pr(10),
           "an item another task links does not join a goal: \(contested.tasks[0].links.map(\.url))")
+    for (mode, archived) in [(TaskMode.auto, false), (.observe, false), (.proposed, true)] {
+        var answered = existing
+        answered.mode = mode
+        answered.archivedAt = archived ? at(0) : nil
+        check(apply([TaskGrouper.Answer(task: existing.id, title: "", items: [10, 20])], [answered]).added == 0,
+              "nothing joins a \(archived ? "archived" : mode.rawValue) goal: what an answered goal holds is the operator's")
+    }
     check(apply([TaskGrouper.Answer(task: owned.id, title: "", items: [3])], [owned]).added == 0,
           "nothing joins the operator's own task")
     check(apply([TaskGrouper.Answer(task: dismissedGoal.id, title: "", items: [20])], [dismissedGoal]).added == 0,
