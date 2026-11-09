@@ -98,6 +98,10 @@ enum QueueTest {
         // A headless Store still READS the operator's real settings — pin every one
         // this test's outcome depends on, or a machine with a monitor switched off
         // fails assertions about work that monitor owns.
+        let argent = PRRef.LocalRepo(owner: "software-mansion", repo: "argent",
+                                     path: AgentSpawner.repoPath)
+        store.pinRoots([argent])
+        store.selectedRepo = ""
         store.prAutofixEnabled = true       // headless-guarded: persists nothing, polls nothing
         store.reviewRequestsEnabled = true
         store.reviewAllowlistRaw = ""       // every review-req offered below carries no author
@@ -644,10 +648,10 @@ enum QueueTest {
                              memberResponded: false)
         }
         store.communityIssuesEnabled = true
-        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0)])
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0)], root: argent)
         check("the first community scan queues none of the backlog",
               store.requestedWork.isEmpty)
-        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)])
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)], root: argent)
         check("an outsider's issue filed after it is queued as a fix of that one issue",
               store.requestedWork.map(\.key) == [key("issues", 71)]
                   && store.requestedWork.first?.author == "outsider71"
@@ -656,14 +660,14 @@ enum QueueTest {
         check("…which re-checks its issue when its turn comes, as a swept fix does",
               store.queuedTasks.first?.job.prompt.contains("CAME OUT OF A SWEEP") == true)
         store.cancelRequestedWork(key("issues", 71))
-        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)])
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)], root: argent)
         check("…and only once, even after its ask is gone", store.requestedWork.isEmpty)
         store.communityIssuesEnabled = false
         store.communityIssuesEnabled = true
-        store.queueCommunityIssues([filed(72, minutes: 2)])
+        store.queueCommunityIssues([filed(72, minutes: 2)], root: argent)
         check("switched off and on, the next scan queues what was filed meanwhile not at all",
               store.requestedWork.isEmpty)
-        store.queueCommunityIssues([filed(72, minutes: 2), filed(73, minutes: 3)])
+        store.queueCommunityIssues([filed(72, minutes: 2), filed(73, minutes: 3)], root: argent)
         check("…and what is filed after it as before",
               store.requestedWork.map(\.key) == [key("issues", 73)])
         store.requestedWork = []

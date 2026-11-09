@@ -200,79 +200,53 @@ struct SettingsView: View {
                                   terminal: store.terminal)
     }
 
-    // MARK: Repo root (where the agents work)
-
-    /// Trimmed the same way the resolver blanks it (`RepoPaths.storedAgentRepo`), so a
-    /// newline-only paste reads as blank in the UI too — otherwise the clear button and
-    /// the "Blank = …" tail would disagree with what actually resolves.
-    private var trimmedRepoPath: String {
-        store.repoPathOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    // MARK: Repo roots (where the agents work)
 
     private var repoSection: some View {
-        // One state read per render decides the pill, the summary and its colour.
-        let state = RepoPaths.agentRepoState
-        let ok = state == .ok
-        let pill = StatusPill(text: ok ? "checkout ok" : "check this",
-                              tint: ok ? .green : .orange,
-                              symbol: ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-        return SettingsCard(symbol: "folder.fill", title: "REPO ROOT", tint: .teal, pill: pill) {
-            // A problem states itself on the face of the card; the happy path is what
-            // the field already shows, so it waits for Explain.
-            SettingRow(title: "Where every spawned agent starts",
-                       summary: ok ? nil : repoSummary(state),
-                       detail: ok ? repoDetail : nil,
-                       stacked: true) {
-                repoField
-            }
+        let env = RepoPaths.agentRepoEnvOverride
+        let paths = store.repoRootPaths
+        let broken = env == nil && paths.enumerated().contains { rootStatus($0.offset, $0.element).warn }
+        let count = store.roots.count
+        let pill: StatusPill
+        if env != nil {
+            pill = StatusPill(text: "env override", tint: .orange, symbol: "exclamationmark.triangle.fill")
+        } else if broken {
+            pill = StatusPill(text: "check this", tint: .orange, symbol: "exclamationmark.triangle.fill")
+        } else {
+            pill = StatusPill(text: count == 1 ? "1 root" : "\(count) roots", tint: .green,
+                              symbol: "checkmark.seal.fill")
         }
-    }
-
-    private var repoField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
-            TextField(RepoPaths.defaultAgentRepo, text: $store.repoPathOverride)
-                .textFieldStyle(.plain)
-                .font(.callout)
-                .lineLimit(1)
-            if !trimmedRepoPath.isEmpty {
-                Button { store.repoPathOverride = "" } label: {
-                    Image(systemName: "xmark.circle.fill")
+        let summary: String? = env.map {
+            "DIPLOMAT_REPO is set in this app's environment - agents run in \($0), whatever "
+                + "this list says. Unset it to use the list again."
+        }
+        return SettingsCard(symbol: "folder.fill", title: "REPO ROOTS", tint: .teal, pill: pill) {
+            SettingRow(title: "Where the agents work", summary: summary,
+                       detail: repoRootsDetail, stacked: true) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if paths.isEmpty { defaultRootRow }
+                    ForEach(Array(paths.enumerated()), id: \.offset) { i, path in
+                        repoRootRow(i, path)
+                    }
+                    Button("Add…") { chooseRepoRoots() }
+                        .buttonStyle(.bordered).controlSize(.small)
                 }
-                .buttonStyle(.borderless).foregroundStyle(.secondary)
-                .help("Clear — fall back to \(RepoPaths.defaultAgentRepo)")
+                // A remote added or renamed since the last read shows up without a relaunch.
+                .onAppear {
+                    RepoPaths.invalidateRoots()
+                    Task { await store.refreshRoots() }
+                }
             }
-            Button("Choose…") { chooseRepoRoot() }
-                .buttonStyle(.bordered).controlSize(.small)
-        }
-        .padding(7)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
-    }
-
-    /// The line for a given state. `state` is passed in (not re-read) so one read in
-    /// `repoSection` drives both the pill and the text — they can't disagree, and the
-    /// filesystem is stat'd once per render. Mirrors `settingsview._refresh_repo_ui`.
-    private func repoSummary(_ state: RepoPaths.AgentRepoState) -> String {
-        switch state {
-        case .envShadowed:
-            return "DIPLOMAT_REPO is set in this app's environment — agents run in "
-                + "\(RepoPaths.agentRepoEnvOverride ?? RepoPaths.agentRepo), whatever this "
-                + "field says. Unset it to use the picker again."
-        case .notAbsolute:
-            return "Use an absolute path — a relative one resolves against whatever "
-                + "directory the spawned terminal happens to start in, not this app's."
-        case .notACheckout:
-            return "No git checkout at \(RepoPaths.agentRepo) — the spawn's `cd` is "
-                + "best-effort, so an agent would start in your home directory instead. "
-                + "Pick the clone of \(repoSlug)."
-        case .ok:
-            return "`cd \(RepoPaths.agentRepo)` — your local clone of \(repoSlug)."
         }
     }
 
-    private var repoDetail: String {
-        repoSummary(.ok) + " Blank = the default path, \(RepoPaths.defaultAgentRepo). "
-            + "DIPLOMAT_REPO in this app's environment outranks both."
+    private var repoRootsDetail: String {
+        "The first is the primary: an agent whose job names no repo starts there. Every "
+            + "automatic job runs across all of them, and the header picks the one the "
+            + "lists, search and wizards work on. Each is known by its GitHub remotes, "
+            + "\(repoSlug) first if it is one of them. None listed = "
+            + "\(RepoPaths.defaultAgentRepo). DIPLOMAT_REPO in this app's environment "
+            + "outranks the list."
     }
 
     private var repoSlug: String {
@@ -280,17 +254,104 @@ struct SettingsView: View {
         return "\(c.owner)/\(c.repo)"
     }
 
-    /// Directory picker for the repo root.
-    private func chooseRepoRoot() {
+    /// The fallback a blank list resolves to, shown in place of the rows.
+    private var defaultRootRow: some View {
+        let path = RepoPaths.defaultAgentRepo
+        let ok = RepoPaths.rootState(path) == .ok
+        let line = ok ? "None listed - agents work in \(path)"
+            : "None listed - and no git checkout at \(path), so an agent would start in "
+                + "your home directory. Add the clone of \(repoSlug)."
+        return Text(line).font(.caption)
+            .foregroundStyle(ok ? Color.secondary : Color.orange)
+            .padding(7)
+    }
+
+    /// One stored root: its path, and what it resolved to or why it does not count.
+    private func repoRootRow(_ i: Int, _ path: String) -> some View {
+        let status = rootStatus(i, path)
+        let field = Binding<String>(
+            get: { i < store.repoRootPaths.count ? store.repoRootPaths[i] : "" },
+            set: { if i < store.repoRootPaths.count { store.repoRootPaths[i] = $0 } })
+        return HStack(spacing: 6) {
+            Image(systemName: i == 0 ? "folder.fill" : "folder")
+                .font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                TextField(RepoPaths.defaultAgentRepo, text: field)
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+                    .lineLimit(1)
+                Text(status.text).font(.caption2)
+                    .foregroundStyle(status.warn ? Color.orange : Color.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+            Button { store.repoRootPaths.swapAt(i, i - 1) } label: {
+                Image(systemName: "arrow.up")
+            }
+            .buttonStyle(.borderless).foregroundStyle(.secondary)
+            .disabled(i == 0)
+            .help("Move up - the first root is the primary")
+            Button("Choose…") { chooseRepoRoot(replacing: i) }
+                .buttonStyle(.bordered).controlSize(.small)
+            Button { store.repoRootPaths.remove(at: i) } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(.borderless).foregroundStyle(.secondary)
+            .help("Stop working in this repo")
+        }
+        .padding(7)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
+    }
+
+    /// The line under a root. A relative path and a missing checkout are judged before
+    /// the resolved list is asked, since the list stands the configured repo in for a
+    /// lone root that has no remote. Mirrors `settingsview._refresh_repo_ui`.
+    private func rootStatus(_ i: Int, _ raw: String) -> (text: String, warn: Bool) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return ("Blank - skipped", true) }
+        switch RepoPaths.rootState(trimmed) {
+        case .notAbsolute:
+            return ("Use an absolute path - a relative one resolves against whatever "
+                    + "directory the spawned terminal starts in, not this app's.", true)
+        case .notACheckout:
+            return ("No git checkout here - the spawn's `cd` is best-effort, so an agent "
+                    + "would start in your home directory instead.", true)
+        case .ok:
+            break
+        }
+        let path = RepoRoots.expand(trimmed)
+        guard let root = store.roots.first(where: { $0.path == path }) else {
+            return ("No GitHub remote, or a repo an earlier root already names - skipped", true)
+        }
+        return (i == 0 ? "\(root.slug) - primary" : root.slug, false)
+    }
+
+    /// Directory picker for the roots to add.
+    private func chooseRepoRoots() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose local checkouts the agents should work in"
+        panel.prompt = "Add"
+        guard panel.runModal() == .OK else { return }
+        let added = panel.urls.map(\.path).filter { !store.repoRootPaths.contains($0) }
+        store.repoRootPaths.append(contentsOf: added)
+    }
+
+    /// Directory picker for one root's new path.
+    private func chooseRepoRoot(replacing i: Int) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.message = "Choose the local checkout agents should work in"
         panel.prompt = "Use as repo root"
-        panel.directoryURL = URL(fileURLWithPath: RepoPaths.agentRepo)
-        if panel.runModal() == .OK, let url = panel.url {
-            store.repoPathOverride = url.path
+        if i < store.repoRootPaths.count {
+            panel.directoryURL = URL(fileURLWithPath: RepoRoots.expand(store.repoRootPaths[i]))
+        }
+        if panel.runModal() == .OK, let url = panel.url, i < store.repoRootPaths.count {
+            store.repoRootPaths[i] = url.path
         }
     }
 

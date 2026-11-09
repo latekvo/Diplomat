@@ -3,7 +3,7 @@ import DiplomatCore
 
 /// The repository roots the app cares about: its OWN checkout (`root` — the source tree
 /// behind self-update and the mesh node) and the TARGET repos the agents work in
-/// (`roots`, the first of which is `agentRepo` — Settings → REPO ROOT). They are
+/// (`roots`, the first of which is `agentRepo` — Settings → REPO ROOTS). They are
 /// unrelated paths; keeping both here keeps the two resolutions from being confused for
 /// each other.
 ///
@@ -133,12 +133,14 @@ enum RepoPaths {
     /// (`RepoRoots.resolve`); never empty.
     ///
     /// Reading the remotes costs a `git` call per root, so the answer is cached until the
-    /// setting changes. A miss on the main thread does not wait for git: it answers as
-    /// though no root had a remote — the primary path standing for the configured repo,
-    /// which is what a single root has always meant — and resolves in the background for
-    /// the next read.
-    static var roots: [PRRef.LocalRepo] {
-        let paths = rootPaths
+    /// setting changes or `invalidateRoots` drops it. A miss on the main thread does not
+    /// wait for git: it answers as though no root had a remote — the primary path standing
+    /// for the configured repo, which is what a single root has always meant — and
+    /// resolves in the background for the next read.
+    static var roots: [PRRef.LocalRepo] { roots(for: rootPaths) }
+
+    /// `roots`, for a list of paths read earlier.
+    static func roots(for paths: [String]) -> [PRRef.LocalRepo] {
         rootsLock.lock()
         let hit = rootsCache.flatMap { $0.paths == paths ? $0.roots : nil }
         rootsLock.unlock()
@@ -149,6 +151,13 @@ enum RepoPaths {
                                      configured: CoreAssets.repoCoordinates())
         }
         return resolveRoots(paths)
+    }
+
+    /// Forget the resolved roots, so a remote added or renamed since is read again.
+    static func invalidateRoots() {
+        rootsLock.lock()
+        rootsCache = nil
+        rootsLock.unlock()
     }
 
     private static let rootsLock = NSLock()
@@ -189,15 +198,14 @@ enum RepoPaths {
         (path as NSString).expandingTildeInPath
     }
 
-    /// How the Settings hint describes the resolved path. A relative entry gets its own
-    /// state: `isCheckout` would judge it against THIS app's working directory while the
-    /// spawn's `cd` runs in the terminal's — the two disagree, so neither verdict is
-    /// honest. Mirrors `settingsview._repo_state` on Linux.
-    enum AgentRepoState { case ok, envShadowed, notAbsolute, notACheckout }
+    /// How Settings describes one stored root. A relative entry gets its own state:
+    /// `isCheckout` would judge it against THIS app's working directory while the spawn's
+    /// `cd` runs in the terminal's — the two disagree, so neither verdict is honest.
+    /// Mirrors `settingsview._repo_state` on Linux.
+    enum RootState { case ok, notAbsolute, notACheckout }
 
-    static var agentRepoState: AgentRepoState {
-        if agentRepoEnvOverride != nil { return .envShadowed }
-        let path = agentRepo
+    static func rootState(_ raw: String) -> RootState {
+        let path = RepoRoots.expand(raw.trimmingCharacters(in: .whitespacesAndNewlines))
         if !path.hasPrefix("/") { return .notAbsolute }
         return isCheckout(path) ? .ok : .notACheckout
     }

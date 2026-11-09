@@ -44,17 +44,11 @@ enum LocalRepos {
 }
 
 extension PRRef {
-    /// How a run's label names the item: `#337`, or `owner/repo#291` in a listed repo.
-    var label: String? {
-        number.map { n in repo.map { "\($0.slug)#\(n)" } ?? "#\(n)" }
-    }
-
     /// The hint under a single-item field whose link names a repo that is neither the
-    /// configured one nor listed in Settings. `noun` is "PR" or "issue".
-    func mismatchWarning(_ noun: String, anyListed: Bool) -> String? {
+    /// selected one (`home`) nor listed in Settings. `noun` is "PR" or "issue".
+    func mismatchWarning(_ noun: String, home: String, anyListed: Bool) -> String? {
         guard repoMismatch else { return nil }
-        let (owner, repo) = CoreAssets.repoCoordinates()
-        return "That \(noun) isn't in \(owner)/\(repo)"
+        return "That \(noun) isn't in \(home)"
             + (anyListed ? " or any repo listed in Settings." : ".")
     }
 }

@@ -84,9 +84,9 @@ enum SpawnTerminal: String, CaseIterable, Identifiable {
 /// `$(cat …)` so we never have to wrestle a multi-line prompt through nested
 /// shell + AppleScript quoting.
 enum AgentSpawner {
-    /// The local checkout the agent works in — Settings → REPO ROOT (see
-    /// `RepoPaths.agentRepo` for the full resolution). Read per spawn, so changing it
-    /// takes effect on the next agent without a restart. The `cd` is best-effort
+    /// The checkout an agent works in when its job names none: the primary of Settings →
+    /// REPO ROOTS (see `RepoPaths.agentRepo` for the full resolution). Read per spawn, so
+    /// changing it takes effect on the next agent without a restart. The `cd` is best-effort
     /// (`;`, not `&&`) so `claude` still starts if the path is wrong.
     static var repoPath: String { RepoPaths.agentRepo }
 
@@ -844,7 +844,8 @@ struct ReviewWizardView: View {
             finalPass: finalPass,
             softApprove: softApprove,
             specificAuthor: specificAuthor)
-        cfg.localRepos = store.localRepos
+        cfg.home = store.selectedRoot
+        cfg.localRepos = store.wizardRepos
         return cfg
     }
 
@@ -966,7 +967,8 @@ struct ReviewWizardView: View {
 
     /// A hint under the PR field when a pasted URL points at an unknown repo.
     private var prWarning: String? {
-        config.prRef.mismatchWarning("PR", anyListed: !store.localRepos.isEmpty)
+        config.prRef.mismatchWarning("PR", home: store.selectedRoot.slug,
+                                     anyListed: store.wizardRepos.count > 1)
     }
 
     private var scopeRow: some View {
@@ -1045,7 +1047,8 @@ struct ReviewWizardView: View {
                             // Only a single PR is a session the mesh could place: a
                             // sweep opens none, it queues one review per PR for this
                             // machine's own cap to start.
-                            routable: target == .specific && config.checkout == nil,
+                            routable: target == .specific
+                                && store.wizardMeshRoutable(config.checkout),
                             action: spawn)
     }
 
@@ -1054,7 +1057,9 @@ struct ReviewWizardView: View {
     /// queued a PR at a time and each of those rows is labelled by its own
     /// `Store.RequestedWork`.
     private var trackingLabel: String {
-        return "Review · \(config.prRef.label ?? "PR") · \(depth.title)"
+        let (owner, repo) = config.targetRepo
+        let item = config.prRef.number.map { store.itemLabel(owner: owner, repo: repo, number: $0) }
+        return "Review · \(item ?? "PR") · \(depth.title)"
     }
 
     /// The one PR this run concerns — the open-in-browser fallback when its window
@@ -1116,7 +1121,7 @@ struct ReviewWizardView: View {
         }
         // Mesh path: hand the job to the local node (it picks the executor, with
         // failover) instead of opening a terminal here — mirrors the Linux wizards.
-        if MeshSpawnRow.isLive(store), useMesh, cfg.checkout == nil {
+        if MeshSpawnRow.isLive(store), useMesh, store.wizardMeshRoutable(cfg.checkout) {
             meshDispatching = true
             status = "Dispatching over the mesh…"
             AuditLog.log("panel", "review", "\(trackingLabel) · via mesh")
@@ -1133,7 +1138,7 @@ struct ReviewWizardView: View {
         let job = Store.AgentJob(kind: "review", auditAction: "review",
                                  label: trackingLabel, prompt: cfg.buildPrompt(),
                                  prURL: trackingPRURL,
-                                 prNumber: cfg.checkout == nil ? cfg.prRef.number : nil,
+                                 prNumber: store.isRootCheckout(cfg.checkout) ? cfg.prRef.number : nil,
                                  authorLogin: reviewedAuthorLogin, duty: "review",
                                  workKey: "", counter: nil, directory: cfg.checkout)
         status = "Launching \(term.title)…"
