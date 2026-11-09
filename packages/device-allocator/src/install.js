@@ -17,12 +17,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { readDiscovery, procIdentity, writeAtomic } from './state.js';
+import { readJson, writeAtomic } from '../../daemon-core/src/fsio.js';
+import { claudeCodeInstall, stripBlock, writeJson } from '../../daemon-core/src/claude-install.js';
+import { daemonControl } from '../../daemon-core/src/daemon-control.js';
+import * as client from './ipc.js';
 import { DISCOVERY_PATH } from './paths.js';
-import { daemonHealth, spawnDaemon } from './ipc.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = path.resolve(__dirname, '..');
@@ -32,13 +32,8 @@ const PKG_JSON = path.join(PKG_DIR, 'package.json');
 
 const HOME = os.homedir();
 const CLAUDE_JSON = path.join(HOME, '.claude.json');
-const SKILL_DIR = path.join(HOME, '.claude', 'skills', 'diplomat-device-allocator');
 const RULES_DIR = path.join(HOME, '.claude', 'rules');
-const RULE_DEST = path.join(RULES_DIR, 'diplomat-device-allocator.md');
 const CLAUDE_MD = path.join(HOME, '.claude', 'CLAUDE.md');
-
-const MCP_KEY = 'diplomat-device-allocator';
-const CMD_NODE = process.execPath; // capture the node that ran the installer
 
 // Pre-rename identifiers (was `argent-device-allocator`, state under `~/.argent`).
 // A re-run of --install on an already-deployed machine migrates it: see
@@ -91,18 +86,6 @@ const CLAUDE_MD_BODY = [
 
 // ---- helpers --------------------------------------------------------------
 
-function readJson(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
-}
-// Every write is atomic (temp + rename): a concurrent reader (Claude Code rewrites
-// ~/.claude.json frequently) never sees a torn file, and neither a killed write nor a
-// full disk can truncate the original.
-function writeJson(file, obj) {
-  writeAtomic(file, `${JSON.stringify(obj, null, 2)}\n`);
-}
-function copyFile(src, dest) {
-  writeAtomic(dest, fs.readFileSync(src));
-}
 // Move every entry from a legacy dir into the new one WITHOUT overwriting anything
 // already there (an applet started post-update may have created the new dir first,
 // so a blind rename would either fail or clobber newer data). Best-effort — a
@@ -130,89 +113,23 @@ function mergeMoveDir(src, dst) {
 // Never fatal: an unreadable package.json must not take the installer down.
 const VERSION = (readJson(PKG_JSON) || {}).version ?? 'unknown';
 
-function mcpRegistered() {
-  const j = readJson(CLAUDE_JSON);
-  return !!(j && j.mcpServers && j.mcpServers[MCP_KEY]);
-}
-function claudeMdInjected() {
-  try { return fs.readFileSync(CLAUDE_MD, 'utf8').includes(CLAUDE_MD_BEGIN); } catch { return false; }
-}
-
-// ---- drift ----------------------------------------------------------------
-// Everything --install lays down is a COPY: the skill and the rule are copied out
-// of assets/, the CLAUDE.md block is generated from the constant above, and the MCP
-// registration names the mcp.js of whichever checkout installed it. A `git pull`
-// moves all four sources and none of the copies, so without this an installed
-// machine keeps coercing its agents with last month's text while `--check` reports
-// a clean install.
-//
-// Compared by content, not against a recorded version: a stamp only catches an
-// update someone remembered to bump, and it cannot see a hand-edited copy at all.
-// `version` below is what the UIs *show*; this is what they act on.
-
-function sameBytes(a, b) {
-  try { return fs.readFileSync(a).equals(fs.readFileSync(b)); } catch { return false; }
-}
-
-/// Whether two paths name the same file on disk, by (device, inode) rather than by
-/// string. A path is not an identity here: this checkout is reached as both
-/// ~/dev/diplomat and ~/dev/Diplomat on a case-insensitive volume, and a registration
-/// written through one spelling would read as pointing at a different checkout from
-/// the other — a permanent, self-reinstalling "out of date" on every launch.
-function sameFile(a, b) {
-  try {
-    const x = fs.statSync(a);
-    const y = fs.statSync(b);
-    return x.dev === y.dev && x.ino === y.ino;
-  } catch { return false; }
-}
-
-/// The managed block as it currently sits in the user's CLAUDE.md, markers included.
-function installedClaudeMdBlock() {
-  try {
-    const text = fs.readFileSync(CLAUDE_MD, 'utf8');
-    const i = text.indexOf(CLAUDE_MD_BEGIN);
-    const j = text.indexOf(CLAUDE_MD_END, i);
-    return i === -1 || j === -1 ? null : text.slice(i, j + CLAUDE_MD_END.length);
-  } catch { return null; }
-}
-
-/// What no longer matches this checkout, as a list of names for the UI and the log.
-///
-/// The MCP entry is judged on its `args` and on whether its `command` still exists,
-/// deliberately NOT on `command` matching the node running right now: the two
-/// front-ends resolve node slightly differently, and an equality check there would
-/// have each of them see the other's registration as drift and reinstall on every
-/// launch, forever. A registration pointing at a deleted node, or at another
-/// checkout's mcp.js, is the real breakage — and both of those this catches.
-function drift() {
-  const stale = [];
-  if (!sameBytes(path.join(ASSETS, 'skill', 'SKILL.md'), path.join(SKILL_DIR, 'SKILL.md'))) {
-    stale.push('skill');
-  }
-  if (!sameBytes(path.join(ASSETS, 'rule', 'diplomat-device-allocator.md'), RULE_DEST)) {
-    stale.push('rule');
-  }
-  if (installedClaudeMdBlock() !== CLAUDE_MD_BODY) stale.push('claudeMd');
-  const entry = (readJson(CLAUDE_JSON) || {}).mcpServers?.[MCP_KEY];
-  if (entry && (!sameFile(entry.args?.[0] ?? '', MCP_JS) || !fs.existsSync(entry.command ?? ''))) {
-    stale.push('mcp');
-  }
-  return stale;
-}
+const claude = claudeCodeInstall({
+  name: 'diplomat-device-allocator',
+  mcpJs: MCP_JS,
+  skillSrc: path.join(ASSETS, 'skill', 'SKILL.md'),
+  ruleSrc: path.join(ASSETS, 'rule', 'diplomat-device-allocator.md'),
+  claudeMd: CLAUDE_MD_BODY,
+  backupSuffix: 'bak-da',
+});
+const { installed } = claude;
+// Leases survive a restart in leases.json. The old daemon shuts down each device it
+// booted on its way out (shutdownBootedSync, up to 15 s each), hence the long wait.
+const control = daemonControl({ client, discoveryPath: DISCOVERY_PATH, restartExitMs: 60000 });
+const { startDaemon, stopDaemon, restartDaemon } = control;
 
 async function status() {
-  const s = {
-    mcpRegistered: mcpRegistered(),
-    skillInstalled: fs.existsSync(path.join(SKILL_DIR, 'SKILL.md')),
-    ruleInstalled: fs.existsSync(RULE_DEST),
-    claudeMdInjected: claudeMdInjected(),
-    daemonRunning: (await daemonHealth()) != null,
-    nodePath: CMD_NODE,
-    mcpJs: MCP_JS,
-    version: VERSION,
-  };
-  s.drift = drift();
+  const s = { ...claude.status(), daemonRunning: (await client.daemonHealth()) != null, version: VERSION };
+  s.drift = claude.drift();
   // Only an install can be out of date. On a machine that never installed (or
   // deliberately uninstalled) every artifact "differs" trivially, and calling that
   // outdated would have the applet treat an uninstall as something to repair.
@@ -225,158 +142,8 @@ async function status() {
   s.outdated = installed(s) && s.drift.length > 0;
   return s;
 }
-function installed(s) {
-  return s.mcpRegistered && s.skillInstalled && s.ruleInstalled && s.claudeMdInjected;
-}
 
 // ---- install / uninstall --------------------------------------------------
-
-function registerMcp() {
-  let j = {};
-  if (fs.existsSync(CLAUDE_JSON)) {
-    const raw = fs.readFileSync(CLAUDE_JSON, 'utf8');
-    if (raw.trim() !== '') {
-      try {
-        j = JSON.parse(raw);
-      } catch (e) {
-        // A parse failure here usually means we read mid-write — NEVER overwrite
-        // the user's ~134KB config with a fresh near-empty object. Abort instead.
-        throw new Error(`refusing to modify ${CLAUDE_JSON}: it is not valid JSON right now (${e.message})`);
-      }
-    }
-    // Back up only a known-good file (we just parsed it), so a clobber can't
-    // overwrite a good backup with a bad one.
-    try { writeAtomic(`${CLAUDE_JSON}.bak-da`, raw, fs.statSync(CLAUDE_JSON).mode & 0o777); } catch {}
-  }
-  j.mcpServers = j.mcpServers || {};
-  j.mcpServers[MCP_KEY] = { type: 'stdio', command: CMD_NODE, args: [MCP_JS] };
-  writeJson(CLAUDE_JSON, j);
-}
-function unregisterMcp() {
-  const j = readJson(CLAUDE_JSON);
-  if (j && j.mcpServers && j.mcpServers[MCP_KEY]) {
-    delete j.mcpServers[MCP_KEY];
-    writeJson(CLAUDE_JSON, j);
-  }
-}
-
-function installSkillAndRule() {
-  copyFile(path.join(ASSETS, 'skill', 'SKILL.md'), path.join(SKILL_DIR, 'SKILL.md'));
-  copyFile(path.join(ASSETS, 'rule', 'diplomat-device-allocator.md'), RULE_DEST);
-}
-function uninstallSkillAndRule() {
-  try { fs.rmSync(SKILL_DIR, { recursive: true, force: true }); } catch {}
-  try { fs.rmSync(RULE_DEST, { force: true }); } catch {}
-}
-
-function injectClaudeMd() {
-  // Only treat as empty when the file genuinely doesn't exist; a real read error
-  // on an existing file must surface, not silently clobber the user's CLAUDE.md.
-  let text = '';
-  if (fs.existsSync(CLAUDE_MD)) text = fs.readFileSync(CLAUDE_MD, 'utf8');
-  text = stripClaudeMd(text);
-  const sep = text && !text.endsWith('\n\n') ? (text.endsWith('\n') ? '\n' : '\n\n') : '';
-  writeAtomic(CLAUDE_MD, `${text}${sep}${CLAUDE_MD_BODY}\n`);
-}
-// Remove every block delimited by (begin, end) — loop, so install/uninstall and
-// the legacy-marker cleanup always converge to zero copies.
-function stripBlock(text, begin, end) {
-  let out = text;
-  for (;;) {
-    const i = out.indexOf(begin);
-    if (i === -1) break;
-    const j = out.indexOf(end, i);
-    if (j === -1) { out = out.slice(0, i); break; }
-    out = out.slice(0, i) + out.slice(j + end.length);
-  }
-  return out.replace(/\n{3,}/g, '\n\n').replace(/\s+$/, out.trim() ? '\n' : '');
-}
-function stripClaudeMd(text) { return stripBlock(text, CLAUDE_MD_BEGIN, CLAUDE_MD_END); }
-function uninjectClaudeMd() {
-  try {
-    if (!fs.existsSync(CLAUDE_MD)) return;
-    const text = fs.readFileSync(CLAUDE_MD, 'utf8');
-    writeAtomic(CLAUDE_MD, stripClaudeMd(text));
-  } catch {}
-}
-
-// The pid daemon.json names while it is still the daemon that wrote it: one killed past
-// its exit handler leaves the file, and its pid can pass to any process. It must run a
-// daemon.js and carry the file's procIdentity, which on Linux can recur after a reboot;
-// a file without one is matched by a start no later than the file instead.
-function discoveredDaemonPid(disc) {
-  const pid = disc?.pid;
-  if (!Number.isInteger(pid) || pid <= 0 || !pidAlive(pid)) return null;
-  let out;
-  try {
-    out = execFileSync('ps', ['-o', 'lstart=,command=', '-p', String(pid)],
-      { encoding: 'utf8', timeout: 2000, env: { ...process.env, LC_ALL: 'C' } });
-  } catch { return null; }
-  // "Tue Oct 27 22:05:29 2026  node /x/src/daemon.js"
-  const words = out.trim().split(/\s+/);
-  if (!words.slice(5).some((w) => path.basename(w) === 'daemon.js')) return null;
-  if (disc.identity) return procIdentity(pid) === disc.identity ? pid : null;
-  const wrote = Date.parse(disc.startedAt);
-  const started = Date.parse(words.slice(0, 5).join(' '));
-  // lstart has whole seconds; startedAt is written once the daemon listens.
-  return Number.isNaN(wrote) || Number.isNaN(started) || started > wrote + 1000 ? null : pid;
-}
-
-/// This BASE_DIR's daemon.json pid while it is a live daemon; a stale file is removed.
-function liveDiscoveredPid() {
-  const disc = readDiscovery();
-  if (!disc) return null;
-  const pid = discoveredDaemonPid(disc);
-  if (pid == null && readDiscovery()?.startedAt === disc.startedAt) {
-    try { fs.unlinkSync(DISCOVERY_PATH); } catch {}
-  }
-  return pid;
-}
-
-/// {running, error?}. Never spawns beside a live but silent daemon (one shutting down):
-/// the new one would take its socket, leaving two daemons on the same devices.
-async function startDaemon() {
-  if (await daemonHealth()) return { running: true };
-  const silent = liveDiscoveredPid();
-  if (silent) {
-    return { running: false, error: `the daemon (pid ${silent}) is running but not answering; it may be shutting down` };
-  }
-  try {
-    await spawnDaemon(6000);
-    return { running: true };
-  } catch (e) {
-    return { running: false, error: e.message };
-  }
-}
-/// The pid it signalled, else null.
-async function stopDaemon() {
-  try {
-    // The serving daemon's own pid, else daemon.json's for one too wedged to answer.
-    // Both go through paths.js (honors DA_BASE_DIR) — a hardcoded ~/.diplomat path
-    // here would SIGTERM the user's real daemon from a test-sandboxed uninstall.
-    const pid = (await daemonHealth())?.pid || liveDiscoveredPid();
-    if (pid) { process.kill(pid, 'SIGTERM'); return pid; }
-  } catch {}
-  return null;
-}
-
-function pidAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
-}
-
-// The one way to replace a daemon from older code, as startDaemon() keeps any that
-// answers; leases survive in leases.json. The old daemon shuts down each device it
-// booted on its way out (shutdownBootedSync, up to 15 s each), hence the long wait.
-const RESTART_EXIT_MS = 60000;
-async function restartDaemon() {
-  const pid = await stopDaemon();
-  const deadline = Date.now() + RESTART_EXIT_MS;
-  while (pid && pidAlive(pid) && Date.now() < deadline) await delay(200);
-  if (pid && pidAlive(pid)) {
-    return `the running daemon (pid ${pid}) did not exit within ${RESTART_EXIT_MS / 1000} s`;
-  }
-  return (await startDaemon()).error ?? null;
-}
 
 // One-time migration from the pre-rename install (argent-device-allocator +
 // ~/.argent). Idempotent: a no-op once done, or on a clean machine. Runs at the
@@ -391,7 +158,7 @@ function migrateLegacy() {
   //    move its state dir out from under a live writer.
   try {
     const disc = readJson(path.join(LEGACY.base, 'device-allocator', 'daemon.json'));
-    const pid = discoveredDaemonPid(disc);
+    const pid = control.discoveredDaemonPid(disc);
     if (pid) { try { process.kill(pid, 'SIGTERM'); } catch {} }
   } catch {}
   // 2. Move the state we own (mesh identity + the daemon's two dirs) to ~/.diplomat.
@@ -422,17 +189,13 @@ function migrateLegacy() {
 
 async function doInstall() {
   migrateLegacy();
-  registerMcp();
-  installSkillAndRule();
-  injectClaudeMd();
+  claude.install();
   await startDaemon();
   return status();
 }
 async function doUninstall() {
   await stopDaemon();
-  unregisterMcp();
-  uninstallSkillAndRule();
-  uninjectClaudeMd();
+  claude.uninstall();
   return status();
 }
 

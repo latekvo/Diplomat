@@ -97,6 +97,12 @@ try {
       const older = `${text.slice(0, begin)}<!-- diplomat-device-allocator (managed — installed by Diplomat; remove via the installer) -->\nold coercion text\n${endMark}${text.slice(end + endMark.length)}`;
       fs.writeFileSync(CLAUDE_MD, older);
     }],
+    ['claudeMd', () => {
+      // A block that lost its end marker (a hand edit): damaged, so drift, never read
+      // as uninstalled - the applets leave an uninstall alone and would not repair it.
+      const text = fs.readFileSync(CLAUDE_MD, 'utf8');
+      fs.writeFileSync(CLAUDE_MD, text.replace('<!-- end diplomat-device-allocator -->', ''));
+    }],
     ['mcp', () => {
       const j = readClaudeJson();
       j.mcpServers[MCP_KEY].args = ['/somewhere/else/device-allocator/src/mcp.js'];
@@ -114,6 +120,20 @@ try {
     const repaired = run('--install');
     eq(`--install clears the stale ${name}`, repaired.drift, []);
     ok(`--install leaves it current after ${name}`, repaired.outdated === false);
+  }
+
+  // ---- repairing a block that lost its end marker --------------------------
+  const endMark = '<!-- end diplomat-device-allocator -->';
+  const whole = fs.readFileSync(CLAUDE_MD, 'utf8');
+  const block = whole.slice(whole.indexOf('<!-- diplomat-device-allocator'));
+  const mine = whole.replace(endMark, '');
+  // Alone, and before a complete block whose end is not its own.
+  for (const after of ['', `\n${block}`]) {
+    fs.writeFileSync(CLAUDE_MD, `${mine}\n## My own rules\nkeep me\n${after}`);
+    run('--install');
+    const kept = fs.readFileSync(CLAUDE_MD, 'utf8');
+    ok(`repairing a block without its end marker keeps the text after it${after && ' (a complete block follows)'}`, kept.includes('keep me'));
+    ok('and leaves one complete block', kept.split(endMark).length === 2);
   }
 
   // ---- an MCP entry whose node is gone -------------------------------------

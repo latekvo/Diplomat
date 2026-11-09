@@ -337,11 +337,12 @@ alone gets a job that installs *only* what that package needs, so a dependency
 creeping back in fails a build instead of going unnoticed:
 [`szpontnet-core`](../packages/szpontnet-core/README.md) is tested with no Qt, no
 `diplomat-core` and no Diplomat on the import path, and
-[`device-allocator`](../packages/device-allocator/README.md) with nothing but Node.
+[`device-allocator`](../packages/device-allocator/README.md) and
+[`remote-machines`](../packages/remote-machines/README.md) with nothing but Node.
 Diplomat is checked from the other side - one step deletes both SzpontNet
 packages outright and renders the applet from what remains.
 
-CI ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) is seven jobs:
+CI ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) is eight jobs:
 `swift-macos` (build both Swift packages + the core smoke + headless panel and
 telemetry renders + the helper self-tests), `swift-core-linux` (proves the core builds on
 Linux, and publishes a static `diplomat-core` binary), `python-linux` (pytest
@@ -350,7 +351,7 @@ the library-less start), `szpontnet` (the library's own tests plus a full
 conformance run against the reference node), `szpont` (the launcher, and the built
 wheel installed into a venv that has never seen the checkout), `szpont-npm` (the
 same launcher in JavaScript, held to the Python one's plan machine shape for
-machine shape), and `node-device-allocator`.
+machine shape), `node-device-allocator`, and `node-remote-machines`.
 
 ```
 packages/
@@ -361,6 +362,14 @@ packages/
                                  after 30 min and idle unheld devices shut down after 5, both settings;
                                  a prompt-injection report bans the author and terminates
                                  the reporting agent). Standalone: any MCP client can point at src/mcp.js
+
+  remote-machines/             ← the `diplomat-remote-machines` MCP server + daemon (see its README): the
+                                 machines this one reaches over SSH (ssh config, mDNS, known_hosts; only
+                                 hosts whose key is already trusted), their load re-read every minute and
+                                 capabilities every 5, and the steering that sends artifact-producing work to them
+
+  daemon-core/                 ← what both MCP daemons share: the unix-socket client and singleton server,
+                                 atomic writes, the Claude Code installer layers, the test runner
 
   diplomat-core/               ← the shared triage brain: everything both front-ends agree on
     assets/                    ← the language-neutral source of truth (see its README): GraphQL queries,
@@ -510,7 +519,7 @@ packages/
                                  both and demands the same facts and the same plan
 
 .github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · szpontnet · szpont ·
-                                 szpont-npm · node-device-allocator
+                                 szpont-npm · node-device-allocator · node-remote-machines
 .github/workflows/release-szpont.yml     ← every push to main → the next minor on PyPI + npm, from one
                                            verified commit; tag szpont-v* to release what a tree states
 .github/workflows/release-szpontnet.yml  ← tag szpontnet-v* → PyPI

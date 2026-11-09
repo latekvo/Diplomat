@@ -496,3 +496,24 @@ jobs:
         env:
           DIPLOMAT_FULL_VOLUME_REQUIRED: '1'
         run: npm test
+
+  # The remote-machines MCP server + daemon, on the same shared daemon-core as the
+  # allocator. Its tests stand in a fake ssh (test/lib/fake-ssh.mjs) for every host, so
+  # nothing reaches a real machine; probe.sh itself runs for real on the runner.
+  node-remote-machines:
+    name: Node (remote machines) · discovery, probe, daemon + MCP tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/remote-machines
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: packages/remote-machines/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Discovery, probe, daemon, MCP and installer tests
+        run: npm test

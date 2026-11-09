@@ -273,7 +273,8 @@ struct AllocatorInstall: Decodable, Equatable {
 
 enum DeviceAllocator {
     /// Where the Node package lives: a sibling of this app inside the same checkout.
-    /// Overridable for a layout that keeps them apart.
+    /// Overridable for a layout that keeps them apart, as long as `daemon-core` sits
+    /// beside the overriding package (the allocator imports it by relative path).
     ///
     /// Resolved through `RepoPaths.root` rather than hardcoded to `~/dev/diplomat`,
     /// which is the twin of the Linux bridge deriving it from its own file's path: an
