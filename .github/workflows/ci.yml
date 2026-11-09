@@ -116,12 +116,12 @@ jobs:
             test -s "$RUNNER_TEMP/$mode.png"
           done
       # The Machines screen: a running daemon with ranked, paused, excluded and local
-      # machines and a day of history, the same snapshot under an idle daemon, and no
-      # install at all.
+      # machines and a day of history, the same snapshot under an idle daemon, one from a
+      # daemon older than the screen, and no install at all.
       - name: Headless machines-screen render
         working-directory: packages/diplomat-platform/macos
         run: |
-          for mode in machines-screen machines-screen-idle machines-screen-off; do
+          for mode in machines-screen machines-screen-idle machines-screen-old machines-screen-off; do
             DIPLOMAT_RENDER=$mode DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/$mode.png" \
               swift run Diplomat
             test -s "$RUNNER_TEMP/$mode.png"

@@ -395,10 +395,12 @@ enum Render {
             ContentView(showDevices: true)
         case let s where s.hasPrefix("machines-screen"):
             // Inside the panel, so the header's button is in the shot. Plain: three pool
-            // machines (one overloaded and low on disk), one paused, one excluded for good,
-            // this machine, a day of history with a gap, and an unavailable line whose mDNS
-            // names must not show. "-idle": the daemon gone idle over its last snapshot.
-            // "-off": not installed, no snapshot.
+            // machines (one overloaded and low on disk), two paused (one no longer
+            // answering), one excluded for good, this machine, a day of history with a
+            // gap, and an unavailable line whose mDNS names must not show. "-idle": the
+            // daemon gone idle over its last snapshot. "-old": a snapshot from a daemon
+            // older than the screen, with no `daemon` key and no usage. "-off": not
+            // installed, no snapshot.
             let _ = seedMachinesScreen(s, store: store)
             ContentView(showMachines: true).environment(\.renderNow, machinesNow)
         case let s where s.hasPrefix("devices"):
@@ -1399,7 +1401,7 @@ enum Render {
     /// chart axes are the same on every run.
     static let machinesNow = MachinesSnapshot.date("2026-11-09T15:00:00.000Z")!
 
-    /// `DIPLOMAT_RENDER=machines-screen[-idle|-off]` — see the mode's case. Decoded from
+    /// `DIPLOMAT_RENDER=machines-screen[-idle|-old|-off]` — see the mode's case. Decoded from
     /// JSON through the real readers' types; nothing is read from or written to
     /// `~/.diplomat`.
     @MainActor
@@ -1423,6 +1425,8 @@ enum Render {
         }
         let min = 60_000.0, hour = 3_600_000.0
         store.auditEntries = [
+            AuditEntry(at: at(4 * min), source: "panel", action: MachinesScan.action,
+                       detail: MachinesScan.auditText(ok: true)),
             AuditEntry(at: at(25 * min), source: "panel", action: "machine-pause",
                        detail: "Paused gpu-box.lan until \(Fmt.clock(Date(timeIntervalSince1970: (now + 2.6 * hour) / 1000)))"),
             AuditEntry(at: at(3 * hour), source: "panel", action: "machine-exclude",
@@ -1485,10 +1489,17 @@ enum Render {
                              ramGB: 256, freeRamGB: 122, diskGB: 3400, os: "Ubuntu 22.04.4 LTS",
                              arch: "x86_64", cpu: "AMD EPYC 7313P",
                              gpus: ["NVIDIA RTX 6000 Ada", "NVIDIA RTX 6000 Ada"], ssh: 0,
-                             excluded: ["until": at(-2.6 * hour)])
+                             excluded: ["until": at(-2.6 * hour), "by": ["gpu-box.lan"]])
+        var laptop = machine("laptop-id", "spare-mbp.local", user: "ilatka", cores: 8, load: 0,
+                             ramGB: 16, freeRamGB: 0, diskGB: 0, os: "macOS 14.7", arch: "arm64",
+                             cpu: "Apple M1", ssh: 0,
+                             excluded: ["until": at(-0.8 * hour), "by": ["spare-mbp.local"]],
+                             status: "unreachable", read: false)
+        laptop["error"] = "ssh: connect to host spare-mbp.local port 22: Operation timed out"
         var imac = machine("imac-id", "old-imac.local", cores: 8, load: 0, ramGB: 16, freeRamGB: 0,
                            diskGB: 0, os: "macOS 13.6", arch: "x86_64", cpu: "Intel Core i7-8700",
-                           ssh: 0, excluded: ["until": NSNull()], status: "excluded", read: false)
+                           ssh: 0, excluded: ["until": NSNull(), "by": ["old-imac.local", "10.0.0.30"]],
+                           status: "excluded", read: false)
         imac["error"] = "excluded in Diplomat"
         let local = machine("local-id", nil, cores: 12, load: 5.1, ramGB: 36, freeRamGB: 11.5,
                             pressure: "normal", diskGB: 412, os: "macOS 15.5", arch: "arm64",
@@ -1497,14 +1508,14 @@ enum Render {
             ["id": target, "target": target, "hostname": target, "user": "dev", "port": 22,
              "sources": [source], "status": status, "probedAt": NSNull(), "capabilitiesAt": NSNull()]
         }
-        let snapshot: [String: Any] = [
+        var snapshot: [String: Any] = [
             "updatedAt": at(last + 14_000),
             "discoveredAt": at(last + 160_000),
             "probeIntervalMs": 60_000,
             "daemon": ["pid": 48213, "startedAt": at(last + 3.2 * hour), "sessions": 3],
             "local": local,
             "machines": [studio, mini, linux],
-            "excluded": [paused, imac],
+            "excluded": [paused, laptop, imac],
             "unavailable": [
                 unavailable("nas", "auth-failed", "ssh-config"),
                 unavailable("jump-host", "proxied", "ssh-config"),
@@ -1515,6 +1526,13 @@ enum Render {
                 unavailable("Living-Room-TV.local", "untrusted", "mdns"),
             ],
         ]
+        if mode.hasSuffix("old") {
+            snapshot["daemon"] = nil
+            snapshot["local"] = local.filter { $0.key != "usage" }
+            for key in ["machines", "excluded"] {
+                snapshot[key] = (snapshot[key] as? [[String: Any]])?.map { $0.filter { $0.key != "usage" } }
+            }
+        }
 
         // A day at one reading a minute, quiet for three hours overnight while no agent ran.
         var rng = SeededRandom(seed: 0x6D61_6368)
@@ -1546,6 +1564,7 @@ enum Render {
                 "mini-id": series(cpu: 0.62, mem: 0.78, ssh: 1, until: last),
                 "linux-id": series(cpu: 0.95, mem: 0.66, ssh: 4, until: last),
                 "gpu-id": series(cpu: 0.3, mem: 0.5, ssh: 0, until: last),
+                "laptop-id": series(cpu: 0.15, mem: 0.55, ssh: 0, until: last + 1.5 * hour),
                 "imac-id": series(cpu: 0.4, mem: 0.7, ssh: 1, until: 3 * hour),
                 "local-id": series(cpu: 0.45, mem: 0.66, ssh: 0, until: last),
             ],

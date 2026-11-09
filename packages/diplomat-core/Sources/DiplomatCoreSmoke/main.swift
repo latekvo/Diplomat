@@ -3752,6 +3752,74 @@ do {
         .applying(.include, target: "a.local", names: names, now: now)
     check(i.exclude == ["Other"] && i.until.isEmpty, "include clears both, without case, got \(i)")
 
+    // `excluded.by` can name a machine by an entry that is neither its target nor an alias.
+    check(snap.unavailableLine() == "Not usable (4) - not answering: 10.0.0.8; host key changed since "
+          + "it was accepted: box; 1 old known_hosts addresses not answering; 1 other machines "
+          + "advertising SSH on the network, never vetted.", "unavailable line, got \(snap.unavailableLine() ?? "nil")")
+    let none = try JSONDecoder().decode(MachinesSnapshot.self, from: Data(#"{"machines":[]}"#.utf8))
+    check(none.unavailableLine() == nil, "no unavailable line without unavailable machines")
+    check(forGood.excluded?.by == [], "an exclusion without by names nothing")
+    let byJSON = #"""
+    {"id":"b","target":"build-linux","status":"excluded","error":"excluded in Diplomat",
+     "excluded":{"until":null,"by":["build-linux","10.0.0.21"]}}
+    """#
+    let byIP = try JSONDecoder().decode(RemoteMachine.self, from: Data(byJSON.utf8))
+    let inc = MachineExclusions(exclude: ["Other", "10.0.0.21", "BUILD-LINUX"],
+                                until: ["10.0.0.21": "2026-11-10T00:00:00.000Z"])
+        .applying(.include, target: "build-linux", names: byIP.names, now: now)
+    check(inc.exclude == ["Other"] && inc.until.isEmpty, "include drops the by entries, got \(inc)")
+    let pausedByJSON = #"""
+    {"id":"q","target":"spare.local","status":"unreachable","error":"timed out",
+     "excluded":{"until":"2026-11-09T13:00:00.000Z","by":["Spare"]}}
+    """#
+    let pausedBy = try JSONDecoder().decode(RemoteMachine.self, from: Data(pausedByJSON.utf8))
+    let pausedConfig = MachineExclusions(exclude: [], until: ["spare": "2026-11-09T13:00:00.000Z"])
+    let res = pausedConfig.applying(.resume, target: "spare.local", names: pausedBy.names, now: now)
+    check(res.until.isEmpty, "resume drops a pause entered under another name, got \(res)")
+    let ex = pausedConfig.applying(.exclude, target: "spare.local", names: pausedBy.names, now: now)
+    check(ex.exclude == ["spare.local"] && ex.until.isEmpty, "exclude drops the by pause, got \(ex)")
+    check(pausedBy.problem == "⚠ unreachable: timed out" && byIP.problem == nil
+          && snap.machines[0].problem == nil, "a machine that could not be read says why")
+
+    let unparsed = MachineExclusions(exclude: [], until: ["odd": "next tuesday", "gone": "2026-11-09T11:00:00.000Z"])
+        .applying(.pause(60), target: "x", names: [], now: now)
+    check(unparsed.until["odd"] == "next tuesday" && unparsed.until["gone"] == nil,
+          "an unparseable pause time is kept, an expired one dropped, got \(unparsed)")
+
+    // Each edit is one key, the list first; an emptied key is removed, the rest kept.
+    let cfgIn: [String: Any] = ["repoRoot": "/r", MachineExclusions.excludeKey: ["a.local"],
+                                MachineExclusions.untilKey: ["a2": "2026-11-10T00:00:00.000Z"]]
+    let before = MachineExclusions(config: cfgIn)
+    check(before == MachineExclusions(exclude: ["a.local"], until: ["a2": "2026-11-10T00:00:00.000Z"]),
+          "exclusions read from config, got \(before)")
+    let after = before.applying(.include, target: "a.local", names: names, now: now)
+    let edits = after.edits(from: before)
+    check(edits.count == 2, "two keys changed, got \(edits.count)")
+    let first = edits[0](cfgIn)
+    check(first[MachineExclusions.excludeKey] == nil && first[MachineExclusions.untilKey] != nil,
+          "the list is written first, and an empty list removes its key")
+    let written = edits.reduce(cfgIn) { $1($0) }
+    check(written.keys.sorted() == ["repoRoot"], "both keys removed, others kept, got \(written)")
+    let paused2 = before.applying(.pause(3600), target: "b", names: [], now: now)
+    let pauseEdits = paused2.edits(from: before)
+    check(pauseEdits.count == 1
+          && (pauseEdits[0](cfgIn)[MachineExclusions.untilKey] as? [String: String])?["b"]
+             == "2026-11-09T13:00:00.000Z", "a pause writes only the pause map")
+    check(MachinesScan.body == ["full": true], "a scan asks for discovery and every probe, with no ownerPid")
+
+    let agoCases: [(Double, String)] = [
+        (-5, "0 s ago"), (119.4, "119 s ago"), (119.5, "2 min ago"), (150, "3 min ago"),
+        (5370, "90 min ago"), (9000, "3 h ago"), (5.5 * 3600, "6 h ago"),
+        (2.5 * 86400, "3 d ago"),
+    ]
+    for (s, want) in agoCases {
+        check(MachinesText.ago(seconds: s) == want, "ago(\(s)) = \(MachinesText.ago(seconds: s)), want \(want)")
+    }
+    let pctCases: [(Double, String)] = [(0.125, "13%"), (0.994, "99%"), (-0.005, "0%"), (1.2, "120%")]
+    for (v, want) in pctCases {
+        check(MachinesText.percent(v) == want, "percent(\(v)) = \(MachinesText.percent(v)), want \(want)")
+    }
+
     let hist = #"{"version":1,"intervalMs":60000,"machines":{"a":[[0,0.2,0.4,1],[60000,0.4,0.6,3],[120000,null,0.5,null],[600000,1.5,0.5,0]]}}"#
     let h = try JSONDecoder().decode(MachineHistory.self, from: Data(hist.utf8))
     let cols = MachineHistory.columns(h.machines["a"]!, from: 0, to: 600_000, width: 5, gapMs: 180_000)

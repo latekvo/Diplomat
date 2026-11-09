@@ -20,13 +20,14 @@ enum RemoteMachines {
         return try? JSONDecoder().decode(MachineHistory.self, from: data)
     }
 
-    /// Discovery and every probe, answered once they finish. No `ownerPid`: that would
-    /// attach this app as an agent session and keep the daemon from ever going idle.
-    @discardableResult
-    static func scan() -> Bool {
-        guard case .reply(let r) = package.send("scan", body: ["full": true], timeoutSecs: 120)
-        else { return false }
-        return (200..<300).contains(r.status)
+    /// Whether the daemon answered the scan with success; nil when none is listening.
+    static func scan() -> Bool? {
+        switch package.send(MachinesScan.endpoint, body: MachinesScan.body,
+                            timeoutSecs: MachinesScan.timeoutSecs) {
+        case .unreachable: return nil
+        case .unanswered: return false
+        case .reply(let r): return (200..<300).contains(r.status)
+        }
     }
 
     // MARK: installer (blocking — call off the main thread)
@@ -42,21 +43,11 @@ enum RemoteMachines {
     // MARK: exclusions
 
     /// Applies `action` to config.json, writing only the keys it changes, and says whether
-    /// they landed. The list is written first, so an exclusion is never briefly lifted
-    /// between the two writes.
+    /// they all landed.
     static func applyExclusion(_ action: MachineExclusions.Action, target: String,
                                names: [String], now: Date) -> Bool {
-        let current = MachineExclusions(
-            exclude: AppConfig.strings(AppConfig.remoteMachineExcludeKey),
-            until: AppConfig.stringMap(AppConfig.remoteMachineExcludeUntilKey))
+        let current = MachineExclusions(config: AppConfig.read())
         let next = current.applying(action, target: target, names: names, now: now)
-        var ok = true
-        if next.exclude != current.exclude {
-            ok = AppConfig.setStrings(AppConfig.remoteMachineExcludeKey, next.exclude)
-        }
-        if ok, next.until != current.until {
-            ok = AppConfig.setStringMap(AppConfig.remoteMachineExcludeUntilKey, next.until)
-        }
-        return ok
+        return next.edits(from: current).allSatisfy(AppConfig.update)
     }
 }

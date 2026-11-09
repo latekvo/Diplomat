@@ -33,8 +33,20 @@ public struct RemoteMachine: Decodable, Equatable, Identifiable {
         public let model: String?
         public let perfCores: Double?
     }
-    /// `until` nil = excluded for good.
-    public struct Exclusion: Decodable, Equatable { public let until: String? }
+    /// `until` nil = excluded for good. `by`: the settings entries that name this machine,
+    /// which can be a name it is reached by under neither its target nor its aliases.
+    public struct Exclusion: Decodable, Equatable {
+        public let until: String?
+        public let by: [String]
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            until = try c.decodeIfPresent(String.self, forKey: .until)
+            by = (try? c.decodeIfPresent([String].self, forKey: .by)) ?? []
+        }
+
+        private enum CodingKeys: String, CodingKey { case until, by }
+    }
     /// The fractions the daemon ranks and warns by: `cpu` is the 1-minute load per core
     /// (above 1 when overloaded), `memory` the share of RAM not available.
     public struct Usage: Decodable, Equatable {
@@ -69,9 +81,14 @@ public struct RemoteMachine: Decodable, Equatable, Identifiable {
     public let warnings: [String]?
 
     /// What the operator's exclusions match it by.
-    public var names: [String] { (target.map { [$0] } ?? []) + (aliases ?? []) }
+    public var names: [String] { (target.map { [$0] } ?? []) + (aliases ?? []) + (excluded?.by ?? []) }
     public var isExcludedForGood: Bool { excluded != nil && excluded?.until == nil }
     public var pausedUntil: Date? { excluded?.until.flatMap(MachinesSnapshot.date) }
+
+    /// Why a machine the daemon tried could not be read; nil when it was, or was not tried.
+    public var problem: String? {
+        status == "ok" || status == "excluded" ? nil : "⚠ \(status): \(error ?? "not read")"
+    }
 }
 
 public struct MachinesSnapshot: Decodable, Equatable {
@@ -175,6 +192,49 @@ public struct MachinesSnapshot: Decodable, Equatable {
         }
         return parts
     }
+
+    /// `format.js`'s sentence for the machines no panel shows, or nil when there are none.
+    public func unavailableLine() -> String? {
+        let parts = unavailableSummary()
+        guard !parts.isEmpty else { return nil }
+        return "Not usable (\(unavailable.count)) - " + parts.joined(separator: "; ") + "."
+    }
+}
+
+/// The Machines screens' wording, rounding half up like the daemon's JS `Math.round`.
+public enum MachinesText {
+    static func halfUp(_ x: Double) -> Int { clampedInt((x + 0.5).rounded(.down)) }
+
+    /// `12 s ago`, `14 min ago`, `3 h ago`, `2 d ago`.
+    public static func ago(seconds: Double) -> String {
+        let s = max(0, halfUp(seconds))
+        if s < 120 { return "\(s) s ago" }
+        if s < 7200 { return "\(halfUp(Double(s) / 60)) min ago" }
+        if s < 172_800 { return "\(halfUp(Double(s) / 3600)) h ago" }
+        return "\(halfUp(Double(s) / 86400)) d ago"
+    }
+
+    public static func percent(_ v: Double) -> String { "\(halfUp(v * 100))%" }
+
+    /// For a snapshot without a `daemon` key, whose writer reads no usage and ignores
+    /// exclusions.
+    public static let daemonPredatesScreen =
+        "The daemon predates this screen; restart it to read usage and apply exclusions."
+}
+
+/// Refresh: one POST to the daemon's socket.
+public enum MachinesScan {
+    public static let endpoint = "scan"
+    /// Discovery and every probe, answered once they finish. No `ownerPid`: that would
+    /// attach the caller as an agent session and keep the daemon from ever going idle.
+    public static let body: [String: Bool] = ["full": true]
+    /// As long as the daemon's own client waits for a full scan.
+    public static let timeoutSecs = 120
+    public static let action = "machines-scan"
+
+    public static func auditText(ok: Bool) -> String {
+        ok ? "Rescanned the remote machines" : "Rescan FAILED: the remote-machines daemon did not answer"
+    }
 }
 
 /// How a usage fraction is coloured: `over` where the daemon warns, `high` from 75 %.
@@ -265,6 +325,10 @@ public struct MachineExclusions: Equatable {
         case pause(TimeInterval), exclude, resume, include
     }
 
+    /// Same keys on the Linux side.
+    public static let excludeKey = "remoteMachineExclude"
+    public static let untilKey = "remoteMachineExcludeUntil"
+
     public var exclude: [String]
     public var until: [String: String]
 
@@ -273,8 +337,35 @@ public struct MachineExclusions: Equatable {
         self.until = until
     }
 
+    /// From a parsed config.json; entries that are not strings are dropped.
+    public init(config: [String: Any]) {
+        exclude = (config[Self.excludeKey] as? [Any])?.compactMap { $0 as? String } ?? []
+        until = (config[Self.untilKey] as? [String: Any])?.compactMapValues { $0 as? String } ?? [:]
+    }
+
+    /// The config.json edits that turn `current` into this, one per changed key, each
+    /// applied to the file as it then stands and written before the next. The list goes
+    /// first, so an exclusion is never briefly lifted between the two writes. An emptied
+    /// key is removed.
+    public func edits(from current: MachineExclusions) -> [([String: Any]) -> [String: Any]] {
+        func setting(_ key: String, _ value: Any, empty: Bool) -> ([String: Any]) -> [String: Any] {
+            { config in
+                var next = config
+                if empty { next.removeValue(forKey: key) } else { next[key] = value }
+                return next
+            }
+        }
+        var out: [([String: Any]) -> [String: Any]] = []
+        if exclude != current.exclude {
+            out.append(setting(Self.excludeKey, exclude, empty: exclude.isEmpty))
+        }
+        if until != current.until { out.append(setting(Self.untilKey, until, empty: until.isEmpty)) }
+        return out
+    }
+
     /// `action` on the machine called `target` (also known as `names`, matched without
-    /// case). Every edit also drops the pauses that have run out.
+    /// case). Every edit also drops the pauses that have run out, keeping a time it cannot
+    /// parse, which the daemon's `Date.parse` may still honour.
     public func applying(_ action: Action, target: String, names: [String],
                          now: Date) -> MachineExclusions {
         let lowered = Set((names + [target]).map { $0.lowercased() })

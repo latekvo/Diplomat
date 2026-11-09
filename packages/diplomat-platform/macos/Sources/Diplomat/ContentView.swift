@@ -1424,7 +1424,7 @@ struct AuditRow: View {
         case "repair-done":          return "wrench.and.screwdriver"
         case "allocator-install", "allocator-uninstall": return "shippingbox.fill"
         case "machine-pause", "machine-resume", "machine-exclude", "machine-include",
-             "machines-install", "machines-uninstall": return "server.rack"
+             "machines-install", "machines-uninstall", MachinesScan.action: return "server.rack"
         case "merge-failed", "spawn-failed", "poll-failed", "warn":
             return "exclamationmark.triangle.fill"
         case "poll-recovered":       return "checkmark.circle.fill"
