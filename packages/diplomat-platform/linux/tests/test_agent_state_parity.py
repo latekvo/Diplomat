@@ -428,7 +428,7 @@ _RELEASE_INTO_ITS_OWN_NAME = {
             "activity": {}, "processes": {}, "sentinels": [],
             "tails": {"pts/3": "● Posted the review.\n❯\n"
                                "⏵⏵ bypass permissions on (shift+tab to cycle)"},
-            "claims": [], "mergedPrs": [337], "liveAgents": {"337": "pts/3"},
+            "claims": [], "mergedPrs": ["o/r#337"], "liveAgents": {"o/r#337": "pts/3"},
             "sessions": {}, "tokensLeft": True}.items()},
 }
 
