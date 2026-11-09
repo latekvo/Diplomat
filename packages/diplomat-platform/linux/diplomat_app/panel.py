@@ -425,7 +425,6 @@ class Panel(QWidget):
         name = QLabel("Diplomat")
         name.setStyleSheet("font-weight: 700; font-size: 14px;")
         row.addWidget(name)
-        # The selected repo root: a caption with one root, a picker with several.
         self.repo_label = QLabel()
         self.repo_label.setStyleSheet(muted(9))
         row.addWidget(self.repo_label)

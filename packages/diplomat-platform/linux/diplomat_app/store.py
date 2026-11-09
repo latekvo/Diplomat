@@ -667,8 +667,7 @@ class Store(QObject):
 
     @staticmethod
     def _root_of(item: str | None) -> LocalRepo:
-        """The repo root an item key (or slug) is in, else the primary: a fetch made
-        for a root can name the repo by a spelling its remote does not (a rename)."""
+        """The repo root an item key (or slug) is in, else the primary."""
         roots = review.repo_roots()
         slug = (item or "").partition("#")[0].lower()
         return next((r for r in roots if r.slug.lower() == slug), roots[0])
@@ -1643,8 +1642,9 @@ class Store(QObject):
         once (:meth:`Filters.new_community_issues`). So it is offered until it is
         dispatched, can be cancelled, and re-reads its issue when its turn comes.
 
-        Each root keeps its own mark, and one with none starts from now, so adding a
-        root never queues its backlog. A root whose read failed keeps its mark."""
+        Each root keeps its own mark, and one with none is baselined on its first read,
+        so adding a root never queues its backlog. A root whose read failed keeps its
+        mark."""
         if not self.community_issues_enabled:
             return
         marks = self._community_marks()
