@@ -10,7 +10,9 @@ If a PR turns out perfectly clean — no issues, regressions or bad practices le
 
 For review threads that OTHERS have left on these PRs: address each one, and never mark a thread resolved without first replying "Fixed in <commit_hash>" with the real commit hash.
 
-Keep dispatching swarms until every PR you go through comes back clean — where CLEAN means a pass that surfaced no HIGH and no MEDIUM finding. A pass whose findings are all LOW (or nitpicks) COUNTS AS CLEAN: post the LOW ones, drop the nitpicks, and stop iterating on that PR. Only a HIGH or a MEDIUM keeps the loop alive.
+Keep dispatching swarms until every PR you go through comes back clean — where CLEAN means a pass that surfaced no HIGH and no MEDIUM finding. A pass whose findings are all LOW (or nitpicks) COUNTS AS CLEAN: drop the nitpicks and stop iterating on that PR. Only a HIGH or a MEDIUM keeps the loop alive.
+
+On my own PR, a finding is never posted — not as an inline comment, a review, or a top-level comment — it is FIXED on the branch. This outranks any line here or in my CLAUDE.md that says to post LOW findings; that applies to someone else's PR only. The LOW findings of the clean pass are no exception: the swarm loop stops there, but the run does not end until each of them is fixed on the branch and its check re-run. Treat every finding an earlier Diplomat run already posted on the PR under my own login (a comment opening with the Diplomat tag) exactly like a reviewer's: fix it or dismiss it with a reason, reply "Fixed in <commit_hash>" or the reason on its thread, then resolve that thread. Finish only with ZERO pending findings on the PR: none left unfixed, and no finding thread left without a reply.
 
 No AI attribution anywhere in git/GitHub — commits authored as me, no Co-Authored-By, no "Generated with" taglines.
 

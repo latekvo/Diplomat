@@ -114,8 +114,9 @@ def _fixture():
                ready_for_review_at=None, files=["src/g.ts"],
                review_decision="APPROVED", review_threads=[]),
         # Mine with unaddressed threads: one owed, one resolved, one I answered
-        # last, one I cannot resolve — only the first counts, and the count is
-        # printed, so a triage disagreement shows up as a different row.
+        # last, one I cannot resolve, and a run's unanswered finding — the first and
+        # the last count, and the count is printed, so a triage disagreement shows up
+        # as a different row.
         OpenPR(number=107, title="My reviewed PR", url="https://x/pull/107",
                is_draft=False, author=ME, created_at=created_9_5d,
                ready_for_review_at=None, files=["src/d.ts"],
@@ -129,6 +130,9 @@ def _fixture():
                                 last_comment_author=ME),
                    ReviewThread(is_resolved=False, viewer_can_resolve=False,
                                 last_comment_author="reviewer"),
+                   # A run's unanswered finding, posted under my login: owed.
+                   ReviewThread(is_resolved=False, viewer_can_resolve=True,
+                                last_comment_author=ME, unanswered_run_finding=True),
                ]),
         # Mine, exactly ONE owed thread — the singular "1 open thread".
         OpenPR(number=108, title="One open thread", url="https://x/pull/108",
@@ -192,7 +196,8 @@ def _fixture():
                 "reviewThreads": [
                     {"isResolved": t.is_resolved,
                      "viewerCanResolve": t.viewer_can_resolve,
-                     "lastCommentAuthor": t.last_comment_author}
+                     "lastCommentAuthor": t.last_comment_author,
+                     "unansweredRunFinding": t.unanswered_run_finding}
                     for t in p.review_threads
                 ],
             }

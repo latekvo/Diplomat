@@ -20,7 +20,7 @@ query ($q: String!) {
           nodes {
             isResolved
             viewerCanResolve
-            comments(last: 1) { nodes { author { login } } }
+            comments(last: 1) { totalCount nodes { author { login } body } }
           }
         }
       }
