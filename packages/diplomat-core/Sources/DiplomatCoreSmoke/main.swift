@@ -3722,6 +3722,8 @@ let goldenModes: [(String, String)] = [
     ("investigate", commsGoldenInvestigate.buildPrompt()),
     ("comms-classifier", CommsClassifier.prompt(settings: CommsSettings(
         owner: "software-mansion", repo: "argent", login: goldenMe))),
+    ("comms-classifier-multi", CommsClassifier.prompt(settings: CommsSettings(
+        repos: ["software-mansion/argent", "latekvo/diplomat"], login: goldenMe))),
 ]
 let goldenDir = try CoreAssets.assetsDir().appendingPathComponent("golden-prompts")
 if ProcessInfo.processInfo.environment["DIPLOMAT_GOLDEN_WRITE"] == "1" {

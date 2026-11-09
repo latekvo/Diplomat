@@ -7,18 +7,35 @@ public struct CommsQueuedWork: Codable, Equatable, Sendable {
     public var kind: String
     /// The PR or issue; unused for an investigation.
     public var number: Int
+    /// Its repository, as `CommsAsk.repo` names one: "" for the primary.
+    public var repo: String
     /// Tasks waiting ahead of it, and how many bays run them at once.
     public var ahead: Int
     public var bays: Int
     /// When its agent started, for work already under way.
     public var startedAt: Date?
 
-    public init(kind: String, number: Int, ahead: Int = 0, bays: Int = 1, startedAt: Date? = nil) {
+    public init(kind: String, number: Int, repo: String = "", ahead: Int = 0, bays: Int = 1,
+                startedAt: Date? = nil) {
         self.kind = kind
         self.number = number
+        self.repo = repo
         self.ahead = ahead
         self.bays = bays
         self.startedAt = startedAt
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, number, repo, ahead, bays, startedAt }
+
+    /// Only `kind` and `number` are required.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(kind: try c.decode(String.self, forKey: .kind),
+                  number: try c.decode(Int.self, forKey: .number),
+                  repo: try c.decodeIfPresent(String.self, forKey: .repo) ?? "",
+                  ahead: try c.decodeIfPresent(Int.self, forKey: .ahead) ?? 0,
+                  bays: try c.decodeIfPresent(Int.self, forKey: .bays) ?? 1,
+                  startedAt: try c.decodeIfPresent(Date.self, forKey: .startedAt))
     }
 }
 
@@ -167,15 +184,18 @@ public enum CommsReplier {
             var settings = r.settings
             settings.bannedSenders += CommsBan.bannedNow()
             let asked = CommsTS.number(r.message.ts) ?? 0
+            let repo = r.settings.canonical(r.decision.repo) ?? ""
+            let (owner, name) = r.settings.coordinates(of: repo)
             let question = CommsAnswerer.Question(
                 message: r.message,
                 context: CommsWatch.context(for: [r.message], in: dir, settings: settings,
                                             assets: assets)
                     .filter { (CommsTS.number($0.ts) ?? 0) < asked },
-                documentation: CommsKnowledge.load(owner: r.settings.owner, repo: r.settings.repo,
-                                                   dir: dir, now: now))
-            let a = (answer ?? { CommsAnswerer.run($0, settings: r.settings, name: who) })(question)
-            let text = sanitize(a.text, settings: r.settings, assets: assets)
+                documentation: CommsKnowledge.load(owner: owner, repo: name, dir: dir, now: now))
+            let a = (answer ?? {
+                CommsAnswerer.run($0, settings: r.settings, repo: repo, name: who)
+            })(question)
+            let text = sanitize(a.text, settings: r.settings, repo: repo, assets: assets)
             guard a.answers, !text.isEmpty else {
                 let outcome = "skipped: " + (a.answers ? "nothing was left once mentions and links were taken out"
                                              : a.reason.isEmpty ? "no answer" : a.reason)
@@ -248,10 +268,7 @@ public enum CommsReplier {
                                 words: CoreAssets.CommsModel.Replies.Language,
                                 assets: CoreAssets.CommsModel) -> String {
         let r = assets.replies
-        func list(_ items: [String]) -> String {
-            items.count < 2 ? items.joined()
-                : items.dropLast().joined(separator: ", ") + " \(words.and) " + (items.last ?? "")
-        }
+        func list(_ items: [String]) -> String { CommsText.list(items, and: words.and) }
         var kinds: [String] = []
         for q in work where !kinds.contains(q.kind) { kinds.append(q.kind) }
         var whats: [String] = []
@@ -259,9 +276,10 @@ public enum CommsReplier {
         for kind in kinds {
             let group = work.filter { $0.kind == kind }
             whats.append(group.count == 1
-                ? CommsText.fill(words.what[kind] ?? "", ["number": String(group[0].number)])
+                ? CommsText.fill(words.what[kind] ?? "",
+                                 ["ref": CommsSettings.ref(group[0].number, repo: group[0].repo)])
                 : CommsText.fill(words.whatMany[kind] ?? "",
-                                 ["numbers": list(group.map { "#\($0.number)" })]))
+                                 ["numbers": list(group.map { CommsSettings.ref($0.number, repo: $0.repo) })]))
             var last = group.filter { $0.startedAt == nil }.max { $0.ahead < $1.ahead }
             last?.ahead += group.filter { $0.startedAt == nil }.count - 1
             due = (group.filter { $0.startedAt != nil } + (last.map { [$0] } ?? []))
@@ -316,8 +334,10 @@ public enum CommsReplier {
     }
 
     /// The answer as one paragraph of at most `answer.maxChars`, with nothing Slack would
-    /// turn into a mention, a broadcast or a link the project's own prefixes do not start.
-    public static func sanitize(_ text: String, settings: CommsSettings,
+    /// turn into a mention, a broadcast or a link the project's own prefixes do not start:
+    /// those of `answer.linkPrefixes` filled with `repo` (a `CommsSettings.canonical`
+    /// slug), and those that name no repository when `repo` is `assets/config.json`'s.
+    public static func sanitize(_ text: String, settings: CommsSettings, repo: String = "",
                                 assets: CoreAssets.CommsModel) -> String {
         var s = text
         func sub(_ pattern: String, _ template: String) {
@@ -329,9 +349,13 @@ public enum CommsReplier {
         sub("<(https?://[^|>\\s]+)(\\|[^>]*)?>", "$1")
         sub("<[^>]*>", "")
         sub("(?<![\\p{L}\\p{N}._%+-])@(?=[\\p{L}\\p{N}])", "")
-        let prefixes = assets.answer.linkPrefixes.map {
-            CommsText.fill($0, ["owner": settings.owner, "repo": settings.repo]).lowercased()
-        }
+        let (owner, name) = settings.coordinates(of: repo)
+        let configured = CoreAssets.repoCoordinates()
+        let isConfigured = "\(owner)/\(name)".lowercased()
+            == "\(configured.owner)/\(configured.repo)".lowercased()
+        let prefixes = assets.answer.linkPrefixes
+            .filter { isConfigured || $0.contains("{owner}") || $0.contains("{repo}") }
+            .map { CommsText.fill($0, ["owner": owner, "repo": name]).lowercased() }
         if let re = try? NSRegularExpression(pattern: "(?:https?://|www\\.)[^\\s<>()\\[\\]]+",
                                              options: [.caseInsensitive]) {
             for m in re.matches(in: s, range: NSRange(s.startIndex..., in: s)).reversed() {
@@ -389,10 +413,11 @@ public enum CommsAnswerer {
         }
     }
 
-    public static func prompt(settings: CommsSettings, name: String) -> String {
+    /// About `repo`, a `CommsSettings.canonical` slug.
+    public static func prompt(settings: CommsSettings, repo: String = "", name: String) -> String {
         guard let a = (try? CoreAssets.comms())?.answer else { return "" }
-        return CommsText.fill(a.instructions, ["name": name, "owner": settings.owner,
-                                               "repo": settings.repo])
+        let (owner, project) = settings.coordinates(of: repo)
+        return CommsText.fill(a.instructions, ["name": name, "owner": owner, "repo": project])
     }
 
     public static func input(for q: Question) -> String {
@@ -418,7 +443,7 @@ public enum CommsAnswerer {
         ])
     }
 
-    public static func arguments(settings: CommsSettings, name: String) -> [String] {
+    public static func arguments(settings: CommsSettings, repo: String = "", name: String) -> [String] {
         let model = (try? CoreAssets.comms())
         return ["-p", "--model", model?.answer.model ?? "sonnet",
                 "--tools", "",
@@ -428,21 +453,22 @@ public enum CommsAnswerer {
                 "--no-session-persistence",
                 "--output-format", "json",
                 "--json-schema", model?.answerSchema ?? "",
-                prompt(settings: settings, name: name)]
+                prompt(settings: settings, repo: repo, name: name)]
     }
 
-    public static func run(_ q: Question, settings: CommsSettings, name: String,
+    public static func run(_ q: Question, settings: CommsSettings, repo: String = "", name: String,
                            binary: String? = nil) -> CommsAnswer {
         guard let model = try? CoreAssets.comms() else {
             return .declined("assets/comms.json could not be read")
         }
         guard !q.documentation.isEmpty else {
-            return .declined("no documentation of \(settings.owner)/\(settings.repo) could be read")
+            let (owner, project) = settings.coordinates(of: repo)
+            return .declined("no documentation of \(owner)/\(project) could be read")
         }
         guard let exe = binary ?? CommsClassifier.binary() else {
             return .declined("the claude CLI was not found")
         }
-        switch CommsClassifier.execute(exe, arguments(settings: settings, name: name),
+        switch CommsClassifier.execute(exe, arguments(settings: settings, repo: repo, name: name),
                                        input: Data(input(for: q).utf8),
                                        timeout: model.answer.timeoutSecs) {
         case .failedToStart(let why): return .declined("claude could not be started: \(why)")

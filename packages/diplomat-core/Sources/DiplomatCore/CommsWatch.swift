@@ -39,12 +39,20 @@ public enum CommsClassifier {
     /// every later ping would fail the same way.
     public static let failurePrefix = "classifier failed: "
 
+    /// `classifier.instructions`, its repository wording `classifier.repos.one`'s for one
+    /// watched repository and `many`'s for several.
     public static func prompt(settings: CommsSettings) -> String {
         guard let c = (try? CoreAssets.comms())?.classifier else { return "" }
-        return CommsText.fill(c.instructions, [
-            "login": settings.login.isEmpty ? "the operator" : settings.login,
-            "owner": settings.owner, "repo": settings.repo,
-        ])
+        let names = settings.repos.map { String($0.split(separator: "/").last ?? "") }
+        let base = ["owner": settings.owner, "repo": settings.repo,
+                    "list": CommsText.list(settings.repos, and: "and"),
+                    "example": names.dropFirst().first ?? ""]
+        var values = (settings.repos.count > 1 ? c.repos.many : c.repos.one)
+            .mapValues { CommsText.fill($0, base) }
+        values["login"] = settings.login.isEmpty ? "the operator" : settings.login
+        values["owner"] = settings.owner
+        values["repo"] = settings.repo
+        return CommsText.fill(c.instructions, values)
     }
 
     /// The stdin: one block per message, context first, each its label line and the
@@ -84,7 +92,38 @@ public enum CommsClassifier {
         ])
     }
 
-    public static var schema: String { (try? CoreAssets.comms())?.schema ?? "" }
+    /// `classifier.schema`; with several watched repositories, each decision and each of
+    /// its targets also names one of them as `repo`.
+    public static func schema(settings: CommsSettings) -> String {
+        let fixed = (try? CoreAssets.comms())?.schema ?? ""
+        guard settings.repos.count > 1,
+              var root = (try? JSONSerialization.jsonObject(with: Data(fixed.utf8))) as? [String: Any],
+              var props = root["properties"] as? [String: Any],
+              var decisions = props["decisions"] as? [String: Any],
+              var decision = decisions["items"] as? [String: Any],
+              var fields = decision["properties"] as? [String: Any],
+              var targets = fields["targets"] as? [String: Any],
+              var target = targets["items"] as? [String: Any],
+              var targetFields = target["properties"] as? [String: Any] else { return fixed }
+        let repo: [String: Any] = ["type": "string", "enum": settings.repos]
+        func requiring(_ object: [String: Any]) -> [String] {
+            ((object["required"] as? [String]) ?? []) + ["repo"]
+        }
+        targetFields["repo"] = repo
+        target["properties"] = targetFields
+        target["required"] = requiring(target)
+        targets["items"] = target
+        fields["targets"] = targets
+        fields["repo"] = repo
+        decision["properties"] = fields
+        decision["required"] = requiring(decision)
+        decisions["items"] = decision
+        props["decisions"] = decisions
+        root["properties"] = props
+        guard let data = try? JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+        else { return fixed }
+        return String(decoding: data, as: UTF8.self)
+    }
 
     public static func arguments(settings: CommsSettings) -> [String] {
         ["-p", "--model", settings.model,
@@ -94,7 +133,7 @@ public enum CommsClassifier {
          "--setting-sources", "",
          "--no-session-persistence",
          "--output-format", "json",
-         "--json-schema", schema,
+         "--json-schema", schema(settings: settings),
          prompt(settings: settings)]
     }
 
@@ -335,7 +374,8 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
         /// One item per target of `decision`, at most `maxTargets` of them, so each has its
         /// own action, row in the log and queue entry; last first, as each goes to the
         /// front of its band and the first asked for should run first. A decision with one
-        /// target or none is one item, as it stands.
+        /// target or none is one item, as it stands. A row past the first is
+        /// `<id>#<number>`, or `<id>#<owner/repo>#<number>` outside the primary repository.
         public static func targets(_ message: CommsMessage, _ decision: CommsDecision,
                             maxTargets: Int) -> [Item] {
             guard decision.numbers.count > 1 else {
@@ -344,7 +384,10 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
             let kept = decision.targets.prefix(max(1, maxTargets))
             return kept.enumerated().reversed().map { i, t in
                 var row = message
-                if i > 0 { row.id += String(CommsMessage.targetSeparator) + String(t.number) }
+                if i > 0 {
+                    let mark = String(CommsMessage.targetSeparator)
+                    row.id += mark + (t.repo.isEmpty ? "" : t.repo + mark) + String(t.number)
+                }
                 return Item(message: row, decision: decision.targeting(t))
             }
         }
@@ -643,7 +686,7 @@ public enum CommsWatch {
             CommsTickResult.Item.targets($0, $1, maxTargets: assets.maxTargets)
         })
         for decision in decisions where decision.numbers.count > assets.maxTargets {
-            let left = decision.numbers.dropFirst(assets.maxTargets).map { "#\($0)" }
+            let left = decision.targets.dropFirst(assets.maxTargets).map(\.ref)
             notice("A Slack message named more than the \(assets.maxTargets) a message can act on, "
                    + "so nothing was done for \(left.joined(separator: ", ")).")
         }

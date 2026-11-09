@@ -26,6 +26,7 @@ from diplomat_app import bans, issues
 from diplomat_app.store import Store, app_settings
 from diplomat_runtime import activity, autofix, comms, core, gh, review
 from diplomat_runtime.models import OpenIssue, OpenPR
+from diplomat_runtime.prref import LocalRepo
 
 pytest.importorskip("PySide6")
 
@@ -43,12 +44,12 @@ def qkey(verb: str, number: int) -> str:
 
 
 def _pr(number: int, author: str) -> OpenPR:
-    return OpenPR(number, f"PR {number}", f"https://github.com/o/r/pull/{number}",
+    return OpenPR(number, f"PR {number}", f"https://github.com/{PRIMARY}/pull/{number}",
                   False, author, NOW, None, [], None, [])
 
 
 def _issue(number: int, author: str = "carol") -> OpenIssue:
-    return OpenIssue(number, f"Issue {number}", f"https://github.com/o/r/issues/{number}",
+    return OpenIssue(number, f"Issue {number}", f"https://github.com/{PRIMARY}/issues/{number}",
                      author, "CONTRIBUTOR", NOW, NOW, 0, [], [], False)
 
 
@@ -318,7 +319,7 @@ def test_a_review_ask_is_queued_at_the_front_of_band_1(comms_store, monkeypatch)
         qkey("review", 12), qkey("review", 13), qkey("review", 1), qkey("review", 2), qkey("issues", 7)]
     ask = next(r for r in comms_store.requested_work if r.key == qkey("review", 12))
     # The Review wizard's single-PR default for someone else's PR.
-    assert (ask.author, ask.url) == ("bob", "https://github.com/o/r/pull/12")
+    assert (ask.author, ask.url) == ("bob", f"https://github.com/{PRIMARY}/pull/12")
     assert ask.config["specificPR"] == "12"
     assert ask.config["target"] == "specific"
     assert ask.config["specificAuthor"] == "theirs"
@@ -570,6 +571,135 @@ def test_the_lines_python_writes_fold_through_the_real_cli():
         "investigation queued", "investigate:1", "Investigate · Slack · x")
     assert (item["at"], item["startedAt"], item["finishedAt"]) == (
         "2026-10-27T10:00:00Z", "2026-10-27T10:02:00Z", "2026-10-27T10:09:00Z")
+
+
+# MARK: - several repo roots
+
+#: The second repo root, spelled as its remote spells it.
+WIDGET = LocalRepo("acme", "Widget", "/src/widget")
+
+
+def _two_roots(monkeypatch) -> None:
+    owner, repo = PRIMARY.split("/")
+    roots = [LocalRepo(owner, repo, "/src/primary"), WIDGET]
+    monkeypatch.setattr(review, "repo_roots", lambda: roots)
+
+
+def _in(repo: str, action: str, number: int) -> dict:
+    """A decision naming ``#number`` of ``repo`` ("" = the primary root)."""
+    return {**_decision(action, number),
+            "targets": [{"action": action, "number": number, "repo": repo}]}
+
+
+def test_the_tick_watches_every_root_primary_first(comms_store, monkeypatch):
+    _two_roots(monkeypatch)
+    assert comms_store.comms_settings_payload()["repos"] == [PRIMARY, "acme/Widget"]
+
+
+@needs_core
+def test_the_same_number_in_two_roots_is_two_asks(comms_store, monkeypatch):
+    _two_roots(monkeypatch)
+    asked: list = []
+    monkeypatch.setattr("diplomat_runtime.gh.run", _github({
+        ("pr", 12): ("OPEN", "https://github.com/acme/Widget/pull/12", "dana")}, asked))
+    _tick(comms_store, monkeypatch,
+          (_message(1, "review #12 please"), _in("", "review", 12)),
+          (_message(2, "review widget#12 please"), _in("acme/widget", "review", 12)))
+
+    assert [a[:5] for a in asked] == [["pr", "view", "12", "--repo", "acme/Widget"]], (
+        "the panel's #12 is the primary's, not widget's")
+    assert [(r.key, r.repo, r.author) for r in comms_store.requested_work] == [
+        (qkey("review", 12), PRIMARY, "bob"),
+        ("review:acme/widget#12", "acme/widget", "dana")]
+    assert [e["outcome"] for e in _events() if e["kind"] == "action"] == [
+        f"review of {PRIMARY.split('/')[1]}#12 queued, at the front of its band",
+        "review of widget#12 queued, at the front of its band"]
+
+
+@needs_core
+def test_an_ask_in_another_root_works_in_its_checkout(comms_store, monkeypatch):
+    _two_roots(monkeypatch)
+    asked: list = []
+    monkeypatch.setattr("diplomat_runtime.gh.run", _github({
+        ("issue", 500): ("OPEN", "https://github.com/acme/Widget/issues/500", "dana")},
+        asked))
+    _tick(comms_store, monkeypatch,
+          (_message(1, "fix widget#500"), _in("acme/widget", "fix_issue", 500)),
+          (_message(2, "fix #7"), _in("", "fix_issue", 7)))
+
+    assert asked[0][3:5] == ["--repo", "acme/Widget"]
+    widget, primary = comms_store.requested_work
+    assert (widget.key, widget.config["home"]) == (
+        "issues:acme/widget#500", {"owner": "acme", "repo": "Widget", "path": "/src/widget"})
+    tasks = {t.id: t for t in comms_store.queued_tasks}
+    assert tasks[widget.key].job.checkout == "/src/widget"
+    assert tasks[primary.key].job.checkout is None, "the primary is where every spawn starts"
+
+
+@needs_core
+def test_an_investigation_of_another_root_works_in_its_checkout(comms_store, monkeypatch):
+    _two_roots(monkeypatch)
+    widget = {**_decision("investigate", 0, "widget hangs"), "repo": "acme/widget"}
+    _tick(comms_store, monkeypatch, (_message(1, "widget hangs on start"), widget),
+          (_message(2, "the screenshot tool hangs"), _decision("investigate", 0, "hangs")))
+
+    there, here = comms_store.requested_work
+    assert (there.config["owner"], there.config["checkout"], there.repo) == (
+        "acme", "/src/widget", "acme/widget")
+    assert "checkout" not in here.config
+    tasks = {t.id: t for t in comms_store.queued_tasks}
+    assert (tasks[there.key].job.checkout, tasks[here.key].job.checkout) == (
+        "/src/widget", None)
+
+
+@needs_core
+@pytest.mark.parametrize("label, running", [
+    ("Issues · widget#9005 · deep", True),
+    (f"Issues · {PRIMARY.split('/')[1]}#9005 · deep", False),
+])
+def test_a_fix_running_in_another_root_is_known_by_its_repo_label(comms_store, monkeypatch,
+                                                                 label, running):
+    _two_roots(monkeypatch)
+    monkeypatch.setattr("diplomat_runtime.gh.run", _github({
+        ("issue", 9005): ("OPEN", "https://github.com/acme/Widget/issues/9005", "dana")}, []))
+    _rows(monkeypatch, [autofix.RunningAgent(0, label, "issues", True, started_at=DISPATCHED)])
+    _tick(comms_store, monkeypatch, (_message(1, "fix widget#9005"),
+                                     _in("acme/widget", "fix_issue", 9005)))
+    outcome = next(e for e in _events() if e["kind"] == "action")["outcome"]
+    assert outcome == ("already running" if running
+                       else "fix of issue widget#9005 queued, at the front of its band")
+
+
+@needs_core
+def test_a_bump_moves_only_its_own_roots_item(comms_store, monkeypatch):
+    _two_roots(monkeypatch)
+    monkeypatch.setattr("diplomat_runtime.gh.run", _github({
+        ("pr", 12): ("OPEN", "https://github.com/acme/Widget/pull/12", "dana")}, []))
+    _tick(comms_store, monkeypatch,
+          (_message(1, "review widget#12"), _in("acme/widget", "review", 12)),
+          (_message(2, "review #12"), _in("", "review", 12)),
+          (_message(3, "review #13"), _in("", "review", 13)))
+    order = [qkey("review", 13), qkey("review", 12), "review:acme/widget#12"]
+    assert [t.id for t in comms_store.queued_tasks] == order
+
+    _tick(comms_store, monkeypatch, (_message(4, "#12 first please"), _in("", "bump", 12)))
+    assert [t.id for t in comms_store.queued_tasks] == [order[1], order[0], order[2]]
+    assert _events()[-1]["outcome"] == f"moved {order[1]} to the front of its band"
+
+
+def test_a_queue_key_a_single_repo_build_logged_is_the_primary_roots(comms_store):
+    comms.comms_dir().mkdir(parents=True)
+    review_ping, investigation = _message(1), _message(2)
+    _logged((review_ping, _decision("review", 42)), (investigation, _decision("investigate")))
+    comms.append_event("action", review_ping["id"], outcome="review of #42 queued",
+                       queue_key="review:42", label="Review · #42 · deep")
+    comms.append_event("action", investigation["id"], outcome="investigation queued",
+                       queue_key="investigate:1761580002000100", label="Investigate")
+    comms_store.refresh_comms_feed()
+    assert sorted(i["queueKey"] for i in comms_store.comms_items) == [
+        "investigate:1761580002000100", qkey("review", 42)]
+    assert set(comms_store._comms_owned) == {
+        "investigate:1761580002000100", qkey("review", 42)}
 
 
 # MARK: - unread, errors, notifications
@@ -934,7 +1064,7 @@ def _review_req(number: int, author: str = "bob") -> autofix.QueuedTask:
         id=qkey("review-req", number), attempt=1,
         job=autofix.AgentJob(kind="review", audit_action="review-req",
                              label=f"Review-req · #{number} (@{author}) +verdict",
-                             prompt="p", pr_url=f"https://github.com/o/r/pull/{number}",
+                             prompt="p", pr_url=f"https://github.com/{PRIMARY}/pull/{number}",
                              pr_number=number, author_login=author,
                              counter="review_requests"))
 

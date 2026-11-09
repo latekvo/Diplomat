@@ -38,6 +38,30 @@ enum CommsTest {
         AgentProbes.pinDump(.present(""))
         defer { AgentProbes.pinDump(nil) }
 
+        // The repo roots: scratch checkouts whose remotes name `o/r`, the primary every
+        // target is in, and `o/second`, a second root for the checks that load both.
+        unsetenv("DIPLOMAT_REPO")
+        func checkout(_ name: String, remote slug: String) -> String {
+            let dir = scratch.appendingPathComponent("roots/\(name)")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            for args in [["init", "-q"], ["remote", "add", "origin", "https://github.com/\(slug).git"]] {
+                let git = Process()
+                git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                git.arguments = ["-C", dir.path] + args
+                try? git.run()
+                git.waitUntilExit()
+            }
+            return dir.path
+        }
+        let primaryRoot = checkout("r", remote: "o/r")
+        let secondRoot = checkout("second", remote: "o/second")
+        // Resolved off the main actor, which is where `RepoPaths.roots` runs git and caches.
+        func useRoots(_ paths: [String]) async {
+            AppConfig.setRepoRoots(paths)
+            _ = await Task.detached { RepoPaths.roots.count }.value
+        }
+        await useRoots([primaryRoot])
+
         // Numbers far above the real repo's, so no saved queue order of the operator's
         // names any of them.
         let targets: [Int: CommsTarget] = [
@@ -103,8 +127,28 @@ enum CommsTest {
                                author: "ivan", isOpen: true, state: "OPEN"),
             90089: CommsTarget(number: 90089, url: "https://github.com/o/r/pull/90089",
                                author: "ivan", isOpen: true, state: "OPEN"),
+            90200: CommsTarget(number: 90200, url: "https://github.com/o/r/pull/90200",
+                               author: "alice", isOpen: true, state: "OPEN"),
+            90210: CommsTarget(number: 90210, url: "https://github.com/o/r/pull/90210",
+                               author: "alice", isOpen: true, state: "OPEN"),
+            90230: CommsTarget(number: 90230, url: "https://github.com/o/r/issues/90230",
+                               author: "bob", isOpen: true, state: "OPEN"),
+        ]
+        // The same numbers in the second root, `gh --repo o/second`'s answers.
+        let secondTargets: [Int: CommsTarget] = [
+            90200: CommsTarget(number: 90200, url: "https://github.com/o/second/pull/90200",
+                               author: "zoe", isOpen: true, state: "OPEN"),
+            90202: CommsTarget(number: 90202, url: "https://github.com/o/second/pull/90202",
+                               author: "zoe", isOpen: true, state: "OPEN"),
+            90210: CommsTarget(number: 90210, url: "https://github.com/o/second/pull/90210",
+                               author: "zoe", isOpen: true, state: "OPEN"),
+            90230: CommsTarget(number: 90230, url: "https://github.com/o/second/issues/90230",
+                               author: "zoe", isOpen: true, state: "OPEN"),
+            90240: CommsTarget(number: 90240, url: "https://github.com/o/second/pull/90240",
+                               author: "zoe", isOpen: true, state: "OPEN"),
         ]
         var lookups: [Int] = []
+        var ghCalls: [[String]] = []
         // Run while a lookup is suspended, as a dispatch elsewhere on the main actor would.
         var duringLookup: [Int: () -> Void] = [:]
         // A gh that could not ask GitHub about these numbers at all.
@@ -123,9 +167,11 @@ enum CommsTest {
                 throw GHError.process(code: 1, stderr: "unexpected arguments \(args)")
             }
             lookups.append(n)
+            ghCalls.append(args)
             duringLookup.removeValue(forKey: n)?()
             if let down = ghDown[n] { throw down }
-            guard let t = targets[n], args[0] == "issue" || t.url.contains("/pull/") else {
+            let known = args.contains("o/second") ? secondTargets : targets
+            guard let t = known[n], args[0] == "issue" || t.url.contains("/pull/") else {
                 let what = args[0] == "issue" ? "an issue or pull request" : "a PullRequest"
                 throw GHError.process(code: 1, stderr: "GraphQL: Could not resolve to \(what) "
                                       + "with the number of \(n). (repository.pullRequest)")
@@ -505,7 +551,7 @@ enum CommsTest {
         store.commitQueue()
         check("…and with nothing to put back, the ping says it left the queue",
               !ids().contains("review-req:o/r#90043")
-                && outcome(askHeld) == "\(Store.commsLeftQueueOutcome) (review-req:90043)"
+                && outcome(askHeld) == "\(Store.commsLeftQueueOutcome) (review-req:o/r#90043)"
                 && !store.commsOwnedKeys.contains("review-req:o/r#90043"))
         store.queuedTasks = [held] + store.queuedTasks
         check("…after which it holds the monitor's find no more", store.isHeld(held))
@@ -1462,6 +1508,133 @@ enum CommsTest {
                 && feed(Store.commsReplyVerb).contains { $0.detail.contains("failed: ") })
         slack.fail = nil
 
+        // MARK: several repo roots
+        await useRoots([primaryRoot, secondRoot])
+        check("the watched repos are the roots, the primary first",
+              store.commsSettings.repos == ["o/r", "o/second"])
+        // One message's targets, one row each, as a tick splits them.
+        func targeted(_ asks: [CommsAsk]) -> [CommsTickResult.Item] {
+            let m = item(asks[0].action, asks[0].number).message
+            return CommsTickResult.Item.targets(
+                m, CommsDecision(action: asks[0].action, targets: asks, summary: "s", reason: "r"),
+                maxTargets: 20)
+        }
+        func tasked(_ key: String) -> Store.QueuedAgentTask? { store.queuedTasks.first { $0.id == key } }
+        func asked(_ key: String) -> Store.RequestedWork? { store.requestedWork.first { $0.key == key } }
+
+        ghCalls = []
+        let twoRepos = targeted([CommsAsk(.review, 90200), CommsAsk(.review, 90200, repo: "o/second")])
+        await apply(twoRepos)
+        check("one number named in two roots is two asks, each keyed by its own repo",
+              Set(twoRepos.compactMap { folded($0)?.queueKey })
+                == ["review:o/r#90200", "review:o/second#90200"]
+                && tasked("review:o/r#90200") != nil && tasked("review:o/second#90200") != nil)
+        check("…each looked up in its own repo: \(ghCalls.map { $0.prefix(5).joined(separator: " ") })",
+              Set(ghCalls.map { $0.prefix(5).joined(separator: " ") })
+                == ["pr view 90200 --repo o/r", "pr view 90200 --repo o/second"])
+        if case .review(let cfg)? = asked("review:o/second#90200")?.config,
+           case .review(let home)? = asked("review:o/r#90200")?.config {
+            check("…the second root's review targets that repo, from its checkout",
+                  cfg.targetRepo == ("o", "second") && cfg.checkout == secondRoot
+                    && cfg.buildPrompt().contains("o/second")
+                    && tasked("review:o/second#90200")?.job.directory == secondRoot
+                    && tasked("review:o/second#90200")?.job.prURL
+                        == "https://github.com/o/second/pull/90200"
+                    && asked("review:o/second#90200")?.author == "zoe")
+            check("…and the primary's its own",
+                  home.targetRepo == ("o", "r") && home.checkout == primaryRoot
+                    && !home.buildPrompt().contains("o/second")
+                    && tasked("review:o/r#90200")?.job.directory == primaryRoot)
+        } else {
+            check("…the second root's review targets that repo, from its checkout", false)
+        }
+
+        // The panel lists one root's PRs: a cached entry of the same number in another
+        // root is not this one.
+        store.prs = [OpenPR(number: 90202, title: "PR 90202", url: "https://github.com/o/r/pull/90202",
+                            isDraft: false, author: "alice", createdAt: Date(), readyForReviewAt: nil,
+                            files: [], reviewDecision: nil, reviewThreads: [])]
+        ghCalls = []
+        let cachedTwin = targeted([CommsAsk(.review, 90202), CommsAsk(.review, 90202, repo: "o/second")])
+        await apply(cachedTwin)
+        check("a PR the panel lists is not asked about, its namesake in another root is",
+              ghCalls.map { $0.prefix(5).joined(separator: " ") } == ["pr view 90202 --repo o/second"]
+                && asked("review:o/r#90202")?.url == "https://github.com/o/r/pull/90202"
+                && asked("review:o/second#90202")?.url == "https://github.com/o/second/pull/90202")
+        store.prs = []
+
+        let gone = targeted([CommsAsk(.review, 90299, repo: "o/second")])
+        await apply(gone)
+        check("a PR missing from a second root names that root",
+              outcome(gone[0]) == "no PR #90299 in o/second, so nothing was queued")
+
+        store.requestOne(review(90210))
+        store.requestOne(Store.RequestedWork(number: 90210,
+                                             url: "https://github.com/o/second/pull/90210",
+                                             author: "", config: review(90210).config))
+        let bumpPrimary = targeted([CommsAsk(.bump, 90210)])
+        await apply(bumpPrimary)
+        check("a bump of a primary root's number moves that item alone",
+              outcome(bumpPrimary[0]) == "moved review:o/r#90210 to the front of its band"
+                && band(1).first == "review:o/r#90210" && band(1).last == "review:o/second#90210")
+        let bumpSecond = targeted([CommsAsk(.bump, 90210, repo: "o/second")])
+        await apply(bumpSecond)
+        check("…and one of the second root's, the second's alone",
+              outcome(bumpSecond[0]) == "moved review:o/second#90210 to the front of its band"
+                && band(1).first == "review:o/second#90210")
+
+        // An issue fix's run is known by its label alone, which names the repo.
+        store.pinAgentRows([run("r30", nil, "issues", "Issues · second#90230 · deep")])
+        let fixSecond = targeted([CommsAsk(.fixIssue, 90230, repo: "o/second")])
+        let fixPrimary = targeted([CommsAsk(.fixIssue, 90230)])
+        await apply(fixSecond + fixPrimary)
+        check("a fix of an issue an agent is fixing in that root is not queued again",
+              outcome(fixSecond[0]) == "already running" && tasked("issues:o/second#90230") == nil)
+        check("…while the same number in the primary root is",
+              outcome(fixPrimary[0]).hasPrefix("queued") && tasked("issues:o/r#90230") != nil
+                && tasked("issues:o/r#90230")?.job.directory == primaryRoot)
+        store.pinAgentRows([])
+
+        let investigateSecond = CommsTickResult.Item(
+            message: item(.investigate, 0).message,
+            decision: CommsDecision(action: .investigate, summary: "crash in second", reason: "r",
+                                    repo: "o/second"))
+        await apply([investigateSecond])
+        let secondInvKey = "investigate:\(CommsTS.number(investigateSecond.message.ts)!)"
+        if case .investigate(let cfg)? = asked(secondInvKey)?.config {
+            check("an investigation about the second root runs in its checkout",
+                  cfg.owner == "o" && cfg.repo == "second" && cfg.checkout == secondRoot
+                    && tasked(secondInvKey)?.job.directory == secondRoot)
+        } else {
+            check("an investigation about the second root runs in its checkout", false)
+        }
+
+        store.commsLockedSince = Date().addingTimeInterval(-4 * 3600)
+        let secondReply = inChannel("U0RITA001", "rita", CommsDecision(
+            action: .review, targets: [CommsAsk(.review, 90240, repo: "o/second")],
+            summary: "s", reason: "r"))
+        await apply([secondReply])
+        await settled()
+        store.commsLockedSince = nil
+        let secondText = slack.posts.last?["message"] as? String ?? ""
+        check("a reply names a second root's PR by its repo: \(secondText.debugDescription)",
+              folded(secondReply)?.replyOutcome == "sent"
+                && secondText.contains("a review of second#90240"))
+
+        // Written by a single-repo build: `review:N`.
+        let legacy = item(.review, 90250)
+        CommsLog.append(CommsEvent(kind: .ping, id: legacy.message.id, message: legacy.message))
+        CommsLog.append(CommsEvent(kind: .decision, id: legacy.message.id, decision: legacy.decision))
+        CommsLog.append(CommsEvent(kind: .action, id: legacy.message.id, outcome: "queued",
+                                   queueKey: "review:90250", label: "Review · #90250 · deep"))
+        store.refreshComms()
+        check("a queue key a single-repo build logged is read as the primary root's item",
+              folded(legacy)?.queueKey == "review:o/r#90250"
+                && store.commsOwnedKeys.contains("review:o/r#90250"))
+        check("…and an investigation's as it was",
+              folded(askInvestigate)?.queueKey == invKey)
+        await useRoots([primaryRoot])
+
         // MARK: refreshing from the log
         let events = CommsLog.eventsURL()
         guard let mark = store.commsLog.mark,
@@ -1489,7 +1662,8 @@ enum CommsTest {
         check("a refresh of a log whose inode, size and mtime are unchanged reads nothing",
               folded(askReview)?.outcome == "queued, at the front of its band")
         rewrite("QUEUED", mtime: CommsLogReader.Time(sec: mark.mtime.sec + 1, nsec: 0))
-        store.refreshComms()
+        // Read whole again, which past `commsInlineReadBytes` is off the main actor.
+        await store.refreshComms()?.value
         check("…and a new mtime on the same size is read again",
               folded(askReview)?.outcome == "QUEUED, at the front of its band")
 
@@ -1520,7 +1694,8 @@ enum CommsTest {
         var reading: Task<Void, Never>?
         let handoffMs = timed { reading = store.refreshComms() }
         check("a long log is read off the main actor", reading != nil)
-        let lastKey = "review:\(91000 + n)"
+        // Logged as a single-repo build wrote them, so read as the primary's items.
+        let lastKey = "review:o/r#\(91000 + n)"
         let lastEntry = Store.QueuedAgentTask(
             id: lastKey,
             job: Store.AgentJob(kind: "review", auditAction: "review", label: "Review · #\(91000 + n)",
