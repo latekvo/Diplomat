@@ -481,10 +481,10 @@ private struct TaskRow<Details: View>: View {
                 if task.archivedAt != nil {
                     StatusPill(text: "archived", tint: .secondary, symbol: "archivebox").fixedSize()
                 }
-                Text(view.lastEventAt.map { TaskTint.ago($0) } ?? "")
+                Text(TaskTint.ago(view.lastEventAt))
                     .font(.system(size: 9).monospacedDigit()).foregroundStyle(.secondary)
                     .fixedSize()
-                    .help(view.lastEventAt.map { "Last event \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "")
+                    .help("Last event \(view.lastEventAt.formatted(date: .abbreviated, time: .shortened))")
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: toggle)

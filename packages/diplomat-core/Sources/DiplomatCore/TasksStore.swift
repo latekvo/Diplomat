@@ -154,7 +154,7 @@ public enum TaskStore {
     }
 
     /// What `tasks-list` prints: unarchived tasks (all with `archived`), each with its
-    /// status and newest-first history; tasks not done first, then by newest event.
+    /// status and newest-first history; tasks not done first, then by last activity.
     public static func views(archived: Bool = false, now: Date = Date(),
                              in dir: URL = dir) throws -> [TaskView] {
         let assets = try CoreAssets.tasks()
@@ -165,7 +165,7 @@ public enum TaskStore {
             let mine = (history[task.id] ?? []).sorted {
                 ($0.element.at, $0.offset) > ($1.element.at, $1.offset)
             }.map(\.element)
-            let last = mine.first?.at
+            let last = [task.lastEventAt, mine.first?.at].compactMap { $0 }.max() ?? task.createdAt
             let (status, reasons) = TaskStatus.derive(task, snapshots: snapshots, lastEventAt: last,
                                                       now: now, staleDays: assets.staleDays,
                                                       watched: watched)
@@ -175,8 +175,7 @@ public enum TaskStore {
         }
         return views.sorted { a, b in
             if (a.status == .done) != (b.status == .done) { return b.status == .done }
-            let (x, y) = (a.lastEventAt ?? .distantPast, b.lastEventAt ?? .distantPast)
-            return x != y ? x > y : a.task.id < b.task.id
+            return a.lastEventAt != b.lastEventAt ? a.lastEventAt > b.lastEventAt : a.task.id < b.task.id
         }
     }
 
@@ -204,7 +203,10 @@ public enum TaskStore {
                 throw TaskError(message: "the edit was saved, but its history line was not written to \(path)",
                                 saved: task)
             }
-            return task
+            // Not fatal: until the history rotates, `views` reads the same time off the line.
+            let noted = noting(events, in: tasks)
+            if noted != tasks { _ = save(noted, in: dir) }
+            return noted.first { $0.id == task.id } ?? task
         }) else { throw TaskError(message: "could not lock \(lockURL(in: dir).path)") }
         return task
     }
@@ -325,6 +327,16 @@ public enum TaskStore {
             guard tasks[i].archivedAt != nil else { return (tasks[i], []) }
             tasks[i].archivedAt = nil
             return (tasks[i], [event(id, ["unarchived"])])
+        }
+    }
+
+    /// `tasks` with each one's `lastEventAt` moved up to the newest of `events` it has.
+    static func noting(_ events: [TaskEvent], in tasks: [TrackedTask]) -> [TrackedTask] {
+        let newest = Dictionary(events.map { ($0.task, $0.at) }, uniquingKeysWith: max)
+        return tasks.map { task in
+            var task = task
+            if let at = newest[task.id], task.lastEventAt.map({ at > $0 }) ?? true { task.lastEventAt = at }
+            return task
         }
     }
 
