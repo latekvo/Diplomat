@@ -12,8 +12,9 @@ import Foundation
 ///                `error` is set: a failed sync is an answer, and `ok` with an `error`
 ///                names the links it skipped.
 ///   tasks-group  [--if-due]  one `TaskGrouper.run`; stdout = {"ok", "error"?, "created",
-///                "added"}, or {"ok": true, "skipped": "not due"} with --if-due before
-///                `groupSecs` have passed. Exits 0 either way.
+///                "added"}, or {"ok": true, "skipped": "not due", "ranAt", "lastError"?}
+///                (the last run's mark) with --if-due before `groupSecs` have passed.
+///                Exits 0 either way.
 ///   tasks-edit   stdin = a TaskEdit ({"op": "create" | "update" | "link" | "unlink" |
 ///                "note" | "archive" | "unarchive" | "mode" | "dispatched", …}); stdout =
 ///                the task as it now is.
@@ -46,7 +47,8 @@ enum TasksCommand {
     static func group(_ arguments: [String]) {
         guard arguments.allSatisfy({ $0 == "--if-due" }) else { die("tasks-group takes only --if-due", 1) }
         if !arguments.isEmpty, !TaskGrouper.due() {
-            emit(Data("{\"ok\":true,\"skipped\":\"not due\"}\n".utf8))
+            let mark = TaskGrouper.mark()
+            emitJSON(Skipped(ranAt: mark?.ranAt, lastError: mark?.error))
             return
         }
         let box = Box()
@@ -57,6 +59,13 @@ enum TasksCommand {
         }
         done.wait()
         emitJSON(box.grouped!)
+    }
+
+    private struct Skipped: Encodable {
+        let ok = true
+        let skipped = "not due"
+        let ranAt: Date?
+        let lastError: String?
     }
 
     static func sync() {

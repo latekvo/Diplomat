@@ -64,6 +64,56 @@ from . import (
 #: The review-request monitor's verb.
 REVIEW_REQ_ACTION = "review-req"
 
+GITHUB_ITEM = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/(?:pull|issues)/([0-9]+)$")
+#: An issue fix run's label (``RequestedWork.label``, the Fix-issues wizard's), past any
+#: ``Auto · `` prefix.
+_ISSUE_RUN = re.compile(r"(?:^|· )Issues · #([0-9]+) · ")
+
+
+def watched_number(url: str) -> int | None:
+    """The number of a PR or issue of the repo the agents work in; None for any other
+    link."""
+    m = GITHUB_ITEM.match(url)
+    cfg = core.config()
+    if m is None or f"{m[1]}/{m[2]}".lower() != f"{cfg['owner']}/{cfg['repo']}".lower():
+        return None
+    return int(m[3])
+
+
+@dataclass(frozen=True)
+class GoalOverlay:
+    """The watched repo's PRs and issues with an agent on them, and those waiting in
+    the queue: what a goal graph's pills are badged with."""
+
+    agent_prs: frozenset[int] = frozenset()
+    agent_issues: frozenset[int] = frozenset()
+    queued_prs: frozenset[int] = frozenset()
+    queued_issues: frozenset[int] = frozenset()
+
+
+def goal_overlay(records: list, states: dict, asks: list[autofix.RequestedWork],
+                 queued: list[autofix.QueuedTask]) -> GoalOverlay:
+    """A run counts as the dispatch dedup counts it (:func:`agentstate.in_flight`): not
+    released, in a blocking state. A PR's run is known by its number; an issue fix run
+    has none, and is known by its kind and label. Queued: the asks, and every queued
+    task, by its key's verb."""
+    live = [r for r in records if r.run_id in states and not r.released
+            and states[r.run_id].state in agentstate.BLOCKING]
+    agent_issues = set()
+    for r in live:
+        m = _ISSUE_RUN.search(r.label)
+        if r.pr_number is None and r.kind == autofix.QUEUE_ISSUES_ACTION and m:
+            agent_issues.add(int(m[1]))
+    keys = [a.key for a in asks] + [t.id for t in queued]
+    return GoalOverlay(
+        agent_prs=frozenset(r.pr_number for r in live if r.pr_number is not None),
+        agent_issues=frozenset(agent_issues),
+        queued_prs=frozenset(t.job.pr_number for t in queued if t.job.pr_number is not None)
+        | frozenset(a.number for a in asks if a.action == autofix.QUEUE_REVIEW_ACTION),
+        queued_issues=frozenset(int(k.split(":", 1)[1]) for k in keys
+                                if k.startswith(f"{autofix.QUEUE_ISSUES_ACTION}:")),
+    )
+
 
 def app_settings() -> QSettings:
     """This front-end's own preference store, the Linux analogue of UserDefaults.
@@ -523,6 +573,16 @@ class Store(QObject):
         # tasks before the edit that asked. `_force` is any of those asks' `force`.
         self._tracker_sync_again = False
         self._tracker_sync_again_force = False
+        # The goal grouper (`tasks-group`): whether one runs (under
+        # `_tracker_queue_lock`), when it last ran, and that run's error.
+        self.tracker_grouping = False
+        self.tracker_grouped_at: datetime | None = None
+        self.tracker_grouper_error: str | None = None
+        #: The PRs whose review threads an `auto` goal wants fixed (its `findings`), as
+        #: of the last poll: the my-review reconcile is not paused for them.
+        self._goal_findings: frozenset[int] = frozenset()
+        #: Issue numbers whose `+` fix is being dispatched, until its run is booked.
+        self._goal_fixes_starting: set[int] = set()
 
         # Pruned on every start — a Store outlives thousands of polls.
         self._workers: list[threading.Thread] = []
@@ -1410,12 +1470,15 @@ class Store(QObject):
                 # succeeds, since the refusal that staged them wrote no attempt
                 # record.
                 self._staged_queue = []
+                # Read before the reconcile below: an `auto` goal's findings unpause it.
+                goal_work = self._read_goal_work()
                 # Both PR monitors run whatever their toggles say; a switched-off one
                 # queues what it finds instead of dispatching it (see is_paused).
                 if snaps is not None:
                     self._poll_my_prs(snaps)
                 self._poll_review_requests(owner, repo)
                 self._poll_community_issues()
+                self._request_goal_work(goal_work)
                 # Last, so the monitors' finds keep the places they were found in:
                 # the operator's own sweep bands behind them anyway, and a fifty-item
                 # ask offered first would otherwise decide the arrangement of a queue
@@ -1570,6 +1633,46 @@ class Store(QObject):
             if queued:
                 activity.log("auto", "community-issue", f"{who} - fix queued")
         self._settings.setValue("communityIssuesSince", mark.isoformat())
+
+    def _read_goal_work(self) -> list[tuple[str, dict]]:
+        """Re-read the tasks, keep the PRs whose threads an ``auto`` goal wants fixed
+        (``findings``, for :meth:`is_paused`), and return its ``fix-issue`` and
+        ``review`` work by task id. Nothing when the tasks could not be read: what was
+        asked for since the last read is recorded only in the core."""
+        if not self.refresh_tracked_tasks():
+            self._goal_findings = frozenset()
+            return []
+        self.tracked_tasks_changed.emit()
+        work = [(str(v["task"].get("id")), w) for v in self.tracked_tasks
+                for w in v.get("work") or [] if isinstance(w, dict)]
+        self._goal_findings = frozenset(int(w["number"]) for _, w in work
+                                        if w.get("kind") == "findings")
+        return [(t, w) for t, w in work if w.get("kind") in ("fix-issue", "review")]
+
+    def _request_goal_work(self, work: list[tuple[str, dict]]) -> None:
+        """Queue each ``auto`` goal's issue fixes and reviews as asks (the cap, the ban
+        list and the queue switch apply), then record them on their task, the ones
+        already queued too. One whose prompt will not assemble is left for the next
+        pass, as :meth:`_offer_requested_work` leaves an ask."""
+        done: dict[str, list[str]] = {}
+        for task_id, w in work:
+            number, url, author = int(w["number"]), str(w["url"]), str(w.get("author") or "")
+            if w["kind"] == "fix-issue":
+                config = issues.IssueConfig(target=issues.Target.CONTRIBUTORS,
+                                            me=self.effective_me).for_issue(number)
+            else:
+                config = self._review_request_config(number, verdict=False)
+            try:
+                self._request([autofix.RequestedWork(number=number, url=url, author=author,
+                                                     config=config.prompt_payload())])
+            except Exception as exc:  # noqa: BLE001 — a missing/wedged core binary
+                activity.log("auto", "goal", f"could not queue {w['key']}: {exc}")
+                continue
+            done.setdefault(task_id, []).append(str(w["key"]))
+        for task_id, keys in done.items():
+            error = self._edit_tracked_task({"op": "dispatched", "id": task_id, "work": keys})
+            if error:
+                activity.log("auto", "goal", f"could not record {', '.join(keys)}: {error}")
 
     def _poll_review_requests(self, owner: str, repo: str) -> None:
         try:
@@ -1802,7 +1905,7 @@ class Store(QObject):
                 # front-end's own out of the dispatch gate both front-ends mirror.
                 # The queue switch has to hold HERE and not only at the drain: a find
                 # that meets a free bay never reaches the queue at all.
-                paused = self.is_paused(job.counter) or not self.queue_auto_run
+                paused = self.is_paused(job.counter, job.pr_number) or not self.queue_auto_run
                 at_capacity = full or paused
             # Measured after capacity and under the same conditions: a device with
             # no free bay has nothing to spend a budget on, so the probe and the
@@ -1994,18 +2097,7 @@ class Store(QObject):
             kind="review",
             audit_action=REVIEW_REQ_ACTION,
             label=f"Review-req · #{r.number} (@{r.author}){tag}",
-            prompt=review.ReviewConfig(
-                depth="max",
-                target=PRTarget.SPECIFIC,
-                me=self.effective_me,
-                mark_ready=False,
-                leave_reviews=True,
-                reply_to_reviews=False,
-                specific_pr=str(r.number),
-                final_pass=verdict,
-                soft_approve=soft,
-                specific_author=review.SpecificAuthor.THEIRS,
-            ).build_prompt(),
+            prompt=self._review_request_config(r.number, verdict=verdict).build_prompt(),
             pr_url=r.url,
             pr_number=r.number,
             author_login=r.author,
@@ -2016,6 +2108,23 @@ class Store(QObject):
             attempt_stamp=r.stamp,
         )
         return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
+
+    def _review_request_config(self, number: int, *, verdict: bool) -> review.ReviewConfig:
+        """The review-request monitor's review of someone's PR ``number``: the deepest,
+        left on the PR; ``verdict`` lets a clean one approve, and without it a clean
+        one soft-approves unless that is switched off."""
+        return review.ReviewConfig(
+            depth="max",
+            target=PRTarget.SPECIFIC,
+            me=self.effective_me,
+            mark_ready=False,
+            leave_reviews=True,
+            reply_to_reviews=False,
+            specific_pr=str(number),
+            final_pass=verdict,
+            soft_approve=self.soft_approve_enabled,
+            specific_author=review.SpecificAuthor.THEIRS,
+        )
 
     def _spawn_tracked(self, prompt: str, url: str | None, number: int | None,
                        source: str, ledger_key: str = "", label: str = "",
@@ -2673,16 +2782,21 @@ class Store(QObject):
             self.queued_tasks = remaining
             self.tasks_changed.emit()
 
-    def is_paused(self, counter: str | None) -> bool:
+    def is_paused(self, counter: str | None, pr_number: int | None = None) -> bool:
         """Whether the monitor that owns this work is switched off.
 
         A switched-off monitor still finds its work and still queues it — what your
         PRs owe is worth seeing whether or not this machine is set to act on it — but
         nothing automatic starts it. It waits for "execute now", or for the toggle to
         come back on. That is the whole difference the two toggles make: they decide
-        who starts the work, not whether it is known."""
+        who starts the work, not whether it is known.
+
+        Review threads on a PR of an ``auto`` goal are fixed whatever the PR toggle
+        says: putting the goal in ``auto`` asked for it."""
         if counter == "review_requests":
             return not self.review_requests_enabled
+        if counter == "my_reviews" and pr_number in self._goal_findings:
+            return False
         if counter in ("my_reviews", "conflicts"):
             return not self.pr_autofix_enabled
         # A review the operator asked for: no monitor owns it, so neither toggle
@@ -2708,7 +2822,7 @@ class Store(QObject):
                 owned: dict[str, frozenset[str]] | None = None) -> bool:
         """Paused, unless a Slack ping took it as its ask: then it is asked-for work,
         which switching a monitor off never stops (:meth:`is_paused`)."""
-        return (self.is_paused(task.job.counter)
+        return (self.is_paused(task.job.counter, task.job.pr_number)
                 and task.id not in (self._comms_owned if owned is None else owned))
 
     def _begin_starting(self, entry: autofix.QueuedTask) -> None:
@@ -4291,17 +4405,19 @@ class Store(QObject):
         """The Tasks button's count: unarchived tasks whose status is ``blocked``."""
         return sum(1 for v in self._tracker_live() if v.get("status") == "blocked")
 
-    def refresh_tracked_tasks(self) -> None:
+    def refresh_tracked_tasks(self) -> bool:
         """``tasks-list``, on a worker: it reads the whole event log. A core that cannot
-        answer leaves the rows as they were, and says why."""
+        answer leaves the rows as they were, says why, and returns False."""
         with self._tracker_lock:
             try:
-                views = tasks.views(archived=self.tracker_show_archived)
+                views = tasks.views(archived=self.tracker_show_archived,
+                                    me=self.effective_me)
             except tasks.Failure as exc:
                 self.tracker_list_error = str(exc)
-                return
+                return False
             self.tracked_tasks = views
             self.tracker_list_error = None
+            return True
 
     def refresh_tracked_tasks_async(self) -> None:
         def work() -> None:
@@ -4392,11 +4508,94 @@ class Store(QObject):
         self.tracked_tasks_changed.emit()
         if op.get("op") in ("create", "link", "unarchive"):
             self.run_tracker_sync_async()
+        if op.get("op") == "mode" and op.get("mode") == "auto":
+            # Its automatic pass now: a poll already running may have read the task
+            # before the switch. The poll is what fixes its findings.
+            self._request_goal_work(self._read_goal_work())
+            self.run_autofix_poll_async()
         return None
 
     def set_tracker_show_archived(self, on: bool) -> None:
         self.tracker_show_archived = on
         self.refresh_tracked_tasks_async()
+
+    def run_goal_grouper_async(self, *, force: bool = False) -> None:
+        """``tasks-group``: on the Tasks tick only once it is due, at once when
+        ``force``d ("Find goals"); never two at a time. A run that proposed or added
+        anything is followed by a sync, for the new links' states."""
+        with self._tracker_queue_lock:
+            if self.tracker_grouping:
+                return
+            self.tracker_grouping = True
+
+        def work() -> None:
+            ran = False
+            try:
+                self.tracked_tasks_changed.emit()
+                result = tasks.group(if_due=not force)
+                ran = "skipped" not in result
+                if ran:
+                    self.tracker_grouped_at = datetime.now().astimezone()
+                    self.tracker_grouper_error = result.get("error") or None
+                else:
+                    self.tracker_grouped_at = comms.parse_iso(str(result.get("ranAt") or ""))
+                    self.tracker_grouper_error = result.get("lastError") or None
+            finally:
+                with self._tracker_queue_lock:
+                    self.tracker_grouping = False
+            if ran and (result.get("created") or result.get("added")):
+                self.run_tracker_sync_async()
+            elif ran:
+                self.refresh_tracked_tasks()
+            self.tracked_tasks_changed.emit()
+
+        self.start_background(work, name="tasks-group")
+
+    def goal_overlay(self) -> GoalOverlay:
+        """What the goal graphs badge, from this moment's runs and queue."""
+        t = self._agent_tick()
+        overlay = goal_overlay(t.records, t.states, self.requested_work,
+                               self.queued_tasks + self.starting_tasks)
+        return dataclasses.replace(
+            overlay, agent_issues=overlay.agent_issues | frozenset(self._goal_fixes_starting))
+
+    def start_goal_fix_async(self, task_id: str, node: dict) -> None:
+        """A goal graph's ``+``: a fix agent for its issue now, as the Fix-issues
+        wizard's press for one issue starts it (outside the cap), then recorded on the
+        task by ``node["work"]``. Why it did not start comes back as the card's error."""
+        number = watched_number(str(node.get("url") or ""))
+        if number is None:
+            return
+        with self._tracker_queue_lock:
+            if number in self._goal_fixes_starting:
+                return
+            self._goal_fixes_starting.add(number)
+        self.tracked_tasks_changed.emit()
+
+        def work() -> None:
+            try:
+                cfg = issues.IssueConfig(target=issues.Target.SPECIFIC, me=self.effective_me,
+                                         specific_issue=str(number))
+                verdict = self.dispatch_agent(autofix.AgentJob(
+                    kind=autofix.QUEUE_ISSUES_ACTION, audit_action=autofix.QUEUE_ISSUES_ACTION,
+                    label=f"Issues · #{number} · {issues.depth_by_id(cfg.depth)['title']}",
+                    prompt=cfg.build_prompt(), duty=autofix.QUEUE_ISSUES_ACTION,
+                ), autofix.SOURCE_PANEL)
+            except Exception as exc:  # noqa: BLE001 — a core that cannot build the prompt
+                verdict = str(exc)
+            finally:
+                with self._tracker_queue_lock:
+                    self._goal_fixes_starting.discard(number)
+            if verdict in ("spawned", autofix.VERDICT_STAND_DOWN):
+                self.edit_tracked_task_async(
+                    {"op": "dispatched", "id": task_id, "work": [node["work"]]},
+                    ("card", task_id, False))
+                return
+            self.tracked_task_edited.emit(("card", task_id, False),
+                                          f"The fix for #{number} did not start: {verdict}")
+            self.tracked_tasks_changed.emit()
+
+        self.start_background(work, name="goal-fix")
 
     # MARK: device allocator
 

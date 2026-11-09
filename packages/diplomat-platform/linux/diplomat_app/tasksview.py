@@ -25,12 +25,13 @@ from PySide6.QtWidgets import (
     QMenu,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
 from . import glyphs
-from .store import Store
+from .store import GITHUB_ITEM, GoalOverlay, Store, watched_number
 from .widgets import ElidedLabel, GlyphLabel, muted, plain_tooltip, tint_bg
 
 _RED, _GREEN, _ORANGE, _BLUE, _PURPLE = "#FF3B30", "#34C759", "#FF9500", "#0A84FF", "#AF52DE"
@@ -44,13 +45,16 @@ STATUS_TINT = {"open": glyphs.MUTED, "in-progress": _BLUE, "in-review": _PURPLE,
 STATE_TINT = {"open": _GREEN, "draft": glyphs.MUTED, "merged": _PURPLE, "closed": _RED,
               "missing": _ORANGE}
 
+#: The row header's pill for a goal Diplomat proposed, and for one it acts on.
+MODE_PILL = {"proposed": (f"{glyphs.G_FINAL} PROPOSED", _PURPLE),
+             "auto": (f"{glyphs.G_AUTO} AUTO", _ORANGE)}
+
 SOURCE_GLYPH = {"github": glyphs.G_ISSUES, "slack": glyphs.G_COMMS, "note": glyphs.G_NOTE,
                 "diplomat": glyphs.G_APP}
 
 #: An opened history shows this many of the newest events until asked for the rest.
 HISTORY_SHOWN = 12
 
-_GITHUB = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/(?:pull|issues)/([0-9]+)$")
 
 
 def _text_color() -> str:
@@ -81,6 +85,16 @@ def _small_button(text: str, on_click) -> QPushButton:
     return btn
 
 
+def _choice(text: str, on: bool, tint: str, on_click) -> QPushButton:
+    """A small button that is one side of a choice: filled with ``tint`` while it is
+    the one in effect."""
+    btn = _small_button(text, on_click)
+    if on:
+        btn.setStyleSheet(f"font-size: 9px; padding: 1px 6px; font-weight: 700; color: {tint};"
+                          f" background-color: {tint_bg(tint, 0.18)}; border-radius: 4px;")
+    return btn
+
+
 def _clear(layout) -> None:
     while layout.count():
         item = layout.takeAt(0)
@@ -103,14 +117,14 @@ def split_tags(raw: str) -> list[str]:
 
 
 def _github_key(url: str) -> str | None:
-    m = _GITHUB.match(url or "")
+    m = GITHUB_ITEM.match(url or "")
     return f"{m[1]}/{m[2]}#{m[3]}".lower() if m else None
 
 
 def link_label(url: str, kind: str) -> str:
     """``#123`` in the watched repo, ``o/r#12`` elsewhere (``GitHubRef.label``),
     ``slack``, else the host."""
-    m = _GITHUB.match(url or "")
+    m = GITHUB_ITEM.match(url or "")
     if m and kind in ("pr", "issue"):
         cfg = core.config()
         watched = f"{cfg.get('owner', '')}/{cfg.get('repo', '')}#{m[3]}".lower()
@@ -169,6 +183,60 @@ class LinkChip(QFrame):
         self.context_menu().exec(event.globalPos())
 
 
+class GraphPill(LinkChip):
+    """One item of a goal's graph (``TaskGraph.Node``). A PR or an issue opens; the
+    ``+`` after an issue no PR closes yet starts a fix agent for it through ``on_fix``
+    (None: archived, or not the watched repo's), unless ``badge`` (``agent`` or
+    ``queued``) says one is on it already, which it then shows instead."""
+
+    def __init__(self, node: dict, *, badge: str | None, on_fix=None) -> None:
+        self.node = node
+        self.kind = str(node.get("kind") or "")
+        self.badge = badge
+        self._on_fix = on_fix
+        add = self.kind == "add"
+        super().__init__(str(node.get("url") or ""),
+                         badge.upper() if add and badge else str(node.get("label") or ""),
+                         state=None if add else node.get("state"))
+        if add:
+            self.text.setStyleSheet(
+                f"color: {glyphs.AGENT_LIVE if badge == 'agent' else _BLUE};"
+                " font-size: 9px; font-weight: 700;")
+            asked = comms.parse_iso(str(node.get("dispatchedAt") or ""))
+            tip = f"fix asked {Fmt.age(asked)} ago" if asked else "no fix asked yet"
+            if badge:
+                tip = f"a fix is {'running' if badge == 'agent' else 'queued'}; {tip}"
+            elif on_fix is not None:
+                tip = f"Start a fix agent for this issue; {tip}"
+            self.setToolTip(plain_tooltip(tip))
+        elif badge:
+            self.badge_chip = _chip(badge.upper(),
+                                    glyphs.AGENT_LIVE if badge == "agent" else glyphs.MUTED)
+            self.layout().addWidget(self.badge_chip)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self.kind != "add":
+            super().mouseReleaseEvent(event)
+        elif (event.button() == Qt.MouseButton.LeftButton and self.badge is None
+              and self._on_fix is not None):
+            self._on_fix(self.node)
+
+
+def graph_badge(node: dict, overlay: GoalOverlay) -> str | None:
+    """``agent`` or ``queued`` for a node of the watched repo something is on: for a
+    ``+``, a fix of its issue."""
+    number = watched_number(str(node.get("url") or ""))
+    if number is None:
+        return None
+    kind = node.get("kind")
+    on_issue = kind in ("issue", "add")
+    if number in (overlay.agent_issues if on_issue else overlay.agent_prs):
+        return "agent"
+    if number in (overlay.queued_issues if on_issue else overlay.queued_prs):
+        return "queued"
+    return None
+
+
 class HistoryRow(QFrame):
     """One history event: time, source glyph, tags, its link, and the excerpt."""
 
@@ -218,11 +286,13 @@ def _tag_tint(tag: str) -> str:
 
 class TaskCard(QFrame):
     """One task: status, title, reasons and tags; its links; its actions; and, opened,
-    its history. Every action is a ``tasks-edit`` through the store, whose answer
-    :class:`TasksView` routes back by ``("card", id, from_editor)``."""
+    its goal (what Diplomat does about it, and its graph) and its history. Every action
+    is a ``tasks-edit`` through the store, whose answer :class:`TasksView` routes back
+    by ``("card", id, from_editor)``. ``overlay`` badges the graph."""
 
     def __init__(self, view: dict, store: Store, *, expanded: bool, full_history: bool,
-                 error: str | None, on_toggle, on_older, on_editing) -> None:
+                 error: str | None, on_toggle, on_older, on_editing,
+                 overlay: GoalOverlay) -> None:
         super().__init__()
         self.view = view
         self.store = store
@@ -250,6 +320,12 @@ class TaskCard(QFrame):
         title = _plain(str(self.task.get("title", "")))
         title.setStyleSheet("font-weight: 700; font-size: 11px;")
         head.addWidget(title)
+        #: `TaskMode`'s raw value; observe when unset.
+        self.goal_mode = str(self.task.get("mode") or "observe")
+        self.mode_chip: QLabel | None = None
+        if self.goal_mode in MODE_PILL:
+            self.mode_chip = _chip(*MODE_PILL[self.goal_mode])
+            head.addWidget(self.mode_chip)
         if archived:
             head.addWidget(_chip("ARCHIVED", glyphs.MUTED))
         self.reasons = [str(r) for r in view.get("reasons") or []]
@@ -328,7 +404,11 @@ class TaskCard(QFrame):
 
         self.history_rows: list[HistoryRow] = []
         self.older_btn: QPushButton | None = None
+        self.goal_buttons: dict[str, QPushButton] = {}
+        self.graph_rows: list[list[GraphPill]] = []
+        self.goal_line: QLabel | None = None
         if expanded:
+            self._build_goal(col, archived, overlay)
             hist = QVBoxLayout()
             hist.setContentsMargins(6, 2, 0, 0)
             hist.setSpacing(2)
@@ -348,6 +428,86 @@ class TaskCard(QFrame):
                 none.setStyleSheet(muted(9))
                 hist.addWidget(none)
             col.addLayout(hist)
+
+    # MARK: the goal
+
+    def _build_goal(self, col: QVBoxLayout, archived: bool, overlay: GoalOverlay) -> None:
+        """What Diplomat does about it (a proposal's three answers, else Observe | Auto
+        and, in auto, review on new commits), then its graph: one line per row of
+        ``view.graph``. An archived task shows the graph alone."""
+        github = [lk for lk in self.task.get("links") or [] if lk.get("kind") in ("pr", "issue")]
+        graph = [row for row in self.view.get("graph") or [] if isinstance(row, list)]
+        if not github and not graph:
+            return
+        grouped = self.task.get("origin") == "grouper"
+
+        def mode(key: str, text: str, op: dict, on: bool = False, tint: str = _BLUE) -> None:
+            self.goal_buttons[key] = _choice(text, on, tint, lambda: self.apply(
+                {"op": "mode", "id": self.id, **op}))
+            line.addWidget(self.goal_buttons[key])
+
+        if not archived:
+            line = QHBoxLayout()
+            line.setSpacing(4)
+            if self.goal_mode == "proposed":
+                self.goal_line = _plain(f"Proposed from {len(github)} open issues and PRs")
+                self.goal_line.setStyleSheet(muted(9))
+                line.addWidget(self.goal_line)
+                mode("dismiss", "Dismiss", {"mode": "dismissed"})
+                mode("observe", "Observe", {"mode": "observe"})
+                mode("auto", "Automate", {"mode": "auto"})
+            else:
+                auto = self.goal_mode == "auto"
+                mode("observe", "Observe", {"mode": "observe"}, on=not auto)
+                mode("auto", "Auto", {"mode": "auto"}, on=auto, tint=_ORANGE)
+                if auto:
+                    on = bool(self.task.get("reviewOnPush"))
+                    mode("review", "Review on new commits", {"reviewOnPush": not on}, on=on,
+                         tint=_ORANGE)
+                if grouped:
+                    mode("dismiss", "Dismiss", {"mode": "dismissed"})
+            line.addStretch(1)
+            col.addLayout(line)
+        if not graph:
+            return
+        host = QWidget()
+        rows = QVBoxLayout(host)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(2)
+        for nodes in graph:
+            line = QHBoxLayout()
+            line.setSpacing(3)
+            pills = []
+            for i, node in enumerate(n for n in nodes if isinstance(n, dict)):
+                if i:
+                    arrow = QLabel("→")
+                    arrow.setStyleSheet(muted(10))
+                    line.addWidget(arrow)
+                fix = None
+                if (node.get("kind") == "add" and not archived
+                        and watched_number(str(node.get("url") or "")) is not None):
+                    fix = self.start_fix
+                pill = GraphPill(node, badge=graph_badge(node, overlay), on_fix=fix)
+                pills.append(pill)
+                line.addWidget(pill)
+            line.addStretch(1)
+            rows.addLayout(line)
+            self.graph_rows.append(pills)
+        # Wider rows scroll sideways rather than widen the card or wrap.
+        self.graph = QScrollArea()
+        self.graph.setWidget(host)
+        self.graph.setWidgetResizable(True)
+        self.graph.setFrameShape(QFrame.Shape.NoFrame)
+        self.graph.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.graph.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget"
+                                 " { background: transparent; }")
+        self.graph.setFixedHeight(host.sizeHint().height()
+                                  + self.graph.horizontalScrollBar().sizeHint().height())
+        col.addWidget(self.graph)
+
+    def start_fix(self, node: dict) -> None:
+        self.error.setVisible(False)
+        self.store.start_goal_fix_async(self.id, node)
 
     # MARK: inline editors
 
@@ -486,6 +646,7 @@ class TasksView(QWidget):
 
         store.tracked_tasks_changed.connect(self.rebuild)
         store.tracked_task_edited.connect(self._edited)
+        store.tasks_changed.connect(self._agents_changed)
         self.rebuild()
 
     def _build_header(self) -> QHBoxLayout:
@@ -510,6 +671,12 @@ class TasksView(QWidget):
         self.sync_btn.clicked.connect(lambda _=False: self.store.run_tracker_sync_async(
             force=True))
         row.addWidget(self.sync_btn)
+        self.goals_btn = QPushButton("Find goals")
+        self.goals_btn.setToolTip("Ask Claude now which open issues and PRs serve one goal,"
+                                  " and propose each as a task")
+        self.goals_btn.clicked.connect(lambda _=False: self.store.run_goal_grouper_async(
+            force=True))
+        row.addWidget(self.goals_btn)
         done = QPushButton("Done")
         done.setStyleSheet("font-weight: 700;")
         done.clicked.connect(self.done.emit)
@@ -611,16 +778,23 @@ class TasksView(QWidget):
                          f"{'' if st.tracker_sync_events == 1 else 's'}")
         else:
             parts.append("not synced yet")
+        if st.tracker_grouping:
+            parts.append("looking for goals…")
+        elif st.tracker_grouped_at:
+            parts.append(f"goals looked for {Fmt.clock(st.tracker_grouped_at)}")
         return " · ".join(parts)
 
     def rebuild(self, *, force: bool = False) -> None:
         st = self.store
         self.status.setText(self._status_text())
         errors = [e for e in (st.tracker_sync_error, st.tracker_list_error) if e]
+        if st.tracker_grouper_error:
+            errors.append(f"Finding goals failed: {st.tracker_grouper_error}")
         self.error_banner.setVisible(bool(errors))
         self.error_banner.setText("\n".join(f"⚠ {e}" for e in errors))
         self.sync_btn.setEnabled(not st.tracker_syncing and any(
             not v["task"].get("archivedAt") for v in st.tracked_tasks))
+        self.goals_btn.setEnabled(not st.tracker_grouping)
         self.archived_box.blockSignals(True)
         self.archived_box.setChecked(st.tracker_show_archived)
         self.archived_box.blockSignals(False)
@@ -639,17 +813,28 @@ class TasksView(QWidget):
             none.setStyleSheet(muted(10))
             none.setWordWrap(True)
             self.list_col.addWidget(none)
+        overlay = st.goal_overlay() if self._graphs_shown() else GoalOverlay()
         for view in st.tracked_tasks:
             task_id = str(view["task"].get("id"))
             card = TaskCard(view, st, expanded=task_id in self._expanded,
                             full_history=task_id in self._full_history,
                             error=self._errors.get(task_id),
                             on_toggle=self._toggle_history, on_older=self._show_older,
-                            on_editing=lambda on, i=task_id: self._note_editing(i, on))
+                            on_editing=lambda on, i=task_id: self._note_editing(i, on),
+                            overlay=overlay)
             self.cards.append(card)
             self.list_col.addWidget(card)
             if task_id in drafts:
                 card.restore(drafts[task_id])
+
+    def _graphs_shown(self) -> bool:
+        return any(v.get("graph") and str(v["task"].get("id")) in self._expanded
+                   for v in self.store.tracked_tasks)
+
+    def _agents_changed(self) -> None:
+        """An agent started, ended or was queued: the graphs' badges."""
+        if self._graphs_shown():
+            self.rebuild()
 
     def _toggle_history(self, task_id: str) -> None:
         if task_id in self._expanded:
