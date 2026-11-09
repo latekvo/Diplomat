@@ -88,6 +88,14 @@ def test_an_exclusion_is_for_good_without_a_time_and_a_pause_with_one():
     assert (pool.excluded_for_good, pool.paused_until) == (False, None)
 
 
+def test_an_exclusion_is_named_by_the_entries_it_came_from_too():
+    m = rm.decode_machine(raw_machine(status="excluded",
+                                      excluded={"until": None, "by": ["10.0.0.21", 7]}))
+    assert m.excluded_by == ("10.0.0.21",)
+    assert m.names == ("radoniusz", "radoniusz.local", "10.0.0.21")
+    assert rm.decode_machine(raw_machine(excluded={"until": None})).excluded_by == ()
+
+
 def test_an_older_daemons_snapshot_has_no_daemon_and_nothing_excluded():
     raw = snapshot()
     del raw["daemon"], raw["excluded"]
@@ -175,6 +183,26 @@ def test_the_bar_texts():
     assert rm.address(rm.decode_machine(raw_machine(port=2222))) == "ci@radoniusz.local:2222"
 
 
+def test_the_same_gpu_twice_is_counted_not_repeated():
+    m = rm.decode_machine(raw_machine(gpus=[{"name": "RTX 6000"}, {"name": "M2 Ultra"},
+                                            {"name": "RTX 6000"}], os={}, cpu={},
+                                      cores=None, memory={}))
+    assert rm.specs(m) == "2× RTX 6000, M2 Ultra"
+
+
+@pytest.mark.parametrize("seconds, text", [
+    (0.5, "1 s ago"), (119.4, "119 s ago"), (150, "3 min ago"), (7199, "120 min ago"),
+    (9000, "3 h ago"), (48 * 3600 - 1, "48 h ago"), (2.5 * 86400, "3 d ago"),
+])
+def test_ages_round_half_up_as_javascript_does(seconds, text):
+    assert rm.ago(seconds) == text
+
+
+@pytest.mark.parametrize("fraction, text", [(0.125, "13%"), (0.625, "63%"), (1.15, "115%")])
+def test_percentages_round_half_up(fraction, text):
+    assert rm.percent(fraction) == text
+
+
 def unavailable(target, status, *sources) -> rm.Machine:
     return rm.Machine(id=target, status=status, target=target, sources=sources)
 
@@ -190,7 +218,8 @@ def test_the_unusable_line_counts_strangers_and_stale_addresses_and_never_names_
     ))
     assert line == ("Not usable (6) - SSH refused our keys: gpu-rig; host key never "
                     "accepted: lab.local; weird: box; 2 old known_hosts addresses not "
-                    "answering; 1 other machines advertising SSH on the network, never vetted")
+                    "answering; 1 other machines advertising SSH on the network, never "
+                    "vetted.")
     assert rm.unavailable_line(()) is None
 
 
@@ -215,13 +244,46 @@ def test_iso_times_are_written_as_javascript_writes_them():
     assert rm.iso_utc(1_793_000_000.0) == "2026-10-26T07:33:20.000Z"
 
 
+#: A time ``Date.parse`` reads and this applet does not, so the daemon may still honour it.
+HTTP_DATE = "Tue, 10 Nov 2026 12:00:00 GMT"
+
+
 def test_a_pause_sets_the_target_and_drops_expired_pauses_and_nothing_else():
     write_config({"repoRoot": "/r", "remoteMachineExclude": ["old"],
-                  "remoteMachineExcludeUntil": {"gone": PAST, "bad": "soon", "other": FUTURE}})
+                  "remoteMachineExcludeUntil": {"gone": PAST, "odd": HTTP_DATE, "num": 7,
+                                                "other": FUTURE}})
     rm.pause(MACHINE, 3600, NOW)
     assert config() == {"repoRoot": "/r", "remoteMachineExclude": ["old"],
-                        "remoteMachineExcludeUntil": {"other": FUTURE,
+                        "remoteMachineExcludeUntil": {"odd": HTTP_DATE, "other": FUTURE,
                                                       "Studio": rm.iso_utc(NOW + 3600)}}
+
+
+def test_every_action_also_lifts_the_entries_the_exclusion_came_from():
+    # Excluded by an address the daemon resolved to it, which is neither target nor alias.
+    by_address = rm.decode_machine({
+        "id": "x", "status": "excluded", "target": "Studio", "aliases": ["studio.local"],
+        "excluded": {"until": None, "by": ["10.0.0.21"]}})
+    write_config({"remoteMachineExclude": ["10.0.0.21", "keep"],
+                  "remoteMachineExcludeUntil": {"10.0.0.21": FUTURE, "keep": FUTURE}})
+    rm.resume(by_address, NOW)
+    assert config()["remoteMachineExcludeUntil"] == {"keep": FUTURE}
+    write_config({"remoteMachineExcludeUntil": {"10.0.0.21": FUTURE, "keep": FUTURE}})
+    rm.exclude(by_address, NOW)
+    assert config() == {"remoteMachineExclude": ["Studio"],
+                        "remoteMachineExcludeUntil": {"keep": FUTURE}}
+    write_config({"remoteMachineExclude": ["10.0.0.21", "keep"],
+                  "remoteMachineExcludeUntil": {"10.0.0.21": FUTURE, "keep": FUTURE}})
+    rm.include(by_address, NOW)
+    assert config() == {"remoteMachineExclude": ["keep"],
+                        "remoteMachineExcludeUntil": {"keep": FUTURE}}
+
+
+def test_an_include_writes_the_list_before_the_pauses(monkeypatch):
+    written = []
+    monkeypatch.setattr(appconfig, "set_list", lambda key, v: written.append(key))
+    monkeypatch.setattr(appconfig, "set_dict", lambda key, v: written.append(key))
+    rm.include(MACHINE, NOW)
+    assert written == [appconfig.REMOTE_MACHINE_EXCLUDE, appconfig.REMOTE_MACHINE_EXCLUDE_UNTIL]
 
 
 def test_an_exclude_lists_the_target_once_and_ends_its_pause_by_any_name():
@@ -276,14 +338,16 @@ def test_the_store_writes_off_the_gui_thread_and_logs_what_happened(app, monkeyp
     assert threads == [False, False]
     assert "Studio" in config()["remoteMachineExcludeUntil"]
     details = [e.detail for e in machine_events(activity.read())]
-    assert details[0] == "Pause FAILED for Studio (Permission denied)"
+    assert details[0].startswith("Paused Studio until ")
+    assert details[0].endswith(" FAILED: config.json was not written")
     assert details[1].startswith("Paused Studio until ")
+    assert "FAILED" not in details[1]
 
 
 @pytest.mark.parametrize("method, line", [
-    ("exclude_machine_async", "Excluded Studio from the remote machines"),
+    ("exclude_machine_async", "Excluded Studio from the pool"),
     ("resume_machine_async", "Resumed Studio"),
-    ("include_machine_async", "Included Studio in the remote machines again"),
+    ("include_machine_async", "Put Studio back in the pool"),
 ])
 def test_each_exclusion_action_is_logged(app, method, line):
     from diplomat_app.store import Store
@@ -292,6 +356,29 @@ def test_each_exclusion_action_is_logged(app, method, line):
     getattr(store, method)(MACHINE)
     assert store.wait_for_background(5) == []
     assert activity.read()[0].detail == line
+
+
+@pytest.mark.parametrize("install, starts", [
+    ({"installed": True, "daemonRunning": False}, True),
+    ({"installed": True, "daemonRunning": True}, False),
+    ({"installed": False, "daemonRunning": False}, False),
+    (None, False),
+])
+def test_an_exclusion_starts_an_installed_daemon_that_is_not_running(
+        app, monkeypatch, install, starts):
+    from diplomat_app.store import Store
+
+    shelled = []
+    monkeypatch.setattr(da, "run_installer", lambda script, arg: shelled.append(arg) or {
+        "daemonRunning": True})
+    store = Store()
+    store.machines_install = install
+    store.exclude_machine_async(MACHINE)
+    # The write's worker, then the start it hands on.
+    for _ in range(2):
+        assert store.wait_for_background(5) == []
+    assert shelled == (["--start-daemon"] if starts else [])
+    assert "Studio" in config()["remoteMachineExclude"]
 
 
 # MARK: the daemon's socket and installer
@@ -350,26 +437,72 @@ def daemon(monkeypatch):
 RUNNING = {"installed": True, "daemonRunning": True, "version": "0.1.0"}
 
 
-@pytest.mark.parametrize("status, line", [
-    (200, "Rescanned the remote machines"),
-    (500, "Rescan FAILED: the remote-machines daemon did not answer"),
+@pytest.mark.parametrize("install", [RUNNING, {**RUNNING, "daemonRunning": False}])
+@pytest.mark.parametrize("status, answer, line", [
+    (200, {}, "Rescanned the remote machines"),
+    (500, {"error": "scan crashed"}, "Rescanned the remote machines FAILED: scan crashed"),
+    (500, {}, "Rescanned the remote machines FAILED: HTTP 500"),
 ])
-def test_refresh_asks_the_running_daemon_for_a_full_scan_and_never_attaches(
-        app, daemon, status, line):
+def test_refresh_asks_the_daemon_for_a_full_scan_whatever_the_last_check_said(
+        app, daemon, monkeypatch, install, status, answer, line):
+    """``daemonRunning`` may be 15 s old: a daemon that answers is asked, never started."""
     from diplomat_app.store import Store
 
-    d = daemon({"/scan": (status, {})})
+    shelled = []
+    monkeypatch.setattr(da, "run_installer", lambda script, arg: shelled.append(arg))
+    d = daemon({"/scan": (status, answer)})
     store = Store()
-    store.machines_install = RUNNING
+    store.machines_install = install
     store.refresh_machines_async()
-    assert store.machines_scanning
     assert store.wait_for_background(10) == []
     assert d.got == [("/scan", {"full": True})]
-    assert not store.machines_scanning
+    assert shelled == []
+    assert not store.machines_scanning and not store.machines_busy
+    assert activity.read()[0].action == "machines-scan"
     assert activity.read()[0].detail == line
 
 
-def test_refresh_starts_a_daemon_that_is_not_running(app, monkeypatch):
+def test_a_scan_that_gets_no_reply_says_so(app, monkeypatch):
+    from diplomat_app.store import Store
+
+    asked = []
+    monkeypatch.setattr(da, "exchange", lambda *a, **kw: asked.append(kw) or da.NO_REPLY)
+    store = Store()
+    store.refresh_machines_async()
+    assert store.wait_for_background(5) == []
+    assert asked == [{"timeout_secs": 120, "sock": rm.socket_path()}]
+    assert activity.read()[0].detail == ("Rescanned the remote machines FAILED: the daemon "
+                                         "did not answer")
+
+
+def test_a_scan_holds_the_installer_gate(app, monkeypatch):
+    from diplomat_app.store import Store
+
+    release = threading.Event()
+    during = []
+
+    def exchange(*a, **kw):
+        during.append((store.machines_busy, store.machines_scanning))
+        # An install asked for meanwhile is refused, not run beside the scan.
+        store.install_machines_async()
+        release.wait(5)
+        return da.DaemonReply(200, {})
+
+    shelled = []
+    monkeypatch.setattr(da, "run_installer", lambda script, arg: shelled.append(arg))
+    monkeypatch.setattr(da, "exchange", exchange)
+    store = Store()
+    store.refresh_machines_async()
+    assert store.machines_busy
+    store.refresh_machines_async()
+    release.set()
+    assert store.wait_for_background(5) == []
+    assert during == [(True, True)]
+    assert shelled == []
+
+
+@pytest.mark.parametrize("install", [RUNNING, {**RUNNING, "daemonRunning": False}])
+def test_refresh_starts_a_daemon_that_does_not_answer(app, monkeypatch, install):
     from diplomat_app.store import Store
 
     shelled = []
@@ -377,7 +510,7 @@ def test_refresh_starts_a_daemon_that_is_not_running(app, monkeypatch):
     monkeypatch.setattr(da, "run_installer", lambda script, arg: shelled.append(
         (os.path.relpath(script, rm.package_dir()), arg)) or {"daemonRunning": True})
     store = Store()
-    store.machines_install = {**RUNNING, "daemonRunning": False}
+    store.machines_install = install
     store.refresh_machines_async()
     assert store.wait_for_background(5) == []
     assert shelled == [("src/install.js", "--start-daemon")]
@@ -506,7 +639,7 @@ def test_the_mdns_strangers_own_name_never_renders(screen):
     texts = _texts(view)
     assert not [t for t in texts if "SYSTEM-NOTICE" in t]
     assert ("Not usable (6) - SSH refused our keys: gpu-rig; 3 old known_hosts addresses "
-            "not answering; 2 other machines advertising SSH on the network, never vetted"
+            "not answering; 2 other machines advertising SSH on the network, never vetted."
             in texts)
 
 
@@ -611,6 +744,53 @@ def test_not_installed_and_no_snapshot(screen):
     assert view._light.text() == "not installed"
 
 
+def test_refresh_is_offered_while_a_daemon_runs_even_when_not_installed(screen, monkeypatch):
+    from diplomat_app import machinesview
+
+    monkeypatch.setattr(machinesview, "machines_ready", lambda: True)
+    view = screen("machines-screen-off")
+    store = view.store
+    for install, enabled in (({"installed": False, "daemonRunning": True}, True),
+                             ({"installed": True, "daemonRunning": False}, True),
+                             ({"installed": False, "daemonRunning": False}, False),
+                             (None, False)):
+        store.machines_install = install
+        store.machines_install_changed.emit()
+        assert view.refresh.isEnabled() is enabled, install
+
+
+def test_the_header_counts_the_pool_the_paused_and_the_excluded(screen):
+    view = screen("machines-screen")
+    assert view._counts.text() == "3 in pool · 1 paused · 1 excluded"
+    state = view.store.machines_state
+    view.store.machines_state = state.__class__(**{**state.__dict__, "excluded": ()})
+    view.store.machines_changed.emit()
+    assert view._counts.text() == "3 in pool"
+    view.store.machines_state = state.__class__(**{
+        **state.__dict__, "machines": (), "excluded": state.excluded[1:]})
+    view.store.machines_changed.emit()
+    assert view._counts.text() == "0 in pool · 1 excluded"
+
+
+def test_an_older_daemons_snapshot_says_so_in_the_status_card(screen):
+    view = screen("machines-screen")
+    assert view._old_daemon.isHidden()
+    state = view.store.machines_state
+    view.store.machines_state = state.__class__(**{**state.__dict__, "daemon": None})
+    view.store.machines_changed.emit()
+    assert not view._old_daemon.isHidden()
+    assert view._old_daemon.text() == ("The daemon predates this screen; restart it to read "
+                                       "usage and apply exclusions.")
+    view.store.machines_state = None
+    view.store.machines_changed.emit()
+    assert view._old_daemon.isHidden()
+
+
+def test_a_panel_counts_a_gpu_listed_twice(screen):
+    view = screen("machines-screen")
+    assert any(t.endswith("· 2× NVIDIA GeForce RTX 4090") for t in _texts(_panels(view)[1]))
+
+
 def test_text_from_the_daemon_is_never_read_as_html(screen):
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QLabel
@@ -651,6 +831,28 @@ def test_the_header_button_opens_the_screen_and_its_polls_run_only_while_it_is_o
     panel.machines_btn.click()
     assert panel.body.currentIndex() == panel._screens["main"]
     assert not view._state_timer.isActive() and not view._install_timer.isActive()
+    panel.deleteLater()
+
+
+def test_hiding_the_window_stops_the_machines_polls_and_showing_it_restarts_them(
+        app, monkeypatch):
+    from diplomat_app.panel import Panel
+    from diplomat_app.store import Store
+
+    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_machines_install_async", lambda self: None)
+    panel = Panel(Store())
+    view = panel.machines_view
+    panel.show()
+    panel.machines_btn.click()
+    assert view._state_timer.isActive() and view._install_timer.isActive()
+    panel.hide()
+    app.processEvents()
+    assert not view._state_timer.isActive() and not view._install_timer.isActive()
+    panel.show()
+    app.processEvents()
+    assert view._state_timer.isActive() and view._install_timer.isActive()
+    panel.hide()
     panel.deleteLater()
 
 

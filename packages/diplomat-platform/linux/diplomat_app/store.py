@@ -4616,18 +4616,19 @@ class Store(QObject):
             self._after_machines_action()
         self._machines_action(work)
 
+    def _start_machines_daemon(self) -> None:
+        result = remotemachines.start_daemon()
+        self.machines_install = deviceallocator.with_install_status(
+            result, self.machines_install)
+        running = "true" if (result or {}).get("daemonRunning") else "false"
+        error = (result or {}).get("error")
+        activity.log("panel", "machines-install",
+                     f"Started the remote-machines daemon (ok: {running})"
+                     + (f": {error}" if error else ""))
+        self._after_machines_action()
+
     def start_machines_daemon_async(self) -> None:
-        def work() -> None:
-            result = remotemachines.start_daemon()
-            self.machines_install = deviceallocator.with_install_status(
-                result, self.machines_install)
-            running = "true" if (result or {}).get("daemonRunning") else "false"
-            error = (result or {}).get("error")
-            activity.log("panel", "machines-install",
-                         f"Started the remote-machines daemon (ok: {running})"
-                         + (f": {error}" if error else ""))
-            self._after_machines_action()
-        self._machines_action(work)
+        self._machines_action(self._start_machines_daemon)
 
     def restart_machines_daemon_async(self) -> None:
         def work() -> None:
@@ -4643,35 +4644,40 @@ class Store(QObject):
         self._machines_action(work)
 
     def refresh_machines_async(self) -> None:
-        """A full scan by the running daemon; with none running, a start, whose first
-        act is one."""
-        if not (self.machines_install or {}).get("daemonRunning"):
-            self.start_machines_daemon_async()
-            return
-        if self.machines_scanning or self.machines_busy:
-            return
-        self.machines_scanning = True
-        self.machines_install_changed.emit()
-
+        """A full scan, asked of the daemon's socket rather than of ``daemonRunning``,
+        which may be 15 s old; with no daemon there, a start, whose first act is one."""
         def work() -> None:
-            ok = remotemachines.scan()
-            activity.log("panel", "machines-scan",
-                         "Rescanned the remote machines" if ok
-                         else "Rescan FAILED: the remote-machines daemon did not answer")
-            self.machines_scanning = False
+            self.machines_scanning = True
             self.machines_install_changed.emit()
+            try:
+                reply = remotemachines.scan()
+            finally:
+                self.machines_scanning = False
+            if reply == deviceallocator.UNREACHABLE:
+                self._start_machines_daemon()
+                return
+            if isinstance(reply, deviceallocator.DaemonReply):
+                why = "" if reply.ok else f": {reply.get('error') or f'HTTP {reply.status}'}"
+            else:
+                why = ": the daemon did not answer"
+            activity.log("panel", "machines-scan",
+                         "Rescanned the remote machines" + (f" FAILED{why}" if why else ""))
             self._after_machines_action()
-        self.start_background(work, name="machines-scan")
+        self._machines_action(work)
 
-    def _machine_exclusion_async(self, action: str, write, done: str, failed: str) -> None:
-        """``write(now)`` to the shared config, logged with what really happened."""
+    def _machine_exclusion_async(self, action: str, write, what: str) -> None:
+        """``write(now)`` to the shared config, logged with what really happened. A
+        daemon that is not running applies nothing, so an installed one is started."""
         def work() -> None:
             try:
                 write(time.time())
-            except OSError as exc:
-                activity.log("panel", action, f"{failed} ({exc.strerror or exc})")
+            except OSError:
+                activity.log("panel", action, f"{what} FAILED: config.json was not written")
             else:
-                activity.log("panel", action, done)
+                activity.log("panel", action, what)
+                install = self.machines_install or {}
+                if install.get("installed") and not install.get("daemonRunning"):
+                    self.start_machines_daemon_async()
             self._after_machines_action()
         self.start_background(work, name=action)
 
@@ -4679,23 +4685,22 @@ class Store(QObject):
         until = Fmt.clock(datetime.fromtimestamp(time.time() + seconds, tz=timezone.utc))
         self._machine_exclusion_async(
             "machine-pause", lambda now: remotemachines.pause(m, seconds, now),
-            f"Paused {m.target} until {until}", f"Pause FAILED for {m.target}")
+            f"Paused {m.target} until {until}")
 
     def exclude_machine_async(self, m: remotemachines.Machine) -> None:
         self._machine_exclusion_async(
             "machine-exclude", lambda now: remotemachines.exclude(m, now),
-            f"Excluded {m.target} from the remote machines", f"Exclude FAILED for {m.target}")
+            f"Excluded {m.target} from the pool")
 
     def resume_machine_async(self, m: remotemachines.Machine) -> None:
         self._machine_exclusion_async(
             "machine-resume", lambda now: remotemachines.resume(m, now),
-            f"Resumed {m.target}", f"Resume FAILED for {m.target}")
+            f"Resumed {m.target}")
 
     def include_machine_async(self, m: remotemachines.Machine) -> None:
         self._machine_exclusion_async(
             "machine-include", lambda now: remotemachines.include(m, now),
-            f"Included {m.target} in the remote machines again",
-            f"Include FAILED for {m.target}")
+            f"Put {m.target} back in the pool")
 
     # MARK: activity feed + bans
 

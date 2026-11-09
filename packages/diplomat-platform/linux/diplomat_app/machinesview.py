@@ -39,6 +39,9 @@ _CPU, _RAM, _SSH = _BLUE, _PURPLE, _TEAL
 #: The pause lengths the Pause menu offers.
 PAUSES = (("1 hour", 3600), ("4 hours", 4 * 3600), ("24 hours", 24 * 3600))
 
+OLD_DAEMON_NOTE = ("The daemon predates this screen; restart it to read usage and apply "
+                   "exclusions.")
+
 IDLE_NOTE = ("Idle, which is no fault: the daemon exits 10 min after its last agent "
              "session and starts with the next one. Refresh starts it now.")
 
@@ -116,6 +119,16 @@ def machines_installer(store: Store) -> Installer:
 
 def machine_events(entries: list) -> list:
     return [e for e in entries if e.action in EVENT_ACTIONS][:6]
+
+
+def counts(state: rm.Snapshot) -> str:
+    paused = sum(1 for m in state.excluded if not m.excluded_for_good)
+    parts = [f"{len(state.machines)} in pool"]
+    if paused:
+        parts.append(f"{paused} paused")
+    if len(state.excluded) > paused:
+        parts.append(f"{len(state.excluded) - paused} excluded")
+    return " · ".join(parts)
 
 
 # MARK: - the history graph
@@ -202,7 +215,8 @@ class UsageChart(QWidget):
         painter.drawText(QRectF(pad_l + w + 3, pad_t - 5, pad_r, 10), left,
                          rm.number(top_ssh))
         painter.drawText(QRectF(pad_l + w + 3, pad_t + h - 5, pad_r, 10), left, "0")
-        painter.drawText(QRectF(pad_l, pad_t + h + 2, 90, 11), left, _clock(start))
+        painter.drawText(QRectF(pad_l, pad_t + h + 2, 90, 11), left,
+                         f"{Fmt.duration(span)} ago")
         painter.drawText(QRectF(pad_l + w - 90, pad_t + h + 2, 90, 11), right, "now")
         painter.end()
 
@@ -285,7 +299,7 @@ class MachinePanel(QWidget):
             tint = rm.usage_color(value, warn_above)
             fill = min(1.0, max(0.0, value))
             grid.addWidget(SplitBar(fill, 1 - fill, tint, _GREY, height=10), line, 1)
-            pct = _plain(f"{round(value * 100)}%",
+            pct = _plain(rm.percent(value),
                          f"color: {tint}; font-size: 10px; font-weight: 700;"
                          " font-family: monospace;")
             pct.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -481,8 +495,7 @@ class MachinesView(QWidget):
 
     def _refresh_header(self) -> None:
         state = self.store.machines_state
-        self._counts.setText(f"{len(state.machines)} in the pool · {len(state.excluded)} out"
-                             if state else "")
+        self._counts.setText(counts(state) if state else "")
         self._counts.setVisible(state is not None)
         color, label = self._daemon_light()
         self._dot.setStyleSheet(f"color: {color}; font-size: 9px;")
@@ -561,6 +574,8 @@ class MachinesView(QWidget):
         self._daemon_pill = Pill("")
         self._daemon_row = SettingRow("Daemon", self._daemon_pill)
         body.addWidget(self._daemon_row)
+        self._old_daemon = _note(OLD_DAEMON_NOTE, _ORANGE)
+        body.addWidget(self._old_daemon)
 
         facts = QGridLayout()
         facts.setHorizontalSpacing(10)
@@ -601,6 +616,7 @@ class MachinesView(QWidget):
         mark = "⚡ " if running else "☾ " if s and s.get("installed") else ""
         self._daemon_pill.set_state(mark + label, color)
         daemon = state.daemon if state else None
+        self._old_daemon.setVisible(state is not None and daemon is None)
         self._ages = []
         if running and daemon is not None:
             pid = f"pid {daemon.pid}" if daemon.pid is not None else "running"
@@ -634,9 +650,8 @@ class MachinesView(QWidget):
 
         scanning = self.store.machines_scanning
         self.refresh.setText("Scanning…" if scanning else "Refresh")
-        installed = bool(s and s.get("installed"))
-        self.refresh.setEnabled(installed and machines_ready() and not scanning
-                                and not self.store.machines_busy)
+        reachable = bool(s and (s.get("installed") or running))
+        self.refresh.setEnabled(reachable and machines_ready() and not self.store.machines_busy)
         self.refresh.setToolTip(
             "Rediscover the machines and read every one now" if running
             else "Start the daemon, which reads every machine as it starts")

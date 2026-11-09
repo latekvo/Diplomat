@@ -248,7 +248,7 @@ def _machines_screen_fixture(store: Store, mode: str) -> None:
         activity.AuditEntry("2026-11-09T11:12:00Z", "panel", "machines-scan",
                             "Rescanned the remote machines"),
         activity.AuditEntry("2026-11-09T06:02:00Z", "panel", "machine-exclude",
-                            "Excluded old-laptop from the remote machines"),
+                            "Excluded old-laptop from the pool"),
     ] + store.audit_entries
     if off:
         store.machines_state = store.machines_history = None
@@ -294,7 +294,7 @@ def _machines_screen_fixture(store: Store, mode: str) -> None:
         machine("77fe-build-box", "build-box", "ci", "10.0.4.12", port=2222,
                 os_name="Ubuntu 24.04", arch="x86_64", cpu="AMD Ryzen 9 7950X", cores=32,
                 total_gb=64, load=9.6, avail_gb=37.8, ssh=3, disk_gb=812,
-                gpus=("NVIDIA GeForce RTX 4090",)),
+                gpus=("NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 4090")),
         machine("5d02-mac-mini", "mac-mini", "ci", "mac-mini.lan", os_name="macOS 26.4",
                 arch="arm64", cpu="Apple M2", cores=8, total_gb=16, load=9.2,
                 avail_gb=3.5, ssh=2, disk_gb=14,
@@ -308,7 +308,7 @@ def _machines_screen_fixture(store: Store, mode: str) -> None:
         machine("9e41-old-laptop", "old-laptop", "ignacy", "old-laptop.local",
                 os_name="Ubuntu 22.04", arch="x86_64", cpu="Intel Core i7-8550U", cores=8,
                 total_gb=16, load=0.4, avail_gb=11, ssh=0, disk_gb=88,
-                excluded={"until": None}, status="excluded"),
+                excluded={"until": None, "by": ["old-laptop"]}, status="excluded"),
     ]
     local = machine("local-mbp", None, None, None, os_name="macOS 27.0", arch="arm64",
                     cpu="Apple M3 Max", cores=14, total_gb=36, load=8.4, avail_gb=7.2,

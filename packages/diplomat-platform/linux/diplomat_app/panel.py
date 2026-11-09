@@ -1284,11 +1284,14 @@ class Panel(QWidget):
         self.store.refresh_auto_task_count_async()
         if self._screen == "devices":
             self.devices_view.opened()
+        if self._screen == "machines":
+            self.machines_view.opened()
         super().showEvent(event)
 
     def hideEvent(self, event) -> None:  # noqa: N802
-        # The Devices screen polls the installer only while it is on screen.
+        # The Devices and Machines screens poll only while they are on screen.
         self.devices_view.closed()
+        self.machines_view.closed()
         # Reopening lands on the panel, not on Settings. A minimize is a spontaneous
         # hide and keeps the screen.
         if self._screen == "settings" and not event.spontaneous():

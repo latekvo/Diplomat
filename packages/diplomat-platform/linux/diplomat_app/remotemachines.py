@@ -78,16 +78,16 @@ def ensure_deps() -> bool:
     return da.ensure_deps(package_dir())
 
 
-#: A full scan rediscovers and re-reads every machine, each probe bounded at 20 s.
-SCAN_TIMEOUT_SECS = 90
+#: A full scan rediscovers and re-reads every machine; the MCP server waits as long.
+SCAN_TIMEOUT_SECS = 120
 
 
-def scan() -> bool:
-    """Ask the running daemon for a full scan. No ``ownerPid``: that would attach this
-    applet as an agent session, and the daemon would never go idle."""
-    reply = da.exchange("scan", {"full": True}, timeout_secs=SCAN_TIMEOUT_SECS,
-                        sock=socket_path())
-    return isinstance(reply, da.DaemonReply) and reply.ok
+def scan() -> da.DaemonReply | str:
+    """Ask the daemon for a full scan: its reply, or ``da.UNREACHABLE`` /
+    ``da.NO_REPLY``. No ``ownerPid``: that would attach this applet as an agent
+    session, and the daemon would never go idle."""
+    return da.exchange("scan", {"full": True}, timeout_secs=SCAN_TIMEOUT_SECS,
+                       sock=socket_path())
 
 
 # MARK: the snapshot
@@ -123,6 +123,9 @@ class Machine:
     paused_until: float | None = None
     #: Taken out of the pool for good: not contacted at all.
     excluded_for_good: bool = False
+    #: The settings entries that take it out, which may name it by an address that is
+    #: neither its target nor an alias.
+    excluded_by: tuple[str, ...] = ()
     spare_cores: float | None = None
     usage_cpu: float | None = None
     usage_memory: float | None = None
@@ -131,7 +134,7 @@ class Machine:
     @property
     def names(self) -> tuple[str, ...]:
         """What the operator's exclusions may name this machine by."""
-        return ((self.target,) if self.target else ()) + self.aliases
+        return ((self.target,) if self.target else ()) + self.aliases + self.excluded_by
 
 
 @dataclass(frozen=True)
@@ -177,8 +180,8 @@ def decode_machine(raw) -> Machine | None:
         return None
     target = _str(raw.get("target"))
     memory, os_, cpu, usage = (_obj(raw.get(k)) for k in ("memory", "os", "cpu", "usage"))
-    excluded = raw.get("excluded")
-    until = da.parse_instant(excluded.get("until")) if isinstance(excluded, dict) else None
+    excluded = raw.get("excluded") if isinstance(raw.get("excluded"), dict) else None
+    until = da.parse_instant(excluded.get("until")) if excluded is not None else None
     port = _num(raw.get("port"))
     return Machine(
         id=_str(raw.get("id")) or target or "",
@@ -205,7 +208,8 @@ def decode_machine(raw) -> Machine | None:
         cpu_model=_str(cpu.get("model")),
         probed_at=da.parse_instant(raw.get("probedAt")),
         paused_until=until,
-        excluded_for_good=isinstance(excluded, dict) and excluded.get("until") is None,
+        excluded_for_good=excluded is not None and excluded.get("until") is None,
+        excluded_by=_strings(excluded.get("by")) if excluded is not None else (),
         spare_cores=_num(raw.get("spareCores")),
         usage_cpu=_num(usage.get("cpu")),
         usage_memory=_num(usage.get("memory")),
@@ -356,15 +360,24 @@ def number(v: float) -> str:
     return f"{v:.2f}".rstrip("0").rstrip(".")
 
 
+def half_up(x: float) -> int:
+    """JavaScript's ``Math.round``; Python's ``round`` takes 2.5 to 2."""
+    return math.floor(x + 0.5)
+
+
 def ago(seconds: float) -> str:
-    s = max(0, round(seconds))
+    s = max(0, half_up(seconds))
     if s < 120:
         return f"{s} s ago"
     if s < 120 * 60:
-        return f"{round(s / 60)} min ago"
+        return f"{half_up(s / 60)} min ago"
     if s < 48 * 3600:
-        return f"{round(s / 3600)} h ago"
-    return f"{round(s / 86400)} d ago"
+        return f"{half_up(s / 3600)} h ago"
+    return f"{half_up(s / 86400)} d ago"
+
+
+def percent(fraction: float) -> str:
+    return f"{half_up(fraction * 100)}%"
 
 
 def usage_color(value: float, warn_above: float) -> str:
@@ -390,12 +403,20 @@ def memory_text(m: Machine) -> str:
     return f"{used} of {gb(m.memory_total)} used{pressure}"
 
 
+def gpu_names(gpus: tuple[str, ...]) -> str:
+    """``2× NVIDIA RTX 6000 Ada, Apple M2 Ultra``, in the order the daemon lists them."""
+    counts: dict[str, int] = {}
+    for name in gpus:
+        counts[name] = counts.get(name, 0) + 1
+    return ", ".join(f"{n}× {name}" if n > 1 else name for name, n in counts.items())
+
+
 def specs(m: Machine) -> str:
     os_part = " ".join(p for p in (m.os_name, m.arch) if p)
     parts = [os_part, m.cpu_model,
              m.cores is not None and f"{number(m.cores)} cores",
              m.memory_total is not None and f"{gb(m.memory_total)} RAM",
-             ", ".join(m.gpus)]
+             gpu_names(m.gpus)]
     return " · ".join(p for p in parts if p)
 
 
@@ -439,7 +460,7 @@ def unavailable_line(rows: tuple[Machine, ...]) -> str | None:
     if strangers:
         parts.append(f"{strangers} other machines advertising SSH on the network, "
                      "never vetted")
-    return f"Not usable ({len(rows)}) - {'; '.join(parts)}" if parts else None
+    return f"Not usable ({len(rows)}) - {'; '.join(parts)}." if parts else None
 
 
 # MARK: exclusions (the shared config)
@@ -452,11 +473,14 @@ def iso_utc(epoch: float) -> str:
 
 
 def _until(now: float) -> dict:
-    """The pauses still in force: every write drops the rest."""
+    """The pauses, less those run out. A time this applet cannot read is kept: the
+    daemon reads it with ``Date.parse``, which takes more forms."""
     out = {}
     for name, at in appconfig.get_dict(appconfig.REMOTE_MACHINE_EXCLUDE_UNTIL).items():
-        when = da.parse_instant(at) if isinstance(at, str) else None
-        if when is not None and when > now:
+        if not isinstance(at, str):
+            continue
+        when = da.parse_instant(at)
+        if when is None or when > now:
             out[name] = at
     return out
 
@@ -488,7 +512,6 @@ def resume(m: Machine, now: float) -> None:
 
 
 def include(m: Machine, now: float) -> None:
-    # The pause first: in between, the daemon reads the machine as excluded for good.
-    resume(m, now)
     listed = appconfig.get_list(appconfig.REMOTE_MACHINE_EXCLUDE)
     appconfig.set_list(appconfig.REMOTE_MACHINE_EXCLUDE, _without(m.names, listed))
+    resume(m, now)
