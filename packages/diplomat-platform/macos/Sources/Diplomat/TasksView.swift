@@ -484,7 +484,7 @@ private struct TaskRow<Details: View>: View {
                 Text(TaskTint.ago(view.lastEventAt))
                     .font(.system(size: 9).monospacedDigit()).foregroundStyle(.secondary)
                     .fixedSize()
-                    .help("Last event \(view.lastEventAt.formatted(date: .abbreviated, time: .shortened))")
+                    .tooltip("Last event \(view.lastEventAt.formatted(date: .abbreviated, time: .shortened))")
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: toggle)
@@ -532,7 +532,7 @@ private struct HistoryLine: View {
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(TaskTint.source(event.source))
                 .frame(width: 13)
-                .help(event.source)
+                .tooltip(event.source)
             if let subject {
                 Text(subject).font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary).fixedSize()
@@ -550,7 +550,7 @@ private struct HistoryLine: View {
             }
         }
         .padding(.vertical, 1.5)
-        .help(help)
+        .tooltip(help)
         if let url {
             line.contentShape(Rectangle())
                 .onTapGesture { NSWorkspace.shared.open(url) }
@@ -596,8 +596,8 @@ private struct LinkChip: View {
             Button("Open", action: open).disabled(url == nil)
             if let remove { Button("Remove link", action: remove) }
         }
-        .help(([link.title, state?.word, link.url, link.via == "manual" ? nil : "linked via \(link.via)"]
-               as [String?]).compactMap { $0 }.joined(separator: "\n"))
+        .tooltip(([link.title, state?.word, link.url, link.via == "manual" ? nil : "linked via \(link.via)"]
+                  as [String?]).compactMap { $0 }.joined(separator: "\n"))
     }
 
     private var symbol: String {

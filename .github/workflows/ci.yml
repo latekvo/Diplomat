@@ -179,6 +179,15 @@ jobs:
           test -z "$missing" || echo "::error::dispatched but not in Headless.modes: $missing"
           test -z "$orphans" || echo "::error::in Headless.modes but dispatched nowhere: $orphans"
           test -z "$missing$orphans"
+      # SwiftUI's `.help` gives the window a dynamic tooltip that reads its text out of
+      # the view graph on AppKit's hover timer, which crashed the app once the hovered
+      # view was gone (#238). Tooltips go through `.tooltip`; a menu item's `.help`
+      # (a `.tag(...)` before it) is its NSMenuItem's tooltip and stays.
+      - name: No SwiftUI .help tooltips
+        working-directory: packages/diplomat-platform/macos/Sources/Diplomat
+        run: |
+          found="$(grep -nE '\.help\(' *.swift | grep -vE '\.tag\([^)]*\)\.help\(' || true)"
+          test -z "$found" || { echo "::error::use .tooltip(...), not .help(...):"; echo "$found"; exit 1; }
       # Every gh call is recorded and refused, so a self-test that reads GitHub fails
       # here instead of spending the operator's rate limit when run locally.
       - name: Headless helper self-tests

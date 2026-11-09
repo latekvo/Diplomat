@@ -91,7 +91,7 @@ struct ConflictWizardView: View {
         case .specific:
             VStack(alignment: .leading, spacing: 3) {
                 WizardTextField(systemImage: "number", placeholder: "PR # or URL", text: $specificPR)
-                    .help("Update just this one PR — paste its number or GitHub URL.")
+                    .tooltip("Update just this one PR — paste its number or GitHub URL.")
                 if let warning = prWarning {
                     Text(warning)
                         .font(.system(size: 10))

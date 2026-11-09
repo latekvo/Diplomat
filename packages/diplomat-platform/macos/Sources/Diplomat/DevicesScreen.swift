@@ -233,7 +233,7 @@ struct DevicesScreen: View {
                     save("")
                 } label: { Image(systemName: "xmark.circle.fill") }
                 .buttonStyle(.borderless).foregroundStyle(.secondary)
-                .help("Clear: turn the remote pool off")
+                .tooltip("Clear: turn the remote pool off")
             }
             Button("Apply", action: applyProvider)
                 .buttonStyle(.borderedProminent).controlSize(.small).disabled(!dirty)
@@ -300,11 +300,11 @@ struct DevicesScreen: View {
                 Button { Task { await store.remoteSignInNow() } } label: { Text("Sign in").bold() }
                     .buttonStyle(.borderedProminent).controlSize(.small)
                     .disabled(!remoteCallable || store.remoteSignIn == .running)
-                    .help("Ask the pool for a browser sign-in\(why)")
+                    .tooltip("Ask the pool for a browser sign-in\(why)")
                 Button { Task { await store.listRemotePool() } } label: { Text("List pool devices") }
                     .buttonStyle(.bordered).controlSize(.small)
                     .disabled(!remoteCallable || store.remoteListing == .running)
-                    .help("What the pool lends now. Never prompts a sign-in\(why)")
+                    .tooltip("What the pool lends now. Never prompts a sign-in\(why)")
                 Spacer(minLength: 0)
             }
             RemoteCallLine(call: store.remoteSignIn, label: "Sign-in",
@@ -552,7 +552,7 @@ struct DeviceScreenRow: View {
                     .foregroundStyle(dev.platformTint)
                 }
                 .buttonStyle(.plain)
-                .help("Focus the terminal running \(dev.owner?.agentName ?? "this agent")")
+                .tooltip("Focus the terminal running \(dev.owner?.agentName ?? "this agent")")
                 if let started = dev.allocatedAt {
                     TimelineView(.periodic(from: Date(), by: 30)) { ctx in
                         Text(heldText(since: started / 1000, now: ctx.date))
@@ -606,7 +606,7 @@ struct DeviceScreenRow: View {
             Label(title, systemImage: symbol).font(.system(size: 9, weight: .semibold))
         }
         .buttonStyle(.bordered).controlSize(.mini).tint(tint)
-        .help(help)
+        .tooltip(help)
     }
 }
 
@@ -770,7 +770,7 @@ struct RestartDaemonButton: View {
         Button { Task { await store.restartAllocatorDaemon() } } label: { Text("Restart daemon") }
             .buttonStyle(.bordered).controlSize(.small)
             .disabled(!AllocatorUI.ready || store.allocatorBusy)
-            .help(AllocatorUI.restartHelp)
+            .tooltip(AllocatorUI.restartHelp)
     }
 }
 
@@ -815,7 +815,7 @@ struct AllocatorButtons: View {
             Button { Task { await store.refreshAllocatorInstall() } } label: {
                 Image(systemName: "arrow.clockwise")
             }
-            .buttonStyle(.borderless).controlSize(.small).help("Re-check status")
+            .buttonStyle(.borderless).controlSize(.small).tooltip("Re-check status")
             .disabled(busy)
             Spacer(minLength: 0)
         }

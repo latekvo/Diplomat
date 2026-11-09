@@ -247,7 +247,7 @@ struct MeshView: View {
             if !networkDown {
                 Button("Open") { openLocalNetworkSettings() }
                     .buttonStyle(.borderedProminent).tint(.red).controlSize(.small)
-                    .help("Open System Settings → Privacy & Security → Local Network")
+                    .tooltip("Open System Settings → Privacy & Security → Local Network")
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
@@ -307,10 +307,10 @@ struct MeshView: View {
             }
             Spacer(minLength: 0)
         }
-        .help("The mesh's preferred WAN transport, gossiped to every node. An edge uses "
-              + "the most-preferred transport BOTH its ends run, so a peer that runs "
-              + "only the other one is still reached over that one. Takes effect on the "
-              + "next reconnect — a live link is never moved.")
+        .tooltip("The mesh's preferred WAN transport, gossiped to every node. An edge uses "
+                 + "the most-preferred transport BOTH its ends run, so a peer that runs "
+                 + "only the other one is still reached over that one. Takes effect on the "
+                 + "next reconnect — a live link is never moved.")
     }
 
     /// This machine's permanent id on one transport — the half of a manual handshake
@@ -330,8 +330,8 @@ struct MeshView: View {
             Button("copy") { copyToPasteboard(address) }
                 .buttonStyle(.borderless).font(.system(size: 9))
                 .disabled(address.isEmpty)
-                .help("Copy this machine's \(transport.title) id — paste it into another "
-                      + "machine's Mesh screen to link the two.")
+                .tooltip("Copy this machine's \(transport.title) id — paste it into another "
+                         + "machine's Mesh screen to link the two.")
             Spacer(minLength: 0)
         }
     }
@@ -357,9 +357,9 @@ struct MeshView: View {
                 .buttonStyle(.bordered).controlSize(.small)
         }
         .disabled(!enabled)
-        .help("Dial that machine now, over whichever transport its id names — it works "
-              + "even if the two were never on a LAN together. From then on it is an "
-              + "ordinary mesh member and reconnects on its own.")
+        .tooltip("Dial that machine now, over whichever transport its id names — it works "
+                 + "even if the two were never on a LAN together. From then on it is an "
+                 + "ordinary mesh member and reconnects on its own.")
     }
 
     /// Hand the pasted id to the node and empty the box. Cleared on submit, not on
@@ -388,11 +388,11 @@ struct MeshView: View {
             Text("via").font(.system(size: 9)).foregroundStyle(.secondary)
             if onWan {
                 transportMark(peer.transport)
-                    .help("This link runs over \(transportTitle(peer.transport)).")
+                    .tooltip("This link runs over \(transportTitle(peer.transport)).")
             } else {
                 if linked {
                     transportMark("lan")
-                        .help("This link is a direct connection on this network.")
+                        .tooltip("This link is a direct connection on this network.")
                 }
                 offLanNote(peer.wan)
             }
@@ -415,16 +415,16 @@ struct MeshView: View {
         if !wan.isEmpty {
             Text("→ \(catalog?.transport(wan)?.emoji ?? "") \(transportTitle(wan)) off-LAN")
                 .font(.system(size: 9)).foregroundStyle(transportColor(wan))
-                .help("Off this network the two reconnect over \(transportTitle(wan)) — "
-                      + "the transport both machines run, ranked by the mesh's preference.")
+                .tooltip("Off this network the two reconnect over \(transportTitle(wan)) — "
+                         + "the transport both machines run, ranked by the mesh's preference.")
         } else if (store.meshState?.wan?.ready ?? []).isEmpty {
             Text("→ this network only").font(.system(size: 9)).foregroundStyle(.secondary)
         } else {
             Text("⚠ no shared WAN transport")
                 .font(.system(size: 9, weight: .semibold)).foregroundStyle(.orange)
-                .help("This machine and that one run no WAN transport in common, so the "
-                      + "link cannot re-form once they leave this network. Run the same "
-                      + "transport on both — or link them by hand with the id above.")
+                .tooltip("This machine and that one run no WAN transport in common, so the "
+                         + "link cannot re-form once they leave this network. Run the same "
+                         + "transport on both — or link them by hand with the id above.")
         }
     }
 
@@ -533,8 +533,8 @@ struct MeshView: View {
             }
         }
         .labelsHidden().pickerStyle(.menu).frame(maxWidth: 150)
-        .help("Machine strength — auto-detected from RAM/CPU/GPU (1 = strongest). "
-              + "'weakest-first' routing keeps strong machines free; pick a word to pin it.")
+        .tooltip("Machine strength — auto-detected from RAM/CPU/GPU (1 = strongest). "
+                 + "'weakest-first' routing keeps strong machines free; pick a word to pin it.")
     }
 
     /// Token-budget *setting* only — the measurement lives in `quotaRow`, so the picker
@@ -552,9 +552,9 @@ struct MeshView: View {
             }
         }
         .labelsHidden().pickerStyle(.menu).frame(width: 92)
-        .help("Token-budget setting. Auto derives ok/low/out from the node's real remaining "
-              + "quota (see the quota row); picking a value pins the state until set back to "
-              + "Auto. The mesh skips 'out' nodes.")
+        .tooltip("Token-budget setting. Auto derives ok/low/out from the node's real remaining "
+                 + "quota (see the quota row); picking a value pins the state until set back to "
+                 + "Auto. The mesh skips 'out' nodes.")
     }
 
     /// Read-only quota indicator, deliberately separate from the token-budget input:
@@ -577,10 +577,10 @@ struct MeshView: View {
             Text(left).font(.system(size: 9, weight: .bold)).foregroundStyle(meta.color)
             Spacer(minLength: 0)
         }
-        .help("Remaining Claude quota — the account's real 7-day rate-limit window "
-              + "via the OAuth usage probe; '≈' marks a local "
-              + "estimate (probe unavailable). 'pinned' = a manual override is in effect "
-              + "and the mesh routes on it.")
+        .tooltip("Remaining Claude quota — the account's real 7-day rate-limit window "
+                 + "via the OAuth usage probe; '≈' marks a local "
+                 + "estimate (probe unavailable). 'pinned' = a manual override is in effect "
+                 + "and the mesh routes on it.")
     }
 
     /// Whether a peer is a *newly-seen* device awaiting a trust decision: it proved a
@@ -654,7 +654,7 @@ struct MeshView: View {
             if peer.trust == "banned" {
                 Text("⊘ banned").font(.system(size: 9, weight: .bold))
                     .foregroundStyle(trustColor("banned"))
-                    .help(banReason(peer))
+                    .tooltip(banReason(peer))
                 Button("unban") {
                     store.meshUnban(fingerprint: peer.verified ? peer.fingerprint : "",
                                     node: peer.id)
@@ -727,10 +727,10 @@ struct MeshView: View {
         }
         .padding(.horizontal, 6).padding(.vertical, 4)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.05)))
-        .help("Default trust level for a device the moment it joins the mesh. "
-              + "Foreign (default) = zero-trust: a new device can't run your requests, "
-              + "mutate this node, or own work until you mark it Personal. "
-              + "Personal = full-trust: every new device is trusted automatically.")
+        .tooltip("Default trust level for a device the moment it joins the mesh. "
+                 + "Foreign (default) = zero-trust: a new device can't run your requests, "
+                 + "mutate this node, or own work until you mark it Personal. "
+                 + "Personal = full-trust: every new device is trusted automatically.")
     }
 
     private func trustColor(_ level: String) -> Color {
@@ -804,7 +804,7 @@ struct MeshView: View {
                     set: { editPlacement(dutyID: duty.id, current: placement, tokenAware: $0) }
                 )) { Text("token-aware").font(.system(size: 9)) }
                     .toggleStyle(.switch).controlSize(.mini)
-                    .help("Skip nodes that are out of tokens when routing")
+                    .tooltip("Skip nodes that are out of tokens when routing")
             }
         }
         .padding(6)
@@ -819,6 +819,7 @@ struct MeshView: View {
             set: { editPlacement(dutyID: dutyID, current: placement, strategy: $0) }
         )) {
             ForEach(strategies, id: \.id) { s in
+                // A menu item: `.help` is its NSMenuItem's tooltip, not a hover lookup.
                 Text(s.title).tag(s.id).help(s.detail)
             }
         }
