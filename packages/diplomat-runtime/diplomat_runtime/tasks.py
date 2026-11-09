@@ -1,10 +1,11 @@
 """Tasks, the long-running task tracker, as the Linux front-end reaches it.
 
 Everything Tasks decides is ``DiplomatCore``, reached through the ``diplomat-core`` CLI
-(``tasks-list``, ``tasks-sync``, ``tasks-edit``), which reads and writes
+(``tasks-list``, ``tasks-sync``, ``tasks-edit``, ``tasks-group``), which reads and writes
 ``$DIPLOMAT_TASKS_DIR`` (default ``~/.diplomat/tasks``). What lives here is calling it,
 and the tunables of ``assets/tasks.json`` the front-end reads itself: the sync period
-(``syncSecs``, ``minSyncSecs``) and the ``chunk`` that bounds a sync's run time.
+(``syncSecs``, ``minSyncSecs``), the ``chunk`` that bounds a sync's run time, and
+``grouper.timeoutSecs``, which bounds the grouper's.
 
 Stdlib-only, like the rest of the runtime.
 """
@@ -62,10 +63,21 @@ def sync_timeout(github_links: int) -> float:
     return calls * _GH_CALL_SECS + _GH_LOOKUP_SECS + _MARGIN_SECS
 
 
-def views(*, archived: bool = False) -> list[dict]:
+def group_timeout() -> float:
+    """``tasks-group``'s own bounds: its ``gh`` call, tried twice with a second between,
+    then ``claude`` for ``grouper.timeoutSecs`` and the five seconds before its SIGKILL;
+    finding each of the two."""
+    claude = float((tunables().get("grouper") or {}).get("timeoutSecs", 300))
+    return 2 * _GH_CALL_SECS + 1 + claude + 5 + 2 * _GH_LOOKUP_SECS + _MARGIN_SECS
+
+
+def views(*, archived: bool = False, me: str = "") -> list[dict]:
     """``tasks-list``: ``[TaskView]`` (``{task, status, reasons, history, lastEventAt,
-    linkStates}``), not done first; archived tasks too with ``archived``."""
-    rows = json.loads(promptcore.cli(["tasks-list", *(["--archived"] if archived else [])]))
+    linkStates, graph, work}``), not done first; archived tasks too with ``archived``.
+    ``me`` is the operator's GitHub login: an ``auto`` task's PRs it wrote get
+    ``findings`` work."""
+    rows = json.loads(promptcore.cli(["tasks-list", *(["--archived"] if archived else []),
+                                      *(["--me", me] if me else [])]))
     if not isinstance(rows, list):
         raise ValueError("diplomat-core tasks-list answered something that is not a list")
     return [r for r in rows if isinstance(r, dict) and isinstance(r.get("task"), dict)]
@@ -84,9 +96,25 @@ def sync(github_links: int) -> dict:
     return out
 
 
+def group(*, if_due: bool) -> dict:
+    """``tasks-group``: ``{"ok", "error"?, "created", "added"}``, or with ``if_due`` before
+    it is due ``{"ok": true, "skipped", "ranAt", "lastError"?}``. Never raises: a CLI
+    that could not answer is an ``error``."""
+    try:
+        out = json.loads(promptcore.cli(["tasks-group", *(["--if-due"] if if_due else [])],
+                                        timeout=group_timeout()))
+    except Failure as exc:
+        return {"ok": False, "error": str(exc), "created": 0, "added": 0}
+    if not isinstance(out, dict):
+        return {"ok": False, "created": 0, "added": 0,
+                "error": "diplomat-core tasks-group answered something that is not a run"}
+    return out
+
+
 def edit(op: dict) -> dict:
     """``tasks-edit``: the task as it now is. ``op`` is a ``TaskEdit`` (``{"op":
-    "create" | "update" | "link" | "unlink" | "note" | "archive" | "unarchive", …}``)."""
+    "create" | "update" | "link" | "unlink" | "note" | "archive" | "unarchive" | "mode" |
+    "dispatched", …}``)."""
     task = json.loads(promptcore.cli(["tasks-edit"], stdin=op))
     if not isinstance(task, dict):
         raise ValueError("diplomat-core tasks-edit answered something that is not a task")

@@ -1,5 +1,5 @@
 {
-  "_comment": "Tasks, the long-running task tracker: the tunables of ../Sources/DiplomatCore/Tasks.swift, TasksStore.swift, TasksSync.swift and TaskGoals.swift. The Linux front-end reaches tasks only through the diplomat-core CLI (tasks-list, tasks-sync, tasks-edit, tasks-group) and reads this file itself for nothing but syncSecs, minSyncSecs and chunk (to bound how long tasks-sync may take).",
+  "_comment": "Tasks, the long-running task tracker: the tunables of ../Sources/DiplomatCore/Tasks.swift, TasksStore.swift, TasksSync.swift and TaskGoals.swift. The Linux front-end reaches tasks only through the diplomat-core CLI (tasks-list, tasks-sync, tasks-edit, tasks-group) and reads this file itself for nothing but syncSecs, minSyncSecs, chunk and grouper.timeoutSecs (to bound how long tasks-sync and tasks-group may take).",
   "_syncComment": "syncSecs is the front-ends' sync period while at least one task is not archived; minSyncSecs is the floor it is clamped to. A sync is one batched gh api graphql call per chunk linked GitHub items (graphql/task-item.graphql), each fetching its newest commentsPerItem comments and reviews.",
   "syncSecs": 300,
   "minSyncSecs": 60,
