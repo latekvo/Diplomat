@@ -692,11 +692,12 @@ def _comms_fixture(store: Store, *, signed_in: bool) -> None:
 
 
 def write_gh_stub(directory, answers: dict) -> str:
-    """A ``gh`` for ``tasks-sync``: it answers the batched query from ``gh-answers.json``
-    in ``directory`` (``{"owner/repo#n": node | None}``, re-read per call, so a caller
-    moves GitHub on between syncs; ``{"fail": stderr}`` exits 1 with it), and appends
-    each argv to ``gh-calls``. An item it holds no node for is ``NOT_FOUND``, as GitHub
-    answers. Returns the stub's path, for ``DIPLOMAT_GH``."""
+    """A ``gh`` for ``tasks-sync`` and ``tasks-group``: it answers the batched query from
+    ``gh-answers.json`` in ``directory`` (``{"owner/repo#n": node | None}``, re-read per
+    call, so a caller moves GitHub on between syncs; ``{"fail": stderr}`` exits 1 with
+    it) and the grouper's candidates query with its ``"candidates"`` (a
+    ``repository``), and appends each argv to ``gh-calls``. An item it holds no node for
+    is ``NOT_FOUND``, as GitHub answers. Returns the stub's path, for ``DIPLOMAT_GH``."""
     import json
     import sys
     from pathlib import Path
@@ -717,6 +718,10 @@ if "fail" in answers:
     sys.stderr.write(answers["fail"])
     sys.exit(1)
 vals = dict(a.split("=", 1) for a in args if "=" in a)
+if "name" in vals:
+    empty = {{"issues": {{"nodes": []}}, "pullRequests": {{"nodes": []}}}}
+    print(json.dumps({{"data": {{"repository": answers.get("candidates", empty)}}}}))
+    sys.exit(0)
 data, errors, k = {{}}, [], 0
 while f"o{{k}}" in vals:
     key = (vals[f"o{{k}}"] + "/" + vals[f"r{{k}}"] + "#" + vals[f"n{{k}}"]).lower()
@@ -735,12 +740,17 @@ sys.exit(1 if errors else 0)
 
 def gh_pr(url: str, title: str, *, state: str = "OPEN", draft: bool = False,
           review: str | None = None, mergeable: str = "MERGEABLE", ci: str | None = "SUCCESS",
-          comments: tuple = (), reviews: tuple = (), closes: tuple = ()) -> dict:
+          comments: tuple = (), reviews: tuple = (), closes: tuple = (),
+          author: str = "octocat", base: str = "main", head: str | None = None,
+          oid: str | None = None) -> dict:
     """A ``TaskPR`` node (assets/graphql/task-item.graphql) as GitHub answers it.
-    ``comments``: ``(id, login, body)``; ``reviews``: ``(id, login, state)``."""
+    ``comments``: ``(id, login, body)``; ``reviews``: ``(id, login, state)``; ``head``
+    is its branch, ``oid`` that branch's commit."""
     at = "2026-11-05T10:00:00Z"
     return {
         "__typename": "PullRequest", "title": title, "url": url, "state": state,
+        "author": {"login": author}, "baseRefName": base,
+        "headRefName": head or f"branch-{url.rsplit('/', 1)[-1]}", "headRefOid": oid,
         "isDraft": draft, "reviewDecision": review, "mergeable": mergeable,
         "mergedAt": at if state == "MERGED" else None,
         "closedAt": at if state in ("MERGED", "CLOSED") else None,
@@ -755,11 +765,48 @@ def gh_pr(url: str, title: str, *, state: str = "OPEN", draft: bool = False,
     }
 
 
-def gh_issue(url: str, title: str, *, state: str = "OPEN") -> dict:
+def gh_issue(url: str, title: str, *, state: str = "OPEN", author: str = "octocat") -> dict:
     """A ``TaskIssue`` node."""
     return {"__typename": "Issue", "title": title, "url": url, "state": state,
+            "author": {"login": author},
             "closedAt": "2026-11-05T10:00:00Z" if state == "CLOSED" else None,
             "closedByPullRequestsReferences": {"nodes": []}, "comments": {"nodes": []}}
+
+
+def write_claude_stub(directory, goals: list[dict]) -> str:
+    """A ``claude`` for ``tasks-group``: it answers with ``{"goals": goals}`` as its
+    structured output (``claude-answer.json`` in ``directory``, re-read per call), and
+    appends each call's argv and stdin to ``claude-calls``. Returns its path, for
+    ``DIPLOMAT_CLAUDE``."""
+    import json
+    import sys
+    from pathlib import Path
+
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "claude-answer.json").write_text(json.dumps({"goals": goals}))
+    stub = directory / "claude"
+    stub.write_text(f"""#!{sys.executable}
+import json, os, sys
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "claude-calls"), "a") as f:
+    f.write(json.dumps({{"args": sys.argv[1:], "stdin": sys.stdin.read()}}) + "\\n")
+with open(os.path.join(here, "claude-answer.json")) as f:
+    answer = json.load(f)
+print(json.dumps({{"type": "result", "is_error": False, "structured_output": answer}}))
+""")
+    stub.chmod(0o755)
+    return str(stub)
+
+
+def gh_candidate(url: str, title: str, *, closes: tuple = (), author: str = "octocat") -> dict:
+    """One open issue or PR of ``graphql/goal-candidates.graphql``; ``closes`` holds the
+    numbers of the issues a PR closes."""
+    node = {"number": int(url.rsplit("/", 1)[-1]), "title": title, "url": url,
+            "bodyText": "", "author": {"login": author}, "labels": {"nodes": []}}
+    if "/pull/" in url:
+        node["closingIssuesReferences"] = {"nodes": [{"number": n} for n in closes]}
+    return node
 
 
 def _tasks_fixture(store: Store) -> bool:
@@ -823,11 +870,88 @@ def _tasks_fixture(store: Store) -> bool:
     tasks.edit({"op": "note", "id": iphone, "text": "Apple's DDI mount is the blocker",
                 "tags": ["blocked-on:apple"], "url": "https://developer.apple.com/forums/"})
     synced = tasks.sync(4)
+    _goals_fixture(store, home, answers, stub_dir, scratch)
     store.refresh_tracked_tasks()
     store.tracker_last_sync = datetime.now().astimezone()
     store.tracker_sync_events = synced["events"]
     store.tracker_sync_error = synced.get("error")
     return False
+
+
+def _goals_fixture(store: Store, home: str, answers: dict, stub_dir, scratch) -> None:
+    """Two goals the grouper proposes through the real ``tasks-group``, against a stub
+    ``claude``: Duo support, then approved for automatic action with review on new
+    commits, a fix running for one of its issues and one queued, and a review running
+    on one of its PRs; and a cold-start goal still proposed."""
+    from diplomat_runtime import autofix, core, tasks
+
+    cfg = core.config()
+    issue, pr = f"{home}/issues/{{}}".format, f"{home}/pull/{{}}".format
+
+    def key(n: int) -> str:
+        return f"{cfg['owner']}/{cfg['repo']}#{n}".lower()
+
+    items = {
+        1801: gh_issue(issue(1801), "Duo crashes when folded mid-launch"),
+        1802: gh_issue(issue(1802), "Duo hinge angle is never reported"),
+        1803: gh_issue(issue(1803), "Duo screenshots cut at the fold"),
+        1810: gh_pr(pr(1810), "iPhone Duo support", closes=(issue(1801),), head="duo",
+                    oid="d00d1810", ci=None),
+        1811: gh_pr(pr(1811), "Duo: split layout", base="duo", oid="d00d1811"),
+        1820: gh_issue(issue(1820), "Cold start takes 9s"),
+        1821: gh_issue(issue(1821), "Splash hangs on first launch"),
+        1825: gh_pr(pr(1825), "Lazy-load the device list", draft=True,
+                    closes=(issue(1820),)),
+    }
+    answers.update({key(n): node for n, node in items.items()})
+    answers["candidates"] = {
+        "issues": {"nodes": [gh_candidate(node["url"], node["title"])
+                             for node in items.values() if node["__typename"] == "Issue"]},
+        "pullRequests": {"nodes": [
+            gh_candidate(pr(1810), items[1810]["title"], closes=(1801,)),
+            gh_candidate(pr(1811), items[1811]["title"]),
+            gh_candidate(pr(1825), items[1825]["title"], closes=(1820,))]},
+    }
+    write_gh_stub(stub_dir, answers)
+    os.environ["DIPLOMAT_CLAUDE"] = write_claude_stub(scratch / "claude", [
+        {"task": None, "title": "iPhone Duo support", "tags": ["area:devices"],
+         "items": [1801, 1802, 1803, 1810, 1811], "blocks": []},
+        {"task": None, "title": "Faster cold start", "tags": ["area:perf"],
+         "items": [1820, 1821, 1825], "blocks": []},
+    ])
+    grouped = tasks.group(if_due=False)
+    store.tracker_grouped_at = datetime.now().astimezone()
+    store.tracker_grouper_error = grouped.get("error")
+    tasks.sync(14)
+    duo = next(v["task"]["id"] for v in tasks.views() if v["task"]["title"] == "iPhone Duo support")
+    tasks.edit({"op": "mode", "id": duo, "mode": "auto", "reviewOnPush": True})
+    tasks.edit({"op": "dispatched", "id": duo, "work": [f"fix:{key(1802)}"]})
+
+    _agents_scratch()
+    now = time.time()
+    for number, kind, label, pid, tty in (
+        (None, "issues", "Auto · Issues · #1802 · deep", 6001, "pts/60"),
+        (1811, "review", "Review · #1811 · max", 6002, "pts/61"),
+    ):
+        agentregistry.create_run(agentstate.RunRecord(
+            run_id=agentregistry.new_run_id(now - 600), dispatched_at=now - 600,
+            pr_number=number, pr_url=pr(number) if number else "", kind=kind, label=label,
+            source=autofix.SOURCE_AUTO, pid=pid, tty=tty), "")
+    # In memory only: the asks list is a setting, and a render writes none.
+    store.queued_tasks = [autofix.QueuedTask("issues:1803", autofix.AgentJob(
+        kind="issues", audit_action="issues", label="Issues · #1803 · deep", prompt=""), 1)]
+    busy = "● Reading…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
+
+    def _fixed_probes(records, now, merged=None, tokens=None, mesh_enabled=True):
+        present = agentstate.Observation.present
+        return agentstate.Evidence(
+            processes=present({pid: agentstate.ProcInfo(tty=tty, elapsed=600, is_agent=True)
+                               for pid, tty in ((6001, "pts/60"), (6002, "pts/61"))}),
+            sentinels=present(set()), tails=present({"pts/60": busy, "pts/61": busy}),
+            claims=present(set()), merged_prs=present(set()), live_agents=present({}),
+            tokens_left=present(True))
+
+    probes.gather = _fixed_probes
 
 
 def run(what: str, out: str) -> int:
@@ -913,9 +1037,10 @@ def run(what: str, out: str) -> int:
         # The re-read opening the screen starts, landed.
         store.wait_for_background()
         app.processEvents()
-        # The fixture's first task unfolded; a caller's every one.
-        for view in store.tracked_tasks[:None if given_tasks else 1]:
-            panel.tasks_view._toggle_history(view["task"]["id"])
+        # The fixture's first task and its goals unfolded; a caller's every one.
+        for i, view in enumerate(store.tracked_tasks):
+            if given_tasks or i == 0 or view["task"].get("origin"):
+                panel.tasks_view._toggle_history(view["task"]["id"])
     else:  # panel, and comms-panel: the same, its ✉ header button showing a count
         _device_fixture(store)
         _left_pane_fixture(store)

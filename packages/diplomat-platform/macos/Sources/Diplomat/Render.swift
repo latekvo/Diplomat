@@ -267,9 +267,12 @@ enum Render {
             // error's, from the screen's own reload); "tasks-edit-error" the
             // refusals drawn where they were made: the new-task form's, a link editor's and
             // a row action's; "tasks-archived" the archived one listed; "tasks-empty" no
-            // task at all. A `DIPLOMAT_TASKS_DIR` set by the caller is drawn as it is, every
-            // task unfolded, instead of the fixture.
-            let _ = seedTasks(store, empty: s.contains("empty"), form: s.contains("form"))
+            // task at all; "tasks-goals" the three goals unfolded instead: a proposal, an
+            // auto goal with an agent on one PR and a queued fix, and an observed one. A
+            // `DIPLOMAT_TASKS_DIR` set by the caller is drawn as it is, every task unfolded,
+            // instead of the fixture.
+            let _ = seedTasks(store, empty: s.contains("empty"), form: s.contains("form"),
+                              goals: s.contains("goals"))
             let first = tasksUnfolded.sorted().first
             if s.contains("panel") {
                 ContentView(showTasks: true)
@@ -763,7 +766,7 @@ enum Render {
     /// reasons are `TaskStore.views`' own. Only the Slack lines, which a sync folds from
     /// Comms' log, are composed whole.
     @discardableResult
-    private static func seedTasks(_ store: Store, empty: Bool, form: Bool) -> Bool {
+    private static func seedTasks(_ store: Store, empty: Bool, form: Bool, goals: Bool) -> Bool {
         let now = Date()
         if let given = ProcessInfo.processInfo.environment["DIPLOMAT_TASKS_DIR"], !given.isEmpty {
             // When a sync last wrote the mirror.
@@ -783,15 +786,28 @@ enum Render {
             store.taskViews = []
             return true
         }
+        var goalIDs: TasksTest.GoalFixture?
         do {
             try writeTaskFixture(in: dir, now: now)
+            goalIDs = try TasksTest.writeGoalFixture(in: dir, now: now, me: "octo-me")
             store.taskViews = try TaskStore.views(archived: true, now: now)
             store.taskLabels = TaskTint.labels(of: store.taskViews)
         } catch {
             print("RENDER ERROR: tasks fixture: \(error)")
         }
         let byTitle = Dictionary(store.taskViews.map { ($0.task.title, $0.task.id) }) { a, _ in a }
-        tasksUnfolded = Set(["Physical iPhone support", "Release 0.9 checklist"].compactMap { byTitle[$0] })
+        if goals, let goalIDs {
+            tasksUnfolded = [goalIDs.proposed, goalIDs.auto, goalIDs.observe]
+            // The auto goal's: an agent on someone's PR, the fix of its issue queued.
+            store.pinAgentRows([Store.AgentRow(
+                record: AgentState.RunRecord(runID: "r-1821", dispatchedAt: now.timeIntervalSince1970 - 600,
+                                             prNumber: 1821, kind: "review", label: "Review · #1821 · max"),
+                state: .running, reason: "", window: nil)])
+            store.queuedTasks = [queuedFixture(number: 1820, kind: "issues", auditAction: "issues",
+                                               label: "Issues · #1820 · deep", counter: nil)]
+        } else {
+            tasksUnfolded = Set(["Physical iPhone support", "Release 0.9 checklist"].compactMap { byTitle[$0] })
+        }
         if form {
             store.tasksSyncError = "gh: GraphQL: API rate limit exceeded for user ID 1234 (skipped 2 links)"
             // Torn after the read above, so the screen's own reload, which only a `window-`

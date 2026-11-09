@@ -7,6 +7,10 @@ fragment TaskPR on PullRequest {
   title
   url
   state
+  author { login }
+  baseRefName
+  headRefName
+  headRefOid
   isDraft
   reviewDecision
   mergeable
@@ -22,6 +26,7 @@ fragment TaskIssue on Issue {
   title
   url
   state
+  author { login }
   closedAt
   closedByPullRequestsReferences(first: 10, includeClosedPrs: true) { nodes { url } }
   comments(last: $c) { nodes { id url author { login } createdAt bodyText } }

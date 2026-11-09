@@ -71,6 +71,68 @@ watched repo), a Slack permalink, or any `http(s)` URL. `owner/repo#12` and `#12
 issues until the first sync says they are PRs. Tags are lowercased, spaces become `-`, and repeats
 are dropped; in the screen's fields they are separated by spaces or commas.
 
+## Goals
+
+A **goal** is a task Diplomat proposes on its own: the open issues and PRs of the watched repo that
+serve one outcome - five issues asking for iPhone Duo support, the PR adding it, and the three PRs
+fixing bugs that block that PR. Every six hours the **grouper** shows the repo's newest 100 open
+issues and 100 open PRs (title, labels, the start of the body, what each PR closes) and the goals
+already tracked to one `claude -p` (sonnet, no tools, no MCP servers, no settings), and asks which
+of them serve one goal. Issue and PR text is untrusted: it reaches the model on stdin, every line
+quoted, never as instructions, and the answer can only name the numbers it was shown.
+
+- A new goal needs at least three items no other unarchived task links; at most five are proposed
+  per run. It arrives as a **proposed** task tagged `goal`, its history saying `created`,
+  `via:grouper`.
+- The grouper can also add newly filed items to a goal it proposed that you have not answered yet
+  (`linked`, `via:grouper`): never to one you observe, automate or archived, never to a task you
+  made yourself, and never a link you removed from it.
+- **Find goals** on the Tasks screen runs it at once.
+
+### Modes
+
+A proposed goal shows its graph and three choices:
+
+| Choice | What happens |
+|---|---|
+| **Dismiss** | Archived and never listed again, archived or not; the grouper does not propose it again (a proposal whose items are mostly a dismissed goal's is dropped) |
+| **Observe** | You see the graph and act on it by hand |
+| **Automate** | Diplomat works on it, below |
+
+Any task with GitHub links, including your own, can switch between **Observe** and **Auto**. In
+**auto**, on every poll of the [automatic-work monitors](automation.md):
+
+- each open issue that no open, draft or merged PR of the task closes gets one [Fix-issues](actions.md#fix-issues)
+  fix, feature requests included (a goal's issues often are), in the issue-fix band of the queue,
+  under the task cap like any queued work. As a sweep's fix, it leaves the issue alone if it is
+  closed or assigned by the time its turn comes. It is asked for once; `+` asks again
+- with **Review on new commits** on, each open PR is reviewed once per head commit, at max depth with
+  per-line comments and no verdict (your own PR as yours)
+- your own open PRs get their unresolved review threads fixed, through the PR auto-fix path and its
+  backoff, even with that monitor switched off
+
+Only items in the watched repo are worked on; the others are shown. A pinned task does nothing.
+What was started is history (`dispatch:fix-issue`, `dispatch:review`). Leaving auto, pinning or
+archiving the task (or dismissing the goal) withdraws what is still waiting in the queue
+(`withdraw:…`), to be asked for again if it goes back to auto.
+
+### The graph
+
+Unfolding a task with GitHub links shows them as flat rows of pills, each row what must land before
+what, left to right:
+
+```
+( #1234 ) ──▶ ( #4321 )        issue #1234 is closed by PR #4321
+( #31 ) ──▶ ( #25 )            PR #25 is stacked on #31 (its base branch is #31's head), or the grouper said #31 blocks it
+( #1240 ) ──▶ ( + )            no PR closes issue #1240 yet
+```
+
+A pill's dot is its state as of the last sync. A pill opens its item; `+` starts the same fix agent
+for that issue at once, outside the cap, as the Fix-issues wizard's single-issue press does. A PR
+pill shows **agent** while an agent works on it and **queued** while one waits for a slot; for an
+issue, the `+` after it does. Rows whose items are all merged or closed come last. Only issues in
+the watched repo get a `+`.
+
 ## Statuses and reason tags
 
 The first rule that holds decides the status:
@@ -98,10 +160,11 @@ outside the watched repo read `owner/repo#12`.
   1 MB, and always at least the newest one.
 - `mirror.json` - what the last sync saw of each linked item, and how far into Comms' log it read.
   Delete it and the next sync sees every item for the first time again.
+- `grouper.json` - when the grouper last ran, and its error. Delete it and the next tick runs it.
 - `tasks.lock` - held by every writer, the app's and the CLI's alike.
 
 The tunables are in `assets/tasks.json`. `DIPLOMAT_TASKS_SECS` overrides the five-minute sync (one
-minute to a day).
+minute to a day), `DIPLOMAT_GOALS_SECS` the grouper's six hours (ten minutes at least).
 
 ## The CLI, for agents and scripts
 
@@ -119,8 +182,10 @@ under the working directory, else from the checkout it was built in. Run from in
 checkout, or after its own moved, it needs `DIPLOMAT_CORE=<checkout>/packages/diplomat-core/assets`.
 
 ```sh
-diplomat-core tasks-list [--archived]      # every task: status, reasons, history (newest 200), linkStates
+diplomat-core tasks-list [--archived] [--me LOGIN]  # every task: status, reasons, history (newest 200), linkStates, graph, work
 diplomat-core tasks-sync                   # one sync: {"ok":true,"events":3}, or ok:false and the error
+diplomat-core tasks-group [--if-due]       # one grouper run: {"ok":true,"created":1,"added":0};
+                                           # not due yet: {"ok":true,"skipped":"not due","ranAt":…,"lastError"?}
 echo '{"op":"create","title":"Tor transport","tags":["area:mesh"],"links":["#1601"]}' \
   | diplomat-core tasks-edit               # prints the task as it now is
 ```
@@ -130,7 +195,11 @@ echo '{"op":"create","title":"Tor transport","tags":["area:mesh"],"links":["#160
 
 `tasks-edit` takes one `op` on stdin: `create` (`title`, `tags`, `links`), `update` (`id`, and any of
 `title`, `tags`, `pinnedStatus`: `done`, `paused`, or `""` to unpin), `link` / `unlink` (`id`, `url`),
-`note` (`id`, and any of `text`, `tags`, `url`), `archive` / `unarchive` (`id`). An unknown op, key
+`note` (`id`, and any of `text`, `tags`, `url`), `archive` / `unarchive` (`id`), `mode` (`id`, and
+any of `mode`: `observe`, `auto` or `dismissed`, and `reviewOnPush`), `dispatched` (`id`, `work`: the
+`key`s of `work` items just started), `withdrawn` (`id`, `work`: `dispatched` keys whose work was
+withdrawn before it started, wanted again). `work` is what an auto task wants started: `fix-issue`,
+`review`, and `findings` for `LOGIN`'s own PRs. An unknown op, key
 or task, a note over 4000 characters, or an edit that does not apply exits 1 with the reason on
 stderr. An edit saved whose history line could not be written exits 0 with the task, and a warning
 on stderr: do not repeat it. `DIPLOMAT_TASKS_DIR`, `DIPLOMAT_COMMS_DIR` and `DIPLOMAT_GH` apply. The

@@ -94,12 +94,12 @@ jobs:
       # scratch DIPLOMAT_TASKS_DIR the render sets itself (one per status, history from
       # every source, one archived), inside the whole panel (the header button and its
       # badge), with the new-task form, a note editor and the sync error banner,
-      # with refused edits drawn at their editors, with the archived task listed, and with
-      # no task at all.
+      # with refused edits drawn at their editors, with the archived task listed, with
+      # no task at all, and with goals unfolded on their graphs.
       - name: Headless tasks render
         working-directory: packages/diplomat-platform/macos
         run: |
-          for mode in tasks tasks-panel tasks-form tasks-edit-error tasks-archived tasks-empty; do
+          for mode in tasks tasks-panel tasks-form tasks-edit-error tasks-archived tasks-empty tasks-goals; do
             DIPLOMAT_RENDER=$mode DIPLOMAT_RENDER_OUT="$RUNNER_TEMP/$mode.png" \
               swift run Diplomat
             test -s "$RUNNER_TEMP/$mode.png"
