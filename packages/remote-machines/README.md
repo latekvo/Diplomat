@@ -88,8 +88,12 @@ which also catches its host under any other name it is found by.
 | `remoteMachineExcludeUntil` | `{name: ISO time}`: until then. Such a machine is still read, so its load stays on show. |
 
 The daemon checks the file every second (`RM_CONFIG_POLL_MS`) and republishes when it
-changes. An excluded machine is listed under `excluded`, not `machines`, and the agent
-output names it as not usable.
+changes or a time in it passes. An excluded machine is listed under `excluded`, not
+`machines`, with `excluded: {until, by}`: `until` is null for good, and `by` lists the
+entries that name it, so a UI can take back exactly those. The agent output names it as
+not usable. A machine excluded under one name stays excluded under all of them, across
+restarts too: the daemon keeps the machine id each name last reached in
+`machine-ids.json`.
 
 ## Reading a machine
 
@@ -97,7 +101,8 @@ output names it as not usable.
 this machine). It installs nothing and changes nothing. A `load` probe reads the load
 averages, memory (macOS `kern.memorystatus_level` and pressure level, Linux
 `MemAvailable`), swap, free disk in `$HOME`, boot time, machine id, NVIDIA GPU usage and
-the number of SSH sessions open on it (other than the probe's own).
+the number of SSH sessions open on it (other than the probe's own; on macOS, only those of
+the user it logs in as, since other users' process titles are hidden).
 A `full` probe adds the OS, CPU, GPUs, Xcode, and the toolchains on the login shell's
 PATH (the one agents are told to run work under).
 

@@ -1,8 +1,9 @@
 # Prints one machine's load (and, with `full`, its capabilities) as key=value lines
 # between markers, so whatever a login shell prints around it is ignored. POSIX sh,
-# fed over `ssh <host> sh -s -- <mode>` and run locally the same way: nothing is
-# installed on the machine it describes, and it changes nothing there.
+# fed over `ssh <host> sh -s -- <mode> ssh` and run locally as `sh -s -- <mode>`: nothing
+# is installed on the machine it describes, and it changes nothing there.
 mode=${1:-load}
+via=$2
 os=$(uname -s)
 echo __RM_BEGIN__
 echo "os=$os"
@@ -11,9 +12,10 @@ echo "home=$HOME"
 echo "conn=$SSH_CONNECTION"
 df -Pk "$HOME" 2>/dev/null | awk 'NR==2 {print "disk_kb=" $2 " " $4}'
 # Authenticated SSH sessions: sshd names each one's process user@<tty> or user@notty.
-# Over ssh, this probe's own session is one of them.
+# Over ssh, this probe's own session is one of them. On macOS another user's process
+# shows no arguments, so only sessions of the user probing are counted there.
 ps_out=$(ps -A -o args= 2>/dev/null) && ssh_n=$(printf '%s\n' "$ps_out" | grep -cE '^sshd(-session)?: [^ ]+@')
-[ -n "$ssh_n" ] && [ -n "$SSH_CONNECTION" ] && [ "$ssh_n" -gt 0 ] && ssh_n=$((ssh_n - 1))
+[ -n "$ssh_n" ] && [ "$via" = ssh ] && [ "$ssh_n" -gt 0 ] && ssh_n=$((ssh_n - 1))
 echo "ssh_sessions=$ssh_n"
 if [ "$os" = Darwin ]; then
   echo "loadavg=$(sysctl -n vm.loadavg | tr -d '{}')"

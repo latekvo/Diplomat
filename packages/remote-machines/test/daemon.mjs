@@ -192,12 +192,15 @@ try {
 
   await check('a machine excluded for a while leaves the pool but is still read, under all its names', async () => {
     const until = new Date(Date.now() + 3600e3).toISOString();
-    // Excluded under one of its names only.
-    settings({ remoteMachineExcludeUntil: { 'idle-ip': until, busy: new Date(Date.now() - 1000).toISOString() } });
+    const sooner = new Date(Date.now() + 1800e3).toISOString();
+    // Paused under two of its names, until different times, one of them by its host name.
+    settings({ remoteMachineExcludeUntil: { 'idle-ip': until, 'IDLE.LOCAL': sooner, busy: new Date(Date.now() - 1000).toISOString() } });
     const st = await stateWhen((x) => x.excluded.length === 1, 'idle excluded');
     assert.deepEqual(st.machines.map((m) => m.target), ['busy', 'full'], 'an exclusion that has run out counts for nothing');
     assert.equal(st.excluded[0].target, 'idle');
-    assert.deepEqual(st.excluded[0].excluded, { until });
+    // The later time holds, and every entry naming it is listed, for the UI to take back.
+    assert.equal(st.excluded[0].excluded.until, until);
+    assert.deepEqual(st.excluded[0].excluded.by.sort(), ['IDLE.LOCAL', 'idle-ip']);
     const probes = sb.probed().filter((t) => t === 'idle').length;
     const again = await callDaemon('POST', '/scan', { full: true });
     assert.ok(sb.probed().filter((t) => t === 'idle').length > probes, 'still read');
@@ -207,7 +210,7 @@ try {
   await check('a machine excluded for good is not contacted until it is let back in', async () => {
     settings({ remoteMachineExclude: ['IDLE.local'] });
     const st = await stateWhen((x) => x.excluded.length === 1 && x.excluded[0].status === 'excluded', 'idle excluded for good');
-    assert.deepEqual(st.excluded.map((m) => [m.target, m.excluded]), [['idle', { until: null }]]);
+    assert.deepEqual(st.excluded.map((m) => [m.target, m.excluded]), [['idle', { until: null, by: ['IDLE.local'] }]]);
     assert.deepEqual(st.machines.map((m) => m.target), ['busy', 'full']);
     // Its other name reaches the same machine id: it is not listed in its place.
     assert.ok(!st.unavailable.some((m) => m.target === 'idle-ip'));

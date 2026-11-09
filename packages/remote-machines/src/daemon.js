@@ -24,7 +24,7 @@ import { atomicWrite, pidAlive, procIdentity, readJson, sweepDeadTmp } from '../
 import { createLog } from '../../daemon-core/src/log.js';
 import { NO_ROUTE, jsonServer, listenSingleton, socketHealthy } from '../../daemon-core/src/serve.js';
 import {
-  BASE_DIR, SOCKET_PATH, DISCOVERY_PATH, STATE_PATH, HISTORY_PATH, LOG_PATH, CONFIG_PATH,
+  BASE_DIR, SOCKET_PATH, DISCOVERY_PATH, STATE_PATH, HISTORY_PATH, IDS_PATH, LOG_PATH, CONFIG_PATH,
   PROBE_INTERVAL_MS, DISCOVERY_INTERVAL_MS, IDLE_EXIT_MS, CLIENT_CHECK_MS, LOAD_GAP_MIN_MS,
   HISTORY_MS, CONFIG_POLL_MS,
 } from './paths.js';
@@ -64,25 +64,50 @@ function baseStatus(c) {
   return { status: 'new', error: undefined };
 }
 
-let exclusionRun = 0;
+// Candidate key -> the machine id last read through it. Kept on disk, so a machine
+// excluded for good, which is never read again, is still known under all its names.
+const knownIds = new Map(Object.entries(readJson(IDS_PATH) ?? {}).filter(([, v]) => typeof v === 'string'));
+const machineIdOf = (rec) => rec.info?.machineId || knownIds.get(rec.key) || null;
 
-/// Marks each record with the operator's exclusion, read from the settings now: rec.excluded
-/// is {until: null} for good, {until: iso} for a while, or null. A record excluded for good
-/// is not probed; one let back in is probed by the next scan.
+function learnId(rec) {
+  const id = rec.info?.machineId;
+  if (!id || !rec.key || knownIds.get(rec.key) === id) return;
+  knownIds.set(rec.key, id);
+  try { atomicWrite(IDS_PATH, Object.fromEntries(knownIds), 0o644); } catch (e) { log('ids write failed', String(e)); }
+}
+
+let exclusionRun = 0;
+let nextExpiry = Infinity;
+
+/// Marks each record with the operator's exclusion, read from the settings now:
+/// rec.excluded is {until: null} for good or {until: iso} for a while, with `by` the
+/// settings entries that name the machine, or null. A record excluded for good is not
+/// probed; one let back in is probed by the next scan.
 async function applyExclusions() {
   const run = ++exclusionRun;
   const s = settings();
+  const matcher = async (name) => ({ name, match: await nameMatcher([name]) });
   const [forGood, paused] = await Promise.all([
-    nameMatcher(s.exclude),
-    Promise.all(s.paused.map(async ([name, at]) => ({ match: await nameMatcher([name]), at }))),
+    Promise.all(s.exclude.map(matcher)),
+    Promise.all(s.paused.map(async ([name, at]) => ({ ...(await matcher(name)), at }))),
   ]);
   if (run !== exclusionRun) return; // a later call read newer settings
-  // Its other names reach the same machine: one read since this daemon started says so.
-  const goneIds = new Set([...records.values()].filter((r) => forGood(r) && r.info?.machineId).map((r) => r.info.machineId));
+  nextExpiry = Math.min(...paused.map((p) => p.at));
+  const named = (list, rec) => list.filter((e) => e.match(rec));
+  // Entries that exclude a machine for good under one name hold all its other names too.
+  const gone = new Map();
   for (const rec of records.values()) {
-    const permanent = forGood(rec) || goneIds.has(rec.info?.machineId);
-    const at = Math.max(...paused.filter((p) => p.match(rec)).map((p) => p.at));
-    rec.excluded = permanent ? { until: null } : at > 0 ? { until: new Date(at).toISOString() } : null;
+    const id = machineIdOf(rec);
+    const by = named(forGood, rec).map((e) => e.name);
+    if (id && by.length) gone.set(id, [...(gone.get(id) ?? []), ...by]);
+  }
+  for (const rec of records.values()) {
+    const permanentBy = [...new Set([...named(forGood, rec).map((e) => e.name), ...(gone.get(machineIdOf(rec)) ?? [])])];
+    const pausedBy = named(paused, rec);
+    const by = [...new Set([...permanentBy, ...pausedBy.map((e) => e.name)])];
+    const at = Math.max(...pausedBy.map((p) => p.at));
+    const permanent = permanentBy.length > 0;
+    rec.excluded = permanent ? { until: null, by } : at > 0 ? { until: new Date(at).toISOString(), by } : null;
     if (permanent && rec.status !== 'excluded') Object.assign(rec, { status: 'excluded', error: 'excluded in Diplomat' });
     else if (!permanent && rec.status === 'excluded') Object.assign(rec, baseStatus(rec));
   }
@@ -95,7 +120,8 @@ function watchConfig() {
   configStamp = stamp();
   setInterval(async () => {
     const now = stamp();
-    if (now === configStamp) return;
+    // A pause that ran out lets its machine back in as promptly as a settings change.
+    if (now === configStamp && Date.now() < nextExpiry) return;
     configStamp = now;
     await applyExclusions();
     publish();
@@ -144,6 +170,7 @@ async function probeInto(rec, mode) {
   if (mode === 'full') rec.capabilitiesAt = rec.probedAt;
   rec.load = { ...info.load, sinceLastScan: sinceLastScan(rec, info, at) };
   rec.latencyMs = r.latencyMs;
+  learnId(rec);
   if (rec.status !== 'ok' && rec.target) log('reached', rec.target);
   rec.status = 'ok';
   delete rec.error;
@@ -193,7 +220,7 @@ function scan(discover = false) {
 
 function view(rec) {
   const m = {
-    id: rec.info?.machineId || rec.key,
+    id: machineIdOf(rec) || rec.key,
     target: rec.target,
     ...(rec.names?.length > 1 ? { aliases: rec.names.filter((n) => n !== rec.target) } : {}),
     ...(rec.target ? { hostname: rec.hostname, user: rec.user, port: rec.port, sources: rec.sources } : {}),
@@ -248,11 +275,11 @@ function record(machines) {
 // Best first: machines without warnings, then by spare cores.
 const byRank = (a, b) => (a.warnings.length > 0) - (b.warnings.length > 0) || (b.spareCores ?? 0) - (a.spareCores ?? 0);
 
-// The later of two exclusions; for good outlasts any time.
+// The later of two exclusions (for good outlasts any time), named by the entries of both.
 function longer(a, b) {
   if (!a || !b) return a ?? b;
-  if (a.until == null || b.until == null) return { until: null };
-  return a.until > b.until ? a : b;
+  const until = a.until == null || b.until == null ? null : (a.until > b.until ? a : b).until;
+  return { until, by: [...new Set([...a.by, ...b.by])] };
 }
 
 // Adds a view to a map by machine id, so one machine reached under two names is listed
@@ -271,12 +298,15 @@ function publish() {
   const localId = localRecord.info?.machineId;
   const ready = new Map();
   const forGood = new Map();
+  const pausedUnread = new Map();
   const unavailable = [];
   for (const rec of records.values()) {
     const m = view(rec);
     if (rec.status === 'excluded') merge(forGood, m);
-    else if (rec.status !== 'ok') unavailable.push(m);
-    else if (m.id !== localId) merge(ready, m);
+    else if (rec.status !== 'ok') {
+      if (rec.excluded) merge(pausedUnread, m);
+      else unavailable.push(m);
+    } else if (m.id !== localId) merge(ready, m);
   }
   const live = [...ready.values()];
   record([local, ...live]);
@@ -287,9 +317,10 @@ function publish() {
     daemon: { pid: process.pid, startedAt, sessions: clients.size },
     local,
     machines: live.filter((m) => !m.excluded).sort(byRank),
-    // Excluded for a while (still read, best first), then for good.
+    // Excluded for a while (those read best first, then those that could not be), then for good.
     excluded: [
       ...live.filter((m) => m.excluded).sort(byRank),
+      ...[...pausedUnread.values()].sort((a, b) => a.target.localeCompare(b.target)),
       ...[...forGood.values()].sort((a, b) => a.target.localeCompare(b.target)),
     ],
     unavailable: unavailable.sort((a, b) => a.status.localeCompare(b.status) || a.target.localeCompare(b.target)),
@@ -355,7 +386,7 @@ function bye() {
 async function start() {
   fs.mkdirSync(BASE_DIR, { recursive: true });
   if (await socketHealthy(SOCKET_PATH)) { log('another daemon is already live; exiting'); process.exit(0); }
-  for (const f of [DISCOVERY_PATH, STATE_PATH, HISTORY_PATH]) sweepDeadTmp(f);
+  for (const f of [DISCOVERY_PATH, STATE_PATH, HISTORY_PATH, IDS_PATH]) sweepDeadTmp(f);
   listenSingleton({ server, socketPath: SOCKET_PATH, log, onListening });
   process.on('SIGINT', bye);
   process.on('SIGTERM', bye);

@@ -19,6 +19,8 @@ const SSH_OPTS = [
   '-o', 'ServerAliveInterval=5',
   '-o', 'ServerAliveCountMax=2',
   '-o', 'ControlMaster=no',
+  // Nor riding a master the user's own ssh left open, whose session the probe's would be.
+  '-o', 'ControlPath=none',
   '-o', 'ClearAllForwardings=yes',
 ];
 
@@ -43,7 +45,7 @@ export async function probe(target, mode) {
   const started = Date.now();
   const [bin, args] = target == null
     ? ['sh', ['-s', '--', mode]]
-    : [SSH_BIN, [...sshConfigArgs(), ...SSH_OPTS, '--', target, `sh -s -- ${mode}`]];
+    : [SSH_BIN, [...sshConfigArgs(), ...SSH_OPTS, '--', target, `sh -s -- ${mode} ssh`]];
   const r = await run(bin, args, { timeout: PROBE_TIMEOUT_MS, input: SCRIPT });
   const i = r.stdout.indexOf('__RM_BEGIN__\n');
   const j = r.stdout.indexOf('__RM_END__', i);

@@ -5,13 +5,15 @@
 import os from 'node:os';
 import path from 'node:path';
 
-export const BASE_DIR =
-  process.env.RM_BASE_DIR || path.join(os.homedir(), '.diplomat', 'remote-machines');
+export const BASE_DIR = process.env.RM_BASE_DIR
+  ? process.env.RM_BASE_DIR.replace(/^~(?=$|\/)/, os.homedir())
+  : path.join(os.homedir(), '.diplomat', 'remote-machines');
 
 export const SOCKET_PATH = path.join(BASE_DIR, 'daemon.sock');
 export const DISCOVERY_PATH = path.join(BASE_DIR, 'daemon.json'); // {pid, identity, startedAt, socket}
 export const STATE_PATH = path.join(BASE_DIR, 'state.json'); // the public snapshot
 export const HISTORY_PATH = path.join(BASE_DIR, 'history.json'); // each machine's usage over time
+export const IDS_PATH = path.join(BASE_DIR, 'machine-ids.json'); // {candidate key: machine id}
 export const LOG_PATH = path.join(BASE_DIR, 'daemon.log');
 
 // Diplomat's cross-process settings, relocated by the same DIPLOMAT_CONFIG the
