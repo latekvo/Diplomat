@@ -24,7 +24,7 @@ conversations, so "can you review it?" after "#412 is ready" is understood as a 
 | **investigate** | queues an **Investigate** agent that reproduces and researches the report and writes a markdown report |
 | **question** | answers it while you are away, when the project's documentation settles it (see [Reply to…](#settings)) |
 | **none** | the ping, and nothing else |
-| **injection** | [bans the sender](#bans): the message tries to hijack an agent instead of asking you for something |
+| **injection** | [bans the sender](#bans): the message tries to hijack an agent instead of asking you for something, including an order to delete someone else's account or hand over data or keys, and a DM claiming you already agreed |
 
 A message listing several PRs or issues acts on all of them, up to twenty: each gets its own row and
 its own place in the queue, the first it names first. One message is one kind of work: "review #12 and
