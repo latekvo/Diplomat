@@ -18,6 +18,7 @@ import json
 from diplomat_runtime import core, gh
 from diplomat_runtime.autofix import PRSnapshot, ReviewRequest
 from diplomat_runtime.models import API, OpenIssue
+from diplomat_runtime.prref import item_key
 
 
 def _owed_thread(thread: dict, me: str) -> bool:
@@ -67,13 +68,13 @@ def _parse_snapshots(env: dict, me: str) -> list[PRSnapshot]:
 def fetch_snapshots(owner: str, repo: str, me: str) -> list[PRSnapshot]:
     """One GraphQL search over my open, authored PRs (``assets/graphql/monitor-prs``)."""
     q = f"repo:{owner}/{repo} author:{me} is:pr is:open"
-    env = gh.graphql("monitor-prs", with_repo=False, variables={"q": q})
+    env = gh.graphql("monitor-prs", variables={"q": q})
     return _parse_snapshots(env, me)
 
 
-def fetch_closed_prs(owner: str, repo: str) -> set[int]:
-    """The PRs this repo has recently merged or closed — what the queue is re-checked
-    against (``assets/graphql/closed-prs``).
+def fetch_closed_prs(owner: str, repo: str) -> set[str]:
+    """The PRs (item keys) this repo has recently merged or closed — what the queue is
+    re-checked against (``assets/graphql/closed-prs``).
 
     Not scoped to me, to my queue, or to a monitor's verb: any PR can be sitting in
     the queue (a sweep asks for whoever's PRs the operator aimed it at), and a search
@@ -84,13 +85,14 @@ def fetch_closed_prs(owner: str, repo: str) -> set[int]:
     query = core.read_graphql("closed-prs")
     data = gh.run(["api", "graphql", "-f", f"query={query}", "-f", f"q={q}"])
     nodes = ((json.loads(data).get("data") or {}).get("search") or {}).get("nodes") or []
-    return {n["number"] for n in nodes if n and n.get("number") is not None}
+    return {item_key(owner, repo, n["number"])
+            for n in nodes if n and n.get("number") is not None}
 
 
-def fetch_open_issues() -> list[OpenIssue]:
+def fetch_open_issues(owner: str, repo: str) -> list[OpenIssue]:
     """The repo's newest open issues, the same read the panel lists them from, for
     the new-community-issue monitor (:meth:`Store._poll_community_issues`)."""
-    return API.fetch_open_issues()
+    return API.fetch_open_issues(owner, repo)
 
 
 def _parse_review_requests(env: dict, me: str) -> list[ReviewRequest]:
@@ -158,7 +160,6 @@ def fetch_review_requests(
     q = f"repo:{owner}/{repo} review-requested:{me} is:pr is:open"
     env = gh.graphql(
         "review-requests",
-        with_repo=False,
         variables={"q": q},
         typed_variables={"withFiles": "true" if include_files else "false"},
     )

@@ -31,7 +31,7 @@ from test_autofix import _spawn_recorder, fake_probes, store  # noqa: F401 — f
 
 from diplomat_app import bans, issues
 from diplomat_app.store import Store
-from diplomat_runtime import autofix, review
+from diplomat_runtime import autofix, core, review
 from diplomat_runtime.models import OpenIssue, OpenPR
 from diplomat_runtime.prtarget import PRTarget
 
@@ -44,15 +44,23 @@ NOW = datetime.now(timezone.utc)
 #: afterwards is what the ask put there.
 CAP_FULL = {90, 91}
 
+#: The primary repo root's slug: the repo a sweep's PRs and issues are in.
+PRIMARY = "{owner}/{repo}".format(**core.config())
+
+
+def key(verb: str, number: int) -> str:
+    """The queue key of the ask ``verb`` makes of the primary repo's ``number``."""
+    return autofix.queue_key(verb, f"{PRIMARY}#{number}")
+
 
 def _pr(number: int, *, author: str = "alice", draft: bool = True) -> OpenPR:
-    return OpenPR(number, f"PR {number}", f"https://github.com/o/r/pull/{number}",
+    return OpenPR(number, f"PR {number}", f"https://github.com/{PRIMARY}/pull/{number}",
                   draft, author, NOW, None, [], None, [])
 
 
 def _issue(number: int, *, author: str = "carol", assignees=()) -> OpenIssue:
     return OpenIssue(number, f"Issue {number}",
-                     f"https://github.com/o/r/issues/{number}", author, "CONTRIBUTOR",
+                     f"https://github.com/{PRIMARY}/issues/{number}", author, "CONTRIBUTOR",
                      NOW, NOW, 0, list(assignees), [], False)
 
 
@@ -92,7 +100,7 @@ def _poll(store, monkeypatch, closed=()) -> None:  # noqa: F811
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
                         lambda *a, **k: [])
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_closed_prs",
-                        lambda *a, **k: set(closed))
+                        lambda *a, **k: {f"{PRIMARY}#{n}" for n in closed})
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     store._autofix_poll_once()
 
@@ -106,10 +114,10 @@ def test_a_sweep_queues_one_review_per_pr_instead_of_one_agent_for_all(swept_sto
     queued, already = swept_store.request_review_sweep(_sweep(swept_store))
 
     assert (queued, already) == (2, 0)  # #3 is ready-for-review, #4 is bob's
-    assert [t.id for t in swept_store.queued_tasks] == ["review:1", "review:2"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("review", 1), key("review", 2)]
     assert [t.job.pr_number for t in swept_store.queued_tasks] == [1, 2]
     assert [t.job.pr_url for t in swept_store.queued_tasks] == [
-        "https://github.com/o/r/pull/1", "https://github.com/o/r/pull/2",
+        f"https://github.com/{PRIMARY}/pull/1", f"https://github.com/{PRIMARY}/pull/2",
     ]
 
 
@@ -142,7 +150,7 @@ def test_a_sweep_of_someone_elses_prs_carries_the_author_for_the_ban_check(swept
         _sweep(swept_store, target=PRTarget.SOMEONE, username="bob", include_ready=True))
 
     assert [(t.id, t.job.author_login) for t in swept_store.queued_tasks] == [
-        ("review:4", "bob")
+        (key("review", 4), "bob")
     ]
 
 
@@ -163,7 +171,7 @@ def test_sweeping_twice_asks_once(swept_store):
         _sweep(swept_store, include_ready=True))
 
     assert (queued, already) == (1, 2)  # only the ready PR is new
-    assert [t.id for t in swept_store.queued_tasks] == ["review:1", "review:2", "review:3"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("review", 1), key("review", 2), key("review", 3)]
 
 
 def test_two_sweeps_that_overlap_in_time_ask_once(swept_store, monkeypatch):
@@ -200,7 +208,7 @@ def test_two_sweeps_that_overlap_in_time_ask_once(swept_store, monkeypatch):
         t.join(timeout=20)
 
     assert [r.number for r in store.requested_work] == [1, 2]
-    assert [t.id for t in store.queued_tasks] == ["review:1", "review:2"]
+    assert [t.id for t in store.queued_tasks] == [key("review", 1), key("review", 2)]
     # …and the press that lost the race says so, rather than counting the same two
     # reviews a second time at the operator.
     assert sorted(presses) == [(0, 2), (2, 0)]
@@ -251,8 +259,8 @@ def test_a_sweep_queues_one_fix_per_issue_instead_of_one_agent_for_all(swept_sto
     queued, already = swept_store.request_issue_sweep(_issue_sweep(swept_store))
 
     assert (queued, already) == (3, 0)  # #42 is claimed already
-    assert [t.id for t in swept_store.queued_tasks] == ["issues:2", "issues:31",
-                                                        "issues:41"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("issues", 2), key("issues", 31),
+                                                        key("issues", 41)]
     assert [t.job.label for t in swept_store.queued_tasks] == [
         "Issues · #2 · deep", "Issues · #31 · deep", "Issues · #41 · deep",
     ]
@@ -274,7 +282,7 @@ def test_the_scope_decides_which_issues_are_queued(swept_store):
     the panel's own fetch, and all it does is decide what gets queued."""
     assert swept_store.request_issue_sweep(
         _issue_sweep(swept_store, target=issues.Target.SOMEONE, username="dana")) == (1, 0)
-    assert [t.id for t in swept_store.queued_tasks] == ["issues:41"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("issues", 41)]
 
 
 def test_the_unassigned_filter_is_applied_before_anything_is_queued(swept_store):
@@ -282,8 +290,8 @@ def test_the_unassigned_filter_is_applied_before_anything_is_queued(swept_store)
     never becomes a row at all rather than becoming one that stops on arrival."""
     swept_store.request_issue_sweep(_issue_sweep(swept_store, unassigned_only=False))
 
-    assert [t.id for t in swept_store.queued_tasks] == ["issues:2", "issues:31",
-                                                        "issues:41", "issues:42"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("issues", 2), key("issues", 31),
+                                                        key("issues", 41), key("issues", 42)]
 
 
 def test_a_queued_fix_is_not_pr_scoped(swept_store):
@@ -307,7 +315,7 @@ def test_someone_elses_issues_carry_their_author_for_the_ban_check(swept_store):
         _issue_sweep(swept_store, target=issues.Target.SOMEONE, username="dana"),
     )
     assert [(t.id, t.job.author_login) for t in swept_store.queued_tasks] == [
-        ("issues:41", "dana")
+        (key("issues", 41), "dana")
     ]
 
 
@@ -327,8 +335,8 @@ def test_sweeping_the_same_issues_twice_asks_once(swept_store):
         _issue_sweep(swept_store, unassigned_only=False))
 
     assert (queued, already) == (1, 3)  # only the claimed issue is new
-    assert [t.id for t in swept_store.queued_tasks] == ["issues:2", "issues:31",
-                                                        "issues:41", "issues:42"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("issues", 2), key("issues", 31),
+                                                        key("issues", 41), key("issues", 42)]
 
 
 def test_a_fix_and_a_review_of_the_same_number_are_two_rows(swept_store):
@@ -338,13 +346,13 @@ def test_a_fix_and_a_review_of_the_same_number_are_two_rows(swept_store):
     swept_store.request_issue_sweep(_issue_sweep(swept_store))
 
     assert {t.id for t in swept_store.queued_tasks} == {
-        "review:1", "review:2", "issues:2", "issues:31", "issues:41",
+        key("review", 1), key("review", 2), key("issues", 2), key("issues", 31), key("issues", 41),
     }
 
-    swept_store.cancel_requested_work("issues:2")
+    swept_store.cancel_requested_work(key("issues", 2))
 
-    assert [t.id for t in swept_store.queued_tasks] == ["review:1", "review:2",
-                                                        "issues:31", "issues:41"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("review", 1), key("review", 2),
+                                                        key("issues", 31), key("issues", 41)]
     assert [(r.action, r.number) for r in swept_store.requested_work] == [
         ("review", 1), ("review", 2), ("issues", 31), ("issues", 41),
     ]
@@ -362,7 +370,7 @@ def test_a_closed_pr_does_not_retire_the_issue_that_shares_its_number(swept_stor
     _poll(swept_store, monkeypatch, closed=[2])
 
     assert [t.id for t in swept_store.queued_tasks] == [
-        "review:1", "issues:2", "issues:31", "issues:41",
+        key("review", 1), key("issues", 2), key("issues", 31), key("issues", 41),
     ]
     assert [(r.action, r.number) for r in swept_store.requested_work] == [
         ("review", 1), ("issues", 2), ("issues", 31), ("issues", 41),
@@ -378,7 +386,7 @@ def test_a_queued_fix_runs_when_a_bay_frees(swept_store, monkeypatch):
     _poll(swept_store, monkeypatch)
 
     assert [c["prompt"] for c in calls] == ["PROMPT:issues:2", "PROMPT:issues:31"]
-    assert [t.id for t in swept_store.queued_tasks] == ["issues:41"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("issues", 41)]
     assert [(r.action, r.number) for r in swept_store.requested_work] == [("issues", 41)]
 
 
@@ -407,7 +415,7 @@ def test_a_fix_outlives_the_process_too_and_remembers_it_is_one(swept_store):
         ("issues", 2), ("issues", 31), ("issues", 41),
     ]
     assert reopened.requested_work[0].config["specificIssue"] == "2"
-    assert reopened.requested_work[0].key == "issues:2"
+    assert reopened.requested_work[0].key == key("issues", 2)
 
 
 def test_a_review_asked_for_by_an_older_build_still_reads_back(swept_store):
@@ -417,13 +425,26 @@ def test_a_review_asked_for_by_an_older_build_still_reads_back(swept_store):
     upgrade with no row left to cancel by."""
     swept_store._settings.setValue(
         "requestedReviews",
-        '[{"pr": 7, "url": "https://github.com/o/r/pull/7", "author": "bob",'
+        '[{"pr": 7, "url": "https://github.com/' + PRIMARY + '/pull/7", "author": "bob",'
         ' "config": {"kind": "review", "specificPR": "7", "depth": "deep"}}]',
     )
 
     [ask] = swept_store.requested_work
-    assert (ask.action, ask.number, ask.key) == ("review", 7, "review:7")
+    assert (ask.action, ask.number, ask.key) == ("review", 7, key("review", 7))
+    assert ask.repo == PRIMARY, "a single-repo build only ever asked of its one repo"
     assert ask.label == "Review · #7 · deep"
+
+
+def test_an_ask_keeps_the_repo_it_was_made_of(swept_store):
+    """Two repos' #7 are two asks: a row read back under the primary's key would be
+    the primary's #7, retired by what happens to that one."""
+    swept_store.requested_work = [
+        autofix.RequestedWork(number=7, url="https://github.com/o/other/pull/7", author="",
+                              config={"kind": "review", "specificPR": "7"}, repo="o/other"),
+        autofix.RequestedWork(number=7, url=f"https://github.com/{PRIMARY}/pull/7", author="",
+                              config={"kind": "review", "specificPR": "7"}, repo=PRIMARY),
+    ]
+    assert [a.key for a in Store().requested_work] == ["review:o/other#7", key("review", 7)]
 
 
 def test_a_stored_row_that_makes_no_sense_is_dropped_not_raised(swept_store):
@@ -449,7 +470,7 @@ def test_every_poll_re_offers_an_ask_nothing_has_started(swept_store, monkeypatc
 
     _poll(swept_store, monkeypatch)
 
-    assert [t.id for t in swept_store.queued_tasks] == ["review:1", "review:2"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("review", 1), key("review", 2)]
 
 
 def test_an_ask_whose_prompt_will_not_assemble_costs_only_its_own_row(swept_store,
@@ -475,7 +496,7 @@ def test_an_ask_whose_prompt_will_not_assemble_costs_only_its_own_row(swept_stor
 
     _poll(store, monkeypatch)
 
-    assert [t.id for t in store.queued_tasks] == ["review:2"]
+    assert [t.id for t in store.queued_tasks] == [key("review", 2)]
     # …and the skipped one is kept, because a core mid-self-update is a reason to
     # ask again next poll rather than to throw the ask away.
     assert [r.number for r in store.requested_work] == [1, 2]
@@ -493,7 +514,7 @@ def test_a_started_review_leaves_the_list_for_good(swept_store, monkeypatch):
     assert [r.number for r in swept_store.requested_work] == [2]
     fake_probes(monkeypatch, live_prs=CAP_FULL)
     _poll(swept_store, monkeypatch)
-    assert [t.id for t in swept_store.queued_tasks] == ["review:2"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("review", 2)]
 
 
 def test_a_review_that_failed_to_start_is_asked_for_again(swept_store, monkeypatch):
@@ -545,7 +566,7 @@ def test_an_ask_whose_pr_landed_is_dropped_and_forgotten(swept_store, monkeypatc
 
     _poll(swept_store, monkeypatch, closed=[1])
 
-    assert [t.id for t in swept_store.queued_tasks] == ["review:2"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("review", 2)]
     assert [r.number for r in swept_store.requested_work] == [2]
     # And said out loud. This is the only thing that takes an ask off the list without
     # the operator, and a row that vanished silently reads exactly like one that ran.
@@ -563,7 +584,7 @@ def test_a_closed_pr_retires_only_its_own_ask(swept_store, monkeypatch):
 
     _poll(swept_store, monkeypatch, closed=[3, 4, 99])
 
-    assert [t.id for t in swept_store.queued_tasks] == ["review:1", "review:2"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("review", 1), key("review", 2)]
     assert [r.number for r in swept_store.requested_work] == [1, 2]
 
 
@@ -574,11 +595,11 @@ def test_cancelling_drops_an_ask_and_it_does_not_come_back(swept_store, monkeypa
     fake_probes(monkeypatch, live_prs=CAP_FULL)
     swept_store.request_review_sweep(_sweep(swept_store))
 
-    swept_store.cancel_requested_work("review:1")
+    swept_store.cancel_requested_work(key("review", 1))
 
-    assert [t.id for t in swept_store.queued_tasks] == ["review:2"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("review", 2)]
     _poll(swept_store, monkeypatch)
-    assert [t.id for t in swept_store.queued_tasks] == ["review:2"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("review", 2)]
 
 
 def test_cancel_leaves_a_monitors_row_alone(swept_store):
@@ -587,9 +608,9 @@ def test_cancel_leaves_a_monitors_row_alone(swept_store):
     it even if it were."""
     swept_store.queued_tasks = [_monitor_task()]
 
-    swept_store.cancel_requested_work("conflicts:7")
+    swept_store.cancel_requested_work("conflicts:o/r#7")
 
-    assert [t.id for t in swept_store.queued_tasks] == ["conflicts:7"]
+    assert [t.id for t in swept_store.queued_tasks] == ["conflicts:o/r#7"]
 
 
 # ---- how they run ---------------------------------------------------------
@@ -606,7 +627,7 @@ def test_a_queued_review_waits_for_the_cap_like_any_automatic_agent(swept_store,
     _poll(swept_store, monkeypatch)
 
     assert len(calls) == swept_store.auto_task_limit == 2
-    assert [t.id for t in swept_store.queued_tasks] == ["review:3", "review:4", "review:5"]
+    assert [t.id for t in swept_store.queued_tasks] == [key("review", 3), key("review", 4), key("review", 5)]
 
 
 def test_a_running_requested_review_is_not_labelled_automatic(swept_store, monkeypatch):
@@ -642,7 +663,7 @@ def test_the_monitor_toggles_do_not_hold_an_ask(swept_store, monkeypatch):
 
 def _monitor_task() -> autofix.QueuedTask:
     return autofix.QueuedTask(
-        id=autofix.queue_key("conflicts", 7),
+        id=autofix.queue_key("conflicts", "o/r#7"),
         job=autofix.AgentJob(kind="conflicts", audit_action="conflicts",
                              label="Resolve · #7", prompt="p",
                              pr_url="https://github.com/o/r/pull/7", pr_number=7,

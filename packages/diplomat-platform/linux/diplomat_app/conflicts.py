@@ -27,6 +27,8 @@ class ConflictConfig(PRSweepConfig):
     specific_pr: str = ""
     # The checkouts listed in Settings that a pasted link in ``specific_pr`` may name.
     local_repos: tuple[LocalRepo, ...] = ()
+    # The repo root a bare number targets; None = the configured repo.
+    home: LocalRepo | None = None
 
     # author_handle / is_single_pr / target_repo / pr_ref are inherited verbatim
     # from PRSweepConfig (shared with ReviewConfig).
@@ -45,7 +47,7 @@ class ConflictConfig(PRSweepConfig):
             "username": self.username,
             "me": self.me,
             "specificPR": self.specific_pr,
-            **listed_payload(self.local_repos),
+            **listed_payload(self.local_repos, self.home),
         }
 
     def build_prompt(self) -> str:

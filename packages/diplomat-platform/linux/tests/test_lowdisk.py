@@ -80,21 +80,21 @@ def test_auto_work_holds_on_a_full_disk_and_resumes_once_it_drains(
     assert str(repo) in lines[0].detail and "floor" in lines[0].detail, lines[0].detail
     # Deferred, not dropped.
     store.commit_queue()
-    assert [e.id for e in store.queued_tasks] == ["review:1", "review:2", "review:3"]
+    assert [e.id for e in store.queued_tasks] == ["review:o/r#1", "review:o/r#2", "review:o/r#3"]
 
     # The drain stops at the disk like it stops at the budget: the one it tried is
     # re-staged, the rest wait on the list.
-    store.queued_tasks = [autofix.QueuedTask("review:6", _job(6), 1),
-                          autofix.QueuedTask("review:7", _job(7), 1)]
+    store.queued_tasks = [autofix.QueuedTask("review:o/r#6", _job(6), 1),
+                          autofix.QueuedTask("review:o/r#7", _job(7), 1)]
     store._drain_queued_tasks([], closed=set())
     assert calls == []
-    assert [e.id for e in store._staged_queue if e.id in ("review:6", "review:7")] \
-        == ["review:6"]
-    assert [e.id for e in store.queued_tasks] == ["review:7"]
+    assert [e.id for e in store._staged_queue if e.id in ("review:o/r#6", "review:o/r#7")] \
+        == ["review:o/r#6"]
+    assert [e.id for e in store.queued_tasks] == ["review:o/r#7"]
 
     # The operator's own starts are not held: a click, and "execute now".
     assert store.dispatch_agent(_job(4), autofix.SOURCE_PANEL) == "spawned"
-    entry = autofix.QueuedTask("review:5", _job(5), 1)
+    entry = autofix.QueuedTask("review:o/r#5", _job(5), 1)
     store.queued_tasks = [entry]
     store._execute_queued_task(entry)
     assert len(calls) == 2

@@ -24,15 +24,16 @@ from pathlib import Path
 from diplomat_runtime import review, runner, usagescan
 from diplomat_runtime.models import API, Filters, Fmt
 from diplomat_runtime.prtarget import PRTarget
-from diplomat_runtime.review import ReviewConfig
+from diplomat_runtime.review import ReviewConfig, repo_roots
 from .store import Store, tool_by_id
 
 
 def run_dump() -> int:
     try:
         me = API.fetch_viewer_login()
-        prs = API.fetch_open_prs()
-        issues = API.fetch_open_issues()
+        primary = repo_roots()[0]
+        prs = API.fetch_open_prs(primary.owner, primary.repo)
+        issues = API.fetch_open_issues(primary.owner, primary.repo)
     except Exception as exc:  # noqa: BLE001
         print(f"DUMP ERROR: {exc}")
         return 1
@@ -80,8 +81,9 @@ def run_dump() -> int:
 def run_lookup(n: int) -> int:
     try:
         me = API.fetch_viewer_login()
-        prs = API.fetch_open_prs()
-        issues = API.fetch_open_issues()
+        primary = repo_roots()[0]
+        prs = API.fetch_open_prs(primary.owner, primary.repo)
+        issues = API.fetch_open_issues(primary.owner, primary.repo)
     except Exception as exc:  # noqa: BLE001
         print(f"LOOKUP ERROR: {exc}")
         return 1

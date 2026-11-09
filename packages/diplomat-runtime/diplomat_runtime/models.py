@@ -8,6 +8,7 @@ associations, the "APPROVED" sentinel) sourced from the shared
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -316,12 +317,19 @@ class Fmt:
 class API:
     @staticmethod
     def fetch_viewer_login() -> str:
-        env = gh.graphql("viewer", with_repo=False)
+        env = gh.graphql("viewer")
         return env["data"]["viewer"]["login"]
 
     @staticmethod
-    def fetch_open_prs() -> list[OpenPR]:
-        env = gh.graphql("prs", with_repo=True)
+    def fetch_pr_state(number: int, owner: str, repo: str) -> str:
+        """One PR's lifecycle state: ``OPEN``, ``CLOSED`` or ``MERGED``."""
+        out = gh.run(["pr", "view", str(number), "--repo", f"{owner}/{repo}",
+                      "--json", "state"])
+        return str(json.loads(out).get("state", ""))
+
+    @staticmethod
+    def fetch_open_prs(owner: str, repo: str) -> list[OpenPR]:
+        env = gh.graphql("prs", repo=(owner, repo))
         nodes = env["data"]["repository"]["pullRequests"]["nodes"]
         out: list[OpenPR] = []
         for n in nodes:
@@ -357,8 +365,8 @@ class API:
         return out
 
     @staticmethod
-    def fetch_open_issues() -> list[OpenIssue]:
-        env = gh.graphql("issues", with_repo=True)
+    def fetch_open_issues(owner: str, repo: str) -> list[OpenIssue]:
+        env = gh.graphql("issues", repo=(owner, repo))
         nodes = env["data"]["repository"]["issues"]["nodes"]
         team = Filters.team()
         out: list[OpenIssue] = []

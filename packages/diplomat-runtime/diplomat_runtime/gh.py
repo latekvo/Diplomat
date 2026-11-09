@@ -71,13 +71,14 @@ def run(args: list[str], timeout: float = 60.0) -> bytes:
 def graphql(
     query_name: str,
     *,
-    with_repo: bool,
+    repo: tuple[str, str] | None = None,
     variables: dict[str, str] | None = None,
     typed_variables: dict[str, str] | None = None,
 ) -> dict:
     """Run a shared assets/graphql query, returning the decoded JSON envelope.
 
-    ``variables`` go through gh's ``-f``, which sends the value as a string;
+    ``repo`` fills the query's ``$owner``/``$name``; a query that names no repo
+    passes none. ``variables`` go through gh's ``-f``, which sends the value as a string;
     ``typed_variables`` through ``-F``, which lets gh parse it into the JSON type
     the query declares — the spelling a ``Boolean!`` needs.
 
@@ -87,9 +88,8 @@ def graphql(
     """
     query = core.read_graphql(query_name)
     args = ["api", "graphql", "-f", f"query={query}"]
-    if with_repo:
-        cfg = core.config()
-        args += ["-f", f"owner={cfg['owner']}", "-f", f"name={cfg['repo']}"]
+    if repo is not None:
+        args += ["-f", f"owner={repo[0]}", "-f", f"name={repo[1]}"]
     for k, v in (variables or {}).items():
         args += ["-f", f"{k}={v}"]
     for k, v in (typed_variables or {}).items():

@@ -19,7 +19,6 @@ from PySide6.QtCore import QObject, QSettings, Signal
 
 import json
 import os
-import re
 import subprocess
 import tempfile
 import threading
@@ -48,7 +47,8 @@ from diplomat_runtime import (
     tmuxwatch,
 )
 from diplomat_runtime.models import API, Filters, Fmt, OpenIssue, OpenPR
-from diplomat_runtime.prref import LocalRepo
+from diplomat_runtime.prref import (LocalRepo, item_key_from_url, migrate_item_key,
+                                    migrate_queue_key, split_item_key)
 from diplomat_runtime.prtarget import PRTarget
 from . import (
     autofixmonitor,
@@ -451,12 +451,12 @@ class Store(QObject):
         # One settle at a time: the poll and the panel's refresh both retire, price
         # and audit what a tick found, and two at once did it twice.
         self._settle_lock = threading.Lock()
-        # PR numbers with a dispatch_agent call in flight - a click and an
+        # Item keys of PRs with a dispatch_agent call in flight - a click and an
         # overlapping poll can't race two spawns onto one PR. Guarded by its own
         # short mutex: _autofix_lock is the whole-poll overlap guard (held for the
         # entire poll by run_autofix_poll_async), and a poll reaches dispatch_agent
         # while holding it - reusing that non-reentrant lock here would self-deadlock.
-        self._dispatching_prs: set[int] = set()
+        self._dispatching_prs: set[str] = set()
         self._dispatching_lock = threading.Lock()
         # Work keys a peer's agent already owns, so the "claimed elsewhere" note is
         # logged once per key rather than every poll (szpontnet-spec/docs/12).
@@ -633,18 +633,25 @@ class Store(QObject):
 
     @property
     def repo_path_override(self) -> str:
-        """The repo root every spawned agent ``cd``s into (Settings → REPO ROOT).
-        Empty => ``review.default_repo_path()``; ``DIPLOMAT_REPO`` outranks both.
-        Stored raw (a typed ``~/…`` is expanded at use) so the field shows back
-        exactly what was entered.
+        """The primary repo root, the one every spawned agent ``cd``s into unless its
+        work names another (Settings → REPO ROOT). Empty =>
+        ``review.default_repo_path()``; ``DIPLOMAT_REPO`` outranks both. Stored raw (a
+        typed ``~/…`` is expanded at use) so the field shows back exactly what was
+        entered.
 
-        The one setting NOT in QSettings: a mesh node spawns agents from its own
-        stdlib-only process, which has no Qt — see :mod:`appconfig`."""
-        return appconfig.get(appconfig.REPO_ROOT)
+        Not in QSettings: a mesh node spawns agents from its own stdlib-only process,
+        which has no Qt — see :mod:`appconfig`."""
+        roots = appconfig.repo_roots()
+        return roots[0] if roots else ""
 
     @repo_path_override.setter
     def repo_path_override(self, value: str) -> None:
-        appconfig.set_value(appconfig.REPO_ROOT, value)
+        appconfig.set_repo_roots([value, *appconfig.repo_roots()[1:]])
+
+    @staticmethod
+    def _primary() -> LocalRepo:
+        """The primary repo root (:func:`review.repo_roots`)."""
+        return review.repo_roots()[0]
 
     @property
     def other_repo_paths(self) -> list[str]:
@@ -880,7 +887,9 @@ class Store(QObject):
         view of its own list, and a mesh node has no queue to read it from. Pruned to
         what is still offered on every commit, so it can't grow past the work it
         describes."""
-        return [str(k) for k in (self._settings.value("queuedTaskOrder", [], list) or [])]
+        primary = self._primary().slug
+        return [migrate_queue_key(str(k), primary)
+                for k in (self._settings.value("queuedTaskOrder", [], list) or [])]
 
     @queued_task_order.setter
     def queued_task_order(self, value: list[str]) -> None:
@@ -921,7 +930,11 @@ class Store(QObject):
         if not isinstance(rows, list):
             return []
         parsed = [autofix.RequestedWork.from_json(r) for r in rows if isinstance(r, dict)]
-        return [r for r in parsed if r is not None]
+        primary = self._primary().slug.lower()
+        # A row single-repo builds stored names no repo: it was the primary's.
+        return [r if r.repo or r.action == autofix.QUEUE_INVESTIGATE_ACTION
+                else dataclasses.replace(r, repo=primary)
+                for r in parsed if r is not None]
 
     @requested_work.setter
     def requested_work(self, value: list[autofix.RequestedWork]) -> None:
@@ -1256,8 +1269,9 @@ class Store(QObject):
         self.loading_changed.emit(True)
         try:
             me = API.fetch_viewer_login()
-            prs = API.fetch_open_prs()
-            issues = API.fetch_open_issues()
+            primary = self._primary()
+            prs = API.fetch_open_prs(primary.owner, primary.repo)
+            issues = API.fetch_open_issues(primary.owner, primary.repo)
             self.me = me
             self.prs = prs
             self.issues = issues
@@ -1376,8 +1390,8 @@ class Store(QObject):
                     "GitHub login unknown — is `gh` installed and authenticated?"
                 )
             else:
-                cfg = core.config()
-                owner, repo = cfg["owner"], cfg["repo"]
+                primary = self._primary()
+                owner, repo = primary.owner, primary.repo
                 # One fetch of my PRs per cycle, taken before anything acts on it:
                 # the drain re-checks the waiting queue against it and the
                 # reconcilers below diff from the same list. Fetching it here rather
@@ -1415,7 +1429,7 @@ class Store(QObject):
                 if snaps is not None:
                     self._poll_my_prs(snaps)
                 self._poll_review_requests(owner, repo)
-                self._poll_community_issues()
+                self._poll_community_issues(owner, repo)
                 # Last, so the monitors' finds keep the places they were found in:
                 # the operator's own sweep bands behind them anyway, and a fifty-item
                 # ask offered first would otherwise decide the arrangement of a queue
@@ -1446,7 +1460,7 @@ class Store(QObject):
             self._note_poll_failure(exc)
             return None
 
-    def _fetch_closed_prs(self, owner: str, repo: str) -> set[int] | None:
+    def _fetch_closed_prs(self, owner: str, repo: str) -> set[str] | None:
         """This cycle's read of the PRs that have merged or closed, or ``None`` if the
         read failed — which is not the same as an empty set, and is why the failure
         stands the drain down rather than letting it read every PR as open."""
@@ -1494,7 +1508,7 @@ class Store(QObject):
         attempts = self._load_attempts(key)
         owed = [s for s in snaps if s.threads_i_owe > 0]
         for s in owed:
-            k = str(s.number)
+            k = s.item
             action, val = autofix.decide(
                 attempts.get(k),
                 autofix.STAMP_UNRESOLVED_REVIEW,
@@ -1506,7 +1520,7 @@ class Store(QObject):
                 attempts[k] = autofix.ReviewAttempt(
                     autofix.STAMP_UNRESOLVED_REVIEW, now, int(val)
                 )
-        owed_keys = {str(s.number) for s in owed}
+        owed_keys = {s.item for s in owed}
         self._save_attempts(key, {k: v for k, v in attempts.items() if k in owed_keys})
 
     def _reconcile_my_conflicts(self, snaps: list, now: float) -> None:
@@ -1517,7 +1531,7 @@ class Store(QObject):
         attempts = self._load_attempts(key)
         conflicted = [s for s in snaps if s.mergeable == "CONFLICTING"]
         for s in conflicted:
-            k = str(s.number)
+            k = s.item
             action, val = autofix.decide(
                 attempts.get(k),
                 autofix.STAMP_CONFLICTING,
@@ -1531,10 +1545,10 @@ class Store(QObject):
                 attempts[k] = autofix.ReviewAttempt(
                     autofix.STAMP_CONFLICTING, now, int(val)
                 )
-        keep = {str(s.number) for s in snaps if s.mergeable != "MERGEABLE"}
+        keep = {s.item for s in snaps if s.mergeable != "MERGEABLE"}
         self._save_attempts(key, {k: v for k, v in attempts.items() if k in keep})
 
-    def _poll_community_issues(self) -> None:
+    def _poll_community_issues(self, owner: str, repo: str) -> None:
         """Queue one fix for each issue the community filed since the last scan.
 
         Queued as an ask, the same row a Fix-issues sweep of the community leaves,
@@ -1544,7 +1558,7 @@ class Store(QObject):
         if not self.community_issues_enabled:
             return
         try:
-            found = autofixmonitor.fetch_open_issues()
+            found = autofixmonitor.fetch_open_issues(owner, repo)
         except Exception as exc:  # noqa: BLE001
             self._note_poll_failure(exc)
             return
@@ -1566,7 +1580,8 @@ class Store(QObject):
                                      me=self.effective_me)
             queued, _ = self._request([autofix.RequestedWork(
                 number=issue.number, url=issue.url, author=issue.author,
-                config=cfg.for_issue(issue.number).prompt_payload())])
+                config=cfg.for_issue(issue.number).prompt_payload(),
+                repo=f"{owner}/{repo}".lower())])
             if queued:
                 activity.log("auto", "community-issue", f"{who} - fix queued")
         self._settings.setValue("communityIssuesSince", mark.isoformat())
@@ -1602,9 +1617,9 @@ class Store(QObject):
             for r in owed if not bans.is_banned(r.author, banned)
         })
         dispatched: dict[str, autofix.ReviewAttempt] = {}
-        concluded: set[int] = set()
+        concluded: set[str] = set()
         for r in owed:
-            k = str(r.number)
+            k = r.item
             stamp = r.stamp
             action, val = autofix.decide(
                 prior.get(k),
@@ -1614,7 +1629,7 @@ class Store(QObject):
                 now,
             )
             if action == "concluded":
-                concluded.add(r.number)
+                concluded.add(k)
             if action == "dispatch" and self._dispatch_review_request(r, int(val)):
                 dispatched[k] = autofix.ReviewAttempt(stamp, now, int(val))
         # Onto the records as they stand now, not as this pass read them: the panel's tick
@@ -1623,12 +1638,12 @@ class Store(QObject):
         # re-request is fresh (:func:`autofix.retained`).
         self._save_attempts(key, autofix.retained(
             {**self._load_attempts(key), **dispatched},
-            {str(r.number): r.stamp for r in owed}, now))
+            {r.item: r.stamp for r in owed}, now))
         self.unaddressed_reviews = sum(
             1
             for r in owed
             if not self._in_flight(r.url) and not bans.is_banned(r.author, banned)
-            and r.number not in concluded
+            and r.item not in concluded
         )
 
     # MARK: monitor dispatch + tracking
@@ -1750,11 +1765,12 @@ class Store(QObject):
         not be afforded when it was found cannot be afforded by having waited in a
         list, nor does a disk drain by being waited on; only the operator pressing
         "execute now" overrides those two, exactly as only they override the cap."""
-        if job.pr_number is not None:
+        item = job.item
+        if item is not None:
             with self._dispatching_lock:
-                if job.pr_number in self._dispatching_prs:
+                if item in self._dispatching_prs:
                     return autofix.VERDICT_IN_FLIGHT
-                self._dispatching_prs.add(job.pr_number)
+                self._dispatching_prs.add(item)
         try:
             banned = bool(job.author_login) and bans.is_banned(
                 job.author_login, bans.read()
@@ -1768,10 +1784,10 @@ class Store(QObject):
             outside_allowlist = job.counter == "review_requests" and not (
                 autofix.author_allowed(job.author_login or "", self.review_allowlist)
             )
-            # Keyed on the number, as the claim on ``_dispatching_prs`` above is: a job
-            # with a link and no number is a PR of another checkout, which shares its
-            # numbering with ours only by coincidence.
-            agent_on_pr = job.pr_number is not None and self._in_flight(job.pr_url or "")
+            # Keyed on the item, as the claim on ``_dispatching_prs`` above is: a job
+            # with a link and no number is a PR of another checkout, which the dedup
+            # does not cover.
+            agent_on_pr = item is not None and self._in_flight(job.pr_url or "")
             # The disk first: it outranks every other hold on auto work. Measured on
             # the fuller of the two volumes an agent fills: the repo root (its
             # worktree) and ~/.diplomat (the tool caches).
@@ -1930,9 +1946,9 @@ class Store(QObject):
                 self.refresh_activity()
             return "spawned"
         finally:
-            if job.pr_number is not None:
+            if item is not None:
                 with self._dispatching_lock:
-                    self._dispatching_prs.discard(job.pr_number)
+                    self._dispatching_prs.discard(item)
 
     def _dispatch_conflict_fix(
         self, number: int, url: str, attempt: int, source: str, head_sha: str = ""
@@ -2297,10 +2313,10 @@ class Store(QObject):
         # is re-offered from the list that remembers the ask instead —
         # :meth:`_offer_requested_work`. A wizard click is uncapped and never
         # refused.)
-        if job.pr_number is None or job.counter is None:
+        if job.item is None or job.counter is None:
             return
         entry = autofix.QueuedTask(
-            id=autofix.queue_key(job.audit_action, job.pr_number),
+            id=autofix.queue_key(job.audit_action, job.item),
             job=job,
             attempt=attempt,
         )
@@ -2363,6 +2379,7 @@ class Store(QObject):
                 # The ban dimension, and only someone else's PR has one.
                 author=pr.author if cfg.disposition == review.SpecificAuthor.THEIRS else "",
                 config=cfg.for_pr(pr.number).prompt_payload(),
+                repo=self._primary().slug.lower(),
             )
             for pr in targets
         ])
@@ -2389,6 +2406,7 @@ class Store(QObject):
                 # matching the login the wizard would ban-check.
                 author=issue.author if cfg.target == issues.Target.SOMEONE else "",
                 config=cfg.for_issue(issue.number).prompt_payload(),
+                repo=self._primary().slug.lower(),
             )
             for issue in targets
         ])
@@ -2611,8 +2629,8 @@ class Store(QObject):
         one task was unlucky, and each entry is taken off the list before it is tried —
         so walking the whole queue into the same failure would clear the panel of every
         queued row at once, for a reason none of them caused."""
-        conflicting = {s.number for s in snaps if s.mergeable == "CONFLICTING"}
-        owing_reply = {s.number for s in snaps if s.threads_i_owe > 0}
+        conflicting = {s.item for s in snaps if s.mergeable == "CONFLICTING"}
+        owing_reply = {s.item for s in snaps if s.threads_i_owe > 0}
         # Dropped here rather than left for this cycle's commit to omit: the commit is
         # the far side of two monitor runs, and a row already known to be answered
         # should not be sitting in the list underneath them, one "execute now" away
@@ -2623,9 +2641,9 @@ class Store(QObject):
             # in the issue space, and pricing issue #421 against the PRs closed this
             # cycle would retire it for something that happened to the PR of the same
             # number.
-            if entry.job.pr_number is None:
+            if entry.job.item is None:
                 continue
-            if autofix.still_owed(entry.job.audit_action, entry.job.pr_number,
+            if autofix.still_owed(entry.job.audit_action, entry.job.item,
                                   conflicting, owing_reply, closed):
                 continue
             # An ask outlives its row by design — the row is rebuilt from it on every
@@ -2787,10 +2805,10 @@ class Store(QObject):
             "my_reviews": "myReviewAttempts",
             "conflicts": "myConflictAttempts",
         }.get(entry.job.counter or "")
-        if key is None or entry.job.pr_number is None:
+        if key is None or entry.job.item is None:
             return
         attempts = self._load_attempts(key)
-        attempts[str(entry.job.pr_number)] = autofix.ReviewAttempt(
+        attempts[entry.job.item] = autofix.ReviewAttempt(
             entry.job.attempt_stamp, time.time(), entry.attempt
         )
         self._save_attempts(key, attempts)
@@ -3284,8 +3302,8 @@ class Store(QObject):
         including one waiting at its prompt (that session holds the PR's context) and
         one nothing is known about (releasing a PR on missing evidence is how two
         agents end up on it). A released agent does not: its run ended."""
-        m = re.search(r"/pull/(\d+)", url)
-        return m is not None and self._agent_tick().in_flight(int(m.group(1)))
+        item = item_key_from_url(url)
+        return item is not None and self._agent_tick().in_flight(item)
 
     def refresh_merged_statuses(self) -> None:
         """Ask GitHub which of the tracked PRs have landed — the one terminal outcome
@@ -3298,9 +3316,9 @@ class Store(QObject):
         merge, since a landed PR does not make its agent leave. What ends one of those
         is the scan that made it.
         """
-        prs = {r.pr_number for r in agentregistry.load()
-               if r.pr_number is not None and not r.untracked}
-        self._merged_prs = probes.merged_prs(prs)
+        items = {r.item for r in agentregistry.load()
+                 if r.item is not None and not r.untracked}
+        self._merged_prs = probes.merged_prs(items)
 
     def refresh_token_budget(self) -> None:
         """Ask whether the account still has room to spend — the precondition on the
@@ -3353,10 +3371,11 @@ class Store(QObject):
             obj = json.loads(raw) if raw else {}
         except ValueError:
             return {}
-        out: dict[int, autofix.PRFingerprint] = {}
+        primary = self._primary().slug
+        out: dict[str, autofix.PRFingerprint] = {}
         for k, v in (obj or {}).items():
             try:
-                out[int(k)] = autofix.PRFingerprint(
+                out[migrate_item_key(k, primary)] = autofix.PRFingerprint(
                     mergeable=v.get("mergeable", "UNKNOWN"),
                     review_decision=v.get("reviewDecision", ""),
                     threads_unresolved=int(v.get("threadsUnresolved", 0)),
@@ -3382,11 +3401,12 @@ class Store(QObject):
             obj = json.loads(raw) if raw else {}
         except ValueError:
             return {}
+        primary = self._primary().slug
         out: dict[str, autofix.ReviewAttempt] = {}
         for k, v in (obj or {}).items():
             try:
                 concluded = v.get("concludedAt")
-                out[k] = autofix.ReviewAttempt(
+                out[migrate_item_key(k, primary)] = autofix.ReviewAttempt(
                     requested_at=v.get("requestedAt", ""),
                     last_dispatched_at=float(v.get("lastDispatchedAt", 0.0)),
                     attempts=int(v.get("attempts", 1)),
@@ -3719,10 +3739,10 @@ class Store(QObject):
                     "state": "OPEN"}
         from diplomat_runtime import gh
 
-        cfg = core.config()
+        primary = self._primary()
         try:
             obj = json.loads(gh.run(["pr" if kind == "review" else "issue", "view",
-                                     str(number), "--repo", f"{cfg['owner']}/{cfg['repo']}",
+                                     str(number), "--repo", primary.slug,
                                      "--json", "number,url,author,state"], timeout=30))
         except Exception as exc:  # noqa: BLE001 — gh's own failures are all GHError
             # Both views' "no such number"; "Could not resolve to a Repository" shares
@@ -4037,7 +4057,7 @@ class Store(QObject):
                              else review.SpecificAuthor.THEIRS))
         return f"review of #{number}", autofix.RequestedWork(
             number=number, url=str(found.get("url", "")), author="" if mine else author,
-            config=cfg.prompt_payload())
+            config=cfg.prompt_payload(), repo=self._primary().slug.lower())
 
     def _comms_fix(self, number: int,
                    found: dict | None) -> tuple[str, autofix.RequestedWork | None]:
@@ -4061,10 +4081,11 @@ class Store(QObject):
                                  specific_issue=str(number), me=me)
         return f"fix of issue #{number}", autofix.RequestedWork(
             number=number, url=str(found.get("url", "")), author="" if mine else author,
-            config=cfg.prompt_payload())
+            config=cfg.prompt_payload(), repo=self._primary().slug.lower())
 
     def _comms_bump(self, number: int) -> str:
-        moved = [t.id for t in self.queued_tasks if t.id.endswith(f":{number}")]
+        moved = [t.id for t in self.queued_tasks
+                 if (self._comms_key_parts(t.id) or ("", 0))[1] == number]
         for key in moved:
             self._move_to_band_front(key)
         if not moved:
@@ -4090,17 +4111,23 @@ class Store(QObject):
 
     @staticmethod
     def _comms_key_parts(key: str) -> tuple[str, int] | None:
-        verb, _, number = key.partition(":")
-        return (verb, int(number)) if number.isdigit() else None
+        """``(verb, number)`` of a queue key: its item's number, or an investigation's
+        ts."""
+        verb, _, rest = key.partition(":")
+        split = split_item_key(rest)
+        if split is not None:
+            return verb, split[1]
+        return (verb, int(rest)) if rest.isdigit() else None
 
     @staticmethod
     def _comms_twin_keys(key: str) -> list[str]:
         """The keys a monitor queues the same work under: a review requested of me on
         GitHub is the review a Slack message asks for."""
-        parts = Store._comms_key_parts(key)
-        if parts is None or parts[0] != autofix.QUEUE_REVIEW_ACTION:
+        verb, _, _ = key.partition(":")
+        item = autofix.item_of_key(key)
+        if verb != autofix.QUEUE_REVIEW_ACTION or item is None:
             return []
-        return [autofix.queue_key(REVIEW_REQ_ACTION, parts[1])]
+        return [autofix.queue_key(REVIEW_REQ_ACTION, item)]
 
     @staticmethod
     def _comms_row_doing(key: str, rows: list[autofix.RunningAgent]

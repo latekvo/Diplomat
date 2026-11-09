@@ -288,8 +288,8 @@ def test_an_opencode_agent_is_counted_by_the_nodes_capacity_hook():
     is a separate stdlib-only process — a runner it cannot see is a machine that keeps
     accepting routed work it has no room for."""
     ps = "pts/3    07:22 opencode --prompt Review PR #41 in software-mansion/argent\n"
-    assert list(autofix.agent_lines(ps, "software-mansion", "argent")) == [
-        autofix.AgentLine(tty="pts/3", pr_number=41, elapsed=442.0)]
+    assert list(autofix.agent_lines(ps, {"software-mansion/argent"})) == [
+        autofix.AgentLine(tty="pts/3", item="software-mansion/argent#41", elapsed=442.0)]
 
 
 def test_an_opencode_pane_mid_turn_reads_as_busy():

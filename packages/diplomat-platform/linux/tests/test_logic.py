@@ -560,8 +560,8 @@ def test_repo_path_resolution(tmp_path):
         picked = str(tmp_path / "clone")
         store.repo_path_override = picked
         assert store.repo_path_override == picked
-        assert appconfig.read() == {"repoRoot": picked}
-        assert review.stored_repo_path() == picked
+        assert appconfig.read() == {"repoRoots": [picked]}
+        assert review.repo_root_paths() == [picked]
         assert review.repo_path() == picked
 
         # A hand-typed "~/…" expands like the shell would — the spawn single-quotes
@@ -595,6 +595,36 @@ def test_repo_path_resolution(tmp_path):
         os.environ.pop("DIPLOMAT_CONFIG", None)
         if prior_config is not None:
             os.environ["DIPLOMAT_CONFIG"] = prior_config
+
+
+def test_repo_roots_fall_back_to_the_single_root_older_builds_wrote(monkeypatch):
+    """A config.json from a single-repo build names its root under ``repoRoot``; it
+    answers until the list is written, and that write drops it."""
+    import json
+
+    from diplomat_runtime import appconfig
+
+    monkeypatch.delenv("DIPLOMAT_REPO", raising=False)
+    path = appconfig.path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"repoRoot": " /legacy ", "autoTaskLimit": 3}))
+    assert appconfig.repo_roots() == ["/legacy"]
+    assert review.repo_root_paths() == ["/legacy"]
+
+    path.write_text(json.dumps({"repoRoot": "/legacy", "repoRoots": ["", " "]}))
+    assert appconfig.repo_roots() == ["/legacy"], "a list of blanks is no list"
+    path.write_text(json.dumps({"repoRoot": "/legacy", "repoRoots": [" /a", "", "/b"]}))
+    assert appconfig.repo_roots() == ["/a", "/b"]
+
+    path.write_text(json.dumps({"repoRoot": "/legacy", "autoTaskLimit": 3}))
+    Store().repo_path_override = "/picked"
+    assert appconfig.read() == {"repoRoots": ["/picked"], "autoTaskLimit": 3}
+    appconfig.set_repo_roots(["/picked", "/second"])
+    store = Store()
+    store.repo_path_override = "/primary"
+    assert appconfig.repo_roots() == ["/primary", "/second"], "only the primary changes"
+    appconfig.set_repo_roots(["  "])
+    assert appconfig.read() == {"autoTaskLimit": 3}
 
 
 # A meta-path finder that makes `import PySide6[...]` fail, so a subprocess simulates
