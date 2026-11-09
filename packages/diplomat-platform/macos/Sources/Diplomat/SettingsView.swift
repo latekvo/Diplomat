@@ -92,7 +92,7 @@ struct SettingsView: View {
             }
         }
         .toggleStyle(.switch).controlSize(.mini)
-        .help("Show what each setting does, in full")
+        .tooltip("Show what each setting does, in full")
     }
 
     // MARK: GitHub identity
@@ -134,7 +134,7 @@ struct SettingsView: View {
                     Image(systemName: "xmark.circle.fill")
                 }
                 .buttonStyle(.borderless).foregroundStyle(.secondary)
-                .help("Clear — fall back to the gh-authenticated user")
+                .tooltip("Clear — fall back to the gh-authenticated user")
             }
         }
         .padding(7)
@@ -168,9 +168,9 @@ struct SettingsView: View {
                     .textFieldStyle(.plain).font(.callout).lineLimit(1)
                 Button("Connect a provider…") { openProviderSetup() }
                     .buttonStyle(.bordered).controlSize(.small)
-                    .help("Open \(runnerName)'s own login wizard: it knows every "
-                          + "provider in its catalog and stores the credential "
-                          + "itself. Diplomat never holds an API key.")
+                    .tooltip("Open \(runnerName)'s own login wizard: it knows every "
+                             + "provider in its catalog and stores the credential "
+                             + "itself. Diplomat never holds an API key.")
             }
             .padding(7)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
@@ -240,7 +240,7 @@ struct SettingsView: View {
                     Image(systemName: "xmark.circle.fill")
                 }
                 .buttonStyle(.borderless).foregroundStyle(.secondary)
-                .help("Clear — fall back to \(RepoPaths.defaultAgentRepo)")
+                .tooltip("Clear — fall back to \(RepoPaths.defaultAgentRepo)")
             }
             Button("Choose…") { chooseRepoRoot() }
                 .buttonStyle(.bordered).controlSize(.small)
@@ -344,7 +344,7 @@ struct SettingsView: View {
             Spacer()
             Button(action: remove) { Image(systemName: "xmark.circle.fill") }
                 .buttonStyle(.borderless).foregroundStyle(.secondary)
-                .help("Stop accepting links to this repo")
+                .tooltip("Stop accepting links to this repo")
         }
         .padding(7)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
@@ -472,10 +472,10 @@ struct SettingsView: View {
         if store.unaddressedReviews > 0 {
             let n = store.unaddressedReviews
             StatusPill(text: "\(n) owed", tint: .orange, symbol: "arrow.triangle.2.circlepath")
-                .help("\(n) unaddressed review\(n == 1 ? "" : "s") — the reconciler is retrying")
+                .tooltip("\(n) unaddressed review\(n == 1 ? "" : "s") — the reconciler is retrying")
         } else if store.reviewRequestsHandled > 0 {
             StatusPill(text: "\(store.reviewRequestsHandled) done", tint: .secondary)
-                .help("Reviews delivered so far")
+                .tooltip("Reviews delivered so far")
         }
     }
 
@@ -537,7 +537,7 @@ struct SettingsView: View {
                     Image(systemName: "xmark.circle.fill")
                 }
                 .buttonStyle(.borderless).foregroundStyle(.secondary)
-                .help("Clear — auto-review whoever requests me")
+                .tooltip("Clear — auto-review whoever requests me")
             }
         }
         .padding(7)
@@ -874,7 +874,7 @@ struct SettingsView: View {
         }
         .controlSize(.small)
         .disabled(store.commsTesting)
-        .help("Ask Slack who Claude Code's Slack login is")
+        .tooltip("Ask Slack who Claude Code's Slack login is")
     }
 
     private func commsField(_ placeholder: String, _ text: Binding<String>,
@@ -992,7 +992,7 @@ struct SettingsView: View {
             ), supportsOpacity: false)
                 .labelsHidden()
                 .frame(width: 34)
-                .help("Tint for \(kind.title)")
+                .tooltip("Tint for \(kind.title)")
             Toggle("Show \(kind.title) in the grid", isOn: Binding(
                 get: { visible },
                 set: { store.setTool(kind, visible: $0) }
@@ -1001,7 +1001,7 @@ struct SettingsView: View {
                 .toggleStyle(.switch)
                 .controlSize(.small)
                 .tint(store.tint(for: kind))
-                .help("Show \(kind.title) in the grid")
+                .tooltip("Show \(kind.title) in the grid")
         }
         .opacity(visible ? 1 : 0.45)
         .padding(.horizontal, 6).padding(.vertical, 4)
@@ -1124,7 +1124,7 @@ struct SettingsView: View {
                     Button { store.refreshUpdateStatus() } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .buttonStyle(.borderless).controlSize(.small).help("Re-check for updates")
+                    .buttonStyle(.borderless).controlSize(.small).tooltip("Re-check for updates")
                     Spacer(minLength: 0)
                 }
             }

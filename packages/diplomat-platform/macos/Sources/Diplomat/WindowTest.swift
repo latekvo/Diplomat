@@ -1,11 +1,12 @@
 import AppKit
+import SwiftUI
 
 /// Self-test for the app window - `DIPLOMAT_WINDOW_TEST=1`.
 ///
 /// What a launch decides before anything is on screen: an unattended start is read off
 /// the environment and removed from it, and the window is a regular one that a close
-/// keeps for the next open; and an older login agent gets the unattended mark, on a
-/// scratch plist. Orders no window in, so it takes no focus; showing,
+/// keeps for the next open; its tooltips are AppKit's; and an older login agent gets
+/// the unattended mark, on a scratch plist. Orders no window in, so it takes no focus; showing,
 /// reopening and focus are checked by `scripts/macos-vm-test.sh` in a VM.
 ///
 ///     DIPLOMAT_WINDOW_TEST=1 swift run Diplomat
@@ -54,6 +55,41 @@ enum WindowTest {
               w.contentMinSize.width < MainRoot.width && w.contentMinSize.width > 0,
               "min \(w.contentMinSize.width)")
         check("a close keeps it for the next open", !w.isReleasedWhenClosed)
+
+        print("tooltips: plain AppKit strings, gone with their view")
+        w.contentView?.layoutSubtreeIfNeeded()
+        let tips = toolTips(in: w.contentView)
+        check("the header buttons' tooltips are on NSViews",
+              ["Refresh", "Settings", "Quit"].allSatisfy(tips.contains), "\(tips.sorted())")
+        // The object whose hover timer crashed reading a torn-down view's text (#238).
+        // A menu item's `.help` (MeshView's strategy picker) installs none.
+        let manager = NSSelectorFromString("_dynamicToolTipManager")
+        let panelManager = w.contentView.flatMap { $0.responds(to: manager) ? $0.perform(manager) : nil }
+        check("the panel has no SwiftUI dynamic tooltip manager",
+              w.contentView?.responds(to: manager) == true && panelManager == nil,
+              panelManager.map { "\($0.takeUnretainedValue())" } ?? "AppKit no longer answers \(manager)")
+        let menu = NSHostingView(rootView: MenuHelpProbe())
+        let menuWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
+                                  styleMask: [.titled], backing: .buffered, defer: true)
+        menuWindow.isReleasedWhenClosed = false
+        menuWindow.contentView = menu
+        menu.layoutSubtreeIfNeeded()
+        check("…and a menu item's .help installs none", menu.perform(manager) == nil)
+        let probe = NSHostingView(rootView: TooltipProbe(shown: true))
+        let probeWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
+                                   styleMask: [.titled], backing: .buffered, defer: true)
+        probeWindow.isReleasedWhenClosed = false
+        probeWindow.contentView = probe
+        probe.layoutSubtreeIfNeeded()
+        check("a shown view's tooltip is there", toolTips(in: probe).contains("probe"),
+              "\(toolTips(in: probe))")
+        let hit = probe.hitTest(NSPoint(x: 100, y: 50))
+        check("a click passes through it to the view beneath", hit?.toolTip == nil,
+              "hit \(hit.map { "\($0)" } ?? "nothing")")
+        probe.rootView = TooltipProbe(shown: false)
+        probe.layoutSubtreeIfNeeded()
+        check("…and leaves with the view", !toolTips(in: probe).contains("probe"),
+              "\(toolTips(in: probe))")
         w.close()
         check("a closed window still has the panel", w.contentViewController != nil && !w.isVisible)
         check("the last window closing does not quit the app",
@@ -88,5 +124,27 @@ enum WindowTest {
         if failures.isEmpty { print("window: all passed") }
         else { print("window: FAILED \(failures.count): \(failures.joined(separator: "; "))") }
         return failures.isEmpty
+    }
+
+    private static func toolTips(in view: NSView?) -> Set<String> {
+        guard let view else { return [] }
+        return view.subviews.reduce(Set(view.toolTip.map { [$0] } ?? [])) { $0.union(toolTips(in: $1)) }
+    }
+}
+
+private struct MenuHelpProbe: View {
+    @State var pick = "a"
+    var body: some View {
+        Picker("", selection: $pick) {
+            ForEach(["a", "b"], id: \.self) { s in Text(s).tag(s).help("detail \(s)") }
+        }
+        .pickerStyle(.menu)
+    }
+}
+
+private struct TooltipProbe: View {
+    let shown: Bool
+    var body: some View {
+        if shown { Text("probe").tooltip("probe") } else { Text("none") }
     }
 }

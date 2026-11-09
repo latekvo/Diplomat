@@ -155,7 +155,7 @@ struct IssueWizardView: View {
             VStack(alignment: .leading, spacing: 3) {
                 WizardTextField(systemImage: "number", placeholder: "issue # or URL",
                                 text: $specificIssue)
-                    .help("Fix just this one issue — paste its number or GitHub URL.")
+                    .tooltip("Fix just this one issue — paste its number or GitHub URL.")
                 if let warning = issueWarning {
                     Text(warning)
                         .font(.system(size: 10))
@@ -204,21 +204,21 @@ struct IssueWizardView: View {
                 Toggle(isOn: $unassignedOnly) {
                     Text("Only unassigned issues").font(.caption)
                 }
-                .help("Skip every issue that already has an assignee — somebody is on it already.")
+                .tooltip("Skip every issue that already has an assignee — somebody is on it already.")
                 .transition(rowTransition)
             }
             Toggle(isOn: $assignToMe) {
                 Text("Assign each issue to me while working it").font(.caption)
             }
-            .help("Claim the issue on GitHub before starting, and hand it back if the run abandons it — what stops a second agent taking the same one.")
+            .tooltip("Claim the issue on GitHub before starting, and hand it back if the run abandons it — what stops a second agent taking the same one.")
             Toggle(isOn: $openPRs) {
                 Text("Open a draft PR per fix").font(.caption)
             }
-            .help("Off: nothing reaches the remote — each fix is left in the working tree and reported.")
+            .tooltip("Off: nothing reaches the remote — each fix is left in the working tree and reported.")
             Toggle(isOn: $commentOnIssue) {
                 Text("Comment the outcome on the issue").font(.caption)
             }
-            .help("One comment per issue actually worked: what was reproduced, the cause, and where the fix is.")
+            .tooltip("One comment per issue actually worked: what was reproduced, the cause, and where the fix is.")
         }
         .toggleStyle(.checkbox)
     }
