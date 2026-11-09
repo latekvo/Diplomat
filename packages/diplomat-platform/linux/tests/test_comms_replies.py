@@ -212,7 +212,7 @@ def test_a_queued_review_asks_for_one_reply_with_its_place_in_the_queue(
                     "replies": True, "replyToReviews": False, "replyToFixes": False,
                     "replyToInvestigations": False, "replyToQuestions": True},
         "settings": comms_store.comms_settings_payload(),
-        "queued": {"kind": "review", "number": 12, "ahead": 0, "bays": 3}}]
+        "queued": {"kind": "review", "number": 12, "repo": "", "ahead": 0, "bays": 3}}]
     assert _reply_lines() == ["Replied to kacper in DM: [Diplomat]: Queued it"]
 
 
@@ -222,7 +222,7 @@ def test_a_fix_counts_the_tasks_ahead_of_its_band(comms_store, replies, monkeypa
     _replied(comms_store, monkeypatch, (_message(1, "fix #7"), _decision("fix_issue", 7)))
     assert [t.id for t in comms_store.queued_tasks] == [qkey("review", 13), qkey("review", 1), qkey("issues", 7)]
     [request] = replies
-    assert request["queued"] == {"kind": "fix_issue", "number": 7, "ahead": 2,
+    assert request["queued"] == {"kind": "fix_issue", "number": 7, "repo": "", "ahead": 2,
                                  "bays": comms_store.auto_task_limit}
 
 
@@ -233,7 +233,7 @@ def test_work_already_running_says_when_it_started(comms_store, replies, monkeyp
     _replied(comms_store, monkeypatch, _ask(1, "review", 12))
     [request] = replies
     assert request["queued"] == {
-        "kind": "review", "number": 12, "ahead": 0, "bays": comms_store.auto_task_limit,
+        "kind": "review", "number": 12, "repo": "", "ahead": 0, "bays": comms_store.auto_task_limit,
         "startedAt": comms.iso(datetime.fromtimestamp(DISPATCHED, timezone.utc))}
 
 
