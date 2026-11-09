@@ -165,6 +165,7 @@ class IssueWizardView(SpawnWizard):
             comment_on_issue=self.comment_on_issue.isChecked(),
             include_features=self.include_features.isChecked(),
             local_repos=self.store.local_repos,
+            home=self.store.selected_repo,
         )
 
     def _sync(self) -> None:

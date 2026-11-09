@@ -20,10 +20,13 @@ from diplomat_runtime.autofix import (
     decide,
     retry_delay,
 )
+from diplomat_runtime.prref import LocalRepo
 
 
 #: The repo every fixture PR is in.
 SLUG = "o/r"
+#: The fixture repo as a repo root, for the passes that take the roots they read.
+ROOT = LocalRepo("o", "r", "/src/r")
 
 
 def item(n: int) -> str:
@@ -587,7 +590,7 @@ def test_review_request_verdict_gating(store, monkeypatch):
     # A clean PR by a trusted author → verdict allowed (final_pass=true in prompt).
     reqs = [_req(requested_at="2026-01-02", author_association="MEMBER", files=["a.py"])]
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs)
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 1 and "review" in calls[0]["prompt"]
     assert store.review_requests_handled == 1
 
@@ -597,7 +600,7 @@ def test_review_request_verdict_gating(store, monkeypatch):
                        files=["foo.skill.md"])]
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
                         lambda *a, **k: skill_reqs)
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 1  # dispatched (comments-only)
 
 
@@ -610,7 +613,7 @@ def test_unaddressed_count_and_ban_skip(store, monkeypatch):
     ]
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     # Dispatched + finished → no longer in-flight → counts as still unaddressed until
     # the reviewer resolves it (the reconciler will retry on the next poll).
     assert store.unaddressed_reviews == 1
@@ -630,7 +633,7 @@ def test_allowlist_keeps_an_unlisted_author_out_of_the_poll(store, monkeypatch):
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
     )
     store.review_allowlist_raw = "@Alice"
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 1                      # alice only
     assert calls[0]["prompt"].endswith(":8")    # her PR, not bob's #7
     assert store.review_requests_handled == 1
@@ -640,7 +643,7 @@ def test_allowlist_keeps_an_unlisted_author_out_of_the_poll(store, monkeypatch):
     # Clearing the list restores the default, and bob is owed again on the next poll.
     calls.clear()
     store.review_allowlist_raw = ""
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 1                      # bob; alice is inside her backoff
     assert store.unaddressed_reviews == 2
 
@@ -662,7 +665,7 @@ def test_an_excluded_request_is_dropped_where_a_held_one_would_queue(store, monk
     )
 
     store.review_allowlist_raw = "alice"
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     store.commit_queue()
     assert calls == []
     assert [t.id for t in store.queued_tasks] == ["review-req:o/r#8"]   # never bob's
@@ -670,7 +673,7 @@ def test_an_excluded_request_is_dropped_where_a_held_one_would_queue(store, monk
     # With no list, the same poll holds both — which is what makes the line above a
     # statement about the allowlist rather than about the hold.
     store.review_allowlist_raw = ""
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     store.commit_queue()
     assert {t.id for t in store.queued_tasks} == {"review-req:o/r#7", "review-req:o/r#8"}
 
@@ -878,7 +881,7 @@ def _poll_one_review(store, monkeypatch):
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: [_mesh_req()]
     )
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
 
 
 def test_review_request_runs_on_the_mesh(store, monkeypatch):
@@ -1821,18 +1824,18 @@ def test_a_poll_dispatches_only_up_to_the_cap(store, monkeypatch):
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
     )
 
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == store.auto_task_limit == 2
 
     # A second poll while both are still running adds nothing.
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 2
 
     # Both agents finish → the cap frees up → the next poll takes the next two.
     for c in calls:
         with open(c["done"], "w") as fh:
             fh.write("0")
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 4
 
 
@@ -1855,7 +1858,7 @@ def test_a_review_run_that_finished_posting_nothing_is_not_dispatched_again(
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
                         lambda *a, **k: [req])
 
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 1
     (run,) = agentregistry.load()
     now = _time.time()
@@ -1873,8 +1876,8 @@ def test_a_review_run_that_finished_posting_nothing_is_not_dispatched_again(
     book = store._load_attempts(key)
     book[item(7)] = dataclasses.replace(book[item(7)], last_dispatched_at=now - 4 * 3600)
     store._save_attempts(key, book)
-    store._poll_review_requests("o", "r")
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
+    store._poll_review_requests([ROOT])
 
     assert len(calls) == (2 if retried else 1)
     assert store.unaddressed_reviews == 0

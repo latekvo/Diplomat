@@ -187,6 +187,7 @@ class WizardView(SpawnWizard):
             final_pass=self.final_pass.isChecked(),
             specific_author=self._specific_author,
             local_repos=self.store.local_repos,
+            home=self.store.selected_repo,
         )
 
     def _sync(self) -> None:

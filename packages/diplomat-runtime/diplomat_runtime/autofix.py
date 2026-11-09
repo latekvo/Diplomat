@@ -13,7 +13,7 @@ import math
 import re
 from dataclasses import dataclass, replace
 
-from .prref import item_key, item_key_from_url, split_item_key
+from .prref import item_key, item_key_from_url, item_label, split_item_key
 
 # MARK: - Snapshot + fingerprint
 
@@ -1131,16 +1131,23 @@ class RequestedWork:
 
     @property
     def label(self) -> str:
-        """The row this task wears in the panel and the activity feed. Carries the
-        depth because that is the choice a sweep is worth re-reading later: the same PR
-        queued from a `max` sweep and from a `quick` one are different jobs.
+        """The row this task wears in the panel and the activity feed, with one repo
+        root loaded (:meth:`label_among`)."""
+        return self.label_among(1)
+
+    def label_among(self, roots: int) -> str:
+        """The row this task wears while ``roots`` repo roots are loaded, its item named
+        by :func:`item_label`. Carries the depth because that is the choice a sweep is
+        worth re-reading later: the same PR queued from a `max` sweep and from a `quick`
+        one are different jobs.
 
         An investigation's label comes from its config (``InvestigateConfig.label``):
         its number is a Slack ts, which reads as nothing on a row."""
         if self.action == QUEUE_INVESTIGATE_ACTION:
             return str(self.config.get("label", ""))
         noun = "Issues" if self.action == QUEUE_ISSUES_ACTION else "Review"
-        return f"{noun} · #{self.number} · {self.config.get('depth', '')}"
+        named = item_label(self.item, roots) if self.item else f"#{self.number}"
+        return f"{noun} · {named} · {self.config.get('depth', '')}"
 
     def to_json(self) -> dict:
         return {"number": self.number, "url": self.url, "author": self.author,
