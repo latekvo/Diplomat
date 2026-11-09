@@ -414,7 +414,7 @@ class Store(QObject):
         # is not the same as "nothing is owed", and must not empty the list.
         self._staged_queue: list[autofix.QueuedTask] = []
         # The task each stored ask has been built into, as ((config, label, checkout),
-        # task) by queue key — an assembled prompt is the expensive half and cannot
+        # task) by queue key - an assembled prompt is the expensive half and cannot
         # change while the ask stands, so it is built once rather than once per poll
         # (:meth:`_requested_task`).
         self._requested_tasks: dict[str, tuple[tuple, autofix.QueuedTask]] = {}
@@ -1522,7 +1522,7 @@ class Store(QObject):
 
     def _fetch_my_snapshots(self, roots: list[LocalRepo]) -> list | None:
         """This cycle's read of my open PRs in every root, or ``None`` if any root's
-        read failed — in which case the failure is already noted and every consumer of
+        read failed - in which case the failure is already noted and every consumer of
         it stands down: a list missing one root would read that root's work as done."""
         try:
             return [s for r in roots
@@ -1534,7 +1534,7 @@ class Store(QObject):
 
     def _fetch_closed_prs(self, roots: list[LocalRepo]) -> set[str] | None:
         """This cycle's read of the PRs that have merged or closed in every root, or
-        ``None`` if any read failed — which is not the same as an empty set, and is
+        ``None`` if any read failed - which is not the same as an empty set, and is
         why the failure stands the drain down rather than letting it read every PR as
         open."""
         try:
@@ -2665,13 +2665,14 @@ class Store(QObject):
 
         An ask in a repo that is no longer a root is dropped: nothing here works in that
         repo any more."""
-        slugs = {r.slug.lower() for r in review.repo_roots()}
+        roots = review.repo_roots()
+        slugs = {r.slug.lower() for r in roots}
         for entry in self.requested_work:
             if entry.repo and entry.repo.lower() not in slugs:
                 self._forget_requested(entry.key)
                 activity.log("panel", "queue-drop",
-                             f"{entry.label} — {entry.repo} is no longer a repo root, "
-                             f"not run")
+                             f"{entry.label_among(len(roots))} - {entry.repo} is no "
+                             f"longer a repo root, not run")
                 continue
             try:
                 task = self._requested_task(entry)

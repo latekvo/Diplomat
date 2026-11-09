@@ -523,7 +523,7 @@ class SettingsView(QWidget):
                    "the agent works in that checkout. Each checkout answers for every "
                    "GitHub remote it has, so a fork clone takes links to both its "
                    "upstream and its origin. A bare "
-                   "#number still means the repo root's repo, and a run here is never "
+                   "#number still means the selected repo root, and a run here is never "
                    "routed over the mesh: a peer would start it in its own repo root.",
         )))
         self.store.local_repos_changed.connect(self._refresh_other_repos_ui)
