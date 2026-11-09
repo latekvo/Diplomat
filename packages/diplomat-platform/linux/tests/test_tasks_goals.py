@@ -325,9 +325,11 @@ def test_badges_are_the_overlay_sets(tstore, github, claude, no_agents, monkeypa
         agent_prs=frozenset({1810}), queued_prs=frozenset({1811}),
         agent_issues=frozenset({1801}), queued_issues=frozenset({1802})))
     _, card = _expanded(tstore, task_id)
+    # An issue's own pill is never badged: its fix is the + after it.
     assert [[p.badge for p in row] for row in card.graph_rows] == [
-        ["agent", "agent", "queued"], ["queued", "queued"]]
-    assert [p.badge_chip.text() for p in card.graph_rows[0]] == ["AGENT", "AGENT", "QUEUED"]
+        [None, "agent", "queued"], [None, "queued"]]
+    assert [p.badge_chip.text() for p in card.graph_rows[0][1:]] == ["AGENT", "QUEUED"]
+    assert not hasattr(card.graph_rows[0][0], "badge_chip")
     plus = card.graph_rows[1][1]
     assert plus.text.text() == "QUEUED" and "a fix is queued" in plus.toolTip()
     plus.mouseReleaseEvent(_left_click())
@@ -414,11 +416,14 @@ def test_an_auto_goal_queues_its_fixes_and_reviews_and_fixes_my_findings(
     asks = {r.key: r for r in tstore.requested_work}
     assert sorted(asks) == ["issues:1802", "review:1810", "review:1812"]
     fix = asks["issues:1802"]
-    assert (fix.url, fix.author, fix.config["target"], fix.config["specificIssue"]) == (
-        LONE, "kacper", "contributors", "1802")
+    assert (fix.url, fix.author, fix.config["target"], fix.config["specificIssue"],
+            fix.config["includeFeatures"]) == (LONE, "kacper", "specific", "1802", True)
     review = asks["review:1810"]
     assert (review.author, review.config["depth"], review.config["specificPR"],
-            review.config["leaveReviews"]) == ("hubert", "max", "1810", True)
+            review.config["leaveReviews"], review.config["specificAuthor"]) == (
+        "hubert", "max", "1810", True, "theirs")
+    # My own PR is reviewed as mine, and no author is banned-checked for it.
+    assert (asks["review:1812"].author, asks["review:1812"].config["specificAuthor"]) == ("", "mine")
     # My PR's threads: the my-review path, though the PR auto-fix toggle is off.
     assert [c["prompt"] for c in no_agents] == ["PROMPT:review:1812"]
     assert [r.label for r in agentregistry.load()] == ["Auto · Review · #1812"]

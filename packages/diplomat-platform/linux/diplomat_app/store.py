@@ -1658,10 +1658,12 @@ class Store(QObject):
         for task_id, w in work:
             number, url, author = int(w["number"]), str(w["url"]), str(w.get("author") or "")
             if w["kind"] == "fix-issue":
-                config = issues.IssueConfig(target=issues.Target.CONTRIBUTORS,
-                                            me=self.effective_me).for_issue(number)
+                config = self._goal_fix_config(number)
             else:
                 config = self._review_request_config(number, verdict=False)
+                if self.effective_me and author.lower() == self.effective_me.lower():
+                    config.specific_author = review.SpecificAuthor.MINE
+                    author = ""
             try:
                 self._request([autofix.RequestedWork(number=number, url=url, author=author,
                                                      config=config.prompt_payload())])
@@ -1673,6 +1675,12 @@ class Store(QObject):
             error = self._edit_tracked_task({"op": "dispatched", "id": task_id, "work": keys})
             if error:
                 activity.log("auto", "goal", f"could not record {', '.join(keys)}: {error}")
+
+    def _goal_fix_config(self, number: int) -> issues.IssueConfig:
+        """A goal issue's fix: that issue, named, feature requests included, since the
+        goal it serves is often one."""
+        return issues.IssueConfig(target=issues.Target.SPECIFIC, me=self.effective_me,
+                                  specific_issue=str(number), include_features=True)
 
     def _poll_review_requests(self, owner: str, repo: str) -> None:
         try:
@@ -4574,8 +4582,7 @@ class Store(QObject):
 
         def work() -> None:
             try:
-                cfg = issues.IssueConfig(target=issues.Target.SPECIFIC, me=self.effective_me,
-                                         specific_issue=str(number))
+                cfg = self._goal_fix_config(number)
                 verdict = self.dispatch_agent(autofix.AgentJob(
                     kind=autofix.QUEUE_ISSUES_ACTION, audit_action=autofix.QUEUE_ISSUES_ACTION,
                     label=f"Issues · #{number} · {issues.depth_by_id(cfg.depth)['title']}",

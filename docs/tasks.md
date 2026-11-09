@@ -102,10 +102,11 @@ Any task with GitHub links, including your own, can switch between **Observe** a
 **auto**, on every poll of the [automatic-work monitors](automation.md):
 
 - each open issue that no open, draft or merged PR of the task closes gets a [Fix-issues](actions.md#fix-issues)
-  fix in the issue-fix band of the queue, under the task cap like any queued work; while still no PR
-  closes it, it is asked for again a day later (`fixRetrySecs`)
-- with **Review on new commits** on, each open PR is reviewed once per head commit, with the config
-  the Review-requests monitor uses
+  fix of that one issue, feature requests included (a goal's issues often are), in the issue-fix band
+  of the queue, under the task cap like any queued work; while still no PR closes it, it is asked for
+  again a day later (`fixRetrySecs`)
+- with **Review on new commits** on, each open PR is reviewed once per head commit, at max depth with
+  per-line comments and no verdict (your own PR as yours)
 - your own open PRs get their unresolved review threads fixed, through the PR auto-fix path and its
   backoff, even with that monitor switched off
 
@@ -123,9 +124,10 @@ what, left to right:
 ( #1240 ) ──▶ ( + )            no PR closes issue #1240 yet
 ```
 
-A pill's dot is its state as of the last sync. A pill opens its item; `+` starts a fix agent for
-that issue at once, outside the cap, as the Fix-issues wizard does. A pill shows **agent** while an
-agent works on that item and **queued** while one waits for a slot. Rows whose items are all merged
+A pill's dot is its state as of the last sync. A pill opens its item; `+` starts the same fix agent
+for that issue at once, outside the cap, as the Fix-issues wizard's single-issue press does. A PR
+pill shows **agent** while an agent works on it and **queued** while one waits for a slot; for an
+issue, the `+` after it does. Rows whose items are all merged
 or closed come last.
 
 ## Statuses and reason tags
@@ -179,7 +181,8 @@ checkout, or after its own moved, it needs `DIPLOMAT_CORE=<checkout>/packages/di
 ```sh
 diplomat-core tasks-list [--archived] [--me LOGIN]  # every task: status, reasons, history (newest 200), linkStates, graph, work
 diplomat-core tasks-sync                   # one sync: {"ok":true,"events":3}, or ok:false and the error
-diplomat-core tasks-group [--if-due]       # one grouper run: {"ok":true,"created":1,"added":0}
+diplomat-core tasks-group [--if-due]       # one grouper run: {"ok":true,"created":1,"added":0};
+                                           # not due yet: {"ok":true,"skipped":"not due","ranAt":…,"lastError"?}
 echo '{"op":"create","title":"Tor transport","tags":["area:mesh"],"links":["#1601"]}' \
   | diplomat-core tasks-edit               # prints the task as it now is
 ```

@@ -223,13 +223,14 @@ class GraphPill(LinkChip):
 
 
 def graph_badge(node: dict, overlay: GoalOverlay) -> str | None:
-    """``agent`` or ``queued`` for a node of the watched repo something is on: for a
-    ``+``, a fix of its issue."""
+    """``agent`` or ``queued`` for a PR or a ``+`` of the watched repo something is on
+    (a ``+``'s: a fix of its issue). An issue's own pill has none: its fix is drawn on
+    the ``+`` after it."""
     number = watched_number(str(node.get("url") or ""))
-    if number is None:
-        return None
     kind = node.get("kind")
-    on_issue = kind in ("issue", "add")
+    if number is None or kind == "issue":
+        return None
+    on_issue = kind == "add"
     if number in (overlay.agent_issues if on_issue else overlay.agent_prs):
         return "agent"
     if number in (overlay.queued_issues if on_issue else overlay.queued_prs):
