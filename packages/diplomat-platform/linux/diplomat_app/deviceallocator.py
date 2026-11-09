@@ -577,6 +577,12 @@ def is_remote(dev: dict) -> bool:
     return dev.get("source") == "remote"
 
 
+def display_order(dev: dict) -> tuple:
+    """Sort key within a section: the remote pool's rows first, then by platform, then
+    name. Twin of ``DevicesView.sorted`` on macOS."""
+    return (not is_remote(dev), dev.get("platform", ""), dev.get("name") or "")
+
+
 #: Per-platform tint, as ``DeviceAllocation.platformTint`` on macOS.
 PLATFORM_TINT = {"ios": "#0A84FF", "apple-tv": "#0A84FF", "android": "#34C759",
                  "android-tv": "#34C759", "vega": "#FF9500"}

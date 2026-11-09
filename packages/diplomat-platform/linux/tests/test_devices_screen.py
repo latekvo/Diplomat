@@ -491,8 +491,9 @@ def test_the_screen_with_a_pool_signing_in(screen):
     assert view._remote_pill.text() == "signing in…"
     assert "⟳ Waiting for the browser sign-in (up to 10 min)…" in texts
     assert any(t.startswith("Pool: 3 devices · ") for t in texts)
+    # The pool's free Galaxy Tab S9 is a row with the remote chip, but no lease.
     assert "LEASED HERE · 2" in texts
-    assert texts.count("remote · lab-pool") == 2
+    assert texts.count("remote · lab-pool") == 3
     assert not view.sign_in.isEnabled()  # one sign-in at a time
     assert view.list_pool.isEnabled()
     assert _buttons(view).count("Return") == 2
@@ -815,9 +816,53 @@ def test_a_rows_actions_are_only_what_the_daemon_does_for_it(app):
     held = {"key": "k", "platform": "ios", "status": "ready", "owner": {"ownerPid": 3}}
     assert actions(held) == ["Free", "Kill"]
     assert actions({**held, "source": "remote"}) == ["Return"]
+    assert actions({"key": "k", "platform": "ios", "status": "free", "owner": None,
+                    "source": "remote"}) == []
     assert actions({"key": "k", "platform": "ios", "status": "repairing",
                     "owner": {"ownerPid": None}}) == ["Repaired", "Kill"]
     assert actions({"key": "k", "platform": "ios", "status": "free"}) == []
+
+
+#: Each group's local Android row sorts before its remote iOS row by platform alone.
+MIXED = [
+    {"key": "a:7", "platform": "android", "name": "Pixel 7", "status": "free",
+     "source": "local"},
+    {"key": "p:15", "platform": "ios", "name": "iPhone 15 Pro", "status": "free",
+     "owner": None, "source": "remote"},
+    {"key": "a:6", "platform": "android", "name": "Pixel 6", "status": "ready",
+     "owner": {"ownerPid": 1}, "source": "local"},
+    {"key": "p:16", "platform": "ios", "name": "iPhone 16", "status": "ready",
+     "owner": {"ownerPid": 2}, "source": "remote"},
+]
+MIXED_ORDER = ["iPhone 16", "Pixel 6", "iPhone 15 Pro", "Pixel 7"]
+
+
+def _row_names(column) -> list[str]:
+    names = {d["name"] for d in MIXED}
+    widgets = [column.itemAt(i).widget() for i in range(column.count())]
+    return [t for w in widgets if w is not None for t in _texts(w) if t in names]
+
+
+def test_the_screen_lists_remote_rows_first_in_each_group(screen):
+    view = screen("devices-screen-remote")
+    view.store.device_state = {**view.store.device_state, "devices": MIXED}
+    view.rebuild()
+    assert _row_names(view._devices_col) == MIXED_ORDER
+
+
+def test_the_panels_device_section_lists_remote_rows_first_in_each_group(app, monkeypatch):
+    from diplomat_app.panel import Panel
+    from diplomat_app.store import Store
+
+    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
+    store = Store()
+    panel = Panel(store)
+    panel._free_expanded = True
+    store.device_state = {"devices": MIXED, "daemonPid": 1, "remote": None}
+    store.devices_changed.emit()
+    assert _row_names(panel.devices_col) == MIXED_ORDER
+    panel.deleteLater()
 
 
 def test_free_reaches_the_daemon_with_the_rows_holder(app, monkeypatch):

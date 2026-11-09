@@ -1193,10 +1193,11 @@ struct DevicesView: View {
         _freeExpanded = State(initialValue: seedFreeExpanded)
     }
 
-    /// Within a section: by platform, then name. (Cross-section busy-first ordering
-    /// is gone — the split into In use / Free already conveys that.)
+    /// Within a section: remote first (a request tries the pool first), then by platform,
+    /// then name.
     static func sorted(_ d: [DeviceAllocation]) -> [DeviceAllocation] {
         d.sorted { a, b in
+            if a.isRemote != b.isRemote { return a.isRemote }
             if a.platform != b.platform { return a.platform < b.platform }
             return (a.name ?? "") < (b.name ?? "")
         }

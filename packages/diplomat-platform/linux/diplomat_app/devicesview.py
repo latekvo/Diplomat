@@ -496,9 +496,10 @@ class DeviceScreenRow(QWidget):
         self.actions: dict[str, QPushButton] = {}
         # Only the actions the daemon takes for this row.
         if remote:
-            # A remote row exists only while leased.
-            self._action(actions, "Return", _INDIGO, lambda: store.kill_device_async(key),
-                         "Hand the lease back to the remote pool. The agent loses the device.")
+            # A free remote row is the pool's to lend: nothing here acts on it.
+            if allocated:
+                self._action(actions, "Return", _INDIGO, lambda: store.kill_device_async(key),
+                             "Hand the lease back to the remote pool. The agent loses the device.")
         else:
             if pid is not None and status != "repairing":
                 self._action(actions, "Free", _BLUE, lambda: store.release_device_async(dev),
@@ -701,12 +702,8 @@ class DevicesView(QWidget):
         _clear(self._devices_col)
         state = self.store.device_state
         devices = (state or {}).get("devices", [])
-
-        def sort_key(d: dict):
-            return (d.get("platform", ""), d.get("name") or "")
-
-        in_use = sorted((d for d in devices if da.is_allocated(d)), key=sort_key)
-        free = sorted((d for d in devices if not da.is_allocated(d)), key=sort_key)
+        in_use = sorted((d for d in devices if da.is_allocated(d)), key=da.display_order)
+        free = sorted((d for d in devices if not da.is_allocated(d)), key=da.display_order)
         if state is None:
             self._devices_pill.set_state("")
             self._devices_col.addWidget(_note(
@@ -964,7 +961,8 @@ class DevicesView(QWidget):
                 self._calls_col.addWidget(line)
 
         _clear(self._leases_col)
-        leases = [d for d in (state or {}).get("devices", []) if da.is_remote(d)]
+        leases = [d for d in (state or {}).get("devices", [])
+                  if da.is_remote(d) and da.is_allocated(d)]
         if leases:
             head = _plain(f"LEASED HERE · {len(leases)}")
             head.setStyleSheet(muted(9, bold=True) + " letter-spacing: 0.5px;")

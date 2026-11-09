@@ -232,6 +232,17 @@ enum AllocatorSetupTest {
         check("idle colour: quiet below that", DeviceAllocation.idleColor(14, limit: 30) == .secondary)
         check("idle colour: never with no limit", DeviceAllocation.idleColor(500, limit: 0) == .secondary)
 
+        // ---- the device lists' order ----
+
+        func device(_ key: String, _ platform: String, _ source: String?) -> DeviceAllocation {
+            DeviceAllocation(key: key, platform: platform, name: key, version: nil, apiVersion: nil,
+                             handle: nil, status: "free", owner: nil, allocatedAt: nil, idleMs: nil,
+                             brokenReason: nil, repairLog: nil, format: nil, source: source)
+        }
+        let order = DevicesView.sorted([device("b", "android", nil), device("a", "android", "local"),
+                                        device("z", "ios", "remote"), device("y", "android", "remote")]).map(\.key)
+        check("remote rows first, then by platform and name", order == ["y", "z", "a", "b"], "got \(order)")
+
         // ---- the Devices screen's actions, through a Store and a stand-in installer ----
 
         print("allocator: the Devices screen's actions")

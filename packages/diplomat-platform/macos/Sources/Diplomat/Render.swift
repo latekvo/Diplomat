@@ -1140,6 +1140,13 @@ enum Render {
                 allocatedAt: nowMs - 40_000, idleMs: nil, brokenReason: nil,
                 repairLog: nil, format: "phone", source: "remote"),
         ]
+        let listed = away ? [] : [
+            DeviceAllocation(
+                key: "lab-pool:tab-s9-01", platform: "android", name: "Galaxy Tab S9",
+                version: "14", apiVersion: "34", handle: nil, status: "free",
+                owner: nil, allocatedAt: nil, idleMs: nil, brokenReason: nil,
+                repairLog: nil, format: "tablet", source: "remote"),
+        ]
         let status = away
             ? RemoteStatus(provider: "lab-pool", state: "sign-in-unanswered",
                            url: "https://lab-pool.example/devices",
@@ -1149,7 +1156,7 @@ enum Render {
             : RemoteStatus(provider: "lab-pool", state: "signing-in",
                            url: "https://lab-pool.example/devices",
                            loginUrl: "https://lab-pool.example/login?session=7f3a")
-        store.deviceState = DeviceState(devices: local.devices + leases, daemonPid: 51734,
+        store.deviceState = DeviceState(devices: listed + leases + local.devices, daemonPid: 51734,
                                         remote: status)
         store.setDeviceRemoteProvider("~/.diplomat/remote/lab-pool.mjs")
         store.auditEntries.insert(
