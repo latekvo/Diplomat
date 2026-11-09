@@ -123,15 +123,18 @@ try {
   }
 
   // ---- repairing a block that lost its end marker --------------------------
-  // Where the block ended is unknown, so what follows the begin marker may be the
-  // user's own text, and the reinstall must keep it.
   const endMark = '<!-- end diplomat-device-allocator -->';
-  const mine = fs.readFileSync(CLAUDE_MD, 'utf8').replace(endMark, '');
-  fs.writeFileSync(CLAUDE_MD, `${mine}\n## My own rules\nkeep me\n`);
-  run('--install');
-  const kept = fs.readFileSync(CLAUDE_MD, 'utf8');
-  ok('repairing a block without its end marker keeps the text after it', kept.includes('keep me'));
-  ok('and leaves one complete block', kept.split(endMark).length === 2);
+  const whole = fs.readFileSync(CLAUDE_MD, 'utf8');
+  const block = whole.slice(whole.indexOf('<!-- diplomat-device-allocator'));
+  const mine = whole.replace(endMark, '');
+  // Alone, and before a complete block whose end is not its own.
+  for (const after of ['', `\n${block}`]) {
+    fs.writeFileSync(CLAUDE_MD, `${mine}\n## My own rules\nkeep me\n${after}`);
+    run('--install');
+    const kept = fs.readFileSync(CLAUDE_MD, 'utf8');
+    ok(`repairing a block without its end marker keeps the text after it${after && ' (a complete block follows)'}`, kept.includes('keep me'));
+    ok('and leaves one complete block', kept.split(endMark).length === 2);
+  }
 
   // ---- an MCP entry whose node is gone -------------------------------------
   // The other half of the registration: the args can be right while the binary

@@ -41,15 +41,16 @@ function sameFile(a, b) {
 
 // Remove every block delimited by (begin, end) — loop, so install/uninstall and
 // a legacy-marker cleanup always converge to zero copies. A begin marker without its
-// end loses only its own line: where the block ended is unknown, and what follows may
-// be the user's.
+// own end (none follows before the next begin) loses only its own line: where the block
+// ended is unknown, and what follows may be the user's, so its old body stays as text.
 export function stripBlock(text, begin, end) {
   let out = text;
   for (;;) {
     const i = out.indexOf(begin);
     if (i === -1) break;
     const j = out.indexOf(end, i);
-    if (j === -1) {
+    const next = out.indexOf(begin, i + begin.length);
+    if (j === -1 || (next !== -1 && next < j)) {
       const eol = out.indexOf('\n', i);
       out = out.slice(0, i) + (eol === -1 ? '' : out.slice(eol + 1));
       continue;
@@ -103,9 +104,10 @@ export function claudeCodeInstall({ name, mcpJs, skillSrc, ruleSrc, claudeMd, ba
   /// What no longer matches this checkout, as a list of names for the UI and the log.
   ///
   /// The MCP entry is judged on its `args` and on whether its `command` still exists,
-  /// deliberately NOT on `command` matching the node running right now: Diplomat's
-  /// two front-ends, which both install the allocator, resolve node slightly differently, and an equality check there would
-  /// have each of them see the other's registration as drift and reinstall on every
+  /// deliberately NOT on `command` matching the node running right now: Diplomat's two
+  /// front-ends, which both install the allocator, resolve node slightly differently, and
+  /// an equality check there would have each of them see the other's registration as
+  /// drift and reinstall on every
   /// launch, forever. A registration pointing at a deleted node, or at another
   /// checkout's mcp.js, is the real breakage — and both of those this catches.
   function drift() {

@@ -95,7 +95,6 @@ try {
   });
 
   await check('a hung probe returns at its timeout and leaves nothing running', async () => {
-    // The hung probe's grandchild holds its stderr open, as a ProxyCommand does.
     const r = inSandbox({ ...sb.env, RM_PROBE_TIMEOUT_MS: '1000' }, `
       const { probe } = await import('./probe.js');
       const t = Date.now();
@@ -121,7 +120,6 @@ try {
     const fullSwap = { totalBytes: 4 * GB, usedBytes: 3.9 * GB };
     const load = { last1m: 2 };
     assert.deepEqual(warnings({ info: base, load }), []);
-    // macOS keeps the swap files it grew, so with a pressure reading swap is not a signal.
     assert.deepEqual(warnings({ info: { ...base, swap: fullSwap }, load }), []);
     const linux = { ...base, memory: { ...base.memory, pressure: null }, swap: fullSwap };
     assert.deepEqual(warnings({ info: linux, load }), ['swap 98% used']);

@@ -102,7 +102,6 @@ try {
     assert.equal(byTarget.pinned.trusted, true);
     assert.equal(byTarget['fresh.lan'].trusted, true);
     assert.equal(byTarget.included.trusted, false);
-    // ssh looks a HostKeyAlias up bare, whatever the port.
     assert.equal(byTarget.aliased.trusted, true);
   });
 
@@ -113,7 +112,6 @@ try {
   });
 
   const withoutAlpha = await d.candidates({ exclude: ['alpha'] });
-  // ssh matches Host aliases case-sensitively, so a mixed-case one must resolve as written.
   const withoutMixed = await d.candidates({ exclude: ['MixedBox'] });
   check('excluding an alias hides its host under every other name too', () => {
     assert.ok(!withoutAlpha.some((c) => c.hostname === 'alpha.local'), JSON.stringify(withoutAlpha.map((c) => c.target)));
