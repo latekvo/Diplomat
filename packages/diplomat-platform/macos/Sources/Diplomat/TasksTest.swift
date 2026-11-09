@@ -7,7 +7,11 @@ import DiplomatCore
 /// against a stand-in `gh` (`DIPLOMAT_GH`) that logs its calls, notes any call made while
 /// another is still running, and answers one canned GraphQL reply.
 ///
-/// The tasks and Comms directories point at scratch; no real `gh` runs.
+/// Then goals: the automatic pass's asks and records, what pauses for them, the agent
+/// overlay, and a grouper run that fails.
+///
+/// The tasks and Comms directories point at scratch; no real `gh` or `claude` runs, and
+/// no agent is spawned.
 enum TasksTest {
     @MainActor
     static func run() async -> Bool {
@@ -199,7 +203,222 @@ enum TasksTest {
               "\(form.text)|\(form.tags)|\(form.links)")
         check("and syncs without waiting for the timer", calls() == j + 1, "\(calls() - j) calls")
 
+        print("goals")
+        let goalsDir = scratch.appendingPathComponent("goals")
+        setenv("DIPLOMAT_TASKS_DIR", goalsDir.path, 1)
+        // The grouper's `claude`, were it ever reached.
+        setenv("DIPLOMAT_CLAUDE", "/usr/bin/false", 1)
+        let me = "octo-me"
+        store.usernameOverride = ""
+        store.me = me
+        store.prAutofixEnabled = false
+        let fixture: GoalFixture
+        do {
+            fixture = try writeGoalFixture(in: goalsDir, now: Date(), me: me)
+        } catch {
+            print("FAIL — goal fixture: \(error)")
+            return false
+        }
+        await store.reloadTasks()
+        func view(_ id: String) -> TaskView? { store.taskViews.first { $0.task.id == id } }
+        func ref(_ n: Int) -> String { "\(owner)/\(repo)#\(n)" }
+        let labels = view(fixture.proposed)?.graph.map { $0.map(\.label) } ?? []
+        check("the proposal's graph: closes, stacked and blocking PRs, and the issue no PR closes",
+              labels == [["#1801", "#1810", "#1811"], ["#1802", "#1811"], ["#1803", "+"], ["#1812", "#1810", "#1811"]],
+              "\(labels)")
+        let wanted = view(fixture.auto)?.work.map { "\($0.kind.rawValue):\($0.number)" } ?? []
+        check("the auto goal wants a fix, two reviews and the findings of the operator's PR",
+              wanted == ["fix-issue:1820", "review:1821", "review:1822", "findings:1822"], "\(wanted)")
+        check("a proposed and an observed goal want nothing",
+              view(fixture.proposed)?.work == [] && view(fixture.observe)?.work == [])
+        check("with PR auto-fix off, my-PR review fixes are paused",
+              store.isPaused(.myReviews, prNumber: 1810) && store.isPaused(.myReviews, prNumber: nil))
+        check("but not on a PR of an auto goal's findings, whose conflicts stay paused",
+              !store.isPaused(.myReviews, prNumber: 1822) && store.isPaused(.conflicts, prNumber: 1822))
+
+        print("the automatic pass")
+        let asksBefore = Set(store.requestedWork.map(\.key))
+        await store.runGoalPass()
+        let asked = store.requestedWork.filter { !asksBefore.contains($0.key) }
+        check("asks for exactly the fix and the two reviews",
+              asked.map(\.key) == ["issues:1820", "review:1821", "review:1822"], "\(asked.map(\.key))")
+        if case .issues(let cfg)? = asked.first?.config {
+            check("the fix names its issue", cfg.target == .specific && cfg.specificIssue == "1820"
+                    && asked.first?.author == "tv-user", "\(cfg.target) \(cfg.specificIssue)")
+        } else {
+            check("the fix is an issues ask", false, "\(String(describing: asked.first?.config))")
+        }
+        let reviews = asked.dropFirst().compactMap { ask -> (ReviewConfig, String)? in
+            if case .review(let cfg) = ask.config { return (cfg, ask.author) }
+            return nil
+        }
+        check("the reviews are the review-request monitor's, mine reviewed as mine",
+              reviews.map { "\($0.0.depth) \($0.0.specificPR) \($0.0.specificAuthor) @\($0.1)" }
+                == ["max 1821 theirs @contributor-x", "max 1822 mine @"],
+              "\(reviews.map { "\($0.0.depth) \($0.0.specificPR) \($0.0.specificAuthor) @\($0.1)" })")
+        let recorded = view(fixture.auto)?.task.dispatched.keys.sorted() ?? []
+        check("and records them dispatched", recorded == ["fix:\(ref(1820))", "review:\(ref(1821))@a1b2c3d4",
+                                                           "review:\(ref(1822))@e5f6a7b8"], "\(recorded)")
+        check("so the goal wants only the findings now",
+              view(fixture.auto)?.work.map(\.kind) == [.findings])
+        await store.runGoalPass()
+        check("a second pass asks for nothing more", store.requestedWork.count == asksBefore.count + 3,
+              "\(store.requestedWork.count - asksBefore.count) asks")
+        let overlay = store.goalOverlay
+        check("the asks show as queued", overlay.queuedIssues == [1820] && overlay.queuedPRs == [1821, 1822],
+              "\(overlay)")
+
+        print("the agent overlay")
+        func run(_ id: String, _ pr: Int?, _ kind: String, _ label: String, _ state: AgentState.RunState,
+                 released: Bool = false) -> Store.AgentRow {
+            Store.AgentRow(record: AgentState.RunRecord(runID: id, dispatchedAt: 0, prNumber: pr, kind: kind,
+                                                        label: label, released: released),
+                           state: state, reason: "", window: nil)
+        }
+        func task(_ id: String, pr: Int?) -> Store.QueuedAgentTask {
+            Store.QueuedAgentTask(id: id, job: Store.AgentJob(kind: "review", auditAction: "review", label: id,
+                                                              prompt: "", prURL: nil, prNumber: pr,
+                                                              authorLogin: nil, duty: "review", workKey: "",
+                                                              counter: nil),
+                                  attemptNumber: 1)
+        }
+        let composed = Store.goalOverlay(
+            rows: [run("a", 1821, "review", "Review · #1821 · deep", .running),
+                   run("b", 1810, "review", "Review · #1810 · deep", .awaitingInput),
+                   run("c", 1822, "review", "Review · #1822 · deep", .running, released: true),
+                   run("d", 1811, "conflicts", "Resolve · #1811", .finished),
+                   run("e", nil, "issues", "Issues · #18030 · deep", .starting),
+                   run("f", nil, "issues", "Issues · #1803 · deep", .unknown),
+                   run("g", nil, "review", "Issues · #1804 · deep", .running)],
+            queued: [task("issues:1802", pr: nil), task("review-req:1812", pr: 1812)],
+            requested: [store.goalFixAsk(number: 1801, url: "", author: nil)],
+            startingFixes: [1830])
+        check("agents: live PR runs, issue fixes by label, spawning fixes",
+              composed.agentPRs == [1810, 1821] && composed.agentIssues == [1803, 1830, 18030], "\(composed)")
+        check("queued: PR tasks, issues:N tasks and asked-for fixes",
+              composed.queuedPRs == [1812] && composed.queuedIssues == [1801, 1802], "\(composed)")
+        let watched = (owner: owner, repo: repo)
+        func pill(_ kind: String, _ n: Int, in o: String = owner) -> TaskGraph.Node {
+            TaskGraph.Node(kind: kind, url: "https://github.com/\(o)/\(repo)/\(kind == "pr" ? "pull" : "issues")/\(n)",
+                           label: "#\(n)")
+        }
+        let badges = [pill("pr", 1821), pill("pr", 1812), pill("pr", 1822), pill("add", 1803), pill("add", 1802),
+                      pill("issue", 1803), pill("pr", 1821, in: "someone-else")]
+            .map { composed.badge($0, watched: watched).map { "\($0)" } ?? "-" }
+        check("badges: a PR's and an add pill's, none on an issue pill or another repo's PR",
+              badges == ["agent", "queued", "-", "agent", "queued", "-", "-"], "\(badges)")
+
+        print("finding goals")
+        fm.createFile(atPath: failing.path, contents: Data())
+        await store.findGoals()
+        try? fm.removeItem(at: failing)
+        check("a failed grouper run is shown, and the chip freed",
+              store.tasksGrouperMark?.error?.contains("502") == true && !store.tasksGrouping,
+              store.tasksGrouperMark?.error ?? "nil")
+
         print(pass ? "tasks: all passed" : "tasks: FAILED")
         return pass
+    }
+
+    /// What `writeGoalFixture` made: the three goals' ids.
+    struct GoalFixture {
+        let proposed: String
+        let auto: String
+        let observe: String
+    }
+
+    struct FixtureError: Error { let message: String }
+
+    /// Three goals in `dir`, through the real core: a grouper proposal (`TaskGrouper.apply`)
+    /// whose PRs close its issues, stack on and block each other, one issue with no PR; an
+    /// `auto` goal (`reviewOnPush`) with an issue to fix, someone's PR and one of `me`'s; a
+    /// proposal the operator chose to observe. Their items are synced into the mirror
+    /// (`TaskSync.apply`) beside whatever it holds.
+    static func writeGoalFixture(in dir: URL, now: Date, me: String) throws -> GoalFixture {
+        let (owner, repo) = CoreAssets.repoCoordinates()
+        func gh(_ kind: String, _ n: Int) -> String {
+            "https://github.com/\(owner)/\(repo)/\(kind == "pr" ? "pull" : "issues")/\(n)"
+        }
+        func ago(_ hours: Double) -> Date { now.addingTimeInterval(-hours * 3600) }
+        struct Item {
+            let kind: String, number: Int, title: String, author: String
+            var state = "OPEN", draft = false, closes: [Int] = [], base: String? = nil, head: String? = nil,
+                oid: String? = nil
+        }
+        let items = [
+            Item(kind: "issue", number: 1801, title: "iPhone Duo: apps open on the wrong panel", author: "duo-fan"),
+            Item(kind: "issue", number: 1802, title: "Fold gesture on the iPhone Duo", author: "mobile-dev"),
+            Item(kind: "issue", number: 1803, title: "Screenshots capture one panel of the Duo", author: "qa-bot"),
+            Item(kind: "pr", number: 1810, title: "feat: iPhone Duo support", author: me, closes: [1801],
+                 base: "main", head: "duo-support", oid: "d00d1810"),
+            Item(kind: "pr", number: 1811, title: "fix: fold gesture on the Duo", author: "mobile-dev",
+                 closes: [1802], base: "duo-support", head: "duo-fold", oid: "f01d1811"),
+            Item(kind: "pr", number: 1812, title: "fix: simulator-server crash on a second display", author: me,
+                 state: "MERGED", base: "main", head: "second-display", oid: "5ec0d1812"),
+            Item(kind: "issue", number: 1820, title: "Fire TV remote: long press", author: "tv-user"),
+            Item(kind: "pr", number: 1821, title: "feat: remote key mapping", author: "contributor-x",
+                 base: "main", head: "remote-keys", oid: "a1b2c3d4"),
+            Item(kind: "pr", number: 1822, title: "feat: remote swipe gestures", author: me,
+                 base: "main", head: "remote-swipe", oid: "e5f6a7b8"),
+            Item(kind: "issue", number: 1830, title: "Network inspector on Android", author: "net-user"),
+            Item(kind: "pr", number: 1831, title: "feat: Android network inspector", author: "net-dev", draft: true,
+                 closes: [1830], base: "main", head: "android-net", oid: "0a1b1831"),
+        ]
+        let candidates = items.filter { $0.number < 1820 || $0.number >= 1830 }.map {
+            TaskGrouper.Candidate(number: $0.number, kind: $0.kind, title: $0.title, author: $0.author,
+                                  closes: $0.closes, url: gh($0.kind, $0.number))
+        }
+        let answers = [
+            TaskGrouper.Answer(title: "iPhone Duo support", tags: ["area:devices"],
+                               items: [1801, 1802, 1803, 1810, 1811, 1812], blocks: [(from: 1812, to: 1810)]),
+            TaskGrouper.Answer(title: "Android network inspector", tags: ["area:network"], items: [1830, 1831]),
+        ]
+        let grouped = TaskGrouper.apply(answers, to: try TaskStore.tasks(in: dir), candidates: candidates,
+                                        now: ago(30), minItems: 2, maxNew: 3,
+                                        watched: (owner: owner, repo: repo))
+        guard grouped.created == 2, grouped.tasks.count >= 2 else {
+            throw FixtureError(message: "the grouper fixture proposed \(grouped.created) goals")
+        }
+        let proposed = grouped.tasks[grouped.tasks.count - 2].id
+        let observe = grouped.tasks[grouped.tasks.count - 1].id
+        try save(grouped.tasks, events: grouped.events, in: dir)
+        try TaskStore.edit(.mode(id: observe, mode: TaskMode.observe.rawValue, reviewOnPush: nil), now: ago(20), in: dir)
+        let auto = try TaskStore.edit(.create(title: "Fire TV remote input", tags: ["area:vega", "goal"],
+                                              links: [gh("issue", 1820), gh("pr", 1821), gh("pr", 1822)]),
+                                      now: ago(50), in: dir)
+        try TaskStore.edit(.mode(id: auto.id, mode: TaskMode.auto.rawValue, reviewOnPush: true), now: ago(6), in: dir)
+
+        var fetched: [String: TaskFetch] = [:]
+        for i in items {
+            let url = gh(i.kind, i.number)
+            fetched[url] = .found(TaskItem(kind: i.kind, title: i.title, url: url, state: i.state, isDraft: i.draft,
+                                           ci: i.kind == "pr" ? "SUCCESS" : nil,
+                                           closes: i.closes.map { gh("issue", $0) },
+                                           mergedAt: i.state == "MERGED" ? ago(10) : nil, author: i.author,
+                                           baseRef: i.base, headRef: i.head, headOid: i.oid))
+        }
+        let synced = TaskSync.apply(tasks: try TaskStore.tasks(in: dir), mirror: TaskStore.mirror(in: dir),
+                                    fetched: fetched, now: ago(2), excerptChars: 200)
+        try save(synced.tasks, events: synced.events, in: dir)
+        try CommsLog.encoder.encode(synced.mirror).write(to: dir.appendingPathComponent("mirror.json"))
+        return GoalFixture(proposed: proposed, auto: auto.id, observe: observe)
+    }
+
+    /// `tasks` as the whole task file, `events` appended to the history.
+    private static func save(_ tasks: [TrackedTask], events: [TaskEvent], in dir: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try CommsLog.encoder.encode(["tasks": tasks]).write(to: dir.appendingPathComponent("tasks.json"))
+        let url = dir.appendingPathComponent("events.jsonl")
+        if !fm.fileExists(atPath: url.path) { fm.createFile(atPath: url.path, contents: nil) }
+        var lines = Data()
+        for e in events {
+            lines.append(try CommsLog.encoder.encode(e))
+            lines.append(UInt8(ascii: "\n"))
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: lines)
+        try handle.close()
     }
 }

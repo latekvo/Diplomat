@@ -51,6 +51,7 @@ struct TasksView: View {
             header
             statusLine
             if let error = store.tasksSyncError { banner(error, tint: .orange) }
+            if let error = store.tasksGrouperMark?.error { banner("Finding goals failed: \(error)", tint: .orange) }
             if let error = store.tasksReadError { banner(error, tint: .red) }
             if let seed = composer {
                 let open = $composer
@@ -100,6 +101,12 @@ struct TasksView: View {
                 let store = store
                 Task { await store.syncTasks() }
             }
+            ActionChip(symbol: "sparkle.magnifyingglass",
+                       text: store.tasksGrouping ? "Finding goals…" : "Find goals",
+                       tint: .accentColor, enabled: !store.tasksGrouping) {
+                let store = store
+                Task { await store.findGoals() }
+            }
             ActionChip(symbol: "plus", text: "New task", tint: .accentColor, enabled: composer == nil) {
                 composer = TaskDraft.Seed()
             }
@@ -122,12 +129,14 @@ struct TasksView: View {
     }
 
     private var statusText: String {
+        let goals = store.tasksGrouperMark.map { "goals looked for \(Fmt.clock($0.ranAt))" }
+            ?? "goals not looked for yet"
         guard store.activeTaskCount > 0 else {
-            return "Nothing to sync: syncing starts with the first task that is not archived."
+            return "Nothing to sync: syncing starts with the first task that is not archived · \(goals)"
         }
         let last = store.tasksLastSync.map { "last sync \(Fmt.clock($0))" } ?? "not synced yet"
         let every = Fmt.duration(Store.tasksSyncInterval)
-        return "GitHub state and Comms pings of every linked item · \(last) · every \(every)"
+        return "GitHub state and Comms pings of every linked item · \(last) · every \(every) · \(goals)"
     }
 
     private func banner(_ message: String, tint: Color) -> some View {
@@ -170,6 +179,7 @@ struct TasksView: View {
                         }
                         .id(editor)
                     }
+                    goal(view)
                     history(view)
                 }
                 .padding(.leading, 14)
@@ -221,6 +231,23 @@ struct TasksView: View {
             ActionChip(symbol: "archivebox", text: "Archive", tint: .secondary) {
                 edit(.archive(id: id), task: id)
             }
+        }
+    }
+
+    /// A task with GitHub links: its mode and its graph.
+    @ViewBuilder
+    private func goal(_ view: TaskView) -> some View {
+        if view.task.links.contains(where: \.isGitHub) {
+            let id = view.task.id
+            let store = store
+            let errors = $actionErrors
+            GoalSection(view: view, overlay: store.goalOverlay, watched: CoreAssets.repoCoordinates(),
+                        setMode: { mode, review in
+                            Task { errors.wrappedValue[id] = await store.setGoalMode(id, mode: mode, reviewOnPush: review) }
+                        },
+                        startFix: { node in
+                            Task { errors.wrappedValue[id] = await store.startGoalFix(node, task: id) }
+                        })
         }
     }
 
@@ -471,6 +498,11 @@ private struct TaskRow<Details: View>: View {
                     .font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
                     .frame(width: 9)
                 StatusPill(text: view.status.rawValue, tint: TaskTint.status(view.status)).fixedSize()
+                switch task.effectiveMode {
+                case .proposed: StatusPill(text: "proposed", tint: .teal, symbol: "sparkles").fixedSize()
+                case .auto:     StatusPill(text: "auto", tint: .orange, symbol: "bolt.fill").fixedSize()
+                case .observe, .dismissed: EmptyView()
+                }
                 Text(task.title).font(.system(size: 11.5, weight: .semibold))
                     .lineLimit(1).truncationMode(.tail)
                     .layoutPriority(1)
@@ -510,6 +542,185 @@ private struct TaskRow<Details: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardChrome(fill: Color.gray.opacity(dimmed ? 0.045 : 0.08), padding: 5)
         .opacity(task.archivedAt != nil ? 0.75 : 1)
+    }
+}
+
+// MARK: - A task's goal
+
+/// A task's mode, with the operator's three answers to a proposed one, and its GitHub links
+/// as flat chains (`TaskView.graph`), one line each. An archived task's graph only.
+private struct GoalSection: View {
+    let view: TaskView
+    let overlay: GoalOverlay
+    let watched: (owner: String, repo: String)
+    /// A `mode` edit: the mode, `reviewOnPush`; nil leaves either.
+    let setMode: (TaskMode?, Bool?) -> Void
+    let startFix: (TaskGraph.Node) -> Void
+
+    var body: some View {
+        let actionable = view.task.archivedAt == nil
+        return VStack(alignment: .leading, spacing: 3) {
+            if actionable { modeLine }
+            ForEach(Array(view.graph.enumerated()), id: \.offset) { _, row in
+                GraphRow(nodes: row, overlay: overlay, watched: watched, actionable: actionable,
+                         startFix: startFix)
+            }
+        }
+    }
+
+    private var modeLine: some View {
+        let task = view.task
+        let mode = task.effectiveMode
+        return HStack(spacing: 5) {
+            Text("GOAL").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary).kerning(0.5)
+            if mode == .proposed {
+                Text(proposedText).font(.system(size: 10.5)).foregroundStyle(.secondary)
+                ActionChip(symbol: "xmark", text: "Dismiss", tint: .secondary) { setMode(.dismissed, nil) }
+                ActionChip(symbol: "eye", text: "Observe", tint: .accentColor) { setMode(.observe, nil) }
+                ActionChip(symbol: "bolt.fill", text: "Automate", tint: .orange) { setMode(.auto, nil) }
+            } else {
+                ActionChip(symbol: "eye", text: "Observe", tint: mode == .observe ? .accentColor : .secondary) {
+                    setMode(.observe, nil)
+                }
+                ActionChip(symbol: "bolt.fill", text: "Auto", tint: mode == .auto ? .orange : .secondary) {
+                    setMode(.auto, nil)
+                }
+                if mode == .auto {
+                    ActionChip(symbol: task.reviewOnPush ? "checkmark.square.fill" : "square",
+                               text: "Review on new commits",
+                               tint: task.reviewOnPush ? .accentColor : .secondary) {
+                        setMode(nil, !task.reviewOnPush)
+                    }
+                }
+                if task.origin == TrackedTask.grouperOrigin {
+                    ActionChip(symbol: "xmark", text: "Dismiss", tint: .secondary) { setMode(.dismissed, nil) }
+                }
+            }
+        }
+    }
+
+    /// "Proposed from N open issues and PRs": the GitHub links not merged, closed or gone.
+    private var proposedText: String {
+        let settled: Set<String> = ["merged", "closed", "missing"]
+        let open = view.task.links.filter { $0.isGitHub && !settled.contains(view.linkStates[$0.url] ?? "") }.count
+        return "Proposed from \(open) open issue\(open == 1 ? "" : "s") and PRs"
+    }
+}
+
+/// One `TaskView.graph` row: its pills left to right, joined by arrows, on one line.
+private struct GraphRow: View {
+    let nodes: [TaskGraph.Node]
+    let overlay: GoalOverlay
+    let watched: (owner: String, repo: String)
+    let actionable: Bool
+    let startFix: (TaskGraph.Node) -> Void
+
+    /// Scrolls only a row too long for the screen: `ImageRenderer` draws no scroll view.
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            pills
+            ScrollView(.horizontal, showsIndicators: false) { pills }
+        }
+    }
+
+    private var pills: some View {
+        HStack(spacing: 3) {
+            ForEach(Array(nodes.enumerated()), id: \.offset) { i, node in
+                if i > 0 {
+                    Image(systemName: "arrow.right").font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                }
+                GoalPill(node: node, badge: overlay.badge(node, watched: watched), watched: watched,
+                         actionable: actionable, startFix: startFix)
+            }
+        }
+        .padding(.vertical, 1)
+        .fixedSize()
+    }
+}
+
+/// A graph item: its state dot and label, opening it in the browser; or the `+` of an
+/// issue no PR closes, starting a fix agent for it. Either shows its `GoalOverlay` badge.
+private struct GoalPill: View {
+    let node: TaskGraph.Node
+    let badge: GoalOverlay.Badge?
+    let watched: (owner: String, repo: String)
+    let actionable: Bool
+    let startFix: (TaskGraph.Node) -> Void
+
+    var body: some View {
+        if node.kind == "add" {
+            addPill
+        } else {
+            itemPill
+        }
+    }
+
+    private var itemPill: some View {
+        let url = URL(string: node.url)
+        let state = TaskTint.linkState(node.state, kind: node.kind)
+        let help = ([state?.word, node.author.map { "by @\($0)" }, node.url] as [String?])
+            .compactMap { $0 }.joined(separator: "\n")
+        return Button { if let url { NSWorkspace.shared.open(url) } } label: {
+            HStack(spacing: 3) {
+                Circle().fill(state?.tint ?? Color.gray.opacity(0.4)).frame(width: 6, height: 6)
+                Text(node.label).font(.system(size: 10, weight: .medium)).lineLimit(1)
+                if let badge { GoalBadge(badge: badge) }
+            }
+            .foregroundStyle(Color.accentColor)
+            .padding(.horizontal, 6).padding(.vertical, 1.5)
+            .background(Capsule().fill(Color.accentColor.opacity(0.11)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .tooltip(help)
+    }
+
+    @ViewBuilder
+    private var addPill: some View {
+        if let badge {
+            GoalBadge(badge: badge).tooltip(badge == .agent ? "An agent is fixing it" : "Its fix is queued")
+        } else {
+            Button { startFix(node) } label: {
+                Image(systemName: "plus").font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(actionable ? Color.accentColor : Color.secondary)
+                    .padding(.horizontal, 7).padding(.vertical, 2.5)
+                    .background(Capsule().strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+                        .foregroundStyle(actionable ? Color.accentColor : Color.secondary))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(!actionable)
+            .fixedSize()
+            .tooltip(addHelp)
+        }
+    }
+
+    private var addHelp: String {
+        let issue = GitHubRef(url: node.url)?.label(watched: watched) ?? node.url
+        let asked = node.dispatchedAt.map { at -> String in
+            let ago = TaskTint.ago(at)
+            return ago == "now" ? "\nfix asked just now" : "\nfix asked \(ago) ago"
+        } ?? ""
+        return "No PR fixes \(issue) yet: start a fix agent for it" + asked
+    }
+}
+
+private struct GoalBadge: View {
+    let badge: GoalOverlay.Badge
+
+    var body: some View {
+        let agent = badge == .agent
+        let tint: Color = agent ? .blue : .orange
+        return HStack(spacing: 2) {
+            Image(systemName: agent ? "cpu" : "clock").font(.system(size: 7.5, weight: .bold))
+            Text(agent ? "agent" : "queued").font(.system(size: 8.5, weight: .bold))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 4).padding(.vertical, 1)
+        .background(Capsule().fill(tint.opacity(0.16)))
+        .fixedSize()
     }
 }
 
