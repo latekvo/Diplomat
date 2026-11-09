@@ -29,9 +29,10 @@ comparison, then the usable remote machines best first, then one line on the res
 ```
 1. radoniusz (also radoniusz.local) - radoniusz@radoniusz.local
    macOS 27.0 arm64 · Apple M3 Pro, 11 cores (5 performance) · GPU Apple M3 Pro (14-core) · 18 GB RAM
-   load 1.04 now, 1.72 over 5 min, 1.21 since the last scan (0.16 per core over 5 min) · 9.8 spare cores · 5.9 GB RAM available · swap 5.0 GB of 6.0 GB used · 14 GB disk free
+   load 1.04 now, 1.72 over 5 min, 1.21 since the last scan (0.16 per core over 5 min) · 10 spare cores · 5.9 GB RAM available · swap 5.0 GB of 6.0 GB used · 14 GB disk free
    tools on the login PATH: git, gh, node v26.7.0, npm, python3, docker, swift, java, ffmpeg, Xcode 27.1 · home /Users/radoniusz
    WARNING: swap 83% used; low disk: 14 GB free
+   load read 12 s ago
 ```
 
 `refresh: true` rediscovers machines and re-reads everything before answering. The
@@ -39,8 +40,9 @@ steering is applied at every layer the allocator uses, so no agent can miss it: 
 `instructions` on the MCP handshake, an `alwaysApply` rule in `~/.claude/rules/`, a
 managed block in `~/.claude/CLAUDE.md`, a skill in `~/.claude/skills/`, and the tool
 description. All of them say the same thing: before artifact-producing work, call
-`list-machines`, then rsync the inputs over, run the work with `ssh <target>`, bring back
-only the artifacts and clean up. They also say when to stay local: when there is no
+`list-machines`, then rsync the inputs over, run the work through a login shell
+(`ssh <target> '$SHELL -l -s'` with the commands on stdin, since a plain `ssh <target>
+<command>` misses Homebrew), bring back only the artifacts and clean up. They also say when to stay local: when there is no
 usable machine, when the work needs this machine's devices, GUI, services or secrets, or
 when the remote lacks the toolchain.
 
@@ -58,9 +60,10 @@ connecting to any:
 
 Each is resolved with `ssh -G`, so the user's own config decides the user, port and host
 name. Outside `remoteMachineHosts`, only hosts on this network count: single-label and
-`.local`/`.lan`/`.home.arpa`/`.internal` names, tailnets (`.ts.net`, 100.64/10) and
-private or link-local addresses. Candidates naming the same host and port merge into
-one, keeping the ssh-config alias (it carries the right user). After probing, two names
+`.local`/`.lan`/`.home`/`.home.arpa`/`.internal` names, tailnets (`.ts.net`, 100.64/10)
+and private or link-local addresses. Candidates naming the same host and port merge into
+one, keeping the target of the first source in the table's order (so an ssh-config alias,
+with the user it sets, beats the bare names known_hosts and mDNS give). After probing, two names
 reaching the same machine id merge too. `remoteMachineExclude` hides a target or host
 name.
 
@@ -68,7 +71,9 @@ name.
 probe runs with `StrictHostKeyChecking=yes`, whatever the user's config says. A host
 nobody vetted could accept any client key and receive whatever an agent offloads to it.
 Probing would also offer our keys to every laptop advertising SSH on an office network.
-Such hosts are listed as `untrusted`; `ssh <host>` once by hand to vet one.
+Such hosts are listed as `untrusted`; `ssh <host>` once by hand to vet one. A host whose
+key changed since it was accepted is listed as `key-changed`, and stays unused until its
+old key is removed from `known_hosts`.
 
 ## Reading a machine
 
@@ -77,7 +82,7 @@ this machine). It installs nothing and changes nothing. A `load` probe reads the
 averages, memory (macOS `kern.memorystatus_level` and pressure level, Linux
 `MemAvailable`), swap, free disk in `$HOME`, boot time, machine id and NVIDIA GPU usage.
 A `full` probe adds the OS, CPU, GPUs, Xcode, and the toolchains on the login shell's
-PATH (the PATH an agent's `ssh host cmd` gets).
+PATH (the one agents are told to run work under).
 
 The daemon re-reads the load of every reachable machine every minute
 (`RM_PROBE_INTERVAL_MS`). Every 5 minutes (`RM_DISCOVERY_INTERVAL_MS`) it also

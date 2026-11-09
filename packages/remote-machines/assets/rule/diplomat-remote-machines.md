@@ -15,9 +15,16 @@ dataset, a benchmark - **prefer running it on a remote machine**:
 
 1. Call `list-machines` first. Pick the first machine without warnings that has the
    toolchain and enough spare cores, RAM and disk for the job.
-2. Copy the inputs there: `rsync -az --exclude node_modules --exclude .git <dir>/ <target>:offload/<task>/`,
+2. Copy the inputs there: `ssh <target> mkdir -p offload/<task>`, then
+   `rsync -az --exclude node_modules --exclude .git <dir>/ <target>:offload/<task>/`,
    or clone/fetch work you have pushed.
-3. Run it with `ssh <target> 'cd offload/<task> && <command>'`.
+3. Run it through a login shell. A plain `ssh <target> <command>` is not one, so its PATH
+   lacks Homebrew and the other toolchains `list-machines` reports:
+   ```bash
+   ssh <target> '$SHELL -l -s' <<'EOF'
+   cd offload/<task> && <command>
+   EOF
+   ```
 4. Copy back only the artifacts and results you need, then `ssh <target> 'rm -rf offload/<task>'`.
 
 Run it on this machine instead when `list-machines` shows no usable machine, when the work

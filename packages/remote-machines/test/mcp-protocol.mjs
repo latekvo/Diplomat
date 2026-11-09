@@ -1,6 +1,6 @@
 // Drives the real stdio MCP server (src/mcp.js) over JSON-RPC, the way Claude Code does,
 // against fake hosts: the handshake carries the offloading instructions, list-machines
-// is advertised with alwaysLoad, a call starts the daemon and answers with the table,
+// is advertised with alwaysLoad, a call answers with the table from the daemon,
 // a refresh rescans, and closing stdin ends the server.
 // Run: node test/mcp-protocol.mjs
 

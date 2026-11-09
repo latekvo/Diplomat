@@ -76,7 +76,7 @@ try {
   await check('ssh failures are told apart', () => {
     assert.equal(classify('me@box: Permission denied (publickey).\n', false).status, 'auth-failed');
     assert.equal(classify('Host key verification failed.\n', false).status, 'untrusted');
-    assert.equal(classify('@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\n', false).status, 'untrusted');
+    assert.equal(classify('@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\nHost key verification failed.\n', false).status, 'key-changed');
     assert.equal(classify('ssh: connect to host x port 22: Connection refused\n', false).status, 'unreachable');
     assert.equal(classify('ssh: Could not resolve hostname x: nodename nor servname provided\n', false).status, 'unreachable');
     assert.equal(classify('', true).status, 'unreachable');

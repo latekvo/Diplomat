@@ -38,6 +38,10 @@ function machine(m, now) {
     `   ${loadLine(m)}`,
   ];
   if (m.target) lines.push(`   tools on the login PATH: ${tools(m)} · home ${m.home}`);
+  // rsync reads `ssh://host:port:path` as host "ssh", so spell out both forms.
+  if (m.target?.startsWith('ssh://')) {
+    lines.push(`   port ${m.port}: use \`ssh -p ${m.port} ${m.hostname}\` and \`rsync -e 'ssh -p ${m.port}' ... ${m.hostname}:offload/<task>/\``);
+  }
   if (m.warnings?.length) lines.push(`   WARNING: ${m.warnings.join('; ')}`);
   lines.push(`   load read ${ago(m.probedAt, now)}`);
   return lines.join('\n');
@@ -47,6 +51,7 @@ const STATUS = {
   'auth-failed': 'SSH refused our keys',
   unreachable: 'not answering',
   untrusted: 'host key never accepted',
+  'key-changed': 'host key changed since it was accepted (ask its owner before trusting it again)',
   error: 'probe failed',
 };
 
@@ -59,7 +64,7 @@ export function formatSnapshot(s, now = Date.now()) {
     : `This machine: could not be read (${local?.error ?? 'not probed yet'}).`);
   out.push('');
   if (s.machines.length) {
-    out.push('Remote machines you can offload to, best first (run commands there with `ssh <target> ...`):');
+    out.push("Remote machines you can offload to, best first (run commands there through a login shell: `ssh <target> '$SHELL -l -s' <<'EOF'`):");
     s.machines.forEach((m, i) => {
       const aka = m.aliases?.length ? ` (also ${m.aliases.join(', ')})` : '';
       out.push(`${i + 1}. ${m.target}${aka} - ${m.user}@${m.hostname}`);

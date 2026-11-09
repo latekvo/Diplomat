@@ -30,14 +30,21 @@ when you need a fresh read of everything (it takes a few seconds).
 ```bash
 T=radoniusz                      # the target list-machines printed
 D=offload/my-task                # one directory per task, under the remote home
+ssh "$T" mkdir -p "$D"           # GNU rsync creates only the last directory level
 rsync -az --delete --exclude node_modules --exclude .git ./ "$T:$D/"
-ssh "$T" "cd $D && npm ci && npm run build"
+ssh "$T" '$SHELL -l -s' <<EOF
+cd $D && npm ci && npm run build
+EOF
 rsync -az "$T:$D/dist/" ./dist/  # bring back only what you need
 ssh "$T" "rm -rf $D"
 ```
 
-- `ssh <target> <command>` runs the command through the remote login shell, so the
-  toolchains `list-machines` reports are on its PATH.
+- Run commands through a login shell (`'$SHELL -l -s'`, fed on stdin as above). A plain
+  `ssh <target> <command>` is not one: its PATH lacks Homebrew and the other toolchains
+  `list-machines` reports. Quote the heredoc marker (`<<'EOF'`) when the commands should
+  expand `$VARS` on the remote rather than here.
+- A machine on a port other than 22 is printed with the `ssh -p` and `rsync -e` forms to
+  use for it.
 - Pushed work can be cloned or fetched there instead of rsynced.
 - Bound long commands yourself, and leave nothing running when you are done.
 

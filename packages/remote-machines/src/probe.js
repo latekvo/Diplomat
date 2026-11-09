@@ -21,12 +21,13 @@ const SSH_OPTS = [
   '-o', 'ControlMaster=no',
 ];
 
-/// Why ssh failed, from its stderr: unreachable, auth-failed, untrusted or error.
+/// Why ssh failed, from its stderr: unreachable, auth-failed, untrusted, key-changed or error.
 export function classify(stderr, timedOut) {
   if (timedOut) return { status: 'unreachable', error: `no answer within ${PROBE_TIMEOUT_MS / 1000} s` };
   const last = stderr.trim().split('\n').filter(Boolean).pop() || 'ssh failed';
   if (/Permission denied|Too many authentication failures/.test(stderr)) return { status: 'auth-failed', error: last };
-  if (/Host key verification failed|IDENTIFICATION HAS CHANGED|host key is known/i.test(stderr)) {
+  if (/IDENTIFICATION HAS CHANGED/i.test(stderr)) return { status: 'key-changed', error: last };
+  if (/Host key verification failed|host key is known/i.test(stderr)) {
     return { status: 'untrusted', error: last };
   }
   if (/Could not resolve|Connection refused|timed out|No route to host|Network is unreachable|Connection closed|Connection reset/i.test(stderr)) {

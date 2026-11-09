@@ -51,8 +51,8 @@ if [ "$mode" = full ]; then
     command -v nvidia-smi >/dev/null 2>&1 ||
       lspci 2>/dev/null | awk -F': ' '/VGA|3D controller/ {print "gpu=" $2}'
   fi
-  # Toolchains on the login shell's PATH, which is the one an agent's `ssh host cmd`
-  # ends up with after it sources a profile; a plain non-login PATH misses Homebrew.
+  # Toolchains on the login shell's PATH, the one agents are told to run work under
+  # (`ssh host '$SHELL -l -s'`); a plain `ssh host cmd` PATH misses Homebrew.
   lpath=$("${SHELL:-/bin/sh}" -lc 'printf "\n%s" "$PATH"' </dev/null 2>/dev/null | tail -1)
   [ -n "$lpath" ] && PATH=$lpath
   for t in git gh node npm pnpm yarn bun python3 uv docker podman swift cargo go java ffmpeg tart claude; do

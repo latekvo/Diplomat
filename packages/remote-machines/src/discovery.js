@@ -94,8 +94,8 @@ function includedFiles(pattern, baseDir) {
 }
 
 /// The literal Host aliases of an ssh config and the files it Includes. Patterns
-/// (*, ?, !) are not hosts and are skipped. A relative Include is resolved against
-/// ~/.ssh, as ssh resolves it in a user config.
+/// (*, ?, !) are not hosts and are skipped. A relative Include is resolved against the
+/// config's own directory: ~/.ssh for the user config, as ssh does.
 export function sshConfigAliases(file = USER_SSH_CONFIG, seen = new Set()) {
   if (seen.has(file)) return [];
   seen.add(file);
@@ -207,7 +207,7 @@ export const SOURCES = ['config', 'ssh-config', 'known-hosts', 'mdns'];
 const portTarget = ({ hostname, port }) => (port === 22 ? hostname : `ssh://${hostname}:${port}`);
 
 // An mDNS name is whatever a peer on the network chose to advertise, so a name that is
-// not a plain host token (one starting with `-` would reach ssh as an option) is dropped.
+// not a plain host token is dropped, on top of the `--` every ssh call passes.
 const SAFE_TARGET = /^(ssh:\/\/)?[A-Za-z0-9_][A-Za-z0-9._@%:[\]-]*$/;
 
 /// Every candidate machine, merged by host name and port:

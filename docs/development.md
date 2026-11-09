@@ -365,8 +365,8 @@ packages/
 
   remote-machines/             ← the `diplomat-remote-machines` MCP server + daemon (see its README): the
                                  machines this one reaches over SSH (ssh config, mDNS, known_hosts; only
-                                 hosts whose key is already trusted), their capabilities and load re-read
-                                 every minute, and the steering that sends artifact-producing work to them
+                                 hosts whose key is already trusted), their load re-read every minute and
+                                 capabilities every 5, and the steering that sends artifact-producing work to them
 
   daemon-core/                 ← what both MCP daemons share: the unix-socket client and singleton server,
                                  atomic writes, the Claude Code installer layers, the test runner

@@ -1,13 +1,7 @@
-// Runs every test in a package's test/ directory, discovered from disk.
-//
-// There used to be two hand-written lists of the device allocator's test files - `npm
-// test` and the CI job - and they had drifted apart in both directions at once: CI never
-// ran paths.mjs, and `npm test` never ran daemon-singleton-race.mjs or
-// agent-kill-spares-supervisor.mjs. Nothing was failing, which is the problem: a test
-// that exists but is never run looks exactly like a test that passes.
-//
-// So there is no list. A file dropped in test/ runs from that moment, and the only way
-// to opt out is to not write it.
+// Runs every test in a package's test/ directory, discovered from disk. There is no
+// list: hand-written ones (`npm test` and the CI job) drift apart silently, and a test
+// that exists but never runs looks exactly like one that passes. A file dropped in test/
+// runs from that moment.
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';

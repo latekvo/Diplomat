@@ -25,10 +25,12 @@ const INSTRUCTIONS =
   'bundle, a test or lint run, a package, a container image, a render or video, generated docs, a ' +
   'dataset, a benchmark - PREFER running it on a remote machine instead of this one. Before such ' +
   'work, call list-machines and pick a machine without warnings and with spare cores, RAM and disk. ' +
-  'Then copy the inputs there (`rsync -az --exclude node_modules --exclude .git <dir>/ ' +
-  '<target>:offload/<task>/`, or `git clone`/`git fetch` of pushed work), run the work with ' +
-  '`ssh <target> \'cd offload/<task> && ...\'`, copy back only the artifacts and results you need, and ' +
-  'delete offload/<task> on the remote when you are done. Run it here instead when list-machines shows ' +
+  'Then copy the inputs there (`ssh <target> mkdir -p offload/<task>`, then `rsync -az --exclude ' +
+  'node_modules --exclude .git <dir>/ <target>:offload/<task>/`, or `git clone`/`git fetch` of pushed ' +
+  'work), and run the work through a login shell, which a plain `ssh <target> <command>` is not (its PATH ' +
+  'lacks Homebrew and the other toolchains list-machines reports): `ssh <target> \'$SHELL -l -s\' ' +
+  '<<\'EOF\'` with `cd offload/<task> && ...` on the lines up to `EOF`. Copy back only the artifacts and ' +
+  'results you need, and delete offload/<task> on the remote when you are done. Run it here instead when list-machines shows ' +
   'no usable machine, when the work needs something only this machine has (its simulators and ' +
   'devices, its GUI, its local services, credentials that must not leave it), or when the remote lacks ' +
   'the toolchain. Never copy secrets (.env files, keys, tokens) to a remote, and leave nothing running ' +
@@ -42,7 +44,7 @@ const TOOLS = [
       'GPU, RAM, toolchains) and how loaded it is right now (load average now, over 5 minutes and since ' +
       'the last scan, free RAM, swap, free disk), plus this machine for comparison. Call it BEFORE any ' +
       'build, test run or other work that produces an artifact, and run that work on the best machine ' +
-      'it lists. Load is at most a minute old; pass refresh: true to rediscover machines and re-read ' +
+      'it lists. Load is re-read every minute; pass refresh: true to rediscover machines and re-read ' +
       'everything now (takes a few seconds).',
     inputSchema: {
       type: 'object',

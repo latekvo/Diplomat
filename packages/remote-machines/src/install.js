@@ -19,15 +19,16 @@ const PKG_DIR = path.resolve(__dirname, '..');
 const ASSETS = path.join(PKG_DIR, 'assets');
 
 const CLAUDE_MD_BODY = [
-  '<!-- diplomat-remote-machines (managed — installed by Diplomat; remove via the installer) -->',
+  '<!-- diplomat-remote-machines (managed — remove via its installer, src/install.js --uninstall) -->',
   '## Offload artifact-producing work to remote machines',
   '',
   'This machine is shared by many agents, and other machines on the network are reachable over',
   'SSH. **For any task that produces an artifact** (a build, binary, app bundle, test or lint run,',
   'package, container image, render, video, generated docs, dataset, benchmark), **call the',
   '`list-machines` tool first and prefer running the work on the best remote machine it lists**:',
-  'rsync the inputs to `offload/<task>/` there, run it over `ssh <target>`, copy back only the',
-  'artifacts, and delete the remote directory when done.',
+  'rsync the inputs to `offload/<task>/` there, run it through a login shell',
+  '(`ssh <target> \'$SHELL -l -s\' <<\'EOF\'`; a plain `ssh <target> <command>` misses Homebrew), copy',
+  'back only the artifacts, and delete the remote directory when done.',
   '',
   'Stay on this machine when no remote machine is usable, when the work needs something only this',
   'machine has (simulators and devices, the GUI, local services, credentials that must not leave',
