@@ -219,6 +219,9 @@ try {
     const back = await stateWhen((x) => x.machines.some((m) => m.target === 'idle'), 'idle back');
     assert.deepEqual(back.excluded, []);
     assert.equal(back.machines.find((m) => m.target === 'idle').status, 'ok');
+    // The exclusions republished the snapshot without new readings; none was kept twice.
+    const at = historyFile().machines['M-IDLE'].map((r) => r[0]);
+    assert.equal(new Set(at).size, at.length);
   });
 
   await check('a refresh re-reads the load and re-ranks', async () => {
