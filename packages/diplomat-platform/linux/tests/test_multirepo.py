@@ -34,6 +34,7 @@ NOW = datetime.now(timezone.utc)
 @pytest.fixture
 def roots(monkeypatch):
     monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, SECOND])
+    monkeypatch.setattr(review, "roots_complete", lambda: True)
 
 
 @pytest.fixture
@@ -277,6 +278,24 @@ def test_an_ask_whose_root_is_gone_is_dropped_and_said(quiet):
     assert [t.job.label for t in quiet._staged_queue] == ["Review · other#3 · deep"]
     assert [e.detail for e in activity.read() if e.action == "queue-drop"] == [
         "Review · gone#3 · deep - o/gone is no longer a repo root, not run"]
+
+
+def test_an_ask_whose_root_failed_to_resolve_is_kept_and_not_run(quiet, monkeypatch):
+    """A root path that fails to resolve (a checkout briefly missing, a git timeout)
+    drops its repo from the roots; its asks wait for it rather than being forgotten."""
+    monkeypatch.setattr(review, "roots_complete", lambda: False)
+    quiet.requested_work = [
+        autofix.RequestedWork(number=3, url="https://github.com/o/gone/pull/3", author="",
+                              config={"kind": "review", "specificPR": "3", "depth": "deep"}, repo="o/gone"),
+        autofix.RequestedWork(number=3, url="https://github.com/o/other/pull/3", author="",
+                              config={"kind": "review", "specificPR": "3", "depth": "deep"}, repo="o/other"),
+    ]
+
+    quiet._offer_requested_work()
+
+    assert [w.repo for w in quiet.requested_work] == ["o/gone", "o/other"]
+    assert [t.job.checkout for t in quiet._staged_queue] == ["/src/other"]
+    assert [e for e in activity.read() if e.action == "queue-drop"] == []
 
 
 def test_the_mesh_never_takes_a_job_whose_checkout_is_no_root(store, roots, monkeypatch):  # noqa: F811

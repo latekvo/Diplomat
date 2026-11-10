@@ -3354,6 +3354,14 @@ private func multiRepoSmoke() throws {
     } else {
         check(false, "an investigation's effect is an investigation")
     }
+    if case .investigate(let cfg) = CommsPlan.effect(for: about, message: asked("x"), toggles: CommsToggles(),
+                                                     settings: lone, reportDir: reports) {
+        check(cfg.owner == "latekvo" && cfg.repo == "diplomat",
+              "an investigation triaged in a repo no longer watched keeps naming it, for the "
+              + "front-end to refuse as it does a review: \(cfg.owner)/\(cfg.repo)")
+    } else {
+        check(false, "an investigation's effect is an investigation")
+    }
     check(CommsDecision(action: .question, summary: "s", reason: "r", repo: "other/radon")
               .checked(against: asked("x"), settings: two).repo == ""
           && CommsDecision(action: .review, number: 1, summary: "s", reason: "r", repo: second).repo == "",

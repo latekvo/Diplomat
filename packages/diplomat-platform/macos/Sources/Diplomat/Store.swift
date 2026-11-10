@@ -116,8 +116,10 @@ final class Store: ObservableObject {
     /// job runs across all of them, while the panel's right column works on one
     /// (`selectedRoot`).
     @Published private(set) var roots: [PRRef.LocalRepo]
-    /// Whether `roots` was read with each root's remotes. Until then it is the stand-in
-    /// `RepoPaths.roots` answers on the main thread, which knows only the primary path.
+    /// Whether every root path had a GitHub remote when `roots` was read
+    /// (`RepoRoots.allResolve`). Never for the stand-in `RepoPaths.roots` answers on the
+    /// main thread before the first resolution, which knows only the primary path. While
+    /// it is false, a repo missing from `roots` may be one that failed to resolve.
     private var rootsResolved = false
     private var rootsPinned = false
 
@@ -125,21 +127,22 @@ final class Store: ObservableObject {
     func refreshRoots() async {
         guard !rootsPinned else { return }
         let paths = RepoPaths.rootPaths
-        let next = await Task.detached(priority: .utility) { RepoPaths.roots(for: paths) }.value
+        let next = await Task.detached(priority: .utility) { RepoPaths.resolved(for: paths) }.value
         guard !rootsPinned, paths == RepoPaths.rootPaths else { return }
-        rootsResolved = true
-        if next != roots {
-            roots = next
+        rootsResolved = next.complete
+        if next.roots != roots {
+            roots = next.roots
             showSelectedRepo()
         }
     }
 
     /// Pin the roots, for headless self-tests only: resolved for real they are whatever
-    /// the developer's own config.json lists.
-    func pinRoots(_ pinned: [PRRef.LocalRepo]) {
+    /// the developer's own config.json lists. `complete` stands for whether every root
+    /// path resolved.
+    func pinRoots(_ pinned: [PRRef.LocalRepo], complete: Bool = true) {
         guard Headless.active, !pinned.isEmpty else { return }
         rootsPinned = true
-        rootsResolved = true
+        rootsResolved = complete
         roots = pinned
         showSelectedRepo()
     }
@@ -3241,17 +3244,17 @@ final class Store: ObservableObject {
     ///
     /// The prompt is rebuilt in the root the ask's repo is now, since the root path a
     /// stored config carries is as old as the ask. nil for an ask made in a root that is
-    /// no longer loaded: it has nowhere to run.
+    /// not loaded: it has nowhere to run.
     private func requestedTask(_ entry: RequestedWork) -> QueuedAgentTask? {
         let action = entry.config.action
         var config = entry.config
         let root = roots.first { $0.slug.lowercased() == entry.repo }
         switch config {
         case .review(var cfg):
-            if let root { cfg.home = root } else if cfg.home != nil, rootsResolved { return nil }
+            if let root { cfg.home = root } else if cfg.home != nil { return nil }
             config = .review(cfg)
         case .issues(var cfg):
-            if let root { cfg.home = root } else if cfg.home != nil, rootsResolved { return nil }
+            if let root { cfg.home = root } else if cfg.home != nil { return nil }
             config = .issues(cfg)
         case .investigate:
             break
@@ -3295,7 +3298,8 @@ final class Store: ObservableObject {
     /// re-offers these is the ask itself, until the dispatch that starts one takes it
     /// off (`settleRequested`), the operator cancels it, or — for a review — the drain
     /// finds its PR closed (`drainQueuedTasks`). Or its root is removed from Settings,
-    /// which this says in the feed.
+    /// which this says in the feed. While a root path fails to resolve (`rootsResolved`)
+    /// its repo may be that one, so the ask is kept and skipped instead.
     ///
     /// Not private: the queue self-test commits a cycle directly, which is the only way
     /// to exercise the offer without a live GitHub fetch.
@@ -3303,7 +3307,7 @@ final class Store: ObservableObject {
         for entry in requestedWork {
             if let task = requestedTask(entry) {
                 stagedQueue.append(task)
-            } else {
+            } else if rootsResolved {
                 forgetRequested(entry.key)
                 AuditLog.log("panel", "queue-drop",
                              "\(entry.label(roots: roots.count)) - \(entry.repo) is no longer "

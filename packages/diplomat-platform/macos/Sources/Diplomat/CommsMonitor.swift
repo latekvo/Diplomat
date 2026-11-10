@@ -512,7 +512,10 @@ extension Store {
                                   feedLine: "Bump \(ref) asked by \(who) — \(outcome)")
         case .investigate(var cfg):
             let slug = "\(cfg.owner)/\(cfg.repo)".lowercased()
-            cfg.checkout = RepoPaths.roots.first { $0.slug.lowercased() == slug }?.path
+            guard let root = Store.commsRoot(slug) else {
+                return refused("comms-investigate", who, Store.notARoot(slug))
+            }
+            cfg.checkout = root.path
             // The sender is the ask's ban dimension: the dispatch gate drops it if they
             // are banned while it waits.
             return queue(RequestedWork(number: cfg.number, url: cfg.permalink,

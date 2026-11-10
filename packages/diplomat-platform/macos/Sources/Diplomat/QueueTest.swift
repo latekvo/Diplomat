@@ -1052,6 +1052,13 @@ enum QueueTest {
         check("an ask on each root's #9 is a row of its own, working in that root",
               store.queuedTasks.map(\.id).sorted() == [askA, askB]
                   && store.queuedTasks.first { $0.id == askB }?.job.directory == rootB.path)
+        store.pinRoots([rootA], complete: false)
+        store.offerRequestedWork()
+        store.commitQueue()
+        check("while a root path fails to resolve, an ask in a repo missing from the roots "
+              + "is kept but not offered",
+              store.requestedWork.map(\.key).sorted() == [askA, askB].sorted()
+                  && store.queuedTasks.map(\.id) == [askA])
         store.pinRoots([rootA])
         store.offerRequestedWork()
         let feedText = (try? String(contentsOf: feed.appendingPathComponent("audit.jsonl"),

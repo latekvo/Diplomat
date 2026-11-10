@@ -49,12 +49,13 @@ public enum RepoRoots {
     /// Each of `paths` (a leading `~` expanded) as the repo it is a checkout of, in order.
     ///
     /// `remotes` maps an expanded path to its `git config --local --get-regexp
-    /// '^remote\..*\.url$'` output; a path missing from it is no checkout. A fork clone
-    /// names the configured repo when one of its remotes is that repo, and otherwise its
-    /// first remote (`LocalRepo.entries` order). A path with no GitHub remote is skipped,
-    /// and a repo two paths name keeps the first. When nothing resolves, the first path
-    /// stands for the configured repo, which is how a single missing or remote-less
-    /// checkout has always been worked.
+    /// '^remote\..*\.url$'` output; a path missing from it is no checkout. A path names
+    /// the configured repo when one of its remotes is that repo, or a repo of that name
+    /// under another owner (a fork's `origin`, or a URL from before the repo moved), and
+    /// otherwise its first remote (`LocalRepo.entries` order). A path with no GitHub
+    /// remote is skipped, and a repo two paths name keeps the first. When nothing
+    /// resolves, the first path stands for the configured repo, which is how a single
+    /// missing or remote-less checkout has always been worked.
     public static func resolve(paths: [String], remotes: [String: String],
                                configured: (owner: String, repo: String)) -> [PRRef.LocalRepo] {
         let want = "\(configured.owner)/\(configured.repo)".lowercased()
@@ -64,7 +65,10 @@ public enum RepoRoots {
             let path = expand(raw)
             guard let config = remotes[path] else { continue }
             let entries = PRRef.LocalRepo.entries(path: path, remotes: config)
-            guard let pick = entries.first(where: { $0.slug.lowercased() == want }) ?? entries.first,
+            let renamed = entries.contains { $0.repo.lowercased() == configured.repo.lowercased() }
+                ? PRRef.LocalRepo(owner: configured.owner, repo: configured.repo, path: path) : nil
+            guard let pick = entries.first(where: { $0.slug.lowercased() == want })
+                    ?? renamed ?? entries.first,
                   seen.insert(pick.slug.lowercased()).inserted else { continue }
             out.append(pick)
         }
@@ -73,6 +77,15 @@ public enum RepoRoots {
                                     path: expand(first))]
         }
         return out
+    }
+
+    /// Whether every one of `paths` has a GitHub remote in `remotes`, as `resolve` reads
+    /// them: false while one is missing, git failed on it, or it has no GitHub remote.
+    /// Python twin: `localrepos.all_resolve`.
+    public static func allResolve(paths: [String], remotes: [String: String]) -> Bool {
+        paths.allSatisfy {
+            !PRRef.LocalRepo.entries(path: expand($0), remotes: remotes[expand($0)] ?? "").isEmpty
+        }
     }
 
     /// `path` with a leading `~` (alone or before a `/`) replaced by `$HOME`, as Python's

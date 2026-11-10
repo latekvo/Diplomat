@@ -115,11 +115,12 @@ def resolve_roots(paths: list[str], remotes: dict[str, str],
     """The repo roots ``paths`` name, primary first. Twin of ``RepoRoots.resolve``.
 
     ``remotes`` maps an expanded path to its :func:`remote_config` output; a path
-    missing from it is no checkout. Each path answers for the remote whose repo is the
-    ``configured`` one when it has that remote, else for its first (:func:`entries`).
-    A path with no GitHub remote is skipped, and of two answering for one repo the
-    first wins. When nothing resolves, the first path stands for the configured repo,
-    so a missing checkout reads as the single root it always did."""
+    missing from it is no checkout. Each path answers for the ``configured`` repo when
+    it has that remote, or a remote of that repo's name under another owner (a fork's
+    ``origin``, or a URL from before the repo moved); else for its first
+    (:func:`entries`). A path with no GitHub remote is skipped, and of two answering for
+    one repo the first wins. When nothing resolves, the first path stands for the
+    configured repo, so a missing checkout reads as the single root it always did."""
     want = f"{configured[0]}/{configured[1]}".lower()
     roots: list[LocalRepo] = []
     seen: set[str] = set()
@@ -128,8 +129,11 @@ def resolve_roots(paths: list[str], remotes: dict[str, str],
         if where not in remotes:
             continue
         found = entries(where, remotes[where])
-        pick = next((r for r in found if r.slug.lower() == want),
-                    found[0] if found else None)
+        pick = next((r for r in found if r.slug.lower() == want), None)
+        if pick is None and any(r.repo.lower() == configured[1].lower() for r in found):
+            pick = LocalRepo(configured[0], configured[1], where)
+        if pick is None and found:
+            pick = found[0]
         if pick is None or pick.slug.lower() in seen:
             continue
         seen.add(pick.slug.lower())
@@ -137,3 +141,10 @@ def resolve_roots(paths: list[str], remotes: dict[str, str],
     if not roots and paths:
         return [LocalRepo(configured[0], configured[1], os.path.expanduser(paths[0]))]
     return roots
+
+
+def all_resolve(paths: list[str], remotes: dict[str, str]) -> bool:
+    """Whether every one of ``paths`` has a GitHub remote in ``remotes``, as
+    :func:`resolve_roots` reads them: False while one is missing, ``git`` failed on it,
+    or it has no GitHub remote. Twin of ``RepoRoots.allResolve``."""
+    return all(entries(w, remotes.get(w, "")) for w in map(os.path.expanduser, paths))

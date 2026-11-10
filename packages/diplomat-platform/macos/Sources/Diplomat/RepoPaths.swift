@@ -132,25 +132,41 @@ enum RepoPaths {
     /// `rootPaths`, each resolved to the GitHub repo it is a checkout of
     /// (`RepoRoots.resolve`); never empty.
     ///
-    /// Reading the remotes costs a `git` call per root, so the answer is cached until the
-    /// setting changes or `invalidateRoots` drops it. A miss on the main thread does not
-    /// wait for git: it answers as though no root had a remote — the primary path standing
-    /// for the configured repo, which is what a single root has always meant — and
-    /// resolves in the background for the next read.
-    static var roots: [PRRef.LocalRepo] { roots(for: rootPaths) }
+    /// Reading the remotes costs a `git` call per root, so a resolution is kept for
+    /// `rootsTTL` per list of paths, or until `invalidateRoots` drops it: a root that
+    /// failed to resolve, or whose remotes changed, is read again within that. A read on
+    /// the main thread never waits for git: it answers the last resolution of these
+    /// paths, or with none as though no root had a remote (the primary path standing for
+    /// the configured repo, which is what a single root has always meant), and resolves
+    /// in the background for the next read.
+    static var roots: [PRRef.LocalRepo] { resolved(for: rootPaths).roots }
 
-    /// `roots`, for a list of paths read earlier.
-    static func roots(for paths: [String]) -> [PRRef.LocalRepo] {
+    /// Seconds a resolution of the roots is kept. Twin of `review.ROOTS_TTL`.
+    static let rootsTTL: TimeInterval = 60
+
+    /// `roots` for a list of paths read earlier, and whether every path had a GitHub
+    /// remote (`RepoRoots.allResolve`).
+    static func resolved(for paths: [String], now: Date = Date())
+        -> (roots: [PRRef.LocalRepo], complete: Bool) {
         rootsLock.lock()
-        let hit = rootsCache.flatMap { $0.paths == paths ? $0.roots : nil }
+        let cached = rootsCache.flatMap { $0.paths == paths ? $0 : nil }
         rootsLock.unlock()
-        if let hit { return hit }
-        guard !Thread.isMainThread else {
-            Task.detached(priority: .utility) { _ = resolveRoots(paths) }
-            return RepoRoots.resolve(paths: paths, remotes: [:],
-                                     configured: CoreAssets.repoCoordinates())
+        if let cached, now.timeIntervalSince(cached.at) < rootsTTL {
+            return (cached.roots, cached.complete)
         }
-        return resolveRoots(paths)
+        guard !Thread.isMainThread else {
+            rootsLock.lock()
+            let start = !rootsResolving
+            rootsResolving = true
+            rootsLock.unlock()
+            if start {
+                Task.detached(priority: .utility) { _ = resolveRoots(paths, at: Date()) }
+            }
+            return cached.map { ($0.roots, $0.complete) }
+                ?? (RepoRoots.resolve(paths: paths, remotes: [:],
+                                      configured: CoreAssets.repoCoordinates()), false)
+        }
+        return resolveRoots(paths, at: now)
     }
 
     /// Forget the resolved roots, so a remote added or renamed since is read again.
@@ -161,19 +177,24 @@ enum RepoPaths {
     }
 
     private static let rootsLock = NSLock()
-    private static var rootsCache: (paths: [String], roots: [PRRef.LocalRepo])?
+    private static var rootsCache: (paths: [String], at: Date, roots: [PRRef.LocalRepo],
+                                    complete: Bool)?
+    private static var rootsResolving = false
 
-    private static func resolveRoots(_ paths: [String]) -> [PRRef.LocalRepo] {
+    private static func resolveRoots(_ paths: [String], at: Date)
+        -> (roots: [PRRef.LocalRepo], complete: Bool) {
         var remotes: [String: String] = [:]
         for path in paths.map(RepoRoots.expand) where isCheckout(path) {
             remotes[path] = LocalRepos.remotes(of: path)
         }
         let resolved = RepoRoots.resolve(paths: paths, remotes: remotes,
                                          configured: CoreAssets.repoCoordinates())
+        let complete = RepoRoots.allResolve(paths: paths, remotes: remotes)
         rootsLock.lock()
-        rootsCache = (paths, resolved)
+        rootsCache = (paths, at, resolved, complete)
+        rootsResolving = false
         rootsLock.unlock()
-        return resolved
+        return (resolved, complete)
     }
 
     /// The checkout every spawned agent `cd`s into when nothing names another: the

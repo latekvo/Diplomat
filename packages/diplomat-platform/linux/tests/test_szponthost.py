@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import json
 import platform
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from diplomat_runtime import activity, core, review, szponthost
+from diplomat_runtime import activity, appconfig, core, review, szponthost
 from diplomat_runtime.prref import LocalRepo
 from szpontnet import config as mesh_config
 from szpontnet import host as szpont_host
@@ -154,6 +155,24 @@ def test_run_job_spawns_in_the_root_its_work_key_names(host, monkeypatch, tmp_pa
     host.run_job("x", str(tmp_path / "c"), "")
     host.run_job("x", str(tmp_path / "d"))
     assert seen == [str(tmp_path / "other"), str(tmp_path / "r"), None, None]
+
+
+def test_a_fork_only_clone_takes_the_configured_repos_jobs(monkeypatch, tmp_path):
+    """A single-root install whose checkout has only its fork as ``origin``: the mesh
+    places the configured repo's jobs there instead of refusing every one."""
+    monkeypatch.delenv("DIPLOMAT_REPO", raising=False)
+    cfg = core.config()
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    for args in (["init", "-q"],
+                 ["remote", "add", "origin", f"git@github.com:someone/{cfg['repo']}.git"]):
+        subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
+    appconfig.set_repo_roots([str(clone)])
+
+    key = f"review:github.com/{cfg['owner']}/{cfg['repo']}#7@abc"
+    assert szponthost._checkout_for(key) == str(clone)
+    with pytest.raises(szpont_host.NoRunner):
+        szponthost._checkout_for(f"review:github.com/someone/{cfg['repo']}#7@abc")
 
 
 @pytest.mark.parametrize("system", ["Linux", "Darwin"])

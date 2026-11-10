@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -164,6 +165,31 @@ def test_a_root_answers_for_the_configured_repo_when_it_has_that_remote():
         LocalRepo("me", "argent", "/a")]
 
 
+def test_a_remote_of_the_configured_repos_name_under_another_owner_answers_for_it():
+    """A fork-only clone (origin someone/argent, no upstream) and a URL from before the
+    repo moved are the configured repo's root, ahead of an upstream; so another path
+    naming that repo is skipped. Twin of the ``repo roots`` smoke section."""
+    remotes = {"/forkonly": _remotes(origin="git@github.com:someone/ARGENT.git"),
+               "/moved": _remotes(origin="https://github.com/old-owner/argent",
+                                  upstream="https://github.com/o/radon")}
+    assert localrepos.resolve_roots(["/forkonly", "/moved"], remotes, (OWNER, REPO)) == [
+        LocalRepo(OWNER, REPO, "/forkonly")]
+    assert localrepos.resolve_roots(["/moved"], remotes, (OWNER, REPO)) == [
+        LocalRepo(OWNER, REPO, "/moved")]
+    assert localrepos.resolve_roots(["/forkonly"], remotes, ("x", "y")) == [
+        LocalRepo("someone", "ARGENT", "/forkonly")]
+
+
+def test_every_path_resolves_only_while_each_has_a_github_remote():
+    remotes = {"/a": _remotes(origin="git@github.com:o/a.git"),
+               os.path.expanduser("~/b"): _remotes(origin="git@github.com:o/b.git"),
+               "/plain": "", "/lab": _remotes(origin="git@gitlab.com:x/y.git")}
+    assert localrepos.all_resolve(["/a", "~/b"], remotes)
+    assert not localrepos.all_resolve(["/a", "/missing"], remotes)
+    assert not localrepos.all_resolve(["/a", "/plain"], remotes)
+    assert not localrepos.all_resolve(["/lab"], remotes)
+
+
 def test_roots_skip_a_path_with_no_github_remote_and_keep_the_first_of_a_repo():
     remotes = {"/lab": _remotes(origin="git@gitlab.com:x/y.git"),
                "/b": _remotes(origin="git@github.com:software-mansion/radon.git"),
@@ -181,26 +207,36 @@ def test_roots_that_resolve_to_nothing_are_the_configured_repo_at_the_first_path
     assert localrepos.resolve_roots([], {}, (OWNER, REPO)) == []
 
 
-def test_repo_roots_resolve_the_stored_paths_and_re_read_only_what_changed(
-        tmp_path, monkeypatch):
+def test_repo_roots_are_kept_for_a_while_then_read_again(tmp_path, monkeypatch):
+    """A root that failed to resolve (here a checkout not there yet) or whose remote
+    changed is read again once :data:`review.ROOTS_TTL` passes, whatever its ``.git``
+    is. A changed list of paths is read at once."""
     monkeypatch.delenv("DIPLOMAT_REPO", raising=False)
+    clock = [1000.0]
+    monkeypatch.setattr(review, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     a = _checkout(tmp_path, "a", origin="git@github.com:software-mansion/radon.git")
-    b = _checkout(tmp_path, "b", origin="git@github.com:o/other.git")
+    b = tmp_path / "b"
     asked: list[str] = []
     real = localrepos.remote_config
     monkeypatch.setattr(localrepos, "remote_config",
                         lambda path: asked.append(path) or real(path))
     appconfig.set_repo_roots([str(a), str(b)])
 
-    want = [LocalRepo("software-mansion", "radon", str(a)), LocalRepo("o", "other", str(b))]
-    assert review.repo_roots() == want and review.repo_path() == str(a)
+    radon = LocalRepo("software-mansion", "radon", str(a))
+    assert review.repo_roots() == [radon] and review.repo_path() == str(a)
+    assert not review.roots_complete()
     assert len(asked) == 2
-    assert review.repo_roots() == want and len(asked) == 2, "an unchanged root is cached"
+
+    _checkout(tmp_path, "b", origin="git@github.com:o/other.git")
+    clock[0] += review.ROOTS_TTL - 1
+    assert review.repo_roots() == [radon] and len(asked) == 2, "kept for ROOTS_TTL"
+
+    clock[0] += 1
+    assert review.repo_roots() == [radon, LocalRepo("o", "other", str(b))]
+    assert review.roots_complete() and len(asked) == 4
 
     _git(b, "remote", "set-url", "origin", "https://github.com/o/renamed")
-    config = b / ".git" / "config"
-    bumped = config.stat().st_mtime_ns + 1_000_000_000
-    os.utime(config, ns=(bumped, bumped))
+    clock[0] += review.ROOTS_TTL
     assert review.repo_roots()[1] == LocalRepo("o", "renamed", str(b))
 
     appconfig.set_repo_roots([str(b)])

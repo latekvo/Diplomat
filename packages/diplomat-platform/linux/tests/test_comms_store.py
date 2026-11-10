@@ -653,6 +653,19 @@ def test_an_investigation_of_another_root_works_in_its_checkout(comms_store, mon
 
 
 @needs_core
+def test_an_investigation_of_a_repo_no_longer_a_root_is_refused_as_a_review_is(
+        comms_store, monkeypatch):
+    owner, repo = PRIMARY.split("/")
+    monkeypatch.setattr(review, "repo_roots", lambda: [LocalRepo(owner, repo, "/src/primary")])
+    widget = {**_decision("investigate", 0, "widget hangs"), "repo": "acme/widget"}
+    _tick(comms_store, monkeypatch, (_message(1, "widget hangs on start"), widget))
+
+    assert comms_store.requested_work == []
+    assert [e["outcome"] for e in _events() if e["kind"] == "action"] == [
+        "investigation of acme/widget not queued: it is not a repo root"]
+
+
+@needs_core
 @pytest.mark.parametrize("label, running", [
     ("Issues · widget#9005 · deep", True),
     (f"Issues · {PRIMARY.split('/')[1]}#9005 · deep", False),

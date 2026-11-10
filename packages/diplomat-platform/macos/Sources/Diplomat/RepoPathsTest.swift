@@ -10,7 +10,8 @@ import Foundation
 ///
 /// The order of the five readings is what this pins: `DIPLOMAT_SELF_REPO`, the tree
 /// an unbundled run's assets sit in, the checkout around the bundle, the checkout
-/// `build-app.sh` recorded in Info.plist, then `~/dev/diplomat`.
+/// `build-app.sh` recorded in Info.plist, then `~/dev/diplomat`. Also how long a
+/// resolution of the repo roots is kept (`RepoPaths.rootsTTL`).
 ///
 ///     DIPLOMAT_REPOPATHS_TEST=1 swift run Diplomat
 ///
@@ -74,6 +75,47 @@ enum RepoPathsTest {
               "got \(root(env: elsewhere.path, assets: devAssets))")
         check("…and an empty one is unset",
               root(env: "") == checkout.path, "got \(root(env: ""))")
+
+        // A root that fails to resolve once is read again after `rootsTTL`, not dropped
+        // until Settings opens. Off the main thread, where a read waits for git.
+        print("repopaths: a repo root that resolves late")
+        func git(_ args: String...) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = args
+            p.standardOutput = Pipe()
+            p.standardError = Pipe()
+            try? p.run()
+            p.waitUntilExit()
+        }
+        let early = scratch.appendingPathComponent("early").path
+        let late = scratch.appendingPathComponent("late").path
+        git("init", "-q", early)
+        git("-C", early, "remote", "add", "origin", "git@github.com:o/early.git")
+        let t0 = Date()
+        final class Box { var value: (roots: [String], complete: Bool) = ([], false) }
+        func read(_ at: TimeInterval) -> (roots: [String], complete: Bool) {
+            let out = Box()
+            let done = DispatchSemaphore(value: 0)
+            Thread {
+                let r = RepoPaths.resolved(for: [early, late], now: t0.addingTimeInterval(at))
+                out.value = (r.roots.map(\.slug), r.complete)
+                done.signal()
+            }.start()
+            done.wait()
+            return out.value
+        }
+        let first = read(0)
+        check("a missing checkout is left out, and the roots say not every path resolved",
+              first.roots == ["o/early"] && !first.complete, "got \(first)")
+        git("init", "-q", late)
+        git("-C", late, "remote", "add", "origin", "git@github.com:o/late.git")
+        let kept = read(RepoPaths.rootsTTL - 1)
+        check("…a resolution is kept for rootsTTL", kept.roots == ["o/early"], "got \(kept)")
+        let again = read(RepoPaths.rootsTTL)
+        check("…and then read again, so the checkout that appeared is a root",
+              again.roots == ["o/early", "o/late"] && again.complete, "got \(again)")
+        RepoPaths.invalidateRoots()
 
         if failures.isEmpty { print("repopaths: all passed") }
         else { print("repopaths: FAILED \(failures.count): \(failures.joined(separator: "; "))") }
