@@ -2423,9 +2423,15 @@ final class Store: ObservableObject {
     }
 
     /// Log `what` of a root unreadable once per run of failed reads, and readable again
-    /// once it reads. Not a poll failure: the other roots' work goes on.
+    /// once it reads. Not a poll failure: the other roots' work goes on. A root taken out
+    /// of Settings loses its markers, so re-added it logs its next failed read.
     private func noteRootsRead(_ what: String, read: [PRRef.LocalRepo],
                                failed: [(root: PRRef.LocalRepo, error: Error)]) {
+        let configured = Set(roots.map { $0.slug.lowercased() })
+        rootsUnread = rootsUnread.filter { key in
+            key.firstIndex(of: ":").map { configured.contains(String(key[key.index(after: $0)...])) }
+                ?? false
+        }
         var logged = false
         for (root, error) in failed
         where rootsUnread.insert("\(what):\(root.slug.lowercased())").inserted {
@@ -2443,6 +2449,9 @@ final class Store: ObservableObject {
 
     /// `"<what>:<slug>"` of each root read that failed last time (`noteRootsRead`).
     private var rootsUnread: Set<String> = []
+
+    /// The `what` the review-request pass's reads are logged and marked under.
+    private static let reviewRequestsRead = "Review requests"
 
     /// My own PRs: dispatch on new conflicts / new review work. Edge-triggered for the
     /// real-time case (a transition observed live), plus a level-triggered reconcile pass
@@ -2660,7 +2669,7 @@ final class Store: ObservableObject {
             notePollFailure(first.error)
             return
         }
-        noteRootsRead("Review requests", read: read, failed: failed)
+        noteRootsRead(Store.reviewRequestsRead, read: read, failed: failed)
         heldSlugs.formUnion(failed.map { $0.root.slug.lowercased() })
         let banned = BanList.read()
         let now = Date()
@@ -3046,8 +3055,9 @@ final class Store: ObservableObject {
     ///
     /// A task in a repo outside `read` (the roots this cycle read, by default every
     /// root) is neither priced nor started: nothing this cycle speaks for it, and a root
-    /// just taken out of Settings is no longer the operator's to work. This cycle's
-    /// commit keeps or drops its row (`commitQueue`).
+    /// just taken out of Settings is no longer the operator's to work. Nor is a review
+    /// request in a root whose last read of review requests failed. This cycle's commit
+    /// keeps or drops its row (`commitQueue`).
     ///
     /// Not private: the refresh pass is what `QueueTest` drives. It runs before the
     /// capacity guard and starts nothing by itself, so a self-test at capacity — the
@@ -3056,8 +3066,11 @@ final class Store: ObservableObject {
                           read: [PRRef.LocalRepo]? = nil) async {
         let polled = Set((read ?? roots).map { $0.slug.lowercased() })
         func outside(_ entry: QueuedAgentTask) -> Bool {
-            AgentTaskQueue.item(ofKey: entry.id).flatMap(PRRef.splitItemKey)
-                .map { !polled.contains($0.slug.lowercased()) } ?? false
+            guard let slug = AgentTaskQueue.item(ofKey: entry.id).flatMap(PRRef.splitItemKey)?
+                .slug.lowercased() else { return false }
+            return !polled.contains(slug)
+                || (entry.job.auditAction == "review-req"
+                    && rootsUnread.contains("\(Store.reviewRequestsRead):\(slug)"))
         }
         let conflicting = Set(snaps.filter { $0.mergeable == "CONFLICTING" }.compactMap(\.item))
         let owingReply = Set(snaps.filter { $0.threadsIOwe > 0 }.compactMap(\.item))
