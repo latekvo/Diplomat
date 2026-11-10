@@ -1288,7 +1288,7 @@ enum QueueTest {
               echo "$*" | grep -o 'name=[a-z]*' | sed 's/^/issues-/' >> '\(heldLog.path)'
               echo '\(noIssues)'; exit 0 ;;
             esac
-            for slug in o1/alpha o2/beta; do
+            for slug in o1/alpha o2/beta O2/Beta; do
               for what in author review-requested; do
                 case "$*" in *"q=repo:$slug $what:"*)
                   name=${slug#*/}
@@ -1416,6 +1416,11 @@ enum QueueTest {
         store.queuedTasks = []
 
         // The review-request twin, its reads failing while the PRs read.
+        heldAnswer("review-requested", "beta", requestedPR("o2/beta", 90010))
+        await store.runAutofixPollOnce()
+        let heldReq = AgentTaskQueue.key(auditAction: "review-req", item: "o2/beta#90010")
+        check("a root's review request queues while it reads",
+              store.queuedTasks.map(\.id).contains(heldReq))
         store.headlessJSON?["reviewReqAttempts"] = try? JSONEncoder().encode(["o2/beta#90006": concludedLongAgo])
         heldAnswer("review-requested", "alpha", requestedPR("o1/alpha", 90009))
         heldFail("review-requested", "beta", true)
@@ -1425,6 +1430,8 @@ enum QueueTest {
                   AgentTaskQueue.key(auditAction: "review-req", item: "o1/alpha#90009")))
         check("…and its concluded record is kept",
               heldRecords("reviewReqAttempts", as: ReviewAttempt.self)["o2/beta#90006"] == concludedLongAgo)
+        check("…and its queued review request stands, that root being held",
+              store.queuedTasks.map(\.id).contains(heldReq))
         check("…logged as that root's review requests",
               unreadLines().last?.action == "root-read-failed"
                   && unreadLines().last?.detail.hasPrefix("Review requests of o2/beta unreadable, its work waits: ")
@@ -1433,6 +1440,91 @@ enum QueueTest {
         await store.runAutofixPollOnce()
         check("review requests unreadable in every root fail the poll",
               store.autofixPollError?.contains("cannot be searched") == true)
+
+        // A root's slug is cased as its remote spells it; item keys are lowercase.
+        heldFail("review-requested", "alpha", false)
+        heldFail("review-requested", "beta", false)
+        heldAnswer("review-requested", "alpha", nil)
+        heldAnswer("review-requested", "beta", nil)
+        let mixed = PRRef.LocalRepo(owner: "O2", repo: "Beta", path: rootB.path)
+        store.pinRoots([rootA, mixed])
+        store.autofixPollError = nil
+        store.queuedTasks = []
+        heldAnswer("author", "Beta", conflictingPR("O2/Beta", 90011, "m1"))
+        await store.runAutofixPollOnce()
+        let mixedRow = AgentTaskQueue.key(auditAction: "conflicts", item: "o2/beta#90011")
+        check("a mixed-case root's conflict queues while it reads",
+              store.queuedTasks.map(\.id).contains(mixedRow))
+        store.headlessJSON?["reviewReqAttempts"] = try? JSONEncoder().encode(["o2/beta#90006": concludedLongAgo])
+        heldFail("author", "Beta", true)
+        await store.runAutofixPollOnce()
+        check("a held root is known whatever its slug's case: its row stands, its records are kept",
+              store.autofixPollError == nil && store.queuedTasks.map(\.id).contains(mixedRow)
+                  && heldRecords("reviewReqAttempts", as: ReviewAttempt.self)["o2/beta#90006"]
+                      == concludedLongAgo)
+        var mixedAsk = ReviewConfig(depth: "deep", target: .mine, me: "alice",
+                                    includeDrafts: true, includeReady: false)
+        mixedAsk.home = mixed
+        store.requestOne(Store.RequestedWork(number: 90012, url: "https://github.com/O2/Beta/pull/90012",
+                                             author: "", config: .review(mixedAsk.forPR(90012))))
+        let mixedAskKey = AgentTaskQueue.key(auditAction: "review", item: "o2/beta#90012")
+        let mixedAskQueued = store.queuedTasks.map(\.id).contains(mixedAskKey)
+        await store.drainQueuedTasks(snaps: [], closed: ["o2/beta#90012"], read: [rootA, mixed])
+        check("…and a read one is priced whatever its case",
+              mixedAskQueued && !store.queuedTasks.map(\.id).contains(mixedAskKey))
+        heldFail("author", "Beta", false)
+        heldAnswer("author", "Beta", nil)
+
+        // 29. The drain starts nothing in a root just taken out of Settings: it runs at
+        //     the top of the poll, before the offer and the commit drop its rows. A free
+        //     bay and a disk below its floor, so a task the drain tried would write a
+        //     low-disk line instead of spawning.
+        func feedDetails(_ action: String) -> [String] {
+            let text = (try? String(contentsOf: feed.appendingPathComponent("audit.jsonl"),
+                                    encoding: .utf8)) ?? ""
+            return text.split(separator: "\n").compactMap { line in
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                      obj["action"] as? String == action else { return nil }
+                return obj["detail"] as? String
+            }
+        }
+        store.pinRoots([rootA, rootB])
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.autofixPollError = nil
+        heldAnswer("review-requested", "beta", requestedPR("o2/beta", 7))
+        let autoRun = store.queueAutoRun
+        store.queueAutoRun = false
+        var goneIssue = IssueConfig(target: .contributors, me: "alice")
+        goneIssue.home = rootB
+        store.requestOne(Store.RequestedWork(number: 11, url: "https://github.com/o2/beta/issues/11",
+                                             author: "outsider11", config: .issues(goneIssue.forIssue(11)),
+                                             repo: "o2/beta"))
+        await store.runAutofixPollOnce()
+        check("an ask and a review request in a root queue while the queue is off",
+              Set(store.queuedTasks.map(\.id)) == [
+                  AgentTaskQueue.key(auditAction: "issues", item: "o2/beta#11"),
+                  AgentTaskQueue.key(auditAction: "review-req", item: "o2/beta#7")])
+        store.pinRoots([rootA])
+        store.queueAutoRun = true
+        setenv(DiskFloor.envOverride, "99999999999999999999", 1)
+        if Store.agentDisk()?.low == true {
+            let lowDiskBefore = feedDetails("low-disk").count
+            store.autoTaskLimit = 2
+            await store.runAutofixPollOnce()
+            store.autoTaskLimit = 1
+            check("the drain starts nothing in a root just taken out of Settings",
+                  feedDetails("low-disk").count == lowDiskBefore)
+            check("…its rows and its ask are dropped, and said",
+                  store.queuedTasks.isEmpty && store.requestedWork.isEmpty
+                      && feedDetails("queue-drop").last?
+                          .hasSuffix("o2/beta is no longer a repo root, not run") == true)
+        } else {
+            check("the disk floor holds every dispatch for the removed-root check", false)
+        }
+        setenv(DiskFloor.envOverride, "0", 1)
+        store.queueAutoRun = autoRun
+        heldAnswer("review-requested", "beta", nil)
         store.prAutofixEnabled = heldAsk.prAutofix
         store.reviewRequestsEnabled = heldAsk.reviewReqs
         store.headlessJSON = nil
