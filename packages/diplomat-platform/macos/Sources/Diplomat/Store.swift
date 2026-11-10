@@ -304,8 +304,10 @@ final class Store: ObservableObject {
 
     /// Where each root's next community-issue scan starts (`Filters.newCommunityIssues`),
     /// by lowercased slug. A root with no mark starts from its first scan, so adding a
-    /// root never queues the issues it already had; a removed root's mark is dropped,
-    /// so re-adding it does not either.
+    /// root never queues the issues it already had. A mark is dropped only for a root
+    /// that is gone while every root path resolved (`rootsResolved`), so re-adding a
+    /// removed root does not queue its backlog either, and a root whose path failed to
+    /// resolve for a poll keeps its mark.
     private(set) var communityIssuesSince: [String: Date] {
         didSet { persist(communityIssuesSince, forKey: Keys.communityIssuesSince) }
     }
@@ -1353,7 +1355,8 @@ final class Store: ObservableObject {
     private func load() async {
         isLoading = true
         error = nil
-        // The panel's lists are the selected root's alone: no automatic job reads them.
+        // The panel's lists are the selected root's alone. Comms reads them before gh
+        // (`commsLookup`); no other automatic job does.
         let root = selectedRoot
         let slug = root.slug.lowercased()
         do {
@@ -2531,8 +2534,11 @@ final class Store: ObservableObject {
                 AuditLog.log("auto", "community-issue", "\(who) — fix queued")
             }
         }
-        let current = Set(roots.map { $0.slug.lowercased() })
-        var marks = communityIssuesSince.filter { current.contains($0.key) }
+        var marks = communityIssuesSince
+        if rootsResolved {
+            let current = Set(roots.map { $0.slug.lowercased() })
+            marks = marks.filter { current.contains($0.key) }
+        }
         marks[slug] = scan.since
         communityIssuesSince = marks
         if !scan.fresh.isEmpty { refreshAudit() }
@@ -2616,12 +2622,12 @@ final class Store: ObservableObject {
         // let a retirement conclude a request, or the queue record a dispatch, meanwhile.
         // Aged-out records are dropped so the store can't grow unbounded and a real future
         // re-request is fresh (`ReviewReconcile.retained`).
-        let attempts = ReviewReconcile.retained(
+        let attempts = Store.retainedReviewReqAttempts(
             loadReviewReqAttempts().merging(dispatched) { _, new in new },
             owed: Dictionary(owed.map { (item(url: $0.url, number: $0.number),
                                          AttemptStamp.reviewRequest($0)) },
                              uniquingKeysWith: { first, _ in first }),
-            now: now)
+            polled: polled, complete: rootsResolved, now: now)
         saveReviewReqAttempts(attempts)
         // Reviews still owed with no agent on them AFTER this poll — the ones a freshly
         // spawned agent didn't cover (cooling down between retries, or a spawn that failed).
@@ -2632,6 +2638,23 @@ final class Store: ObservableObject {
             if !concluded.contains(key), await !inFlight(key) { unaddressed += 1 }
         }
         unaddressedReviews = unaddressed
+    }
+
+    /// The review-request records a poll of `polled` keeps (`ReviewReconcile.retained`,
+    /// `owed` being what those roots owe). While a root path fails to resolve (`complete`
+    /// false), every record outside `polled` is kept too: its root may be the one that
+    /// failed, which was not read, and dropping a concluded record reviews its PR again.
+    /// Not private: the queue self-test drives it, a headless Store persisting no records.
+    nonisolated static func retainedReviewReqAttempts(
+        _ attempts: [String: ReviewAttempt], owed: [String: String],
+        polled: [PRRef.LocalRepo], complete: Bool, now: Date
+    ) -> [String: ReviewAttempt] {
+        let kept = ReviewReconcile.retained(attempts, owed: owed, now: now)
+        guard !complete else { return kept }
+        let read = Set(polled.map { $0.slug.lowercased() })
+        return attempts.filter { key, _ in
+            kept[key] != nil || PRRef.splitItemKey(key).map { !read.contains($0.slug) } == true
+        }
     }
 
     /// Re-read the prompt-injection ban list (cheap local file). Publishes on change, and
