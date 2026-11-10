@@ -1,7 +1,8 @@
 // The daemon over its real unix socket, against fake hosts: one machine reached under two
 // names is listed once, failures are classified, an untrusted host is never contacted,
 // machines are ranked by spare cores with warned ones last, a refresh re-reads the load,
-// refreshes arriving together share a scan, each reading reaches history.json, the
+// refreshes arriving together share a scan, each reading reaches history.json, a machine
+// that stops answering for a moment is retried rather than left lost, the
 // operator's exclusions take a machine out of the pool, the snapshot reaches state.json,
 // and the daemon exits once its last session is gone.
 // Run: node test/daemon.mjs
@@ -44,7 +45,7 @@ const sb = sandbox({
 });
 Object.assign(process.env, sb.env, {
   RM_IDLE_EXIT_MS: '1500', RM_CLIENT_CHECK_MS: '200', RM_PROBE_INTERVAL_MS: '700', RM_LOAD_GAP_MIN_MS: '500',
-  RM_CONFIG_POLL_MS: '100',
+  RM_CONFIG_POLL_MS: '100', RM_RETRY_DELAY_MS: '50',
 });
 const settings = (obj) => fs.writeFileSync(sb.env.DIPLOMAT_CONFIG, JSON.stringify(obj));
 const stateWhen = async (ok, what) => {
@@ -232,6 +233,28 @@ try {
     const r = await callDaemon('POST', '/scan', { ownerPid: session.pid, full: true });
     assert.deepEqual(r.machines.map((m) => m.target), ['busy', 'idle', 'full']);
     assert.equal(r.machines[0].load.last1m, 0.1);
+  });
+
+  const logged = () => fs.readFileSync(path.join(sb.env.RM_BASE_DIR, 'daemon.log'), 'utf8');
+
+  await check('a machine whose name fails to resolve once is retried and never marked lost', async () => {
+    sb.failNext('full', 1);
+    const r = await callDaemon('POST', '/scan', { ownerPid: session.pid });
+    assert.ok(r.machines.some((m) => m.target === 'full'), JSON.stringify(r.unavailable));
+    assert.ok(!/lost full/.test(logged()), logged());
+  });
+
+  await check('a machine that answered and stopped is read again by the next load scan', async () => {
+    sb.failNext('full', 2);
+    const logWhen = async (re) => {
+      const deadline = Date.now() + 8000;
+      while (!re.test(logged())) { assert.ok(Date.now() < deadline, logged()); await delay(50); }
+    };
+    await logWhen(/lost full unreachable ssh: Could not resolve/);
+    // Discovery is minutes away; the periodic load scan brings it back.
+    await logWhen(/lost full[^\n]*\n(.*\n)*.*reached full/);
+    const r = await callDaemon('GET', '/state');
+    assert.ok(r.machines.some((m) => m.target === 'full'), JSON.stringify(r.unavailable));
   });
 
   await check('the daemon exits once its last session is gone, taking its socket along', async () => {

@@ -8,9 +8,9 @@
 //   GET  /state                   -> the snapshot (after the first scan)
 //   GET  /health
 //
-// Every PROBE_INTERVAL_MS it re-reads the load of each machine that answered last time;
-// every DISCOVERY_INTERVAL_MS it also re-discovers candidates (discovery.js), re-reads
-// capabilities and retries the ones that did not answer. Each reading also goes into
+// Every PROBE_INTERVAL_MS it re-reads the load of each machine that has answered, now or
+// before; every DISCOVERY_INTERVAL_MS it also re-discovers candidates (discovery.js),
+// re-reads capabilities and retries the ones that never answered. Each reading also goes into
 // history.json. It exits once no session it serves is alive for IDLE_EXIT_MS, so
 // nothing is probed for nobody.
 //
@@ -20,13 +20,14 @@
 // applied within CONFIG_POLL_MS of the settings changing.
 
 import fs from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { atomicWrite, pidAlive, procIdentity, readJson, sweepDeadTmp } from '../../daemon-core/src/fsio.js';
 import { createLog } from '../../daemon-core/src/log.js';
 import { NO_ROUTE, jsonServer, listenSingleton, socketHealthy } from '../../daemon-core/src/serve.js';
 import {
   BASE_DIR, SOCKET_PATH, DISCOVERY_PATH, STATE_PATH, HISTORY_PATH, IDS_PATH, LOG_PATH, CONFIG_PATH,
   PROBE_INTERVAL_MS, DISCOVERY_INTERVAL_MS, IDLE_EXIT_MS, CLIENT_CHECK_MS, LOAD_GAP_MIN_MS,
-  HISTORY_MS, CONFIG_POLL_MS,
+  HISTORY_MS, CONFIG_POLL_MS, RETRY_DELAY_MS,
 } from './paths.js';
 import { candidates, killAll, mapLimit, nameMatcher, SOURCES } from './discovery.js';
 import { probe, describe, meanLoadBetween, spareCores, usage, warnings } from './probe.js';
@@ -168,7 +169,13 @@ function sinceLastScan(rec, info, at) {
 
 async function probeInto(rec, mode) {
   const at = Date.now();
-  const r = await probe(rec.target, mode);
+  let r = await probe(rec.target, mode);
+  // A failure that comes back at once (a .local name that did not resolve for a moment)
+  // gets one retry before a machine that answered is marked lost.
+  if (!r.ok && rec.status === 'ok' && r.status === 'unreachable' && !r.timedOut) {
+    await delay(RETRY_DELAY_MS);
+    r = await probe(rec.target, mode);
+  }
   // Excluded for good while the probe was out.
   if (rec.status === 'excluded') return;
   rec.probedAt = new Date(at).toISOString();
@@ -204,7 +211,10 @@ async function scanOnce(discover) {
     }
   }
   await applyExclusions();
-  const due = [...records.values()].filter((r) => r.trusted && (full ? r.status !== 'excluded' : r.status === 'ok' || r.status === 'new'));
+  // A machine that answered before and stopped is retried at every scan, not left
+  // unreachable until the next discovery.
+  const lost = (r) => r.status === 'unreachable' && r.info;
+  const due = [...records.values()].filter((r) => r.trusted && (full ? r.status !== 'excluded' : r.status === 'ok' || r.status === 'new' || lost(r)));
   await Promise.all([
     probeInto(localRecord, full || !localRecord.info?.os ? 'full' : 'load'),
     mapLimit(due, 16, (rec) => probeInto(rec, full || !rec.info?.os ? 'full' : 'load')),

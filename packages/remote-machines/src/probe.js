@@ -39,7 +39,7 @@ export function classify(stderr, timedOut) {
   return { status: 'error', error: last };
 }
 
-/// {ok: true, fields, latencyMs} or {ok: false, status, error}. `target` null probes
+/// {ok: true, fields, latencyMs} or {ok: false, status, error, timedOut}. `target` null probes
 /// this machine. `mode` is 'full' (capabilities and load) or 'load'.
 export async function probe(target, mode) {
   const started = Date.now();
@@ -49,7 +49,7 @@ export async function probe(target, mode) {
   const r = await run(bin, args, { timeout: PROBE_TIMEOUT_MS, input: SCRIPT });
   const i = r.stdout.indexOf('__RM_BEGIN__\n');
   const j = r.stdout.indexOf('__RM_END__', i);
-  if (i === -1 || j === -1) return { ok: false, ...classify(r.stderr, r.code === null) };
+  if (i === -1 || j === -1) return { ok: false, timedOut: r.code === null, ...classify(r.stderr, r.code === null) };
   const fields = Object.create(null); // keys come from the remote: `__proto__=` is just a key
   for (const line of r.stdout.slice(i + 13, j).split('\n')) {
     const k = line.indexOf('=');
