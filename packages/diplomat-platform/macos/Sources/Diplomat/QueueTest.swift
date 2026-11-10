@@ -1199,7 +1199,9 @@ enum QueueTest {
               *"issues(states: OPEN"*"name=alpha"*)
                 if [ -f '\(issuesFail.path)' ]; then echo 'HTTP 404: Could not resolve to a Repository' >&2; exit 1; fi
                 echo '\(noIssues)' ;;
-              *"issues(states: OPEN"*) echo '\(noIssues)' ;;
+              *"issues(states: OPEN"*)
+                if [ -f '\(issuesFail.path)-all' ]; then echo 'HTTP 404: Could not resolve to a Repository' >&2; exit 1; fi
+                echo '\(noIssues)' ;;
               *"q=repo:"*) echo '\(none)' ;;
               *) echo '{"data":{"viewer":{"login":"alice"}}}' ;;
             esac
@@ -1230,7 +1232,7 @@ enum QueueTest {
                                     encoding: .utf8)) ?? ""
             return text.split(separator: "\n").compactMap { line in
                 guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-                      let action = obj["action"] as? String, action.hasPrefix("community-issue-"),
+                      let action = obj["action"] as? String, action.hasPrefix("root-read-"),
                       let detail = obj["detail"] as? String else { return nil }
                 return (action, detail)
             }
@@ -1245,20 +1247,194 @@ enum QueueTest {
         check("one root's unreadable issues fail no poll, so the other roots' drain and commit go on",
               store.autofixPollError == nil)
         check("…and are logged once for the streak, naming the root and why",
-              failing.map(\.action) == ["community-issue-failed"]
-                  && failing.first?.detail.hasPrefix("Issues of o1/alpha unreadable, its new ones wait: ")
+              failing.map(\.action) == ["root-read-failed"]
+                  && failing.first?.detail.hasPrefix("Issues of o1/alpha unreadable, its work waits: ")
                       == true
                   && failing.first?.detail.contains("Could not resolve") == true)
         try? FileManager.default.removeItem(at: issuesFail)
         await store.runAutofixPollOnce()
         await store.runAutofixPollOnce()
         check("…and their recovery once",
-              unreadLines().map(\.action) == ["community-issue-failed", "community-issue-recovered"]
+              unreadLines().map(\.action) == ["root-read-failed", "root-read-recovered"]
                   && unreadLines().last?.detail == "Issues of o1/alpha readable again")
+        FileManager.default.createFile(atPath: issuesFail.path, contents: Data())
+        FileManager.default.createFile(atPath: issuesFail.path + "-all", contents: Data())
+        await store.runAutofixPollOnce()
+        check("…nor do they in every root", store.autofixPollError == nil
+                  && unreadLines().map(\.action).filter { $0 == "root-read-failed" }.count == 3)
+        try? FileManager.default.removeItem(at: issuesFail)
+        try? FileManager.default.removeItem(atPath: issuesFail.path + "-all")
+        await store.runAutofixPollOnce()
         store.communityIssuesEnabled = false
         store.autofixPollError = nil
         store.requestedWork = []
         store.queuedTasks = []
+        if let realGH { setenv("DIPLOMAT_GH", realGH, 1) } else { unsetenv("DIPLOMAT_GH") }
+        store.pinRoots([argent])
+
+        // 28. A root whose PRs or review requests gh cannot read holds only its own work:
+        //     its rows, fingerprints and attempt records stand untouched, as for a root
+        //     that failed to resolve, and only a read failing in every root fails the
+        //     poll. `gh` answers each root's search from a file, or fails it while a
+        //     `fail-<what>-<repo>` flag exists. At capacity, so finds queue.
+        let heldDir = feed.appendingPathComponent("gh-held")
+        try? FileManager.default.createDirectory(at: heldDir, withIntermediateDirectories: true)
+        let heldLog = heldDir.appendingPathComponent("log")
+        let heldStub = heldDir.appendingPathComponent("gh")
+        try? """
+            #!/bin/sh
+            echo "$*" | grep -o 'q=repo:[^ ]* [^ ]*' >> '\(heldLog.path)'
+            case "$*" in *"issues(states: OPEN"*)
+              echo "$*" | grep -o 'name=[a-z]*' | sed 's/^/issues-/' >> '\(heldLog.path)'
+              echo '\(noIssues)'; exit 0 ;;
+            esac
+            for slug in o1/alpha o2/beta; do
+              for what in author review-requested; do
+                case "$*" in *"q=repo:$slug $what:"*)
+                  name=${slug#*/}
+                  if [ -f '\(heldDir.path)'/fail-$what-$name ]; then
+                    echo 'HTTP 422: The listed users and repositories cannot be searched' >&2; exit 1
+                  fi
+                  if [ -f '\(heldDir.path)'/$what-$name.json ]; then cat '\(heldDir.path)'/$what-$name.json
+                  else echo '\(none)'; fi
+                  exit 0 ;;
+                esac
+              done
+            done
+            case "$*" in *"q=repo:"*) echo '\(none)' ;; *) echo '{"data":{"viewer":{"login":"alice"}}}' ;; esac
+            """.write(to: heldStub, atomically: true, encoding: .utf8)
+        chmod(heldStub.path, 0o755)
+        func heldAnswer(_ what: String, _ repo: String, _ json: String?) {
+            let file = heldDir.appendingPathComponent("\(what)-\(repo).json")
+            if let json { try? json.write(to: file, atomically: true, encoding: .utf8) }
+            else { try? FileManager.default.removeItem(at: file) }
+        }
+        func heldFail(_ what: String, _ repo: String, _ on: Bool) {
+            let flag = heldDir.appendingPathComponent("fail-\(what)-\(repo)").path
+            if on { FileManager.default.createFile(atPath: flag, contents: Data()) }
+            else { try? FileManager.default.removeItem(atPath: flag) }
+        }
+        func conflictingPR(_ slug: String, _ number: Int, _ sha: String) -> String {
+            #"{"data":{"search":{"nodes":[{"number":\#(number),"title":"t","url":"https://github.com/\#(slug)/pull/\#(number)","isDraft":false,"mergeable":"CONFLICTING","reviewDecision":"","headRefOid":"\#(sha)","reviewThreads":{"nodes":[]}}]}}}"#
+        }
+        func requestedPR(_ slug: String, _ number: Int) -> String {
+            #"{"data":{"search":{"nodes":[{"number":\#(number),"title":"t","url":"https://github.com/\#(slug)/pull/\#(number)","author":{"login":"qt-outsider"},"authorAssociation":"NONE","headRefOid":"r\#(number)"}]}}}"#
+        }
+        func heldRecords<V: Decodable>(_ key: String, as: V.Type) -> [String: V] {
+            store.headlessJSON?[key].flatMap { try? JSONDecoder().decode([String: V].self, from: $0) } ?? [:]
+        }
+        let heldAsk = (prAutofix: store.prAutofixEnabled, reviewReqs: store.reviewRequestsEnabled)
+        store.prAutofixEnabled = true
+        store.reviewRequestsEnabled = true
+        store.communityIssuesEnabled = false
+        store.headlessJSON = [:]
+        store.pinRoots([rootA, rootB])
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.autofixPollError = nil
+        emptyBook()
+        store.autoTaskLimit = 1
+        bookAgent(90)
+        _ = await store.settleAgents()
+        setenv("DIPLOMAT_GH", heldStub.path, 1)
+        heldAnswer("author", "alpha", conflictingPR("o1/alpha", 90007, "a7"))
+        heldAnswer("author", "beta", conflictingPR("o2/beta", 90007, "b7"))
+        await store.runAutofixPollOnce()
+        let heldRow = AgentTaskQueue.key(auditAction: "conflicts", item: "o2/beta#90007")
+        let heldPrint = heldRecords("autofixFingerprints", as: PRFingerprint.self)["o2/beta#90007"]
+        check("both roots' conflicts queue while both read",
+              Set(store.queuedTasks.map(\.id)).isSuperset(of: [
+                  AgentTaskQueue.key(auditAction: "conflicts", item: "o1/alpha#90007"), heldRow])
+                  && heldPrint != nil)
+        let record = ReviewAttempt(requestedAt: Store.AttemptStamp.conflicting,
+                                   lastDispatchedAt: Date(), attempts: 1)
+        store.headlessJSON?["myConflictAttempts"] = try? JSONEncoder().encode(["o2/beta#90007": record])
+        store.headlessJSON?["myReviewAttempts"] = try? JSONEncoder().encode(["o2/beta#90007": record])
+        // A concluded run whose request is still owed: dropping its record reviews again.
+        let concludedLongAgo = ReviewAttempt(
+            requestedAt: "2026-01-02T00:00:00Z",
+            lastDispatchedAt: Date().addingTimeInterval(-ReviewReconcile.retryMaxBackoff - 600),
+            attempts: 1, concludedAt: Date().addingTimeInterval(-ReviewReconcile.retryMaxBackoff - 60))
+        store.headlessJSON?["reviewReqAttempts"] = try? JSONEncoder().encode(["o2/beta#90006": concludedLongAgo])
+        heldFail("author", "beta", true)
+        heldAnswer("author", "alpha", conflictingPR("o1/alpha", 90008, "a8"))
+        let heldLinesBefore = unreadLines().count
+        try? FileManager.default.removeItem(at: heldLog)
+        store.communityIssuesEnabled = true
+        await store.runAutofixPollOnce()
+        await store.runAutofixPollOnce()
+        store.communityIssuesEnabled = false
+        let heldAsked = (try? String(contentsOf: heldLog, encoding: .utf8)) ?? ""
+        check("one root's unreadable PRs fail no poll", store.autofixPollError == nil)
+        check("…its queued row stands, and the other root's new conflict queues",
+              store.queuedTasks.map(\.id).contains(heldRow)
+                  && store.queuedTasks.map(\.id).contains(
+                      AgentTaskQueue.key(auditAction: "conflicts", item: "o1/alpha#90008")))
+        check("…its fingerprint and both attempt records are kept",
+              heldRecords("autofixFingerprints", as: PRFingerprint.self)["o2/beta#90007"] == heldPrint
+                  && heldRecords("myConflictAttempts", as: ReviewAttempt.self)["o2/beta#90007"] == record
+                  && heldRecords("myReviewAttempts", as: ReviewAttempt.self)["o2/beta#90007"] == record)
+        check("…its review requests and issues are not asked, the other root's are",
+              heldAsked.contains("q=repo:o1/alpha review-requested:")
+                  && !heldAsked.contains("q=repo:o2/beta review-requested:")
+                  && heldAsked.contains("issues-name=alpha") && !heldAsked.contains("issues-name=beta"))
+        check("…and its review-request records are kept",
+              heldRecords("reviewReqAttempts", as: ReviewAttempt.self)["o2/beta#90006"] == concludedLongAgo)
+        let heldFailed = unreadLines().dropFirst(heldLinesBefore)
+        check("…and it is logged once for the streak, naming the root and why",
+              heldFailed.map(\.action) == ["root-read-failed"]
+                  && heldFailed.first?.detail.hasPrefix("PRs of o2/beta unreadable, its work waits: ") == true
+                  && heldFailed.first?.detail.contains("cannot be searched") == true)
+        // A free bay and a disk below its floor: the drain would take a row it tried
+        // off the queue and re-stage it into a cycle that does not offer it, so a row
+        // that stands was never tried. Nothing spawns past the disk floor.
+        heldAnswer("author", "alpha", nil)
+        setenv(DiskFloor.envOverride, "99999999999999999999", 1)
+        if Store.agentDisk()?.low == true {
+            store.autoTaskLimit = 2
+            await store.runAutofixPollOnce()
+            check("…and the drain does not start it while a bay is free",
+                  store.queuedTasks.map(\.id).contains(heldRow))
+            store.autoTaskLimit = 1
+        } else {
+            check("the disk floor holds every dispatch for the drain check", false)
+        }
+        setenv(DiskFloor.envOverride, "0", 1)
+        heldFail("author", "alpha", true)
+        await store.runAutofixPollOnce()
+        check("my PRs unreadable in every root fail the poll",
+              store.autofixPollError?.contains("cannot be searched") == true)
+        heldFail("author", "alpha", false)
+        heldFail("author", "beta", false)
+        heldAnswer("author", "beta", nil)
+        store.autofixPollError = nil
+        store.queuedTasks = []
+
+        // The review-request twin, its reads failing while the PRs read.
+        store.headlessJSON?["reviewReqAttempts"] = try? JSONEncoder().encode(["o2/beta#90006": concludedLongAgo])
+        heldAnswer("review-requested", "alpha", requestedPR("o1/alpha", 90009))
+        heldFail("review-requested", "beta", true)
+        await store.runAutofixPollOnce()
+        check("one root's unreadable review requests fail no poll, the other root's queue",
+              store.autofixPollError == nil && store.queuedTasks.map(\.id).contains(
+                  AgentTaskQueue.key(auditAction: "review-req", item: "o1/alpha#90009")))
+        check("…and its concluded record is kept",
+              heldRecords("reviewReqAttempts", as: ReviewAttempt.self)["o2/beta#90006"] == concludedLongAgo)
+        check("…logged as that root's review requests",
+              unreadLines().last?.action == "root-read-failed"
+                  && unreadLines().last?.detail.hasPrefix("Review requests of o2/beta unreadable, its work waits: ")
+                      == true)
+        heldFail("review-requested", "alpha", true)
+        await store.runAutofixPollOnce()
+        check("review requests unreadable in every root fail the poll",
+              store.autofixPollError?.contains("cannot be searched") == true)
+        store.prAutofixEnabled = heldAsk.prAutofix
+        store.reviewRequestsEnabled = heldAsk.reviewReqs
+        store.headlessJSON = nil
+        store.autofixPollError = nil
+        store.requestedWork = []
+        store.queuedTasks = []
+        emptyBook()
         if let realGH { setenv("DIPLOMAT_GH", realGH, 1) } else { unsetenv("DIPLOMAT_GH") }
         store.pinRoots([argent])
 

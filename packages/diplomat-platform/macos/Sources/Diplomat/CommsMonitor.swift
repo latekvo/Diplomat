@@ -320,8 +320,11 @@ extension Store {
         let away = commsAway
         var replies: [CommsReplyRequest] = []
         if let reading = refreshComms() { await reading.value }
+        // Nothing logged is replayed while the tick is held (`commsHeldTick`): its "" repo
+        // would be the next root's.
         let stranded = commsItems.reversed().compactMap { i -> CommsTickResult.Item? in
-            guard i.outcome == nil, !fresh.contains(i.message.id), let d = i.decision else {
+            guard primaryResolved, i.outcome == nil, !fresh.contains(i.message.id),
+                  let d = i.decision else {
                 return nil
             }
             return CommsTickResult.Item(message: i.message, decision: d)

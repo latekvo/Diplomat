@@ -1649,12 +1649,23 @@ enum CommsTest {
         let missingFirst = scratch.appendingPathComponent("roots/missing").path
         await useRoots([missingFirst, secondRoot])
         await store.refreshRoots()
+        let strandedHeld = item(.review, 90011, summary: "review it")
+        CommsLog.append(CommsEvent(kind: .ping, id: strandedHeld.message.id, message: strandedHeld.message))
+        CommsLog.append(CommsEvent(kind: .decision, id: strandedHeld.message.id,
+                                   decision: strandedHeld.decision))
+        store.refreshComms()
+        lookups = []
+        let asksBeforeHeld = store.requestedWork.map(\.key)
+        let queueBeforeHeld = ids()
         let heldTick = store.commsHeldTick()
         check("while the first root path does not resolve, a tick is held: no pings, no items",
               heldTick == CommsTickResult(me: nil, items: [], error: "waiting for the first repo root, "
                                           + "\(missingFirst), to resolve to a GitHub checkout"))
         if let heldTick { await store.applyComms(heldTick) }
         check("…and says why as the Comms error", heldTick != nil && store.commsError == heldTick?.error)
+        check("…replaying no ping an earlier apply left undone",
+              folded(strandedHeld) != nil && folded(strandedHeld)?.outcome == nil && lookups.isEmpty
+                && store.requestedWork.map(\.key) == asksBeforeHeld && ids() == queueBeforeHeld)
         await useRoots([primaryRoot, secondRoot])
         await store.refreshRoots()
         check("a first root path that resolves ticks as before", store.commsHeldTick() == nil)

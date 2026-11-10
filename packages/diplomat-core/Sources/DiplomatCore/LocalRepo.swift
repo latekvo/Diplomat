@@ -18,14 +18,17 @@ extension PRRef.LocalRepo {
     /// --get-regexp '^remote\..*\.url$'` output, each once. A fork clone carries both the fork and the
     /// project it forked, and a link to either belongs in that checkout. `upstream` comes
     /// first, then `origin`, then the rest in config order: the first entry is the one
-    /// Settings names the checkout by.
-    public static func entries(path: String, remotes: String) -> [PRRef.LocalRepo] {
+    /// Settings names the checkout by. With `only`, just the remotes it names, ranked the
+    /// same. Python twin: `localrepos.entries`.
+    public static func entries(path: String, remotes: String,
+                               only: [String] = []) -> [PRRef.LocalRepo] {
         var named: [(remote: String, repo: PRRef.LocalRepo)] = []
         for line in remotes.split(separator: "\n") {
             let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
             guard parts.count == 2, parts[0].hasPrefix("remote."), parts[0].hasSuffix(".url"),
                   let c = coordinates(remoteURL: parts[1]) else { continue }
             let remote = String(parts[0].dropFirst("remote.".count).dropLast(".url".count))
+            if !only.isEmpty, !only.contains(remote) { continue }
             named.append((remote, PRRef.LocalRepo(owner: c.owner, repo: c.repo, path: path)))
         }
         let rank = { (remote: String) in ["upstream", "origin"].firstIndex(of: remote) ?? 2 }
@@ -50,10 +53,12 @@ public enum RepoRoots {
     ///
     /// `remotes` maps an expanded path to its `git config --local --get-regexp
     /// '^remote\..*\.url$'` output; a path missing from it is no checkout. A path names
-    /// the configured repo when one of its remotes is that repo, or a repo of that name
-    /// under another owner (a fork's `origin`, or a URL from before the repo moved), and
-    /// otherwise its first remote (`LocalRepo.entries` order). A path with no GitHub
-    /// remote is skipped, and a repo two paths name keeps the first. When nothing
+    /// the configured repo when its `upstream` or `origin` (any remote, with neither) is
+    /// that repo, or a repo of that name under another owner (a fork's `origin`, or a URL
+    /// from before the repo moved), and otherwise its first remote (`LocalRepo.entries`
+    /// order). Another remote naming it is a sibling fetched from, not what the checkout
+    /// is. A path with no GitHub remote is skipped, and a repo two paths name keeps the
+    /// first. When nothing
     /// resolves, the first path stands for the configured repo, which is how a single
     /// missing or remote-less checkout has always been worked (`guessed` tells the case
     /// of several).
@@ -66,9 +71,12 @@ public enum RepoRoots {
             let path = expand(raw)
             guard let config = remotes[path] else { continue }
             let entries = PRRef.LocalRepo.entries(path: path, remotes: config)
-            let renamed = entries.contains { $0.repo.lowercased() == configured.repo.lowercased() }
+            let ownRemotes = PRRef.LocalRepo.entries(path: path, remotes: config,
+                                                     only: ["upstream", "origin"])
+            let own = ownRemotes.isEmpty ? entries : ownRemotes
+            let renamed = own.contains { $0.repo.lowercased() == configured.repo.lowercased() }
                 ? PRRef.LocalRepo(owner: configured.owner, repo: configured.repo, path: path) : nil
-            guard let pick = entries.first(where: { $0.slug.lowercased() == want })
+            guard let pick = own.first(where: { $0.slug.lowercased() == want })
                     ?? renamed ?? entries.first,
                   seen.insert(pick.slug.lowercased()).inserted else { continue }
             out.append(pick)

@@ -246,8 +246,9 @@ struct SettingsView: View {
         "The first is the primary: an agent whose job names no repo starts there. Every "
             + "automatic job runs across all of them, and the header picks the one the "
             + "lists, search and wizards work on. Each is known by one GitHub repo from its "
-            + "remotes: \(repoSlug) if a remote names it or a repo of that name under "
-            + "another owner (a fork or a move), else upstream, else origin. None listed = "
+            + "remotes: \(repoSlug) if its upstream or origin names it or a repo of that "
+            + "name under another owner (a fork or a move), else upstream, else origin. "
+            + "None listed = "
             + "\(RepoPaths.defaultAgentRepo). DIPLOMAT_REPO in this app's environment "
             + "outranks the list."
     }
