@@ -302,7 +302,8 @@ final class Store: ObservableObject {
 
     /// Where each root's next community-issue scan starts (`Filters.newCommunityIssues`),
     /// by lowercased slug. A root with no mark starts from its first scan, so adding a
-    /// root never queues the issues it already had.
+    /// root never queues the issues it already had; a removed root's mark is dropped,
+    /// so re-adding it does not either.
     private(set) var communityIssuesSince: [String: Date] {
         didSet { persist(communityIssuesSince, forKey: Keys.communityIssuesSince) }
     }
@@ -1104,8 +1105,9 @@ final class Store: ObservableObject {
         commsSeenAt = defaults.object(forKey: Keys.commsSeenAt) as? Date ?? Date()
         queuedTaskOrder = (defaults.stringArray(forKey: Keys.queuedTaskOrder) ?? [])
             .map { PRRef.migrateQueueKey($0, primary: primary) }
+        let configured = CoreAssets.repoCoordinates()
         requestedWork = Store.decodeRequestedWork(defaults.data(forKey: Keys.requestedWork),
-                                                  primary: primary)
+                                                  configured: "\(configured.owner)/\(configured.repo)")
         listedSlug = selectedRoot.slug.lowercased()
         refreshLocalRepos()
         if hiddenTools.contains(selected.rawValue),
@@ -2527,7 +2529,10 @@ final class Store: ObservableObject {
                 AuditLog.log("auto", "community-issue", "\(who) — fix queued")
             }
         }
-        communityIssuesSince[slug] = scan.since
+        let current = Set(roots.map { $0.slug.lowercased() })
+        var marks = communityIssuesSince.filter { current.contains($0.key) }
+        marks[slug] = scan.since
+        communityIssuesSince = marks
         if !scan.fresh.isEmpty { refreshAudit() }
     }
 
@@ -3145,17 +3150,19 @@ final class Store: ObservableObject {
         }
     }
 
-    /// The stored asks, a row a single-repo build wrote read as one in `primary` (the
-    /// primary root's slug). Split from the defaults read so a self-test can run an ask
-    /// through a restart's decode: headless, nothing is written to those defaults.
-    static func decodeRequestedWork(_ data: Data?, primary: String) -> [RequestedWork] {
+    /// The stored asks. A row a single-repo build wrote names no repo: it reads as its
+    /// link's, else as `configured` (the one repo those builds knew). Split from the
+    /// defaults read so a self-test can run an ask through a restart's decode: headless,
+    /// nothing is written to those defaults.
+    static func decodeRequestedWork(_ data: Data?, configured: String) -> [RequestedWork] {
         guard let data, let rows = try? JSONDecoder().decode([StoredAsk].self, from: data)
         else { return [] }
         return rows.compactMap(\.work).map { ask in
             guard ask.repo.isEmpty, ask.config.action != AgentTaskQueue.investigateAction
             else { return ask }
             var legacy = ask
-            legacy.repo = primary
+            legacy.repo = PRRef.itemKey(url: ask.url).flatMap(PRRef.splitItemKey)?.slug
+                ?? configured.lowercased()
             return legacy
         }
     }
@@ -3988,7 +3995,7 @@ final class Store: ObservableObject {
             tag = soft ? " ~soft-approve (\(why))" : " −verdict (\(why))"
         }
         let key = item(url: r.url, number: r.number)
-        let root = root(ofItem: key)
+        guard let root = root(ofItem: key) else { return false }
         var cfg = ReviewConfig(depth: "max", target: .specific, me: effectiveMe,
                                markReady: false, leaveReviews: true, replyToReviews: false,
                                specificPR: String(r.number), finalPass: verdict,
@@ -4003,7 +4010,7 @@ final class Store: ObservableObject {
                            ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
                                                             prURL: r.url, headSha: r.headSha),
                            counter: .reviewRequests, attemptStamp: AttemptStamp.reviewRequest(r),
-                           directory: root?.path)
+                           directory: root.path)
         return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
     }
 
@@ -4047,7 +4054,8 @@ final class Store: ObservableObject {
                                      source: AgentDispatchGate.Source,
                                      headSha: String = "") async -> DispatchOutcome {
         let key = item(url: url, number: number)
-        let root = root(ofItem: key)
+        // An item in no root is skipped: that number in the primary is another PR.
+        guard let root = root(ofItem: key) else { return .failed("\(key) is in no repo root") }
         var cfg = ConflictConfig(target: .specific, me: effectiveMe, specificPR: String(number))
         cfg.home = root
         let job = AgentJob(kind: "conflicts", auditAction: "conflicts",
@@ -4059,7 +4067,7 @@ final class Store: ObservableObject {
                            ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindConflicts,
                                                             prURL: url, headSha: headSha),
                            counter: .conflicts, attemptStamp: AttemptStamp.conflicting,
-                           directory: root?.path)
+                           directory: root.path)
         return await dispatchAgent(job, source: source, attemptNumber: attemptNumber)
     }
 
@@ -4069,7 +4077,7 @@ final class Store: ObservableObject {
     @discardableResult
     private func dispatchMyReview(_ s: PRSnapshot, attemptNumber: Int = 1) async -> Bool {
         let key = item(url: s.url, number: s.number)
-        let root = root(ofItem: key)
+        guard let root = root(ofItem: key) else { return false }
         var cfg = ReviewConfig(depth: "deep", target: .specific, me: effectiveMe,
                                markReady: false, leaveReviews: false, replyToReviews: true,
                                specificPR: String(s.number), specificAuthor: .mine)
@@ -4083,7 +4091,7 @@ final class Store: ObservableObject {
                            ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReply,
                                                             prURL: s.url, headSha: s.headSha),
                            counter: .myReviews, attemptStamp: AttemptStamp.unresolvedReview,
-                           directory: root?.path)
+                           directory: root.path)
         return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
     }
 

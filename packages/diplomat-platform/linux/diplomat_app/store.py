@@ -738,11 +738,16 @@ class Store(QObject):
         return review.repo_roots()[0]
 
     @staticmethod
+    def _root_named(item: str | None) -> LocalRepo | None:
+        """The repo root an item key (or slug) is in, or ``None``. A monitor dispatch of
+        an item in none is skipped: that number in the primary is another PR."""
+        slug = (item or "").partition("#")[0].lower()
+        return next((r for r in review.repo_roots() if r.slug.lower() == slug), None)
+
+    @staticmethod
     def _root_of(item: str | None) -> LocalRepo:
         """The repo root an item key (or slug) is in, else the primary."""
-        roots = review.repo_roots()
-        slug = (item or "").partition("#")[0].lower()
-        return next((r for r in roots if r.slug.lower() == slug), roots[0])
+        return Store._root_named(item) or review.repo_roots()[0]
 
     @staticmethod
     def _checkout_of(root: LocalRepo) -> str | None:
@@ -807,6 +812,16 @@ class Store(QObject):
                 seen.add(repo.slug.lower())
                 out.append(repo)
         return tuple(out)
+
+    @staticmethod
+    def wizard_item_label(owner: str, repo: str, number: int) -> str:
+        """A wizard's single item: :func:`item_label` in a repo root, else the whole
+        ``owner/repo#N``. The Comms adoption of a running fix matches it."""
+        slug = f"{owner}/{repo}"
+        roots = review.repo_roots()
+        if slug.lower() not in {r.slug.lower() for r in roots}:
+            return f"{slug}#{number}"
+        return item_label(item_key(owner, repo, number), len(roots))
 
     def is_root(self, repo: LocalRepo | None) -> bool:
         """Whether ``repo`` is one of the repo roots: work there is deduped by item and
@@ -1063,12 +1078,21 @@ class Store(QObject):
             return []
         if not isinstance(rows, list):
             return []
-        parsed = [autofix.RequestedWork.from_json(r) for r in rows if isinstance(r, dict)]
-        primary = self._primary().slug.lower()
-        # A row single-repo builds stored names no repo: it was the primary's.
-        return [r if r.repo or r.action == autofix.QUEUE_INVESTIGATE_ACTION
-                else dataclasses.replace(r, repo=primary)
-                for r in parsed if r is not None]
+        parsed = [w for r in rows if isinstance(r, dict)
+                  if (w := autofix.RequestedWork.from_json(r)) is not None]
+        legacy = [not w.repo and w.action != autofix.QUEUE_INVESTIGATE_ACTION
+                  for w in parsed]
+        if not any(legacy):
+            return parsed
+        # A row a single-repo build stored names no repo: its link's, else the one repo
+        # those builds knew. Written back, so it is migrated once.
+        cfg = core.config()
+        configured = f"{cfg['owner']}/{cfg['repo']}".lower()
+        migrated = [dataclasses.replace(
+                        w, repo=(item_key_from_url(w.url) or configured).partition("#")[0])
+                    if old else w for w, old in zip(parsed, legacy)]
+        self.requested_work = migrated
+        return migrated
 
     @requested_work.setter
     def requested_work(self, value: list[autofix.RequestedWork]) -> None:
@@ -1718,8 +1742,8 @@ class Store(QObject):
         dispatched, can be cancelled, and re-reads its issue when its turn comes.
 
         Each root keeps its own mark, and one with none is baselined on its first read,
-        so adding a root never queues its backlog. A root whose read failed keeps its
-        mark."""
+        so adding a root never queues its backlog. A removed root's mark is dropped, so
+        re-adding it does not either. A root whose read failed keeps its mark."""
         if not self.community_issues_enabled:
             return
         marks = self._community_marks()
@@ -1754,7 +1778,9 @@ class Store(QObject):
                 if queued:
                     activity.log("auto", "community-issue", f"{who} - fix queued")
             marks[slug] = mark.isoformat()
-        self._settings.setValue("communityIssuesSince", json.dumps(marks))
+        current = {r.slug.lower() for r in roots}
+        self._settings.setValue("communityIssuesSince", json.dumps(
+            {k: v for k, v in marks.items() if k in current}))
 
     def _read_goal_work(self) -> list[tuple[str, dict]]:
         """Re-read the tasks, keep the PRs whose threads an ``auto`` goal wants fixed
@@ -2228,7 +2254,9 @@ class Store(QObject):
     def _dispatch_conflict_fix(
         self, number: int, url: str, attempt: int, source: str, head_sha: str = ""
     ) -> bool:
-        root = self._root_of(item_key_from_url(url))
+        root = self._root_named(item_key_from_url(url))
+        if root is None:
+            return False
         job = autofix.AgentJob(
             kind="conflicts",
             audit_action="conflicts",
@@ -2249,7 +2277,9 @@ class Store(QObject):
         return self.dispatch_agent(job, source, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
     def _dispatch_my_review(self, s, attempt: int = 1) -> bool:
-        root = self._root_of(s.item)
+        root = self._root_named(s.item)
+        if root is None:
+            return False
         job = autofix.AgentJob(
             kind="review",
             audit_action="review-reply",
@@ -2287,7 +2317,9 @@ class Store(QObject):
         else:
             why = "auto-approvals off" if not self.auto_approve_enabled else ", ".join(reasons)
             tag = f" ~soft-approve ({why})" if soft else f" -verdict ({why})"
-        root = self._root_of(r.item)
+        root = self._root_named(r.item)
+        if root is None:
+            return False
         job = autofix.AgentJob(
             kind="review",
             audit_action=REVIEW_REQ_ACTION,
@@ -2797,7 +2829,9 @@ class Store(QObject):
                 pr_number=entry.number if is_pr else None,
                 author_login=entry.author or None,
                 duty=entry.action,
-                checkout=checkout or (where if where != review.repo_path() else None),
+                # A root's checkout is wherever that root is now, not where it was asked.
+                checkout=checkout if entry.repo else (
+                    where if where != review.repo_path() else None),
             ),
             attempt=1,
         )

@@ -7,6 +7,7 @@ resolves real checkouts instead, since what it edits is the stored list."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -161,6 +162,23 @@ def test_each_root_keeps_its_own_issue_mark_and_a_new_one_starts_now(quiet, monk
         ("o/r", 11), ("o/r", 12), ("o/other", 22)]
 
 
+def test_a_root_removed_and_added_back_queues_none_of_its_backlog(quiet, monkeypatch):
+    quiet.community_issues_enabled = True
+    _by_repo(monkeypatch, "fetch_open_issues", {
+        "o/r": [_issue(PRIMARY, 11, NOW - timedelta(minutes=30))],
+        "o/other": [_issue(SECOND, 21, NOW - timedelta(minutes=30))]})
+    quiet._poll_community_issues([PRIMARY, SECOND])
+    quiet._poll_community_issues([PRIMARY])
+    assert set(json.loads(quiet._settings.value("communityIssuesSince"))) == {"o/r"}
+
+    later = NOW + timedelta(hours=1)
+    _by_repo(monkeypatch, "fetch_open_issues", {
+        "o/other": [_issue(SECOND, n, later + timedelta(minutes=n)) for n in (22, 23, 24)]})
+    quiet._poll_community_issues([PRIMARY, SECOND])
+
+    assert quiet.requested_work == []
+
+
 def test_state_from_a_single_repo_build_names_the_primary_root(quiet):
     s = quiet._settings
     s.setValue("queuedTaskOrder", ["conflicts:5", "review-req:o/other#6", "investigate:1.2"])
@@ -174,6 +192,74 @@ def test_state_from_a_single_repo_build_names_the_primary_root(quiet):
     for key in ("reviewReqAttempts", "myReviewAttempts", "myConflictAttempts"):
         assert sorted(quiet._load_attempts(key)) == ["o/other#7", "o/r#7"], key
     assert list(quiet._load_fingerprints()) == ["o/r#5"]
+
+
+def test_a_legacy_ask_keeps_its_repo_whichever_root_is_primary(store, monkeypatch):  # noqa: F811
+    """A row a single-repo build stored names no repo: its link's, else the configured
+    repo's, written back on the first read so no later primary re-homes it."""
+    from diplomat_runtime import core
+
+    cfg = core.config()
+    configured = f"{cfg['owner']}/{cfg['repo']}".lower()
+    home = LocalRepo(cfg["owner"], cfg["repo"], "/src/home")
+    review_cfg = {"kind": "review", "specificPR": "7", "depth": "deep"}
+    rows = [autofix.RequestedWork(number=7, url="https://github.com/O/There/pull/7",
+                                  author="", config=review_cfg).to_json(),
+            autofix.RequestedWork(number=8, url="", author="", config=review_cfg).to_json()]
+    for row in rows:
+        del row["repo"]
+    store._settings.setValue("requestedReviews", json.dumps(rows))
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [SECOND, home])
+    assert [w.repo for w in store.requested_work] == ["o/there", configured]
+    stored = json.loads(store._settings.value("requestedReviews"))
+    assert [r["repo"] for r in stored] == ["o/there", configured]
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [home, SECOND])
+    assert [w.repo for w in store.requested_work] == ["o/there", configured]
+
+
+def _issue_of(root: LocalRepo, n: int) -> OpenIssue:
+    return OpenIssue(n, f"Issue {n}", f"https://github.com/{root.slug}/issues/{n}",
+                     "carol", "CONTRIBUTOR", NOW, NOW, 0, [], [], False)
+
+
+def test_a_review_sweep_asks_of_its_home_root(quiet):
+    sweep = review.ReviewConfig(target=PRTarget.MINE, me=quiet.me, depth="deep",
+                                include_drafts=True, include_ready=True)
+    quiet.prs = [dataclasses.replace(_pr(PRIMARY, 5), author=quiet.me)]
+    assert quiet.request_review_sweep(dataclasses.replace(sweep, home=PRIMARY)) == (1, 0)
+    quiet.prs = [dataclasses.replace(_pr(SECOND, 5), author=quiet.me)]
+
+    assert quiet.request_review_sweep(dataclasses.replace(sweep, home=SECOND)) == (1, 0)
+    assert [w.key for w in quiet.requested_work] == ["review:o/r#5", "review:o/other#5"]
+
+
+def test_an_issue_sweep_asks_of_its_home_root_and_works_in_its_checkout(quiet):
+    from diplomat_app import issues
+
+    quiet.issues = [_issue_of(SECOND, 7)]
+    sweep = issues.IssueConfig(target=issues.Target.CONTRIBUTORS, me=quiet.me, depth="deep",
+                               unassigned_only=True, home=SECOND)
+
+    assert quiet.request_issue_sweep(sweep) == (1, 0)
+    assert [w.key for w in quiet.requested_work] == ["issues:o/other#7"]
+    quiet._offer_requested_work()
+    assert [t.job.checkout for t in quiet._staged_queue] == ["/src/other"]
+
+
+def test_an_ask_works_where_its_root_is_now_not_where_it_was_asked(quiet):
+    def ask(root: LocalRepo, old_path: str) -> autofix.RequestedWork:
+        home = {"owner": root.owner, "repo": root.repo, "path": old_path}
+        return autofix.RequestedWork(
+            number=3, url=f"https://github.com/{root.slug}/pull/3", author="",
+            config={"kind": "review", "specificPR": "3", "depth": "deep", "home": home},
+            repo=root.slug)
+
+    quiet.requested_work = [ask(PRIMARY, "/old/r"), ask(SECOND, "/old/other")]
+    quiet._offer_requested_work()
+
+    assert [t.job.checkout for t in quiet._staged_queue] == [None, "/src/other"]
 
 
 def test_an_ask_whose_root_is_gone_is_dropped_and_said(quiet):
@@ -210,6 +296,56 @@ def test_the_mesh_never_takes_a_job_whose_checkout_is_no_root(store, roots, monk
     assert calls == [("review", "review:github.com/o/other#3@s")]
 
 
+def test_the_closed_pr_read_covers_every_root(quiet, monkeypatch):
+    asked = _by_repo(monkeypatch, "fetch_closed_prs", {})
+
+    quiet._autofix_poll_once()
+
+    assert asked == ["o/r", "o/other"]
+
+
+def test_a_comms_bump_moves_the_named_roots_item(quiet):
+    def task(key):
+        return autofix.QueuedTask(id=key, job=autofix.AgentJob(
+            kind="review", audit_action="review", label=key, prompt="P", pr_url=None,
+            pr_number=None, duty="review"), attempt=1)
+
+    quiet.queued_tasks = [task(k) for k in ("review:o/r#9", "review:o/r#5", "review:o/other#5")]
+
+    quiet._comms_bump(5, "o/other")
+    assert [t.id for t in quiet.queued_tasks] == [
+        "review:o/other#5", "review:o/r#9", "review:o/r#5"]
+    quiet._comms_bump(5, "")
+    assert [t.id for t in quiet.queued_tasks][0] == "review:o/r#5"
+
+
+def test_a_prompt_names_an_item_whatever_the_slugs_case():
+    text = "Review PR #5 in O/Other. Use the `gh` CLI"
+    assert list(autofix.prompt_items(text, {"O/Other"})) == ["o/other#5"]
+
+
+def test_a_run_with_a_pr_number_but_no_pr_link_holds_an_unscoped_bay():
+    from diplomat_runtime import agentstate
+
+    run = agentstate.RunRecord(run_id="r1", dispatched_at=0.0, pr_number=5, pr_url="",
+                               tty="ttys003")
+    assert run.item is None
+    assert autofix.unscoped_auto_ttys([run], "ttys003 01:00 claude do it\n") == {"ttys003"}
+
+
+def test_the_tick_scans_for_live_agents_on_every_root(roots, monkeypatch):
+    from diplomat_app import probes
+    from diplomat_runtime import agentstate
+
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: agentstate.Observation.present(
+        "  42 ttys003 60 claude Review PR #5 in o/other. Use the `gh` CLI\n"
+        "  43 ttys004 60 claude Review PR #6 in o/r. Use the `gh` CLI\n"))
+
+    scan = probes.gather([], 0.0, mesh_enabled=False).live_agents
+
+    assert scan.value == {"o/other#5": "ttys003", "o/r#6": "ttys004"}
+
+
 def test_the_disk_floor_measures_every_root(quiet, monkeypatch):
     measured: list[str] = []
     monkeypatch.setenv(diskfloor.ENV_OVERRIDE, "1")
@@ -219,6 +355,22 @@ def test_the_disk_floor_measures_every_root(quiet, monkeypatch):
     quiet._dispatch_conflict_fix(5, "https://github.com/o/other/pull/5", 1, autofix.SOURCE_AUTO)
 
     assert measured == ["/src/r", "/src/other", str(Path.home() / ".diplomat")]
+
+
+def test_a_monitor_dispatch_in_no_root_is_skipped(quiet, monkeypatch):
+    jobs: list[autofix.AgentJob] = []
+    monkeypatch.setattr(quiet, "dispatch_agent",
+                        lambda job, source, attempt=1: jobs.append(job) or "spawned")
+    gone = "https://github.com/o/gone/pull/5"
+    snap = PRSnapshot(number=5, title="t", url=gone, is_draft=False, mergeable="MERGEABLE",
+                      review_decision="", threads_unresolved=1, threads_i_owe=1, head_sha="s")
+    req = ReviewRequest(number=5, title="t", url=gone, author="bob", author_association="MEMBER",
+                        files=[], requested_at="2026-01-02", my_last_review_at=None, head_sha="s")
+
+    assert not quiet._dispatch_conflict_fix(5, gone, 1, autofix.SOURCE_AUTO)
+    assert not quiet._dispatch_my_review(snap)
+    assert not quiet._dispatch_review_request(req)
+    assert jobs == []
 
 
 def test_usage_counts_every_root_and_its_worktrees(roots):
@@ -349,6 +501,31 @@ def test_a_link_to_another_root_is_deduped_by_its_number(wizard_store, dispatche
     assert [(j.pr_number, j.pr_url, j.checkout) for j in dispatched] == [
         (9, "https://github.com/o/other/pull/9", "/src/other"),
         (9, "https://github.com/o/r/pull/9", None)]
+
+
+@pytest.mark.parametrize("selected, text", [
+    ("o/other", "12"), ("o/other", "https://github.com/o/other/issues/12"),
+    ("o/r", "https://github.com/o/other/issues/12")])
+def test_comms_adopts_a_fix_the_issues_wizard_is_running(wizard_store, dispatched,
+                                                         selected, text):
+    from diplomat_app import issues
+    from diplomat_app.issuewizardview import IssueWizardView
+    from diplomat_app.store import Store
+
+    wizard_store.select_repo(selected)
+    w = IssueWizardView(wizard_store)
+    w.target.setCurrentIndex(w.target.findData(issues.Target.SPECIFIC))
+    w.specific_issue.setText(text)
+    w._spawn()
+    [job] = dispatched
+    rows = [autofix.RunningAgent(pr_number=None, label=job.label,
+                                 kind=autofix.QUEUE_ISSUES_ACTION, tracked=True)]
+
+    assert job.label.startswith("Issues · other#12 · ")
+    assert Store._comms_row_doing(
+        autofix.queue_key(autofix.QUEUE_ISSUES_ACTION, "o/other#12"), rows) is rows[0]
+    assert Store._comms_row_doing(
+        autofix.queue_key(autofix.QUEUE_ISSUES_ACTION, "o/r#12"), rows) is None
 
 
 # ---- the header and Settings ------------------------------------------------
