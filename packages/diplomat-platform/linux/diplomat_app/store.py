@@ -1802,7 +1802,8 @@ class Store(QObject):
         list and the queue switch apply), then record them on their task, the ones
         already queued too. One whose prompt will not assemble is left for the next
         pass, as :meth:`_offer_requested_work` leaves an ask. A fix whose issue has an
-        agent on it already is recorded, not asked for."""
+        agent on it already is recorded, not asked for. An item in no repo root is
+        skipped."""
         done: dict[str, list[str]] = {}
         fixes = any(w["kind"] == "fix-issue" for _, w in work)
         agent_issues = self.goal_overlay().agent_issues if fixes else frozenset()
@@ -1812,7 +1813,9 @@ class Store(QObject):
                 done.setdefault(task_id, []).append(str(w["key"]))
                 continue
             item = item_key_from_url(url) or ""
-            root = self._root_of(item)
+            root = self._root_named(item)
+            if root is None:
+                continue
             if w["kind"] == "fix-issue":
                 config = self._goal_fix_config(number, root)
             else:

@@ -467,6 +467,20 @@ def test_an_auto_goal_queues_its_fixes_and_reviews_and_fixes_my_findings(
     assert asked == [] and len(tasks_events()) == lines
 
 
+def test_an_auto_goal_in_no_repo_root_asks_and_records_nothing(tstore, github, no_agents,
+                                                              monkeypatch):
+    """Goal work is the configured repo's. With no root for it, an ask would only be
+    dropped as in no root, after the goal had recorded it dispatched."""
+    from diplomat_runtime import review
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [LocalRepo("o", "elsewhere", "/src/e")])
+    tstore.pr_autofix_enabled = False
+    task_id = _auto_goal(tstore, github, "auto")
+    _poll(tstore, monkeypatch)
+    assert tstore.requested_work == [] and no_agents == []
+    assert "dispatched" not in _task(task_id)["task"]
+
+
 def tasks_events() -> list[str]:
     from pathlib import Path
 

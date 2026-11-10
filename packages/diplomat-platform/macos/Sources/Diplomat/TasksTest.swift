@@ -245,6 +245,13 @@ enum TasksTest {
               !store.isPaused(.myReviews, item: key(1822)) && store.isPaused(.conflicts, item: key(1822)))
 
         print("the automatic pass")
+        let asksBeforeNoRoot = store.requestedWork.count
+        store.pinRoots([PRRef.LocalRepo(owner: "o", repo: "elsewhere", path: "/src/elsewhere")])
+        await store.runGoalPass()
+        store.pinRoots([PRRef.LocalRepo(owner: owner, repo: repo, path: RepoPaths.agentRepo)])
+        check("with no root for the goal's repo, it asks for and records nothing",
+              store.requestedWork.count == asksBeforeNoRoot && view(fixture.auto)?.task.dispatched.isEmpty == true,
+              "\(store.requestedWork.map(\.key)) \(view(fixture.auto)?.task.dispatched.keys.sorted() ?? [])")
         let asksBefore = Set(store.requestedWork.map(\.key))
         store.goalFixesStarting = [1820]
         await store.runGoalPass()

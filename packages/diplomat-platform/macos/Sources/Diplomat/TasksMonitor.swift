@@ -308,12 +308,12 @@ extension Store {
     /// (`requestOne`, so the cap, the ban list and the queue switch apply), then recorded
     /// as `dispatched`, also when already asked for; a fix of an issue an agent is on is
     /// recorded without asking. `findings` needs nothing here: `isPaused` lets the my-PR
-    /// review reconcile run for `goalFindingItems`.
+    /// review reconcile run for `goalFindingItems`. An item in no repo root is skipped.
     func runGoalPass() async {
         let overlay = goalOverlay
         for view in taskViews where !view.work.isEmpty {
             var started: [String] = []
-            for item in view.work {
+            for item in view.work where root(ofItem: PRRef.itemKey(url: item.url)) != nil {
                 switch item.kind {
                 case .fixIssue:
                     if !overlay.agentIssues.contains(item.number) {
