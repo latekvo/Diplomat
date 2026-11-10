@@ -18,7 +18,7 @@ import pytest
 from test_autofix import fake_probes, store  # noqa: F401 — fixture
 
 from diplomat_runtime import (
-    activity, appconfig, autofix, diskfloor, localrepos, review, telemetry, usagescan,
+    activity, appconfig, autofix, core, diskfloor, localrepos, review, telemetry, usagescan,
 )
 from diplomat_runtime.autofix import PRSnapshot, ReviewRequest
 from diplomat_runtime.models import API, OpenIssue, OpenPR
@@ -143,7 +143,9 @@ def test_the_owed_ledger_keeps_every_roots_pending_work(quiet, monkeypatch):
 
 def test_each_root_keeps_its_own_issue_mark_and_a_new_one_starts_now(quiet, monkeypatch):
     quiet.community_issues_enabled = True
-    # The one mark a single-repo build stored: the primary's.
+    cfg = core.config()
+    monkeypatch.setattr(core, "config", lambda: {**cfg, "owner": "o", "repo": "r"})
+    # The one mark a single-repo build stored: the configured repo's.
     quiet._settings.setValue("communityIssuesSince", (NOW - timedelta(hours=1)).isoformat())
     _by_repo(monkeypatch, "fetch_open_issues", {
         "o/r": [_issue(PRIMARY, 11, NOW - timedelta(minutes=30))],
@@ -164,6 +166,20 @@ def test_each_root_keeps_its_own_issue_mark_and_a_new_one_starts_now(quiet, monk
 
     assert [(w.repo, w.number) for w in quiet.requested_work] == [
         ("o/r", 11), ("o/r", 12), ("o/other", 22)]
+
+
+def test_a_single_builds_mark_is_the_configured_repos_whatever_root_is_first(quiet,
+                                                                              monkeypatch):
+    """A single-repo build scanned the configured repo. A first root resolving to
+    another repo is baselined, not handed that repo's old mark."""
+    quiet.community_issues_enabled = True
+    quiet._settings.setValue("communityIssuesSince", (NOW - timedelta(hours=1)).isoformat())
+    _by_repo(monkeypatch, "fetch_open_issues", {
+        "o/r": [_issue(PRIMARY, 11, NOW - timedelta(minutes=30))]})
+
+    quiet._poll_community_issues([PRIMARY, SECOND])
+
+    assert quiet.requested_work == []
 
 
 def test_a_root_removed_and_added_back_queues_none_of_its_backlog(quiet, monkeypatch):
@@ -1248,3 +1264,43 @@ def test_a_root_taken_out_and_added_back_logs_its_failed_read_again(quiet, monke
     monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, SECOND])
     quiet._autofix_poll_once()
     assert logged.count("root-read-failed") == 2
+
+
+def test_the_drain_starts_no_investigation_asked_in_a_root_just_taken_out(quiet, monkeypatch):
+    quiet.requested_work = [autofix.RequestedWork(
+        number=1, url="", author="", config={"kind": "investigate", "checkout": "/src/other"},
+        repo="o/other")]
+    quiet.queue_auto_run = False
+    quiet._autofix_poll_once()
+    assert [t.id for t in quiet.queued_tasks] == ["investigate:1"]
+    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY])
+    quiet.queue_auto_run = True
+    started = _starts(quiet, monkeypatch)
+
+    quiet._drain_queued_tasks([], set())
+
+    assert started == []
+
+
+def test_a_guessed_root_is_shown_as_unresolved(app, tmp_path, monkeypatch):
+    """With several paths and none resolving, the first stands in for the configured
+    repo; its row must not read as a checkout of it."""
+    from PySide6.QtWidgets import QLabel
+
+    from diplomat_app.settingsview import SettingsView
+    from diplomat_app.store import Store
+
+    monkeypatch.delenv("DIPLOMAT_REPO", raising=False)
+    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
+    first, second = tmp_path / "a", tmp_path / "b"
+    for where in (first, second):
+        where.mkdir()
+        subprocess.run(["git", "-C", str(where), "init", "-q"], check=True)
+    appconfig.set_repo_roots([str(first), str(second)])
+    assert review.roots_guessed()
+    view = SettingsView(Store())
+
+    texts = [w.text() for w in view._roots_list.itemAt(0).widget().findChildren(QLabel)]
+    assert any("No GitHub remote" in t for t in texts), texts
+    view.deleteLater()

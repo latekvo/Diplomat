@@ -424,7 +424,8 @@ class SettingsView(QWidget):
                 item.widget().deleteLater()
         paths = self.store.repo_root_paths
         shadowed = bool(os.environ.get("DIPLOMAT_REPO"))
-        resolved = {r.path: r for r in review.repo_roots()}
+        # A guessed root is a stand-in, not a resolved checkout.
+        resolved = {} if review.roots_guessed() else {r.path: r for r in review.repo_roots()}
         problems = 0
         for i, path in enumerate(paths):
             root = None if shadowed else resolved.get(os.path.expanduser(path))

@@ -1225,6 +1225,27 @@ def test_a_find_a_ping_took_stays_queued_until_it_runs(comms_store, monkeypatch)
 
 
 @needs_core
+def test_a_find_a_ping_took_leaves_once_its_root_is_taken_out(comms_store, monkeypatch):
+    """Kept for its ping, it would otherwise wait forever: the drain starts nothing in a
+    repo no root is, and no monitor offers it again."""
+    _rows(monkeypatch, [])
+    comms_store.queued_tasks = [_review_req(12)]
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+    monkeypatch.setattr(review, "repo_roots", lambda: [LocalRepo("o", "elsewhere", "/x")])
+    # While a root is unresolved, its repo missing may be that one.
+    monkeypatch.setattr(review, "roots_complete", lambda: False)
+    comms_store._staged_queue = []
+    comms_store.commit_queue()
+    assert [t.id for t in comms_store.queued_tasks] == [qkey("review-req", 12)]
+    monkeypatch.setattr(review, "roots_complete", lambda: True)
+    comms_store._staged_queue = []
+    comms_store.commit_queue()
+    assert comms_store.queued_tasks == []
+    assert _events()[-1]["outcome"] == f"{comms.LEFT_QUEUE} ({qkey('review-req', 12)})"
+
+
+@needs_core
 def test_a_ping_whose_run_never_started_is_started_by_its_retry(comms_store, monkeypatch):
     """A failed spawn records no attempt, so the monitor finds the review again; the ping
     that took the first, failed start waits for that retry instead of reading "nothing

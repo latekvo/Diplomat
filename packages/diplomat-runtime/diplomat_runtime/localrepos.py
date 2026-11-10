@@ -45,7 +45,10 @@ def remote_config(path: str) -> str | None:
     remotes answers ``None`` too: ``git config --get-regexp`` exits 1 on no match.
 
     ``--local`` because outside a repository a bare ``git config`` would answer from
-    the user's global config instead of failing."""
+    the user's global config instead of failing; and no ``.git`` here is no checkout,
+    though ``git -C`` would answer for a repository the folder sits inside."""
+    if not os.path.exists(os.path.join(os.path.expanduser(path), ".git")):
+        return None
     try:
         out = subprocess.run(
             ["git", "-C", path, "config", "--local", "--get-regexp",

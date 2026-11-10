@@ -506,3 +506,11 @@ def test_a_listed_run_is_not_deduped_against_the_configured_repos_pr(monkeypatch
                             pr_url=f"https://github.com/{OWNER}/{REPO}/pull/291",
                             pr_number=291)
     assert s.dispatch_agent(same, autofix.SOURCE_PANEL) == autofix.VERDICT_IN_FLIGHT
+
+
+def test_a_plain_folder_inside_a_checkout_has_no_remotes(tmp_path):
+    """``git -C`` would answer for the repository around it."""
+    outer = _checkout(tmp_path, "outer", origin="git@github.com:o/dotfiles.git")
+    (outer / "plain").mkdir()
+    assert localrepos.remote_config(str(outer)) is not None
+    assert localrepos.remote_config(str(outer / "plain")) is None

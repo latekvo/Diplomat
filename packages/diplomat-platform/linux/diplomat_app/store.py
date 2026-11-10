@@ -1680,6 +1680,22 @@ class Store(QObject):
                 self._roots_unread.discard(key)
                 activity.log("auto", "root-read-recovered", f"{what} of {r.slug} readable again")
 
+    @staticmethod
+    def _root_gone(slug: str) -> bool:
+        """Whether repo ``slug`` was taken out of the roots: every root resolved, and none
+        is that repo."""
+        return review.roots_complete() and slug.lower() not in {
+            r.slug.lower() for r in review.repo_roots()}
+
+    def _queued_root_gone(self, key: str) -> bool:
+        """:meth:`_root_gone` for the task queued as ``key``: its item's repo, or for an
+        investigation the repo it was asked in."""
+        split = split_item_key(key.partition(":")[2])
+        if split is not None:
+            return self._root_gone(split[0])
+        ask = next((w for w in self.requested_work if w.key == key), None)
+        return ask is not None and bool(ask.repo) and self._root_gone(ask.repo)
+
     def _held(self, item: str) -> bool:
         return item.partition("#")[0] in self._held_slugs
 
@@ -1767,7 +1783,7 @@ class Store(QObject):
 
     def _community_marks(self) -> dict[str, str]:
         """The new-community-issue monitor's mark per root slug, as stored. A single
-        mark single-repo builds stored was the primary's."""
+        mark single-repo builds stored was the configured repo's."""
         raw = str(self._settings.value("communityIssuesSince", "", str) or "")
         try:
             marks = json.loads(raw)
@@ -1775,7 +1791,8 @@ class Store(QObject):
             marks = None
         if isinstance(marks, dict):
             return {str(k): str(v) for k, v in marks.items()}
-        return {self._primary().slug.lower(): raw} if raw else {}
+        cfg = core.config()
+        return {f"{cfg['owner']}/{cfg['repo']}".lower(): raw} if raw else {}
 
     def _poll_community_issues(self, roots: list[LocalRepo], complete: bool = True) -> None:
         """Queue one fix for each issue the community filed in a root since its last
@@ -3067,7 +3084,7 @@ class Store(QObject):
             action, _, item = entry.id.partition(":")
             split = split_item_key(item)
             if split is None:
-                return False
+                return self._queued_root_gone(entry.id)
             slug = split[0].lower()
             return slug not in polled or (
                 action == REVIEW_REQ_ACTION and f"Review requests:{slug}" in self._roots_unread)
@@ -4748,7 +4765,7 @@ class Store(QObject):
                         or not comms.unstarted(item) or comms.left_queue(item)
                         or self._comms_row_doing(key, rows) is not None):
                     continue
-                if key in adopted:
+                if key in adopted and not self._queued_root_gone(key):
                     kept[key] = adopted[key]
                 else:
                     left.append((str(item["message"]["id"]), key))
