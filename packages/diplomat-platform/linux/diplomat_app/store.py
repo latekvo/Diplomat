@@ -488,7 +488,7 @@ class Store(QObject):
         # just dispatched, and the GUI thread cancelling a row. Unguarded, a sweep that
         # read the list before a dispatch removed an entry would write that entry back,
         # and the item would be worked twice.
-        self._requested_lock = threading.Lock()
+        self._requested_lock = threading.RLock()
         # Guards the _dispatching_prs set (below). MUST stay distinct from the
         # poll-overlap guard: run_autofix_poll_async holds that one across the whole
         # worker, and the worker's dispatch_agent re-takes THIS one — sharing a single
@@ -2762,7 +2762,10 @@ class Store(QObject):
                 taken = {r.key for r in stored}
                 fresh = [a for a in fresh if a.key not in taken]
                 self.requested_work = stored + fresh
-            self._publish_requested([built[a.key] for a in fresh])
+                # Under the lock too: queued_tasks is read-modify-written, so a press
+                # publishing outside it can write back a copy older than the other's.
+                if fresh:
+                    self._publish_requested([built[a.key] for a in fresh])
             self._bring_poll_forward(self._settled_load)
         return len(fresh), len(asks) - len(fresh)
 
