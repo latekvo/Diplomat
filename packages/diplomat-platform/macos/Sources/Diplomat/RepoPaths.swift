@@ -207,6 +207,16 @@ enum RepoPaths {
         home.appendingPathComponent("dev/\(CoreAssets.repoCoordinates().repo)").path
     }
 
+    /// The stored root list once Settings adds `picked` to `listed`, a pick already listed
+    /// skipped. An empty list stands for `fallback`, so it is listed first: an Add must
+    /// not stop the agents working in the root they work in now.
+    static func rootPaths(adding picked: [String], to listed: [String],
+                          fallback: String = defaultAgentRepo) -> [String] {
+        var out = listed.isEmpty ? [fallback] : listed
+        for path in picked where !out.contains(path) { out.append(path) }
+        return out
+    }
+
     /// `DIPLOMAT_REPO`, when it's set — the Settings screen shows that it wins.
     static var agentRepoEnvOverride: String? {
         let env = ProcessInfo.processInfo.environment["DIPLOMAT_REPO"] ?? ""

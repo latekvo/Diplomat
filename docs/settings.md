@@ -118,7 +118,8 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   into, one row each with a **Choose…** directory picker (on macOS the path can also be
   typed; a leading `~` expands), **↑** to move it up and **✕** to remove it, plus **Add…**. The
   first is the *primary*. Blank = `~/dev/<repo>` for whichever repo
-  [`assets/config.json`](../packages/diplomat-core/assets/config.json) targets. Each
+  [`assets/config.json`](../packages/diplomat-core/assets/config.json) targets, which
+  **Add…** on a blank list keeps as the first root. Each
   root is known by one GitHub repo, read from its remotes: the `assets/config.json`
   repo if a remote names it or a repo of the same name under another owner (a fork's
   `origin`, an old owner's URL), else `upstream`, else `origin`. The roots are read
