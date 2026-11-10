@@ -35,10 +35,12 @@ export const USER_SSH_CONFIG = SSH_CONFIG || path.join(os.homedir(), '.ssh', 'co
 // '' turns mDNS browsing off; otherwise it is the browse time.
 export const MDNS_BROWSE_MS = process.env.RM_MDNS_MS === '' ? 0 : Number(process.env.RM_MDNS_MS) || 3000;
 
-// The load of every reachable machine is re-read this often.
+// The load of every machine that has answered is re-read this often.
 export const PROBE_INTERVAL_MS = Number(process.env.RM_PROBE_INTERVAL_MS) || 60 * 1000;
-// Candidates are re-discovered, and capabilities and unreachable ones re-probed, this often.
+// Candidates are re-discovered, capabilities re-read and never-answering ones retried, this often.
 export const DISCOVERY_INTERVAL_MS = Number(process.env.RM_DISCOVERY_INTERVAL_MS) || 5 * 60 * 1000;
+// The pause before a machine that answered is probed again after a quick failure.
+export const RETRY_DELAY_MS = Number(process.env.RM_RETRY_DELAY_MS) || 1000;
 // One probe's ssh connection, script and all, is killed past this.
 export const PROBE_TIMEOUT_MS = Number(process.env.RM_PROBE_TIMEOUT_MS) || 20 * 1000;
 // Two load readings closer than this are dominated by which 5-second kernel tick each

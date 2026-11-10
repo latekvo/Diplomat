@@ -107,9 +107,11 @@ the user it logs in as, since other users' process titles are hidden).
 A `full` probe adds the OS, CPU, GPUs, Xcode, and the toolchains on the login shell's
 PATH (the one agents are told to run work under).
 
-The daemon re-reads the load of every reachable machine every minute
-(`RM_PROBE_INTERVAL_MS`). Every 5 minutes (`RM_DISCOVERY_INTERVAL_MS`) it also
-rediscovers, re-reads capabilities and retries the machines that failed.
+The daemon re-reads the load of every machine that has answered every minute
+(`RM_PROBE_INTERVAL_MS`), including one that has since stopped; a machine that answered
+and then fails at once (a `.local` name that briefly does not resolve) is retried a second
+later before it is marked lost. Every 5 minutes (`RM_DISCOVERY_INTERVAL_MS`) it also
+rediscovers, re-reads capabilities and retries the machines that never answered.
 
 **Load since the last scan** needs nothing on the machine. The 5-minute load average is
 an exponential moving average of the run queue with a 300 s time constant, on macOS and

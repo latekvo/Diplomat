@@ -91,7 +91,8 @@ try {
     await until((x) => x.excluded.some((m) => m.target === 'slow'), 'slow excluded');
     const st = await scanning;
     assert.deepEqual(st.excluded.map((m) => [m.target, m.status]), [['slow', 'excluded']]);
-    assert.deepEqual(targets(st.machines), ['quick']);
+    // flaky, answering again, is read back by the same scan.
+    assert.deepEqual(targets(st.machines), ['flaky', 'quick']);
   });
 
   await check('a pause under one name holds the machine under its others when that one stops answering', async () => {
