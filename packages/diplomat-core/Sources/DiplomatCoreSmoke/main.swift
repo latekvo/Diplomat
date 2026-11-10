@@ -348,6 +348,24 @@ do {
           "nothing resolving falls back to the configured repo at the first path")
     check(RepoRoots.resolve(paths: [], remotes: remotes, configured: cfgSlug).isEmpty,
           "no paths, no roots")
+    let forkOnly = ["/w/forkonly": "remote.origin.url git@github.com:someone/ARGENT.git",
+                    "/w/moved": "remote.origin.url https://github.com/old-owner/argent\n"
+                        + "remote.upstream.url https://github.com/o/radon"]
+    check(RepoRoots.resolve(paths: ["/w/forkonly", "/w/moved"], remotes: forkOnly,
+                            configured: cfgSlug)
+          == [PRRef.LocalRepo(owner: "software-mansion", repo: "argent", path: "/w/forkonly")],
+          "a fork-only clone (origin someone/argent) answers for the configured repo, so "
+          + "another path naming it is skipped")
+    check(RepoRoots.resolve(paths: ["/w/moved"], remotes: forkOnly, configured: cfgSlug)
+          == [PRRef.LocalRepo(owner: "software-mansion", repo: "argent", path: "/w/moved")]
+          && RepoRoots.resolve(paths: ["/w/forkonly"], remotes: forkOnly,
+                               configured: ("x", "y")).map(\.slug) == ["someone/ARGENT"],
+          "a pre-transfer URL does too, ahead of an upstream; a remote of another name does not")
+    check(RepoRoots.allResolve(paths: ["/w/radon", "~/dev/radon2"], remotes: remotes)
+          && !RepoRoots.allResolve(paths: ["/w/radon", "/w/missing"], remotes: remotes)
+          && !RepoRoots.allResolve(paths: ["/w/radon", "/w/plain"], remotes: remotes)
+          && !RepoRoots.allResolve(paths: ["/w/gitlab"], remotes: remotes),
+          "every path resolves only while each has a GitHub remote")
     check(RepoRoots.expand("~") == home && RepoRoots.expand("~user/x") == "~user/x"
           && RepoRoots.expand("/a/b/") == "/a/b/",
           "only a bare ~ or ~/ expands, and nothing else is touched")

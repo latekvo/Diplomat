@@ -1510,6 +1510,7 @@ enum CommsTest {
 
         // MARK: several repo roots
         await useRoots([primaryRoot, secondRoot])
+        await store.refreshRoots()
         check("the watched repos are the roots, the primary first",
               store.commsSettings.repos == ["o/r", "o/second"])
         // One message's targets, one row each, as a tick splits them.
@@ -1634,6 +1635,15 @@ enum CommsTest {
         check("…and an investigation's as it was",
               folded(askInvestigate)?.queueKey == invKey)
         await useRoots([primaryRoot])
+        await store.refreshRoots()
+        let investigateGone = CommsTickResult.Item(
+            message: item(.investigate, 0).message,
+            decision: CommsDecision(action: .investigate, summary: "crash in a gone root",
+                                    reason: "r", repo: "o/second"))
+        await apply([investigateGone])
+        check("an investigation about a repo no longer a root is refused, as a review is",
+              outcome(investigateGone) == "o/second is no longer a repo root, so nothing was done"
+                && asked("investigate:\(CommsTS.number(investigateGone.message.ts)!)") == nil)
 
         // MARK: refreshing from the log
         let events = CommsLog.eventsURL()

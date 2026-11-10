@@ -2839,15 +2839,17 @@ class Store(QObject):
         core mid-self-update wants anyway.
 
         An ask in a repo that is no longer a root is dropped: nothing here works in that
-        repo any more."""
+        repo any more. While a root path fails to resolve (:func:`review.roots_complete`)
+        its repo may be that one, so the ask is kept and skipped instead."""
         roots = review.repo_roots()
         slugs = {r.slug.lower() for r in roots}
         for entry in self.requested_work:
             if entry.repo and entry.repo.lower() not in slugs:
-                self._forget_requested(entry.key)
-                activity.log("panel", "queue-drop",
-                             f"{entry.label_among(len(roots))} - {entry.repo} is no "
-                             f"longer a repo root, not run")
+                if review.roots_complete():
+                    self._forget_requested(entry.key)
+                    activity.log("panel", "queue-drop",
+                                 f"{entry.label_among(len(roots))} - {entry.repo} is no "
+                                 f"longer a repo root, not run")
                 continue
             try:
                 task = self._requested_task(entry)

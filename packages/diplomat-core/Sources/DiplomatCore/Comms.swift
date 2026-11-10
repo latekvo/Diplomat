@@ -954,7 +954,9 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
     public init(message: CommsMessage, decision: CommsDecision, settings: CommsSettings,
                 reportDir: URL) {
         let number = CommsTS.number(message.ts) ?? 0
-        let (owner, repo) = settings.coordinates(of: settings.canonical(decision.repo) ?? "")
+        // One no longer watched stays named, so the front-end refuses it as it does a review.
+        let (owner, repo) = settings.coordinates(of: settings.canonical(decision.repo)
+                                                     ?? decision.repo.lowercased())
         self.init(number: number, messageID: message.id, sender: message.sender,
                   senderID: message.userID, channel: message.place, permalink: message.permalink, text: message.text,
                   summary: decision.summary,

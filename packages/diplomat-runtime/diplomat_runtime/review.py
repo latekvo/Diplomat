@@ -23,6 +23,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, replace
 from enum import Enum
 
@@ -313,33 +314,43 @@ def repo_root_paths() -> list[str]:
     return appconfig.repo_roots() or [default_repo_path()]
 
 
-_roots_cache: tuple[tuple, list[LocalRepo]] | None = None
+#: Seconds :func:`repo_roots` keeps one resolution of the paths. Twin of
+#: ``RepoPaths.rootsTTL``.
+ROOTS_TTL = 60.0
+
+_roots_cache: tuple[tuple, float, list[LocalRepo], bool] | None = None
 
 
-def _git_config_mtime(path: str) -> int | None:
-    try:
-        return os.stat(os.path.join(path, ".git", "config")).st_mtime_ns
-    except OSError:
-        return None
+def _resolved_roots() -> tuple[list[LocalRepo], bool]:
+    global _roots_cache
+    paths = repo_root_paths()
+    cfg = core.config()
+    configured = (cfg["owner"], cfg["repo"])
+    key = (tuple(paths), configured)
+    now = time.monotonic()
+    if _roots_cache is None or _roots_cache[0] != key or now - _roots_cache[1] >= ROOTS_TTL:
+        remotes = {p: out for p in map(os.path.expanduser, paths)
+                   if (out := localrepos.remote_config(p)) is not None}
+        _roots_cache = (key, now, localrepos.resolve_roots(paths, remotes, configured),
+                        localrepos.all_resolve(paths, remotes))
+    return _roots_cache[2], _roots_cache[3]
 
 
 def repo_roots() -> list[LocalRepo]:
     """:func:`repo_root_paths` resolved to the repos they check out
     (:func:`localrepos.resolve_roots`), never empty.
 
-    Cached on the paths and each one's ``.git/config`` mtime, so a caller on a tick
-    pays a ``git`` call per root only when a root or its remotes changed."""
-    global _roots_cache
-    paths = repo_root_paths()
-    expanded = [os.path.expanduser(p) for p in paths]
-    cfg = core.config()
-    configured = (cfg["owner"], cfg["repo"])
-    key = (tuple(paths), tuple(_git_config_mtime(p) for p in expanded), configured)
-    if _roots_cache is None or _roots_cache[0] != key:
-        remotes = {p: out for p in expanded
-                   if (out := localrepos.remote_config(p)) is not None}
-        _roots_cache = (key, localrepos.resolve_roots(paths, remotes, configured))
-    return list(_roots_cache[1])
+    Kept for :data:`ROOTS_TTL` per list of paths, so a caller on a tick pays a ``git``
+    call per root at most that often, and a root that failed to resolve (a missing
+    checkout, a ``git`` timeout) or whose remotes changed is read again within it."""
+    return list(_resolved_roots()[0])
+
+
+def roots_complete() -> bool:
+    """Whether every root path had a GitHub remote when :func:`repo_roots` last read
+    them (:func:`localrepos.all_resolve`). Until they all do, a repo missing from the
+    roots may be one that failed to resolve rather than one taken out of Settings."""
+    return _resolved_roots()[1]
 
 
 def repo_path() -> str:
