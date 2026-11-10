@@ -1,3 +1,4 @@
+import DiplomatCore
 import Foundation
 
 /// Self-test for where the app finds its own checkout - `DIPLOMAT_REPOPATHS_TEST=1`.
@@ -128,6 +129,17 @@ enum RepoPathsTest {
         check("…and none of several resolving leaves the one root a guess",
               !none.primary && none.guessed, "got \(none)")
         RepoPaths.invalidateRoots()
+
+        print("repopaths: a root's line in Settings")
+        let bare = scratch.appendingPathComponent("bare").path
+        git("init", "-q", bare)
+        let standIn = [PRRef.LocalRepo(owner: "o", repo: "configured", path: bare)]
+        let resolvedLine = SettingsView.rootStatus(0, bare, roots: standIn, guessed: false)
+        check("a resolved first root reads as the primary",
+              resolvedLine == ("o/configured - primary", false), "got \(resolvedLine)")
+        let guessedLine = SettingsView.rootStatus(0, bare, roots: standIn, guessed: true)
+        check("…and a guessed one as unresolved, not a checkout of the configured repo",
+              guessedLine.warn && guessedLine.text.hasPrefix("No GitHub remote"), "got \(guessedLine)")
 
         print("repopaths: adding roots in Settings")
         let defaultRoot = RepoPaths.defaultAgentRepo

@@ -79,12 +79,14 @@ enum QueueTest {
 
         /// Stand one automatic agent up, the way a dispatch books it: a record with no
         /// pid yet, which is exactly what a spawn nothing has observed yet looks like —
-        /// and which holds a bay of the cap from the moment it is written.
-        func bookAgent(_ number: Int, label: String = "") {
+        /// and which holds a bay of the cap from the moment it is written. Only for
+        /// `AgentState.spawnGrace`, though: past it the bay frees and the drain starts
+        /// REAL agents, so a section whose polls may outlast it dates it `ahead`.
+        func bookAgent(_ number: Int, label: String = "", ahead: TimeInterval = 0) {
             let now = Date().timeIntervalSince1970
             AgentRegistry.createRun(
                 AgentState.RunRecord(
-                    runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
+                    runID: AgentRegistry.newRunID(now: now), dispatchedAt: now + ahead,
                     prNumber: number,
                     prURL: "https://github.com/software-mansion/argent/pull/\(number)",
                     kind: "review",
@@ -949,7 +951,7 @@ enum QueueTest {
         store.usernameOverride = "alice"
         store.communityIssuesEnabled = false
         store.autoTaskLimit = 1
-        bookAgent(90)
+        bookAgent(90, ahead: 86_400)
         _ = await store.settleAgents()
         // A poll the early-poll section above brought forward may still be finishing;
         // this one only counts once the stand-in has been asked.
@@ -1339,7 +1341,7 @@ enum QueueTest {
         store.autofixPollError = nil
         emptyBook()
         store.autoTaskLimit = 1
-        bookAgent(90)
+        bookAgent(90, ahead: 86_400)
         _ = await store.settleAgents()
         setenv("DIPLOMAT_GH", heldStub.path, 1)
         heldAnswer("author", "alpha", conflictingPR("o1/alpha", 90007, "a7"))
@@ -1618,6 +1620,59 @@ enum QueueTest {
             check("the disk floor holds every dispatch for the investigation check", false)
         }
         setenv(DiskFloor.envOverride, "0", 1)
+
+        // 33. An investigation, or an ask stored without its home, would still run in the
+        //     primary root: one whose repo left the roots is neither started nor kept, and
+        //     its drop is said.
+        store.pinRoots([rootA, mixed])
+        store.requestedWork = []
+        store.queuedTasks = []
+        let goneNumber = 9_100_002
+        let goneInvestigation = InvestigateConfig(
+            number: goneNumber, messageID: "qt-inv2", sender: "qt", channel: "qt", permalink: "",
+            text: "t", summary: "s", reportPath: feed.appendingPathComponent("inv2.md").path,
+            owner: "o2", repo: "beta")
+        store.requestOne(Store.RequestedWork(number: goneNumber, url: "", author: "",
+                                             config: .investigate(goneInvestigation), repo: "o2/beta"))
+        let goneInvKey = AgentTaskQueue.key(auditAction: InvestigateConfig.kind, item: String(goneNumber))
+        store.pinRoots([rootA])
+        setenv(DiskFloor.envOverride, "99999999999999999999", 1)
+        if Store.agentDisk()?.low == true {
+            store.autoTaskLimit = 2
+            await store.drainQueuedTasks(snaps: [], closed: [], read: [rootA])
+            store.autoTaskLimit = 1
+            check("the drain starts no investigation asked in a root just taken out",
+                  store.queuedTasks.map(\.id) == [goneInvKey])
+        } else {
+            check("the disk floor holds every dispatch for the gone-investigation check", false)
+        }
+        setenv(DiskFloor.envOverride, "0", 1)
+        let homeless = ReviewConfig(depth: "deep", target: .mine, me: "alice",
+                                    includeDrafts: true, includeReady: false)
+        store.requestedWork.append(Store.RequestedWork(
+            number: 90013, url: "https://github.com/o2/beta/pull/90013", author: "",
+            config: .review(homeless.forPR(90013)), repo: "o2/beta"))
+        let dropsBefore = feedDetails("queue-drop").count
+        store.offerRequestedWork()
+        store.commitQueue()
+        let goneDrops = feedDetails("queue-drop").dropFirst(dropsBefore)
+        check("…and the offer drops it and an ask stored without its home, saying so",
+              store.requestedWork.isEmpty && store.queuedTasks.isEmpty && goneDrops.count == 2
+                  && goneDrops.allSatisfy { $0.hasSuffix(" - o2/beta is no longer a repo root, not run") })
+        let legacyNumber = 9_100_003
+        let legacyInvestigation = InvestigateConfig(
+            number: legacyNumber, messageID: "qt-inv3", sender: "qt", channel: "qt", permalink: "",
+            text: "t", summary: "s", reportPath: feed.appendingPathComponent("inv3.md").path,
+            owner: "o2", repo: "beta")
+        store.requestOne(Store.RequestedWork(number: legacyNumber, url: "", author: "",
+                                             config: .investigate(legacyInvestigation)))
+        store.offerRequestedWork()
+        store.commitQueue()
+        let legacyInvKey = AgentTaskQueue.key(auditAction: InvestigateConfig.kind, item: String(legacyNumber))
+        check("…but one stored naming no repo runs in the primary root, kept",
+              store.requestedWork.map(\.key) == [legacyInvKey]
+                  && store.queuedTasks.map(\.id) == [legacyInvKey]
+                  && feedDetails("queue-drop").count == dropsBefore + 2)
         store.queueAutoRun = autoRun
         store.prAutofixEnabled = heldAsk.prAutofix
         store.reviewRequestsEnabled = heldAsk.reviewReqs

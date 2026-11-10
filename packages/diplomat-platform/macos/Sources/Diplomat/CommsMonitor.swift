@@ -538,7 +538,8 @@ extension Store {
             // The sender is the ask's ban dimension: the dispatch gate drops it if they
             // are banned while it waits.
             return queue(RequestedWork(number: cfg.number, url: cfg.permalink,
-                                       author: cfg.banLogin, config: .investigate(cfg)),
+                                       author: cfg.banLogin, config: .investigate(cfg),
+                                       repo: slug),
                          verb: "comms-investigate", who: who, front: false)
         case .ban(let b):
             let reporter = Store.commsReporter
@@ -860,7 +861,8 @@ extension Store {
     /// The monitor finds pings adopted (`queue`) that a commit's offers left out: each
     /// stays queued until it runs, its monitor no longer offering it (a withdrawn request,
     /// a failed spawn it has not found again). One adopted before this launch has no task
-    /// here to put back, so its ping says it left the queue rather than read "queued"
+    /// here to put back, and one whose repo left the roots would never be started
+    /// (`drainQueuedTasks`), so its ping says it left the queue rather than read "queued"
     /// forever.
     func commsKeptAdopted(offered: [QueuedAgentTask]) -> [QueuedAgentTask] {
         let owned = commsOwnedKeys
@@ -874,7 +876,7 @@ extension Store {
                   let verb = Store.commsKeyParts(key)?.verb,
                   !AgentTaskQueue.requestedActions.contains(verb),
                   commsRow(doing: key) == nil else { continue }
-            if let task = commsAdopted[key] {
+            if let task = commsAdopted[key], !queuedRootGone(key) {
                 if !kept.contains(where: { $0.id == key }) { kept.append(task) }
             } else {
                 lines.append(CommsEvent(kind: .action, id: item.message.id,
