@@ -7,6 +7,7 @@ resolves real checkouts instead, since what it edits is the stored list."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -216,6 +217,35 @@ def test_a_legacy_ask_keeps_its_repo_whichever_root_is_primary(store, monkeypatc
 
     monkeypatch.setattr(review, "repo_roots", lambda: [home, SECOND])
     assert [w.repo for w in store.requested_work] == ["o/there", configured]
+
+
+def _issue_of(root: LocalRepo, n: int) -> OpenIssue:
+    return OpenIssue(n, f"Issue {n}", f"https://github.com/{root.slug}/issues/{n}",
+                     "carol", "CONTRIBUTOR", NOW, NOW, 0, [], [], False)
+
+
+def test_a_review_sweep_asks_of_its_home_root(quiet):
+    sweep = review.ReviewConfig(target=PRTarget.MINE, me=quiet.me, depth="deep",
+                                include_drafts=True, include_ready=True)
+    quiet.prs = [dataclasses.replace(_pr(PRIMARY, 5), author=quiet.me)]
+    assert quiet.request_review_sweep(dataclasses.replace(sweep, home=PRIMARY)) == (1, 0)
+    quiet.prs = [dataclasses.replace(_pr(SECOND, 5), author=quiet.me)]
+
+    assert quiet.request_review_sweep(dataclasses.replace(sweep, home=SECOND)) == (1, 0)
+    assert [w.key for w in quiet.requested_work] == ["review:o/r#5", "review:o/other#5"]
+
+
+def test_an_issue_sweep_asks_of_its_home_root_and_works_in_its_checkout(quiet):
+    from diplomat_app import issues
+
+    quiet.issues = [_issue_of(SECOND, 7)]
+    sweep = issues.IssueConfig(target=issues.Target.CONTRIBUTORS, me=quiet.me, depth="deep",
+                               unassigned_only=True, home=SECOND)
+
+    assert quiet.request_issue_sweep(sweep) == (1, 0)
+    assert [w.key for w in quiet.requested_work] == ["issues:o/other#7"]
+    quiet._offer_requested_work()
+    assert [t.job.checkout for t in quiet._staged_queue] == ["/src/other"]
 
 
 def test_an_ask_whose_root_is_gone_is_dropped_and_said(quiet):
