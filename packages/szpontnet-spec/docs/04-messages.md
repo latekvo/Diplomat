@@ -148,6 +148,7 @@ type stays [`dispatch`](#dispatch) carrying a `job`.
 | `requestedBy` | string | no (`"?"`) | node id of the dispatcher. |
 | `requestedAt` | float | no (now) | dispatcher's timestamp. |
 | `workKey` | string | no (`""`) | the origination-dedup key this job executes ([12](12-work-claims.md)). When set, the **executor** claims it on spawn and holds the lease for the agent's lifetime; empty on a server-local / explicit-target / manual dispatch. Additive — a pre-claims node ignores it. |
+| `repo` | string | no (`""`) | the repo the job works on, `owner/name` lowercased, handed to the executor's host so a machine with a checkout per repo runs it in the right one. Empty = unspecified; omitted when empty. Additive - an older node ignores it. |
 
 A Job missing `id` or `duty` is invalid and MUST be dropped.
 
@@ -374,8 +375,9 @@ field carries the credential to forward to an API-key-gated
 [server](11-trust-and-balancing.md#the-api-key) target. An optional `workKey`
 field opts the request into [origination dedup](12-work-claims.md#integration-with-dispatch):
 the node claims the key first and, if a better peer already owns the work, replies
-with a single `"suppressed"` slot instead of dispatching. The peer-link shape is
-unchanged (it carries a `job`, never a `target`/`workKey`).
+with a single `"suppressed"` slot instead of dispatching. An optional `repo` field
+becomes the job's [`repo`](#job). The peer-link shape is unchanged (it carries a
+`job`, never a top-level `target`/`workKey`/`repo`).
 
 > The two shapes exist because a peer link dispatches *one job to this node*, while
 > a control client asks *this node to place a job across the mesh on its behalf*.

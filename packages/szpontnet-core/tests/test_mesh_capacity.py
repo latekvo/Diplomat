@@ -37,7 +37,7 @@ def spawned(monkeypatch):
     from szpontnet import node as node_mod
 
     monkeypatch.setattr(node_mod.spawnjob, "spawn_job",
-                        lambda prompt, done_path=None, work_key=None:
+                        lambda prompt, done_path=None, work_key=None, repo=None:
                             calls.append(prompt) or "/p")
     return calls
 
@@ -82,12 +82,27 @@ def test_the_spawn_is_handed_the_jobs_work_key(node, monkeypatch):
 
     keys: list = []
     monkeypatch.setattr(node_mod.spawnjob, "spawn_job",
-                        lambda prompt, done_path=None, work_key=None:
+                        lambda prompt, done_path=None, work_key=None, repo=None:
                             keys.append(work_key) or "/p")
     host.set_host(_Busy(full=False))
     node._spawn_local(_job())
     node._spawn_local(_job(work_key=""))
     assert keys == ["review:github.com/o/r#1@sha", None]
+
+
+def test_the_spawn_is_handed_the_jobs_repo(node, monkeypatch):
+    from szpontnet import node as node_mod
+
+    repos: list = []
+    monkeypatch.setattr(node_mod.spawnjob, "spawn_job",
+                        lambda prompt, done_path=None, work_key=None, repo=None:
+                            repos.append(repo) or "/p")
+    host.set_host(_Busy(full=False))
+    node._spawn_local(protocol.Job(id="j1", duty="review", prompt="p", requested_by="peer",
+                                   requested_at=1.0, repo="o/r"))
+    node._spawn_local(protocol.Job(id="j2", duty="review", prompt="p", requested_by="peer",
+                                   requested_at=1.0))
+    assert repos == ["o/r", None]
 
 
 def test_work_already_running_here_is_deduped_not_declined(node, spawned):
