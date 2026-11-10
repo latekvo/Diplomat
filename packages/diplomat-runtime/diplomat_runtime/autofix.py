@@ -345,7 +345,8 @@ WORK_CONFLICTS = "conflicts"  # conflict fixes on MY PRs → duty "conflicts"
 
 
 def _pr_ref(pr_url: str) -> str | None:
-    """``<host>/<owner>/<repo>#<n>`` for a PR URL, or None when it isn't one. Split
+    """``<host>/<owner>/<repo>#<n>`` for a PR URL (a GitLab merge request's owner is its
+    whole namespace), or None when it isn't one. Split
     out of :func:`work_key` so :func:`ledger_key` cannot parse a URL differently
     from the claim key — the two identify the same unit of work and are compared
     against each other in the telemetry ledger."""
@@ -357,9 +358,13 @@ def _pr_ref(pr_url: str) -> str | None:
         return None
     host = (u.hostname or "").lower()
     parts = [p for p in (u.path or "").split("/") if p]
-    if not host or len(parts) != 4 or parts[2] != "pull" or not parts[3].isdigit():
+    if not host or not parts or not parts[-1].isdigit():
         return None
-    return f"{host}/{parts[0]}/{parts[1]}#{parts[3]}"
+    if len(parts) == 4 and parts[2] == "pull":
+        return f"{host}/{parts[0]}/{parts[1]}#{parts[3]}"
+    if len(parts) >= 5 and parts[-3:-1] == ["-", "merge_requests"]:
+        return f"{host}/{'/'.join(parts[:-3])}#{parts[-1]}"
+    return None
 
 
 def work_key(kind: str, pr_url: str, head_sha: str) -> str:
@@ -1110,7 +1115,7 @@ class RequestedWork:
         no repo: an investigation, or a legacy row not yet given one."""
         if self.action == QUEUE_INVESTIGATE_ACTION or not self.repo:
             return None
-        owner, _, repo = self.repo.partition("/")
+        owner, _, repo = self.repo.rpartition("/")
         return item_key(owner, repo, self.number)
 
     @property

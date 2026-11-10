@@ -19,6 +19,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from diplomat_runtime import gh, review  # noqa: E402
+from diplomat_runtime.prref import LocalRepo  # noqa: E402
 from diplomat_runtime.prtarget import PRTarget  # noqa: E402
 from diplomat_runtime.review import SpecificAuthor  # noqa: E402
 from diplomat_app.store import Store  # noqa: E402
@@ -42,7 +43,8 @@ def test_fetch_specific_author_parses_login(monkeypatch):
         return b'{"author": {"login": "octocat"}}'
 
     monkeypatch.setattr(gh, "run", fake_run)
-    assert review.fetch_specific_author("software-mansion", "argent", 337) == "octocat"
+    assert review.fetch_specific_author(
+        LocalRepo("software-mansion", "argent", "/src/argent"), 337) == "octocat"
     # It uses `gh pr view <n> --repo owner/repo --json author` (mirrors macOS).
     assert calls["args"] == [
         "pr", "view", "337", "--repo", "software-mansion/argent", "--json", "author"
@@ -54,15 +56,15 @@ def test_fetch_specific_author_none_on_failure(monkeypatch):
         raise gh.GHError("gh exited 1: no pull requests found")
 
     monkeypatch.setattr(gh, "run", boom)
-    assert review.fetch_specific_author("o", "r", 999) is None
+    assert review.fetch_specific_author(LocalRepo("o", "r", "/src/r"), 999) is None
 
 
 def test_fetch_specific_author_none_on_malformed(monkeypatch):
     monkeypatch.setattr(gh, "run", lambda args, timeout=60.0: b"not json")
-    assert review.fetch_specific_author("o", "r", 1) is None
+    assert review.fetch_specific_author(LocalRepo("o", "r", "/src/r"), 1) is None
     # A well-formed envelope missing the author still yields None, not a crash.
     monkeypatch.setattr(gh, "run", lambda args, timeout=60.0: b"{}")
-    assert review.fetch_specific_author("o", "r", 1) is None
+    assert review.fetch_specific_author(LocalRepo("o", "r", "/src/r"), 1) is None
 
 
 # MARK: - The wizard: ownership -> toggles + config

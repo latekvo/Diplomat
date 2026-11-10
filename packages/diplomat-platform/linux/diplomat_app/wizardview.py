@@ -176,7 +176,7 @@ class WizardView(SpawnWizard):
             depth=review.depth_ids()[self.slider.value()],
             target=self.target.currentData(),
             username=self.username.text(),
-            me=self.store.effective_me,
+            me=self.store.known_me(self.store.selected_repo),
             mark_ready=self.mark_ready.isChecked(),
             leave_reviews=self.leave_reviews.isChecked(),
             reply_to_reviews=self.reply.isChecked(),
@@ -209,7 +209,7 @@ class WizardView(SpawnWizard):
         self.drafts.setVisible(not is_specific)
         self.ready.setVisible(not is_specific)
 
-        me = self.store.effective_me
+        me = self.store.known_me(self.store.selected_repo)
         self.mine_caption.setText(f"PRs authored by @{me}" if (is_mine and me) else "")
         self.mine_caption.setVisible(bool(is_mine and me))
 
@@ -280,7 +280,7 @@ class WizardView(SpawnWizard):
             self._specific_author = SpecificAuthor.UNKNOWN
             return
 
-        owner, repo = cfg.target_repo
+        target = cfg.target_root
         number = ref.number
         self._author_pending = pending
         self._author_loading = True
@@ -296,7 +296,7 @@ class WizardView(SpawnWizard):
             time.sleep(0.4)
             if self._author_pending != pending:
                 return
-            login = review.fetch_specific_author(owner, repo, number)
+            login = review.fetch_specific_author(target, number)
             # Emit back to the main thread; the slot re-checks the guard + computes
             # mine-vs-theirs against the (possibly changed) viewer login there.
             self._author_resolved.emit(pending, login or "")
@@ -312,7 +312,7 @@ class WizardView(SpawnWizard):
         if self.target.currentData() != PRTarget.SPECIFIC:
             return
         self._author_loading = False
-        me = self.store.effective_me
+        me = self.store.known_me(self._config().target_root)
         self._specific_author_login = login or None
         if login and me:
             self._specific_author = (

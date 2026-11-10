@@ -16,6 +16,10 @@ import pytest
 
 from diplomat_app import autofixmonitor
 from diplomat_runtime import gh
+from diplomat_runtime.prref import LocalRepo
+
+ROOT = LocalRepo("o", "r", "/src/r")
+ARGENT = LocalRepo("software-mansion", "argent", "/src/argent")
 
 SNAPSHOTS = json.dumps({"data": {"search": {"nodes": [{
     "number": 7,
@@ -70,7 +74,7 @@ def _flaky(monkeypatch, payload: bytes, failures: int):
 
 def test_snapshot_fetch_survives_a_transient_failure(monkeypatch):
     calls = _flaky(monkeypatch, SNAPSHOTS, failures=1)
-    snaps = autofixmonitor.fetch_snapshots("o", "r", "alice")
+    snaps = autofixmonitor.fetch_snapshots(ROOT, "alice")
     assert [s.number for s in snaps] == [7]
     assert snaps[0].mergeable == "CONFLICTING"
     assert len(calls) == 2
@@ -78,7 +82,7 @@ def test_snapshot_fetch_survives_a_transient_failure(monkeypatch):
 
 def test_review_request_fetch_survives_a_transient_failure(monkeypatch):
     calls = _flaky(monkeypatch, REVIEW_REQUESTS, failures=1)
-    reqs = autofixmonitor.fetch_review_requests("o", "r", "alice")
+    reqs = autofixmonitor.fetch_review_requests(ROOT, "alice")
     assert [r.number for r in reqs] == [9]
     assert reqs[0].author == "bob"
     assert len(calls) == 2
@@ -98,7 +102,7 @@ def test_a_failure_that_outlasts_the_retry_still_reaches_the_poll(
     second failure or it would treat an empty answer as "no work"."""
     calls = _flaky(monkeypatch, payload, failures=2)
     with pytest.raises(gh.GHError, match="TLS handshake timeout"):
-        fetch("o", "r", "alice")
+        fetch(ROOT, "alice")
     assert len(calls) == 2
 
 
@@ -107,7 +111,7 @@ def test_a_failure_that_outlasts_the_retry_still_reaches_the_poll(
 
 def test_snapshot_fetch_searches_for_my_open_prs(monkeypatch):
     calls = _flaky(monkeypatch, SNAPSHOTS, failures=0)
-    autofixmonitor.fetch_snapshots("software-mansion", "argent", "latekvo")
+    autofixmonitor.fetch_snapshots(ARGENT, "latekvo")
     args = calls[0]
     assert args[:3] == ["api", "graphql", "-f"]
     assert "-f" in args and "q=repo:software-mansion/argent author:latekvo is:pr is:open" in args
@@ -123,7 +127,7 @@ def test_review_request_fetch_types_the_with_files_flag(
     value) — sent through ``-f`` it would arrive as the string "true"."""
     calls = _flaky(monkeypatch, REVIEW_REQUESTS, failures=0)
     autofixmonitor.fetch_review_requests(
-        "software-mansion", "argent", "latekvo", include_files=include_files
+        ARGENT, "latekvo", include_files=include_files
     )
     args = calls[0]
     assert args[args.index(f"withFiles={expected}") - 1] == "-F"

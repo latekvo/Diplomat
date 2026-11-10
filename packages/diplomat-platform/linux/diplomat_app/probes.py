@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from diplomat_runtime import apiwatch, runner, tmuxwatch
 from diplomat_runtime.agentstate import UNAVAILABLE, Evidence, Observation, ProcInfo, RunRecord
+from diplomat_runtime.prref import LocalRepo
 
 #: How long a probe's answer is reused. The resolver re-runs for every question the
 #: applet asks — that is deliberate, so no answer is ever stale — which makes THIS the
@@ -593,9 +594,11 @@ def mesh_claims(enabled: bool = True) -> Observation:
     return Observation.present(set(claims))
 
 
-def merged_prs(items: set[str]) -> Observation:
-    """Which of these PRs (item keys) GitHub calls MERGED — the one terminal outcome
-    that outranks anything a process is doing. Each is asked of its own repo.
+def merged_prs(items: set[str], roots: Iterable[LocalRepo] = ()) -> Observation:
+    """Which of these PRs (item keys) their host calls MERGED — the one terminal outcome
+    that outranks anything a process is doing. Each is asked of its own repo: the one
+    of ``roots`` it is in, so a GitLab root's merge request is asked of its GitLab, and
+    any other repo of GitHub.
 
     One ``gh`` call per PR, so this belongs on the slow refresh, not the 8-second
     tick. The reading is always PRESENT: a PR whose probe fails is simply absent from
@@ -605,14 +608,16 @@ def merged_prs(items: set[str]) -> Observation:
     from diplomat_runtime.models import API
     from diplomat_runtime.prref import split_item_key
 
+    known = {r.slug.lower(): r for r in roots}
     merged = set()
     for item in sorted(items):
         split = split_item_key(item)
         if split is None:
             continue
-        (owner, repo), number = split[0].split("/", 1), split[1]
+        slug, number = split
+        owner, _, repo = slug.rpartition("/")
         try:
-            state = API.fetch_pr_state(number, owner, repo)
+            state = API.fetch_pr_state(number, known.get(slug) or LocalRepo(owner, repo, ""))
         except Exception:  # noqa: BLE001 - a probe never raises into the tick
             continue
         if state == "MERGED":

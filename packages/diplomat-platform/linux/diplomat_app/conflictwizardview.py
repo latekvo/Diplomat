@@ -69,7 +69,7 @@ class ConflictWizardView(SpawnWizard):
         return conflicts.ConflictConfig(
             target=self.target.currentData(),
             username=self.username.text(),
-            me=self.store.effective_me,
+            me=self.store.known_me(self.store.selected_repo),
             specific_pr=self.specific_pr.text(),
             local_repos=self.store.local_repos,
             home=self.store.selected_repo,

@@ -12,8 +12,9 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from . import core, gh
+from . import core, gh, gitlab, glab
 from .issuetarget import IssueTarget
+from .prref import GITHUB, LocalRepo
 from .reviewaudit import TAG
 
 
@@ -328,25 +329,33 @@ class Fmt:
         return date.astimezone().strftime("%H:%M")
 
 
-# MARK: - GitHub API (GraphQL via the gh CLI)
+# MARK: - GitHub / GitLab API (GraphQL via the gh and glab CLIs)
 
 
 class API:
-    @staticmethod
-    def fetch_viewer_login() -> str:
-        env = gh.graphql("viewer")
-        return env["data"]["viewer"]["login"]
+    """Each read of a repo root asks its host: ``gh`` for github.com, else ``glab``,
+    whose answer :mod:`gitlab` turns into the GitHub one the parsing here reads."""
 
     @staticmethod
-    def fetch_pr_state(number: int, owner: str, repo: str) -> str:
+    def fetch_viewer_login(host: str = GITHUB) -> str:
+        """The signed-in login on ``host``."""
+        if host == GITHUB:
+            return gh.graphql("viewer")["data"]["viewer"]["login"]
+        return gitlab.viewer(glab.graphql("gitlab-viewer", host), host)
+
+    @staticmethod
+    def fetch_pr_state(number: int, root: LocalRepo) -> str:
         """One PR's lifecycle state: ``OPEN``, ``CLOSED`` or ``MERGED``."""
-        out = gh.run(["pr", "view", str(number), "--repo", f"{owner}/{repo}",
-                      "--json", "state"])
+        if root.is_gitlab:
+            env = glab.project("gitlab-mr", root, {"iid": str(number)})
+            return gitlab.mr(env)["state"]
+        out = gh.run(["pr", "view", str(number), "--repo", root.slug, "--json", "state"])
         return str(json.loads(out).get("state", ""))
 
     @staticmethod
-    def fetch_open_prs(owner: str, repo: str) -> list[OpenPR]:
-        env = gh.graphql("prs", repo=(owner, repo))
+    def fetch_open_prs(root: LocalRepo) -> list[OpenPR]:
+        env = (gitlab.prs(glab.project("gitlab-prs", root)) if root.is_gitlab
+               else gh.graphql("prs", repo=(root.owner, root.repo)))
         nodes = env["data"]["repository"]["pullRequests"]["nodes"]
         out: list[OpenPR] = []
         for n in nodes:
@@ -383,8 +392,9 @@ class API:
         return out
 
     @staticmethod
-    def fetch_open_issues(owner: str, repo: str) -> list[OpenIssue]:
-        env = gh.graphql("issues", repo=(owner, repo))
+    def fetch_open_issues(root: LocalRepo) -> list[OpenIssue]:
+        env = (gitlab.issues(glab.project("gitlab-issues", root)) if root.is_gitlab
+               else gh.graphql("issues", repo=(root.owner, root.repo)))
         nodes = env["data"]["repository"]["issues"]["nodes"]
         team = Filters.team()
         out: list[OpenIssue] = []

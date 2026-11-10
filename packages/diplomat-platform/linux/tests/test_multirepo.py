@@ -59,9 +59,9 @@ def _by_repo(monkeypatch, name: str, table: dict) -> list[str]:
     repos it was asked about, in order."""
     asked: list[str] = []
 
-    def fetch(owner, repo, *a, **k):
-        asked.append(f"{owner}/{repo}")
-        return table.get(f"{owner}/{repo}", [])
+    def fetch(root, *a, **k):
+        asked.append(root.slug)
+        return table.get(root.slug, [])
 
     monkeypatch.setattr(f"diplomat_app.autofixmonitor.{name}", fetch)
     return asked
@@ -611,8 +611,8 @@ def test_switching_roots_shows_its_last_fetch_and_refetches_it(quiet, monkeypatc
     fetched: list[str] = []
     monkeypatch.setattr(API, "fetch_viewer_login", staticmethod(lambda: "alice"))
     monkeypatch.setattr(API, "fetch_open_prs", staticmethod(
-        lambda o, r: fetched.append(f"{o}/{r}") or lists[f"{o}/{r}"]))
-    monkeypatch.setattr(API, "fetch_open_issues", staticmethod(lambda o, r: []))
+        lambda root: fetched.append(root.slug) or lists[root.slug]))
+    monkeypatch.setattr(API, "fetch_open_issues", staticmethod(lambda root: []))
 
     def listed() -> set[str]:
         return {i.url for t in quiet.visible_tools for i in quiet.items_for(t.id)}
@@ -641,15 +641,15 @@ def test_a_pick_during_a_fetch_is_fetched_before_the_lists_change(quiet, monkeyp
     lists = {"o/r": [_pr(PRIMARY, 5)], "o/other": [_pr(SECOND, 6)]}
     fetched: list[str] = []
 
-    def fetch(o, r):
-        fetched.append(f"{o}/{r}")
+    def fetch(root):
+        fetched.append(root.slug)
         if len(fetched) == 1:
             quiet.select_repo("o/other")
-        return lists[f"{o}/{r}"]
+        return lists[root.slug]
 
     monkeypatch.setattr(API, "fetch_viewer_login", staticmethod(lambda: "alice"))
     monkeypatch.setattr(API, "fetch_open_prs", staticmethod(fetch))
-    monkeypatch.setattr(API, "fetch_open_issues", staticmethod(lambda o, r: []))
+    monkeypatch.setattr(API, "fetch_open_issues", staticmethod(lambda root: []))
 
     quiet.refresh()
 
@@ -960,7 +960,7 @@ def test_the_first_root_is_the_primary_only_while_its_path_resolves():
     table = {"/src/r": "remote.origin.url https://github.com/o/r.git\n",
              "/src/other": "remote.origin.url https://github.com/o/other.git\n"}
     two = ["/src/r", "/src/other"]
-    second_only = {"/src/r": "remote.origin.url https://gitlab.com/o/r.git\n",
+    second_only = {"/src/r": "remote.origin.url https://bitbucket.org/o/r.git\n",
                    "/src/other": table["/src/other"]}
 
     assert localrepos.primary_resolves(two, table) and not localrepos.guessed(two, table)
@@ -999,7 +999,8 @@ def test_the_monitors_stand_down_when_no_root_resolves(quiet, monkeypatch):
     quiet._autofix_poll_once()
 
     assert asked == []
-    assert quiet.autofix_poll_error == "no repo root in Settings resolves to a GitHub checkout"
+    assert quiet.autofix_poll_error == (
+        "no repo root in Settings resolves to a GitHub or GitLab checkout")
 
 
 def test_comms_waits_while_the_first_root_is_unresolved(store, remotes,  # noqa: F811
@@ -1028,8 +1029,8 @@ def test_one_roots_unreadable_issues_hold_no_other_roots_work(quiet, monkeypatch
     quiet.community_issues_enabled = True
     _by_repo(monkeypatch, "fetch_snapshots", {"o/r": [_conflicting(PRIMARY, 5)]})
 
-    def issues(owner, repo, *a, **k):
-        if repo == "other":
+    def issues(root, *a, **k):
+        if root.repo == "other":
             raise RuntimeError("Could not resolve to a Repository")
         return []
 
@@ -1054,10 +1055,10 @@ def test_one_roots_unreadable_issues_hold_no_other_roots_work(quiet, monkeypatch
 
 def _unreadable(monkeypatch, name: str, table: dict, bad: str = "o/other") -> None:
     """``autofixmonitor.<name>`` answering from ``table``, and failing for ``bad``."""
-    def fetch(owner, repo, *a, **k):
-        if f"{owner}/{repo}" == bad:
+    def fetch(root, *a, **k):
+        if root.slug == bad:
             raise RuntimeError("The listed users and repositories cannot be searched")
-        return table.get(f"{owner}/{repo}", [])
+        return table.get(root.slug, [])
 
     monkeypatch.setattr(f"diplomat_app.autofixmonitor.{name}", fetch)
 
@@ -1302,5 +1303,5 @@ def test_a_guessed_root_is_shown_as_unresolved(app, tmp_path, monkeypatch):
     view = SettingsView(Store())
 
     texts = [w.text() for w in view._roots_list.itemAt(0).widget().findChildren(QLabel)]
-    assert any("No GitHub remote" in t for t in texts), texts
+    assert any("No GitHub or GitLab remote" in t for t in texts), texts
     view.deleteLater()

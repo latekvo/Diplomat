@@ -2048,7 +2048,7 @@ def test_the_polls_settle_tells_the_panel_what_it_retired(store, monkeypatch):
                  label="Auto · #512")
     fake_probes(monkeypatch, processes={})
     monkeypatch.setattr("diplomat_app.probes.merged_prs",
-                        lambda prs: A.Observation.present(set()))
+                        lambda prs, roots=(): A.Observation.present(set()))
     monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
     told: list[str] = []
     store.tasks_changed.connect(lambda: told.append("tasks"))
@@ -2290,7 +2290,8 @@ def test_the_poll_takes_the_merged_reading_the_top_rung_needs(store, monkeypatch
 
     taken = []
     monkeypatch.setattr("diplomat_app.probes.merged_prs",
-                        lambda prs: taken.append(prs) or A.Observation.present({item(7)}))
+                        lambda prs, roots=(): taken.append(prs)
+                        or A.Observation.present({item(7)}))
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     fake_probes(monkeypatch)
     monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
@@ -2309,7 +2310,8 @@ def test_the_poll_reads_which_prs_landed_before_it_settles_the_agents(store, mon
 
     order: list[str] = []
     monkeypatch.setattr("diplomat_app.probes.merged_prs",
-                        lambda prs: order.append("merged") or A.Observation.present(set()))
+                        lambda prs, roots=(): order.append("merged")
+                        or A.Observation.present(set()))
     monkeypatch.setattr(type(store), "_settle_agents",
                         lambda self: order.append("settle"))
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
@@ -2989,7 +2991,7 @@ def test_the_closed_pr_read_asks_for_closed_prs(nothing_closed, monkeypatch):
 
     monkeypatch.setattr("diplomat_runtime.gh.run", fake_run)
 
-    assert fetch_closed_prs("o", "r") == {item(41), item(42)}
+    assert fetch_closed_prs(ROOT) == {item(41), item(42)}
     assert "q=repo:o/r is:pr is:closed sort:updated-desc" in seen["args"]
 
 
@@ -4044,7 +4046,7 @@ def test_the_merged_probe_is_never_asked_about_an_untracked_runs_pr(store, monke
 
     asked = []
 
-    def record_and_answer(prs):
+    def record_and_answer(prs, roots=()):
         asked.append(prs)
         return A.Observation.present(set())
 

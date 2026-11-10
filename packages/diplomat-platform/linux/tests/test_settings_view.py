@@ -285,7 +285,7 @@ def test_other_repos_are_added_named_by_their_remote_and_removed(view, tmp_path,
         view._add_other_repo()
     assert view.store.other_repo_paths == [str(radon), str(plain)]
     assert _other_repo_rows(view) == [["software-mansion/radon", str(radon)],
-                                      ["⚠ No GitHub remote", str(plain)]]
+                                      ["⚠ No GitHub or GitLab remote", str(plain)]]
     assert view._other_repos_pill.text() == "check this"
     assert [r.repo for r in view.store.local_repos] == ["argent", "radon"], \
         "the repo root comes first"

@@ -2,7 +2,9 @@
 
 Mirrors ``PRRef.swift`` verbatim: accepts a bare number (``337`` / ``#337``), a
 full GitHub URL (``https://github.com/owner/repo/pull/337`` with any trailing
-path/query), or the ``owner/repo#337`` shorthand. When the input names a repo it's
+path/query), a GitLab one (``https://<host>/group/sub/proj/-/merge_requests/337``), or
+the ``owner/repo#337`` shorthand, whose owner may be a nested GitLab namespace (and
+``group/proj!337`` names a merge request). When the input names a repo it's
 checked against the home repo (the root the wizard works on, else the configured repo)
 and then the local checkouts listed in Settings (:mod:`localrepos`), so a link to an
 unknown project is rejected instead of silently reviewing the wrong PR, and a link to a
@@ -18,6 +20,8 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+GITHUB = "github.com"
+
 # PR numbers are ASCII digits only ([0-9], not \d): Python's \d / str.isdigit()
 # also match non-ASCII digits like "٣٣٧", which Swift's Int(_:) rejects.
 # github.com/OWNER/REPO/<kind>/N — scheme/www optional, trailing path/query allowed.
@@ -28,11 +32,24 @@ _URL = {
     )
     for kind in ("pull", "issues")
 }
-# OWNER/REPO#N shorthand (whole string).
-_SHORTHAND = re.compile(r"^([\w.-]+)/([\w.-]+)#([0-9]+)$")
+# HOST/NAMESPACE.../PROJECT/-/<segment>/N — GitLab's spelling, on any host.
+_GITLAB_URL = {
+    kind: re.compile(
+        rf"(?:https?://)?([A-Za-z0-9.-]+)(?::[0-9]+)?/([\w.-]+(?:/[\w.-]+)*)/([\w.-]+)"
+        rf"/-/{segment}/([0-9]+)",
+        re.IGNORECASE,
+    )
+    for kind, segment in (("pull", "merge_requests"), ("issues", "issues"))
+}
+# OWNER/REPO#N shorthand (whole string). OWNER may be a nested namespace, and a merge
+# request may be written OWNER/REPO!N.
+_SHORTHAND = {
+    "pull": re.compile(r"^([\w.-]+(?:/[\w.-]+)*)/([\w.-]+)[#!]([0-9]+)$"),
+    "issues": re.compile(r"^([\w.-]+(?:/[\w.-]+)*)/([\w.-]+)#([0-9]+)$"),
+}
 # A bare PR number (after any leading '#' is stripped).
 _BARE_NUMBER = re.compile(r"^[0-9]+$")
-_ITEM_KEY = re.compile(r"([\w.-]+/[\w.-]+)#([0-9]+)")
+_ITEM_KEY = re.compile(r"([\w.-]+(?:/[\w.-]+)+)#([0-9]+)")
 _DIGITS = re.compile(r"[0-9]+")
 
 # Swift's ``Int`` is 64-bit, so ``Int("9223372036854775808")`` (2^63, one past
@@ -51,16 +68,32 @@ def _int64(digits: str) -> int | None:
 
 @dataclass(frozen=True)
 class LocalRepo:
-    """A local checkout a link may target besides the home repo: one GitHub
-    remote of it (``owner``/``repo``) and where it is cloned (``path``)."""
+    """A local checkout a link may target besides the home repo: one remote of it
+    (``owner``/``repo`` on ``host``, lowercased) and where it is cloned (``path``). On
+    GitLab ``owner`` is the whole namespace, ``/`` and all."""
 
     owner: str
     repo: str
     path: str
+    host: str = GITHUB
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "host", self.host.lower())
 
     @property
     def slug(self) -> str:
         return f"{self.owner}/{self.repo}"
+
+    @property
+    def is_gitlab(self) -> bool:
+        return self.host != GITHUB
+
+    def link(self, kind: str, number: int) -> str:
+        """The web URL of PR (``kind`` ``"pull"``) or issue (``"issues"``) ``number``."""
+        if not self.is_gitlab:
+            return f"https://{GITHUB}/{self.slug}/{kind}/{number}"
+        segment = "merge_requests" if kind == "pull" else "issues"
+        return f"https://{self.host}/{self.slug}/-/{segment}/{number}"
 
 
 def item_key(owner: str, repo: str, number: int) -> str:
@@ -69,13 +102,24 @@ def item_key(owner: str, repo: str, number: int) -> str:
     return f"{owner.lower()}/{repo.lower()}#{number}"
 
 
+def _link(url: str, kind: str) -> tuple[str, str, str, str] | None:
+    """``(host, owner, repo, digits)`` of a ``kind`` link: github.com's spelling, else
+    GitLab's on any host."""
+    m = _URL[kind].search(url)
+    if m:
+        return GITHUB, m.group(1), m.group(2), m.group(3)
+    m = _GITLAB_URL[kind].search(url)
+    return (m.group(1).lower(), m.group(2), m.group(3), m.group(4)) if m else None
+
+
 def item_key_from_url(url: str) -> str | None:
-    """:func:`item_key` of a github.com PR or issue link, or ``None`` for any other."""
+    """:func:`item_key` of a github.com PR or issue link, or of a GitLab merge request
+    or issue one, or ``None`` for any other."""
     for kind in ("pull", "issues"):
-        m = _URL[kind].search(url)
-        if m:
-            n = _int64(m.group(3))
-            return item_key(m.group(1), m.group(2), n) if n else None
+        found = _link(url, kind)
+        if found:
+            n = _int64(found[3])
+            return item_key(found[1], found[2], n) if n else None
     return None
 
 
@@ -107,7 +151,7 @@ def item_label(item: str, roots: int) -> str:
     if split is None:
         return item
     slug, n = split
-    return f"#{n}" if roots <= 1 else f"{slug.split('/', 1)[1]}#{n}"
+    return f"#{n}" if roots <= 1 else f"{slug.rpartition('/')[2]}#{n}"
 
 
 @dataclass(frozen=True)
@@ -130,22 +174,30 @@ class PRRef:
 
 
 def parse_pr_ref(raw: str, owner: str, repo: str, kind: str = "pull",
-                 also: Sequence[LocalRepo] = ()) -> PRRef:
-    """Parse ``raw`` against the expected ``owner``/``repo``, then ``also`` in order
-    (all case-insensitive): the expected repo wins over a listed one with the same
-    coordinates, and the first listed match over a later one. ``kind`` is ``"pull"``
-    for a PR field or ``"issues"`` for an issue one."""
+                 also: Sequence[LocalRepo] = (), host: str = GITHUB) -> PRRef:
+    """Parse ``raw`` against the expected ``owner``/``repo`` on ``host``, then ``also``
+    in order (all case-insensitive): the expected repo wins over a listed one with the
+    same coordinates, and the first listed match over a later one. A link names its
+    host and matches a repo there only; the shorthand names none and matches any.
+    ``kind`` is ``"pull"`` for a PR field or ``"issues"`` for an issue one."""
     s = raw.strip()
     if not s:
         return PRRef(None, False)
 
-    m = _URL[kind].search(s) or _SHORTHAND.match(s)
-    if m:
-        o, r, n = m.group(1).lower(), m.group(2).lower(), _int64(m.group(3))
+    found: tuple[str | None, str, str, str] | None = _link(s, kind)
+    if found is None and (m := _SHORTHAND[kind].match(s)):
+        found = (None, m.group(1), m.group(2), m.group(3))
+    if found:
+        at, o, r = found[0], found[1].lower(), found[2].lower()
+        n = _int64(found[3])
         n = n if (n is not None and n > 0) else None
-        if o == owner.lower() and r == repo.lower():
+
+        def names(h: str, x_owner: str, x_repo: str) -> bool:
+            return at in (None, h.lower()) and x_owner.lower() == o and x_repo.lower() == r
+
+        if names(host, owner, repo):
             return PRRef(n, False)
-        local = next((x for x in also if x.owner.lower() == o and x.repo.lower() == r), None)
+        local = next((x for x in also if names(x.host, x.owner, x.repo)), None)
         return PRRef(n, local is None, local)
 
     bare = s[1:] if s.startswith("#") else s

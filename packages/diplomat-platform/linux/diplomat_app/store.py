@@ -24,6 +24,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 from diplomat_runtime import (
@@ -380,6 +381,8 @@ class Store(QObject):
         self.selected: str = tools()[0].id
         self.has_loaded = False
         self.me = ""
+        # The glab login of each GitLab host a root is on, once read (:meth:`me_for`).
+        self._gitlab_me: dict[str, str] = {}
 
         # Live device-allocator state (pool + holders) and install status.
         self.device_state: dict | None = None
@@ -824,7 +827,7 @@ class Store(QObject):
 
     @property
     def local_checkouts(self) -> list[localrepos.Checkout]:
-        """:attr:`other_repo_paths`, each with the GitHub repos it answers for."""
+        """:attr:`other_repo_paths`, each with the GitHub and GitLab repos it answers for."""
         if self._local_checkouts is None:
             self._local_checkouts = localrepos.resolve(self.other_repo_paths)
         return self._local_checkouts
@@ -1400,6 +1403,20 @@ class Store(QObject):
         o = self.username_override.strip()
         return o if o else self.me
 
+    def me_for(self, root: LocalRepo) -> str:
+        """Who "me" is in ``root``: :attr:`effective_me` on GitHub; on GitLab the login
+        glab is signed in to on its host, read once per host and kept once read. Raises
+        while that read fails, which leaves the root unread like any failed read."""
+        if not root.is_gitlab:
+            return self.effective_me
+        if root.host not in self._gitlab_me:
+            self._gitlab_me[root.host] = API.fetch_viewer_login(root.host)
+        return self._gitlab_me[root.host]
+
+    def known_me(self, root: LocalRepo) -> str:
+        """:meth:`me_for` without reading anything: on a GitLab host not read yet, ""."""
+        return self._gitlab_me.get(root.host, "") if root.is_gitlab else self.effective_me
+
     def tint(self, tool_id: str) -> str:
         """A tool's tint as #RRGGBB: the user's override if set, else its default."""
         override = self.color_overrides.get(tool_id)
@@ -1454,13 +1471,17 @@ class Store(QObject):
         self.error = None
         self.loading_changed.emit(True)
         try:
-            self.me = API.fetch_viewer_login()
             # Again when the picker moved during the fetch: that one is cached, and
             # the root now selected is the one on screen.
             while True:
                 root = self.selected_repo
-                prs = API.fetch_open_prs(root.owner, root.repo)
-                found = API.fetch_open_issues(root.owner, root.repo)
+                # Who the panel's "my PRs" lists compare against.
+                if root.is_gitlab:
+                    self.me_for(root)
+                else:
+                    self.me = API.fetch_viewer_login()
+                prs = API.fetch_open_prs(root)
+                found = API.fetch_open_issues(root)
                 self._panel_data[root.slug.lower()] = (
                     prs, found, datetime.now().astimezone())
                 if self.selected_repo.slug.lower() == root.slug.lower():
@@ -1582,7 +1603,7 @@ class Store(QObject):
                 # Its one root would be the configured repo at the first path, which
                 # may check out another.
                 self._note_poll_failure(
-                    "no repo root in Settings resolves to a GitHub checkout")
+                    "no repo root in Settings resolves to a GitHub or GitLab checkout")
             else:
                 # Every root's fetches concatenated: one drain, diff and commit see every
                 # repo, and the telemetry ledger reconciles once per kind against the
@@ -1666,8 +1687,8 @@ class Store(QObject):
         failed: list[tuple[LocalRepo, Exception]] = []
         for r in roots:
             try:
-                found = autofixmonitor.fetch_snapshots(r.owner, r.repo, self.effective_me)
-                gone = autofixmonitor.fetch_closed_prs(r.owner, r.repo)
+                found = autofixmonitor.fetch_snapshots(r, self.me_for(r))
+                gone = autofixmonitor.fetch_closed_prs(r)
             except Exception as exc:  # noqa: BLE001 — any failure leaves the root unread
                 failed.append((r, exc))
                 continue
@@ -1836,7 +1857,8 @@ class Store(QObject):
         for root in roots:
             slug = root.slug.lower()
             try:
-                found = autofixmonitor.fetch_open_issues(root.owner, root.repo)
+                found = autofixmonitor.fetch_open_issues(root)
+                me = self.me_for(root)
             except Exception as exc:  # noqa: BLE001
                 # Not a poll failure even in every root: nothing owed is read from it.
                 failed.append((root, exc))
@@ -1858,7 +1880,7 @@ class Store(QObject):
                                  f"{who} - author is banned, not queued")
                     continue
                 cfg = issues.IssueConfig(target=issues.Target.CONTRIBUTORS,
-                                         me=self.effective_me, home=root)
+                                         me=me, home=root)
                 queued, _ = self._request([autofix.RequestedWork(
                     number=issue.number, url=issue.url, author=issue.author,
                     config=cfg.for_issue(issue.number).prompt_payload(), repo=slug)])
@@ -1909,7 +1931,8 @@ class Store(QObject):
                 config = self._goal_fix_config(number, root)
             else:
                 config = self._review_request_config(number, verdict=False, home=root)
-                if self.effective_me and author.lower() == self.effective_me.lower():
+                me = self.known_me(root)
+                if me and author.lower() == me.lower():
                     config.specific_author = review.SpecificAuthor.MINE
                     author = ""
             try:
@@ -1929,7 +1952,7 @@ class Store(QObject):
         """The automatic pass's fix of a goal issue: feature requests included, since
         the goal it serves is often one, and, as a sweep's, re-checked when its turn
         comes: one closed or assigned by then is left alone."""
-        return issues.IssueConfig(target=issues.Target.ALL, me=self.effective_me,
+        return issues.IssueConfig(target=issues.Target.ALL, me=self.known_me(home),
                                   include_features=True, home=home).for_issue(number)
 
     def _goal_asks(self, op: dict) -> tuple[str, dict[str, str]] | None:
@@ -1977,8 +2000,7 @@ class Store(QObject):
         for root in roots:
             try:
                 reqs += autofixmonitor.fetch_review_requests(
-                    root.owner, root.repo, self.effective_me,
-                    include_files=self.auto_approve_enabled)
+                    root, self.me_for(root), include_files=self.auto_approve_enabled)
             except Exception as exc:  # noqa: BLE001
                 failed.append((root, exc))
                 continue
@@ -2368,7 +2390,7 @@ class Store(QObject):
             audit_action="conflicts",
             label=f"Resolve · {self._item_label(url, number)}",
             prompt=conflicts.ConflictConfig(
-                target=PRTarget.SPECIFIC, me=self.effective_me, specific_pr=str(number),
+                target=PRTarget.SPECIFIC, me=self.known_me(root), specific_pr=str(number),
                 home=root,
             ).build_prompt(),
             pr_url=url,
@@ -2393,7 +2415,7 @@ class Store(QObject):
             prompt=review.ReviewConfig(
                 depth="deep",
                 target=PRTarget.SPECIFIC,
-                me=self.effective_me,
+                me=self.known_me(root),
                 mark_ready=False,
                 leave_reviews=False,
                 reply_to_reviews=True,
@@ -2451,7 +2473,7 @@ class Store(QObject):
         return review.ReviewConfig(
             depth="max",
             target=PRTarget.SPECIFIC,
-            me=self.effective_me,
+            me=self.known_me(home),
             mark_ready=False,
             leave_reviews=True,
             reply_to_reviews=False,
@@ -3804,7 +3826,7 @@ class Store(QObject):
         """
         items = {r.item for r in agentregistry.load()
                  if r.item is not None and not r.untracked}
-        self._merged_prs = probes.merged_prs(items)
+        self._merged_prs = probes.merged_prs(items, review.repo_roots())
 
     def refresh_token_budget(self) -> None:
         """Ask whether the account still has room to spend — the precondition on the
@@ -4245,25 +4267,35 @@ class Store(QObject):
 
     def _comms_lookup(self, kind: str, number: int, root: LocalRepo) -> dict | None:
         """``{number, url, author, state}`` of ``root``'s ``#number``, open or not;
-        ``None`` when GitHub does not know it; ``{"error": why}`` when GitHub could not
-        be asked. The panel's last fetch holds only some open work, so ``gh`` answers
-        the rest. ``gh issue view`` answers a PR's number too, with its ``/pull/`` url."""
+        ``None`` when its host does not know it; ``{"error": why}`` when it could not
+        be asked. The panel's last fetch holds only some open work, so ``gh`` (``glab``
+        on GitLab) answers the rest. ``gh issue view`` answers a PR's number too, with
+        its ``/pull/`` url; GitLab numbers merge requests apart from issues."""
         want = item_key(root.owner, root.repo, number)
         listed = self.prs if kind == "review" else self.issues
         hit = next((i for i in listed if item_key_from_url(i.url) == want), None)
         if hit is not None:
             return {"number": hit.number, "url": hit.url, "author": hit.author,
                     "state": "OPEN"}
-        from diplomat_runtime import gh
+        from diplomat_runtime import gh, gitlab, glab
 
         try:
-            obj = json.loads(gh.run(["pr" if kind == "review" else "issue", "view",
-                                     str(number), "--repo", root.slug,
-                                     "--json", "number,url,author,state"], timeout=30))
+            if root.is_gitlab:
+                project = urllib.parse.quote(root.slug, safe="")
+                kinds = "merge_requests" if kind == "review" else "issues"
+                obj = gitlab.item_view(json.loads(glab.run(
+                    ["api", "--hostname", root.host, f"projects/{project}/{kinds}/{number}"],
+                    timeout=30)))
+            else:
+                obj = json.loads(gh.run(["pr" if kind == "review" else "issue", "view",
+                                         str(number), "--repo", root.slug,
+                                         "--json", "number,url,author,state"], timeout=30))
         except Exception as exc:  # noqa: BLE001 — gh's own failures are all GHError
             # Both views' "no such number"; "Could not resolve to a Repository" shares
-            # only the prefix.
-            if "Could not resolve to" in str(exc) and "with the number of" in str(exc):
+            # only the prefix. GitLab's is "404 Not found", its missing project's
+            # "404 Project Not Found".
+            if ("Could not resolve to" in str(exc) and "with the number of" in str(exc)
+                    or "404 Not found" in str(exc)):
                 return None
             return {"error": self.comms_snippet(str(exc), 120)}
         if not isinstance(obj, dict):
@@ -4566,7 +4598,7 @@ class Store(QObject):
         author = str(found.get("author", ""))
         if self._comms_banned(author):
             return f"PR {ref} is by @{author}, who is banned; not queued", None
-        me = self.effective_me
+        me = self.known_me(root)
         mine = bool(me) and author.lower() == me.lower()
         cfg = review.ReviewConfig(
             target=PRTarget.SPECIFIC, specific_pr=str(number), me=me,
@@ -4596,7 +4628,7 @@ class Store(QObject):
         author = str(found.get("author", ""))
         if self._comms_banned(author):
             return f"issue {ref} is by @{author}, who is banned; not queued", None
-        me = self.effective_me
+        me = self.known_me(root)
         mine = bool(me) and author.lower() == me.lower()
         cfg = issues.IssueConfig(target=issues.Target.SPECIFIC,
                                  specific_issue=str(number), me=me, home=root)
@@ -4624,7 +4656,7 @@ class Store(QObject):
 
     def _comms_bump(self, number: int, repo: str) -> str:
         """Moves whatever is queued for that item ("" = the primary root's)."""
-        owner, _, name = (repo or self._primary().slug).partition("/")
+        owner, _, name = (repo or self._primary().slug).rpartition("/")
         item = item_key(owner, name, number)
         moved = [t.id for t in self.queued_tasks if autofix.item_of_key(t.id) == item]
         for key in moved:
@@ -5045,7 +5077,7 @@ class Store(QObject):
         def work() -> None:
             try:
                 # Named, as the wizard's press names it: the operator asked for this one.
-                cfg = issues.IssueConfig(target=issues.Target.SPECIFIC, me=self.effective_me,
+                cfg = issues.IssueConfig(target=issues.Target.SPECIFIC, me=self.known_me(root),
                                          specific_issue=str(number), include_features=True,
                                          home=root)
                 verdict = self.dispatch_agent(autofix.AgentJob(
@@ -5821,7 +5853,7 @@ class Store(QObject):
     # every render. `diplomat-platform/linux/tests/test_tooldata_parity.py` runs both over one fixture
     # and diffs the rows, so a change to either has to be made to both.
     def _row_specs(self) -> dict:
-        me = self.effective_me
+        me = self.known_me(self.selected_repo)
         return {
             "skillPRs": (
                 lambda: sorted(Filters.skill_prs(self.prs), key=lambda p: -p.number),

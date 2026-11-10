@@ -157,7 +157,7 @@ class IssueWizardView(SpawnWizard):
             depth=self._depth_ids[self.slider.value()],
             target=self.target.currentData(),
             username=self.username.text(),
-            me=self.store.effective_me,
+            me=self.store.known_me(self.store.selected_repo),
             specific_issue=self.specific_issue.text(),
             unassigned_only=self.unassigned_only.isChecked(),
             assign_to_me=self.assign_to_me.isChecked(),
@@ -179,7 +179,7 @@ class IssueWizardView(SpawnWizard):
         self.username.setVisible(cfg.target == Target.SOMEONE)
         self.specific_issue.setVisible(is_specific)
 
-        me = self.store.effective_me
+        me = self.store.known_me(self.store.selected_repo)
         self.mine_caption.setText(f"issues opened by @{me}" if (is_mine and me) else "")
         self.mine_caption.setVisible(bool(is_mine and me))
 

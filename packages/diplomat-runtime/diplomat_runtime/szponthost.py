@@ -233,7 +233,7 @@ class DiplomatHost(szpont_host.Host):
 
 
 def _checkout_for(work_key: str, repo: str = "") -> str | None:
-    """Where a job runs: the repo root checking out ``repo`` (``owner/name``), else the
+    """Where a job runs: the GitHub repo root checking out ``repo`` (``owner/name``), else the
     repo ``work_key`` names, else the configured repo's (:func:`review.mesh_checkout`).
     Raises :class:`szpont_host.NoRunner` for a repo with no root here, so the
     dispatcher fails the job over to a machine that has one, or for any job while no
@@ -251,7 +251,8 @@ def _checkout_for(work_key: str, repo: str = "") -> str | None:
                 raise szpont_host.NoRunner("no checkout of the configured repo on this machine")
             return checkout
         slug = f"{ref[1]}/{ref[2]}".lower()
-    root = next((r for r in review.repo_roots() if r.slug.lower() == slug), None)
+    root = next((r for r in review.repo_roots()
+                 if not r.is_gitlab and r.slug.lower() == slug), None)
     if root is None:
         raise szpont_host.NoRunner(f"no checkout of {slug} on this machine")
     return root.path

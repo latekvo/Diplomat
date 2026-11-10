@@ -152,7 +152,7 @@ class IssueConfig(RepoConfig):
         shorthand, checked against :attr:`home_repo`, then ``local_repos``."""
         owner, repo = self.home_repo
         return parse_pr_ref(self.specific_issue, owner, repo, kind="issues",
-                            also=self.local_repos)
+                            also=self.local_repos, host=self.home_host)
 
     @property
     def single_ref(self) -> PRRef | None:

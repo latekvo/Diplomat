@@ -816,7 +816,7 @@ def test_the_warning_names_the_listed_repos_once_there_are_any(store, radon_list
 def test_the_author_poll_asks_about_the_listed_repo(store, radon_listed, monkeypatch):
     asked = []
     monkeypatch.setattr(review, "fetch_specific_author",
-                        lambda owner, repo, number: asked.append((owner, repo, number)))
+                        lambda root, number: asked.append((root.owner, root.repo, number)))
     monkeypatch.setattr(store, "start_background", lambda work: work())
     _single(store, WizardView, RADON_PR)
     # Other tests' wizards may still have a debounced poll in flight, landing here too.

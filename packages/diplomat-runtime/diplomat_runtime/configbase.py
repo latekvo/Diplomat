@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from . import core
-from .prref import LocalRepo, PRRef, parse_pr_ref
+from .prref import GITHUB, LocalRepo, PRRef, parse_pr_ref
 from .prtarget import PRTarget
 
 
@@ -50,6 +50,11 @@ class RepoConfig:
         return (self.home.owner, self.home.repo) if self.home else self.configured_repo
 
     @property
+    def home_host(self) -> str:
+        """The host of :attr:`home_repo`."""
+        return self.home.host if self.home else GITHUB
+
+    @property
     def single_ref(self) -> PRRef | None:
         """The single-item field parsed, while the run is scoped to that one item;
         ``None`` for a sweep or a whole-repo run, whose field is never read."""
@@ -62,11 +67,16 @@ class RepoConfig:
         return ref.repo if ref is not None else None
 
     @property
+    def target_root(self) -> LocalRepo:
+        """The repo this run works on: :attr:`listed_repo`, else :attr:`home`, else the
+        configured repo (with no path). What the prompt names, ``gh`` or ``glab`` asks
+        about, and links point at."""
+        return self.listed_repo or self.home or LocalRepo(*self.configured_repo, "")
+
+    @property
     def target_repo(self) -> tuple[str, str]:
-        """The repo this run works on (owner, repo): :attr:`listed_repo`'s, else
-        :attr:`home_repo`. What the prompt names, ``gh`` asks about, and links point at."""
-        local = self.listed_repo
-        return (local.owner, local.repo) if local else self.home_repo
+        """:attr:`target_root` as (owner, repo)."""
+        return self.target_root.owner, self.target_root.repo
 
     @property
     def checkout(self) -> str | None:
@@ -101,14 +111,18 @@ class RepoConfig:
 
 
 def _repo_json(r: LocalRepo) -> dict:
-    return {"owner": r.owner, "repo": r.repo, "path": r.path}
+    out = {"owner": r.owner, "repo": r.repo, "path": r.path}
+    if r.is_gitlab:
+        out["host"] = r.host
+    return out
 
 
 def listed_payload(local_repos: Sequence[LocalRepo],
                    home: LocalRepo | None = None) -> dict:
     """The listed checkouts as the ``localRepos`` of a prompt payload and the home
     root as its ``home``, each left out when there is none, so a payload stored before
-    either existed reads the same."""
+    either existed reads the same. A repo carries its ``host`` only off github.com,
+    which a payload without one means."""
     out: dict = {}
     if local_repos:
         out["localRepos"] = [_repo_json(r) for r in local_repos]
@@ -151,7 +165,8 @@ class PRSweepConfig(RepoConfig):
         """The single-PR field parsed as a number / URL / ``owner/repo#n`` shorthand,
         checked against :attr:`home_repo`, then ``local_repos``."""
         owner, repo = self.home_repo
-        return parse_pr_ref(self.specific_pr, owner, repo, also=self.local_repos)
+        return parse_pr_ref(self.specific_pr, owner, repo, also=self.local_repos,
+                            host=self.home_host)
 
     @property
     def single_ref(self) -> PRRef | None:
@@ -172,5 +187,4 @@ class PRSweepConfig(RepoConfig):
         ref = self.single_ref
         if ref is None or ref.number is None:
             return None
-        owner, repo = self.target_repo
-        return f"https://github.com/{owner}/{repo}/pull/{ref.number}"
+        return self.target_root.link("pull", ref.number)

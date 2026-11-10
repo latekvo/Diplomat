@@ -1218,7 +1218,7 @@ class Panel(QWidget):
 
     def _rebuild_lookup(self, n: int) -> None:
         r = self.store.lookup(n)
-        link = r.url or f"https://github.com/{self.store.selected_repo.slug}/issues/{n}"
+        link = r.url or self.store.selected_repo.link("issues", n)
 
         container = QWidget()
         col = QVBoxLayout(container)

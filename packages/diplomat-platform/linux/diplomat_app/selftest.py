@@ -30,10 +30,10 @@ from .store import Store, tool_by_id
 
 def run_dump() -> int:
     try:
-        me = API.fetch_viewer_login()
         primary = repo_roots()[0]
-        prs = API.fetch_open_prs(primary.owner, primary.repo)
-        issues = API.fetch_open_issues(primary.owner, primary.repo)
+        me = API.fetch_viewer_login(primary.host)
+        prs = API.fetch_open_prs(primary)
+        issues = API.fetch_open_issues(primary)
     except Exception as exc:  # noqa: BLE001
         print(f"DUMP ERROR: {exc}")
         return 1
@@ -80,10 +80,10 @@ def run_dump() -> int:
 
 def run_lookup(n: int) -> int:
     try:
-        me = API.fetch_viewer_login()
         primary = repo_roots()[0]
-        prs = API.fetch_open_prs(primary.owner, primary.repo)
-        issues = API.fetch_open_issues(primary.owner, primary.repo)
+        me = API.fetch_viewer_login(primary.host)
+        prs = API.fetch_open_prs(primary)
+        issues = API.fetch_open_issues(primary)
     except Exception as exc:  # noqa: BLE001
         print(f"LOOKUP ERROR: {exc}")
         return 1

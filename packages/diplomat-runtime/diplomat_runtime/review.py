@@ -49,24 +49,27 @@ class SpecificAuthor(Enum):
     THEIRS = "theirs"    # review only (CASE B)
 
 
-def fetch_specific_author(owner: str, repo: str, number: int) -> str | None:
-    """One ``gh pr view ... --json author`` -> the author login, or ``None`` on
-    failure. Mirrors ``ReviewWizardView.fetchAuthor`` in ReviewWizard.swift. Runs
-    the gh shell-out synchronously; call it OFF the UI thread (the wizard does).
+def fetch_specific_author(root: LocalRepo, number: int) -> str | None:
+    """One ``gh pr view ... --json author`` (on GitLab, the ``gitlab-mr`` query) -> the
+    author login, or ``None`` on failure. Mirrors ``ReviewWizardView.fetchAuthor`` in
+    ReviewWizard.swift. Runs the shell-out synchronously; call it OFF the UI thread
+    (the wizard does).
     """
-    from . import gh
+    from . import gh, gitlab, glab
 
     try:
-        data = gh.run(
-            ["pr", "view", str(number), "--repo", f"{owner}/{repo}", "--json", "author"]
-        )
+        if root.is_gitlab:
+            found = gitlab.mr(glab.project("gitlab-mr", root, {"iid": str(number)}))
+        else:
+            found = json.loads(gh.run(
+                ["pr", "view", str(number), "--repo", root.slug, "--json", "author"]))
     except Exception:  # noqa: BLE001 - best-effort author resolution, None on any failure
         return None
     try:
-        author = json.loads(data).get("author") or {}
+        author = found.get("author") or {}
         login = author.get("login")
         return login or None
-    except (ValueError, AttributeError):
+    except AttributeError:
         return None
 
 
@@ -340,11 +343,13 @@ def _resolved_roots() -> tuple[list[LocalRepo], bool, bool, bool]:
     if _roots_cache is None or _roots_cache[0] != key or now - _roots_cache[1] >= ROOTS_TTL:
         remotes = {p: out for p in map(os.path.expanduser, paths)
                    if (out := localrepos.remote_config(p)) is not None}
+        hosts = localrepos.gitlab_hosts()
         before = _roots_cache[2] if _roots_cache else None
-        _roots_cache = (key, now, localrepos.resolve_roots(paths, remotes, configured),
-                        localrepos.all_resolve(paths, remotes),
-                        localrepos.primary_resolves(paths, remotes),
-                        localrepos.guessed(paths, remotes))
+        _roots_cache = (key, now,
+                        localrepos.resolve_roots(paths, remotes, configured, hosts),
+                        localrepos.all_resolve(paths, remotes, hosts),
+                        localrepos.primary_resolves(paths, remotes, hosts),
+                        localrepos.guessed(paths, remotes, hosts))
         if before is not None and _roots_cache[2] != before:
             for ref in list(_roots_followers):
                 method = ref()
@@ -369,20 +374,21 @@ def repo_roots() -> list[LocalRepo]:
 
 
 def mesh_checkout() -> str | None:
-    """The checkout of the root that checks out the configured repo, or ``None`` when no
-    root does or none resolved (:func:`roots_guessed`). Only work there may go over the
+    """The checkout of the root that checks out the configured GitHub repo, or ``None``
+    when no root does or none resolved (:func:`roots_guessed`). Only work there may go over the
     mesh, and a job naming no repo (a peer predating repo routing means this one) runs
     there."""
     if roots_guessed():
         return None
     cfg = core.config()
     slug = f"{cfg['owner']}/{cfg['repo']}".lower()
-    return next((r.path for r in repo_roots() if r.slug.lower() == slug), None)
+    return next((r.path for r in repo_roots()
+                 if not r.is_gitlab and r.slug.lower() == slug), None)
 
 
 def roots_complete() -> bool:
-    """Whether every root path had a GitHub remote when :func:`repo_roots` last read
-    them (:func:`localrepos.all_resolve`). Until they all do, a repo missing from the
+    """Whether every root path had a GitHub or GitLab remote when :func:`repo_roots`
+    last read them (:func:`localrepos.all_resolve`). Until they all do, a repo missing from the
     roots may be one that failed to resolve rather than one taken out of Settings."""
     return _resolved_roots()[1]
 
