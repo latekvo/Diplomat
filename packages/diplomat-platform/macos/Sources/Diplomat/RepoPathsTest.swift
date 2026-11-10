@@ -11,7 +11,8 @@ import Foundation
 /// The order of the five readings is what this pins: `DIPLOMAT_SELF_REPO`, the tree
 /// an unbundled run's assets sit in, the checkout around the bundle, the checkout
 /// `build-app.sh` recorded in Info.plist, then `~/dev/diplomat`. Also how long a
-/// resolution of the repo roots is kept (`RepoPaths.rootsTTL`).
+/// resolution of the repo roots is kept (`RepoPaths.rootsTTL`), and what an Add in
+/// Settings stores (`RepoPaths.rootPaths(adding:to:)`).
 ///
 ///     DIPLOMAT_REPOPATHS_TEST=1 swift run Diplomat
 ///
@@ -116,6 +117,16 @@ enum RepoPathsTest {
         check("…and then read again, so the checkout that appeared is a root",
               again.roots == ["o/early", "o/late"] && again.complete, "got \(again)")
         RepoPaths.invalidateRoots()
+
+        print("repopaths: adding roots in Settings")
+        let defaultRoot = RepoPaths.defaultAgentRepo
+        let seeded = RepoPaths.rootPaths(adding: ["/src/x"], to: [])
+        check("an Add over none listed keeps the default root, first", seeded == [defaultRoot, "/src/x"],
+              "got \(seeded)")
+        let more = RepoPaths.rootPaths(adding: ["/src/y", "/src/x"], to: ["/src/x"])
+        check("…over a list appends what it does not hold", more == ["/src/x", "/src/y"], "got \(more)")
+        let same = RepoPaths.rootPaths(adding: [defaultRoot], to: [])
+        check("…and picking the default over none lists it once", same == [defaultRoot], "got \(same)")
 
         if failures.isEmpty { print("repopaths: all passed") }
         else { print("repopaths: FAILED \(failures.count): \(failures.joined(separator: "; "))") }

@@ -245,8 +245,9 @@ struct SettingsView: View {
     private var repoRootsDetail: String {
         "The first is the primary: an agent whose job names no repo starts there. Every "
             + "automatic job runs across all of them, and the header picks the one the "
-            + "lists, search and wizards work on. Each is known by its GitHub remotes, "
-            + "\(repoSlug) first if it is one of them. None listed = "
+            + "lists, search and wizards work on. Each is known by one GitHub repo from its "
+            + "remotes: \(repoSlug) if a remote names it or a repo of that name under "
+            + "another owner (a fork or a move), else upstream, else origin. None listed = "
             + "\(RepoPaths.defaultAgentRepo). DIPLOMAT_REPO in this app's environment "
             + "outranks the list."
     }
@@ -338,8 +339,8 @@ struct SettingsView: View {
         panel.message = "Choose local checkouts the agents should work in"
         panel.prompt = "Add"
         guard panel.runModal() == .OK else { return }
-        let added = panel.urls.map(\.path).filter { !store.repoRootPaths.contains($0) }
-        store.repoRootPaths.append(contentsOf: added)
+        store.repoRootPaths = RepoPaths.rootPaths(adding: panel.urls.map(\.path),
+                                                  to: store.repoRootPaths)
     }
 
     /// Directory picker for one root's new path.
