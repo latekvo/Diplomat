@@ -120,7 +120,9 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   first is the *primary*. Blank = `~/dev/<repo>` for whichever repo
   [`assets/config.json`](../packages/diplomat-core/assets/config.json) targets. Each
   root is known by one GitHub repo, read from its remotes: the `assets/config.json`
-  repo if a remote names it, else `upstream`, else `origin`. A row warns when the path
+  repo if a remote names it or a repo of the same name under another owner (a fork's
+  `origin`, an old owner's URL), else `upstream`, else `origin`. The roots are read
+  again every minute, so a checkout that appears later is picked up. A row warns when the path
   isn't absolute, has no `.git`, or has no GitHub remote - such a root is not
   watched, unless no root has one, when the first stands for the `assets/config.json`
   repo - and two roots naming the same repo count once. Every automatic job (the
