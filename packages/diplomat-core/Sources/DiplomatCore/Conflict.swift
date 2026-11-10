@@ -15,7 +15,7 @@ public struct ConflictConfig {
     public var me: String
     public var specificPR: String
 
-    /// The local checkouts besides the configured repo that a pasted link may name
+    /// The local checkouts besides the home repo that a pasted link may name
     /// (Settings → OTHER REPOS). Optional so a queued config stored without it decodes.
     public var localRepos: [PRRef.LocalRepo]?
 

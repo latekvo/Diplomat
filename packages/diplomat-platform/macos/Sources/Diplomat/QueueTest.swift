@@ -1033,6 +1033,13 @@ enum QueueTest {
                                     filedIn(rootB, 85, minutes: 16)], root: rootB)
         check("a root removed and added back queues none of what was filed meanwhile",
               store.requestedWork.isEmpty)
+        store.pinRoots([rootA], complete: false)
+        store.queueCommunityIssues([filedIn(rootA, 81, minutes: 12)], root: rootA)
+        store.pinRoots([rootA, rootB])
+        store.queueCommunityIssues([filedIn(rootB, 85, minutes: 16), filedIn(rootB, 86, minutes: 17)],
+                                   root: rootB)
+        check("a root whose path failed to resolve for a poll keeps its mark: what it filed meanwhile is queued",
+              store.requestedWork.map(\.key) == [AgentTaskQueue.key(auditAction: "issues", item: "o2/beta#86")])
         store.communityIssuesEnabled = false
         store.requestedWork = []
         store.queuedTasks = []
@@ -1086,6 +1093,31 @@ enum QueueTest {
                 && !store.meshRoutable(routed(feed.appendingPathComponent("other").path)))
         check("a wizard run goes over the mesh only from the primary root",
               store.meshRoutable(checkout: rootA.path) && !store.meshRoutable(checkout: rootB.path))
+
+        // 24b. A review-request record outlives a poll its root's path failed to resolve
+        //      for: o/other#7's run concluded long ago and the request is still owed.
+        //      A poll of o/r alone keeps what `retainedReviewReqAttempts` returns; the
+        //      next poll, of both roots, decides on that.
+        let polledR = PRRef.LocalRepo(owner: "o", repo: "r", path: "/src/r")
+        let reqAt = "2026-11-01T10:00:00Z"
+        let concludedRec = ReviewAttempt(
+            requestedAt: reqAt,
+            lastDispatchedAt: Date().addingTimeInterval(-ReviewReconcile.retryMaxBackoff - 600),
+            attempts: 1, concludedAt: Date().addingTimeInterval(-ReviewReconcile.retryMaxBackoff))
+        func afterTwoPolls(middleComplete: Bool) -> ReviewReconcile.Decision {
+            let kept = Store.retainedReviewReqAttempts(["o/other#7": concludedRec], owed: [:],
+                                                       polled: [polledR], complete: middleComplete,
+                                                       now: Date())
+            return ReviewReconcile.decide(prior: kept["o/other#7"], stamp: reqAt, inFlight: false,
+                                          banned: false, now: Date())
+        }
+        check("a concluded review request in a root that failed to resolve for a poll is not reviewed again",
+              afterTwoPolls(middleComplete: false) == .skipConcluded)
+        check("…while one in a root gone from a complete set of roots is dropped",
+              afterTwoPolls(middleComplete: true) == .dispatch(attemptNumber: 1))
+        check("…and one in a polled root that no longer owes it is dropped, resolved or not",
+              Store.retainedReviewReqAttempts(["o/r#7": concludedRec], owed: [:], polled: [polledR],
+                                              complete: false, now: Date()).isEmpty)
 
         // 25. The selected root decides which lists the right column reads.
         func rootPR(_ root: PRRef.LocalRepo, _ number: Int) -> OpenPR {

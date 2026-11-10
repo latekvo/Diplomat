@@ -336,18 +336,19 @@ extension Store {
 
     /// The `+` pill: a fix agent for its issue now, outside the cap like the Fix-issues
     /// wizard's single-issue press, recorded as `dispatched` once started. Nil once
-    /// started (or already on its way), else why not.
+    /// started (or already on its way), else why not. An issue in no repo root gets none,
+    /// as the automatic pass skips one.
     func startGoalFix(_ node: TaskGraph.Node, task id: String) async -> String? {
         guard let ref = GitHubRef(url: node.url) else { return "not a GitHub issue: \(node.url)" }
+        let item = PRRef.itemKey(url: node.url)
+        guard root(ofItem: item) != nil else {
+            let slug = item.flatMap(PRRef.splitItemKey)?.slug ?? node.url
+            return "\(slug) is not a repo root, so no fix was started"
+        }
         guard goalOverlay.badge(node, watched: CoreAssets.repoCoordinates()) == nil else { return nil }
         goalFixesStarting.insert(ref.number)
         defer { goalFixesStarting.remove(ref.number) }
-        let ask = goalPlusAsk(number: ref.number, url: node.url, author: node.author)
-        let action = ask.config.action
-        let job = AgentJob(kind: action, auditAction: action, label: ask.label(roots: roots.count),
-                           prompt: ask.config.buildPrompt(), prURL: nil, prNumber: nil,
-                           authorLogin: node.author, duty: action, workKey: "", counter: nil)
-        let outcome = await dispatchAgent(job, source: .panel)
+        let outcome = await dispatchAgent(goalPlusJob(node, number: ref.number), source: .panel)
         switch outcome {
         case .spawned, .standDown: break
         case .banned: return "@\(node.author ?? "") is banned, so no fix was started"
@@ -358,6 +359,16 @@ extension Store {
             AppLog.log("tasks", "goal \(id): could not record \(work): \(refusal)")
         }
         return nil
+    }
+
+    /// The `+` press's agent, in its issue's root checkout.
+    func goalPlusJob(_ node: TaskGraph.Node, number: Int) -> AgentJob {
+        let ask = goalPlusAsk(number: number, url: node.url, author: node.author)
+        let action = ask.config.action
+        return AgentJob(kind: action, auditAction: action, label: ask.label(roots: roots.count),
+                        prompt: ask.config.buildPrompt(), prURL: nil, prNumber: nil,
+                        authorLogin: node.author, duty: action, workKey: "", counter: nil,
+                        directory: ask.config.checkout)
     }
 
     /// One mode edit, then the automatic pass when the goal wants work started, without

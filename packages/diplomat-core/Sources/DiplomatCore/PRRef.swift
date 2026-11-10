@@ -5,12 +5,13 @@ import Foundation
 /// The field accepts a bare number (`337`, `#337`), a full GitHub URL
 /// (`https://github.com/owner/repo/pull/337`, with any trailing path/query), or the
 /// `owner/repo#337` shorthand. When the input names a repo (URL or shorthand) it's
-/// checked against the configured target repo and then the local checkouts listed in
-/// Settings, so a link to an unknown project is rejected instead of silently reviewing
-/// the wrong PR. Shared verbatim with the shared runtime (see `prref.py`).
+/// checked against the home repo (the root the wizard works on, else the configured
+/// repo) and then the local checkouts listed in Settings, so a link to an unknown
+/// project is rejected instead of silently reviewing the wrong PR. Shared verbatim with
+/// the shared runtime (see `prref.py`).
 public struct PRRef: Equatable {
-    /// A local checkout a link may target besides the configured repo: one GitHub remote
-    /// of it (`owner`/`repo`) and where it is cloned (`path`).
+    /// A local checkout, a repo root or one a link may target besides the home repo: one
+    /// GitHub remote of it (`owner`/`repo`) and where it is cloned (`path`).
     public struct LocalRepo: Equatable, Hashable, Codable {
         public let owner: String
         public let repo: String
@@ -38,8 +39,8 @@ public struct PRRef: Equatable {
     /// True only when the input named a repo that does NOT match the target. A bare
     /// number names no repo, so it never mismatches.
     public let repoMismatch: Bool
-    /// The listed checkout the input named, or nil for the configured repo (which a bare
-    /// number always means).
+    /// The listed checkout the input named, or nil for the home repo (which a bare number
+    /// always means).
     public let repo: LocalRepo?
 
     public init(number: Int?, repoMismatch: Bool, repo: LocalRepo? = nil) {
