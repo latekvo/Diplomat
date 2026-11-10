@@ -249,9 +249,9 @@ def test_every_monitor_prompt_names_its_roots_repo(quiet, monkeypatch):
     """The prompt's repo is its config's home; without one it is the configured repo's."""
     monkeypatch.setattr("diplomat_runtime.promptcore.build_prompt", lambda cfg: (
         f"{cfg.get('kind')} in {(cfg.get('home') or {}).get('repo')}"))
-    prompts: list[str] = []
-    monkeypatch.setattr(quiet, "dispatch_agent",
-                        lambda job, source, attempt=1: prompts.append(job.prompt) or "spawned")
+    prompts: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(quiet, "dispatch_agent", lambda job, source, attempt=1: (
+        prompts.append((job.prompt, job.checkout)) or "spawned"))
     url = "https://github.com/o/other/pull/5"
     snap = PRSnapshot(number=5, title="t", url=url, is_draft=False, mergeable="MERGEABLE",
                       review_decision="", threads_unresolved=1, threads_i_owe=1, head_sha="s")
@@ -259,7 +259,8 @@ def test_every_monitor_prompt_names_its_roots_repo(quiet, monkeypatch):
     assert quiet._dispatch_conflict_fix(5, url, 1, autofix.SOURCE_AUTO)
     assert quiet._dispatch_my_review(snap)
     assert quiet._dispatch_review_request(_requested(SECOND, 5))
-    assert prompts == ["conflicts in other", "review in other", "review in other"]
+    assert prompts == [("conflicts in other", "/src/other"), ("review in other", "/src/other"),
+                       ("review in other", "/src/other")]
 
     quiet.community_issues_enabled = True
     _by_repo(monkeypatch, "fetch_open_issues", {"o/other": [_issue(SECOND, 21, NOW)]})
@@ -894,3 +895,134 @@ def test_a_comms_review_ask_matches_only_the_agent_on_its_own_repos_pr():
     assert Store._comms_row_doing(key, rows) is rows[1]
     assert Store._comms_row_doing(autofix.queue_key(autofix.QUEUE_REVIEW_ACTION, "o/x#12"),
                                   rows) is None
+
+
+# ---- roots that do not resolve --------------------------------------------------
+
+
+def test_the_first_root_is_the_primary_only_while_its_path_resolves():
+    table = {"/src/r": "remote.origin.url https://github.com/o/r.git\n",
+             "/src/other": "remote.origin.url https://github.com/o/other.git\n"}
+    two = ["/src/r", "/src/other"]
+    second_only = {"/src/r": "remote.origin.url https://gitlab.com/o/r.git\n",
+                   "/src/other": table["/src/other"]}
+
+    assert localrepos.primary_resolves(two, table) and not localrepos.guessed(two, table)
+    assert not localrepos.primary_resolves(two, second_only)
+    assert not localrepos.guessed(two, second_only)
+    assert not localrepos.primary_resolves(two, {}) and localrepos.guessed(two, {})
+    # One path is the single root it always was.
+    assert localrepos.primary_resolves(["/src/r"], {})
+    assert not localrepos.guessed(["/src/r"], {})
+
+
+def test_no_root_resolving_takes_nothing_onto_the_mesh(remotes):
+    from diplomat_runtime import core
+
+    cfg = core.config()
+    remotes["/src/r"] = f"remote.origin.url https://github.com/{cfg['owner']}/{cfg['repo']}\n"
+    assert review.mesh_checkout() == "/src/r" and not review.roots_guessed()
+    remotes.clear()
+    _reread()
+    assert [r.path for r in review.repo_roots()] == ["/src/r"]
+    assert review.roots_guessed() and not review.primary_resolved()
+    assert review.mesh_checkout() is None
+
+
+def test_the_monitors_stand_down_when_no_root_resolves(quiet, monkeypatch):
+    """The one root left is the configured repo at the first path, which may check
+    out another repo."""
+    quiet.pr_autofix_enabled = True
+    asked = _by_repo(monkeypatch, "fetch_snapshots", {"o/r": [_conflicting(PRIMARY, 5)]})
+    monkeypatch.setattr(review, "roots_guessed", lambda: True)
+    monkeypatch.setattr(quiet, "dispatch_agent", lambda *a, **k: pytest.fail("dispatched"))
+
+    quiet._autofix_poll_once()
+
+    assert asked == []
+    assert quiet.autofix_poll_error == "no repo root in Settings resolves to a GitHub checkout"
+
+
+def test_comms_waits_while_the_first_root_is_unresolved(store, remotes,  # noqa: F811
+                                                        monkeypatch):
+    """The core reads a bare #N as the first root's, which would be the next one's."""
+    ticks: list[dict] = []
+    monkeypatch.setattr("diplomat_app.store.comms.tick", lambda settings: (
+        ticks.append(settings) or {"items": [], "pings": [], "notices": []}))
+    monkeypatch.setattr("diplomat_app.store.comms.session_locked", lambda: None)
+    first = remotes.pop("/src/r")
+
+    plan = store._comms_poll_once()
+
+    assert ticks == [] and plan["items"] == []
+    assert plan["error"] == ("waiting for the first repo root, /src/r, to resolve to a "
+                             "GitHub checkout")
+    remotes["/src/r"] = first
+    _reread()
+    assert store._comms_poll_once()["error"] is None
+    assert [t["repos"] for t in ticks] == [["o/r", "o/other"]]
+
+
+def test_one_roots_unreadable_issues_hold_no_other_roots_work(quiet, monkeypatch):
+    """Nothing owed is read from the issues, and a repo gh cannot see would otherwise
+    hold every root's queue for as long as it stays listed."""
+    quiet.community_issues_enabled = True
+    _by_repo(monkeypatch, "fetch_snapshots", {"o/r": [_conflicting(PRIMARY, 5)]})
+
+    def issues(owner, repo, *a, **k):
+        if repo == "other":
+            raise RuntimeError("Could not resolve to a Repository")
+        return []
+
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues", issues)
+    logged: list[tuple[str, str]] = []
+    monkeypatch.setattr(activity, "log", lambda kind, event, text, *a, **k: (
+        logged.append((event, text))))
+
+    quiet._autofix_poll_once()
+    quiet._autofix_poll_once()
+
+    assert quiet.autofix_poll_error is None
+    assert [t.id for t in quiet.queued_tasks] == ["conflicts:o/r#5"]
+    assert [e for e in logged if e[0].startswith("community-issue-")] == [
+        ("community-issue-failed", "Issues of o/other unreadable, its new ones wait: "
+                                   "Could not resolve to a Repository")]
+
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues", lambda *a, **k: [])
+    quiet._autofix_poll_once()
+    assert logged[-1] == ("community-issue-recovered", "Issues of o/other readable again")
+
+
+@pytest.mark.parametrize("wizard", ["review", "issues"])
+def test_a_link_into_the_configured_repo_is_its_whatever_root_is_picked(
+        wizard_store, dispatched, monkeypatch, wizard):
+    """The configured repo's link parses as a bare number, which means the home root."""
+    from diplomat_app import issues
+    from diplomat_app.issuewizardview import IssueWizardView
+    from diplomat_runtime import core
+
+    cfg = core.config()
+    conf = LocalRepo(cfg["owner"], cfg["repo"], "/src/conf")
+    monkeypatch.setattr(review, "repo_roots", lambda: [conf, SECOND])
+    wizard_store.select_repo("o/other")
+    if wizard == "review":
+        url = f"https://github.com/{conf.slug}/pull/9"
+        w = _review_wizard(wizard_store, url)
+    else:
+        url = f"https://github.com/{conf.slug}/issues/9"
+        w = IssueWizardView(wizard_store)
+        w.target.setCurrentIndex(w.target.findData(issues.Target.SPECIFIC))
+        w.specific_issue.setText(url)
+    w._spawn()
+    [job] = dispatched
+    assert job.checkout in (None, "/src/conf")
+    assert conf.repo in job.label and "other" not in job.label
+
+
+def test_an_audit_prompt_names_its_home_root():
+    from diplomat_app.audit import AuditConfig
+    from diplomat_runtime import core
+
+    cfg = core.config()
+    prompt = AuditConfig(home=SECOND).build_prompt()
+    assert "o/other" in prompt and f"{cfg['owner']}/{cfg['repo']}" not in prompt

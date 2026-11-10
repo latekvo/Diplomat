@@ -122,11 +122,13 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   **Add…** on a blank list keeps as the first root. Each
   root is known by one GitHub repo, read from its remotes: the `assets/config.json`
   repo if a remote names it or a repo of the same name under another owner (a fork's
-  `origin`, an old owner's URL), else `upstream`, else `origin`. The roots are read
-  again every minute, so a checkout that appears later is picked up. A row warns when the path
-  isn't absolute, has no `.git`, or has no GitHub remote - such a root is not
-  watched, unless no root has one, when the first stands for the `assets/config.json`
-  repo - and two roots naming the same repo count once. Every automatic job (the
+  `origin`, an old owner's URL), else `upstream`, else `origin`. A reading older than a
+  minute is taken again when next asked, so a checkout that appears later is picked up by
+  the next poll. A row warns when the path isn't absolute, has no `.git`, or has no
+  GitHub remote - such a root is not watched, and two roots naming the same repo count
+  once. A lone root stands for the `assets/config.json` repo even then; with several and
+  none resolving, the monitors stand down, and while the first does not resolve, Comms
+  waits (a bare `#N` would name the next root's issue). Every automatic job (the
   monitors, [Comms](comms.md)) runs on every root; the panel works on the one picked in
   its [header](panel.md#layout). `DIPLOMAT_REPO` outranks the list with a single root,
   and the card says so when it's set. Like the runner and every other key a node

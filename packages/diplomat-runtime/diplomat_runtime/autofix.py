@@ -1055,7 +1055,7 @@ class AgentJob:
     # The checkout the agent works in: a repo root's, or another one listed in Settings.
     # None is whichever root is primary at spawn time, so a monitor job, which can wait
     # in the queue past a change of primary, names its root's path. The mesh takes only
-    # the primary's (``Store._route_via_mesh``).
+    # work in the configured repo's root (``Store._route_via_mesh``).
     checkout: str | None = None
 
     @property

@@ -413,6 +413,8 @@ class Store(QObject):
         self.autofix_poll_error_at: float | None = None
         self.unaddressed_reviews = 0
         self._poll_error_this_cycle: str | None = None
+        #: Roots whose issues the last community scan could not read.
+        self._community_unread: set[str] = set()
         # The last resolved tick — what every agent question is answered from (the
         # dedup, the cap, the rows, the retirement). None until the first one.
         # Replaced, never mutated: the poll worker writes it while the GUI thread
@@ -1560,6 +1562,11 @@ class Store(QObject):
                 self._note_poll_failure(
                     "GitHub login unknown — is `gh` installed and authenticated?"
                 )
+            elif review.roots_guessed():
+                # Its one root would be the configured repo at the first path, which
+                # may check out another.
+                self._note_poll_failure(
+                    "no repo root in Settings resolves to a GitHub checkout")
             else:
                 # Every root, each fetch concatenated across them: one drain, one
                 # diff and one commit see every repo, and the telemetry ledger is
@@ -1755,7 +1762,8 @@ class Store(QObject):
 
         Each root keeps its own mark, and one with none is baselined on its first read,
         so adding a root never queues its backlog. A removed root's mark is dropped, so
-        re-adding it does not either. A root whose read failed keeps its mark, as does
+        re-adding it does not either. A root whose read failed keeps its mark (and is
+        logged once, not failed as a poll), as does
         every root while one fails to resolve (``complete``: :func:`review.roots_complete`
         of the reading ``roots`` came from)."""
         if not self.community_issues_enabled:
@@ -1767,8 +1775,19 @@ class Store(QObject):
             try:
                 found = autofixmonitor.fetch_open_issues(root.owner, root.repo)
             except Exception as exc:  # noqa: BLE001
-                self._note_poll_failure(exc)
+                # Not a poll failure: nothing owed is read from it, so the other
+                # roots' drain and commit go on (a repo gh cannot see would hold
+                # them forever).
+                if slug not in self._community_unread:
+                    self._community_unread.add(slug)
+                    activity.log("auto", "community-issue-failed",
+                                 f"Issues of {root.slug} unreadable, its new ones wait: "
+                                 f"{str(exc)[:120]}")
                 continue
+            if slug in self._community_unread:
+                self._community_unread.discard(slug)
+                activity.log("auto", "community-issue-recovered",
+                             f"Issues of {root.slug} readable again")
             try:
                 since = datetime.fromisoformat(marks.get(slug, ""))
             except ValueError:
@@ -4067,8 +4086,15 @@ class Store(QObject):
         self.start_background(work, name="comms-poll")
 
     def _comms_poll_once(self) -> dict:
-        """The slow half of a tick, off the Qt thread. Changes nothing in the queue."""
+        """The slow half of a tick, off the Qt thread. Changes nothing in the queue.
+        Held while the first root path does not resolve: the core reads a bare ``#N``
+        as the first root's, which would be another repo's."""
         at = datetime.now().astimezone()
+        if not review.primary_resolved():
+            return {"at": at, "me": None, "pings": [], "items": [],
+                    "error": f"waiting for the first repo root, "
+                             f"{review.repo_root_paths()[0]}, to resolve to a GitHub "
+                             f"checkout", "locked": comms.session_locked()}
         settings = self.comms_settings_payload()
         result = comms.tick(settings)
         toggles = self.comms_toggles()

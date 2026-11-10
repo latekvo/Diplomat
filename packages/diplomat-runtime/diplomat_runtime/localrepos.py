@@ -120,7 +120,8 @@ def resolve_roots(paths: list[str], remotes: dict[str, str],
     ``origin``, or a URL from before the repo moved); else for its first
     (:func:`entries`). A path with no GitHub remote is skipped, and of two answering for
     one repo the first wins. When nothing resolves, the first path stands for the
-    configured repo, so a missing checkout reads as the single root it always did."""
+    configured repo, so a missing checkout reads as the single root it always did
+    (:func:`guessed` tells the case of several)."""
     want = f"{configured[0]}/{configured[1]}".lower()
     roots: list[LocalRepo] = []
     seen: set[str] = set()
@@ -148,3 +149,22 @@ def all_resolve(paths: list[str], remotes: dict[str, str]) -> bool:
     :func:`resolve_roots` reads them: False while one is missing, ``git`` failed on it,
     or it has no GitHub remote. Twin of ``RepoRoots.allResolve``."""
     return all(entries(w, remotes.get(w, "")) for w in map(os.path.expanduser, paths))
+
+
+def primary_resolves(paths: list[str], remotes: dict[str, str]) -> bool:
+    """Whether :func:`resolve_roots`' first root is the first path's own repo: always
+    with one path (the fallback is the single root it always was), else only while the
+    first path has a GitHub remote. Without one the next path's repo stands first, so
+    "the primary" names another repo. Twin of ``RepoRoots.primaryResolves``."""
+    if len(paths) < 2:
+        return True
+    first = os.path.expanduser(paths[0])
+    return bool(entries(first, remotes.get(first, "")))
+
+
+def guessed(paths: list[str], remotes: dict[str, str]) -> bool:
+    """Whether :func:`resolve_roots` fell back on several paths none of which resolved:
+    its one root is then a guess that the first path checks out the configured repo,
+    possibly a checkout of another. Twin of ``RepoRoots.guessed``."""
+    return len(paths) > 1 and not any(entries(w, remotes.get(w, ""))
+                                      for w in map(os.path.expanduser, paths))

@@ -148,15 +148,20 @@ def test_a_banned_authors_issue_is_not_queued(watched, monkeypatch):
     assert _feed("ban-skip") == ["Issue #7 by @mallory - author is banned, not queued"]
 
 
-def test_a_failed_read_fails_the_poll_and_keeps_the_mark(watched, monkeypatch):
+def test_a_failed_read_is_logged_and_keeps_the_mark(watched, monkeypatch):
+    """Not a poll failure: nothing owed is read from it."""
     watched._autofix_poll_once()
 
     def down(*repo):
         raise RuntimeError("gh: network down")
 
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues", down)
+    logged: list[str] = []
+    monkeypatch.setattr("diplomat_app.store.activity.log",
+                        lambda kind, event, text, *a, **k: logged.append(event))
     watched._autofix_poll_once()
-    assert "network down" in (watched.autofix_poll_error or "")
+    assert watched.autofix_poll_error is None
+    assert logged.count("community-issue-failed") == 1
 
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues",
                         lambda *repo: watched.found)

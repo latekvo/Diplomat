@@ -319,7 +319,7 @@ def repo_root_paths() -> list[str]:
 #: ``RepoPaths.rootsTTL``.
 ROOTS_TTL = 60.0
 
-_roots_cache: tuple[tuple, float, list[LocalRepo], bool] | None = None
+_roots_cache: tuple[tuple, float, list[LocalRepo], bool, bool, bool] | None = None
 _roots_followers: list[weakref.WeakMethod] = []
 
 
@@ -329,7 +329,9 @@ def follow_roots(method) -> None:
     _roots_followers.append(weakref.WeakMethod(method))
 
 
-def _resolved_roots() -> tuple[list[LocalRepo], bool]:
+def _resolved_roots() -> tuple[list[LocalRepo], bool, bool, bool]:
+    """The roots, then :func:`roots_complete`, :func:`primary_resolved` and
+    :func:`roots_guessed` of that one reading."""
     global _roots_cache
     paths = repo_root_paths()
     cfg = core.config()
@@ -341,7 +343,9 @@ def _resolved_roots() -> tuple[list[LocalRepo], bool]:
                    if (out := localrepos.remote_config(p)) is not None}
         before = _roots_cache[2] if _roots_cache else None
         _roots_cache = (key, now, localrepos.resolve_roots(paths, remotes, configured),
-                        localrepos.all_resolve(paths, remotes))
+                        localrepos.all_resolve(paths, remotes),
+                        localrepos.primary_resolves(paths, remotes),
+                        localrepos.guessed(paths, remotes))
         if before is not None and _roots_cache[2] != before:
             for ref in list(_roots_followers):
                 method = ref()
@@ -352,7 +356,7 @@ def _resolved_roots() -> tuple[list[LocalRepo], bool]:
                     method()
                 except RuntimeError:  # a Qt object already deleted
                     _roots_followers.remove(ref)
-    return _roots_cache[2], _roots_cache[3]
+    return _roots_cache[2], _roots_cache[3], _roots_cache[4], _roots_cache[5]
 
 
 def repo_roots() -> list[LocalRepo]:
@@ -367,9 +371,12 @@ def repo_roots() -> list[LocalRepo]:
 
 def mesh_checkout() -> str | None:
     """The checkout of the root that checks out the configured repo, or ``None`` when no
-    root does. Only work there may go over the mesh, and a job that names no repo runs
-    there: a peer on a Diplomat from before repo routing names none, and runs every job
-    in its single root, a checkout of that same repo."""
+    root does or none resolved (:func:`roots_guessed`). Only work there may go over the
+    mesh, and a job that names no repo runs there: a peer on a Diplomat from before repo
+    routing names none, and runs every job in its single root, a checkout of that same
+    repo."""
+    if roots_guessed():
+        return None
     cfg = core.config()
     slug = f"{cfg['owner']}/{cfg['repo']}".lower()
     return next((r.path for r in repo_roots() if r.slug.lower() == slug), None)
@@ -380,6 +387,19 @@ def roots_complete() -> bool:
     them (:func:`localrepos.all_resolve`). Until they all do, a repo missing from the
     roots may be one that failed to resolve rather than one taken out of Settings."""
     return _resolved_roots()[1]
+
+
+def primary_resolved() -> bool:
+    """Whether the first root path resolved when :func:`repo_roots` last read them
+    (:func:`localrepos.primary_resolves`). While it does not, the first root is another
+    repo, so a reference that names no repo has none to name."""
+    return _resolved_roots()[2]
+
+
+def roots_guessed() -> bool:
+    """Whether none of several root paths resolved when :func:`repo_roots` last read
+    them, leaving its one root a guess (:func:`localrepos.guessed`)."""
+    return _resolved_roots()[3]
 
 
 def repo_path() -> str:
