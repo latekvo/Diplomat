@@ -389,9 +389,11 @@ do {
     var audit = AuditConfig()
     audit.home = radonHome
     check(audit.buildPrompt().contains("software-mansion/radon")
-          && !audit.buildPrompt().contains("\(cfg.owner)/\(cfg.repo)"),
-          "an audit audits its home")
+          && !audit.buildPrompt().contains("\(cfg.owner)/\(cfg.repo)")
+          && audit.checkout == "/r/radon",
+          "an audit audits its home, in its checkout")
     check(ReviewConfig(depth: "max", me: me).checkout == nil
+          && AuditConfig().checkout == nil
           && AuditConfig().targetRepo == (cfg.owner, cfg.repo),
           "no home is the configured repo in the default root")
     let roundTrip = try JSONDecoder().decode(ReviewConfig.self, from: JSONEncoder().encode(one))
