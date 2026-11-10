@@ -65,9 +65,19 @@ final class Store: ObservableObject {
     /// the auto-fix fingerprints). Same headless rule; an encode
     /// failure leaves the previous value in place rather than clearing it.
     private func persistJSON<T: Encodable>(_ value: T, forKey key: String) {
-        guard !Headless.active else { return }
         guard let data = try? JSONEncoder().encode(value) else { return }
+        guard !Headless.active else { headlessJSON?[key] = data; return }
         UserDefaults.standard.set(data, forKey: key)
+    }
+
+    /// What a headless self-test that sets it reads and `persistJSON` writes in place of
+    /// UserDefaults, so records can carry from one poll to the next. By key name.
+    var headlessJSON: [String: Data]?
+
+    /// The JSON `persistJSON` stored under `key`.
+    private func storedJSON(forKey key: String) -> Data? {
+        if Headless.active, let stored = headlessJSON { return stored[key] }
+        return UserDefaults.standard.data(forKey: key)
     }
 
     @Published var usernameOverride: String {
@@ -2301,7 +2311,7 @@ final class Store: ObservableObject {
             // list: one drain, one fingerprint diff, one ledger observation per kind (a
             // per-root observation would close the other roots' pending entries).
             let polled = roots
-            let complete = rootsResolved
+            var complete = rootsResolved
             // Off the main thread, so every prompt this cycle builds on it (each queued
             // task's, every poll) names the model from memory instead of walking Claude
             // Code's transcripts once per prompt.
@@ -2312,12 +2322,14 @@ final class Store: ObservableObject {
             // is what lets the queue be checked at all — the drain runs first, and the
             // whole point of the check is that it reads THIS cycle's evidence, not the
             // one the queue was built from.
-            let snaps = await fetchMySnapshots(polled)
-            // And which PRs have left the open state — the one thing the fetch above
-            // cannot answer, because it lists what is open and the queue has to be
-            // checked against what is not. Every verb answers to it, the operator's
-            // own ask included (`AgentTaskQueue.stillOwed`).
-            let closed = await fetchClosedPRs(polled)
+            //
+            // And which PRs have left the open state — the one thing that fetch cannot
+            // answer, because it lists what is open and the queue has to be checked
+            // against what is not. Every verb answers to it, the operator's own ask
+            // included (`AgentTaskQueue.stillOwed`). A root either read fails in is
+            // left out of everything below, as one that failed to resolve is.
+            let (snaps, closed, read) = await fetchMyPRs(polled)
+            complete = complete && read.count == polled.count
             // The queue first, in the operator's order: a slot that freed since the
             // last cycle belongs to work already waiting for it, not to whichever PR
             // this poll's fetch happens to return first.
@@ -2337,8 +2349,8 @@ final class Store: ObservableObject {
             // committed — they are re-offered by the cycle that succeeds.
             stagedQueue = []
             if let snaps { await pollMyPRs(snaps: snaps) }
-            await pollReviewRequests(polled, complete: complete)
-            await pollCommunityIssues(polled)
+            await pollReviewRequests(read, complete: complete)
+            await pollCommunityIssues(read)
             await runGoalPass()
             // Last, so the monitors' finds keep the places they were found in: the
             // operator's own sweep bands behind them anyway, and a fifty-item ask
@@ -2366,49 +2378,81 @@ final class Store: ObservableObject {
         }
     }
 
-    /// This cycle's read of my open PRs in every root, or `nil` if any root's read failed
-    /// — in which case the failure is already noted and every consumer of it stands down.
-    /// All or nothing, because each consumer prunes what the list leaves out: one root
-    /// missing would read as all of its PRs resolved.
-    private func fetchMySnapshots(_ polled: [PRRef.LocalRepo]) async -> [PRSnapshot]? {
-        var all: [PRSnapshot] = []
-        do {
-            for root in polled {
-                all += try await AutofixMonitor.fetchSnapshots(owner: root.owner, repo: root.repo,
-                                                               me: effectiveMe)
+    /// This cycle's read of my open PRs and of the PRs that left the open state, and the
+    /// roots both were read in. A root either read fails in is left out and held
+    /// (`heldSlugs`): its queued tasks, fingerprints and attempt records stand untouched
+    /// rather than be read as done. Only when every root's read fails is it a poll
+    /// failure: both reads are `nil`, which stands their consumers down, and every root
+    /// is returned, so the reads after this one fail on their own.
+    private func fetchMyPRs(_ polled: [PRRef.LocalRepo]) async
+        -> (snaps: [PRSnapshot]?, closed: Set<String>?, read: [PRRef.LocalRepo]) {
+        var snaps: [PRSnapshot] = []
+        var closed = Set<String>()
+        var read: [PRRef.LocalRepo] = []
+        var failed: [(root: PRRef.LocalRepo, error: Error)] = []
+        for root in polled {
+            do {
+                let found = try await AutofixMonitor.fetchSnapshots(owner: root.owner,
+                                                                    repo: root.repo,
+                                                                    me: effectiveMe)
+                let gone = try await AutofixMonitor.fetchClosedPRs(owner: root.owner,
+                                                                   repo: root.repo)
+                snaps += found
+                closed.formUnion(gone)
+                read.append(root)
+            } catch {
+                failed.append((root, error))
             }
-            return all
-        } catch {
-            notePollFailure(error)   // leave state as-is, retry next tick
-            return nil
         }
+        heldSlugs = Set(failed.map { $0.root.slug.lowercased() })
+        if read.isEmpty, let first = failed.first {
+            notePollFailure(first.error)
+            return (nil, nil, polled)
+        }
+        noteRootsRead("PRs", read: read, failed: failed)
+        return (snaps, closed, read)
     }
 
-    /// This cycle's read of the PRs that have merged or closed in every root, or `nil` if
-    /// any read failed — which is not the same as an empty set, and is why the failure
-    /// stands the drain down rather than letting it read every PR as open.
-    private func fetchClosedPRs(_ polled: [PRRef.LocalRepo]) async -> Set<String>? {
-        var all = Set<String>()
-        do {
-            for root in polled {
-                all.formUnion(try await AutofixMonitor.fetchClosedPRs(owner: root.owner,
-                                                                      repo: root.repo))
-            }
-            return all
-        } catch {
-            notePollFailure(error)
-            return nil
-        }
+    /// Slugs of the roots this cycle's read of my PRs failed in (`fetchMyPRs`).
+    private var heldSlugs: Set<String> = []
+
+    /// Whether `item` is in a root this cycle's read of my PRs failed in.
+    private func inUnreadRoot(_ item: String) -> Bool {
+        PRRef.splitItemKey(item).map { heldSlugs.contains($0.slug) } ?? false
     }
+
+    /// Log `what` of a root unreadable once per run of failed reads, and readable again
+    /// once it reads. Not a poll failure: the other roots' work goes on.
+    private func noteRootsRead(_ what: String, read: [PRRef.LocalRepo],
+                               failed: [(root: PRRef.LocalRepo, error: Error)]) {
+        var logged = false
+        for (root, error) in failed
+        where rootsUnread.insert("\(what):\(root.slug.lowercased())").inserted {
+            let why = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            AuditLog.log("auto", "root-read-failed",
+                         "\(what) of \(root.slug) unreadable, its work waits: \(why.prefix(120))")
+            logged = true
+        }
+        for root in read where rootsUnread.remove("\(what):\(root.slug.lowercased())") != nil {
+            AuditLog.log("auto", "root-read-recovered", "\(what) of \(root.slug) readable again")
+            logged = true
+        }
+        if logged { refreshAudit() }
+    }
+
+    /// `"<what>:<slug>"` of each root read that failed last time (`noteRootsRead`).
+    private var rootsUnread: Set<String> = []
 
     /// My own PRs: dispatch on new conflicts / new review work. Edge-triggered for the
     /// real-time case (a transition observed live), plus a level-triggered reconcile pass
     /// so a review that landed while we were offline — and so was already present the first
     /// time we saw the PR (which the edge-trigger silently baselines) — still gets an agent.
     private func pollMyPRs(snaps: [PRSnapshot]) async {
-        let (events, fingerprints) = AutofixDiff.compute(prior: loadAutofixFingerprints(), now: snaps)
+        let prior = loadAutofixFingerprints()
+        let (events, fingerprints) = AutofixDiff.compute(prior: prior, now: snaps)
         for event in events { await dispatchAutofix(event) }
-        saveAutofixFingerprints(fingerprints)
+        saveAutofixFingerprints(fingerprints.merging(prior.filter { inUnreadRoot($0.key) },
+                                                     uniquingKeysWith: { new, _ in new }))
         // Record what is owed BEFORE reconciling, so a unit of work is queued in the
         // ledger before the same poll can start it — otherwise the first dispatch of
         // every item would look like it came from nowhere and its time-to-start would
@@ -2464,7 +2508,7 @@ final class Store: ObservableObject {
             }
         }
         let owedKeys = Set(owed.map { item(url: $0.url, number: $0.number) })
-        attempts = attempts.filter { owedKeys.contains($0.key) }
+        attempts = attempts.filter { owedKeys.contains($0.key) || inUnreadRoot($0.key) }
         saveMyReviewAttempts(attempts)
     }
 
@@ -2501,12 +2545,12 @@ final class Store: ObservableObject {
         // comes back as CONFLICTING a poll later.
         let keepKeys = Set(snaps.filter { $0.mergeable != "MERGEABLE" }
             .map { item(url: $0.url, number: $0.number) })
-        attempts = attempts.filter { keepKeys.contains($0.key) }
+        attempts = attempts.filter { keepKeys.contains($0.key) || inUnreadRoot($0.key) }
         saveMyConflictAttempts(attempts)
     }
 
     private func loadMyConflictAttempts() -> [String: ReviewAttempt] {
-        guard let data = UserDefaults.standard.data(forKey: Keys.myConflictAttempts),
+        guard let data = storedJSON(forKey: Keys.myConflictAttempts),
               let decoded = try? JSONDecoder().decode([String: ReviewAttempt].self, from: data)
         else { return [:] }
         return Store.migrated(decoded, primary: primarySlug)
@@ -2516,35 +2560,26 @@ final class Store: ObservableObject {
     }
 
     /// Each root on its own mark, so one root's failed fetch holds back that root alone.
-    /// A failed read keeps its root's mark and is logged once per streak, not failed as a
-    /// poll: nothing owed is read from it, so the other roots' drain and commit go on (a
-    /// repo gh cannot see would hold them forever).
+    /// A failed read keeps its root's mark and is logged (`noteRootsRead`), never failed
+    /// as a poll, even in every root: nothing owed is read from it, so the other roots'
+    /// drain and commit go on (a repo gh cannot see would hold them forever).
     private func pollCommunityIssues(_ polled: [PRRef.LocalRepo]) async {
         guard communityIssuesEnabled else { return }
+        var read: [PRRef.LocalRepo] = []
+        var failed: [(root: PRRef.LocalRepo, error: Error)] = []
         for root in polled {
-            let slug = root.slug.lowercased()
             let found: [OpenIssue]
             do {
                 found = try await API.fetchOpenIssues(owner: root.owner, repo: root.repo)
             } catch {
-                if communityUnread.insert(slug).inserted {
-                    let why = (error as? LocalizedError)?.errorDescription ?? "\(error)"
-                    AuditLog.log("auto", "community-issue-failed",
-                                 "Issues of \(root.slug) unreadable, its new ones wait: \(why.prefix(120))")
-                    refreshAudit()
-                }
+                failed.append((root, error))
                 continue
             }
-            if communityUnread.remove(slug) != nil {
-                AuditLog.log("auto", "community-issue-recovered", "Issues of \(root.slug) readable again")
-                refreshAudit()
-            }
+            read.append(root)
             queueCommunityIssues(found, root: root)
         }
+        noteRootsRead("Issues", read: read, failed: failed)
     }
-
-    /// Roots whose issues the last community scan could not read, by lowercased slug.
-    private var communityUnread: Set<String> = []
 
     /// Queue one fix for each issue the community filed since the last scan of
     /// `found`, `root`'s open issues.
@@ -2599,24 +2634,32 @@ final class Store: ObservableObject {
     /// as soon as it's possible (no in-flight agent, retry backoff elapsed), so a slip
     /// never leaves a review permanently unanswered.
     ///
-    /// `complete` is `rootsResolved` of the reading `polled` came from.
+    /// `complete` is false while a root failed to resolve or to be read this cycle. A
+    /// concluded record is kept only while the pass sees its request owed, so the
+    /// records of repos no root read is a checkout of are then all kept
+    /// (`retainedReviewReqAttempts`). A read that fails in every root is a poll failure.
     private func pollReviewRequests(_ polled: [PRRef.LocalRepo], complete: Bool) async {
-        // Every root's, or none: the attempts and the ledger below are pruned to what this
-        // list owes, so a root left out would read as all of its requests withdrawn.
         var reqs: [AutofixMonitor.ReviewRequest] = []
-        do {
-            for root in polled {
+        var read: [PRRef.LocalRepo] = []
+        var failed: [(root: PRRef.LocalRepo, error: Error)] = []
+        for root in polled {
+            do {
                 // Only pull changed-file paths (a big slice of the query cost) when
                 // auto-approvals are on — they're only used to gate the verdict, which is
                 // off by default.
                 reqs += try await AutofixMonitor.fetchReviewRequests(
                     owner: root.owner, repo: root.repo, me: effectiveMe,
                     includeFiles: autoApproveEnabled)
+                read.append(root)
+            } catch {
+                failed.append((root, error))
             }
-        } catch {
-            notePollFailure(error)
+        }
+        if read.isEmpty, let first = failed.first {
+            notePollFailure(first.error)
             return
         }
+        noteRootsRead("Review requests", read: read, failed: failed)
         let banned = BanList.read()
         let now = Date()
         let prior = loadReviewReqAttempts()
@@ -2671,7 +2714,7 @@ final class Store: ObservableObject {
             owed: Dictionary(owed.map { (item(url: $0.url, number: $0.number),
                                          AttemptStamp.reviewRequest($0)) },
                              uniquingKeysWith: { first, _ in first }),
-            polled: polled, complete: complete, now: now)
+            polled: read, complete: complete && failed.isEmpty, now: now)
         saveReviewReqAttempts(attempts)
         // Reviews still owed with no agent on them AFTER this poll — the ones a freshly
         // spawned agent didn't cover (cooling down between retries, or a spawn that failed).
@@ -2685,9 +2728,9 @@ final class Store: ObservableObject {
     }
 
     /// The review-request records a poll of `polled` keeps (`ReviewReconcile.retained`,
-    /// `owed` being what those roots owe). While a root path fails to resolve (`complete`
-    /// false), every record outside `polled` is kept too: its root may be the one that
-    /// failed, which was not read, and dropping a concluded record reviews its PR again.
+    /// `owed` being what those roots owe). While a root path fails to resolve or a root
+    /// fails to be read (`complete` false), every record outside `polled` is kept too: its
+    /// root may be that one, and dropping a concluded record reviews its PR again.
     /// Not private: the queue self-test drives it, a headless Store persisting no records.
     nonisolated static func retainedReviewReqAttempts(
         _ attempts: [String: ReviewAttempt], owed: [String: String],
@@ -2953,7 +2996,12 @@ final class Store: ObservableObject {
     /// poll's offers into the next one, where they would read as work still owed —
     /// so a task would never leave the queue once it entered.
     func commitQueue() {
-        let staged = stagedQueue + commsKeptAdopted(offered: stagedQueue)
+        var staged = stagedQueue + commsKeptAdopted(offered: stagedQueue)
+        // A root whose read failed offered nothing this cycle; its rows stand.
+        let offered = Set(staged.map(\.id))
+        staged += queuedTasks.filter { entry in
+            !offered.contains(entry.id) && entry.job.item.map(inUnreadRoot) == true
+        }
         stagedQueue = []
         let ordered = AgentTaskQueue.order(offered: staged.map(\.id), saved: queuedTaskOrder)
         queuedTaskOrder = ordered
@@ -3009,8 +3057,9 @@ final class Store: ObservableObject {
         // A task with no PR to ask about stands: that is a Fix-issues ask, numbered
         // in the issue space, and pricing issue #421 against the PRs closed this cycle
         // would retire it for something that happened to the PR of the same number.
+        // Nor does one in a root whose read failed: nothing this cycle speaks for it.
         let answered = queuedTasks.filter { entry in
-            guard let item = entry.job.item else { return false }
+            guard let item = entry.job.item, !inUnreadRoot(item) else { return false }
             return !AgentTaskQueue.stillOwed(auditAction: entry.job.auditAction,
                                              item: item,
                                              conflicting: conflicting,
@@ -3034,8 +3083,10 @@ final class Store: ObservableObject {
             // The list moves under this loop: it awaits a spawn per task, and an
             // "execute now" during one of those takes its row off the queue and
             // starts it there and then. Re-reading the queue is what keeps the drain
-            // from dispatching that same task a second time when it reaches it.
-            guard queuedTasks.contains(where: { $0.id == entry.id }) else { continue }
+            // from dispatching that same task a second time when it reaches it. A
+            // task in a root whose read failed waits: nothing this cycle speaks for it.
+            guard queuedTasks.contains(where: { $0.id == entry.id }),
+                  entry.job.item.map(inUnreadRoot) != true else { continue }
             guard await agentTick().tick.capLoad.count < autoTaskLimit else { return }
             // Finding room here is what re-arms the saturation notice. The gate's own
             // reset sits behind the capacity measurement this path skips, so without
@@ -4092,7 +4143,7 @@ final class Store: ObservableObject {
     /// Item key -> our attempt record (request stamp, last dispatch, attempt count).
     /// Persisted as JSON so the retry backoff survives an applet restart.
     private func loadReviewReqAttempts() -> [String: ReviewAttempt] {
-        guard let data = UserDefaults.standard.data(forKey: Keys.reviewReqAttempts),
+        guard let data = storedJSON(forKey: Keys.reviewReqAttempts),
               let decoded = try? JSONDecoder().decode([String: ReviewAttempt].self, from: data)
         else { return [:] }
         return Store.migrated(decoded, primary: primarySlug)
@@ -4169,7 +4220,7 @@ final class Store: ObservableObject {
     /// Item key -> our attempt record for reviews received on my own PRs (unresolved
     /// threads). Persisted as JSON so the retry backoff survives an applet restart.
     private func loadMyReviewAttempts() -> [String: ReviewAttempt] {
-        guard let data = UserDefaults.standard.data(forKey: Keys.myReviewAttempts),
+        guard let data = storedJSON(forKey: Keys.myReviewAttempts),
               let decoded = try? JSONDecoder().decode([String: ReviewAttempt].self, from: data)
         else { return [:] }
         return Store.migrated(decoded, primary: primarySlug)
@@ -4260,7 +4311,7 @@ final class Store: ObservableObject {
         set { persist(newValue, forKey: Keys.autofixReviews) }
     }
     private func loadAutofixFingerprints() -> [String: PRFingerprint] {
-        guard let data = UserDefaults.standard.data(forKey: Keys.autofixFingerprints),
+        guard let data = storedJSON(forKey: Keys.autofixFingerprints),
               let decoded = try? JSONDecoder().decode([String: PRFingerprint].self, from: data)
         else { return [:] }
         return Store.migrated(decoded, primary: primarySlug)

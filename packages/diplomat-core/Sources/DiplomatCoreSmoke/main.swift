@@ -330,10 +330,27 @@ do {
                    "\(home)/dev/radon2": radonRemotes]
     let resolved = RepoRoots.resolve(paths: ["/w/fork", "/w/missing", "/w/radon", "/w/gitlab"],
                                      remotes: remotes, configured: cfgSlug)
-    check(resolved == [PRRef.LocalRepo(owner: "Software-Mansion", repo: "Argent", path: "/w/fork"),
+    check(resolved == [PRRef.LocalRepo(owner: "software-mansion", repo: "argent", path: "/w/fork"),
                        PRRef.LocalRepo(owner: "software-mansion", repo: "radon", path: "/w/radon")],
-          "a fork clone that has the configured repo as a remote is that repo; a path that is "
-          + "no checkout or has no GitHub remote is skipped: \(resolved)")
+          "a fork clone (origin me/argent) is the configured repo, named as configured, not by "
+          + "its sibling remote; a path that is no checkout or has no GitHub remote is "
+          + "skipped: \(resolved)")
+    let siblings = ["/radon": "remote.origin.url https://github.com/o/radon\n"
+                        + "remote.argent.url https://github.com/\(cfgSlug.owner)/\(cfgSlug.repo)\n"
+                        + "remote.fork.url https://github.com/me/argent",
+                    "/argent": "remote.origin.url https://github.com/\(cfgSlug.owner)/\(cfgSlug.repo)",
+                    "/odd": "remote.gh.url https://github.com/me/\(cfgSlug.repo)"]
+    check(RepoRoots.resolve(paths: ["/radon", "/argent"], remotes: siblings, configured: cfgSlug)
+          == [PRRef.LocalRepo(owner: "o", repo: "radon", path: "/radon"),
+              PRRef.LocalRepo(owner: cfgSlug.owner, repo: cfgSlug.repo, path: "/argent")],
+          "a sibling remote naming the configured repo does not take a checkout: its origin does")
+    check(RepoRoots.resolve(paths: ["/odd"], remotes: siblings, configured: cfgSlug)
+          == [PRRef.LocalRepo(owner: cfgSlug.owner, repo: cfgSlug.repo, path: "/odd")],
+          "with no upstream or origin, any remote may name it")
+    check(RepoRoots.resolve(paths: ["/argent"], remotes: siblings,
+                            configured: (cfgSlug.owner.uppercased(), cfgSlug.repo.uppercased()))
+          == [PRRef.LocalRepo(owner: cfgSlug.owner, repo: cfgSlug.repo, path: "/argent")],
+          "however the config cases it, the remote naming it is the root")
     check(RepoRoots.resolve(paths: ["/w/radon"], remotes: ["/w/radon": fork + "\n" + radonRemotes],
                             configured: ("x", "y")).map(\.slug) == ["someone/else"],
           "with no configured remote, the first entry (upstream first) names the checkout")
