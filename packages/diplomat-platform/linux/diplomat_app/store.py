@@ -1085,7 +1085,7 @@ class Store(QObject):
         if not any(legacy):
             return parsed
         # A row a single-repo build stored names no repo: its link's, else the one repo
-        # those builds knew. Written back so a later primary root never re-homes it.
+        # those builds knew. Written back, so it is migrated once.
         cfg = core.config()
         configured = f"{cfg['owner']}/{cfg['repo']}".lower()
         migrated = [dataclasses.replace(

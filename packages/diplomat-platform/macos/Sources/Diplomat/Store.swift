@@ -3151,9 +3151,9 @@ final class Store: ObservableObject {
     }
 
     /// The stored asks. A row a single-repo build wrote names no repo: it reads as its
-    /// link's, else as `configured` (the one repo those builds knew), never as whichever
-    /// root is primary now. Split from the defaults read so a self-test can run an ask
-    /// through a restart's decode: headless, nothing is written to those defaults.
+    /// link's, else as `configured` (the one repo those builds knew). Split from the
+    /// defaults read so a self-test can run an ask through a restart's decode: headless,
+    /// nothing is written to those defaults.
     static func decodeRequestedWork(_ data: Data?, configured: String) -> [RequestedWork] {
         guard let data, let rows = try? JSONDecoder().decode([StoredAsk].self, from: data)
         else { return [] }

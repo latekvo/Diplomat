@@ -31,7 +31,7 @@ public struct AuditConfig {
         PRRef.LocalRepo.coordinates(home: home)
     }
 
-    /// Where the agent works: `home`'s path, nil for the primary checkout.
+    /// Where the agent works: `home`'s checkout, nil without one.
     public var checkout: String? { home?.path }
 
     /// A whole-repo audit needs no user input, so it is always spawnable.
