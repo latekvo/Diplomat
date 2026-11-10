@@ -272,6 +272,30 @@ enum TasksTest {
                     && cfg.specificIssue == "1802" && cfg.includeFeatures && cfg.isSingleIssue,
                   "\(cfg.target) \(cfg.specificIssue) \(cfg.includeFeatures)")
         }
+        let elsewhere = PRRef.LocalRepo(owner: "o", repo: "elsewhere", path: "/src/elsewhere")
+        let configuredRoot = PRRef.LocalRepo(owner: owner, repo: repo, path: scratch.appendingPathComponent("configured").path)
+        let plus = TaskGraph.Node(kind: "add", url: "https://github.com/\(owner)/\(repo)/issues/1899", label: "+",
+                                  author: "plus-banned")
+        store.pinRoots([elsewhere, configuredRoot])
+        let plusJob = store.goalPlusJob(plus, number: 1899)
+        check("the + works in its issue's root, not the primary's",
+              plusJob.directory == configuredRoot.path, "\(plusJob.directory ?? "nil")")
+        // Banned and in a scratch feed: were the root check missing, the dispatch would
+        // stop at the ban and say so there, rather than open a terminal.
+        let bans = scratch.appendingPathComponent("bans")
+        try? fm.createDirectory(at: bans, withIntermediateDirectories: true)
+        try? Data(#"{"banned":[{"login":"plus-banned","reason":"test"}]}"#.utf8)
+            .write(to: bans.appendingPathComponent("banned.json"))
+        setenv("DA_BAN_DIR", bans.path, 1)
+        let feed = scratch.appendingPathComponent("audit")
+        setenv("DIPLOMAT_AUDIT_DIR", feed.path, 1)
+        store.pinRoots([elsewhere])
+        let noRoot = await store.startGoalFix(plus, task: fixture.auto)
+        let fed = (try? String(contentsOf: feed.appendingPathComponent("audit.jsonl"), encoding: .utf8)) ?? ""
+        check("a + on an issue in no root starts nothing and says why",
+              noRoot == "\(owner.lowercased())/\(repo.lowercased()) is not a repo root, so no fix was started"
+                && fed.isEmpty, "\(noRoot ?? "nil") | \(fed)")
+        store.pinRoots([PRRef.LocalRepo(owner: owner, repo: repo, path: RepoPaths.agentRepo)])
         let reviews = asked.compactMap { ask -> (ReviewConfig, String)? in
             if case .review(let cfg) = ask.config { return (cfg, ask.author) }
             return nil
