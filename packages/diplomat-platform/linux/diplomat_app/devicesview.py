@@ -265,13 +265,17 @@ class _IdleLimitSlider(SliderSetting):
     """Re-read on ``store.changed`` and ``store.device_config_reloaded`` (config.json is
     also edited by hand)."""
 
-    def __init__(self, store: Store, attr: str, save, *, label: str, maximum: int,
+    #: A write to the shared config, for the screen to run and report on. A signal,
+    #: not a callback held here: that would be a slider -> screen -> slider cycle,
+    #: and PySide 6.12 segfaults collecting it.
+    write = Signal(object)
+
+    def __init__(self, store: Store, attr: str, *, label: str, maximum: int,
                  step: int) -> None:
         super().__init__(label=label, minimum=0, maximum=maximum, step=step,
                          min_label="never", max_label=f"{maximum} min", tint=_CYAN)
         self._store = store
         self._attr = attr
-        self._write = save
         self.set_badge_text(lambda n: "never" if n == 0 else f"{n} min")
         self.sync()
         self.changed.connect(self._on_changed)
@@ -282,16 +286,15 @@ class _IdleLimitSlider(SliderSetting):
         self.set_value(getattr(self._store, self._attr))
 
     def _on_changed(self, value: int) -> None:
-        self._write(lambda: setattr(self._store, self._attr, value))
+        self.write.emit(lambda: setattr(self._store, self._attr, value))
         self._store.changed.emit()
 
 
-def idle_limit_rows(store: Store, save) -> list[tuple[SliderSetting, SettingRow]]:
-    """``save`` runs one write to the shared config and says whether it landed."""
-    free = _IdleLimitSlider(store, "device_idle_free_minutes", save,
+def idle_limit_rows(store: Store) -> list[tuple[_IdleLimitSlider, SettingRow]]:
+    free = _IdleLimitSlider(store, "device_idle_free_minutes",
                             label="Shut down a free device after",
                             maximum=appconfig.MAX_DEVICE_IDLE_FREE_MINUTES, step=1)
-    leased = _IdleLimitSlider(store, "device_idle_leased_minutes", save,
+    leased = _IdleLimitSlider(store, "device_idle_leased_minutes",
                               label="Take a held device back after",
                               maximum=appconfig.MAX_DEVICE_IDLE_LEASED_MINUTES, step=5)
     return [
@@ -805,8 +808,9 @@ class DevicesView(QWidget):
                              stacked=True)
         reserve.set_summary(summary, color=tint)
         body.addWidget(reserve)
-        self._idle = idle_limit_rows(self.store, self._save)
-        for _slider, row in self._idle:
+        self._idle = idle_limit_rows(self.store)
+        for slider, row in self._idle:
+            slider.write.connect(self._save)
             body.addWidget(row)
         return card
 
