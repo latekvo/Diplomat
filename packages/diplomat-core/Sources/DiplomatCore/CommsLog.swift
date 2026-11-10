@@ -6,6 +6,7 @@ import Foundation
 /// - `ping`     + `message`                         — the tick, per new message, as it hands it over
 /// - `decision` + `decision`                        — the tick, right after that ping; one per
 ///                                                    target, each extra target's id `<id>#<number>`
+///                                                    (`<id>#<owner/repo>#<number>` outside the primary)
 /// - `action`   + `outcome`, `queueKey`?, `label`?  — the front-end, once it has acted
 /// - `started`  + `label`                           — the front-end, when the ask's agent spawned
 /// - `finished` + `label`                           — the front-end, when that run left the agent list

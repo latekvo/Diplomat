@@ -17,7 +17,7 @@ import time
 import pytest
 
 from diplomat_runtime import activity, appconfig, autobudget, autofix, telemetry
-from test_autofix import _spawn_recorder, store  # noqa: F401 — the shared
+from test_autofix import _fixture_root, _spawn_recorder, store  # noqa: F401 — the shared
 # Store fixture and spawn stub, reused rather than rebuilt: a second copy would
 # be a second set of probe stubs to keep in step with the real one.
 

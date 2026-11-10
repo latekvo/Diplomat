@@ -370,6 +370,32 @@ def test_an_ask_whose_root_is_gone_is_dropped_and_said(quiet):
         "Review · gone#3 · deep - o/gone is no longer a repo root, not run"]
 
 
+def test_the_drain_starts_nothing_in_a_root_just_taken_out(quiet, monkeypatch):
+    """The commit at the end of the poll drops its rows; the drain at its top runs
+    before anything else knows the root is gone."""
+    quiet.queue_auto_run = False
+    _by_repo(monkeypatch, "fetch_review_requests", {"o/other": [_requested(SECOND, 7)]})
+    quiet.requested_work = [autofix.RequestedWork(
+        number=11, url="https://github.com/o/other/issues/11", author="",
+        config={"kind": "fix_issues", "target": "specific", "specificIssue": "11",
+                "home": {"owner": "o", "repo": "other", "path": "/src/other"}},
+        repo="o/other")]
+    quiet._autofix_poll_once()
+    assert sorted(t.id for t in quiet.queued_tasks) == [
+        "fix_issues:o/other#11", "review-req:o/other#7"]
+    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY])
+    quiet.queue_auto_run = True
+    started: list[str] = []
+    monkeypatch.setattr(quiet, "dispatch_agent", lambda job, source, attempt=1: (
+        started.append(job.label) or "spawned"))
+
+    quiet._autofix_poll_once()
+
+    assert started == [] and quiet.queued_tasks == [] and quiet.requested_work == []
+    assert [e.detail for e in activity.read() if e.action == "queue-drop"][-1].endswith(
+        "o/other is no longer a repo root, not run")
+
+
 def test_an_ask_whose_root_failed_to_resolve_is_kept_and_not_run(quiet, monkeypatch):
     """A root path that fails to resolve (a checkout briefly missing, a git timeout)
     drops its repo from the roots; its asks wait for it rather than being forgotten."""
@@ -1022,6 +1048,8 @@ def test_one_roots_unreadable_prs_hold_no_other_roots_work(quiet, monkeypatch):
     assert set(fingerprints) == {"o/r#5", "o/other#6"}
     _unreadable(monkeypatch, "fetch_snapshots", {"o/r": [_conflicting(PRIMARY, 7)]})
     asked = _by_repo(monkeypatch, "fetch_review_requests", {})
+    quiet.community_issues_enabled = True
+    issues_asked = _by_repo(monkeypatch, "fetch_open_issues", {})
     logged: list[tuple[str, str]] = []
     monkeypatch.setattr(activity, "log", lambda kind, event, text, *a, **k: (
         logged.append((event, text))))
@@ -1039,6 +1067,7 @@ def test_one_roots_unreadable_prs_hold_no_other_roots_work(quiet, monkeypatch):
     assert set(quiet._load_attempts("myConflictAttempts")) >= {"o/other#6"}
     assert set(quiet._load_attempts("myReviewAttempts")) == {"o/other#6"}
     assert asked == ["o/r", "o/r"]
+    assert issues_asked == ["o/r", "o/r"]
     assert quiet._load_fingerprints()["o/other#6"] == fingerprints["o/other#6"]
     assert [e for e in logged if e[0].startswith("root-read-")] == [
         ("root-read-failed", "PRs of o/other unreadable, its work waits: "
@@ -1070,6 +1099,7 @@ def test_one_roots_unreadable_review_requests_keep_its_records(quiet, monkeypatc
 
     assert quiet.autofix_poll_error is None and dispatched == ["o/r#8"]
     assert "o/other#7" in quiet._load_attempts("reviewReqAttempts")
+    assert quiet._held_slugs == {"o/other"}
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
     quiet._autofix_poll_once()
@@ -1109,3 +1139,16 @@ def test_an_audit_prompt_names_its_home_root():
     cfg = core.config()
     prompt = AuditConfig(home=SECOND).build_prompt()
     assert "o/other" in prompt and f"{cfg['owner']}/{cfg['repo']}" not in prompt
+
+
+def test_a_held_root_is_known_however_its_slug_is_cased(quiet, monkeypatch):
+    """A root's slug comes cased as its remote spells it; item keys are lowercase. And
+    a cycle missing its read keeps every record of a repo it did not read."""
+    mixed = LocalRepo("O", "Other", "/src/other")
+    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, mixed])
+    _unreadable(monkeypatch, "fetch_snapshots", {}, bad="O/Other")
+    seen: list[bool] = []
+    monkeypatch.setattr(quiet, "_poll_review_requests",
+                        lambda roots, complete=True: seen.append(complete))
+    quiet._autofix_poll_once()
+    assert quiet._held("o/other#6") and seen == [False]

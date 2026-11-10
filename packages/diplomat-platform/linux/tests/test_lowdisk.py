@@ -69,6 +69,9 @@ def test_auto_work_holds_on_a_full_disk_and_resumes_once_it_drains(
     repo = volume.path / "repo"
     repo.mkdir()
     monkeypatch.setenv("DIPLOMAT_REPO", str(repo))
+    from diplomat_runtime import review
+    from diplomat_runtime.localrepos import LocalRepo
+    monkeypatch.setattr(review, "repo_roots", lambda: [LocalRepo("o", "r", str(repo))])
     _floor_between_full_and_drained(monkeypatch, volume)
 
     volume.fill()

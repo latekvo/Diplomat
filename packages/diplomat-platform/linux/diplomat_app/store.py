@@ -416,7 +416,7 @@ class Store(QObject):
         #: ``"<what>:<slug>"`` of each root read that failed last time
         #: (:meth:`_note_roots_read`).
         self._roots_unread: set[str] = set()
-        #: Slugs of the roots this cycle's read of my PRs failed in (:meth:`_fetch_my_prs`).
+        #: Slugs of the roots this cycle's read of my PRs or of review requests failed in.
         self._held_slugs: frozenset[str] = frozenset()
         # The last resolved tick — what every agent question is answered from (the
         # dedup, the cap, the rows, the retirement). None until the first one.
@@ -1605,7 +1605,7 @@ class Store(QObject):
                 # either of them, since a missing answer is not a pass.
                 if (self.autofix_poll_error is None and snaps is not None
                         and closed is not None):
-                    self._drain_queued_tasks(snaps, closed)
+                    self._drain_queued_tasks(snaps, closed, read)
                 # Start this cycle's staging empty — the one place it is reset, so a
                 # cycle that failed part-way and never committed does not carry its
                 # offers into this one. They are re-offered by the cycle that
@@ -1825,7 +1825,7 @@ class Store(QObject):
                 found, since, datetime.now().astimezone())
             for issue in fresh:
                 item = item_key(root.owner, root.repo, issue.number)
-                who = f"Issue {item_label(item, len(roots))} by @{issue.author}"
+                who = f"Issue {item_label(item, len(review.repo_roots()))} by @{issue.author}"
                 if bans.is_banned(issue.author, banned):
                     activity.log("auto", "ban-skip",
                                  f"{who} - author is banned, not queued")
@@ -1960,6 +1960,7 @@ class Store(QObject):
             self._note_poll_failure(failed[0][1])
             return
         self._note_roots_read("Review requests", read, failed)
+        self._held_slugs |= {r.slug.lower() for r, _ in failed}
         complete = complete and not failed
         now = time.time()
         banned = bans.read()
@@ -3036,7 +3037,8 @@ class Store(QObject):
         activity.log("panel", "queue-cancel", f"{entry.job.label} — cancelled, not run")
         self.refresh_activity()
 
-    def _drain_queued_tasks(self, snaps: list, closed: set[int]) -> None:
+    def _drain_queued_tasks(self, snaps: list, closed: set[int],
+                            read: list[LocalRepo] | None = None) -> None:
         """Run the queue down into whatever room this device has, in the operator's
         order. This is what makes the drag order mean anything: it runs at the TOP of
         a poll, before the monitors offer their own finds, so a slot that freed since
@@ -3061,7 +3063,18 @@ class Store(QObject):
         failure stops the drain: it means terminal automation is broken, not that this
         one task was unlucky, and each entry is taken off the list before it is tried —
         so walking the whole queue into the same failure would clear the panel of every
-        queued row at once, for a reason none of them caused."""
+        queued row at once, for a reason none of them caused.
+
+        A task in a repo outside ``read`` (the roots this cycle read, by default every
+        root) is neither priced nor started: nothing this cycle speaks for it, and a root
+        just taken out of Settings is no longer the operator's to work. This cycle's
+        commit keeps or drops its row (:meth:`commit_queue`)."""
+        polled = {r.slug.lower() for r in (review.repo_roots() if read is None else read)}
+
+        def outside(entry: autofix.QueuedTask) -> bool:
+            split = split_item_key(entry.id.partition(":")[2])
+            return split is not None and split[0].lower() not in polled
+
         conflicting = {s.item for s in snaps if s.mergeable == "CONFLICTING"}
         owing_reply = {s.item for s in snaps if s.threads_i_owe > 0}
         # Dropped here rather than left for this cycle's commit to omit: the commit is
@@ -3074,8 +3087,7 @@ class Store(QObject):
             # in the issue space, and pricing issue #421 against the PRs closed this
             # cycle would retire it for something that happened to the PR of the same
             # number.
-            # Nor is one in a root whose read failed: nothing this cycle speaks for it.
-            if entry.job.item is None or self._held(entry.job.item):
+            if entry.job.item is None or outside(entry):
                 continue
             if autofix.still_owed(entry.job.audit_action, entry.job.item,
                                   conflicting, owing_reply, closed):
@@ -3097,7 +3109,7 @@ class Store(QObject):
             # dispatching that same task a second time when it reaches it.
             if not any(e.id == entry.id for e in self.queued_tasks):
                 continue
-            if entry.job.item is not None and self._held(entry.job.item):
+            if outside(entry):
                 continue
             if self._auto_tasks_running() >= self.auto_task_limit:
                 return

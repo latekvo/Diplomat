@@ -76,7 +76,8 @@ public struct CommsMessage: Codable, Equatable, Sendable {
     public var place: String { isDM ? "DM" : "#\(channelName)" }
 
     /// A message asking for several PRs or issues is one row per target, so each has its
-    /// own queue key, start and finish: the first keeps `id`, the rest are `<id>#<number>`.
+    /// own queue key, start and finish: the first keeps `id`, the rest are `<id>#<number>`
+    /// (`<id>#<owner/repo>#<number>` outside the primary repository).
     public static let targetSeparator: Character = "#"
 
     /// The Slack message's own id, whichever of its targets' rows this is.
