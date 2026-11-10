@@ -24,7 +24,6 @@ from diplomat_app import probes
 T0 = 1_000_000.0
 
 
-#: The repo the scan fixtures' agents were prompted about.
 ARGENT = "software-mansion/argent"
 
 

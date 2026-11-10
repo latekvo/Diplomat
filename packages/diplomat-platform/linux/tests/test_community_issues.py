@@ -24,7 +24,6 @@ NOW = datetime.now(timezone.utc)
 #: poll's drain starts nothing and the queue holds what the monitor put there.
 CAP_FULL = {90, 91}
 
-#: The primary repo root's slug: the repo the monitor reads, and its asks' repo.
 PRIMARY = "{owner}/{repo}".format(**core.config())
 
 

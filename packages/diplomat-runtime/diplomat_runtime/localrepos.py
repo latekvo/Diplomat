@@ -122,10 +122,10 @@ def resolve_roots(paths: list[str], remotes: dict[str, str],
     its ``upstream`` or ``origin`` (any remote, with neither) is that repo, or a repo of
     that name under another owner (a fork's ``origin``, or a URL from before the repo
     moved); else for its first (:func:`entries`). Another remote naming it is a sibling
-    fetched from, not what the checkout is. A path with no GitHub remote is skipped, and of two answering for
-    one repo the first wins. When nothing resolves, the first path stands for the
-    configured repo, so a missing checkout reads as the single root it always did
-    (:func:`guessed` tells the case of several)."""
+    fetched from, not what the checkout is. A path with no GitHub remote is skipped, and
+    of two answering for one repo the first wins. When nothing resolves, the first path
+    stands for the configured repo, so a missing checkout reads as the single root it
+    always did (:func:`guessed` tells the case of several)."""
     want = f"{configured[0]}/{configured[1]}".lower()
     roots: list[LocalRepo] = []
     seen: set[str] = set()

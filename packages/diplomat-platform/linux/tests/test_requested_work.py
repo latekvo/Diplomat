@@ -44,12 +44,10 @@ NOW = datetime.now(timezone.utc)
 #: afterwards is what the ask put there.
 CAP_FULL = {90, 91}
 
-#: The primary repo root's slug: the repo a sweep's PRs and issues are in.
 PRIMARY = "{owner}/{repo}".format(**core.config())
 
 
 def key(verb: str, number: int) -> str:
-    """The queue key of the ask ``verb`` makes of the primary repo's ``number``."""
     return autofix.queue_key(verb, f"{PRIMARY}#{number}")
 
 
