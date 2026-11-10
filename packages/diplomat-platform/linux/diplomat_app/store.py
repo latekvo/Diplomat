@@ -1942,9 +1942,9 @@ class Store(QObject):
         run's liveness is the executor's origination claim and nothing else."""
         if not self.mesh_enabled or not job.work_key:
             return None, False, ""
-        # A peer starts the job in its root for the work key's repo, which is only the
-        # same work when this job's checkout is a root here too.
-        if job.checkout and job.checkout not in {r.path for r in review.repo_roots()}:
+        # Primary-root work only: a peer on a Diplomat from before repo routing runs
+        # every job in its single root.
+        if job.checkout not in (None, review.repo_path()):
             return None, False, ""
 
         from szpontnet import ctl, statefile
@@ -1952,8 +1952,10 @@ class Store(QObject):
         state = statefile.read_state()
         if not state or not statefile.node_running(state):
             return None, False, ""
+        split = split_item_key(job.item or "")
         try:
-            results = ctl.dispatch(job.duty, job.prompt, work_key=job.work_key)
+            results = ctl.dispatch(job.duty, job.prompt, work_key=job.work_key,
+                                   repo=split[0] if split else "")
         except ctl.CtlError:
             return None, False, ""  # node unreachable → fail-open to a local spawn
         if not results:
@@ -5415,9 +5417,11 @@ class Store(QObject):
         topology a poll or two later."""
         self._mesh_command(lambda ctl: ctl.connect(address), "connect")
 
-    def mesh_dispatch(self, duty: str, prompt: str, done_callback=None) -> None:
-        """Route a job through the mesh; `done_callback(results, error)` fires on
-        the worker thread (callers marshal back to the UI thread themselves)."""
+    def mesh_dispatch(self, duty: str, prompt: str, done_callback=None,
+                      repo: str = "") -> None:
+        """Route a job working on ``repo`` (``owner/name``) through the mesh;
+        `done_callback(results, error)` fires on the worker thread (callers marshal
+        back to the UI thread themselves)."""
         szpont.require()
         from szpontnet import ctl
 
@@ -5425,7 +5429,7 @@ class Store(QObject):
             results: list = []
             err: str | None = None
             try:
-                results = ctl.dispatch(duty, prompt)
+                results = ctl.dispatch(duty, prompt, repo=repo)
                 self.mesh_error = None
             except ctl.CtlError as exc:
                 err = str(exc)

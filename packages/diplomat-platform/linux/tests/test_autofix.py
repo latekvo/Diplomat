@@ -840,7 +840,8 @@ def _mesh_store(monkeypatch, store, dispatch=None):
     monkeypatch.setattr(statefile, "node_running", lambda s=None: True)
     calls: list[tuple[str, str]] = []
 
-    def fake_dispatch(duty, prompt, target=None, api_key="", work_key="", timeout=60.0):
+    def fake_dispatch(duty, prompt, target=None, api_key="", work_key="", repo="",
+                      timeout=60.0):
         calls.append((duty, work_key))
         if dispatch is None:
             raise AssertionError("the mesh must not be consulted for this source")

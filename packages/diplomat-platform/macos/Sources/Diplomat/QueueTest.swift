@@ -1056,20 +1056,20 @@ enum QueueTest {
         store.requestedWork = []
         store.queuedTasks = []
 
-        // 24. Work in a checkout outside the roots is never the mesh's to place, and a
-        //     wizard's (which carries no work key) only in the primary root.
+        // 24. Only the primary root's work is the mesh's to place.
         func routed(_ directory: String?) -> Store.AgentJob {
             Store.AgentJob(kind: "review", auditAction: "review-req", label: "", prompt: "",
                            prURL: nil, prNumber: nil, authorLogin: nil, duty: "review",
                            workKey: "review-req:github.com/o2/beta#5@b5", counter: nil,
                            directory: directory)
         }
-        check("a job in any root's checkout may go over the mesh",
-              store.meshRoutable(routed(rootA.path)) && store.meshRoutable(routed(rootB.path)))
-        check("…one in an OTHER REPOS checkout may not",
-              !store.meshRoutable(routed(feed.appendingPathComponent("other").path)))
+        check("a job in the primary root may go over the mesh",
+              store.meshRoutable(routed(rootA.path)) && store.meshRoutable(routed(nil)))
+        check("…one in another root or an OTHER REPOS checkout may not",
+              !store.meshRoutable(routed(rootB.path))
+                && !store.meshRoutable(routed(feed.appendingPathComponent("other").path)))
         check("a wizard run goes over the mesh only from the primary root",
-              store.wizardMeshRoutable(rootA.path) && !store.wizardMeshRoutable(rootB.path))
+              store.meshRoutable(checkout: rootA.path) && !store.meshRoutable(checkout: rootB.path))
 
         // 25. The selected root decides which lists the right column reads.
         func rootPR(_ root: PRRef.LocalRepo, _ number: Int) -> OpenPR {

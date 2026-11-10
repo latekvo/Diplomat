@@ -1052,9 +1052,9 @@ class AgentJob:
     # panel spawn keeps no attempt record, and a job with no monitor behind it (the
     # sweeps) has no stamp to carry.
     attempt_stamp: str = ""
-    # Where the agent works when that is not the repo root: a wizard run on a link to
-    # another checkout listed in Settings. Never set on a job the mesh may route, since
-    # a peer would start it in its own repo root.
+    # Where the agent works when that is not the primary root: another repo root, or
+    # another checkout listed in Settings. Never set on a job the mesh routes
+    # (``Store._route_via_mesh``).
     checkout: str | None = None
 
     @property

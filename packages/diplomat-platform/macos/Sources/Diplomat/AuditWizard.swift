@@ -123,7 +123,8 @@ struct AuditWizardView: View {
             meshDispatching = true
             status = "Dispatching over the mesh…"
             AuditLog.log("panel", "audit", "\(trackingLabel) · via mesh")
-            store.meshDispatch(duty: "audit", prompt: cfg.buildPrompt()) { results, err in
+            store.meshDispatch(duty: "audit", prompt: cfg.buildPrompt(),
+                               repo: "\(cfg.targetRepo.owner)/\(cfg.targetRepo.repo)") { results, err in
                 meshDispatching = false
                 status = MeshSpawn.summarize(results, error: err)
             }

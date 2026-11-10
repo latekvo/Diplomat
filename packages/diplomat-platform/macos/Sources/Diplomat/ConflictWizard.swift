@@ -120,7 +120,7 @@ struct ConflictWizardView: View {
                             isValid: config.isValid && !meshDispatching,
                             tint: tint,
                             terminalTitle: AgentSpawner.resolved(store.terminal).title,
-                            routable: store.wizardMeshRoutable(config.checkout),
+                            routable: store.meshRoutable(checkout: config.checkout),
                             action: spawn)
     }
 
@@ -164,11 +164,12 @@ struct ConflictWizardView: View {
         let cfg = config
         // Mesh path: hand the job to the local node (it picks the executor, with
         // failover) instead of opening a terminal here — mirrors the Linux wizards.
-        if MeshSpawnRow.isLive(store), useMesh, store.wizardMeshRoutable(cfg.checkout) {
+        if MeshSpawnRow.isLive(store), useMesh, store.meshRoutable(checkout: cfg.checkout) {
             meshDispatching = true
             status = "Dispatching over the mesh…"
             AuditLog.log("panel", "conflicts", "\(trackingLabel) · via mesh")
-            store.meshDispatch(duty: "conflicts", prompt: cfg.buildPrompt()) { results, err in
+            store.meshDispatch(duty: "conflicts", prompt: cfg.buildPrompt(),
+                               repo: "\(cfg.targetRepo.owner)/\(cfg.targetRepo.repo)") { results, err in
                 meshDispatching = false
                 status = MeshSpawn.summarize(results, error: err)
             }

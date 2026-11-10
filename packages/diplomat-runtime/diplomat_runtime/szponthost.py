@@ -60,10 +60,10 @@ class DiplomatHost(szpont_host.Host):
         activity.log("mesh", action, detail)
 
     def run_job(self, prompt: str, done_path: str | None,
-                work_key: str | None = None) -> str:
+                work_key: str | None = None, repo: str | None = None) -> str:
         """Open a terminal running the configured agent runner on the staged prompt,
-        exactly like a local SPAWN AGENT, in the repo root ``work_key`` names
-        (:func:`_checkout_for`).
+        exactly like a local SPAWN AGENT, in the repo root ``repo`` or ``work_key``
+        names (:func:`_checkout_for`).
 
         macOS goes through ``osascript`` (Terminal.app on the same shell command
         the Linux spawner builds); Linux uses the applet's own spawner, which
@@ -71,7 +71,7 @@ class DiplomatHost(szpont_host.Host):
         """
         from . import review, runner
 
-        checkout = _checkout_for(work_key or "")
+        checkout = _checkout_for(work_key or "", repo or "")
         settings = _stage_hooks(done_path)
         if platform.system() == "Darwin":
             return _spawn_macos(prompt, done_path, settings, checkout)
@@ -232,17 +232,20 @@ class DiplomatHost(szpont_host.Host):
             log("mesh", "warn", f"{label} {line}")
 
 
-def _checkout_for(work_key: str) -> str | None:
-    """Where a job for ``work_key`` runs: the repo root checking out the repo the key
-    names, or ``None`` for the primary root when it names none. Raises
-    :class:`szpont_host.NoRunner` for a repo with no root here, so the dispatcher
-    fails the job over to a machine that has one."""
+def _checkout_for(work_key: str, repo: str = "") -> str | None:
+    """Where a job runs: the repo root checking out ``repo`` (``owner/name``), else the
+    repo ``work_key`` names, or ``None`` for the primary root when neither names one.
+    Raises :class:`szpont_host.NoRunner` for a repo with no root here, so the
+    dispatcher fails the job over to a machine that has one."""
     from . import autofix, review
 
-    ref = autofix.parse_work_key(work_key) if work_key else None
-    if ref is None:
-        return None
-    slug = f"{ref[1]}/{ref[2]}".lower()
+    if repo:
+        slug = repo.lower()
+    else:
+        ref = autofix.parse_work_key(work_key) if work_key else None
+        if ref is None:
+            return None
+        slug = f"{ref[1]}/{ref[2]}".lower()
     root = next((r for r in review.repo_roots() if r.slug.lower() == slug), None)
     if root is None:
         raise szpont_host.NoRunner(f"no checkout of {slug} on this machine")
