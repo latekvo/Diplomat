@@ -33,6 +33,12 @@ def host():
     return szponthost.DiplomatHost()
 
 
+@pytest.fixture(autouse=True)
+def _roots_resolved(monkeypatch):
+    """Whatever the developer's own config.json lists, a root resolved."""
+    monkeypatch.setattr(review, "roots_guessed", lambda: False)
+
+
 # ---- the wiring ----------------------------------------------------------
 
 
@@ -207,6 +213,22 @@ def test_a_jobs_repo_picks_its_root_over_the_work_keys(host, monkeypatch, tmp_pa
     with pytest.raises(szpont_host.NoRunner, match="^no checkout of x/y on this machine$"):
         host.run_job("x", str(tmp_path / "c"), "review:github.com/o/r#7@abc", "x/y")
     assert seen == [str(tmp_path / "other"), str(tmp_path / "r")]
+
+
+def test_no_job_runs_while_no_root_resolves(host, monkeypatch, tmp_path):
+    """The one root is then the configured repo at the first path, which may check out
+    another repo."""
+    cfg = core.config()
+    monkeypatch.setattr(review, "repo_roots",
+                        lambda: [LocalRepo(cfg["owner"], cfg["repo"], str(tmp_path / "r"))])
+    monkeypatch.setattr(review, "roots_guessed", lambda: True)
+    monkeypatch.setattr(review, "spawn", lambda *a, **k: pytest.fail("spawned"))
+    key = f"review:github.com/{cfg['owner']}/{cfg['repo']}#7@abc"
+
+    for job in ((key,), (None, f"{cfg['owner']}/{cfg['repo']}"), ("",)):
+        with pytest.raises(szpont_host.NoRunner, match=(
+                "^no repo root on this machine resolves to a GitHub checkout$")):
+            host.run_job("x", str(tmp_path / "a"), *job)
 
 
 def test_a_macos_job_runs_in_the_root_its_work_key_names(host, monkeypatch, tmp_path):

@@ -121,8 +121,9 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   [`assets/config.json`](../packages/diplomat-core/assets/config.json) targets, which
   **Add…** on a blank list keeps as the first root. Each
   root is known by one GitHub repo, read from its remotes: the `assets/config.json`
-  repo if a remote names it or a repo of the same name under another owner (a fork's
-  `origin`, an old owner's URL), else `upstream`, else `origin`. A reading older than a
+  repo if its `upstream` or `origin` (any remote, with neither) names it or a repo of
+  the same name under another owner (a fork's `origin`, an old owner's URL), else
+  `upstream`, else `origin`. A reading older than a
   minute is taken again when next asked, so a checkout that appears later is picked up by
   the next poll. A row warns when the path isn't absolute, has no `.git`, or has no
   GitHub remote - such a root is not watched, and two roots naming the same repo count

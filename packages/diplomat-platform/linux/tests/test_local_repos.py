@@ -160,7 +160,7 @@ def test_a_root_answers_for_the_configured_repo_when_it_has_that_remote():
     remotes = {"/a": _remotes(origin="git@github.com:me/argent.git",
                               sm="https://github.com/Software-Mansion/Argent")}
     assert localrepos.resolve_roots(["/a"], remotes, (OWNER, REPO)) == [
-        LocalRepo("Software-Mansion", "Argent", "/a")]
+        LocalRepo(OWNER, REPO, "/a")]
     assert localrepos.resolve_roots(["/a"], remotes, ("x", "y")) == [
         LocalRepo("me", "argent", "/a")]
 
@@ -178,6 +178,25 @@ def test_a_remote_of_the_configured_repos_name_under_another_owner_answers_for_i
         LocalRepo(OWNER, REPO, "/moved")]
     assert localrepos.resolve_roots(["/forkonly"], remotes, ("x", "y")) == [
         LocalRepo("someone", "ARGENT", "/forkonly")]
+
+
+def test_a_sibling_remote_naming_the_configured_repo_does_not_take_a_checkout():
+    """A remote beside upstream and origin is somewhere the checkout fetches from, not
+    what it is. With neither, any remote may name it. Twin of the ``repo roots`` smoke
+    section."""
+    sibling = (OWNER, REPO)
+    remotes = {"/radon": "remote.origin.url https://github.com/o/radon\n"
+                         f"remote.argent.url https://github.com/{OWNER}/{REPO}\n"
+                         "remote.fork.url https://github.com/me/argent\n",
+               "/argent": _remotes(origin=f"https://github.com/{OWNER}/{REPO}"),
+               "/odd": f"remote.gh.url https://github.com/me/{REPO}\n"}
+    assert localrepos.resolve_roots(["/radon", "/argent"], remotes, sibling) == [
+        LocalRepo("o", "radon", "/radon"), LocalRepo(OWNER, REPO, "/argent")]
+    assert localrepos.resolve_roots(["/odd"], remotes, sibling) == [
+        LocalRepo(OWNER, REPO, "/odd")]
+    # However assets/config.json cases it, the remote naming it is the root.
+    assert localrepos.resolve_roots(["/argent"], remotes, (OWNER.upper(), REPO.upper())) == [
+        LocalRepo(OWNER, REPO, "/argent")]
 
 
 def test_every_path_resolves_only_while_each_has_a_github_remote():

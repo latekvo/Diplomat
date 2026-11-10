@@ -911,6 +911,9 @@ def test_the_first_root_is_the_primary_only_while_its_path_resolves():
     assert not localrepos.primary_resolves(two, second_only)
     assert not localrepos.guessed(two, second_only)
     assert not localrepos.primary_resolves(two, {}) and localrepos.guessed(two, {})
+    first_only = {"/src/r": table["/src/r"]}
+    assert localrepos.primary_resolves(two, first_only)
+    assert not localrepos.guessed(two, first_only)
     # One path is the single root it always was.
     assert localrepos.primary_resolves(["/src/r"], {})
     assert not localrepos.guessed(["/src/r"], {})
@@ -984,13 +987,89 @@ def test_one_roots_unreadable_issues_hold_no_other_roots_work(quiet, monkeypatch
 
     assert quiet.autofix_poll_error is None
     assert [t.id for t in quiet.queued_tasks] == ["conflicts:o/r#5"]
-    assert [e for e in logged if e[0].startswith("community-issue-")] == [
-        ("community-issue-failed", "Issues of o/other unreadable, its new ones wait: "
-                                   "Could not resolve to a Repository")]
+    assert [e for e in logged if e[0].startswith("root-read-")] == [
+        ("root-read-failed", "Issues of o/other unreadable, its work waits: "
+                             "Could not resolve to a Repository")]
 
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues", lambda *a, **k: [])
     quiet._autofix_poll_once()
-    assert logged[-1] == ("community-issue-recovered", "Issues of o/other readable again")
+    assert logged[-1] == ("root-read-recovered", "Issues of o/other readable again")
+
+
+def _unreadable(monkeypatch, name: str, table: dict, bad: str = "o/other") -> None:
+    """``autofixmonitor.<name>`` answering from ``table``, and failing for ``bad``."""
+    def fetch(owner, repo, *a, **k):
+        if f"{owner}/{repo}" == bad:
+            raise RuntimeError("The listed users and repositories cannot be searched")
+        return table.get(f"{owner}/{repo}", [])
+
+    monkeypatch.setattr(f"diplomat_app.autofixmonitor.{name}", fetch)
+
+
+def test_one_roots_unreadable_prs_hold_no_other_roots_work(quiet, monkeypatch):
+    """The unread root's rows, fingerprints and records stand untouched, as one that
+    failed to resolve: nothing this cycle speaks for them."""
+    _by_repo(monkeypatch, "fetch_snapshots", {
+        "o/r": [_conflicting(PRIMARY, 5)], "o/other": [_conflicting(SECOND, 6)]})
+    quiet._autofix_poll_once()
+    assert sorted(t.id for t in quiet.queued_tasks) == [
+        "conflicts:o/other#6", "conflicts:o/r#5"]
+    quiet._save_attempts("myConflictAttempts", {"o/other#6": autofix.ReviewAttempt(
+        autofix.STAMP_CONFLICTING, time.time(), 1)})
+    quiet._save_attempts("myReviewAttempts", {"o/other#6": autofix.ReviewAttempt(
+        autofix.STAMP_UNRESOLVED_REVIEW, time.time(), 1)})
+    fingerprints = quiet._load_fingerprints()
+    assert set(fingerprints) == {"o/r#5", "o/other#6"}
+    _unreadable(monkeypatch, "fetch_snapshots", {"o/r": [_conflicting(PRIMARY, 7)]})
+    asked = _by_repo(monkeypatch, "fetch_review_requests", {})
+    logged: list[tuple[str, str]] = []
+    monkeypatch.setattr(activity, "log", lambda kind, event, text, *a, **k: (
+        logged.append((event, text))))
+    quiet.pr_autofix_enabled = True
+    started: list[str] = []
+    monkeypatch.setattr(quiet, "dispatch_agent", lambda job, source, attempt=1: (
+        started.append(job.item) or "spawned"))
+
+    quiet._autofix_poll_once()
+    quiet._autofix_poll_once()
+
+    assert quiet.autofix_poll_error is None
+    assert "o/other#6" not in started and "o/r#7" in started
+    assert "conflicts:o/other#6" in [t.id for t in quiet.queued_tasks]
+    assert set(quiet._load_attempts("myConflictAttempts")) >= {"o/other#6"}
+    assert set(quiet._load_attempts("myReviewAttempts")) == {"o/other#6"}
+    assert asked == ["o/r", "o/r"]
+    assert quiet._load_fingerprints()["o/other#6"] == fingerprints["o/other#6"]
+    assert [e for e in logged if e[0].startswith("root-read-")] == [
+        ("root-read-failed", "PRs of o/other unreadable, its work waits: "
+                             "The listed users and repositories cannot be searched")]
+
+
+def test_a_read_failing_in_every_root_fails_the_poll(quiet, monkeypatch):
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: (
+        _ for _ in ()).throw(RuntimeError("gh: network down")))
+    quiet._autofix_poll_once()
+    assert quiet.autofix_poll_error == "gh: network down"
+
+
+def test_one_roots_unreadable_review_requests_keep_its_records(quiet, monkeypatch):
+    quiet.review_requests_enabled = True
+    dispatched: list = []
+    monkeypatch.setattr(quiet, "_dispatch_review_request",
+                        lambda r, attempt: dispatched.append(r.item) or True)
+    long_ago = time.time() - autofix.RETRY_MAX_BACKOFF - 60
+    quiet._save_attempts("reviewReqAttempts", {"o/other#7": autofix.ReviewAttempt(
+        "2026-01-02", long_ago, 1, concluded_at=long_ago)})
+    _unreadable(monkeypatch, "fetch_review_requests", {"o/r": [_requested(PRIMARY, 8)]})
+
+    quiet._autofix_poll_once()
+
+    assert quiet.autofix_poll_error is None and dispatched == ["o/r#8"]
+    assert "o/other#7" in quiet._load_attempts("reviewReqAttempts")
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
+    quiet._autofix_poll_once()
+    assert quiet.autofix_poll_error == "down"
 
 
 @pytest.mark.parametrize("wizard", ["review", "issues"])

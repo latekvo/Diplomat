@@ -413,8 +413,11 @@ class Store(QObject):
         self.autofix_poll_error_at: float | None = None
         self.unaddressed_reviews = 0
         self._poll_error_this_cycle: str | None = None
-        #: Roots whose issues the last community scan could not read.
-        self._community_unread: set[str] = set()
+        #: ``"<what>:<slug>"`` of each root read that failed last time
+        #: (:meth:`_note_roots_read`).
+        self._roots_unread: set[str] = set()
+        #: Slugs of the roots this cycle's read of my PRs failed in (:meth:`_fetch_my_prs`).
+        self._held_slugs: frozenset[str] = frozenset()
         # The last resolved tick — what every agent question is answered from (the
         # dedup, the cap, the rows, the retirement). None until the first one.
         # Replaced, never mutated: the poll worker writes it while the GUI thread
@@ -1581,12 +1584,14 @@ class Store(QObject):
                 # than inside the monitor is what lets the queue be checked at all —
                 # the drain runs first, and the whole point of the check is that it
                 # reads THIS cycle's evidence, not the one the queue was built from.
-                snaps = self._fetch_my_snapshots(roots)
-                # And which PRs have left the open state — the one thing the fetch
-                # above cannot answer, because it lists what is open and the queue
-                # has to be checked against what is not. Every verb answers to it,
-                # the operator's own ask included (:func:`autofix.still_owed`).
-                closed = self._fetch_closed_prs(roots)
+                # And which PRs have left the open state — the one thing that fetch
+                # cannot answer, because it lists what is open and the queue has to
+                # be checked against what is not. Every verb answers to it, the
+                # operator's own ask included (:func:`autofix.still_owed`). A root
+                # either read fails in is left out of everything below, as one that
+                # failed to resolve is.
+                snaps, closed, read = self._fetch_my_prs(roots)
+                complete = complete and len(read) == len(roots)
                 # The queue first, in the operator's order: a slot that freed since
                 # the last cycle belongs to work already waiting for it, not to
                 # whichever PR this poll's fetch happens to return first.
@@ -1613,8 +1618,8 @@ class Store(QObject):
                 # queues what it finds instead of dispatching it (see is_paused).
                 if snaps is not None:
                     self._poll_my_prs(snaps)
-                self._poll_review_requests(roots, complete)
-                self._poll_community_issues(roots, complete)
+                self._poll_review_requests(read, complete)
+                self._poll_community_issues(read, complete)
                 self._request_goal_work(goal_work)
                 # Last, so the monitors' finds keep the places they were found in:
                 # the operator's own sweep bands behind them anyway, and a fifty-item
@@ -1637,33 +1642,59 @@ class Store(QObject):
             self._note_poll_failure(exc)
         self._settle_poll_error()
 
-    def _fetch_my_snapshots(self, roots: list[LocalRepo]) -> list | None:
-        """This cycle's read of my open PRs in every root, or ``None`` if any root's
-        read failed - in which case the failure is already noted and every consumer of
-        it stands down: a list missing one root would read that root's work as done."""
-        try:
-            return [s for r in roots
-                    for s in autofixmonitor.fetch_snapshots(r.owner, r.repo,
-                                                            self.effective_me)]
-        except Exception as exc:  # noqa: BLE001 — any failure is a poll failure
-            self._note_poll_failure(exc)
-            return None
+    def _fetch_my_prs(self, roots: list[LocalRepo]
+                      ) -> tuple[list | None, set[str] | None, list[LocalRepo]]:
+        """This cycle's read of my open PRs and of the PRs that left the open state, and
+        the roots both were read in. A root whose read failed is left out and held
+        (:attr:`_held_slugs`): its queued tasks, fingerprints and attempt records stand
+        untouched rather than be read as done. Only when every root's read failed is it
+        a poll failure, and both reads ``None``, which stands every consumer down."""
+        snaps: list = []
+        closed: set[str] = set()
+        read: list[LocalRepo] = []
+        failed: list[tuple[LocalRepo, Exception]] = []
+        for r in roots:
+            try:
+                found = autofixmonitor.fetch_snapshots(r.owner, r.repo, self.effective_me)
+                gone = autofixmonitor.fetch_closed_prs(r.owner, r.repo)
+            except Exception as exc:  # noqa: BLE001 — any failure leaves the root unread
+                failed.append((r, exc))
+                continue
+            snaps += found
+            closed |= set(gone)
+            read.append(r)
+        self._held_slugs = frozenset(r.slug.lower() for r, _ in failed)
+        if not read:
+            self._note_poll_failure(failed[0][1])
+            return None, None, read
+        self._note_roots_read("PRs", read, failed)
+        return snaps, closed, read
 
-    def _fetch_closed_prs(self, roots: list[LocalRepo]) -> set[str] | None:
-        """This cycle's read of the PRs that have merged or closed in every root, or
-        ``None`` if any read failed - which is not the same as an empty set, and is
-        why the failure stands the drain down rather than letting it read every PR as
-        open."""
-        try:
-            return {k for r in roots
-                    for k in autofixmonitor.fetch_closed_prs(r.owner, r.repo)}
-        except Exception as exc:  # noqa: BLE001 — any failure is a poll failure
-            self._note_poll_failure(exc)
-            return None
+    def _note_roots_read(self, what: str, read: list[LocalRepo],
+                         failed: list[tuple[LocalRepo, Exception]]) -> None:
+        """Log ``what`` of a root unreadable once per run of failed reads, and readable
+        again once it reads. Not a poll failure: the other roots' work goes on."""
+        for r, exc in failed:
+            key = f"{what}:{r.slug.lower()}"
+            if key not in self._roots_unread:
+                self._roots_unread.add(key)
+                activity.log("auto", "root-read-failed",
+                             f"{what} of {r.slug} unreadable, its work waits: {str(exc)[:120]}")
+        for r in read:
+            key = f"{what}:{r.slug.lower()}"
+            if key in self._roots_unread:
+                self._roots_unread.discard(key)
+                activity.log("auto", "root-read-recovered", f"{what} of {r.slug} readable again")
+
+    def _held(self, item: str) -> bool:
+        """Whether ``item`` is in a root this cycle's read of my PRs failed in."""
+        return item.partition("#")[0] in self._held_slugs
 
     def _poll_my_prs(self, snaps: list) -> None:
         now = time.time()
-        events, fps = autofix.compute_diff(self._load_fingerprints(), snaps)
+        prior = self._load_fingerprints()
+        events, fps = autofix.compute_diff(prior, snaps)
+        fps |= {k: f for k, f in prior.items() if self._held(k)}
         for kind, snap in events:
             if kind == "review":
                 self._dispatch_my_review(snap, 1)
@@ -1712,7 +1743,8 @@ class Store(QObject):
                     autofix.STAMP_UNRESOLVED_REVIEW, now, int(val)
                 )
         owed_keys = {s.item for s in owed}
-        self._save_attempts(key, {k: v for k, v in attempts.items() if k in owed_keys})
+        self._save_attempts(key, {k: v for k, v in attempts.items()
+                                  if k in owed_keys or self._held(k)})
 
     def _reconcile_my_conflicts(self, snaps: list, now: float) -> None:
         """Level-triggered: any CONFLICTING PR of mine with no agent on it gets a
@@ -1737,7 +1769,8 @@ class Store(QObject):
                     autofix.STAMP_CONFLICTING, now, int(val)
                 )
         keep = {s.item for s in snaps if s.mergeable != "MERGEABLE"}
-        self._save_attempts(key, {k: v for k, v in attempts.items() if k in keep})
+        self._save_attempts(key, {k: v for k, v in attempts.items()
+                                  if k in keep or self._held(k)})
 
     def _community_marks(self) -> dict[str, str]:
         """The new-community-issue monitor's mark per root slug, as stored. A single
@@ -1763,31 +1796,24 @@ class Store(QObject):
         Each root keeps its own mark, and one with none is baselined on its first read,
         so adding a root never queues its backlog. A removed root's mark is dropped, so
         re-adding it does not either. A root whose read failed keeps its mark (and is
-        logged once, not failed as a poll), as does
+        logged, :meth:`_note_roots_read`), as does
         every root while one fails to resolve (``complete``: :func:`review.roots_complete`
         of the reading ``roots`` came from)."""
         if not self.community_issues_enabled:
             return
         marks = self._community_marks()
         banned = bans.read()
+        read: list[LocalRepo] = []
+        failed: list[tuple[LocalRepo, Exception]] = []
         for root in roots:
             slug = root.slug.lower()
             try:
                 found = autofixmonitor.fetch_open_issues(root.owner, root.repo)
             except Exception as exc:  # noqa: BLE001
-                # Not a poll failure: nothing owed is read from it, so the other
-                # roots' drain and commit go on (a repo gh cannot see would hold
-                # them forever).
-                if slug not in self._community_unread:
-                    self._community_unread.add(slug)
-                    activity.log("auto", "community-issue-failed",
-                                 f"Issues of {root.slug} unreadable, its new ones wait: "
-                                 f"{str(exc)[:120]}")
+                # Not a poll failure even in every root: nothing owed is read from it.
+                failed.append((root, exc))
                 continue
-            if slug in self._community_unread:
-                self._community_unread.discard(slug)
-                activity.log("auto", "community-issue-recovered",
-                             f"Issues of {root.slug} readable again")
+            read.append(root)
             try:
                 since = datetime.fromisoformat(marks.get(slug, ""))
             except ValueError:
@@ -1811,6 +1837,7 @@ class Store(QObject):
                 if queued:
                     activity.log("auto", "community-issue", f"{who} - fix queued")
             marks[slug] = mark.isoformat()
+        self._note_roots_read("Issues", read, failed)
         if complete:
             current = {r.slug.lower() for r in roots}
             marks = {k: v for k, v in marks.items() if k in current}
@@ -1911,20 +1938,28 @@ class Store(QObject):
             activity.log("auto", "goal", f"could not forget {', '.join(sorted(waiting))}: {error}")
 
     def _poll_review_requests(self, roots: list[LocalRepo], complete: bool = True) -> None:
-        """Dispatch the reviews requested of me in every root. A read that fails in any
-        root stands the whole pass down: a concluded record is kept only while the pass
-        sees its request owed (:func:`autofix.retained`), so a partial read would drop
-        the unread root's and re-dispatch them. For the same reason, while a root fails
-        to resolve (``complete``, as for :meth:`_poll_community_issues`) the records of
-        repos no polled root is a checkout of are all kept."""
-        try:
-            reqs = [r for root in roots
-                    for r in autofixmonitor.fetch_review_requests(
-                        root.owner, root.repo, self.effective_me,
-                        include_files=self.auto_approve_enabled)]
-        except Exception as exc:  # noqa: BLE001
-            self._note_poll_failure(exc)
+        """Dispatch the reviews requested of me in every root. A concluded record is
+        kept only while the pass sees its request owed (:func:`autofix.retained`), so
+        while a root fails to resolve or to be read (``complete``, as for
+        :meth:`_poll_community_issues`) the records of repos no root read is a checkout
+        of are all kept. A read that fails in every root is a poll failure."""
+        reqs: list = []
+        read: list[LocalRepo] = []
+        failed: list[tuple[LocalRepo, Exception]] = []
+        for root in roots:
+            try:
+                reqs += autofixmonitor.fetch_review_requests(
+                    root.owner, root.repo, self.effective_me,
+                    include_files=self.auto_approve_enabled)
+            except Exception as exc:  # noqa: BLE001
+                failed.append((root, exc))
+                continue
+            read.append(root)
+        if failed and not read:
+            self._note_poll_failure(failed[0][1])
             return
+        self._note_roots_read("Review requests", read, failed)
+        complete = complete and not failed
         now = time.time()
         banned = bans.read()
         key = "reviewReqAttempts"
@@ -1970,7 +2005,7 @@ class Store(QObject):
         records = {**self._load_attempts(key), **dispatched}
         kept = autofix.retained(records, {r.item: r.stamp for r in owed}, now)
         if not complete:
-            polled = {r.slug.lower() for r in roots}
+            polled = {r.slug.lower() for r in read}
             kept |= {k: a for k, a in records.items() if k.partition("#")[0] not in polled}
         self._save_attempts(key, kept)
         self.unaddressed_reviews = sum(
@@ -2707,6 +2742,10 @@ class Store(QObject):
         start that fails is re-offered, and dropping the key would send it to the
         back."""
         staged = self._staged_queue + self._comms_kept_adopted(self._staged_queue)
+        # A root whose read failed offered nothing this cycle; its rows stand.
+        offered = {e.id for e in staged}
+        staged += [e for e in self.queued_tasks if e.id not in offered
+                   and e.job.item is not None and self._held(e.job.item)]
         by_id = {e.id: e for e in staged}
         ordered = autofix.queue_order([e.id for e in staged], self.queued_task_order)
         self.queued_task_order = ordered
@@ -3034,7 +3073,8 @@ class Store(QObject):
             # in the issue space, and pricing issue #421 against the PRs closed this
             # cycle would retire it for something that happened to the PR of the same
             # number.
-            if entry.job.item is None:
+            # Nor is one in a root whose read failed: nothing this cycle speaks for it.
+            if entry.job.item is None or self._held(entry.job.item):
                 continue
             if autofix.still_owed(entry.job.audit_action, entry.job.item,
                                   conflicting, owing_reply, closed):
@@ -3055,6 +3095,8 @@ class Store(QObject):
             # it there and then. Re-reading the queue is what keeps the drain from
             # dispatching that same task a second time when it reaches it.
             if not any(e.id == entry.id for e in self.queued_tasks):
+                continue
+            if entry.job.item is not None and self._held(entry.job.item):
                 continue
             if self._auto_tasks_running() >= self.auto_task_limit:
                 return

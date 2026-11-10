@@ -236,9 +236,12 @@ def _checkout_for(work_key: str, repo: str = "") -> str | None:
     """Where a job runs: the repo root checking out ``repo`` (``owner/name``), else the
     repo ``work_key`` names, else the configured repo's (:func:`review.mesh_checkout`).
     Raises :class:`szpont_host.NoRunner` for a repo with no root here, so the
-    dispatcher fails the job over to a machine that has one."""
+    dispatcher fails the job over to a machine that has one, or for any job while no
+    root resolves (:func:`review.roots_guessed`)."""
     from . import autofix, review
 
+    if review.roots_guessed():
+        raise szpont_host.NoRunner("no repo root on this machine resolves to a GitHub checkout")
     if repo:
         slug = repo.lower()
     else:

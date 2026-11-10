@@ -57,15 +57,18 @@ def remote_config(path: str) -> str | None:
     return out.stdout if out.returncode == 0 else None
 
 
-def entries(path: str, remotes: str) -> list[LocalRepo]:
-    """Every GitHub remote in ``remotes`` (:func:`remote_config` output) as a repo
-    cloned at ``path``, each once: ``upstream`` first, then ``origin``, then the rest
-    in config order. Twin of ``LocalRepo.entries(path:remotes:)``."""
+def entries(path: str, remotes: str, only: tuple[str, ...] = ()) -> list[LocalRepo]:
+    """Every GitHub remote in ``remotes`` (:func:`remote_config` output), or every one
+    named in ``only``, as a repo cloned at ``path``, each once: ``upstream`` first, then
+    ``origin``, then the rest in config order. Twin of
+    ``LocalRepo.entries(path:remotes:only:)``."""
     named: list[tuple[str, LocalRepo]] = []
     for line in remotes.split("\n"):
         key, sep, url = line.partition(" ")
         coords = parse_remote(url) if sep else None
         if coords is None or not key.startswith("remote.") or not key.endswith(".url"):
+            continue
+        if only and key[len("remote."):-len(".url")] not in only:
             continue
         named.append((key[len("remote."):-len(".url")],
                       LocalRepo(coords[0], coords[1], path)))
@@ -116,9 +119,10 @@ def resolve_roots(paths: list[str], remotes: dict[str, str],
 
     ``remotes`` maps an expanded path to its :func:`remote_config` output; a path
     missing from it is no checkout. Each path answers for the ``configured`` repo when
-    it has that remote, or a remote of that repo's name under another owner (a fork's
-    ``origin``, or a URL from before the repo moved); else for its first
-    (:func:`entries`). A path with no GitHub remote is skipped, and of two answering for
+    its ``upstream`` or ``origin`` (any remote, with neither) is that repo, or a repo of
+    that name under another owner (a fork's ``origin``, or a URL from before the repo
+    moved); else for its first (:func:`entries`). Another remote naming it is a sibling
+    fetched from, not what the checkout is. A path with no GitHub remote is skipped, and of two answering for
     one repo the first wins. When nothing resolves, the first path stands for the
     configured repo, so a missing checkout reads as the single root it always did
     (:func:`guessed` tells the case of several)."""
@@ -130,8 +134,9 @@ def resolve_roots(paths: list[str], remotes: dict[str, str],
         if where not in remotes:
             continue
         found = entries(where, remotes[where])
-        pick = next((r for r in found if r.slug.lower() == want), None)
-        if pick is None and any(r.repo.lower() == configured[1].lower() for r in found):
+        own = entries(where, remotes[where], ("upstream", "origin")) or found
+        pick = next((r for r in own if r.slug.lower() == want), None)
+        if pick is None and any(r.repo.lower() == configured[1].lower() for r in own):
             pick = LocalRepo(configured[0], configured[1], where)
         if pick is None and found:
             pick = found[0]

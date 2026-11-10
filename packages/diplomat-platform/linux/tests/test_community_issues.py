@@ -161,7 +161,7 @@ def test_a_failed_read_is_logged_and_keeps_the_mark(watched, monkeypatch):
                         lambda kind, event, text, *a, **k: logged.append(event))
     watched._autofix_poll_once()
     assert watched.autofix_poll_error is None
-    assert logged.count("community-issue-failed") == 1
+    assert logged.count("root-read-failed") == 1
 
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues",
                         lambda *repo: watched.found)
