@@ -40,8 +40,8 @@ default 14):
   taking it (the reconciler's backoff, an applet that was off, a busy PR).
 - **Time to finish** - from an agent starting to its exit.
 - **Spent on this repo** - how much of this machine's Claude spend went on the repo
-  the agents work in rather than everything else. Split by the `cwd` each turn ran
-  in, so it counts your own sessions in that checkout too - it is a repo split, not
+  roots the agents work in (and their `<root>-worktrees`) rather than everything else.
+  Split by the `cwd` each turn ran in, so it counts your own sessions in those checkouts too - it is a repo split, not
   an attribution to Diplomat's agents (that is what *limit per task* measures).
 
 ## Where the numbers come from

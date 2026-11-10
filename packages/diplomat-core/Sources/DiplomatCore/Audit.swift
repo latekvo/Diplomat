@@ -18,16 +18,19 @@ public struct AuditConfig {
     public var fixIssues: Bool
     /// Open a PR for every confirmed finding / fix. Off ⇒ read-only audit.
     public var openPRs: Bool
+    /// The repo audited: nil for `assets/config.json`'s.
+    public var home: PRRef.LocalRepo?
 
     public init(fixIssues: Bool = false, openPRs: Bool = false) {
         self.fixIssues = fixIssues
         self.openPRs = openPRs
     }
 
-    /// The configured target repo (owner, repo), from the shared core config.
     public var targetRepo: (owner: String, repo: String) {
-        CoreAssets.repoCoordinates()
+        PRRef.LocalRepo.coordinates(home: home)
     }
+
+    public var checkout: String? { home?.path }
 
     /// A whole-repo audit needs no user input, so it is always spawnable.
     public var isValid: Bool { true }

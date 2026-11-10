@@ -24,12 +24,19 @@ from diplomat_app import probes
 T0 = 1_000_000.0
 
 
+ARGENT = "software-mansion/argent"
+
+
 def rec(run_id="r1", **kw) -> A.RunRecord:
+    """A run on PR #337 of o/r — overridden per case. A PR number given without a link
+    gets that repo's link to it."""
     base = dict(run_id=run_id, dispatched_at=T0, pr_number=337,
-                pr_url="https://github.com/o/r/pull/337", kind="review",
-                label="Auto · Review · #337", source=A.SOURCE_AUTO,
+                kind="review", label="Auto · Review · #337", source=A.SOURCE_AUTO,
                 ledger_key="review:337:abc")
     base.update(kw)
+    if "pr_url" not in kw:
+        n = base["pr_number"]
+        base["pr_url"] = f"https://github.com/o/r/pull/{n}" if n is not None else ""
     return A.RunRecord(**base)
 
 
@@ -353,23 +360,23 @@ def test_a_merged_probe_that_fails_for_one_pr_still_answers_for_the_rest(monkeyp
         return b'{"state":"MERGED"}\n'
 
     monkeypatch.setattr(gh, "run", state)
-    obs = probes.merged_prs({7, 8})
-    assert obs.status == A.PRESENT and obs.value == {8}
+    obs = probes.merged_prs({"o/r#7", "o/r#8", "not an item"})
+    assert obs.status == A.PRESENT and obs.value == {"o/r#8"}
 
 
-def test_the_merged_probe_asks_the_configured_repo_not_the_working_directory(monkeypatch):
-    """The same number names a different PR in whatever checkout the app runs from."""
+def test_the_merged_probe_asks_each_pr_its_own_repo(monkeypatch):
+    """The same number names a different PR in every repo, the app's working directory
+    included; only the PR merged in its own repo is answered merged."""
     from diplomat_runtime import gh
     asked = []
     def state(args, **_):
-        asked.append(args)
-        return b'{"state":"CLOSED"}\n'
+        repo = args[args.index("--repo") + 1]
+        asked.append((repo, args[2]))
+        return b'{"state":"MERGED"}\n' if repo == "o/other" else b'{"state":"OPEN"}\n'
 
     monkeypatch.setattr(gh, "run", state)
-    monkeypatch.setattr(probes.core, "config",
-                        lambda: {"owner": "software-mansion", "repo": "argent"})
-    assert probes.merged_prs({166}).value == set()
-    assert asked[0][asked[0].index("--repo") + 1] == "software-mansion/argent"
+    assert probes.merged_prs({f"{ARGENT}#166", "o/other#166"}).value == {"o/other#166"}
+    assert sorted(asked) == [("o/other", "166"), (ARGENT, "166")]
 
 
 def test_the_pane_probe_asks_only_about_the_ttys_of_tracked_runs(monkeypatch):
@@ -429,8 +436,6 @@ def test_gather_captures_the_screen_of_an_agent_with_no_record(monkeypatch):
 
     monkeypatch.setattr(probes.shutil, "which", lambda _: "/usr/bin/tmux")
     monkeypatch.setattr(probes.tmuxwatch, "pane_tails_for_ttys", record_and_answer)
-    monkeypatch.setattr(probes.core, "config",
-                        lambda: {"owner": "software-mansion", "repo": "argent"})
     monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(
         "  42 pts/7  600 hermes chat --tui -q Review PR #652 in software-mansion/argent\n"))
 
@@ -521,7 +526,7 @@ def test_a_real_agent_is_tracked_from_spawn_to_exit(tmp_path):
         t = A.tick(records, evidence, now, 2)
         assert t.states["r1"].state == A.RUNNING
         assert t.cap_load == {"r1"} and t.free_slots == 1
-        assert t.in_flight(337)
+        assert t.in_flight("o/r#337")
     finally:
         child.kill()
         child.wait(timeout=5)
@@ -638,14 +643,11 @@ def test_the_agent_scan_reads_the_tty_column_of_this_dump(monkeypatch):
         "  345772 pts/3    89 /opt/claude/bin/claude Resolve PR #712 in software-mansion/argent now\n"
         "  345787 ?        89 /opt/claude/bin/claude Review PR #611 in software-mansion/argent now\n"
         "  999999 pts/9    12 grep PR #712 in software-mansion/argent\n"))
-    monkeypatch.setattr(probes.core, "config",
-                        lambda: {"owner": "software-mansion", "repo": "argent"})
 
-    found = probes.live_agents(probes._ps_dump(T0)).value
+    found = probes.live_agents(probes._ps_dump(T0), {ARGENT}).value
 
-    assert found[712] == "pts/3", "the tty column, not the pid"
-    assert found[611] == "", "a process with no controlling tty carries none"
-    assert 712 in found and found[712] != "345772"
+    assert found[f"{ARGENT}#712"] == "pts/3", "the tty column, not the pid"
+    assert found[f"{ARGENT}#611"] == "", "a process with no controlling tty carries none"
 
 
 def test_a_pidless_run_beside_a_held_agent_reads_its_own_screen(monkeypatch):
@@ -657,22 +659,22 @@ def test_a_pidless_run_beside_a_held_agent_reads_its_own_screen(monkeypatch):
     monkeypatch.setattr(probes.tmuxwatch, "pane_tails_for_ttys",
                         lambda ttys: {t: "❯" for t in ttys})
     monkeypatch.setattr(probes, "mesh_claims", lambda enabled=True: A.Observation.present(set()))
-    monkeypatch.setattr(probes.core, "config",
-                        lambda: {"owner": "software-mansion", "repo": "argent"})
     monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(
         "  100 pts/1  900 claude Review PR #844 in software-mansion/argent\n"
         "  200 pts/2  600 claude Review PR #844 in software-mansion/argent\n"
         "  300 pts/3  600 claude Review PR #845 in software-mansion/argent\n"))
     now = T0 + 600
-    released = rec("untracked:844:100", dispatched_at=T0 - 300, pr_number=844, pid=100,
-                   tty="pts/1", untracked=True)
-    placed = rec("a2", pr_number=844, placement=A.PLACEMENT_MESH_HERE)
-    book = [released, placed, rec("a3", pr_number=845, pid=300)]
+    url = f"https://github.com/{ARGENT}/pull/"
+    released = rec(f"untracked:{ARGENT}#844:100", dispatched_at=T0 - 300, pr_number=844,
+                   pr_url=url + "844", pid=100, tty="pts/1", untracked=True)
+    placed = rec("a2", pr_number=844, pr_url=url + "844", placement=A.PLACEMENT_MESH_HERE)
+    book = [released, placed, rec("a3", pr_number=845, pr_url=url + "845", pid=300)]
 
     evidence = probes.gather(book, now)
     t = A.tick(book, evidence, now, 3)
 
-    assert evidence.live_agents.value == {844: "pts/2", 845: "pts/3"}, \
+    assert evidence.live_agents.value == {f"{ARGENT}#844": "pts/2",
+                                          f"{ARGENT}#845": "pts/3"}, \
         "a held agent is named only when it is its PR's last"
     a2 = next(r for r in t.records if r.run_id == "a2")
     assert a2.tty == "pts/2"
@@ -683,9 +685,18 @@ def test_the_agent_scan_ignores_a_line_that_is_not_an_agent(monkeypatch):
     """`grep` for a PR number is not an agent on it."""
     monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(
         "  1 pts/1 5 grep PR #712 in software-mansion/argent\n"))
-    monkeypatch.setattr(probes.core, "config",
-                        lambda: {"owner": "software-mansion", "repo": "argent"})
-    assert probes.live_agents(probes._ps_dump(T0)).value == {}
+    assert probes.live_agents(probes._ps_dump(T0), {ARGENT}).value == {}
+
+
+def test_the_agent_scan_keys_each_agent_by_its_own_repo(monkeypatch):
+    """#5 of two roots is two agents, and an agent on a repo that is no root is not
+    this machine's work."""
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(
+        "  1 pts/1 5 claude Review PR #5 in o/r. Use the `gh` CLI.\n"
+        "  2 pts/2 5 claude Review PR #5 in O/Other. Use the `gh` CLI.\n"
+        "  3 pts/3 5 claude Review PR #5 in o/elsewhere. Use the `gh` CLI.\n"))
+    assert probes.live_agents(probes._ps_dump(T0), {"o/r", "o/other"}).value == {
+        "o/r#5": "pts/1", "o/other#5": "pts/2"}
 
 
 # MARK: - A render never sweeps the operator's book

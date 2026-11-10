@@ -369,7 +369,7 @@ def test_every_tracker_cli_call_runs_off_the_qt_thread(tstore, monkeypatch):
     from diplomat_app.tasksview import TasksView
 
     ran: list[tuple[str, threading.Thread]] = []
-    monkeypatch.setattr(tasks, "views", lambda archived=False: ran.append(
+    monkeypatch.setattr(tasks, "views", lambda archived=False, me="": ran.append(
         ("tasks-list", threading.current_thread())) or [_one_task()])
     monkeypatch.setattr(tasks, "edit", lambda op: ran.append(
         (f"tasks-edit {op['op']}", threading.current_thread())) or {})
@@ -418,7 +418,7 @@ def test_edits_run_one_at_a_time_in_the_order_asked(tstore, monkeypatch):
         return {}
 
     monkeypatch.setattr(tasks, "edit", edit)
-    monkeypatch.setattr(tasks, "views", lambda archived=False: [])
+    monkeypatch.setattr(tasks, "views", lambda archived=False, me="": [])
     tstore.tracked_task_edited.connect(lambda origin, error: answers.append((origin, error)))
     for n in range(4):
         tstore.edit_tracked_task_async({"op": "note", "n": n}, n)
@@ -447,7 +447,7 @@ def test_a_sync_asked_for_mid_sync_runs_after_it(tstore, monkeypatch, live, aske
 
     monkeypatch.setattr(tasks, "sync", sync)
     monkeypatch.setattr(tasks, "views",
-                        lambda archived=False: [_one_task(archivedAt=None if live else "x")])
+                        lambda archived=False, me="": [_one_task(archivedAt=None if live else "x")])
     tstore.run_tracker_sync_async(force=True)
     assert in_sync.wait(10)
     for force in asked_mid_sync:

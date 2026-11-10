@@ -394,6 +394,8 @@ class SimNode:
     quota: tuple = ("ok", 1.0, None, 1.0)
     # Personal jobs the host runner was asked to run here: (prompt, done_path).
     jobs: list = field(default_factory=list)
+    # The ``repo`` each of those jobs was handed, in the same order.
+    job_repos: list = field(default_factory=list)
     # Set to a reason to make this machine unable to take a personal job — the
     # "no runner here" answer a dispatcher fails a slot over on.
     runner_error: str | None = None
@@ -943,13 +945,14 @@ def _sim_host_class():
             if sim is not None:
                 sim.net.log.append((sim.name, action, detail))
 
-        def run_job(self, prompt, done_path):
+        def run_job(self, prompt, done_path, repo=None):
             sim = CURRENT.get()
             if sim is None:
                 raise hostmod.NoRunner("a job ran outside any node's context")
             if sim.runner_error is not None:
                 raise hostmod.NoRunner(sim.runner_error)
             sim.jobs.append((prompt, done_path))
+            sim.job_repos.append(repo)
             return f"/sim/{sim.name}/prompt-{len(sim.jobs)}.txt"
 
         def work_already_running(self, work_key):

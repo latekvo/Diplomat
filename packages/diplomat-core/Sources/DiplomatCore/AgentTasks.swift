@@ -111,8 +111,17 @@ public enum AgentTaskQueue {
     /// overwriting it. It is also what keeps the two numbering spaces apart: issue
     /// #421 and PR #421 are unrelated pieces of work, and only the verb says which
     /// one a key names.
-    public static func key(auditAction: String, number: Int) -> String {
-        "\(auditAction):\(number)"
+    ///
+    /// `item` is a `PRRef.itemKey`, or an investigation's Slack ts.
+    public static func key(auditAction: String, item: String) -> String {
+        "\(auditAction):\(item)"
+    }
+
+    /// The item a queue key is about; nil for an investigation's.
+    public static func item(ofKey key: String) -> String? {
+        guard let colon = key.firstIndex(of: ":") else { return nil }
+        let item = String(key[key.index(after: colon)...])
+        return PRRef.splitItemKey(item) == nil ? nil : item
     }
 
     /// The verbs asked-for work is queued under. A sweep's two are the ones the Review-PRs
@@ -191,15 +200,15 @@ public enum AgentTaskQueue {
     /// asked for is numbered in the other space entirely, and the caller stands it
     /// down rather than pricing issue #421 against the PRs closed this cycle. An
     /// investigation (numbered by a Slack ts) is always owed: no PR closing answers it.
-    public static func stillOwed(auditAction: String, prNumber: Int,
-                                 conflicting: Set<Int>,
-                                 owingReply: Set<Int>,
-                                 closed: Set<Int>) -> Bool {
+    public static func stillOwed(auditAction: String, item: String,
+                                 conflicting: Set<String>,
+                                 owingReply: Set<String>,
+                                 closed: Set<String>) -> Bool {
         if auditAction == investigateAction { return true }
-        if closed.contains(prNumber) { return false }
+        if closed.contains(item) { return false }
         switch auditAction {
-        case "conflicts":    return conflicting.contains(prNumber)
-        case "review-reply": return owingReply.contains(prNumber)
+        case "conflicts":    return conflicting.contains(item)
+        case "review-reply": return owingReply.contains(item)
         default:             return true
         }
     }

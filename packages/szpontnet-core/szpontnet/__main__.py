@@ -289,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--work-key", default="", metavar="KEY", dest="work_key",
                     help="origination-dedup key: claim it first, and stand down "
                     "with a 'suppressed' result if a peer already owns the work")
+    ap.add_argument("--repo", default="", metavar="OWNER/NAME",
+                    help="the repo the --dispatch job works on, for the executor's host")
     ap.add_argument("--api-key", default="", metavar="KEY", dest="api_key",
                     help="API key to present to an API-key-gated (server) target")
     ap.add_argument("--fingerprint", action="store_true",
@@ -415,7 +417,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("--dispatch needs --prompt or --prompt-file", file=sys.stderr)
                 return 2
             results = ctl.dispatch(args.dispatch, prompt, args.target, args.api_key,
-                                   args.work_key)
+                                   args.work_key, args.repo.lower())
             # `suppressed` is a success, not a failure: a peer already owns the
             # work, which is exactly what --work-key asks for.
             ok = all(r.get("status") in ("spawned", "suppressed") for r in results)

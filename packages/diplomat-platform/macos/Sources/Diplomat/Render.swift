@@ -267,9 +267,12 @@ enum Render {
             // error's, from the screen's own reload); "tasks-edit-error" the
             // refusals drawn where they were made: the new-task form's, a link editor's and
             // a row action's; "tasks-archived" the archived one listed; "tasks-empty" no
-            // task at all. A `DIPLOMAT_TASKS_DIR` set by the caller is drawn as it is, every
-            // task unfolded, instead of the fixture.
-            let _ = seedTasks(store, empty: s.contains("empty"), form: s.contains("form"))
+            // task at all; "tasks-goals" the three goals unfolded instead: a proposal, an
+            // auto goal with an agent on one PR and a queued fix, and an observed one. A
+            // `DIPLOMAT_TASKS_DIR` set by the caller is drawn as it is, every task unfolded,
+            // instead of the fixture.
+            let _ = seedTasks(store, empty: s.contains("empty"), form: s.contains("form"),
+                              goals: s.contains("goals"))
             let first = tasksUnfolded.sorted().first
             if s.contains("panel") {
                 ContentView(showTasks: true)
@@ -423,6 +426,15 @@ enum Render {
             // height, proving the content sizes to its content.
             let _ = seedProcessesIfNeeded(s, store: store)
             ContentView()
+        case "panel-roots":
+            // Two repo roots, the second selected: the header draws its picker.
+            let _ = store.pinRoots([
+                PRRef.LocalRepo(owner: "software-mansion", repo: "argent", path: "/render/argent"),
+                PRRef.LocalRepo(owner: "software-mansion", repo: "radon", path: "/render/radon"),
+            ])
+            let _ = { store.selectedRepo = "software-mansion/radon" }()
+            let _ = seedAutofix(store)
+            ContentView().frame(height: 580)
         default: // "panel" — the whole content view; "panel-procs" seeds the
                  // Agent-tasks list (persist is suppressed in headless modes).
             let _ = seedProcessesIfNeeded(what, store: store)
@@ -663,7 +675,7 @@ enum Render {
         log(flaky, minutesAgo: 190,
             CommsDecision(action: .fixIssue, number: 431, summary: "Fix the flaky simulator test",
                           reason: "Asks for issue #431 to be fixed."),
-            outcome: "queued, at the front of its band", key: "issues:431",
+            outcome: "queued, at the front of its band", key: "issues:software-mansion/argent#431",
             label: "Issues · #431 · deep", started: 186, finished: 140)
         replied(flaky, minutesAgo: 190, "failed: Slack refused it (channel_not_found)",
                 "[Diplomat]: Queued a fix for issue #431, should be done by 17:50 today (±1h).")
@@ -730,7 +742,7 @@ enum Render {
         log(review, minutesAgo: 3,
             CommsDecision(action: .review, number: 512, summary: "Review the streaming server PR",
                           reason: "Asks for a review of PR #512."),
-            outcome: "queued, at the front of its band", key: "review:512",
+            outcome: "queued, at the front of its band", key: "review:software-mansion/argent#512",
             label: "Review · #512 · deep")
         replied(review, minutesAgo: 3, "sent",
                 "[Diplomat]: Queued a review of #512, should be done by 19:15 today (±1h).")
@@ -773,7 +785,7 @@ enum Render {
     /// reasons are `TaskStore.views`' own. Only the Slack lines, which a sync folds from
     /// Comms' log, are composed whole.
     @discardableResult
-    private static func seedTasks(_ store: Store, empty: Bool, form: Bool) -> Bool {
+    private static func seedTasks(_ store: Store, empty: Bool, form: Bool, goals: Bool) -> Bool {
         let now = Date()
         if let given = ProcessInfo.processInfo.environment["DIPLOMAT_TASKS_DIR"], !given.isEmpty {
             // When a sync last wrote the mirror.
@@ -793,15 +805,28 @@ enum Render {
             store.taskViews = []
             return true
         }
+        var goalIDs: TasksTest.GoalFixture?
         do {
             try writeTaskFixture(in: dir, now: now)
+            goalIDs = try TasksTest.writeGoalFixture(in: dir, now: now, me: "octo-me")
             store.taskViews = try TaskStore.views(archived: true, now: now)
             store.taskLabels = TaskTint.labels(of: store.taskViews)
         } catch {
             print("RENDER ERROR: tasks fixture: \(error)")
         }
         let byTitle = Dictionary(store.taskViews.map { ($0.task.title, $0.task.id) }) { a, _ in a }
-        tasksUnfolded = Set(["Physical iPhone support", "Release 0.9 checklist"].compactMap { byTitle[$0] })
+        if goals, let goalIDs {
+            tasksUnfolded = [goalIDs.proposed, goalIDs.auto, goalIDs.observe]
+            // The auto goal's: an agent on someone's PR, the fix of its issue queued.
+            store.pinAgentRows([Store.AgentRow(
+                record: AgentState.RunRecord(runID: "r-1821", dispatchedAt: now.timeIntervalSince1970 - 600,
+                                             prNumber: 1821, kind: "review", label: "Review · #1821 · max"),
+                state: .running, reason: "", window: nil)])
+            store.queuedTasks = [queuedFixture(number: 1820, kind: "issues", auditAction: "issues",
+                                               label: "Issues · #1820 · deep", counter: nil)]
+        } else {
+            tasksUnfolded = Set(["Physical iPhone support", "Release 0.9 checklist"].compactMap { byTitle[$0] })
+        }
         if form {
             store.tasksSyncError = "gh: GraphQL: API rate limit exceeded for user ID 1234 (skipped 2 links)"
             // Torn after the read above, so the screen's own reload, which only a `window-`
@@ -1103,7 +1128,8 @@ enum Render {
                                       attemptNumber: Int = 1) -> Store.QueuedAgentTask {
         let isPR = kind != "issues"
         return Store.QueuedAgentTask(
-            id: AgentTaskQueue.key(auditAction: auditAction, number: number),
+            id: AgentTaskQueue.key(auditAction: auditAction,
+                                   item: "software-mansion/argent#\(number)"),
             job: Store.AgentJob(
                 kind: kind, auditAction: auditAction, label: label, prompt: "",
                 prURL: isPR ? "https://github.com/software-mansion/argent/pull/\(number)" : nil,

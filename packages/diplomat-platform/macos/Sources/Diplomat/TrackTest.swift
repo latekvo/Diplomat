@@ -71,12 +71,12 @@ enum TrackTest {
         //     pid cannot speak for — ones nobody here dispatched. The spawning shell's
         //     argv holds an unexpanded `$(cat …)` rather than the prompt, and another
         //     repo's agent is not ours.
-        let scan = AgentProbes.liveAgents(dump, owner: "software-mansion",
-                                          repo: "argent").value ?? [:]
+        let scan = AgentProbes.liveAgents(dump, slugs: ["software-mansion/argent"]).value ?? [:]
         check("the scan finds this repo's agents and nothing else",
-              Set(scan.keys) == [436, 369])
+              Set(scan.keys) == ["software-mansion/argent#436", "software-mansion/argent#369"])
         check("…each on the tty its screen is read from",
-              scan[436] == "ttys001" && scan[369] == "ttys002")
+              scan["software-mansion/argent#436"] == "ttys001"
+                && scan["software-mansion/argent#369"] == "ttys002")
         // A pid-less run beside one the book holds by pid has only this scan to find its
         // tty by, so the held agent is named only when it is its PR's last.
         let twice = Observation.present("""
@@ -85,11 +85,11 @@ enum TrackTest {
           300 ttys003    01:00 claude Review PR #845 in software-mansion/argent.
           """)
         check("a held agent is named only when it is its PR's last",
-              AgentProbes.liveAgents(twice, owner: "software-mansion", repo: "argent",
+              AgentProbes.liveAgents(twice, slugs: ["software-mansion/argent"],
                                      heldPIDs: [100, 300]).value
-                == [844: "ttys002", 845: "ttys003"]
-                && AgentProbes.liveAgents(twice, owner: "software-mansion",
-                                          repo: "argent").value?[844] == "ttys001")
+                == ["software-mansion/argent#844": "ttys002", "software-mansion/argent#845": "ttys003"]
+                && AgentProbes.liveAgents(twice, slugs: ["software-mansion/argent"])
+                    .value?["software-mansion/argent#844"] == "ttys001")
 
         // 2c. The two sources that have to meet on a tty do not spell it the same way:
         //     `ps` reports a bare device name, the terminal apps a full `/dev/…` path. One
@@ -233,8 +233,10 @@ enum TrackTest {
         // already covers is walked as that record, and must not be walked twice.
         var booked = AgentState.RunRecord(runID: "booked", dispatchedAt: 0, kind: "review")
         booked.prNumber = 705
+        booked.prURL = "https://github.com/software-mansion/argent/pull/705"
         check("only the live agents no record covers are gathered",
-              AgentProbes.unbookedTTYs([booked], .present([705: "ttys038", 703: "ttys029"]))
+              AgentProbes.unbookedTTYs([booked], .present(["software-mansion/argent#705": "ttys038",
+                                                          "software-mansion/argent#703": "ttys029"]))
                 == ["ttys029"])
         check("a scan that failed gathers nothing",
               AgentProbes.unbookedTTYs([booked], .unavailable("no dump")).isEmpty)
@@ -292,7 +294,8 @@ enum TrackTest {
         let now = Date().timeIntervalSince1970
         let record = AgentRegistry.createRun(
             AgentState.RunRecord(runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
-                                 prNumber: 1, kind: "review", label: "self-test"),
+                                 prNumber: 1, prURL: "https://github.com/o/r/pull/1",
+                                 kind: "review", label: "self-test"),
             prompt: "self-test")!
         defer { AgentRegistry.forget([record.runID]) }
         // A benign stand-in for the agent, NAMED as one: every scan that counts, adopts
@@ -365,7 +368,7 @@ enum TrackTest {
             AgentProbes.resetCache()   // each pass is its own look at the machine
             let at = Date().timeIntervalSince1970
             let records = AgentRegistry.adoptPids(AgentRegistry.load())
-            let evidence = AgentProbes.gather(records: records, now: at, owner: "o", repo: "r",
+            let evidence = AgentProbes.gather(records: records, now: at, slugs: ["o/r"],
                                               directory: AgentSpawner.repoPath,
                                               meshEnabled: false, meshState: nil,
                                               merged: .present([]),

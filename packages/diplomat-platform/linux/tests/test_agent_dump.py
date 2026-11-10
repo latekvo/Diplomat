@@ -159,7 +159,8 @@ def test_the_dump_gives_the_verdict_on_a_window_it_reaps_off_the_list(
 
     at_prompt = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
     now = time.time()
-    rec = A.RunRecord(run_id="untracked:337", pr_number=337, pid=4242, tty="pts/3",
+    rec = A.RunRecord(run_id="untracked:o/r#337", pr_number=337,
+                      pr_url="https://github.com/o/r/pull/337", pid=4242, tty="pts/3",
                       dispatched_at=now - 3600, source=A.SOURCE_AUTO, untracked=True,
                       released=True, quiet_digest=A.pane_digest(at_prompt),
                       quiet_since=now - A.QUIET_TIMEOUT - 1)
@@ -172,12 +173,12 @@ def test_the_dump_gives_the_verdict_on_a_window_it_reaps_off_the_list(
         processes=A.Observation.present(
             {4242: A.ProcInfo(tty="pts/3", elapsed=3600, is_agent=True)}),
         tails=A.Observation.present({"pts/3": at_prompt}),
-        live_agents=A.Observation.present({337: "pts/3"})))
+        live_agents=A.Observation.present({"o/r#337": "pts/3"})))
 
     agentdump.run()
     out = capsys.readouterr().out
 
-    assert "windows reaped   ['untracked:337']" in out
+    assert "windows reaped   ['untracked:o/r#337']" in out
     assert "  finished       #337 (not drawn)\n" \
            "                   because: released; pid 4242 alive; " \
            "its screen has not changed in 20m\n" in out

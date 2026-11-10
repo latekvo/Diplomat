@@ -86,6 +86,9 @@ GOLDEN_MODES: dict[str, object] = {
         owner="software-mansion", repo="argent"),
     "comms-classifier": lambda: _CorePayload(
         kind="comms-classifier", owner="software-mansion", repo="argent", login=ME),
+    "comms-classifier-multi": lambda: _CorePayload(
+        kind="comms-classifier", repos=["software-mansion/argent", "latekvo/diplomat"],
+        login=ME),
 }
 
 

@@ -313,11 +313,11 @@ public func clampedInt(_ x: Double) -> Int {
 public enum API {
     /// The authenticated user's GitHub login — needed to find "my" PRs.
     public static func fetchViewerLogin() async throws -> String {
-        try await graphqlDecoded("viewer", withRepo: false, as: ViewerResponse.self).data.viewer.login
+        try await graphqlDecoded("viewer", repo: nil, as: ViewerResponse.self).data.viewer.login
     }
 
-    public static func fetchOpenPRs() async throws -> [OpenPR] {
-        let resp = try await graphqlDecoded("prs", withRepo: true, as: PRResponse.self)
+    public static func fetchOpenPRs(owner: String, repo: String) async throws -> [OpenPR] {
+        let resp = try await graphqlDecoded("prs", repo: (owner, repo), as: PRResponse.self)
         return resp.data.repository.pullRequests.nodes.map { n in
             OpenPR(
                 number: n.number,
@@ -346,17 +346,16 @@ public enum API {
 
     /// The lifecycle state of a single PR — "OPEN", "CLOSED", or "MERGED". Used to
     /// mark a tracked agent session's PR as merged once it lands. One cheap
-    /// `gh pr view` per tracked PR; the repo coordinates come from the shared config.
-    public static func fetchPRState(number: Int) async throws -> String {
-        let (owner, repo) = CoreAssets.repoCoordinates()
+    /// `gh pr view` per tracked PR.
+    public static func fetchPRState(number: Int, owner: String, repo: String) async throws -> String {
         let data = try await GH.run(
             ["pr", "view", "\(number)", "--repo", "\(owner)/\(repo)", "--json", "state"])
         struct StateResponse: Decodable { let state: String }
         return try JSONDecoder().decode(StateResponse.self, from: data).state
     }
 
-    public static func fetchOpenIssues() async throws -> [OpenIssue] {
-        let resp = try await graphqlDecoded("issues", withRepo: true, as: IssueResponse.self)
+    public static func fetchOpenIssues(owner: String, repo: String) async throws -> [OpenIssue] {
+        let resp = try await graphqlDecoded("issues", repo: (owner, repo), as: IssueResponse.self)
         return resp.data.repository.issues.nodes.map { n in
             OpenIssue(
                 number: n.number,
@@ -377,8 +376,8 @@ public enum API {
     /// Run a GraphQL query and decode it. The transport retry belongs to
     /// `GH.graphql`, which every GraphQL caller shares; what is left here is
     /// deterministic — a payload that fails to decode fails the same way twice.
-    private static func graphqlDecoded<T: Decodable>(_ queryName: String, withRepo: Bool, as: T.Type) async throws -> T {
-        let data = try await GH.graphql(queryName, withRepo: withRepo)
+    private static func graphqlDecoded<T: Decodable>(_ queryName: String, repo: (owner: String, repo: String)?, as: T.Type) async throws -> T {
+        let data = try await GH.graphql(queryName, repo: repo)
         try checkGraphQLErrors(data)
         return try makeDecoder().decode(T.self, from: data)
     }

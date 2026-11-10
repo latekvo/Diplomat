@@ -125,8 +125,9 @@ def comms() -> dict:
 
 @functools.lru_cache(maxsize=1)
 def tasks() -> dict:
-    """Tasks' tunables. The front-end reads ``syncSecs``, ``minSyncSecs`` and ``chunk``
-    (:mod:`tasks`); the rest only the core (``diplomat-core tasks-*``)."""
+    """Tasks' tunables. The front-end reads ``syncSecs``, ``minSyncSecs``, ``chunk`` and
+    ``grouper.timeoutSecs`` (:mod:`tasks`); the rest only the core (``diplomat-core
+    tasks-*``)."""
     return _read_json("tasks.json")
 
 

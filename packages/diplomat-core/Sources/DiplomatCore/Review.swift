@@ -80,9 +80,13 @@ public struct ReviewConfig: Codable, Equatable {
     public var includeReady: Bool
     public var specificPR: String
 
-    /// The local checkouts besides the configured repo that a pasted link may name
+    /// The local checkouts besides the home repo that a pasted link may name
     /// (Settings → OTHER REPOS). Optional so a queued config stored without it decodes.
     public var localRepos: [PRRef.LocalRepo]?
+
+    /// The repo a bare number and a sweep target, and where the agent works: nil for
+    /// `assets/config.json`'s repo in the default repo root.
+    public var home: PRRef.LocalRepo?
 
     /// The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     public var finalPass: Bool
@@ -169,21 +173,21 @@ public struct ReviewConfig: Codable, Equatable {
     public var isReviewOnly: Bool { target == .someone }
 
     /// The repo this run works in: the listed checkout a single-item link named, else
-    /// the configured one. A sweep never reads the single-item field, so text left in it
+    /// the home repo. A sweep never reads the single-item field, so text left in it
     /// can't retarget one.
     public var targetRepo: (owner: String, repo: String) {
         if isSinglePR, let local = prRef.repo { return (local.owner, local.repo) }
-        return CoreAssets.repoCoordinates()
+        return PRRef.LocalRepo.coordinates(home: home)
     }
 
-    /// Where the agent works when that is not the repo root: the listed checkout
-    /// `targetRepo` came from, or nil.
-    public var checkout: String? { isSinglePR ? prRef.repo?.path : nil }
+    /// Where the agent works when that is not the default repo root: the listed checkout
+    /// `targetRepo` came from, else the home's, or nil.
+    public var checkout: String? { (isSinglePR ? prRef.repo?.path : nil) ?? home?.path }
 
     /// The single-PR field parsed as a number / URL / `owner/repo#n` shorthand,
-    /// checked against the configured repo, then `localRepos`.
+    /// checked against the home repo, then `localRepos`.
     public var prRef: PRRef {
-        let (owner, repo) = CoreAssets.repoCoordinates()
+        let (owner, repo) = PRRef.LocalRepo.coordinates(home: home)
         return PRRef.parse(specificPR, owner: owner, repo: repo, also: localRepos ?? [])
     }
 

@@ -625,7 +625,7 @@ public enum Telemetry {
 
         public let repoTokens: Double
         public let otherTokens: Double
-        /// Share of tokens spent in the repo the agents work in, in percent. 0 when
+        /// Share of tokens spent in the repo roots the agents work in, in percent. 0 when
         /// nothing was spent at all.
         public let repoSharePct: Double
 

@@ -432,6 +432,9 @@ class Job:
     # and freed when it finishes. Empty = an undeduped dispatch (server/target/
     # manual "Run on mesh"). Additive: a pre-claims node just ignores it.
     work_key: str = ""
+    # The repo the job works on ("owner/name", lowercased), for an executor that
+    # keeps a checkout per repo. Empty = unspecified. Additive like work_key.
+    repo: str = ""
 
     def to_dict(self) -> dict:
         d = {
@@ -443,6 +446,8 @@ class Job:
         }
         if self.work_key:
             d["workKey"] = self.work_key
+        if self.repo:
+            d["repo"] = self.repo
         return d
 
     @classmethod
@@ -455,6 +460,7 @@ class Job:
                 requested_by=str(d.get("requestedBy", "?")),
                 requested_at=_finite(d.get("requestedAt", time.time())),
                 work_key=str(d.get("workKey", "")),
+                repo=str(d.get("repo", "")),
             )
         except (KeyError, TypeError, ValueError, OverflowError):
             return None

@@ -59,6 +59,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from . import apiwatch, completion
+from .prref import item_key_from_url, split_item_key
 
 # MARK: - Observations: evidence, or a named reason there is none
 
@@ -445,6 +446,13 @@ class RunRecord:
     released: bool = False
 
     @property
+    def item(self) -> str | None:
+        """The PR this run is on, as an item key (:func:`prref.item_key`), or ``None``
+        for a run scoped to no PR. Read off :attr:`pr_url`, since only the link names
+        the repo."""
+        return item_key_from_url(self.pr_url) if self.pr_number is not None else None
+
+    @property
     def runs_here(self) -> bool:
         """Does this run's agent execute on THIS machine? What the device's cap
         counts — the cap bounds what this box runs, not what it dispatched."""
@@ -516,10 +524,10 @@ class Evidence:
     #: Work keys currently claimed somewhere on the mesh.
     claims: Observation = field(
         default_factory=lambda: Observation.unavailable("not probed"))
-    #: PR numbers GitHub reports as MERGED.
+    #: Item keys of the PRs GitHub reports as MERGED.
     merged_prs: Observation = field(
         default_factory=lambda: Observation.unavailable("not probed"))
-    #: PR number → the tty of an agent found by its prompt text in the process table.
+    #: Item key → the tty of an agent found by its prompt text in the process table.
     #: The pre-registry identity mechanism, and still the only evidence about a run
     #: whose terminal this applet did not open — a mesh placement that landed back
     #: here, whose pid file belongs to the node that spawned it.
@@ -570,10 +578,10 @@ class Evidence:
             tails=Observation.from_json(obj.get("tails"), lambda v: dict(v or {})),
             claims=Observation.from_json(obj.get("claims"), lambda v: set(v or [])),
             merged_prs=Observation.from_json(obj.get("mergedPrs"),
-                                             lambda v: {int(n) for n in (v or [])}),
+                                             lambda v: {str(k) for k in (v or [])}),
             live_agents=Observation.from_json(
                 obj.get("liveAgents"),
-                lambda v: {int(k): str(t) for k, t in (v or {}).items()}),
+                lambda v: {str(k): str(t) for k, t in (v or {}).items()}),
             sessions=Observation.from_json(
                 obj.get("sessions"),
                 lambda v: {str(k): SessionState.from_json(s)
@@ -865,9 +873,9 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
     def done(state: str, reason: str) -> Resolution:
         return Resolution(record.run_id, state, reason)
 
-    if (evidence.merged_prs.ok and record.pr_number is not None
+    if (evidence.merged_prs.ok and record.item is not None
             and not record.untracked):
-        if record.pr_number in evidence.merged_prs.value:
+        if record.item in evidence.merged_prs.value:
             return done(MERGED, f"PR #{record.pr_number} is merged")
 
     if evidence.sentinels.ok and record.run_id in evidence.sentinels.value:
@@ -1094,7 +1102,7 @@ def _resolve_without_pid(record: RunRecord, evidence: Evidence, now: float,
     if not evidence.live_agents.ok:
         return done(UNKNOWN,
                     f"no pid, and the agent scan {evidence.live_agents.reason or 'failed'}")
-    if record.pr_number is not None and record.pr_number in evidence.live_agents.value:
+    if record.item is not None and record.item in evidence.live_agents.value:
         return _classify_activity(record, evidence, now, done,
                                   f"an agent is up on PR #{record.pr_number}")
     if age <= SPAWN_GRACE:
@@ -1107,7 +1115,7 @@ def _resolve_without_pid(record: RunRecord, evidence: Evidence, now: float,
         # survives a terminal that changes how it fails.
         return done(FAILED, "its terminal never ran the command "
                             f"(no pid file {age:.0f}s after dispatch)")
-    if record.pr_number is None:
+    if record.item is None:
         # Nothing to look for: a mesh-here run has no pid file to be missing, and with
         # no PR either it cannot be found by the scan, so its absence is not evidence
         # of anything. The one rung that stamps `unfindable`; see
@@ -1133,7 +1141,7 @@ def _resolve_untracked(record: RunRecord, evidence: Evidence, now: float,
     if not evidence.live_agents.ok:
         return done(UNKNOWN,
                     f"the agent scan {evidence.live_agents.reason or 'failed'}")
-    if record.pr_number in evidence.live_agents.value:
+    if record.item in evidence.live_agents.value:
         return _classify_activity(record, evidence, now, done,
                                   _released(record, "found in process table"))
     return done(FINISHED, "gone from the process table")
@@ -1251,7 +1259,7 @@ def adopt_ttys(records: list[RunRecord], processes: Observation,
             out.append(r)
             continue
         proc = table.get(r.pid) if r.pid is not None else None
-        found = proc.tty if proc is not None else scan.get(r.pr_number, "")
+        found = proc.tty if proc is not None else scan.get(r.item, "")
         if proc is None and found in held:
             found = ""
         out.append(replace(r, tty=found) if found else r)
@@ -1263,7 +1271,7 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     """Records for live agents nobody dispatched, so they are deduped against and
     drawn rather than merely subtracted from a slot count.
 
-    ``live_agents`` maps a PR number to the tty its agent runs on. The tty is what
+    ``live_agents`` maps an item key to the tty its agent runs on. The tty is what
     lets one of these be classified as working or idle at all — without it every
     untracked agent would read as running and hold a bay until its window closed,
     which is the state the cap exists to prevent.
@@ -1281,7 +1289,7 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     One is made once and then kept in the book like any other run, because the
     stillness backstop measures a screen against the last one seen and a record
     re-derived every tick remembers none: its clock never leaves zero, so it can never
-    be found wedged and its window is never closed. The dedup on PR number is what
+    be found wedged and its window is never closed. The dedup on the item key is what
     keeps the next tick from making a second.
 
     They count as automatic. An agent whose trigger is unknown spending a bay defers
@@ -1298,16 +1306,21 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
         # first exits. Its memory of the old screen goes with it, or the new window
         # inherits the old one's stillness. A released run with a pid is held to that
         # process instead, whose tty never changes, and no record takes another's tty.
-        tty = live.get(r.pr_number) if r.untracked and r.pid is None else None
+        tty = live.get(r.item) if r.untracked and r.pid is None else None
         if tty and tty != r.tty and tty not in held:
             r = replace(r, tty=tty, quiet_digest="", quiet_since=None)
         out.append(r)
-    known = {r.pr_number for r in out if r.pr_number is not None}
-    for pr in sorted(set(live) - known):
-        out.append(RunRecord(run_id=f"untracked:{pr}", dispatched_at=now,
-                             pr_number=pr, source=SOURCE_AUTO,
-                             placement=PLACEMENT_LOCAL,
-                             tty=live[pr], untracked=True))
+    known = {r.item for r in out if r.item is not None}
+    for item in sorted(set(live) - known):
+        split = split_item_key(item)
+        if split is None:
+            continue
+        slug, number = split
+        out.append(RunRecord(run_id=f"untracked:{item}", dispatched_at=now,
+                             pr_number=number,
+                             pr_url=f"https://github.com/{slug}/pull/{number}",
+                             source=SOURCE_AUTO, placement=PLACEMENT_LOCAL,
+                             tty=live[item], untracked=True))
     return out
 
 
@@ -1328,26 +1341,26 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
     Only where the scan would re-book once the PR's other records are gone: a run on
     this machine, on a PR the scan sees. One with no pid is held to the scan's
     sighting, which cannot tell two agents apart, so it is released only alone on its
-    PR. Beside a record already named ``untracked:<pr>`` (the run itself, if a hand edit
+    PR. Beside a record already named ``untracked:<item>`` (the run itself, if a hand edit
     made it a dispatch), its run id carries its pid, and without one it is not released.
     Not a run a backstop ended, whose window is being closed. And only while the
     released record resolves to a live agent, or to one the stillness backstop ends at
     once, so that its window is closed.
     """
     live = evidence.live_agents.value if evidence.live_agents.ok else {}
-    count: dict[int, int] = {}
+    count: dict[str, int] = {}
     for r in records:
-        if r.pr_number is not None:
-            count[r.pr_number] = count.get(r.pr_number, 0) + 1
+        if r.item is not None:
+            count[r.item] = count.get(r.item, 0) + 1
     taken = {r.run_id for r in records}
     out = []
     for r in records:
         v = states.get(r.run_id)
         if (v is None or v.state not in ENDED or v.wedged or v.expired
-                or not r.runs_here or r.pr_number not in live
-                or (r.pid is None and count[r.pr_number] != 1)):
+                or not r.runs_here or r.item not in live
+                or (r.pid is None and count[r.item] != 1)):
             continue
-        run_id = f"untracked:{r.pr_number}"
+        run_id = f"untracked:{r.item}"
         if run_id in taken:
             if r.pid is None:
                 continue
@@ -1373,10 +1386,10 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
 
 
 def in_flight(records: list[RunRecord], states: dict[str, Resolution],
-              pr_number: int) -> bool:
-    """Does this PR already have an agent, for the dispatch gate's dedup? A released
-    one does not count: its work on the PR is done."""
-    return any(r.pr_number == pr_number and not r.released
+              item: str) -> bool:
+    """Does this PR (an item key) already have an agent, for the dispatch gate's
+    dedup? A released one does not count: its work on the PR is done."""
+    return any(r.item == item and not r.released
                and states[r.run_id].state in BLOCKING
                for r in records if r.run_id in states)
 
@@ -1508,8 +1521,8 @@ class Tick:
     #: The instant every verdict below was resolved against.
     now: float = 0.0
 
-    def in_flight(self, pr_number: int) -> bool:
-        return in_flight(self.records, self.states, pr_number)
+    def in_flight(self, item: str) -> bool:
+        return in_flight(self.records, self.states, item)
 
 
 def tick(records: list[RunRecord], evidence: Evidence, now: float, limit: int,

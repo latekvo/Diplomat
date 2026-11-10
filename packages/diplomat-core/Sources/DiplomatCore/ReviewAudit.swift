@@ -101,8 +101,8 @@ public enum ReviewAudit {
     /// github.com PR. Throws when GitHub cannot be asked.
     public static func audit(prURL: String, me: String, since: TimeInterval) async throws -> [String] {
         guard let c = coordinates(prURL) else { return [] }
-        let data = try await GH.graphql("my-reviews", withRepo: false,
-                                        variables: [("owner", c.owner), ("name", c.repo), ("me", me)],
+        let data = try await GH.graphql("my-reviews", repo: (c.owner, c.repo),
+                                        variables: [("me", me)],
                                         typedVariables: [("number", String(c.number))])
         struct Resp: Decodable {
             let data: D?

@@ -22,6 +22,7 @@ import Foundation
 //   diplomat-core tasks-list        [--archived]     # the Tasks screen's rows (see TasksCommand)
 //   diplomat-core tasks-sync                         # one GitHub + Comms sync of every task
 //   diplomat-core tasks-edit        < edit.json      # one operator edit of a task
+//   diplomat-core tasks-group       [--if-due]       # one goal-grouper run
 //
 // build-prompt: the JSON config's "kind" field ("review" | "conflicts" | "audit" |
 // "issues" | "investigate") selects the builder; remaining fields mirror the Swift
@@ -83,15 +84,16 @@ let args = CommandLine.arguments
 guard args.count >= 2,
       ["build-prompt", "tool-data", "telemetry", "agent-state", "agent-registry",
        "comms-tick", "comms-auth", "comms-feed", "comms-effect", "comms-reply", "comms-reply-merge",
-       "opencode-session-model", "tasks-list", "tasks-sync", "tasks-edit"].contains(args[1]) else {
+       "opencode-session-model", "tasks-list", "tasks-sync", "tasks-edit", "tasks-group"].contains(args[1]) else {
     die("usage: diplomat-core (build-prompt | tool-data | telemetry | agent-state"
         + " | agent-registry | comms-tick | comms-effect | comms-reply | comms-reply-merge"
         + " | tasks-edit)  (JSON on stdin)"
         + "\n       diplomat-core comms-feed [--limit N]"
         + "\n       diplomat-core comms-auth"
         + "\n       diplomat-core opencode-session-model"
-        + "\n       diplomat-core tasks-list [--archived]"
-        + "\n       diplomat-core tasks-sync", 1)
+        + "\n       diplomat-core tasks-list [--archived] [--me LOGIN]"
+        + "\n       diplomat-core tasks-sync"
+        + "\n       diplomat-core tasks-group [--if-due]", 1)
 }
 
 // These read no stdin, so a caller leaving it attached to a terminal must not hang them.
@@ -113,6 +115,10 @@ if args[1] == "tasks-list" {
 }
 if args[1] == "tasks-sync" {
     TasksCommand.sync()
+    exit(0)
+}
+if args[1] == "tasks-group" {
+    TasksCommand.group(Array(args.dropFirst(2)))
     exit(0)
 }
 
@@ -169,12 +175,17 @@ if args[1] == "agent-registry" {
 func str(_ key: String, _ def: String = "") -> String { obj[key] as? String ?? def }
 func flag(_ key: String, _ def: Bool) -> Bool { JSONInput.flag(obj[key], def) }
 
-/// The `localRepos` entries (`owner`, `repo`, `path`); malformed ones are dropped.
-let localRepos: [PRRef.LocalRepo] = (obj["localRepos"] as? [[String: Any]] ?? []).compactMap {
-    guard let o = $0["owner"] as? String, let r = $0["repo"] as? String,
-          let p = $0["path"] as? String else { return nil }
+/// One `{"owner", "repo", "path"}` object, or nil when it is not one.
+func localRepo(_ raw: Any?) -> PRRef.LocalRepo? {
+    guard let d = raw as? [String: Any], let o = d["owner"] as? String,
+          let r = d["repo"] as? String, let p = d["path"] as? String else { return nil }
     return PRRef.LocalRepo(owner: o, repo: r, path: p)
 }
+
+let localRepos: [PRRef.LocalRepo] = (obj["localRepos"] as? [Any] ?? []).compactMap(localRepo)
+/// The repo a bare number, a sweep or an audit targets; absent (or malformed) for
+/// `assets/config.json`'s.
+let homeRepo = localRepo(obj["home"])
 
 let kind = str("kind")
 let prompt: String
@@ -196,6 +207,7 @@ case "review":
         specificAuthor: specificAuthor(obj["specificAuthor"] as? String)
     )
     cfg.localRepos = localRepos
+    cfg.home = homeRepo
     prompt = cfg.buildPrompt()
 case "conflicts":
     var cfg = ConflictConfig(
@@ -205,9 +217,11 @@ case "conflicts":
         specificPR: str("specificPR")
     )
     cfg.localRepos = localRepos
+    cfg.home = homeRepo
     prompt = cfg.buildPrompt()
 case "audit":
-    let cfg = AuditConfig(fixIssues: flag("fixIssues", false), openPRs: flag("openPRs", false))
+    var cfg = AuditConfig(fixIssues: flag("fixIssues", false), openPRs: flag("openPRs", false))
+    cfg.home = homeRepo
     prompt = cfg.buildPrompt()
 case "issues":
     var cfg = IssueConfig(
@@ -223,6 +237,7 @@ case "issues":
         includeFeatures: flag("includeFeatures", false)
     )
     cfg.localRepos = localRepos
+    cfg.home = homeRepo
     prompt = cfg.buildPrompt()
 case InvestigateConfig.kind:
     prompt = CommsCommand.investigatePrompt(input)

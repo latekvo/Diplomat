@@ -1,7 +1,7 @@
 """Cross-process app settings — ``~/.diplomat/config.json``.
 
 Nearly every setting belongs to one front-end and lives in that front-end's own
-store (``QSettings`` here, ``UserDefaults`` on macOS). A few can't: the repo root
+store (``QSettings`` here, ``UserDefaults`` on macOS). A few can't: the repo roots
 every spawn ``cd``s into, the cap on how many automatic agents may run here at
 once, the four knobs of the spending budget those agents are started against,
 which agent CLI a spawn runs (with the model it is pinned to), and where that
@@ -42,6 +42,10 @@ from . import autofix
 from .atomicjson import read_object, write_atomic
 
 # Keys. Kept in sync with Swift's `AppConfig` (diplomat-platform/macos/Sources/Diplomat/AppConfig.swift).
+#: The repo roots, primary first: a JSON array of paths, ``~`` expanded on use.
+REPO_ROOTS = "repoRoots"
+#: The single root single-repo builds wrote. Read when :data:`REPO_ROOTS` is empty,
+#: and dropped by every write of it.
 REPO_ROOT = "repoRoot"
 AUTO_TASK_LIMIT = "autoTaskLimit"
 AUTO_BUDGET_GATE = "autoBudgetGate"
@@ -165,6 +169,32 @@ def set_dict(key: str, value: dict) -> None:
         data[key] = dict(value)
     else:
         data.pop(key, None)
+    write_atomic(path(), data)
+
+
+def repo_roots() -> list[str]:
+    """The repo roots as stored, blank entries dropped: :data:`REPO_ROOTS`, else the
+    legacy :data:`REPO_ROOT`, else none."""
+    data = read()
+    roots = data.get(REPO_ROOTS)
+    if isinstance(roots, list):
+        kept = [p.strip() for p in roots if isinstance(p, str) and p.strip()]
+        if kept:
+            return kept
+    legacy = data.get(REPO_ROOT)
+    return [legacy.strip()] if isinstance(legacy, str) and legacy.strip() else []
+
+
+def set_repo_roots(paths: list[str]) -> None:
+    """Store the repo roots (none removes the key), dropping the legacy
+    :data:`REPO_ROOT` in the same write so it can never shadow a later clear."""
+    data = read()
+    kept = [p.strip() for p in paths if p.strip()]
+    if kept:
+        data[REPO_ROOTS] = kept
+    else:
+        data.pop(REPO_ROOTS, None)
+    data.pop(REPO_ROOT, None)
     write_atomic(path(), data)
 
 

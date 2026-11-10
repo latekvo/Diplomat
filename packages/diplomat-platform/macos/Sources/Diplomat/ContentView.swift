@@ -128,11 +128,10 @@ struct ContentView: View {
     // MARK: header
 
     private var header: some View {
-        let (owner, repo) = CoreAssets.repoCoordinates()
-        return HStack(spacing: 6) {
+        HStack(spacing: 6) {
             Image(systemName: "wrench.and.screwdriver.fill").foregroundStyle(.blue)
             Text("Diplomat").font(.headline)
-            Text("\(owner)/\(repo)").font(.caption2).foregroundStyle(.secondary)
+            repoPicker
             Spacer()
             if store.isLoading {
                 ProgressView().controlSize(.small)
@@ -160,6 +159,33 @@ struct ContentView: View {
             Button { QuitFlow.confirm() } label: {
                 Image(systemName: "power")
             }.buttonStyle(.borderless).tooltip("Quit")
+        }
+    }
+
+    /// The repo root the right column works on: a menu once several are loaded, else the
+    /// one root's caption.
+    @ViewBuilder
+    private var repoPicker: some View {
+        let current = store.selectedRoot.slug
+        if store.roots.count > 1 {
+            Menu {
+                ForEach(store.roots, id: \.slug) { root in
+                    Button { store.selectedRepo = root.slug.lowercased() } label: {
+                        if root.slug == current {
+                            Label(root.slug, systemImage: "checkmark")
+                        } else {
+                            Text(root.slug)
+                        }
+                    }
+                }
+            } label: {
+                Text(current).font(.caption2)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .tooltip("The repo the lists, search and wizards work on")
+        } else {
+            Text(current).font(.caption2).foregroundStyle(.secondary)
         }
     }
 
@@ -707,8 +733,7 @@ struct ContentView: View {
 
     private func lookupView(_ n: Int) -> some View {
         let r = store.lookup(n)
-        let (owner, repo) = CoreAssets.repoCoordinates()
-        let link = r.url ?? "https://github.com/\(owner)/\(repo)/issues/\(n)"
+        let link = r.url ?? "https://github.com/\(store.selectedRoot.slug)/issues/\(n)"
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("#\(n)").font(.title3.bold().monospaced())
@@ -771,6 +796,7 @@ struct ContentView: View {
                         ForEach(items) { item in
                             if kind == .myApproved,
                                let pr = store.prs.first(where: { $0.number == item.id }) {
+                                let key = PRRef.itemKey(url: pr.url) ?? ""
                                 HStack(spacing: 6) {
                                     ResultRow(item: item, tint: tint)
                                     MergeButton(
@@ -778,10 +804,10 @@ struct ContentView: View {
                                         // Busy while merging OR while a Resolve spawn is in
                                         // flight — the Resolve variant used to have no busy
                                         // state at all, so a double-click raced two agents.
-                                        busy: store.mergingPRs.contains(pr.number)
-                                            || store.resolvingPRs.contains(pr.number),
-                                        onMerge: { Task { await store.mergePR(pr.number) } },
-                                        onResolve: { Task { await store.resolveConflicts(for: pr.number) } })
+                                        busy: store.mergingPRs.contains(key)
+                                            || store.resolvingPRs.contains(key),
+                                        onMerge: { Task { await store.mergePR(pr) } },
+                                        onResolve: { Task { await store.resolveConflicts(for: pr) } })
                                 }
                             } else {
                                 ResultRow(item: item, tint: tint)

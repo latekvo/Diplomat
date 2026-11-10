@@ -358,11 +358,12 @@ private struct PingRow: View {
     private var actionWord: String {
         guard let d = item.decision else { return "triaging" }
         if fromBannedSender { return "banned sender" }
+        let ref = CommsSettings.ref(d.number, repo: d.targets.first?.repo ?? "")
         switch d.action {
         case .none:        return "none"
-        case .bump:        return "bump #\(d.number)"
-        case .review:      return "review #\(d.number)"
-        case .fixIssue:    return "fix #\(d.number)"
+        case .bump:        return "bump \(ref)"
+        case .review:      return "review \(ref)"
+        case .fixIssue:    return "fix \(ref)"
         case .investigate: return "investigate"
         case .question:    return "question"
         case .injection:   return "injection"

@@ -76,7 +76,8 @@ public struct CommsMessage: Codable, Equatable, Sendable {
     public var place: String { isDM ? "DM" : "#\(channelName)" }
 
     /// A message asking for several PRs or issues is one row per target, so each has its
-    /// own queue key, start and finish: the first keeps `id`, the rest are `<id>#<number>`.
+    /// own queue key, start and finish: the first keeps `id`, the rest are `<id>#<number>`
+    /// (`<id>#<owner/repo>#<number>` outside the primary repository).
     public static let targetSeparator: Character = "#"
 
     /// The Slack message's own id, whichever of its targets' rows this is.
@@ -114,10 +115,30 @@ public enum CommsAction: String, Codable, CaseIterable, Sendable {
 public struct CommsAsk: Codable, Equatable, Sendable {
     public let action: CommsAction
     public let number: Int
+    /// Its repository as `CommsSettings.canonical` writes it; "" (the primary) is not encoded.
+    public let repo: String
 
-    public init(_ action: CommsAction, _ number: Int) {
+    public init(_ action: CommsAction, _ number: Int, repo: String = "") {
         self.action = action
         self.number = number
+        self.repo = repo
+    }
+
+    public var ref: String { CommsSettings.ref(number, repo: repo) }
+
+    private enum CodingKeys: String, CodingKey { case action, number, repo }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(try c.decode(CommsAction.self, forKey: .action), try c.decode(Int.self, forKey: .number),
+                  repo: try c.decodeIfPresent(String.self, forKey: .repo) ?? "")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(action, forKey: .action)
+        try c.encode(number, forKey: .number)
+        if !repo.isEmpty { try c.encode(repo, forKey: .repo) }
     }
 }
 
@@ -140,6 +161,9 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// What the message is written in: a key of `replies.languages`, or anything else for
     /// English. Only ever looks up fixed words, so a message steering it steers nothing.
     public let language: String
+    /// For an `investigate` or a `question`, the message's repository as in `CommsAsk.repo`;
+    /// "" otherwise.
+    public let repo: String
 
     /// The first target's number; 0 for none.
     public var number: Int { targets.first?.number ?? 0 }
@@ -151,21 +175,24 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     static let maxText = 240
 
     /// `targets` wins; without it, `numbers` (else `number`) are targets of `action`. A
-    /// target whose number is not positive, or whose action needs none, is dropped.
+    /// target whose number is not positive, or whose action needs none, is dropped, as is one
+    /// whose repository and number an earlier target has.
     public init(action: CommsAction, number: Int = 0, numbers: [Int] = [],
                 targets: [CommsAsk] = [], summary: String,
-                reason: String, evidence: String = "", language: String = defaultLanguage) {
+                reason: String, evidence: String = "", language: String = defaultLanguage,
+                repo: String = "") {
         let reason = Self.clip(reason)
         let evidence = action == .injection ? Self.unquoted(evidence) : ""
         let asked = !targets.isEmpty ? targets
             : (numbers.isEmpty ? [number] : numbers).map { CommsAsk(action, $0) }
         var kept: [CommsAsk] = []
         for t in asked where t.number > 0 && t.action.needsNumber
-            && !kept.contains(where: { $0.number == t.number }) {
+            && !kept.contains(where: { $0.number == t.number && $0.repo == t.repo }) {
             kept.append(t)
         }
         self.summary = Self.clip(summary)
         self.language = language
+        self.repo = [.investigate, .question].contains(action) ? repo : ""
         if action.needsNumber && kept.isEmpty {
             self.action = .none
             self.targets = []
@@ -189,14 +216,17 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         CommsDecision(action: .none, number: 0, summary: "", reason: reason)
     }
 
-    /// This decision without any number neither `message` nor any of `earlier` contains:
-    /// as `#N`, `/pull/N`, `/issues/N` or `N`, with no letter or digit either side, outside
-    /// a reference to another repository (`ownRepoText`). `none` when that leaves no
+    /// This decision without any target `message` and `earlier` do not back: one whose
+    /// number neither contains, as `#N`, `/pull/N`, `/issues/N` or `N`, with no letter or
+    /// digit either side, outside a reference to another repository than the target's
+    /// (`ownRepoText`), one in a repository `settings` does not watch, and one outside
+    /// the primary repository whose name neither contains. `none` when that leaves no
     /// number, or when it is an `injection` whose evidence `message` itself does not
     /// contain, ignoring case and runs of whitespace, as sent or as the classifier read it
-    /// (`CommsText.defang`). `CommsWatch.tick` applies it to every answer, passing the
-    /// messages before this one in its conversation (`CommsBatch.earlier`), so a guessed
-    /// number never acts and nobody is banned for words they did not write.
+    /// (`CommsText.defang`). Repositories come back as `CommsSettings.canonical` writes
+    /// them. `CommsWatch.tick` applies it to every answer, passing the messages before
+    /// this one in its conversation (`CommsBatch.earlier`), so a guessed number never acts
+    /// and nobody is banned for words they did not write.
     public func checked(against message: CommsMessage, earlier: [CommsMessage] = [],
                         settings: CommsSettings = CommsSettings()) -> CommsDecision {
         let needle = Self.squashed(evidence)
@@ -206,16 +236,44 @@ public struct CommsDecision: Codable, Equatable, Sendable {
                                  reason: "answered injection quoting words the message does "
                                      + "not contain; \(reason)")
         }
-        guard action.needsNumber else { return self }
-        let texts = ([message] + earlier).map { Self.ownRepoText($0.text, settings: settings) }
-        let kept = targets.filter { t in
-            texts.contains { CommsMatch.containsWord($0, String(t.number)) }
+        guard action.needsNumber else {
+            let about = settings.canonical(repo) ?? ""
+            return about == repo ? self
+                : CommsDecision(action: action, summary: summary, reason: reason,
+                                evidence: evidence, language: language, repo: about)
+        }
+        let sent = ([message] + earlier).map(\.text)
+        var texts: [String: [String]] = [:]
+        var kept: [CommsAsk] = [], dropped: [CommsAsk] = []
+        for t in targets {
+            guard let repo = settings.canonical(t.repo) else {
+                dropped.append(t)
+                continue
+            }
+            let ask = CommsAsk(t.action, t.number, repo: repo)
+            if texts[repo] == nil {
+                texts[repo] = sent.map { Self.ownRepoText($0, settings: settings, repo: repo) }
+            }
+            let named = repo.isEmpty || sent.contains {
+                CommsMatch.containsWord($0, String(repo.split(separator: "/").last ?? ""))
+            }
+            if kept.contains(where: { $0.number == ask.number && $0.repo == ask.repo }) { continue }
+            if named, texts[repo, default: []].contains(where: {
+                CommsMatch.containsWord($0, String(t.number)) }) {
+                kept.append(ask)
+            } else {
+                dropped.append(t)
+            }
         }
         guard kept != targets else { return self }
-        let dropped = targets.filter { !kept.contains($0) }
+        guard !dropped.isEmpty else {
+            return CommsDecision(action: action, targets: kept, summary: summary, reason: reason,
+                                 language: language)
+        }
         let noun = dropped.count == 1 ? "a number" : "numbers"
+        let place = settings.repos.count == 1 ? "in this repository" : "in that watched repository"
         let why = "answered \(Self.describe(dropped, tagged: true)), \(noun) neither the message "
-            + "nor its conversation names in this repository; \(reason)"
+            + "nor its conversation names \(place); \(reason)"
         return CommsDecision(action: kept.isEmpty ? .none : action, targets: kept,
                              summary: summary, reason: why, language: language)
     }
@@ -225,23 +283,28 @@ public struct CommsDecision: Codable, Equatable, Sendable {
                       evidence: evidence, language: language)
     }
 
-    /// Tagged, `review #1, #2, fix_issue #3`: an action before the first of each run of
-    /// it. Untagged, the bare numbers: `1, 2, 3`.
+    /// Tagged, `review #1, #2, fix_issue argent#3`: an action before the first of each run
+    /// of it. Untagged, the bare numbers: `1, 2, 3`.
     private static func describe(_ targets: [CommsAsk], tagged: Bool = false) -> String {
         guard tagged else { return targets.map { String($0.number) }.joined(separator: ", ") }
         return targets.enumerated().map { i, t in
             let named = i == 0 || targets[i - 1].action != t.action
-            return (named ? t.action.rawValue + " " : "") + "#\(t.number)"
+            return (named ? t.action.rawValue + " " : "") + t.ref
         }.joined(separator: ", ")
     }
 
-    /// `text` with its references into other repositories taken out: GitHub links with
-    /// their Slack or markdown label, `owner/repo#N` for another repository of this one's
-    /// owner, and `name#N` for a repository a link names. A number there is not one of this
-    /// repository's, even when this repository has a PR that happens to wear it. Any other
-    /// `word#N` or `word/word#N` stays, for the classifier to judge: `PR#12`, `fix/login#12`
-    /// and `swmansion/argent#12` cannot be told from a foreign reference here.
-    public static func ownRepoText(_ text: String, settings: CommsSettings) -> String {
+    /// `text` with its references into repositories other than `repo` (a
+    /// `CommsSettings.canonical` slug, the primary by default) taken out: GitHub links with
+    /// their Slack or markdown label, `owner/repo#N` for another repository of `repo`'s
+    /// owner or another watched one, and `name#N` for a repository a link names or another
+    /// watched one. A number there is not one of `repo`'s, even when `repo` has a PR that
+    /// happens to wear it. Any other `word#N` or `word/word#N` stays, for the classifier to
+    /// judge: `PR#12`, `fix/login#12` and `swmansion/argent#12` cannot be told from a
+    /// foreign reference here.
+    public static func ownRepoText(_ text: String, settings: CommsSettings,
+                                   repo target: String = "") -> String {
+        let (home, name) = settings.coordinates(of: target)
+        let slug = "\(home)/\(name)".lowercased()
         let url = #"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues|discussions|commit)/\w+"#
         guard let links = try? NSRegularExpression(
             pattern: #"<\#(url)[^\s>|]*(?:\|[^>\n]*)?>"#
@@ -251,16 +314,21 @@ public struct CommsDecision: Codable, Equatable, Sendable {
             options: [.caseInsensitive]) else { return text }
         let source = text as NSString
         let out = NSMutableString(string: text)
-        var others = Set<String>()
+        var others = Set(settings.repos.compactMap { s -> String? in
+            let n = String(s.split(separator: "/").last ?? "")
+            return n == name.lowercased() ? nil : n
+        })
         // Backwards, so each match's range still holds in `out`.
         for m in links.matches(in: text, range: NSRange(location: 0, length: source.length)).reversed() {
             let group = stride(from: 1, to: 9, by: 2).first { m.range(at: $0).location != NSNotFound } ?? 1
             let owner = source.substring(with: m.range(at: group))
             let repo = source.substring(with: m.range(at: group + 1))
-            let sameOwner = owner.lowercased() == settings.owner.lowercased()
-            let sameRepo = repo.lowercased() == settings.repo.lowercased()
+            let named = "\(owner)/\(repo)".lowercased()
+            let sameRepo = repo.lowercased() == name.lowercased()
             let isLink = group < 7
-            guard isLink ? !(sameOwner && sameRepo) : (sameOwner && !sameRepo) else { continue }
+            let foreign = named != slug && (isLink || owner.lowercased() == home.lowercased()
+                                            || settings.repos.contains(named))
+            guard foreign else { continue }
             out.replaceCharacters(in: m.range, with: "")
             if isLink && !sameRepo { others.insert(repo) }
         }
@@ -294,25 +362,28 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case action, number, numbers, targets, summary, reason, evidence, language
+        case action, number, numbers, targets, summary, reason, evidence, language, repo
     }
 
     /// A target as written, each field kept only when it has the right type.
     private struct RawTarget: Decodable {
         let action: String?
         let number: Int?
+        let repo: String?
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             action = try? c.decode(String.self, forKey: .action)
             number = try? c.decode(Int.self, forKey: .number)
+            repo = try? c.decode(String.self, forKey: .repo)
         }
     }
 
     /// Field by field, so one bad field costs the decision its action instead of failing
     /// the object: an unknown action, or a number that is missing, fractional, a string or
     /// a boolean, lands in `init` as something it refuses. A target without an action
-    /// takes the decision's. An older log line has `numbers`, or `number` alone.
+    /// takes the decision's. An older log line has `numbers`, or `number` alone, and no
+    /// `repo`: the primary repository's.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let summary = (try? c.decode(String.self, forKey: .summary)) ?? ""
@@ -324,13 +395,15 @@ public struct CommsDecision: Codable, Equatable, Sendable {
             return
         }
         let targets = ((try? c.decode([RawTarget].self, forKey: .targets)) ?? []).map {
-            CommsAsk($0.action.map { CommsAction(rawValue: $0) ?? .none } ?? action, $0.number ?? 0)
+            CommsAsk($0.action.map { CommsAction(rawValue: $0) ?? .none } ?? action, $0.number ?? 0,
+                     repo: $0.repo ?? "")
         }
         self.init(action: action, number: (try? c.decode(Int.self, forKey: .number)) ?? 0,
                   numbers: (try? c.decode([Int].self, forKey: .numbers)) ?? [],
                   targets: targets, summary: summary, reason: reason,
                   evidence: (try? c.decode(String.self, forKey: .evidence)) ?? "",
-                  language: (try? c.decode(String.self, forKey: .language)) ?? Self.defaultLanguage)
+                  language: (try? c.decode(String.self, forKey: .language)) ?? Self.defaultLanguage,
+                  repo: (try? c.decode(String.self, forKey: .repo)) ?? "")
     }
 
     /// `number` beside `targets`: the Linux ping row reads it.
@@ -343,6 +416,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         try c.encode(reason, forKey: .reason)
         try c.encode(evidence, forKey: .evidence)
         try c.encode(language, forKey: .language)
+        if !repo.isEmpty { try c.encode(repo, forKey: .repo) }
     }
 
     /// `claude -p --output-format json` prints a JSON array of events whose
@@ -467,15 +541,19 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     public var batchSize: Int
     /// A queue shorter than `batchSize` is triaged once its newest message is this old.
     public var flushAfterSecs: Int
-    public var owner: String
-    public var repo: String
+    /// The watched repositories (the front-end's repo roots) as lowercased `owner/repo`
+    /// slugs, the primary first; never empty. A bare number is the primary's.
+    public private(set) var repos: [String]
     /// The operator's GitHub login; the classifier is told the message was sent to it.
     public var login: String
 
+    /// `repos` without the blank, malformed and repeated; with none left, the one repo
+    /// `owner`/`repo` name, else `assets/config.json`'s.
     public init(keywords: [String] = [], senderAllowlist: [String] = [],
                 bannedSenders: [String] = [],
                 model: String? = nil, maxPerTick: Int? = nil, batchSize: Int? = nil,
-                flushAfterSecs: Int? = nil, owner: String? = nil, repo: String? = nil, login: String = "") {
+                flushAfterSecs: Int? = nil, owner: String? = nil, repo: String? = nil,
+                repos: [String] = [], login: String = "") {
         let assets = try? CoreAssets.comms()
         let coordinates = CoreAssets.repoCoordinates()
         self.keywords = keywords
@@ -486,9 +564,39 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         self.maxPerTick = max(1, maxPerTick ?? assets?.maxPerTick ?? 8)
         self.batchSize = max(1, batchSize ?? assets?.batchSize ?? 8)
         self.flushAfterSecs = max(0, flushAfterSecs ?? assets?.flushAfterSecs ?? 1800)
-        self.owner = owner ?? coordinates.owner
-        self.repo = repo ?? coordinates.repo
+        var slugs: [String] = []
+        for r in repos {
+            let s = r.trimmingCharacters(in: .whitespaces).lowercased()
+            let halves = s.split(separator: "/", omittingEmptySubsequences: false)
+            if halves.count == 2, !halves[0].isEmpty, !halves[1].isEmpty, !slugs.contains(s) {
+                slugs.append(s)
+            }
+        }
+        self.repos = slugs.isEmpty
+            ? ["\(owner ?? coordinates.owner)/\(repo ?? coordinates.repo)".lowercased()] : slugs
         self.login = login
+    }
+
+    public var owner: String { coordinates(of: "").owner }
+    public var repo: String { coordinates(of: "").repo }
+
+    /// A watched repository's coordinates; "" names the primary.
+    public func coordinates(of slug: String) -> (owner: String, repo: String) {
+        let halves = (slug.isEmpty ? repos[0] : slug).split(separator: "/")
+        return (String(halves.first ?? ""), String(halves.last ?? ""))
+    }
+
+    /// How a decision writes `slug` (any case, "" for the primary): "" for the primary,
+    /// its lowercased self for another watched repository, nil for one not watched.
+    public func canonical(_ slug: String) -> String? {
+        let s = slug.trimmingCharacters(in: .whitespaces).lowercased()
+        if s.isEmpty || s == repos[0] { return "" }
+        return repos.contains(s) ? s : nil
+    }
+
+    /// `#12` in the primary repository (`repo` ""), `argent#12` in another.
+    public static func ref(_ number: Int, repo: String) -> String {
+        repo.isEmpty ? "#\(number)" : "\(repo.split(separator: "/").last ?? "")#\(number)"
     }
 
     /// Not split on spaces: a keyword may be a phrase.
@@ -513,12 +621,13 @@ public struct CommsSettings: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case keywords, senderAllowlist, bannedSenders, model, maxPerTick, batchSize,
-             flushAfterSecs, owner, repo, login
+             flushAfterSecs, owner, repo, repos, login
         case keywordsRaw, senderAllowlistRaw
     }
 
     /// Every field optional. The lists may come as the raw Settings strings (`keywordsRaw`,
     /// `senderAllowlistRaw`), so the splitting stays here rather than in each front-end.
+    /// Without `repos`, `owner` and `repo` name the one watched repository.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let keywords = try c.decodeIfPresent([String].self, forKey: .keywords)
@@ -533,6 +642,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
                   flushAfterSecs: try c.decodeIfPresent(Int.self, forKey: .flushAfterSecs),
                   owner: try c.decodeIfPresent(String.self, forKey: .owner),
                   repo: try c.decodeIfPresent(String.self, forKey: .repo),
+                  repos: try c.decodeIfPresent([String].self, forKey: .repos) ?? [],
                   login: try c.decodeIfPresent(String.self, forKey: .login) ?? "")
     }
 
@@ -545,8 +655,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         try c.encode(maxPerTick, forKey: .maxPerTick)
         try c.encode(batchSize, forKey: .batchSize)
         try c.encode(flushAfterSecs, forKey: .flushAfterSecs)
-        try c.encode(owner, forKey: .owner)
-        try c.encode(repo, forKey: .repo)
+        try c.encode(repos, forKey: .repos)
         try c.encode(login, forKey: .login)
     }
 }
@@ -626,31 +735,37 @@ public enum CommsSliderStops {
 /// What a front-end does about one triaged ping, through its ordinary queue: the ban
 /// list, the task cap and the budget gate all apply.
 ///
-/// JSON: `{"kind": "none"}`, `{"kind": "review" | "fix_issue" | "bump", "number": N}`,
-/// `{"kind": "investigate", "config": InvestigateConfig}`, `{"kind": "ban", "ban": CommsBan}`.
+/// JSON: `{"kind": "none"}`, `{"kind": "review" | "fix_issue" | "bump", "number": N,
+/// "repo"?: slug}` (`repo` as `CommsAsk.repo` writes it, absent for the primary
+/// repository), `{"kind": "investigate", "config": InvestigateConfig}`,
+/// `{"kind": "ban", "ban": CommsBan}`.
 public enum CommsEffect: Equatable, Sendable {
     case none
     /// Move whatever is already queued for #N to the front of its band; start nothing.
-    case bump(Int)
+    case bump(Int, repo: String = "")
     /// `review` and `fixIssue` queue at the front of their band.
-    case review(Int)
-    case fixIssue(Int)
+    case review(Int, repo: String = "")
+    case fixIssue(Int, repo: String = "")
     case investigate(InvestigateConfig)
     /// Put the sender on the prompt-injection ban list.
     case ban(CommsBan)
 }
 
 extension CommsEffect: Codable {
-    private enum CodingKeys: String, CodingKey { case kind, number, config, ban }
+    private enum CodingKeys: String, CodingKey { case kind, number, repo, config, ban }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let kind = try c.decode(String.self, forKey: .kind)
+        func target() throws -> (Int, String) {
+            (try c.decode(Int.self, forKey: .number),
+             try c.decodeIfPresent(String.self, forKey: .repo) ?? "")
+        }
         switch kind {
         case "none":        self = .none
-        case "bump":        self = .bump(try c.decode(Int.self, forKey: .number))
-        case "review":      self = .review(try c.decode(Int.self, forKey: .number))
-        case "fix_issue":   self = .fixIssue(try c.decode(Int.self, forKey: .number))
+        case "bump":        let t = try target(); self = .bump(t.0, repo: t.1)
+        case "review":      let t = try target(); self = .review(t.0, repo: t.1)
+        case "fix_issue":   let t = try target(); self = .fixIssue(t.0, repo: t.1)
         case "investigate": self = .investigate(try c.decode(InvestigateConfig.self, forKey: .config))
         case "ban":         self = .ban(try c.decode(CommsBan.self, forKey: .ban))
         default:
@@ -661,18 +776,17 @@ extension CommsEffect: Codable {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        func target(_ kind: String, _ n: Int, _ repo: String) throws {
+            try c.encode(kind, forKey: .kind)
+            try c.encode(n, forKey: .number)
+            if !repo.isEmpty { try c.encode(repo, forKey: .repo) }
+        }
         switch self {
         case .none:
             try c.encode("none", forKey: .kind)
-        case .bump(let n):
-            try c.encode("bump", forKey: .kind)
-            try c.encode(n, forKey: .number)
-        case .review(let n):
-            try c.encode("review", forKey: .kind)
-            try c.encode(n, forKey: .number)
-        case .fixIssue(let n):
-            try c.encode("fix_issue", forKey: .kind)
-            try c.encode(n, forKey: .number)
+        case .bump(let n, let repo):     try target("bump", n, repo)
+        case .review(let n, let repo):   try target("review", n, repo)
+        case .fixIssue(let n, let repo): try target("fix_issue", n, repo)
         case .investigate(let cfg):
             try c.encode("investigate", forKey: .kind)
             try c.encode(cfg, forKey: .config)
@@ -689,11 +803,12 @@ public enum CommsPlan {
     public static func effect(for decision: CommsDecision, message: CommsMessage,
                               toggles: CommsToggles, settings: CommsSettings = CommsSettings(),
                               reportDir: URL) -> CommsEffect {
+        let repo = decision.targets.first?.repo ?? ""
         switch decision.action {
         case .none, .question: return .none
-        case .review:          return toggles.requests ? .review(decision.number) : .none
-        case .fixIssue:        return toggles.requests ? .fixIssue(decision.number) : .none
-        case .bump:            return toggles.bumps ? .bump(decision.number) : .none
+        case .review:          return toggles.requests ? .review(decision.number, repo: repo) : .none
+        case .fixIssue:        return toggles.requests ? .fixIssue(decision.number, repo: repo) : .none
+        case .bump:            return toggles.bumps ? .bump(decision.number, repo: repo) : .none
         case .investigate:
             guard toggles.investigations else { return .none }
             return .investigate(InvestigateConfig(message: message, decision: decision,
@@ -807,14 +922,18 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
     public var text: String
     public var summary: String
     public var reportPath: String
+    /// The decision's repository (`CommsDecision.repo`).
     public var owner: String
     public var repo: String
+    /// That repository's checkout; nil for the primary repo root. Set by the front-end,
+    /// which alone knows the paths.
+    public var checkout: String?
 
     public static let kind = "investigate"
 
     public init(number: Int, messageID: String, sender: String, senderID: String = "",
                 channel: String, permalink: String, text: String, summary: String,
-                reportPath: String, owner: String, repo: String) {
+                reportPath: String, owner: String, repo: String, checkout: String? = nil) {
         self.number = number
         self.messageID = messageID
         self.sender = sender
@@ -826,22 +945,26 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
         self.reportPath = reportPath
         self.owner = owner
         self.repo = repo
+        self.checkout = checkout
     }
 
     public init(message: CommsMessage, decision: CommsDecision, settings: CommsSettings,
                 reportDir: URL) {
         let number = CommsTS.number(message.ts) ?? 0
+        // One no longer watched stays named, so the front-end refuses it as it does a review.
+        let (owner, repo) = settings.coordinates(of: settings.canonical(decision.repo)
+                                                     ?? decision.repo.lowercased())
         self.init(number: number, messageID: message.id, sender: message.sender,
                   senderID: message.userID, channel: message.place, permalink: message.permalink, text: message.text,
                   summary: decision.summary,
                   reportPath: reportDir.appendingPathComponent("\(number).md").path,
-                  owner: settings.owner, repo: settings.repo)
+                  owner: owner, repo: repo)
     }
 
     /// `kind` and `label` are written for readers and never decoded: both follow from the rest.
     private enum CodingKeys: String, CodingKey {
         case kind, number, messageID, sender, senderID, channel, permalink, text, summary,
-             reportPath, owner, repo, label
+             reportPath, owner, repo, checkout, label
     }
 
     public init(from decoder: Decoder) throws {
@@ -854,7 +977,8 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
                   permalink: try s(.permalink), text: try s(.text), summary: try s(.summary),
                   reportPath: try s(.reportPath),
                   owner: try c.decodeIfPresent(String.self, forKey: .owner) ?? coordinates.owner,
-                  repo: try c.decodeIfPresent(String.self, forKey: .repo) ?? coordinates.repo)
+                  repo: try c.decodeIfPresent(String.self, forKey: .repo) ?? coordinates.repo,
+                  checkout: try c.decodeIfPresent(String.self, forKey: .checkout))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -871,6 +995,7 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
         try c.encode(reportPath, forKey: .reportPath)
         try c.encode(owner, forKey: .owner)
         try c.encode(repo, forKey: .repo)
+        try c.encodeIfPresent(checkout, forKey: .checkout)
         try c.encode(label, forKey: .label)
     }
 
@@ -953,6 +1078,12 @@ public enum CommsText {
         text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
             .map { $0.isEmpty ? quoteMarker : quoteMarker + " " + $0 }
             .joined(separator: "\n")
+    }
+
+    /// `a`, `a and b`, `a, b and c`, with `and` the language's word.
+    public static func list(_ items: [String], and: String) -> String {
+        items.count < 2 ? items.joined()
+            : items.dropLast().joined(separator: ", ") + " \(and) " + (items.last ?? "")
     }
 
     /// For a value set outside a fence.

@@ -17,8 +17,8 @@ import pytest
 from test_autofix import _spawn_recorder, store  # noqa: F401 — fixture
 from test_comms_core import MESSAGE, _Slack, _tools, slack  # noqa: F401 — fixture
 from test_comms_store import (  # noqa: F401 — fixture
-    DISPATCHED, _ask, _decision, _feed_lines, _logged, _message, _rows, _sweep_review,
-    _tick, comms_store, needs_core)
+    DISPATCHED, _ask, _decision, _feed_lines, _item, _logged, _message, _rows, _sweep_review,
+    _tick, comms_store, needs_core, qkey)
 
 from diplomat_app import bans
 from diplomat_app.store import Store, app_settings
@@ -204,14 +204,14 @@ def test_a_queued_review_asks_for_one_reply_with_its_place_in_the_queue(
     comms_store.auto_task_limit = 3
     m, d = _ask(1, "review", 12)
     _replied(comms_store, monkeypatch, (m, d))
-    assert [t.id for t in comms_store.queued_tasks] == ["review:12"]
+    assert [t.id for t in comms_store.queued_tasks] == [qkey("review", 12)]
     assert replies == [{
         "message": m, "decision": d, "away": False,
         "toggles": {"requests": True, "bumps": True, "investigations": True,
                     "replies": True, "replyToReviews": False, "replyToFixes": False,
                     "replyToInvestigations": False, "replyToQuestions": True},
         "settings": comms_store.comms_settings_payload(),
-        "queued": {"kind": "review", "number": 12, "ahead": 0, "bays": 3}}]
+        "queued": {"kind": "review", "number": 12, "repo": "", "ahead": 0, "bays": 3}}]
     assert _reply_lines() == ["Replied to kacper in DM: [Diplomat]: Queued it"]
 
 
@@ -219,20 +219,21 @@ def test_a_queued_review_asks_for_one_reply_with_its_place_in_the_queue(
 def test_a_fix_counts_the_tasks_ahead_of_its_band(comms_store, replies, monkeypatch):
     _sweep_review(comms_store, 1)
     _replied(comms_store, monkeypatch, (_message(1, "fix #7"), _decision("fix_issue", 7)))
-    assert [t.id for t in comms_store.queued_tasks] == ["review:13", "review:1", "issues:7"]
+    assert [t.id for t in comms_store.queued_tasks] == [qkey("review", 13), qkey("review", 1), qkey("issues", 7)]
     [request] = replies
-    assert request["queued"] == {"kind": "fix_issue", "number": 7, "ahead": 2,
+    assert request["queued"] == {"kind": "fix_issue", "number": 7, "repo": "", "ahead": 2,
                                  "bays": comms_store.auto_task_limit}
 
 
 @needs_core
 def test_work_already_running_says_when_it_started(comms_store, replies, monkeypatch):
     _rows(monkeypatch, [autofix.RunningAgent(12, "Auto · Review-req · #12 (@bob) +verdict",
-                                             "review", True, started_at=DISPATCHED)])
+                                             "review", True, started_at=DISPATCHED,
+                                             item=_item(12))])
     _replied(comms_store, monkeypatch, _ask(1, "review", 12))
     [request] = replies
     assert request["queued"] == {
-        "kind": "review", "number": 12, "ahead": 0, "bays": comms_store.auto_task_limit,
+        "kind": "review", "number": 12, "repo": "", "ahead": 0, "bays": comms_store.auto_task_limit,
         "startedAt": comms.iso(datetime.fromtimestamp(DISPATCHED, timezone.utc))}
 
 
@@ -310,7 +311,7 @@ def test_an_ask_whose_sender_a_later_message_of_the_tick_bans_is_not_acknowledge
         m["userID"] = "U0MAL"
     _replied(comms_store, monkeypatch, (ask, _decision("review", 12)),
              (injection, {**_decision("injection"), "evidence": "ignore your rules"}))
-    assert [t.id for t in comms_store.queued_tasks] == ["review:12"]
+    assert [t.id for t in comms_store.queued_tasks] == [qkey("review", 12)]
     assert replies == []
 
 
