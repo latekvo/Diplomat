@@ -613,6 +613,8 @@ class Store(QObject):
         self._panel_data: dict[str, tuple[list[OpenPR], list[OpenIssue], datetime]] = {}
         # The root whose lists `prs`/`issues` hold; None before any was shown.
         self._shown_slug: str | None = None
+        # The roots as :meth:`_follow_roots` last saw them resolved.
+        self._seen_roots: list[tuple[str, str]] | None = None
 
         # Re-point a hidden default selection.
         if self.selected in self.hidden_tools:
@@ -725,8 +727,20 @@ class Store(QObject):
     @repo_root_paths.setter
     def repo_root_paths(self, value: list[str]) -> None:
         appconfig.set_repo_roots(list(value))
+        self._seen_roots = None  # Settings redraws every path, resolved or not.
+        self._follow_roots()
+
+    def _follow_roots(self) -> None:
+        """Follow a change in the resolved roots with the picker and the panel lists:
+        an edit in Settings, or a re-read (:data:`review.ROOTS_TTL`) that finds a root
+        path resolving differently."""
+        seen = [(r.slug.lower(), r.path) for r in review.repo_roots()]
+        if seen == self._seen_roots:
+            return
+        self._seen_roots = seen
         self.local_repos_changed.emit()
-        # The lists on screen were of a root this change removed.
+        # The lists on screen were of a root no longer among them, or of the primary
+        # standing in for the selected one.
         if self._shown_slug not in (None, self.selected_repo.slug.lower()):
             self._show_panel_data(self.selected_repo)
             self.selected_repo_changed.emit()
@@ -748,12 +762,6 @@ class Store(QObject):
     def _root_of(item: str | None) -> LocalRepo:
         """The repo root an item key (or slug) is in, else the primary."""
         return Store._root_named(item) or review.repo_roots()[0]
-
-    @staticmethod
-    def _checkout_of(root: LocalRepo) -> str | None:
-        """:attr:`autofix.AgentJob.checkout` for work in ``root``: none for the primary,
-        whose checkout every spawn already starts in."""
-        return None if root.path == review.repo_path() else root.path
 
     @property
     def selected_repo(self) -> LocalRepo:
@@ -1422,6 +1430,7 @@ class Store(QObject):
 
     def refresh(self) -> None:
         """Synchronous full refresh. The GUI runs this on a worker thread."""
+        self._follow_roots()
         self.is_loading = True
         self.error = None
         self.loading_changed.emit(True)
@@ -1556,6 +1565,7 @@ class Store(QObject):
                 # reconciled once per kind against the union (a per-root
                 # `observe_owed` would clear the other roots' pending work).
                 roots = review.repo_roots()
+                self._follow_roots()
                 # One fetch of my PRs per cycle, taken before anything acts on it:
                 # the drain re-checks the waiting queue against it and the
                 # reconcilers below diff from the same list. Fetching it here rather
@@ -1743,7 +1753,8 @@ class Store(QObject):
 
         Each root keeps its own mark, and one with none is baselined on its first read,
         so adding a root never queues its backlog. A removed root's mark is dropped, so
-        re-adding it does not either. A root whose read failed keeps its mark."""
+        re-adding it does not either. A root whose read failed keeps its mark, as does
+        every root while one fails to resolve (:func:`review.roots_complete`)."""
         if not self.community_issues_enabled:
             return
         marks = self._community_marks()
@@ -1778,9 +1789,10 @@ class Store(QObject):
                 if queued:
                     activity.log("auto", "community-issue", f"{who} - fix queued")
             marks[slug] = mark.isoformat()
-        current = {r.slug.lower() for r in roots}
-        self._settings.setValue("communityIssuesSince", json.dumps(
-            {k: v for k, v in marks.items() if k in current}))
+        if review.roots_complete():
+            current = {r.slug.lower() for r in roots}
+            marks = {k: v for k, v in marks.items() if k in current}
+        self._settings.setValue("communityIssuesSince", json.dumps(marks))
 
     def _read_goal_work(self) -> list[tuple[str, dict]]:
         """Re-read the tasks, keep the PRs whose threads an ``auto`` goal wants fixed
@@ -1880,7 +1892,9 @@ class Store(QObject):
         """Dispatch the reviews requested of me in every root. A read that fails in any
         root stands the whole pass down: a concluded record is kept only while the pass
         sees its request owed (:func:`autofix.retained`), so a partial read would drop
-        the unread root's and re-dispatch them."""
+        the unread root's and re-dispatch them. For the same reason, while a root fails
+        to resolve (:func:`review.roots_complete`) the records of repos no polled root
+        is a checkout of are all kept."""
         try:
             reqs = [r for root in roots
                     for r in autofixmonitor.fetch_review_requests(
@@ -1931,9 +1945,12 @@ class Store(QObject):
         # can conclude a request, or the queue record a dispatch, meanwhile. Aged-out
         # records are dropped so the store can't grow unbounded and a real future
         # re-request is fresh (:func:`autofix.retained`).
-        self._save_attempts(key, autofix.retained(
-            {**self._load_attempts(key), **dispatched},
-            {r.item: r.stamp for r in owed}, now))
+        records = {**self._load_attempts(key), **dispatched}
+        kept = autofix.retained(records, {r.item: r.stamp for r in owed}, now)
+        if not review.roots_complete():
+            polled = {r.slug.lower() for r in roots}
+            kept |= {k: a for k, a in records.items() if k.partition("#")[0] not in polled}
+        self._save_attempts(key, kept)
         self.unaddressed_reviews = sum(
             1
             for r in owed
@@ -2277,7 +2294,7 @@ class Store(QObject):
             ledger_key=autofix.ledger_key(autofix.WORK_CONFLICTS, url, head_sha),
             counter="conflicts",
             attempt_stamp=autofix.STAMP_CONFLICTING,
-            checkout=self._checkout_of(root),
+            checkout=root.path,
         )
         return self.dispatch_agent(job, source, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
@@ -2307,7 +2324,7 @@ class Store(QObject):
             ledger_key=autofix.ledger_key(autofix.WORK_REVIEW_REPLY, s.url, s.head_sha),
             counter="my_reviews",
             attempt_stamp=autofix.STAMP_UNRESOLVED_REVIEW,
-            checkout=self._checkout_of(root),
+            checkout=root.path,
         )
         return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
@@ -2338,7 +2355,7 @@ class Store(QObject):
             ledger_key=autofix.ledger_key(autofix.WORK_REVIEW_REQ, r.url, r.head_sha),
             counter="review_requests",
             attempt_stamp=r.stamp,
-            checkout=self._checkout_of(root),
+            checkout=root.path,
         )
         return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
@@ -2399,6 +2416,8 @@ class Store(QObject):
         ``checkout`` is where the agent works when that is not the repo root
         (:attr:`autofix.AgentJob.checkout`).
         """
+        if checkout == review.repo_path():
+            checkout = None
         now = time.time()
         try:
             record = agentregistry.create_run(
@@ -2813,8 +2832,7 @@ class Store(QObject):
         telemetry ledger measures the monitors, not the operator."""
         roots = review.repo_roots()
         label = entry.label_among(len(roots))
-        checkout = (self._checkout_of(self._root_of(entry.repo))
-                    if entry.repo else None)
+        checkout = self._root_of(entry.repo).path if entry.repo else None
         stamp = (entry.config, label, checkout)
         cached = self._requested_tasks.get(entry.key)
         if cached is not None and cached[0] == stamp:
@@ -2838,8 +2856,7 @@ class Store(QObject):
                 author_login=entry.author or None,
                 duty=entry.action,
                 # A root's checkout is wherever that root is now, not where it was asked.
-                checkout=checkout if entry.repo else (
-                    where if where != review.repo_path() else None),
+                checkout=checkout or where,
             ),
             attempt=1,
         )
@@ -4890,8 +4907,17 @@ class Store(QObject):
         """A goal graph's ``+``: a fix agent for its issue now, as the Fix-issues
         wizard's press for one issue starts it (outside the cap), then recorded on the
         task by ``node["work"]``. Why it did not start comes back as the card's error."""
-        number = watched_number(str(node.get("url") or ""))
+        url = str(node.get("url") or "")
+        number = watched_number(url)
         if number is None:
+            return
+        # Worked in its repo's root, as the automatic pass works it (_request_goal_work).
+        item = item_key_from_url(url) or ""
+        root = self._root_named(item)
+        if root is None:
+            self.tracked_task_edited.emit(
+                ("card", task_id, None),
+                f"{item.partition('#')[0]} is not a repo root, so no fix was started")
             return
         with self._tracker_queue_lock:
             if number in self._goal_fixes_starting:
@@ -4903,12 +4929,14 @@ class Store(QObject):
             try:
                 # Named, as the wizard's press names it: the operator asked for this one.
                 cfg = issues.IssueConfig(target=issues.Target.SPECIFIC, me=self.effective_me,
-                                         specific_issue=str(number), include_features=True)
+                                         specific_issue=str(number), include_features=True,
+                                         home=root)
                 verdict = self.dispatch_agent(autofix.AgentJob(
                     kind=autofix.QUEUE_ISSUES_ACTION, audit_action=autofix.QUEUE_ISSUES_ACTION,
-                    label=(f"Issues · {self._item_label(str(node.get('url') or ''), number)}"
+                    label=(f"Issues · {self._item_label(url, number)}"
                            f" · {issues.depth_by_id(cfg.depth)['title']}"),
                     prompt=cfg.build_prompt(), duty=autofix.QUEUE_ISSUES_ACTION,
+                    checkout=root.path,
                 ), autofix.SOURCE_PANEL)
             except Exception as exc:  # noqa: BLE001 — a core that cannot build the prompt
                 verdict = str(exc)

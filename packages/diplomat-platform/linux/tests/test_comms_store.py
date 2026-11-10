@@ -611,6 +611,8 @@ def test_the_same_number_in_two_roots_is_two_asks(comms_store, monkeypatch):
     assert [(r.key, r.repo, r.author) for r in comms_store.requested_work] == [
         (qkey("review", 12), PRIMARY, "bob"),
         ("review:acme/widget#12", "acme/widget", "dana")]
+    assert [r.config["home"]["path"] for r in comms_store.requested_work] == [
+        "/src/primary", "/src/widget"]
     assert [e["outcome"] for e in _events() if e["kind"] == "action"] == [
         f"review of {PRIMARY.split('/')[1]}#12 queued, at the front of its band",
         "review of widget#12 queued, at the front of its band"]
@@ -633,7 +635,7 @@ def test_an_ask_in_another_root_works_in_its_checkout(comms_store, monkeypatch):
         "issues:acme/widget#500", {"owner": "acme", "repo": "Widget", "path": "/src/widget"})
     tasks = {t.id: t for t in comms_store.queued_tasks}
     assert tasks[widget.key].job.checkout == "/src/widget"
-    assert tasks[primary.key].job.checkout is None, "the primary is where every spawn starts"
+    assert tasks[primary.key].job.checkout == "/src/primary"
 
 
 @needs_core
@@ -649,7 +651,7 @@ def test_an_investigation_of_another_root_works_in_its_checkout(comms_store, mon
     assert "checkout" not in here.config
     tasks = {t.id: t for t in comms_store.queued_tasks}
     assert (tasks[there.key].job.checkout, tasks[here.key].job.checkout) == (
-        "/src/widget", None)
+        "/src/widget", "/src/primary")
 
 
 @needs_core

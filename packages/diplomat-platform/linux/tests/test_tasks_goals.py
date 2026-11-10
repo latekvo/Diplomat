@@ -330,6 +330,41 @@ def test_the_plus_starts_a_fix_now_and_records_it(tstore, github, claude, no_age
     assert len(no_agents) == 1
 
 
+def _press_plus_among(store, github, monkeypatch, roots: list[LocalRepo]):
+    """The ``+`` on #1802 with ``roots`` as the repo roots: the jobs it dispatched and
+    the card errors it gave."""
+    from diplomat_runtime import review
+
+    task_id = _propose(store, github)
+    monkeypatch.setattr(review, "repo_roots", lambda: roots)
+    jobs, errors = [], []
+    monkeypatch.setattr(store, "dispatch_agent",
+                        lambda job, source, attempt=1: jobs.append(job) or "spawned")
+    store.tracked_task_edited.connect(lambda origin, why: errors.append(why))
+    _view, card = _expanded(store, task_id)
+    card.graph_rows[1][1].mouseReleaseEvent(_left_click())
+    settle(store)
+    return jobs, errors
+
+
+def test_the_plus_works_in_its_issues_root(tstore, github, claude, no_agents, monkeypatch):
+    cfg = core.config()
+    monkeypatch.setattr("diplomat_runtime.promptcore.build_prompt",
+                        lambda c: f"fix in {(c.get('home') or {}).get('path')}")
+    jobs, _ = _press_plus_among(tstore, github, monkeypatch, [
+        LocalRepo("o", "elsewhere", "/src/e"), LocalRepo(cfg["owner"], cfg["repo"], "/src/conf")])
+    assert [(j.checkout, j.prompt) for j in jobs] == [("/src/conf", "fix in /src/conf")]
+
+
+def test_the_plus_in_no_repo_root_starts_nothing(tstore, github, claude, no_agents,
+                                                 monkeypatch):
+    jobs, errors = _press_plus_among(tstore, github, monkeypatch,
+                                     [LocalRepo("o", "elsewhere", "/src/e")])
+    assert jobs == []
+    slug = _key(1802).partition("#")[0]
+    assert f"{slug} is not a repo root, so no fix was started" in errors
+
+
 def test_badges_are_the_overlay_sets(tstore, github, claude, no_agents, monkeypatch):
     task_id = _propose(tstore, github)
     monkeypatch.setattr(type(tstore), "goal_overlay", lambda self: GoalOverlay(

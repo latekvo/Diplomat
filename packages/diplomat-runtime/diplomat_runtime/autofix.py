@@ -1052,9 +1052,10 @@ class AgentJob:
     # panel spawn keeps no attempt record, and a job with no monitor behind it (the
     # sweeps) has no stamp to carry.
     attempt_stamp: str = ""
-    # Where the agent works when that is not the primary root: another repo root, or
-    # another checkout listed in Settings. Never set on a job the mesh routes
-    # (``Store._route_via_mesh``).
+    # The checkout the agent works in: a repo root's, or another one listed in Settings.
+    # None is whichever root is primary at spawn time, so a monitor job, which can wait
+    # in the queue past a change of primary, names its root's path. The mesh takes only
+    # the primary's (``Store._route_via_mesh``).
     checkout: str | None = None
 
     @property

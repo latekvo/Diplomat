@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -111,7 +112,7 @@ def test_two_roots_one_pr_number_dispatch_each_in_its_own_checkout(quiet, monkey
     quiet._autofix_poll_once()
 
     assert [(j.label, j.pr_number, j.checkout) for j in jobs] == [
-        ("Resolve · r#5", 5, None), ("Resolve · other#5", 5, "/src/other")]
+        ("Resolve · r#5", 5, "/src/r"), ("Resolve · other#5", 5, "/src/other")]
     # The primary's checkout is where every spawn starts anyway.
     assert [kw.get("checkout") for kw in spawned] == [None, "/src/other"]
     assert len({j.work_key for j in jobs}) == 2
@@ -178,6 +179,81 @@ def test_a_root_removed_and_added_back_queues_none_of_its_backlog(quiet, monkeyp
     quiet._poll_community_issues([PRIMARY, SECOND])
 
     assert quiet.requested_work == []
+
+
+def test_a_root_that_failed_to_resolve_keeps_its_issue_mark(quiet, monkeypatch):
+    quiet.community_issues_enabled = True
+    _by_repo(monkeypatch, "fetch_open_issues", {
+        "o/other": [_issue(SECOND, 21, NOW - timedelta(minutes=30))]})
+    quiet._poll_community_issues([PRIMARY, SECOND])
+    monkeypatch.setattr(review, "roots_complete", lambda: False)
+    quiet._poll_community_issues([PRIMARY])
+    monkeypatch.setattr(review, "roots_complete", lambda: True)
+
+    filed = NOW + timedelta(minutes=5)
+    _by_repo(monkeypatch, "fetch_open_issues", {"o/other": [_issue(SECOND, 22, filed)]})
+    quiet._poll_community_issues([PRIMARY, SECOND])
+
+    assert [(w.repo, w.number) for w in quiet.requested_work] == [("o/other", 22)]
+
+
+def test_a_root_that_failed_to_resolve_keeps_its_concluded_reviews(quiet, monkeypatch):
+    """A concluded record is kept only while its request is seen owed, and a root that
+    did not resolve is not read."""
+    quiet.review_requests_enabled = True
+    dispatched: list = []
+    monkeypatch.setattr(quiet, "_dispatch_review_request",
+                        lambda r, attempt: dispatched.append((r.item, attempt)) or True)
+    _by_repo(monkeypatch, "fetch_review_requests", {"o/other": [_requested(SECOND, 7)]})
+    long_ago = time.time() - autofix.RETRY_MAX_BACKOFF - 60
+    quiet._save_attempts("reviewReqAttempts", {"o/other#7": autofix.ReviewAttempt(
+        "2026-01-02", long_ago, 1, concluded_at=long_ago)})
+    monkeypatch.setattr(review, "roots_complete", lambda: False)
+    quiet._poll_review_requests([PRIMARY])
+    monkeypatch.setattr(review, "roots_complete", lambda: True)
+
+    quiet._poll_review_requests([PRIMARY, SECOND])
+
+    assert dispatched == []
+
+
+def test_a_queued_task_keeps_its_root_when_another_becomes_primary(quiet, monkeypatch):
+    _by_repo(monkeypatch, "fetch_snapshots", {"o/r": [_conflicting(PRIMARY, 5)]})
+    quiet._autofix_poll_once()
+    spawned: list[dict] = []
+    monkeypatch.setattr(review, "spawn", lambda prompt, preferred, **kw: (
+        spawned.append(kw) or kw.get("prompt_file") or "/tmp/prompt.txt"))
+    monkeypatch.setattr(review, "repo_roots", lambda: [SECOND, PRIMARY])
+    monkeypatch.setattr(review, "repo_path", lambda: SECOND.path)
+    quiet.pr_autofix_enabled = True
+
+    quiet._autofix_poll_once()
+
+    assert [kw.get("checkout") for kw in spawned] == ["/src/r"]
+
+
+def test_every_monitor_prompt_names_its_roots_repo(quiet, monkeypatch):
+    """The prompt's repo is its config's home; without one it is the configured repo's."""
+    monkeypatch.setattr("diplomat_runtime.promptcore.build_prompt", lambda cfg: (
+        f"{cfg.get('kind')} in {(cfg.get('home') or {}).get('repo')}"))
+    prompts: list[str] = []
+    monkeypatch.setattr(quiet, "dispatch_agent",
+                        lambda job, source, attempt=1: prompts.append(job.prompt) or "spawned")
+    url = "https://github.com/o/other/pull/5"
+    snap = PRSnapshot(number=5, title="t", url=url, is_draft=False, mergeable="MERGEABLE",
+                      review_decision="", threads_unresolved=1, threads_i_owe=1, head_sha="s")
+
+    assert quiet._dispatch_conflict_fix(5, url, 1, autofix.SOURCE_AUTO)
+    assert quiet._dispatch_my_review(snap)
+    assert quiet._dispatch_review_request(_requested(SECOND, 5))
+    assert prompts == ["conflicts in other", "review in other", "review in other"]
+
+    quiet.community_issues_enabled = True
+    _by_repo(monkeypatch, "fetch_open_issues", {"o/other": [_issue(SECOND, 21, NOW)]})
+    quiet._settings.setValue("communityIssuesSince", json.dumps(
+        {"o/other": (NOW - timedelta(hours=1)).isoformat()}))
+    quiet._poll_community_issues([PRIMARY, SECOND])
+    assert [w.config["home"]["repo"] for w in quiet.requested_work] == ["other"]
 
 
 def test_state_from_a_single_repo_build_names_the_primary_root(quiet):
@@ -260,7 +336,7 @@ def test_an_ask_works_where_its_root_is_now_not_where_it_was_asked(quiet):
     quiet.requested_work = [ask(PRIMARY, "/old/r"), ask(SECOND, "/old/other")]
     quiet._offer_requested_work()
 
-    assert [t.job.checkout for t in quiet._staged_queue] == [None, "/src/other"]
+    assert [t.job.checkout for t in quiet._staged_queue] == ["/src/r", "/src/other"]
 
 
 def test_an_ask_whose_root_is_gone_is_dropped_and_said(quiet):
@@ -608,6 +684,49 @@ def test_the_header_offers_a_picker_only_with_several_roots(make_panel):
     two.repo_picker.setCurrentIndex(1)
     two.repo_picker.activated.emit(1)
     assert two.store.selected_repo == SECOND and refreshed == [1]
+
+
+def test_the_header_follows_a_root_that_resolves_later(make_panel, monkeypatch):
+    """The roots are re-read every minute (:data:`review.ROOTS_TTL`): one that did not
+    resolve when the panel was built joins the picker, and the lists follow the stored
+    selection to it."""
+    panel = make_panel([PRIMARY])
+    store_ = panel.store
+    store_._settings.setValue("selectedRepo", "o/other")
+    lists = {"o/r": [_pr(PRIMARY, 5)], "o/other": [_pr(SECOND, 6)]}
+    monkeypatch.setattr(API, "fetch_viewer_login", staticmethod(lambda: "alice"))
+    monkeypatch.setattr(API, "fetch_open_prs", staticmethod(lambda o, r: lists[f"{o}/{r}"]))
+    monkeypatch.setattr(API, "fetch_open_issues", staticmethod(lambda o, r: []))
+    store_.refresh()
+    assert panel.repo_picker.isHidden() and store_.prs == lists["o/r"]
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, SECOND])
+    store_.refresh()
+
+    assert not panel.repo_picker.isHidden()
+    assert panel.repo_picker.currentData() == "o/other"
+    assert store_.prs == lists["o/other"]
+
+
+def test_the_monitor_poll_follows_the_roots_too(quiet, monkeypatch):
+    """Between panel refreshes, a root that resolves again takes the lists back to it."""
+    quiet._settings.setValue("selectedRepo", "o/other")
+    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY])
+    quiet._panel_data = {"o/r": ([_pr(PRIMARY, 5)], [], NOW),
+                         "o/other": ([_pr(SECOND, 6)], [], NOW)}
+    quiet._show_panel_data(quiet.selected_repo)
+    quiet._follow_roots()
+    followed: list[str] = []
+    quiet.local_repos_changed.connect(lambda: followed.append("roots"))
+    quiet.selected_repo_changed.connect(lambda: followed.append("selected"))
+    quiet._autofix_poll_once()
+    assert followed == []
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, SECOND])
+    quiet._autofix_poll_once()
+
+    assert followed == ["roots", "selected"]
+    assert quiet.prs == [_pr(SECOND, 6)]
 
 
 def _checkout(tmp_path: Path, name: str) -> str:
