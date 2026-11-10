@@ -366,6 +366,23 @@ do {
           && !RepoRoots.allResolve(paths: ["/w/radon", "/w/plain"], remotes: remotes)
           && !RepoRoots.allResolve(paths: ["/w/gitlab"], remotes: remotes),
           "every path resolves only while each has a GitHub remote")
+    let pair = ["/src/r", "/src/other"]
+    let both = ["/src/r": "remote.origin.url https://github.com/o/r",
+                "/src/other": "remote.origin.url https://github.com/o/other"]
+    let gitlabFirst = ["/src/r": "remote.origin.url https://gitlab.com/o/r",
+                       "/src/other": "remote.origin.url https://github.com/o/other"]
+    check(RepoRoots.primaryResolves(paths: pair, remotes: both)
+          && !RepoRoots.guessed(paths: pair, remotes: both),
+          "both paths resolving: the first root is the first path's, and not a guess")
+    check(!RepoRoots.primaryResolves(paths: pair, remotes: gitlabFirst)
+          && !RepoRoots.guessed(paths: pair, remotes: gitlabFirst),
+          "a first path with only a GitLab remote is no primary, the second still resolving")
+    check(!RepoRoots.primaryResolves(paths: pair, remotes: [:])
+          && RepoRoots.guessed(paths: pair, remotes: [:]),
+          "none of several resolving: no primary, and the one root a guess")
+    check(RepoRoots.primaryResolves(paths: ["/src/r"], remotes: [:])
+          && !RepoRoots.guessed(paths: ["/src/r"], remotes: [:]),
+          "a lone unresolved path is the primary it always was, not a guess")
     check(RepoRoots.expand("~") == home && RepoRoots.expand("~user/x") == "~user/x"
           && RepoRoots.expand("/a/b/") == "/a/b/",
           "only a bare ~ or ~/ expands, and nothing else is touched")

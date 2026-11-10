@@ -1184,6 +1184,82 @@ enum QueueTest {
         check("an ask stored without its repo is its link's, else the configured repo's",
               decoded.map(\.repo) == ["o1/alpha", "o2/beta", "o1/alpha"]
                   && decoded.first?.key == AgentTaskQueue.key(auditAction: "review", item: "o1/alpha#4"))
+
+        // 27. Several root paths none of which resolved: the one root is a guess, so the
+        //     monitor poll stands down before any fetch, and the mesh takes nothing.
+        //     Then one root's unreadable issues: logged once per streak, failing no poll.
+        let rootsLog = feed.appendingPathComponent("gh-roots.log")
+        let issuesFail = feed.appendingPathComponent("gh-roots.fail")
+        let rootsStub = feed.appendingPathComponent("gh-roots")
+        let noIssues = #"{"data":{"repository":{"issues":{"nodes":[]}}}}"#
+        try? """
+            #!/bin/sh
+            echo "$*" >> '\(rootsLog.path)'
+            case "$*" in
+              *"issues(states: OPEN"*"name=alpha"*)
+                if [ -f '\(issuesFail.path)' ]; then echo 'HTTP 404: Could not resolve to a Repository' >&2; exit 1; fi
+                echo '\(noIssues)' ;;
+              *"issues(states: OPEN"*) echo '\(noIssues)' ;;
+              *"q=repo:"*) echo '\(none)' ;;
+              *) echo '{"data":{"viewer":{"login":"alice"}}}' ;;
+            esac
+            """.write(to: rootsStub, atomically: true, encoding: .utf8)
+        chmod(rootsStub.path, 0o755)
+        setenv("DIPLOMAT_GH", rootsStub.path, 1)
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.autofixPollError = nil
+        let guessedMessage = "no repo root in Settings resolves to a GitHub checkout"
+        store.pinRoots([configuredRoot], complete: false, primary: false, guessed: true)
+        for _ in 0..<50 {
+            await store.runAutofixPollOnce()
+            if store.autofixPollError == guessedMessage { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let guessedAsked = (try? String(contentsOf: rootsLog, encoding: .utf8)) ?? ""
+        check("no root path resolving stands the monitor poll down, fetching nothing",
+              store.autofixPollError == guessedMessage && !guessedAsked.contains("q=repo:")
+                  && !guessedAsked.contains("issues(states: OPEN") && store.queuedTasks.isEmpty)
+        check("…and the mesh takes nothing, the configured repo's root being a guess",
+              !store.meshRoutable(checkout: configuredRoot.path))
+        store.pinRoots([configuredRoot])
+        check("…which it does once that root resolves", store.meshRoutable(checkout: configuredRoot.path))
+
+        func unreadLines() -> [(action: String, detail: String)] {
+            let text = (try? String(contentsOf: feed.appendingPathComponent("audit.jsonl"),
+                                    encoding: .utf8)) ?? ""
+            return text.split(separator: "\n").compactMap { line in
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                      let action = obj["action"] as? String, action.hasPrefix("community-issue-"),
+                      let detail = obj["detail"] as? String else { return nil }
+                return (action, detail)
+            }
+        }
+        store.pinRoots([rootA, rootB])
+        store.communityIssuesEnabled = true
+        store.autofixPollError = nil
+        FileManager.default.createFile(atPath: issuesFail.path, contents: Data())
+        await store.runAutofixPollOnce()
+        await store.runAutofixPollOnce()
+        let failing = unreadLines()
+        check("one root's unreadable issues fail no poll, so the other roots' drain and commit go on",
+              store.autofixPollError == nil)
+        check("…and are logged once for the streak, naming the root and why",
+              failing.map(\.action) == ["community-issue-failed"]
+                  && failing.first?.detail.hasPrefix("Issues of o1/alpha unreadable, its new ones wait: ")
+                      == true
+                  && failing.first?.detail.contains("Could not resolve") == true)
+        try? FileManager.default.removeItem(at: issuesFail)
+        await store.runAutofixPollOnce()
+        await store.runAutofixPollOnce()
+        check("…and their recovery once",
+              unreadLines().map(\.action) == ["community-issue-failed", "community-issue-recovered"]
+                  && unreadLines().last?.detail == "Issues of o1/alpha readable again")
+        store.communityIssuesEnabled = false
+        store.autofixPollError = nil
+        store.requestedWork = []
+        store.queuedTasks = []
+        if let realGH { setenv("DIPLOMAT_GH", realGH, 1) } else { unsetenv("DIPLOMAT_GH") }
         store.pinRoots([argent])
 
         // 13. The redirect above is the only thing between a run of this test and the

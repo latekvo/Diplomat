@@ -121,6 +121,13 @@ final class Store: ObservableObject {
     /// main thread before the first resolution, which knows only the primary path. While
     /// it is false, a repo missing from `roots` may be one that failed to resolve.
     private var rootsResolved = false
+    /// Of the same reading: whether the first root is the first path's own repo
+    /// (`RepoRoots.primaryResolves`). While not, a reference naming no repo has none to
+    /// name, the next path's repo standing first.
+    private(set) var primaryResolved = true
+    /// Of the same reading: whether none of several root paths resolved, leaving the one
+    /// root a guess that the first path checks out the configured repo (`RepoRoots.guessed`).
+    private(set) var rootsGuessed = false
     private var rootsPinned = false
 
     /// Re-resolve the roots off the main actor, and follow a change with the panel.
@@ -130,6 +137,8 @@ final class Store: ObservableObject {
         let next = await Task.detached(priority: .utility) { RepoPaths.resolved(for: paths) }.value
         guard !rootsPinned, paths == RepoPaths.rootPaths else { return }
         rootsResolved = next.complete
+        primaryResolved = next.primaryResolved
+        rootsGuessed = next.guessed
         if next.roots != roots {
             roots = next.roots
             showSelectedRepo()
@@ -137,12 +146,15 @@ final class Store: ObservableObject {
     }
 
     /// Pin the roots, for headless self-tests only: resolved for real they are whatever
-    /// the developer's own config.json lists. `complete` stands for whether every root
-    /// path resolved.
-    func pinRoots(_ pinned: [PRRef.LocalRepo], complete: Bool = true) {
+    /// the developer's own config.json lists. `complete`, `primary` and `guessed` stand
+    /// for `rootsResolved`, `primaryResolved` and `rootsGuessed`.
+    func pinRoots(_ pinned: [PRRef.LocalRepo], complete: Bool = true, primary: Bool = true,
+                  guessed: Bool = false) {
         guard Headless.active, !pinned.isEmpty else { return }
         rootsPinned = true
         rootsResolved = complete
+        primaryResolved = primary
+        rootsGuessed = guessed
         roots = pinned
         showSelectedRepo()
     }
@@ -176,8 +188,10 @@ final class Store: ObservableObject {
     /// configured repo's root's, since a peer on a Diplomat from before repo routing runs
     /// every job in its single root, a checkout of the configured repo. The primary root
     /// need not be that one: roots can be reordered, or the configured repo's path fail to
-    /// resolve. No root of the configured repo, nothing goes.
+    /// resolve. No root of the configured repo, nothing goes, nor while the one root is a
+    /// guess (`rootsGuessed`).
     func meshRoutable(checkout: String?) -> Bool {
+        guard !rootsGuessed else { return false }
         let (owner, repo) = CoreAssets.repoCoordinates()
         let configured = "\(owner)/\(repo)".lowercased()
         guard let home = roots.first(where: { $0.slug.lowercased() == configured }) else { return false }
@@ -2272,17 +2286,22 @@ final class Store: ObservableObject {
         pollErrorThisCycle = nil
         if terminalUnpublished { publishSpawnTerminal() }
         if me.isEmpty { await fetchMe() }
+        await refreshRoots()
         if effectiveMe.isEmpty {
             // The most common total-breakage mode (gh missing/unauthenticated) used to
             // bail before the failure surfacing — the toggles said "on" and nothing
             // ever polled, silently.
             pollErrorThisCycle = "GitHub login unknown — is `gh` installed and authenticated?"
+        } else if rootsGuessed {
+            // Its one root would be the configured repo at the first path, which may
+            // check out another.
+            pollErrorThisCycle = "no repo root in Settings resolves to a GitHub checkout"
         } else {
             // Every root is polled, and everything below reads the roots' finds as ONE
             // list: one drain, one fingerprint diff, one ledger observation per kind (a
             // per-root observation would close the other roots' pending entries).
-            await refreshRoots()
             let polled = roots
+            let complete = rootsResolved
             // Off the main thread, so every prompt this cycle builds on it (each queued
             // task's, every poll) names the model from memory instead of walking Claude
             // Code's transcripts once per prompt.
@@ -2318,7 +2337,7 @@ final class Store: ObservableObject {
             // committed — they are re-offered by the cycle that succeeds.
             stagedQueue = []
             if let snaps { await pollMyPRs(snaps: snaps) }
-            await pollReviewRequests(polled)
+            await pollReviewRequests(polled, complete: complete)
             await pollCommunityIssues(polled)
             await runGoalPass()
             // Last, so the monitors' finds keep the places they were found in: the
@@ -2497,18 +2516,35 @@ final class Store: ObservableObject {
     }
 
     /// Each root on its own mark, so one root's failed fetch holds back that root alone.
+    /// A failed read keeps its root's mark and is logged once per streak, not failed as a
+    /// poll: nothing owed is read from it, so the other roots' drain and commit go on (a
+    /// repo gh cannot see would hold them forever).
     private func pollCommunityIssues(_ polled: [PRRef.LocalRepo]) async {
         guard communityIssuesEnabled else { return }
         for root in polled {
+            let slug = root.slug.lowercased()
+            let found: [OpenIssue]
             do {
-                queueCommunityIssues(try await API.fetchOpenIssues(owner: root.owner,
-                                                                   repo: root.repo),
-                                     root: root)
+                found = try await API.fetchOpenIssues(owner: root.owner, repo: root.repo)
             } catch {
-                notePollFailure(error)
+                if communityUnread.insert(slug).inserted {
+                    let why = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+                    AuditLog.log("auto", "community-issue-failed",
+                                 "Issues of \(root.slug) unreadable, its new ones wait: \(why.prefix(120))")
+                    refreshAudit()
+                }
+                continue
             }
+            if communityUnread.remove(slug) != nil {
+                AuditLog.log("auto", "community-issue-recovered", "Issues of \(root.slug) readable again")
+                refreshAudit()
+            }
+            queueCommunityIssues(found, root: root)
         }
     }
+
+    /// Roots whose issues the last community scan could not read, by lowercased slug.
+    private var communityUnread: Set<String> = []
 
     /// Queue one fix for each issue the community filed since the last scan of
     /// `found`, `root`'s open issues.
@@ -2562,7 +2598,9 @@ final class Store: ObservableObject {
     /// no agent is running — an *unaddressed* review. `ReviewReconcile` re-dispatches those
     /// as soon as it's possible (no in-flight agent, retry backoff elapsed), so a slip
     /// never leaves a review permanently unanswered.
-    private func pollReviewRequests(_ polled: [PRRef.LocalRepo]) async {
+    ///
+    /// `complete` is `rootsResolved` of the reading `polled` came from.
+    private func pollReviewRequests(_ polled: [PRRef.LocalRepo], complete: Bool) async {
         // Every root's, or none: the attempts and the ledger below are pruned to what this
         // list owes, so a root left out would read as all of its requests withdrawn.
         var reqs: [AutofixMonitor.ReviewRequest] = []
@@ -2633,7 +2671,7 @@ final class Store: ObservableObject {
             owed: Dictionary(owed.map { (item(url: $0.url, number: $0.number),
                                          AttemptStamp.reviewRequest($0)) },
                              uniquingKeysWith: { first, _ in first }),
-            polled: polled, complete: rootsResolved, now: now)
+            polled: polled, complete: complete, now: now)
         saveReviewReqAttempts(attempts)
         // Reviews still owed with no agent on them AFTER this poll — the ones a freshly
         // spawned agent didn't cover (cooling down between retries, or a spawn that failed).
