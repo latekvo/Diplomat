@@ -1648,7 +1648,8 @@ class Store(QObject):
         the roots both were read in. A root whose read failed is left out and held
         (:attr:`_held_slugs`): its queued tasks, fingerprints and attempt records stand
         untouched rather than be read as done. Only when every root's read failed is it
-        a poll failure, and both reads ``None``, which stands every consumer down."""
+        a poll failure: both reads are ``None``, which stands their consumers down, and
+        every root is returned, so the reads after this one fail on their own."""
         snaps: list = []
         closed: set[str] = set()
         read: list[LocalRepo] = []
@@ -1666,7 +1667,7 @@ class Store(QObject):
         self._held_slugs = frozenset(r.slug.lower() for r, _ in failed)
         if not read:
             self._note_poll_failure(failed[0][1])
-            return None, None, read
+            return None, None, roots
         self._note_roots_read("PRs", read, failed)
         return snaps, closed, read
 
