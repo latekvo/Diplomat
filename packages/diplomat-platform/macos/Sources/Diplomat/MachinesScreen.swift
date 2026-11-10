@@ -129,8 +129,7 @@ struct MachinesScreen: View {
     @ViewBuilder
     private var armBias: some View {
         let range = MachineArmBias.range
-        SettingRow(title: "ARM bias", summary: MachineArmBias.summary,
-                   detail: MachinesUI.armBiasDetail, stacked: true) {
+        SettingRow(title: "ARM bias", summary: MachineArmBias.summary, stacked: true) {
             SliderSetting(label: "ARM bias",
                           value: Binding(
                               get: { Double(store.remoteMachineArmBias) },
@@ -141,6 +140,7 @@ struct MachinesScreen: View {
                           badge: MachineArmBias.badge(store.remoteMachineArmBias),
                           minLabel: "x86 first", maxLabel: "ARM first",
                           tint: .teal)
+                .tooltip(MachinesUI.armBiasHelp)
         }
         if store.machineArmBiasSaveFailed {
             note(AllocatorUI.saveError, tint: .red)
@@ -309,10 +309,8 @@ enum MachinesUI {
     static let restartHelp = "Stop the running daemon and start this checkout's. Its table "
         + "is rebuilt by the next scan."
 
-    static let armBiasDetail = "Machines are ranked by spare cores, an ARM machine's counting "
-        + "this share and any other's the rest. At 70, an x86 machine needs about 2.3 times the "
-        + "spare cores of an ARM one to be listed above it; at 50 the order is by spare cores alone. "
-        + "Machines with warnings come last whatever the bias. A running daemon applies a change within a second."
+    static let armBiasHelp = "ARM's share of the ranking weight: an ARM machine's spare cores "
+        + "count this percent, any other's the rest. At 50, machines are ranked by spare cores alone."
 
     static var summary: String {
         let pkg = RemoteMachines.package

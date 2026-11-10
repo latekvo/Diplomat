@@ -124,15 +124,15 @@ def arm_bias_badge(arm: int) -> str:
 
 def arm_bias_row(store: Store) -> tuple[ConfigSlider, SettingRow]:
     slider = ConfigSlider(store, "remote_machine_arm_bias", reload=None,
-                          badge=arm_bias_badge, label="Prefer ARM machines",
+                          badge=arm_bias_badge, label="ARM bias",
                           minimum=0, maximum=appconfig.MAX_REMOTE_MACHINE_ARM_BIAS,
-                          step=5, min_label="prefer x86", max_label="prefer ARM",
+                          step=5, min_label="x86 first", max_label="ARM first",
                           tint=_TEAL)
     slider.setToolTip("ARM's share of the ranking weight: an ARM machine's spare cores "
                       "count this percent, any other's the rest. At 50, machines are "
                       "ranked by spare cores alone.")
     return slider, SettingRow(
-        "Prefer ARM machines", slider, stacked=True,
+        "ARM bias", slider, stacked=True,
         summary="Only changes the order machines are preferred in.")
 
 
