@@ -36,12 +36,12 @@ from diplomat_runtime import (
     appconfig,
     autofix,
     comms,
-    core,
     review,
     runner,
     usagescan,
 )
 from diplomat_runtime.models import Fmt
+from diplomat_runtime.prref import LocalRepo
 from . import (
     glyphs,
     szpont,
@@ -339,95 +339,163 @@ class SettingsView(QWidget):
             self._runner_row.set_summary(f"Could not open a terminal: {exc}",
                                          color=_ORANGE)
 
-    # MARK: repo root (where the agents work)
+    # MARK: repo roots (where the agents work)
 
     def _repo_card(self) -> QWidget:
-        card, body, self._repo_pill = settings_card(glyphs.G_REPO, "REPO ROOT", _TEAL)
+        card, body, self._repo_pill = settings_card(glyphs.G_REPO, "REPO ROOTS", _TEAL)
 
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        self._repo_field = QLineEdit(self.store.repo_path_override)
-        self._repo_field.setPlaceholderText(review.default_repo_path())
-        self._repo_field.setClearButtonEnabled(True)
-        row.addWidget(self._repo_field, 1)
-        browse = QPushButton("Browse…")
-        browse.setToolTip("Pick the local checkout agents should work in")
-        browse.clicked.connect(self._browse_repo)
-        row.addWidget(browse)
-        holder = QWidget()
-        holder.setLayout(row)
+        self._roots_host = QWidget()
+        self._roots_list = QVBoxLayout(self._roots_host)
+        self._roots_list.setContentsMargins(0, 0, 0, 0)
+        self._roots_list.setSpacing(4)
+        add = QPushButton("Add…")
+        add.setToolTip("Pick another local checkout the monitors watch")
+        add.clicked.connect(self._add_root)
+
+        col = QWidget()
+        col_layout = QVBoxLayout(col)
+        col_layout.setContentsMargins(0, 0, 0, 0)
+        col_layout.setSpacing(6)
+        col_layout.addWidget(self._roots_host)
+        col_layout.addWidget(add, 0, Qt.AlignmentFlag.AlignLeft)
 
         self._repo_row = self._track(SettingRow(
-            "Where every spawned agent starts", holder, stacked=True,
+            "Checkouts the monitors watch and agents work in", col, stacked=True,
         ))
         body.addWidget(self._repo_row)
-
-        def on_text(text: str) -> None:
-            self._save(lambda: setattr(self.store, "repo_path_override", text))
-            self._refresh_repo_ui()
-
-        self._repo_field.textChanged.connect(on_text)
+        self.store.local_repos_changed.connect(self._refresh_repo_ui)
         self._refresh_repo_ui()
         return card
 
-    def _browse_repo(self) -> None:
+    def _set_roots(self, paths: list[str]) -> None:
+        self._save(lambda: setattr(self.store, "repo_root_paths", paths))
+        self._refresh_repo_ui()
+
+    def _add_root(self) -> None:
         chosen = QFileDialog.getExistingDirectory(
-            self, "Choose the repo root", review.repo_path()
+            self, "Add a repo root", os.path.dirname(review.repo_path())
+        )
+        # None listed stands for the default root, which the first pick joins.
+        paths = self.store.repo_root_paths or [review.default_repo_path()]
+        if chosen and chosen not in paths:
+            self._set_roots([*paths, chosen])
+
+    def _choose_root(self, index: int) -> None:
+        paths = self.store.repo_root_paths
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Choose the repo root", os.path.expanduser(paths[index])
         )
         if chosen:
-            # Writes through the field so the text, the setting and the hint all move
-            # together (textChanged -> on_text).
-            self._repo_field.setText(chosen)
+            paths[index] = chosen
+            self._set_roots(paths)
 
-    def _repo_state(self) -> str:
-        """Which of the four hint states applies. A relative entry gets its own:
-        an "is it a checkout?" stat would be judged against THIS process's working
-        directory while the spawn's ``cd`` runs in the terminal's — the two disagree,
-        so neither verdict is honest. Mirrors ``RepoPaths.agentRepoState`` in Swift."""
-        if os.environ.get("DIPLOMAT_REPO"):
-            return "env-shadowed"
-        resolved = review.repo_path()
-        if not os.path.isabs(resolved):
-            return "not-absolute"
-        return "ok" if os.path.exists(os.path.join(resolved, ".git")) else "not-a-checkout"
+    def _remove_root(self, index: int) -> None:
+        paths = self.store.repo_root_paths
+        del paths[index]
+        self._set_roots(paths)
+
+    def _raise_root(self, index: int) -> None:
+        paths = self.store.repo_root_paths
+        paths[index - 1], paths[index] = paths[index], paths[index - 1]
+        self._set_roots(paths)
+
+    @staticmethod
+    def _root_problem(path: str, root: LocalRepo | None) -> str:
+        """Why a picked path is no usable root, or "" for none. A relative one gets its
+        own: an "is it a checkout?" stat would be judged against THIS process's working
+        directory while the spawn's ``cd`` runs in the terminal's. Mirrors
+        ``RepoPaths.rootState`` in Swift."""
+        where = os.path.expanduser(path)
+        if not os.path.isabs(where):
+            return "Not an absolute path"
+        if not os.path.isdir(where):
+            return "Folder not found"
+        if not os.path.exists(os.path.join(where, ".git")):
+            return "Not a git checkout"
+        return "" if root else "No GitHub remote, or a repo listed above"
 
     def _refresh_repo_ui(self) -> None:
-        """Pill, summary and detail, from one state read so the three can't disagree.
+        """One row per picked root, primary first, each named by the repo it resolved
+        to or by what is wrong with it; then the pill, summary and detail from the
+        primary, as the agents' `cd` sees it."""
+        while self._roots_list.count():
+            item = self._roots_list.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        paths = self.store.repo_root_paths
+        shadowed = bool(os.environ.get("DIPLOMAT_REPO"))
+        # A guessed root is a stand-in, not a resolved checkout.
+        resolved = {} if review.roots_guessed() else {r.path: r for r in review.repo_roots()}
+        problems = 0
+        for i, path in enumerate(paths):
+            root = None if shadowed else resolved.get(os.path.expanduser(path))
+            problem = "" if shadowed else self._root_problem(path, root)
+            problems += bool(problem)
+            self._roots_list.addWidget(self._root_row(i, path, root, problem))
+        self._roots_host.setVisible(bool(paths))
 
-        A problem states itself on the face of the card; the happy path is what the
-        field already shows, so it waits behind *Explain*."""
-        state = self._repo_state()
-        resolved = review.repo_path()
-        owner, repo = core.config()["owner"], core.config()["repo"]
-        default = review.default_repo_path()
-        if state == "env-shadowed":
-            env = os.environ.get("DIPLOMAT_REPO", "")
+        primary = review.repo_path()
+        owner, repo = review.repo_roots()[0].owner, review.repo_roots()[0].repo
+        if shadowed:
             text = (
-                "DIPLOMAT_REPO is set in this app's environment — agents run in "
-                f"{os.path.expanduser(env)}, whatever this field says. Unset it to use "
-                "the picker again."
+                "DIPLOMAT_REPO is set in this app's environment - agents run in "
+                f"{primary} alone, whatever this list says. Unset it to use the list "
+                "again."
             )
-        elif state == "not-absolute":
+        elif problems:
+            text = "A root above is not a checkout Diplomat can work in - fix or remove it."
+        elif not os.path.exists(os.path.join(primary, ".git")):
             text = (
-                "Use an absolute path — a relative one resolves against whatever "
-                "directory the spawned terminal happens to start in, not this app's."
-            )
-        elif state == "not-a-checkout":
-            text = (
-                f"No git checkout at {resolved} — the spawn's `cd` is best-effort, so an "
-                "agent would start in your home directory instead. Pick the clone of "
+                f"No git checkout at {primary} - the spawn's `cd` is best-effort, so an "
+                f"agent would start in your home directory instead. Add the clone of "
                 f"{owner}/{repo}."
             )
         else:
-            text = f"`cd {resolved}` — your local clone of {owner}/{repo}."
-        ok = state == "ok"
-        self._repo_pill.set_state("checkout ok" if ok else "check this",
-                                  _GREEN if ok else _ORANGE)
-        self._repo_row.set_summary("" if ok else text, color=_ORANGE)
-        self._repo_row.set_detail(
-            f"{text} Blank = the default path, {default}. DIPLOMAT_REPO in this app's "
-            "environment outranks both." if ok else None
-        )
+            text = ""
+        n = len(review.repo_roots())
+        self._repo_pill.set_state("check this" if text else
+                                  f"{n} root{'s' if n != 1 else ''}",
+                                  _ORANGE if text else _GREEN)
+        self._repo_row.set_summary(text, color=_ORANGE)
+        self._repo_row.set_detail(None if text else (
+            f"`cd {primary}` - the first root is the primary: where an agent starts "
+            f"when its work names no repo. Every monitor watches every root; the "
+            f"header's picker chooses the one the lists and wizards work on. None "
+            f"picked = {review.default_repo_path()}. DIPLOMAT_REPO in this app's "
+            f"environment outranks the list."
+        ))
+
+    def _root_row(self, index: int, path: str, root: LocalRepo | None,
+                  problem: str) -> QWidget:
+        row = QWidget()
+        line = QHBoxLayout(row)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(6)
+        if problem:
+            name = QLabel(f"⚠ {problem}")
+            name.setStyleSheet(f"font-size: 11px; font-weight: 600; color: {_ORANGE};")
+        else:
+            name = QLabel(root.slug if root else "")
+            name.setStyleSheet("font-size: 11px; font-weight: 600;")
+        name.setTextFormat(Qt.TextFormat.PlainText)
+        line.addWidget(name)
+        where = ElidedLabel(path, 10, _GREY)
+        where.setToolTip(path)
+        line.addWidget(where, 1)
+        for glyph, tip, act, enabled in (
+            ("Choose…", "Pick another checkout for this root", self._choose_root, True),
+            ("↑", "Move up - the first root is the primary", self._raise_root, index > 0),
+            ("✕", "Stop watching this root", self._remove_root, True),
+        ):
+            btn = QPushButton(glyph)
+            btn.setToolTip(tip)
+            btn.setAccessibleName(f"{tip.split(' - ')[0]}: {path}")
+            if glyph != "Choose…":
+                btn.setFixedWidth(26)
+            btn.setEnabled(enabled)
+            btn.clicked.connect(lambda _=False, i=index, f=act: f(i))
+            line.addWidget(btn)
+        return row
 
     # MARK: other repos
 
@@ -457,7 +525,7 @@ class SettingsView(QWidget):
                    "the agent works in that checkout. Each checkout answers for every "
                    "GitHub remote it has, so a fork clone takes links to both its "
                    "upstream and its origin. A bare "
-                   "#number still means the repo root's repo, and a run here is never "
+                   "#number still means the selected repo root, and a run here is never "
                    "routed over the mesh: a peer would start it in its own repo root.",
         )))
         self.store.local_repos_changed.connect(self._refresh_other_repos_ui)
@@ -982,7 +1050,7 @@ class SettingsView(QWidget):
                    "you and your keywords. Each one is a ping (the ✉ screen, the "
                    "activity feed, a notification), and is triaged by one model call "
                    "with no tools and no MCP servers, which only answers what it asks "
-                   "for. A review or issue fix of this repo, a nudge to hurry one, or a "
+                   "for. A review or issue fix in a repo root, a nudge to hurry one, or a "
                    "reported problem to investigate is then queued like any other ask: "
                    "the ban list, the task cap and the spending budget all still "
                    "apply. Your own messages, bots and people from other workspaces "
@@ -1025,7 +1093,7 @@ class SettingsView(QWidget):
             "comms_act_requests",
             "“Can you review #12?” queues that review at the front of the requested "
             "reviews, as the Review wizard would run it; an issue fix likewise. Only an "
-            "open PR or issue of this repo.")
+            "open PR or issue in a repo root.")
         self._sw_comms_bumps = self._comms_switch(
             inner, "Bump queued work", st.comms_act_bumps, "comms_act_bumps",
             "“Any news on #12?” moves whatever is already queued for #12 to the front "

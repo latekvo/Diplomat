@@ -16,8 +16,9 @@ import Foundation
 ///   SZPONTNET_DIR=$(mktemp -d) DIPLOMAT_SELF_REPO=/nonexistent \
 ///     DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
 ///
-/// No node is contacted or started: the commands run against a snapshot with no control
-/// port, which `MeshBridge.request` rejects before it opens a socket. The two env vars are
+/// No node is started: the commands run against a snapshot with no control port, which
+/// `MeshBridge.request` rejects before it opens a socket, and the dispatch checks talk to
+/// a stand-in listening on loopback inside this process. The two env vars are
 /// required (the test refuses to run without them) — `SZPONTNET_DIR` so the
 /// `meshTick()` re-read sees a known-empty state dir instead of the developer's live node,
 /// and `DIPLOMAT_SELF_REPO` so a broken headless guard cannot double-fork a real daemon.
@@ -31,6 +32,18 @@ enum MeshCommandTest {
     private final class Probe: @unchecked Sendable {
         var ports: [Int] = []
         var ranOffMain = false
+    }
+
+    /// What a stand-in node was sent, written on its accept thread.
+    private final class Captured: @unchecked Sendable {
+        private let lock = NSLock()
+        private var msg: [String: Any]?
+        private var done = false
+        func finish(_ m: [String: Any]?) { lock.lock(); (msg, done) = (m, true); lock.unlock() }
+        var result: (done: Bool, msg: [String: Any]?) {
+            lock.lock(); defer { lock.unlock() }
+            return (done, msg)
+        }
     }
 
     /// An error that is NOT a `LocalizedError`, to pin the `"\(error)"` fallback.
@@ -219,6 +232,60 @@ enum MeshCommandTest {
             check("\(name) surfaces the bridge's error", store.meshError == noPortMessage,
                   "got \(store.meshError ?? "nil")")
         }
+
+        // 5. A wizard's "Run on mesh" names the repo it works on, lowercased, so the
+        //    executor starts it in its root for that repo. A stand-in node on loopback
+        //    records the one command it is sent.
+        func capture(_ fire: (Int) async -> Void) async -> [String: Any]? {
+            let fd = socket(AF_INET, SOCK_STREAM, 0)
+            var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            addr.sin_family = sa_family_t(AF_INET)
+            inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr)
+            var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let bound = withUnsafeMutablePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    bind(fd, $0, len) == 0 && listen(fd, 1) == 0 && getsockname(fd, $0, &len) == 0
+                }
+            }
+            guard fd >= 0, bound else { return nil }
+            let got = Captured()
+            Thread.detachNewThread {
+                let conn = accept(fd, nil, nil)
+                var sent: [String: Any]?
+                defer { if conn >= 0 { close(conn) }; close(fd); got.finish(sent) }
+                guard conn >= 0 else { return }
+                var lines: [Data] = [], line = Data(), byte: UInt8 = 0
+                while lines.count < 2, recv(conn, &byte, 1, 0) == 1 {
+                    if byte == 0x0A { lines.append(line); line = Data() } else { line.append(byte) }
+                }
+                if lines.count == 2 {
+                    sent = try? JSONSerialization.jsonObject(with: lines[1]) as? [String: Any]
+                }
+                let reply = Data(#"{"t":"dispatch-result","results":[]}"#.utf8) + [0x0A]
+                _ = reply.withUnsafeBytes { send(conn, $0.baseAddress, reply.count, 0) }
+            }
+            await fire(Int(UInt16(bigEndian: addr.sin_port)))
+            let deadline = Date().addingTimeInterval(5)
+            while !got.result.done, Date() < deadline {
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+            return got.result.msg
+        }
+        let wizard = await capture { port in
+            seed(port: port)
+            var answered = false
+            store.meshDispatch(duty: "review", prompt: "p", repo: "O/R") { _, _ in answered = true }
+            let deadline = Date().addingTimeInterval(5)
+            while !answered, Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
+        }
+        check("a wizard's mesh dispatch names its repo, lowercased",
+              wizard?["repo"] as? String == "o/r", "got \(wizard.map { "\($0)" } ?? "nothing")")
+        let bare = await capture { port in
+            _ = await Task.detached { try? MeshBridge.dispatch(duty: "review", prompt: "p", port: port) }.value
+        }
+        check("a dispatch with no repo carries no repo field",
+              bare != nil && bare?["repo"] == nil, "got \(bare.map { "\($0)" } ?? "nothing")")
 
         print(failures.isEmpty
             ? "\nMESH CMD TEST OK"

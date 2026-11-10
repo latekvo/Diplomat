@@ -229,6 +229,7 @@ enum TasksTest {
         await store.reloadTasks()
         func view(_ id: String) -> TaskView? { store.taskViews.first { $0.task.id == id } }
         func ref(_ n: Int) -> String { "\(owner)/\(repo)#\(n)" }
+        func key(_ n: Int) -> String { ref(n).lowercased() }
         let labels = view(fixture.proposed)?.graph.map { $0.map(\.label) } ?? []
         check("the proposal's graph: closes, stacked and blocking PRs, and the issue no PR closes",
               labels == [["#1801", "#1810", "#1811"], ["#1802", "#1811"], ["#1803", "+"], ["#1812", "#1810", "#1811"]],
@@ -239,23 +240,31 @@ enum TasksTest {
         check("a proposed and an observed goal want nothing",
               view(fixture.proposed)?.work == [] && view(fixture.observe)?.work == [])
         check("with PR auto-fix off, my-PR review fixes are paused",
-              store.isPaused(.myReviews, prNumber: 1810) && store.isPaused(.myReviews, prNumber: nil))
+              store.isPaused(.myReviews, item: key(1810)) && store.isPaused(.myReviews, item: nil))
         check("but not on a PR of an auto goal's findings, whose conflicts stay paused",
-              !store.isPaused(.myReviews, prNumber: 1822) && store.isPaused(.conflicts, prNumber: 1822))
+              !store.isPaused(.myReviews, item: key(1822)) && store.isPaused(.conflicts, item: key(1822)))
 
         print("the automatic pass")
+        let asksBeforeNoRoot = store.requestedWork.count
+        store.pinRoots([PRRef.LocalRepo(owner: "o", repo: "elsewhere", path: "/src/elsewhere")])
+        await store.runGoalPass()
+        store.pinRoots([PRRef.LocalRepo(owner: owner, repo: repo, path: RepoPaths.agentRepo)])
+        check("with no root for the goal's repo, it asks for and records nothing",
+              store.requestedWork.count == asksBeforeNoRoot && view(fixture.auto)?.task.dispatched.isEmpty == true,
+              "\(store.requestedWork.map(\.key)) \(view(fixture.auto)?.task.dispatched.keys.sorted() ?? [])")
         let asksBefore = Set(store.requestedWork.map(\.key))
         store.goalFixesStarting = [1820]
         await store.runGoalPass()
         store.goalFixesStarting = []
         let asked = store.requestedWork.filter { !asksBefore.contains($0.key) }
         check("asks for exactly the two reviews, the fix's issue having an agent",
-              asked.map(\.key) == ["review:1821", "review:1822"], "\(asked.map(\.key))")
-        let fixAsk = store.goalFixAsk(number: 1820, url: "", author: "tv-user")
+              asked.map(\.key) == ["review:\(key(1821))", "review:\(key(1822))"], "\(asked.map(\.key))")
+        let fixAsk = store.goalFixAsk(number: 1820, url: "https://github.com/\(owner)/\(repo)/issues/1820",
+                                       author: "tv-user")
         if case .issues(let cfg) = fixAsk.config {
             check("a fix is the one issue, features included, re-checked for closed and assigned when its turn comes",
                   cfg.target == .all && cfg.specificIssue == "1820" && cfg.includeFeatures && cfg.unassignedOnly
-                    && !cfg.isSingleIssue && fixAsk.key == "issues:1820",
+                    && !cfg.isSingleIssue && fixAsk.key == "issues:\(key(1820))",
                   "\(cfg.target) \(cfg.specificIssue) \(cfg.includeFeatures)")
         }
         if case .issues(let cfg) = store.goalPlusAsk(number: 1802, url: "", author: nil).config {
@@ -263,6 +272,30 @@ enum TasksTest {
                     && cfg.specificIssue == "1802" && cfg.includeFeatures && cfg.isSingleIssue,
                   "\(cfg.target) \(cfg.specificIssue) \(cfg.includeFeatures)")
         }
+        let elsewhere = PRRef.LocalRepo(owner: "o", repo: "elsewhere", path: "/src/elsewhere")
+        let configuredRoot = PRRef.LocalRepo(owner: owner, repo: repo, path: scratch.appendingPathComponent("configured").path)
+        let plus = TaskGraph.Node(kind: "add", url: "https://github.com/\(owner)/\(repo)/issues/1899", label: "+",
+                                  author: "plus-banned")
+        store.pinRoots([elsewhere, configuredRoot])
+        let plusJob = store.goalPlusJob(plus, number: 1899)
+        check("the + works in its issue's root, not the primary's",
+              plusJob.directory == configuredRoot.path, "\(plusJob.directory ?? "nil")")
+        // Banned and in a scratch feed: were the root check missing, the dispatch would
+        // stop at the ban and say so there, rather than open a terminal.
+        let bans = scratch.appendingPathComponent("bans")
+        try? fm.createDirectory(at: bans, withIntermediateDirectories: true)
+        try? Data(#"{"banned":[{"login":"plus-banned","reason":"test"}]}"#.utf8)
+            .write(to: bans.appendingPathComponent("banned.json"))
+        setenv("DA_BAN_DIR", bans.path, 1)
+        let feed = scratch.appendingPathComponent("audit")
+        setenv("DIPLOMAT_AUDIT_DIR", feed.path, 1)
+        store.pinRoots([elsewhere])
+        let noRoot = await store.startGoalFix(plus, task: fixture.auto)
+        let fed = (try? String(contentsOf: feed.appendingPathComponent("audit.jsonl"), encoding: .utf8)) ?? ""
+        check("a + on an issue in no root starts nothing and says why",
+              noRoot == "\(owner.lowercased())/\(repo.lowercased()) is not a repo root, so no fix was started"
+                && fed.isEmpty, "\(noRoot ?? "nil") | \(fed)")
+        store.pinRoots([PRRef.LocalRepo(owner: owner, repo: repo, path: RepoPaths.agentRepo)])
         let reviews = asked.compactMap { ask -> (ReviewConfig, String)? in
             if case .review(let cfg) = ask.config { return (cfg, ask.author) }
             return nil
@@ -284,8 +317,8 @@ enum TasksTest {
               "\(overlay)")
         _ = await store.setGoalMode(fixture.auto, mode: .observe)
         check("switching the goal to observe withdraws its asks not started",
-              !store.requestedWork.contains { ["review:1821", "review:1822"].contains($0.key) }
-                && !store.queuedTasks.contains { ["review:1821", "review:1822"].contains($0.id) },
+              !store.requestedWork.contains { ["review:\(key(1821))", "review:\(key(1822))"].contains($0.key) }
+                && !store.queuedTasks.contains { ["review:\(key(1821))", "review:\(key(1822))"].contains($0.id) },
               "\(store.requestedWork.map(\.key))")
         check("and forgets them, the fix whose agent started kept",
               view(fixture.auto)?.task.dispatched.keys.sorted() == ["fix:\(ref(1820))"],
@@ -293,48 +326,60 @@ enum TasksTest {
         _ = await store.setGoalMode(fixture.auto, mode: .auto)
         await store.runGoalPass()
         check("back in auto, its reviews are asked for again",
-              Set(["review:1821", "review:1822"]).isSubset(of: Set(store.requestedWork.map(\.key))),
+              Set(["review:\(key(1821))", "review:\(key(1822))"]).isSubset(of: Set(store.requestedWork.map(\.key))),
               "\(store.requestedWork.map(\.key))")
         _ = await store.editTask(.archive(id: fixture.auto))
         check("archiving the goal withdraws them too",
-              !store.requestedWork.contains { ["review:1821", "review:1822"].contains($0.key) },
+              !store.requestedWork.contains { ["review:\(key(1821))", "review:\(key(1822))"].contains($0.key) },
               "\(store.requestedWork.map(\.key))")
         _ = await store.editTask(.unarchive(id: fixture.auto))
         _ = await store.setGoalMode(fixture.observe, mode: .auto, reviewOnPush: true)
         check("the grouper's goal, automated, asks for its PR's review",
-              store.requestedWork.contains { $0.key == "review:1831" }, "\(store.requestedWork.map(\.key))")
+              store.requestedWork.contains { $0.key == "review:\(key(1831))" }, "\(store.requestedWork.map(\.key))")
         _ = await store.setGoalMode(fixture.observe, mode: .dismissed)
         check("dismissing it, which hides it, withdraws that too",
-              !store.requestedWork.contains { $0.key == "review:1831" }, "\(store.requestedWork.map(\.key))")
+              !store.requestedWork.contains { $0.key == "review:\(key(1831))" }, "\(store.requestedWork.map(\.key))")
 
         print("the agent overlay")
+        let home = PRRef.LocalRepo(owner: owner, repo: repo, path: "")
+        func url(_ pr: Int, in slug: String = "\(owner)/\(repo)") -> String { "https://github.com/\(slug)/pull/\(pr)" }
         func run(_ id: String, _ pr: Int?, _ kind: String, _ label: String, _ state: AgentState.RunState,
-                 released: Bool = false) -> Store.AgentRow {
-            Store.AgentRow(record: AgentState.RunRecord(runID: id, dispatchedAt: 0, prNumber: pr, kind: kind,
+                 released: Bool = false, in slug: String = "\(owner)/\(repo)") -> Store.AgentRow {
+            Store.AgentRow(record: AgentState.RunRecord(runID: id, dispatchedAt: 0, prNumber: pr,
+                                                        prURL: pr.map { url($0, in: slug) } ?? "", kind: kind,
                                                         label: label, released: released),
                            state: state, reason: "", window: nil)
         }
-        func task(_ id: String, pr: Int?) -> Store.QueuedAgentTask {
+        func task(_ id: String, pr: Int?, in slug: String = "\(owner)/\(repo)") -> Store.QueuedAgentTask {
             Store.QueuedAgentTask(id: id, job: Store.AgentJob(kind: "review", auditAction: "review", label: id,
-                                                              prompt: "", prURL: nil, prNumber: pr,
-                                                              authorLogin: nil, duty: "review", workKey: "",
-                                                              counter: nil),
+                                                              prompt: "", prURL: pr.map { url($0, in: slug) },
+                                                              prNumber: pr, authorLogin: nil, duty: "review",
+                                                              workKey: "", counter: nil),
                                   attemptNumber: 1)
         }
+        let issueURL = "https://github.com/\(owner)/\(repo)/issues/1801"
         let composed = Store.goalOverlay(
             rows: [run("a", 1821, "review", "Review · #1821 · deep", .running),
                    run("b", 1810, "review", "Review · #1810 · deep", .awaitingInput),
                    run("c", 1822, "review", "Review · #1822 · deep", .running, released: true),
                    run("d", 1811, "conflicts", "Resolve · #1811", .finished),
                    run("e", nil, "issues", "Issues · #18030 · deep", .starting),
-                   run("f", nil, "issues", "Issues · #1803 · deep", .unknown),
-                   run("g", nil, "review", "Issues · #1804 · deep", .running)],
-            queued: [task("issues:1802", pr: nil), task("review-req:1812", pr: 1812)],
-            requested: [store.goalFixAsk(number: 1801, url: "", author: nil)],
-            startingFixes: [1830])
-        check("agents: live PR runs, issue fixes by label, spawning fixes",
+                   run("f", nil, "issues", "Issues · \(repo)#1803 · deep", .unknown),
+                   run("g", nil, "review", "Issues · #1804 · deep", .running),
+                   // Another root's PR and issue under the goals' numbers: not theirs.
+                   run("h", 1823, "review", "Review · widgets#1823 · deep", .running, in: "acme/widgets"),
+                   run("i", nil, "issues", "Issues · widgets#1805 · deep", .running)],
+            queued: [task("issues:\(key(1802))", pr: nil),
+                     task("review-req:\(key(1812))", pr: 1812),
+                     task("issues:acme/widgets#1806", pr: nil),
+                     task("review-req:acme/widgets#1813", pr: 1813, in: "acme/widgets")],
+            requested: [store.goalFixAsk(number: 1801, url: issueURL, author: nil),
+                        store.goalFixAsk(number: 1807, url: "https://github.com/acme/widgets/issues/1807",
+                                         author: nil)],
+            startingFixes: [1830], watched: home)
+        check("agents: live PR runs, issue fixes by label, spawning fixes, the goals' repo alone",
               composed.agentPRs == [1810, 1821] && composed.agentIssues == [1803, 1830, 18030], "\(composed)")
-        check("queued: PR tasks, issues:N tasks and asked-for fixes",
+        check("queued: PR tasks, issues: tasks and asked-for fixes, the goals' repo alone",
               composed.queuedPRs == [1812] && composed.queuedIssues == [1801, 1802], "\(composed)")
         let watched = (owner: owner, repo: repo)
         func pill(_ kind: String, _ n: Int, in o: String = owner) -> TaskGraph.Node {

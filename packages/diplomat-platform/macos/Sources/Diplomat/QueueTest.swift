@@ -15,8 +15,9 @@ import DiplomatCore
 /// book never overlap.
 ///
 /// It reaches the at-capacity branch honestly — a real `dispatchAgent` call against
-/// a real cap — so it never spawns an agent, needs no `gh` auth and no terminal
-/// automation, and can run on a CI runner:
+/// a real cap — and a dispatch that gets past it is refused its terminal
+/// (`AgentSpawner.refuseHeadless`), so it never spawns an agent, needs no `gh` auth and
+/// no terminal automation, and can run on a CI runner:
 ///
 ///   DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
 ///
@@ -28,6 +29,11 @@ import DiplomatCore
 /// resolved against is a fixture whose answers depend on what else the developer
 /// happens to be running.
 enum QueueTest {
+    /// The queue key of `verb` on argent's PR or issue `n`, the repo every fixture names.
+    static func key(_ verb: String, _ n: Int) -> String {
+        AgentTaskQueue.key(auditAction: verb, item: "software-mansion/argent#\(n)")
+    }
+
     /// Returns overall pass/fail so the launcher can exit non-zero — a FAIL that
     /// still exits 0 can't gate anything.
     @discardableResult
@@ -74,12 +80,14 @@ enum QueueTest {
 
         /// Stand one automatic agent up, the way a dispatch books it: a record with no
         /// pid yet, which is exactly what a spawn nothing has observed yet looks like —
-        /// and which holds a bay of the cap from the moment it is written.
-        func bookAgent(_ number: Int, label: String = "") {
+        /// and which holds a bay of the cap from the moment it is written. Only for
+        /// `AgentState.spawnGrace`, though: past it the bay frees, and a section whose
+        /// polls may outlast it dates it `ahead` to keep its work queued.
+        func bookAgent(_ number: Int, label: String = "", ahead: TimeInterval = 0) {
             let now = Date().timeIntervalSince1970
             AgentRegistry.createRun(
                 AgentState.RunRecord(
-                    runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
+                    runID: AgentRegistry.newRunID(now: now), dispatchedAt: now + ahead,
                     prNumber: number,
                     prURL: "https://github.com/software-mansion/argent/pull/\(number)",
                     kind: "review",
@@ -93,6 +101,10 @@ enum QueueTest {
         // A headless Store still READS the operator's real settings — pin every one
         // this test's outcome depends on, or a machine with a monitor switched off
         // fails assertions about work that monitor owns.
+        let argent = PRRef.LocalRepo(owner: "software-mansion", repo: "argent",
+                                     path: AgentSpawner.repoPath)
+        store.pinRoots([argent])
+        store.selectedRepo = ""
         store.prAutofixEnabled = true       // headless-guarded: persists nothing, polls nothing
         store.reviewRequestsEnabled = true
         store.reviewAllowlistRaw = ""       // every review-req offered below carries no author
@@ -130,7 +142,7 @@ enum QueueTest {
         check("an over-cap auto job is refused", await offer(job(2)) == .atCapacity)
         store.commitQueue()
         check("…and lands in the queue rather than vanishing",
-              store.queuedTasks.map(\.id) == ["review-req:2"])
+              store.queuedTasks.map(\.id) == [key("review-req", 2)])
 
         // 2. One unit offered twice in a cycle is one task. The review edge-trigger and
         //    the level-triggered reconciler both reach the same PR in one poll; two
@@ -156,29 +168,32 @@ enum QueueTest {
         _ = await offer(job(4))
         store.commitQueue()
         check("one PR owing two monitors is two tasks",
-              store.queuedTasks.map(\.id) == ["review-req:2", "review-req:4", "conflicts:2"])
+              store.queuedTasks.map(\.id)
+                  == [key("review-req", 2), key("review-req", 4), key("conflicts", 2)])
         // …and the conflict fix is last though it was offered second: the band
         // outranks the order the monitors found things in (`AgentTaskQueue.band`).
 
         // 4. The drag order is the execution order, and it survives the poll that
         //    rebuilds the list — the queue is re-derived from GitHub every cycle, so an
         //    arrangement that didn't outlive one would be undone within 3 minutes.
-        store.moveQueuedTask("review-req:4", onto: "review-req:2")
+        store.moveQueuedTask(key("review-req", 4), onto: key("review-req", 2))
         check("a task dragged onto the first row runs first",
-              store.queuedTasks.map(\.id) == ["review-req:4", "review-req:2", "conflicts:2"])
+              store.queuedTasks.map(\.id)
+                  == [key("review-req", 4), key("review-req", 2), key("conflicts", 2)])
         _ = await offer(job(2))
         _ = await offer(job(2, action: "conflicts", label: "Resolve · #2"))
         _ = await offer(job(4))
         store.commitQueue()
         check("…and the next poll re-offers them in that order",
-              store.queuedTasks.map(\.id) == ["review-req:4", "review-req:2", "conflicts:2"])
+              store.queuedTasks.map(\.id)
+                  == [key("review-req", 4), key("review-req", 2), key("conflicts", 2)])
 
         // 5. Work GitHub stops owing drops out. A queue that outlived its evidence
         //    would offer "execute now" on a review that has already been answered.
         _ = await offer(job(4))
         store.commitQueue()
         check("a unit no longer offered leaves the queue",
-              store.queuedTasks.map(\.id) == ["review-req:4"])
+              store.queuedTasks.map(\.id) == [key("review-req", 4)])
 
         // 6. Only work a monitor will offer again may be queued. The queue is a view
         //    of what the monitors owe, never a record of its own: a job no monitor
@@ -203,14 +218,14 @@ enum QueueTest {
                             counter: .conflicts))
         store.commitQueue()
         check("both monitors on ⇒ both kinds queue",
-              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.queuedTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
         check("…and both are the drain's to run",
-              store.drainableTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.drainableTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
         store.prAutofixEnabled = false
         check("switching off PR auto-fix keeps its queued work on the list",
-              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.queuedTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
         check("…but the drain will no longer start it",
-              store.drainableTasks.map(\.id) == ["review-req:4"])
+              store.drainableTasks.map(\.id) == [key("review-req", 4)])
 
         // 8. A switched-off monitor keeps FINDING work: the poll runs both monitors
         //    either way and the queue is where the off one puts what it found. This is
@@ -221,7 +236,7 @@ enum QueueTest {
                             counter: .conflicts))
         store.commitQueue()
         check("a paused monitor's find is queued, not dropped",
-              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.queuedTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
         store.reviewRequestsEnabled = false
         check("with both monitors off, nothing is the drain's to run",
               store.drainableTasks.isEmpty)
@@ -256,7 +271,7 @@ enum QueueTest {
         store.autoTaskLimit = 1
         store.queueAutoRun = true
         check("switched back on, the queue is the drain's again",
-              store.drainableTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.drainableTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
 
         // 9. The empty slots the panel draws under the tasks. The seeded agent is up
         //    against a cap of one, so this device has no room; the panel must not
@@ -295,15 +310,15 @@ enum QueueTest {
         await offerBoth()
         store.commitQueue()
         check("two tasks queued, ready to start",
-              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.queuedTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
         let starting = store.queuedTasks[0]
         store.beginStarting(starting)
         check("a task being started leaves the queue…",
-              store.queuedTasks.map(\.id) == ["conflicts:6"])
+              store.queuedTasks.map(\.id) == [key("conflicts", 6)])
         check("…for the band that keeps it a row while it spawns",
-              store.startingTasks.map(\.id) == ["review-req:4"])
+              store.startingTasks.map(\.id) == [key("review-req", 4)])
         check("…and the drain no longer sees it either",
-              store.drainableTasks.map(\.id) == ["conflicts:6"])
+              store.drainableTasks.map(\.id) == [key("conflicts", 6)])
 
         // The work stays owed until the spawn answers and the attempt is recorded, so
         // a poll committing mid-dispatch re-offers it. Published as queued as well, it
@@ -312,8 +327,8 @@ enum QueueTest {
         await offerBoth()
         store.commitQueue()
         check("a poll landing mid-dispatch does not put the row back in the queue",
-              store.queuedTasks.map(\.id) == ["conflicts:6"])
-        check("…and it is still starting", store.startingTasks.map(\.id) == ["review-req:4"])
+              store.queuedTasks.map(\.id) == [key("conflicts", 6)])
+        check("…and it is still starting", store.startingTasks.map(\.id) == [key("review-req", 4)])
 
         // A start that comes to nothing is re-offered by the next poll, so its key has
         // to keep its PLACE in the arrangement, rather than coming back at the end of a
@@ -323,7 +338,7 @@ enum QueueTest {
         await offerBoth()
         store.commitQueue()
         check("a start that did not take comes back where it was, not at the back",
-              store.queuedTasks.map(\.id) == ["review-req:4", "conflicts:6"])
+              store.queuedTasks.map(\.id) == [key("review-req", 4), key("conflicts", 6)])
 
         // Its bay is spoken for from the moment it starts. Drawn free, the panel would
         // stand a row that is launching next to the empty slot it is launching into —
@@ -335,7 +350,7 @@ enum QueueTest {
         check("one agent up under a cap of three leaves two bays", store.freeAutoSlots == 2)
         store.beginStarting(store.queuedTasks[0])
         check("…and a task starting takes one of them", store.freeAutoSlots == 1)
-        store.endStarting("review-req:4")
+        store.endStarting(key("review-req", 4))
 
         // The `ps` count and the rows are each a lower bound on what is running, and a
         // starting task is outside BOTH — nothing has registered its spawn anywhere. So
@@ -359,9 +374,9 @@ enum QueueTest {
         store.autoTaskLimit = 1
         _ = await offer(job(7))
         store.commitQueue()
-        check("#7 is queued", store.queuedTasks.map(\.id) == ["review-req:7"])
+        check("#7 is queued", store.queuedTasks.map(\.id) == [key("review-req", 7)])
         bookAgent(7, label: "Auto · Review-req · #7")
-        await store.executeQueuedTask("review-req:7")
+        await store.executeQueuedTask(key("review-req", 7))
         check("a refused start leaves no row spinning behind it",
               store.startingTasks.isEmpty && store.queuedTasks.isEmpty)
         check("…and says why nothing opened",
@@ -440,7 +455,8 @@ enum QueueTest {
         _ = await offer(job(23))
         store.commitQueue()
         check("three tasks queued, two of them conflict fixes",
-              store.queuedTasks.map(\.id) == ["review-req:23", "conflicts:21", "conflicts:22"])
+              store.queuedTasks.map(\.id)
+                  == [key("review-req", 23), key("conflicts", 21), key("conflicts", 22)])
         func snap(_ number: Int, mergeable: String, iOwe: Int = 0) -> PRSnapshot {
             PRSnapshot(number: number, title: "t",
                        url: "https://github.com/software-mansion/argent/pull/\(number)",
@@ -452,20 +468,20 @@ enum QueueTest {
                                              snap(22, mergeable: "MERGEABLE")],
                                      closed: [])
         check("a conflict fix the branch no longer needs leaves the list",
-              store.queuedTasks.map(\.id) == ["review-req:23", "conflicts:21"])
+              store.queuedTasks.map(\.id) == [key("review-req", 23), key("conflicts", 21)])
         check("…and one it still needs keeps its place",
-              store.queuedTasks.contains { $0.id == "conflicts:21" })
+              store.queuedTasks.contains { $0.id == key("conflicts", 21) })
         // A review requested of me is not in that fetch at all. Read as answered, every
         // review request on the panel would vanish the first time the drain ran.
         check("a review request is not retired by a fetch that cannot see it",
-              store.queuedTasks.contains { $0.id == "review-req:23" })
+              store.queuedTasks.contains { $0.id == key("review-req", 23) })
         // What does retire it is its PR leaving the open state — the one answer that
         // reaches a verb the my-PRs fetch cannot speak for. #21 stays: it is the
         // arrangement, not the closure, that decides the rest of the list.
         await store.drainQueuedTasks(snaps: [snap(21, mergeable: "CONFLICTING")],
-                                     closed: [23])
+                                     closed: ["software-mansion/argent#23"])
         check("…and one whose PR has closed leaves the list all the same",
-              store.queuedTasks.map(\.id) == ["conflicts:21"])
+              store.queuedTasks.map(\.id) == [key("conflicts", 21)])
         emptyBook()
         store.queuedTasks = []
 
@@ -493,7 +509,7 @@ enum QueueTest {
         let fanOut = store.requestReviewSweep(sweep)
         check("a sweep queues one review per PR in scope, not one agent for all",
               fanOut.queued == 2 && fanOut.already == 0
-                  && store.queuedTasks.map(\.id) == ["review:31", "review:32"])
+                  && store.queuedTasks.map(\.id) == [key("review", 31), key("review", 32)])
         check("…each scoped to its own PR",
               store.queuedTasks.map(\.job.prNumber) == [31, 32])
         check("…owned by no monitor, so no toggle pauses it and no counter counts it",
@@ -520,7 +536,7 @@ enum QueueTest {
         store.offerRequestedWork()
         store.commitQueue()
         check("a poll re-offers every ask nothing has started",
-              store.queuedTasks.map(\.id) == ["review:31", "review:32", "review:33"])
+              store.queuedTasks.map(\.id) == [key("review", 31), key("review", 32), key("review", 33)])
 
         // …and the band puts them behind what GitHub is already owed, ahead of the
         // conflict fix another agent's run may make unnecessary. Back over the cap
@@ -535,45 +551,46 @@ enum QueueTest {
         store.commitQueue()
         check("a requested review waits behind a monitor's find and ahead of a conflict fix",
               store.queuedTasks.map(\.id)
-                  == ["review-req:35", "review:31", "review:32", "review:33", "conflicts:36"])
+                  == [key("review-req", 35), key("review", 31), key("review", 32),
+                      key("review", 33), key("conflicts", 36)])
 
         // Cancel is the way out of an ask the sweep should never have caught — nothing
         // GitHub does retires one while its PR is open, so a mis-aimed sweep would
         // otherwise be a day of agents nobody can call off.
-        store.cancelRequestedWork("review:32")
+        store.cancelRequestedWork(key("review", 32))
         store.offerRequestedWork()
         store.commitQueue()
         check("a cancelled ask does not come back on the next poll",
               store.requestedWork.map(\.number) == [31, 33]
-                  && !store.queuedTasks.contains { $0.id == "review:32" })
+                  && !store.queuedTasks.contains { $0.id == key("review", 32) })
         // Cancel refuses a row no ask stands behind. The monitor's find has to be
         // offered again to be in the queue at all: the commit above rebuilt it from
         // that cycle's offers, and that cycle offered only the asks.
         _ = await offer(job(35))
         store.offerRequestedWork()
         store.commitQueue()
-        store.cancelRequestedWork("review-req:35")
+        store.cancelRequestedWork(key("review-req", 35))
         check("…and a monitor's row is not cancellable at all",
-              store.queuedTasks.contains { $0.id == "review-req:35" })
+              store.queuedTasks.contains { $0.id == key("review-req", 35) })
 
         // The other way out, and the only one nobody pressed: #33 landed while it
         // waited. The ask has to go with the row — the row is rebuilt from the ask on
         // every poll, so a list that kept it would offer the same review straight back.
         // (Still at capacity, so the drain sweeps and then returns without spawning.)
-        await store.drainQueuedTasks(snaps: [], closed: [33])
+        await store.drainQueuedTasks(snaps: [], closed: ["software-mansion/argent#33"])
         check("a swept PR that landed before its turn takes its ask with it",
               store.requestedWork.map(\.number) == [31]
-                  && !store.queuedTasks.contains { $0.id == "review:33" })
+                  && !store.queuedTasks.contains { $0.id == key("review", 33) })
         store.offerRequestedWork()
         store.commitQueue()
         check("…so the next poll has nothing left to offer for it",
-              !store.queuedTasks.contains { $0.id == "review:33" })
+              !store.queuedTasks.contains { $0.id == key("review", 33) })
 
         // The dispatch is what answers an ask. #31's PR gains an agent, so the dispatch
         // is refused and the ask stands; a refusal that dropped it would silently
         // abandon the review.
         bookAgent(31)
-        await store.executeQueuedTask("review:31")
+        await store.executeQueuedTask(key("review", 31))
         check("an ask refused because the PR is busy is still asked for",
               store.requestedWork.map(\.number) == [31])
         store.error = nil
@@ -596,7 +613,7 @@ enum QueueTest {
         let issueFanOut = store.requestIssueSweep(IssueConfig(depth: "deep", me: "alice"))
         check("a scope queues one fix per unclaimed issue, not one agent for all",
               issueFanOut.queued == 2 && issueFanOut.already == 0
-                  && store.queuedTasks.map(\.id) == ["issues:31", "issues:41"])
+                  && store.queuedTasks.map(\.id) == [key("issues", 31), key("issues", 41)])
         check("…each labelled as the operator's own fix of that one issue",
               store.queuedTasks.map(\.job.label) == ["Issues · #31 · deep",
                                                      "Issues · #41 · deep"]
@@ -610,11 +627,11 @@ enum QueueTest {
                                                   includeDrafts: true, includeReady: false))
         check("a review of the PR with the same number is a row of its own",
               store.requestedWork.map(\.key).sorted()
-                  == ["issues:31", "issues:41", "review:31", "review:32"])
-        store.cancelRequestedWork("issues:31")
+                  == [key("issues", 31), key("issues", 41), key("review", 31), key("review", 32)])
+        store.cancelRequestedWork(key("issues", 31))
         check("…and cancelling the fix leaves the review of that number standing",
               store.requestedWork.map(\.key).sorted()
-                  == ["issues:41", "review:31", "review:32"])
+                  == [key("issues", 41), key("review", 31), key("review", 32)])
         store.requestedWork = []
         store.queuedTasks = []
         store.issues = []
@@ -634,28 +651,28 @@ enum QueueTest {
                              memberResponded: false)
         }
         store.communityIssuesEnabled = true
-        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0)])
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0)], root: argent)
         check("the first community scan queues none of the backlog",
               store.requestedWork.isEmpty)
-        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)])
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)], root: argent)
         check("an outsider's issue filed after it is queued as a fix of that one issue",
-              store.requestedWork.map(\.key) == ["issues:71"]
+              store.requestedWork.map(\.key) == [key("issues", 71)]
                   && store.requestedWork.first?.author == "outsider71"
                   && store.queuedTasks.map(\.job.label) == ["Issues · #71 · deep"]
                   && store.queuedTasks.first?.job.prompt.contains("issue #71") == true)
         check("…which re-checks its issue when its turn comes, as a swept fix does",
               store.queuedTasks.first?.job.prompt.contains("CAME OUT OF A SWEEP") == true)
-        store.cancelRequestedWork("issues:71")
-        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)])
+        store.cancelRequestedWork(key("issues", 71))
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)], root: argent)
         check("…and only once, even after its ask is gone", store.requestedWork.isEmpty)
         store.communityIssuesEnabled = false
         store.communityIssuesEnabled = true
-        store.queueCommunityIssues([filed(72, minutes: 2)])
+        store.queueCommunityIssues([filed(72, minutes: 2)], root: argent)
         check("switched off and on, the next scan queues what was filed meanwhile not at all",
               store.requestedWork.isEmpty)
-        store.queueCommunityIssues([filed(72, minutes: 2), filed(73, minutes: 3)])
+        store.queueCommunityIssues([filed(72, minutes: 2), filed(73, minutes: 3)], root: argent)
         check("…and what is filed after it as before",
-              store.requestedWork.map(\.key) == ["issues:73"])
+              store.requestedWork.map(\.key) == [key("issues", 73)])
         store.requestedWork = []
         store.queuedTasks = []
 
@@ -759,7 +776,7 @@ enum QueueTest {
         // stands, so a row would promise an "execute now" the gate refuses again.
         store.commitQueue()
         check("the held find left no row behind it",
-              !store.queuedTasks.contains { $0.id == "review-req:52" })
+              !store.queuedTasks.contains { $0.id == key("review-req", 52) })
         store.reviewAllowlistRaw = ""
         store.queuedTasks = []
         emptyBook()
@@ -896,6 +913,803 @@ enum QueueTest {
         store.requestedWork = []
         store.queuedTasks = []
         if let realGH { setenv("DIPLOMAT_GH", realGH, 1) } else { unsetenv("DIPLOMAT_GH") }
+
+        // 21. Two repo roots. One poll reads both, and the same number in each is two
+        //     pieces of work: two queue rows, two ledger entries, each run in its own
+        //     checkout. `gh` is a stand-in answering per repo: one PR number conflicting in both,
+        //     and another one's review asked in both.
+        let rootA = PRRef.LocalRepo(owner: "o1", repo: "alpha", path: feed.appendingPathComponent("alpha").path)
+        let rootB = PRRef.LocalRepo(owner: "o2", repo: "beta", path: feed.appendingPathComponent("beta").path)
+        store.pinRoots([rootA, rootB])
+        store.selectedRepo = ""
+        let multiLog = feed.appendingPathComponent("gh-multi.log")
+        let multiStub = feed.appendingPathComponent("gh-multi")
+        func monitorPR(_ slug: String, _ sha: String) -> String {
+            #"{"data":{"search":{"nodes":[{"number":90007,"title":"t","url":"https://github.com/\#(slug)/pull/90007","isDraft":false,"mergeable":"CONFLICTING","reviewDecision":"","headRefOid":"\#(sha)","reviewThreads":{"nodes":[]}}]}}}"#
+        }
+        func requested(_ slug: String, _ sha: String) -> String {
+            #"{"data":{"search":{"nodes":[{"number":90005,"title":"t","url":"https://github.com/\#(slug)/pull/90005","author":{"login":"qt-outsider"},"authorAssociation":"NONE","headRefOid":"\#(sha)"}]}}}"#
+        }
+        let none = #"{"data":{"search":{"nodes":[]}}}"#
+        let stubScript = """
+            #!/bin/sh
+            echo "$*" | grep -o 'q=repo:[^ ]* [^ ]*' >> '\(multiLog.path)'
+            case "$*" in
+              *"q=repo:o1/alpha author:"*) echo '\(monitorPR("o1/alpha", "a7"))' ;;
+              *"q=repo:o2/beta author:"*) echo '\(monitorPR("o2/beta", "b7"))' ;;
+              *"q=repo:o1/alpha review-requested:"*) echo '\(requested("o1/alpha", "a5"))' ;;
+              *"q=repo:o2/beta review-requested:"*) echo '\(requested("o2/beta", "b5"))' ;;
+              *"is:closed"*) echo '\(none)' ;;
+              *) echo '{"data":{"viewer":{"login":"alice"}}}' ;;
+            esac
+            """
+        try? stubScript.write(to: multiStub, atomically: true, encoding: .utf8)
+        chmod(multiStub.path, 0o755)
+        setenv("DIPLOMAT_GH", multiStub.path, 1)
+        emptyBook()
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.usernameOverride = "alice"
+        store.communityIssuesEnabled = false
+        store.autoTaskLimit = 1
+        bookAgent(90, ahead: 86_400)
+        _ = await store.settleAgents()
+        // A poll the early-poll section above brought forward may still be finishing;
+        // this one only counts once the stand-in has been asked.
+        for _ in 0..<50 {
+            await store.runAutofixPollOnce()
+            if FileManager.default.fileExists(atPath: multiLog.path) { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let multiAsked = ((try? String(contentsOf: multiLog, encoding: .utf8)) ?? "")
+        check("one poll asks every root for my PRs, closed PRs and review requests",
+              ["o1/alpha author:alice", "o2/beta author:alice",
+               "o1/alpha is:pr", "o2/beta is:pr",
+               "o1/alpha review-requested:alice", "o2/beta review-requested:alice"]
+                  .allSatisfy { multiAsked.contains("q=repo:" + $0) })
+        let rows = Dictionary(store.queuedTasks.map { ($0.id, $0.job) },
+                              uniquingKeysWith: { a, _ in a })
+        let conflictA = AgentTaskQueue.key(auditAction: "conflicts", item: "o1/alpha#90007")
+        let conflictB = AgentTaskQueue.key(auditAction: "conflicts", item: "o2/beta#90007")
+        let reviewA = AgentTaskQueue.key(auditAction: "review-req", item: "o1/alpha#90005")
+        let reviewB = AgentTaskQueue.key(auditAction: "review-req", item: "o2/beta#90005")
+        check("the same number in two roots is two queued rows per verb",
+              Set(rows.keys) == [conflictA, conflictB, reviewA, reviewB])
+        check("…each working in its own root's checkout",
+              rows[conflictA]?.directory == rootA.path && rows[conflictB]?.directory == rootB.path
+                  && rows[reviewA]?.directory == rootA.path && rows[reviewB]?.directory == rootB.path)
+        check("…its prompt aimed at that root's repo",
+              rows[conflictB]?.prompt.contains("o2/beta") == true
+                  && rows[conflictB]?.prompt.contains("o1/alpha") == false)
+        check("…and labelled with the repo, there being more than one root",
+              rows[conflictA]?.label == "Resolve · alpha#90007" && rows[conflictB]?.label == "Resolve · beta#90007")
+        let pending = Set(TelemetryLog.load().tasks
+            .filter { $0.queuedAt != nil && $0.clearedAt == nil }.map(\.key))
+        let owedKeys = [
+            AutofixMesh.ledgerKey(kind: AutofixMesh.kindConflicts,
+                                  prURL: "https://github.com/o1/alpha/pull/90007", headSha: "a7"),
+            AutofixMesh.ledgerKey(kind: AutofixMesh.kindConflicts,
+                                  prURL: "https://github.com/o2/beta/pull/90007", headSha: "b7"),
+            AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
+                                  prURL: "https://github.com/o1/alpha/pull/90005", headSha: "a5"),
+            AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
+                                  prURL: "https://github.com/o2/beta/pull/90005", headSha: "b5"),
+        ]
+        check("the ledger holds every root's owed work, none cleared by another root's read",
+              owedKeys.allSatisfy { pending.contains($0) })
+        store.queuedTasks = []
+        emptyBook()
+        if let realGH { setenv("DIPLOMAT_GH", realGH, 1) } else { unsetenv("DIPLOMAT_GH") }
+
+        // 22. Each root keeps its own community-issue mark: a root's first scan starts
+        //     from then, whatever another root's mark says.
+        func filedIn(_ root: PRRef.LocalRepo, _ number: Int, minutes: Double) -> OpenIssue {
+            let at = filedBase.addingTimeInterval(minutes * 60)
+            return OpenIssue(number: number, title: "issue \(number)",
+                             url: "https://github.com/\(root.slug)/issues/\(number)",
+                             author: "outsider\(number)", authorAssociation: "NONE",
+                             createdAt: at, updatedAt: at, commentCount: 0, assignees: [],
+                             labels: [], memberResponded: false)
+        }
+        store.requestedWork = []
+        store.communityIssuesEnabled = true
+        store.queueCommunityIssues([filedIn(rootA, 80, minutes: 10)], root: rootA)
+        store.queueCommunityIssues([filedIn(rootB, 80, minutes: 11)], root: rootB)
+        check("a root's first community scan queues none of its backlog, though filed after "
+              + "another root's mark", store.requestedWork.isEmpty)
+        store.queueCommunityIssues([filedIn(rootA, 80, minutes: 10), filedIn(rootA, 81, minutes: 12)],
+                                   root: rootA)
+        store.queueCommunityIssues([filedIn(rootB, 80, minutes: 11), filedIn(rootB, 82, minutes: 13)],
+                                   root: rootB)
+        let fixA = AgentTaskQueue.key(auditAction: "issues", item: "o1/alpha#81")
+        let fixB = AgentTaskQueue.key(auditAction: "issues", item: "o2/beta#82")
+        check("…and each root's later issue is queued as a fix in that root",
+              store.requestedWork.map(\.key) == [fixA, fixB]
+                  && store.requestedWork.map(\.repo) == ["o1/alpha", "o2/beta"]
+                  && store.queuedTasks.first { $0.id == fixB }?.job.directory == rootB.path)
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.pinRoots([rootA])
+        store.queueCommunityIssues([filedIn(rootA, 81, minutes: 12)], root: rootA)
+        store.pinRoots([rootA, rootB])
+        store.queueCommunityIssues([filedIn(rootB, 83, minutes: 14), filedIn(rootB, 84, minutes: 15),
+                                    filedIn(rootB, 85, minutes: 16)], root: rootB)
+        check("a root removed and added back queues none of what was filed meanwhile",
+              store.requestedWork.isEmpty)
+        store.pinRoots([rootA], complete: false)
+        store.queueCommunityIssues([filedIn(rootA, 81, minutes: 12)], root: rootA)
+        store.pinRoots([rootA, rootB])
+        store.queueCommunityIssues([filedIn(rootB, 85, minutes: 16), filedIn(rootB, 86, minutes: 17)],
+                                   root: rootB)
+        check("a root whose path failed to resolve for a poll keeps its mark: what it filed meanwhile is queued",
+              store.requestedWork.map(\.key) == [AgentTaskQueue.key(auditAction: "issues", item: "o2/beta#86")])
+        store.communityIssuesEnabled = false
+        store.requestedWork = []
+        store.queuedTasks = []
+
+        // 23. An ask is re-homed from its repo each time it is offered, and dropped (said
+        //     in the feed) once that repo is no longer a root.
+        var rootSweep = ReviewConfig(depth: "deep", target: .mine, me: "alice",
+                                     includeDrafts: true, includeReady: false)
+        rootSweep.home = rootB
+        store.requestOne(Store.RequestedWork(number: 9, url: "https://github.com/o2/beta/pull/9",
+                                             author: "", config: .review(rootSweep.forPR(9))))
+        rootSweep.home = rootA
+        store.requestOne(Store.RequestedWork(number: 9, url: "https://github.com/o1/alpha/pull/9",
+                                             author: "", config: .review(rootSweep.forPR(9))))
+        let askA = AgentTaskQueue.key(auditAction: "review", item: "o1/alpha#9")
+        let askB = AgentTaskQueue.key(auditAction: "review", item: "o2/beta#9")
+        check("an ask on each root's #9 is a row of its own, working in that root",
+              store.queuedTasks.map(\.id).sorted() == [askA, askB]
+                  && store.queuedTasks.first { $0.id == askB }?.job.directory == rootB.path)
+        store.pinRoots([rootA], complete: false)
+        store.offerRequestedWork()
+        store.commitQueue()
+        check("while a root path fails to resolve, an ask in a repo missing from the roots "
+              + "is kept but not offered",
+              store.requestedWork.map(\.key).sorted() == [askA, askB].sorted()
+                  && store.queuedTasks.map(\.id) == [askA])
+        store.pinRoots([rootA])
+        store.offerRequestedWork()
+        let feedText = (try? String(contentsOf: feed.appendingPathComponent("audit.jsonl"),
+                                    encoding: .utf8))?
+            .replacingOccurrences(of: "\\/", with: "/") ?? ""
+        check("removing a root drops its asks and keeps the others'",
+              store.requestedWork.map(\.key) == [askA])
+        check("…and says so in the feed",
+              feedText.contains(" - o2/beta is no longer a repo root, not run"))
+        store.pinRoots([rootA, rootB])
+        store.requestedWork = []
+        store.queuedTasks = []
+
+        // 24. Only the configured repo's root's work is the mesh's to place, the primary
+        //     root being another repo here.
+        func routed(_ directory: String?) -> Store.AgentJob {
+            Store.AgentJob(kind: "review", auditAction: "review-req", label: "", prompt: "",
+                           prURL: nil, prNumber: nil, authorLogin: nil, duty: "review",
+                           workKey: "review-req:github.com/o2/beta#5@b5", counter: nil,
+                           directory: directory)
+        }
+        let (cfgOwner, cfgRepo) = CoreAssets.repoCoordinates()
+        let configuredRoot = PRRef.LocalRepo(owner: cfgOwner.uppercased(), repo: cfgRepo,
+                                             path: feed.appendingPathComponent("configured").path)
+        store.pinRoots([rootA, configuredRoot])
+        check("a job in the configured repo's root may go over the mesh",
+              store.meshRoutable(routed(configuredRoot.path)))
+        check("…one in the primary root, another repo, may not, nor one naming no checkout",
+              !store.meshRoutable(routed(rootA.path)) && !store.meshRoutable(routed(nil)))
+        check("…nor one in an OTHER REPOS checkout",
+              !store.meshRoutable(routed(feed.appendingPathComponent("other").path)))
+        check("a wizard run goes over the mesh only from the configured repo's root",
+              store.meshRoutable(checkout: configuredRoot.path) && !store.meshRoutable(checkout: rootA.path))
+        store.pinRoots([configuredRoot, rootB])
+        check("with the configured repo the primary root, a job naming no checkout may",
+              store.meshRoutable(routed(nil)) && !store.meshRoutable(routed(rootB.path)))
+        store.pinRoots([rootA, rootB])
+        check("with the configured repo in no root, nothing may",
+              !store.meshRoutable(routed(rootA.path)) && !store.meshRoutable(routed(nil)))
+
+        // 24b. A review-request record outlives a poll its root's path failed to resolve
+        //      for: o/other#7's run concluded long ago and the request is still owed.
+        //      A poll of o/r alone keeps what `retainedReviewReqAttempts` returns; the
+        //      next poll, of both roots, decides on that.
+        let polledR = PRRef.LocalRepo(owner: "o", repo: "r", path: "/src/r")
+        let reqAt = "2026-11-01T10:00:00Z"
+        let concludedRec = ReviewAttempt(
+            requestedAt: reqAt,
+            lastDispatchedAt: Date().addingTimeInterval(-ReviewReconcile.retryMaxBackoff - 600),
+            attempts: 1, concludedAt: Date().addingTimeInterval(-ReviewReconcile.retryMaxBackoff))
+        func afterTwoPolls(middleComplete: Bool) -> ReviewReconcile.Decision {
+            let kept = Store.retainedReviewReqAttempts(["o/other#7": concludedRec], owed: [:],
+                                                       polled: [polledR], complete: middleComplete,
+                                                       now: Date())
+            return ReviewReconcile.decide(prior: kept["o/other#7"], stamp: reqAt, inFlight: false,
+                                          banned: false, now: Date())
+        }
+        check("a concluded review request in a root that failed to resolve for a poll is not reviewed again",
+              afterTwoPolls(middleComplete: false) == .skipConcluded)
+        check("…while one in a root gone from a complete set of roots is dropped",
+              afterTwoPolls(middleComplete: true) == .dispatch(attemptNumber: 1))
+        check("…and one in a polled root that no longer owes it is dropped, resolved or not",
+              Store.retainedReviewReqAttempts(["o/r#7": concludedRec], owed: [:], polled: [polledR],
+                                              complete: false, now: Date()).isEmpty)
+
+        // 25. The selected root decides which lists the right column reads.
+        func rootPR(_ root: PRRef.LocalRepo, _ number: Int) -> OpenPR {
+            OpenPR(number: number, title: "PR \(number)",
+                   url: "https://github.com/\(root.slug)/pull/\(number)",
+                   isDraft: true, author: "alice", createdAt: Date(),
+                   readyForReviewAt: nil, files: [], reviewDecision: nil, reviewThreads: [])
+        }
+        store.seedPanelLists(slug: "o1/alpha", prs: [rootPR(rootA, 1)], issues: [])
+        store.seedPanelLists(slug: "o2/beta", prs: [rootPR(rootB, 2), rootPR(rootB, 3)], issues: [])
+        check("with none chosen, the panel shows the primary root's PRs",
+              store.prs.map(\.url) == ["https://github.com/o1/alpha/pull/1"])
+        store.selectedRepo = "o2/beta"
+        check("choosing a root shows its PRs",
+              store.selectedRoot == rootB && store.prs.map(\.number) == [2, 3])
+        let swept = store.requestReviewSweep(ReviewConfig(depth: "deep", target: .mine, me: "alice",
+                                                          includeDrafts: true, includeReady: false))
+        check("…and a sweep asks for that root's PRs",
+              swept.queued == 2 && store.requestedWork.map(\.key)
+                  == [AgentTaskQueue.key(auditAction: "review", item: "o2/beta#2"),
+                      AgentTaskQueue.key(auditAction: "review", item: "o2/beta#3")])
+        store.selectedRepo = "o9/gone"
+        check("a chosen root that is gone reads as the primary",
+              store.selectedRoot == rootA && store.prs.map(\.number) == [1])
+        store.selectedRepo = ""
+        store.requestedWork = []
+        store.queuedTasks = []
+
+        // 26. What a one-repo build stored by bare number reads as the primary root's.
+        check("a legacy bare-number key reads as the primary's item, a keyed one as itself",
+              Store.migrated(["5": 1, "o2/beta#6": 2], primary: "o1/alpha")
+                  == ["o1/alpha#5": 1, "o2/beta#6": 2])
+        check("…and an already-keyed entry wins over its legacy twin",
+              Store.migrated(["5": 1, "o1/alpha#5": 9], primary: "o1/alpha") == ["o1/alpha#5": 9])
+        let legacyMark = Date(timeIntervalSince1970: 1_700_000_000)
+        check("a legacy single community mark is the primary root's",
+              Store.communityMarks(legacyMark, primary: "o1/alpha") == ["o1/alpha": legacyMark]
+                  && Store.communityMarks(["o2/beta": legacyMark], primary: "o1/alpha")
+                      == ["o2/beta": legacyMark])
+        let legacyAsks = [
+            Store.RequestedWork(number: 4, url: "https://github.com/o1/alpha/pull/4",
+                                author: "", config: .review(sweep.forPR(4))),
+            Store.RequestedWork(number: 5, url: "https://github.com/O2/Beta/pull/5",
+                                author: "", config: .review(sweep.forPR(5))),
+            Store.RequestedWork(number: 6, url: "", author: "", config: .review(sweep.forPR(6))),
+        ]
+        var legacyJSON = (try? JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(legacyAsks))) as? [[String: Any]] ?? []
+        legacyJSON = legacyJSON.map { var e = $0; e["repo"] = nil; return e }
+        let decoded = Store.decodeRequestedWork(
+            try? JSONSerialization.data(withJSONObject: legacyJSON), configured: "O1/Alpha")
+        check("an ask stored without its repo is its link's, else the configured repo's",
+              decoded.map(\.repo) == ["o1/alpha", "o2/beta", "o1/alpha"]
+                  && decoded.first?.key == AgentTaskQueue.key(auditAction: "review", item: "o1/alpha#4"))
+
+        // 27. Several root paths none of which resolved: the one root is a guess, so the
+        //     monitor poll stands down before any fetch, and the mesh takes nothing.
+        //     Then one root's unreadable issues: logged once per streak, failing no poll.
+        let rootsLog = feed.appendingPathComponent("gh-roots.log")
+        let issuesFail = feed.appendingPathComponent("gh-roots.fail")
+        let rootsStub = feed.appendingPathComponent("gh-roots")
+        let noIssues = #"{"data":{"repository":{"issues":{"nodes":[]}}}}"#
+        try? """
+            #!/bin/sh
+            echo "$*" >> '\(rootsLog.path)'
+            case "$*" in
+              *"issues(states: OPEN"*"name=alpha"*)
+                if [ -f '\(issuesFail.path)' ]; then echo 'HTTP 404: Could not resolve to a Repository' >&2; exit 1; fi
+                echo '\(noIssues)' ;;
+              *"issues(states: OPEN"*)
+                if [ -f '\(issuesFail.path)-all' ]; then echo 'HTTP 404: Could not resolve to a Repository' >&2; exit 1; fi
+                echo '\(noIssues)' ;;
+              *"q=repo:"*) echo '\(none)' ;;
+              *) echo '{"data":{"viewer":{"login":"alice"}}}' ;;
+            esac
+            """.write(to: rootsStub, atomically: true, encoding: .utf8)
+        chmod(rootsStub.path, 0o755)
+        setenv("DIPLOMAT_GH", rootsStub.path, 1)
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.autofixPollError = nil
+        let guessedMessage = "no repo root in Settings resolves to a GitHub checkout"
+        store.pinRoots([configuredRoot], complete: false, primary: false, guessed: true)
+        for _ in 0..<50 {
+            await store.runAutofixPollOnce()
+            if store.autofixPollError == guessedMessage { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let guessedAsked = (try? String(contentsOf: rootsLog, encoding: .utf8)) ?? ""
+        check("no root path resolving stands the monitor poll down, fetching nothing",
+              store.autofixPollError == guessedMessage && !guessedAsked.contains("q=repo:")
+                  && !guessedAsked.contains("issues(states: OPEN") && store.queuedTasks.isEmpty)
+        check("…and the mesh takes nothing, the configured repo's root being a guess",
+              !store.meshRoutable(checkout: configuredRoot.path))
+        store.pinRoots([configuredRoot])
+        check("…which it does once that root resolves", store.meshRoutable(checkout: configuredRoot.path))
+
+        func unreadLines() -> [(action: String, detail: String)] {
+            let text = (try? String(contentsOf: feed.appendingPathComponent("audit.jsonl"),
+                                    encoding: .utf8)) ?? ""
+            return text.split(separator: "\n").compactMap { line in
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                      let action = obj["action"] as? String, action.hasPrefix("root-read-"),
+                      let detail = obj["detail"] as? String else { return nil }
+                return (action, detail)
+            }
+        }
+        store.pinRoots([rootA, rootB])
+        store.communityIssuesEnabled = true
+        store.autofixPollError = nil
+        FileManager.default.createFile(atPath: issuesFail.path, contents: Data())
+        await store.runAutofixPollOnce()
+        await store.runAutofixPollOnce()
+        let failing = unreadLines()
+        check("one root's unreadable issues fail no poll, so the other roots' drain and commit go on",
+              store.autofixPollError == nil)
+        check("…and are logged once for the streak, naming the root and why",
+              failing.map(\.action) == ["root-read-failed"]
+                  && failing.first?.detail.hasPrefix("Issues of o1/alpha unreadable, its work waits: ")
+                      == true
+                  && failing.first?.detail.contains("Could not resolve") == true)
+        try? FileManager.default.removeItem(at: issuesFail)
+        await store.runAutofixPollOnce()
+        await store.runAutofixPollOnce()
+        check("…and their recovery once",
+              unreadLines().map(\.action) == ["root-read-failed", "root-read-recovered"]
+                  && unreadLines().last?.detail == "Issues of o1/alpha readable again")
+        FileManager.default.createFile(atPath: issuesFail.path, contents: Data())
+        FileManager.default.createFile(atPath: issuesFail.path + "-all", contents: Data())
+        await store.runAutofixPollOnce()
+        check("…nor do they in every root", store.autofixPollError == nil
+                  && unreadLines().map(\.action).filter { $0 == "root-read-failed" }.count == 3)
+        try? FileManager.default.removeItem(at: issuesFail)
+        try? FileManager.default.removeItem(atPath: issuesFail.path + "-all")
+        await store.runAutofixPollOnce()
+        store.communityIssuesEnabled = false
+        store.autofixPollError = nil
+        store.requestedWork = []
+        store.queuedTasks = []
+        if let realGH { setenv("DIPLOMAT_GH", realGH, 1) } else { unsetenv("DIPLOMAT_GH") }
+        store.pinRoots([argent])
+
+        // 28. A root whose PRs or review requests gh cannot read holds only its own work:
+        //     its rows, fingerprints and attempt records stand untouched, as for a root
+        //     that failed to resolve, and only a read failing in every root fails the
+        //     poll. `gh` answers each root's search from a file, or fails it while a
+        //     `fail-<what>-<repo>` flag exists. At capacity, so finds queue.
+        let heldDir = feed.appendingPathComponent("gh-held")
+        try? FileManager.default.createDirectory(at: heldDir, withIntermediateDirectories: true)
+        let heldLog = heldDir.appendingPathComponent("log")
+        let heldStub = heldDir.appendingPathComponent("gh")
+        try? """
+            #!/bin/sh
+            echo "$*" | grep -o 'q=repo:[^ ]* [^ ]*' >> '\(heldLog.path)'
+            case "$*" in *"issues(states: OPEN"*)
+              echo "$*" | grep -o 'name=[a-z]*' | sed 's/^/issues-/' >> '\(heldLog.path)'
+              case "$*" in *"name=Beta"*)
+                if [ -f '\(heldDir.path)'/fail-issues-Beta ]; then
+                  echo 'HTTP 404: Could not resolve to a Repository' >&2; exit 1
+                fi ;;
+              esac
+              echo '\(noIssues)'; exit 0 ;;
+            esac
+            for slug in o1/alpha o2/beta O2/Beta; do
+              for what in author review-requested; do
+                case "$*" in *"q=repo:$slug $what:"*)
+                  name=${slug#*/}
+                  if [ -f '\(heldDir.path)'/fail-$what-$name ]; then
+                    echo 'HTTP 422: The listed users and repositories cannot be searched' >&2; exit 1
+                  fi
+                  if [ -f '\(heldDir.path)'/$what-$name.json ]; then cat '\(heldDir.path)'/$what-$name.json
+                  else echo '\(none)'; fi
+                  exit 0 ;;
+                esac
+              done
+            done
+            case "$*" in *"q=repo:"*) echo '\(none)' ;; *) echo '{"data":{"viewer":{"login":"alice"}}}' ;; esac
+            """.write(to: heldStub, atomically: true, encoding: .utf8)
+        chmod(heldStub.path, 0o755)
+        func heldAnswer(_ what: String, _ repo: String, _ json: String?) {
+            let file = heldDir.appendingPathComponent("\(what)-\(repo).json")
+            if let json { try? json.write(to: file, atomically: true, encoding: .utf8) }
+            else { try? FileManager.default.removeItem(at: file) }
+        }
+        func heldFail(_ what: String, _ repo: String, _ on: Bool) {
+            let flag = heldDir.appendingPathComponent("fail-\(what)-\(repo)").path
+            if on { FileManager.default.createFile(atPath: flag, contents: Data()) }
+            else { try? FileManager.default.removeItem(atPath: flag) }
+        }
+        func conflictingPR(_ slug: String, _ number: Int, _ sha: String) -> String {
+            #"{"data":{"search":{"nodes":[{"number":\#(number),"title":"t","url":"https://github.com/\#(slug)/pull/\#(number)","isDraft":false,"mergeable":"CONFLICTING","reviewDecision":"","headRefOid":"\#(sha)","reviewThreads":{"nodes":[]}}]}}}"#
+        }
+        func requestedPR(_ slug: String, _ number: Int) -> String {
+            #"{"data":{"search":{"nodes":[{"number":\#(number),"title":"t","url":"https://github.com/\#(slug)/pull/\#(number)","author":{"login":"qt-outsider"},"authorAssociation":"NONE","headRefOid":"r\#(number)"}]}}}"#
+        }
+        func heldRecords<V: Decodable>(_ key: String, as: V.Type) -> [String: V] {
+            store.headlessJSON?[key].flatMap { try? JSONDecoder().decode([String: V].self, from: $0) } ?? [:]
+        }
+        let heldAsk = (prAutofix: store.prAutofixEnabled, reviewReqs: store.reviewRequestsEnabled)
+        store.prAutofixEnabled = true
+        store.reviewRequestsEnabled = true
+        store.communityIssuesEnabled = false
+        store.headlessJSON = [:]
+        store.pinRoots([rootA, rootB])
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.autofixPollError = nil
+        emptyBook()
+        store.autoTaskLimit = 1
+        bookAgent(90, ahead: 86_400)
+        _ = await store.settleAgents()
+        setenv("DIPLOMAT_GH", heldStub.path, 1)
+        heldAnswer("author", "alpha", conflictingPR("o1/alpha", 90007, "a7"))
+        heldAnswer("author", "beta", conflictingPR("o2/beta", 90007, "b7"))
+        await store.runAutofixPollOnce()
+        let heldRow = AgentTaskQueue.key(auditAction: "conflicts", item: "o2/beta#90007")
+        let heldPrint = heldRecords("autofixFingerprints", as: PRFingerprint.self)["o2/beta#90007"]
+        check("both roots' conflicts queue while both read",
+              Set(store.queuedTasks.map(\.id)).isSuperset(of: [
+                  AgentTaskQueue.key(auditAction: "conflicts", item: "o1/alpha#90007"), heldRow])
+                  && heldPrint != nil)
+        let record = ReviewAttempt(requestedAt: Store.AttemptStamp.conflicting,
+                                   lastDispatchedAt: Date(), attempts: 1)
+        store.headlessJSON?["myConflictAttempts"] = try? JSONEncoder().encode(["o2/beta#90007": record])
+        store.headlessJSON?["myReviewAttempts"] = try? JSONEncoder().encode(["o2/beta#90007": record])
+        // A concluded run whose request is still owed: dropping its record reviews again.
+        let concludedLongAgo = ReviewAttempt(
+            requestedAt: "2026-01-02T00:00:00Z",
+            lastDispatchedAt: Date().addingTimeInterval(-ReviewReconcile.retryMaxBackoff - 600),
+            attempts: 1, concludedAt: Date().addingTimeInterval(-ReviewReconcile.retryMaxBackoff - 60))
+        store.headlessJSON?["reviewReqAttempts"] = try? JSONEncoder().encode(["o2/beta#90006": concludedLongAgo])
+        heldFail("author", "beta", true)
+        heldAnswer("author", "alpha", conflictingPR("o1/alpha", 90008, "a8"))
+        let heldLinesBefore = unreadLines().count
+        try? FileManager.default.removeItem(at: heldLog)
+        store.communityIssuesEnabled = true
+        await store.runAutofixPollOnce()
+        await store.runAutofixPollOnce()
+        store.communityIssuesEnabled = false
+        let heldAsked = (try? String(contentsOf: heldLog, encoding: .utf8)) ?? ""
+        check("one root's unreadable PRs fail no poll", store.autofixPollError == nil)
+        check("…its queued row stands, and the other root's new conflict queues",
+              store.queuedTasks.map(\.id).contains(heldRow)
+                  && store.queuedTasks.map(\.id).contains(
+                      AgentTaskQueue.key(auditAction: "conflicts", item: "o1/alpha#90008")))
+        check("…its fingerprint and both attempt records are kept",
+              heldRecords("autofixFingerprints", as: PRFingerprint.self)["o2/beta#90007"] == heldPrint
+                  && heldRecords("myConflictAttempts", as: ReviewAttempt.self)["o2/beta#90007"] == record
+                  && heldRecords("myReviewAttempts", as: ReviewAttempt.self)["o2/beta#90007"] == record)
+        check("…its review requests and issues are not asked, the other root's are",
+              heldAsked.contains("q=repo:o1/alpha review-requested:")
+                  && !heldAsked.contains("q=repo:o2/beta review-requested:")
+                  && heldAsked.contains("issues-name=alpha") && !heldAsked.contains("issues-name=beta"))
+        check("…and its review-request records are kept",
+              heldRecords("reviewReqAttempts", as: ReviewAttempt.self)["o2/beta#90006"] == concludedLongAgo)
+        let heldFailed = unreadLines().dropFirst(heldLinesBefore)
+        check("…and it is logged once for the streak, naming the root and why",
+              heldFailed.map(\.action) == ["root-read-failed"]
+                  && heldFailed.first?.detail.hasPrefix("PRs of o2/beta unreadable, its work waits: ") == true
+                  && heldFailed.first?.detail.contains("cannot be searched") == true)
+        // A free bay and a disk below its floor: the drain would take a row it tried
+        // off the queue and re-stage it into a cycle that does not offer it, so a row
+        // that stands was never tried. Nothing spawns past the disk floor.
+        heldAnswer("author", "alpha", nil)
+        setenv(DiskFloor.envOverride, "99999999999999999999", 1)
+        if Store.agentDisk()?.low == true {
+            store.autoTaskLimit = 2
+            await store.runAutofixPollOnce()
+            check("…and the drain does not start it while a bay is free",
+                  store.queuedTasks.map(\.id).contains(heldRow))
+            store.autoTaskLimit = 1
+        } else {
+            check("the disk floor holds every dispatch for the drain check", false)
+        }
+        setenv(DiskFloor.envOverride, "0", 1)
+        heldFail("author", "alpha", true)
+        try? FileManager.default.removeItem(at: heldLog)
+        await store.runAutofixPollOnce()
+        let outageAsked = (try? String(contentsOf: heldLog, encoding: .utf8)) ?? ""
+        check("my PRs unreadable in every root fail the poll",
+              store.autofixPollError?.contains("cannot be searched") == true)
+        check("…and every root's review requests are still asked",
+              outageAsked.contains("q=repo:o1/alpha review-requested:")
+                  && outageAsked.contains("q=repo:o2/beta review-requested:"))
+        heldFail("author", "alpha", false)
+        heldFail("author", "beta", false)
+        heldAnswer("author", "beta", nil)
+        store.autofixPollError = nil
+        store.queuedTasks = []
+
+        // The review-request twin, its reads failing while the PRs read.
+        heldAnswer("review-requested", "beta", requestedPR("o2/beta", 90010))
+        await store.runAutofixPollOnce()
+        let heldReq = AgentTaskQueue.key(auditAction: "review-req", item: "o2/beta#90010")
+        check("a root's review request queues while it reads",
+              store.queuedTasks.map(\.id).contains(heldReq))
+        store.headlessJSON?["reviewReqAttempts"] = try? JSONEncoder().encode(["o2/beta#90006": concludedLongAgo])
+        heldAnswer("review-requested", "alpha", requestedPR("o1/alpha", 90009))
+        heldFail("review-requested", "beta", true)
+        await store.runAutofixPollOnce()
+        check("one root's unreadable review requests fail no poll, the other root's queue",
+              store.autofixPollError == nil && store.queuedTasks.map(\.id).contains(
+                  AgentTaskQueue.key(auditAction: "review-req", item: "o1/alpha#90009")))
+        check("…and its concluded record is kept",
+              heldRecords("reviewReqAttempts", as: ReviewAttempt.self)["o2/beta#90006"] == concludedLongAgo)
+        check("…and its queued review request stands, that root being held",
+              store.queuedTasks.map(\.id).contains(heldReq))
+        check("…logged as that root's review requests",
+              unreadLines().last?.action == "root-read-failed"
+                  && unreadLines().last?.detail.hasPrefix("Review requests of o2/beta unreadable, its work waits: ")
+                      == true)
+        heldFail("review-requested", "alpha", true)
+        await store.runAutofixPollOnce()
+        check("review requests unreadable in every root fail the poll",
+              store.autofixPollError?.contains("cannot be searched") == true)
+
+        // A root's slug is cased as its remote spells it; item keys are lowercase.
+        heldFail("review-requested", "alpha", false)
+        heldFail("review-requested", "beta", false)
+        heldAnswer("review-requested", "alpha", nil)
+        heldAnswer("review-requested", "beta", nil)
+        let mixed = PRRef.LocalRepo(owner: "O2", repo: "Beta", path: rootB.path)
+        store.pinRoots([rootA, mixed])
+        store.autofixPollError = nil
+        store.queuedTasks = []
+        heldAnswer("author", "Beta", conflictingPR("O2/Beta", 90011, "m1"))
+        await store.runAutofixPollOnce()
+        let mixedRow = AgentTaskQueue.key(auditAction: "conflicts", item: "o2/beta#90011")
+        check("a mixed-case root's conflict queues while it reads",
+              store.queuedTasks.map(\.id).contains(mixedRow))
+        store.headlessJSON?["reviewReqAttempts"] = try? JSONEncoder().encode(["o2/beta#90006": concludedLongAgo])
+        heldFail("author", "Beta", true)
+        await store.runAutofixPollOnce()
+        check("a held root is known whatever its slug's case: its row stands, its records are kept",
+              store.autofixPollError == nil && store.queuedTasks.map(\.id).contains(mixedRow)
+                  && heldRecords("reviewReqAttempts", as: ReviewAttempt.self)["o2/beta#90006"]
+                      == concludedLongAgo)
+        var mixedAsk = ReviewConfig(depth: "deep", target: .mine, me: "alice",
+                                    includeDrafts: true, includeReady: false)
+        mixedAsk.home = mixed
+        store.requestOne(Store.RequestedWork(number: 90012, url: "https://github.com/O2/Beta/pull/90012",
+                                             author: "", config: .review(mixedAsk.forPR(90012))))
+        let mixedAskKey = AgentTaskQueue.key(auditAction: "review", item: "o2/beta#90012")
+        let mixedAskQueued = store.queuedTasks.map(\.id).contains(mixedAskKey)
+        await store.drainQueuedTasks(snaps: [], closed: ["o2/beta#90012"], read: [rootA, mixed])
+        check("…and a read one is priced whatever its case",
+              mixedAskQueued && !store.queuedTasks.map(\.id).contains(mixedAskKey))
+        heldFail("author", "Beta", false)
+        heldAnswer("author", "Beta", nil)
+
+        // 29. The drain starts nothing in a root just taken out of Settings: it runs at
+        //     the top of the poll, before the offer and the commit drop its rows. A free
+        //     bay and a disk below its floor, so a task the drain tried would write a
+        //     low-disk line instead of spawning.
+        func feedDetails(_ action: String) -> [String] {
+            let text = (try? String(contentsOf: feed.appendingPathComponent("audit.jsonl"),
+                                    encoding: .utf8)) ?? ""
+            return text.split(separator: "\n").compactMap { line in
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                      obj["action"] as? String == action else { return nil }
+                return obj["detail"] as? String
+            }
+        }
+        store.pinRoots([rootA, rootB])
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.autofixPollError = nil
+        heldAnswer("review-requested", "beta", requestedPR("o2/beta", 7))
+        let autoRun = store.queueAutoRun
+        store.queueAutoRun = false
+        var goneIssue = IssueConfig(target: .contributors, me: "alice")
+        goneIssue.home = rootB
+        store.requestOne(Store.RequestedWork(number: 11, url: "https://github.com/o2/beta/issues/11",
+                                             author: "outsider11", config: .issues(goneIssue.forIssue(11)),
+                                             repo: "o2/beta"))
+        await store.runAutofixPollOnce()
+        check("an ask and a review request in a root queue while the queue is off",
+              Set(store.queuedTasks.map(\.id)) == [
+                  AgentTaskQueue.key(auditAction: "issues", item: "o2/beta#11"),
+                  AgentTaskQueue.key(auditAction: "review-req", item: "o2/beta#7")])
+        store.pinRoots([rootA])
+        store.queueAutoRun = true
+        setenv(DiskFloor.envOverride, "99999999999999999999", 1)
+        if Store.agentDisk()?.low == true {
+            let lowDiskBefore = feedDetails("low-disk").count
+            store.autoTaskLimit = 2
+            await store.runAutofixPollOnce()
+            store.autoTaskLimit = 1
+            check("the drain starts nothing in a root just taken out of Settings",
+                  feedDetails("low-disk").count == lowDiskBefore)
+            check("…its rows and its ask are dropped, and said",
+                  store.queuedTasks.isEmpty && store.requestedWork.isEmpty
+                      && feedDetails("queue-drop").last?
+                          .hasSuffix("o2/beta is no longer a repo root, not run") == true)
+        } else {
+            check("the disk floor holds every dispatch for the removed-root check", false)
+        }
+        setenv(DiskFloor.envOverride, "0", 1)
+        store.queueAutoRun = autoRun
+        heldAnswer("review-requested", "beta", nil)
+
+        // 30. A queued review request waits while its root's review requests stay
+        //     unreadable: the hold its failed read gives it lasts a cycle, the marker
+        //     the whole streak. A mixed-case root, item keys being lowercase.
+        store.pinRoots([rootA, mixed])
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.autofixPollError = nil
+        store.queueAutoRun = false
+        heldAnswer("review-requested", "Beta", requestedPR("O2/Beta", 7))
+        await store.runAutofixPollOnce()
+        let waitingReq = AgentTaskQueue.key(auditAction: "review-req", item: "o2/beta#7")
+        check("a mixed-case root's review request queues while the queue is off",
+              store.queuedTasks.map(\.id).contains(waitingReq))
+        heldFail("review-requested", "Beta", true)
+        await store.runAutofixPollOnce()
+        check("…and stands while that root's review requests are unreadable",
+              store.queuedTasks.map(\.id).contains(waitingReq))
+        store.queueAutoRun = true
+        setenv(DiskFloor.envOverride, "99999999999999999999", 1)
+        if Store.agentDisk()?.low == true {
+            let lowDiskBefore = feedDetails("low-disk").count
+            store.autoTaskLimit = 2
+            await store.runAutofixPollOnce()
+            check("…and a later cycle's drain does not start it while the read still fails",
+                  store.queuedTasks.map(\.id).contains(waitingReq)
+                      && feedDetails("low-disk").count == lowDiskBefore)
+            heldFail("review-requested", "Beta", false)
+            await store.runAutofixPollOnce()
+            check("…until the read succeeds again, when it is dispatched",
+                  feedDetails("low-disk").count == lowDiskBefore + 1
+                      && store.queuedTasks.map(\.id).contains(waitingReq))
+            store.autoTaskLimit = 1
+        } else {
+            check("the disk floor holds every dispatch for the waiting-request check", false)
+        }
+        setenv(DiskFloor.envOverride, "0", 1)
+        store.queueAutoRun = autoRun
+        heldFail("review-requested", "Beta", false)
+        heldAnswer("review-requested", "Beta", nil)
+        store.queuedTasks = []
+
+        // 31. A root taken out of Settings loses its unread markers, so added back it
+        //     logs its next failed read.
+        func issuesUnread() -> Int {
+            feedDetails("root-read-failed").filter { $0.hasPrefix("Issues of O2/Beta unreadable") }.count
+        }
+        let unreadBefore = issuesUnread()
+        store.communityIssuesEnabled = true
+        heldFail("issues", "Beta", true)
+        await store.runAutofixPollOnce()
+        await store.runAutofixPollOnce()
+        check("a mixed-case root's failed read is logged once while it stays a root",
+              issuesUnread() == unreadBefore + 1)
+        store.pinRoots([rootA])
+        await store.runAutofixPollOnce()
+        store.pinRoots([rootA, mixed])
+        await store.runAutofixPollOnce()
+        check("a root's failed read is logged again once it is taken out and added back",
+              issuesUnread() == unreadBefore + 2)
+        heldFail("issues", "Beta", false)
+        await store.runAutofixPollOnce()
+        store.communityIssuesEnabled = false
+
+        // 32. An investigation, about no repo's item, is never outside the roots read.
+        store.requestedWork = []
+        store.queuedTasks = []
+        let invNumber = 9_100_001
+        let investigation = InvestigateConfig(
+            number: invNumber, messageID: "qt-inv", sender: "qt", channel: "qt", permalink: "",
+            text: "t", summary: "s", reportPath: feed.appendingPathComponent("inv.md").path,
+            owner: "O2", repo: "Beta")
+        store.requestOne(Store.RequestedWork(number: invNumber, url: "", author: "",
+                                             config: .investigate(investigation), repo: "o2/beta"))
+        let invKey = AgentTaskQueue.key(auditAction: InvestigateConfig.kind, item: String(invNumber))
+        let invQueued = store.queuedTasks.map(\.id) == [invKey]
+        store.queueAutoRun = true
+        setenv(DiskFloor.envOverride, "99999999999999999999", 1)
+        if Store.agentDisk()?.low == true {
+            store.autoTaskLimit = 2
+            await store.drainQueuedTasks(snaps: [], closed: [], read: [rootA, mixed])
+            store.autoTaskLimit = 1
+            check("the drain tries an investigation whatever roots it read",
+                  invQueued && store.queuedTasks.isEmpty)
+        } else {
+            check("the disk floor holds every dispatch for the investigation check", false)
+        }
+        setenv(DiskFloor.envOverride, "0", 1)
+
+        // 33. An investigation, or an ask stored without its home, would still run in the
+        //     primary root: one whose repo left the roots is neither started nor kept, and
+        //     its drop is said.
+        store.pinRoots([rootA, mixed])
+        store.requestedWork = []
+        store.queuedTasks = []
+        let goneNumber = 9_100_002
+        let goneInvestigation = InvestigateConfig(
+            number: goneNumber, messageID: "qt-inv2", sender: "qt", channel: "qt", permalink: "",
+            text: "t", summary: "s", reportPath: feed.appendingPathComponent("inv2.md").path,
+            owner: "o2", repo: "beta")
+        store.requestOne(Store.RequestedWork(number: goneNumber, url: "", author: "",
+                                             config: .investigate(goneInvestigation), repo: "o2/beta"))
+        let goneInvKey = AgentTaskQueue.key(auditAction: InvestigateConfig.kind, item: String(goneNumber))
+        store.pinRoots([rootA])
+        setenv(DiskFloor.envOverride, "99999999999999999999", 1)
+        if Store.agentDisk()?.low == true {
+            store.autoTaskLimit = 2
+            await store.drainQueuedTasks(snaps: [], closed: [], read: [rootA])
+            store.autoTaskLimit = 1
+            check("the drain starts no investigation asked in a root just taken out",
+                  store.queuedTasks.map(\.id) == [goneInvKey])
+        } else {
+            check("the disk floor holds every dispatch for the gone-investigation check", false)
+        }
+        setenv(DiskFloor.envOverride, "0", 1)
+        let homeless = ReviewConfig(depth: "deep", target: .mine, me: "alice",
+                                    includeDrafts: true, includeReady: false)
+        store.requestedWork.append(Store.RequestedWork(
+            number: 90013, url: "https://github.com/o2/beta/pull/90013", author: "",
+            config: .review(homeless.forPR(90013)), repo: "o2/beta"))
+        let dropsBefore = feedDetails("queue-drop").count
+        store.offerRequestedWork()
+        store.commitQueue()
+        let goneDrops = feedDetails("queue-drop").dropFirst(dropsBefore)
+        check("…and the offer drops it and an ask stored without its home, saying so",
+              store.requestedWork.isEmpty && store.queuedTasks.isEmpty && goneDrops.count == 2
+                  && goneDrops.allSatisfy { $0.hasSuffix(" - o2/beta is no longer a repo root, not run") })
+        let legacyNumber = 9_100_003
+        let legacyInvestigation = InvestigateConfig(
+            number: legacyNumber, messageID: "qt-inv3", sender: "qt", channel: "qt", permalink: "",
+            text: "t", summary: "s", reportPath: feed.appendingPathComponent("inv3.md").path,
+            owner: "o2", repo: "beta")
+        store.requestOne(Store.RequestedWork(number: legacyNumber, url: "", author: "",
+                                             config: .investigate(legacyInvestigation)))
+        store.offerRequestedWork()
+        store.commitQueue()
+        let legacyInvKey = AgentTaskQueue.key(auditAction: InvestigateConfig.kind, item: String(legacyNumber))
+        check("…but one stored naming no repo runs in the primary root, kept",
+              store.requestedWork.map(\.key) == [legacyInvKey]
+                  && store.queuedTasks.map(\.id) == [legacyInvKey]
+                  && feedDetails("queue-drop").count == dropsBefore + 2)
+
+        // 34. Past a free bay a dispatch reaches the terminal, which no self-test may
+        //     open (`AgentSpawner.refuseHeadless`): it fails, counted, and no agent runs.
+        emptyBook()
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.queueAutoRun = true
+        store.autoTaskLimit = 1
+        let refusedBefore = AgentSpawner.refusedTerminals
+        let freeBay = await store.dispatchAgent(job(91, author: "qt-outsider", counter: nil),
+                                                source: .auto)
+        // A terminal answers its AppleScript before the agent's shell starts.
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        probe.arguments = ["-f", agents.path]
+        let found = Pipe()
+        probe.standardOutput = found
+        try? probe.run()
+        probe.waitUntilExit()
+        let spawned = String(decoding: found.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .split(separator: "\n").count
+        check("a dispatch past a free bay fails, its terminal refused once, and starts no agent",
+              freeBay == .failed(AgentSpawner.SpawnError.headless.localizedDescription)
+                  && AgentSpawner.refusedTerminals == refusedBefore + 1 && spawned == 0
+                  && AgentRegistry.load().isEmpty)
+        store.queueAutoRun = autoRun
+        store.prAutofixEnabled = heldAsk.prAutofix
+        store.reviewRequestsEnabled = heldAsk.reviewReqs
+        store.headlessJSON = nil
+        store.autofixPollError = nil
+        store.requestedWork = []
+        store.queuedTasks = []
+        emptyBook()
+        if let realGH { setenv("DIPLOMAT_GH", realGH, 1) } else { unsetenv("DIPLOMAT_GH") }
+        store.pinRoots([argent])
 
         // 13. The redirect above is the only thing between a run of this test and the
         //    operator's real activity log, so prove it caught the writes.

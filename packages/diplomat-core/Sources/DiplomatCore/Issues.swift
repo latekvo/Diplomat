@@ -46,9 +46,13 @@ public struct IssueConfig: Codable, Equatable {
     /// filled in per issue by `forIssue` for every other one.
     public var specificIssue: String
 
-    /// The local checkouts besides the configured repo that a pasted link may name
+    /// The local checkouts besides the home repo that a pasted link may name
     /// (Settings → OTHER REPOS). Optional so a queued config stored without it decodes.
     public var localRepos: [PRRef.LocalRepo]?
+
+    /// The repo a bare number and a sweep target, and where the agent works: nil for
+    /// `assets/config.json`'s repo in the default repo root.
+    public var home: PRRef.LocalRepo?
 
     /// Skip every issue that already has an assignee — somebody is on it already.
     public var unassignedOnly: Bool
@@ -101,21 +105,21 @@ public struct IssueConfig: Codable, Equatable {
     public var canFilterUnassigned: Bool { !isSingleIssue }
 
     /// The repo this run works in: the listed checkout a single-item link named, else
-    /// the configured one. A sweep never reads the single-item field, so text left in it
+    /// the home repo. A sweep never reads the single-item field, so text left in it
     /// can't retarget one.
     public var targetRepo: (owner: String, repo: String) {
         if isSingleIssue, let local = issueRef.repo { return (local.owner, local.repo) }
-        return CoreAssets.repoCoordinates()
+        return PRRef.LocalRepo.coordinates(home: home)
     }
 
-    /// Where the agent works when that is not the repo root: the listed checkout
-    /// `targetRepo` came from, or nil.
-    public var checkout: String? { isSingleIssue ? issueRef.repo?.path : nil }
+    /// Where the agent works when that is not the default repo root: the listed checkout
+    /// `targetRepo` came from, else the home's, or nil.
+    public var checkout: String? { (isSingleIssue ? issueRef.repo?.path : nil) ?? home?.path }
 
     /// The single-issue field parsed as a number / URL / `owner/repo#n` shorthand,
-    /// checked against the configured repo, then `localRepos`.
+    /// checked against the home repo, then `localRepos`.
     public var issueRef: PRRef {
-        let (owner, repo) = CoreAssets.repoCoordinates()
+        let (owner, repo) = PRRef.LocalRepo.coordinates(home: home)
         return PRRef.parse(specificIssue, owner: owner, repo: repo, kind: .issues, also: localRepos ?? [])
     }
 

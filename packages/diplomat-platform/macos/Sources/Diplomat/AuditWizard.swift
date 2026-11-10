@@ -38,7 +38,9 @@ struct AuditWizardView: View {
     @State private var meshDispatching = false
 
     private var config: AuditConfig {
-        AuditConfig(fixIssues: fixIssues, openPRs: openPRs)
+        var cfg = AuditConfig(fixIssues: fixIssues, openPRs: openPRs)
+        cfg.home = store.selectedRoot
+        return cfg
     }
 
     var body: some View {
@@ -104,6 +106,7 @@ struct AuditWizardView: View {
                             isValid: config.isValid && !meshDispatching,
                             tint: tint,
                             terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                            routable: store.meshRoutable(checkout: config.checkout),
                             action: spawn)
     }
 
@@ -119,11 +122,12 @@ struct AuditWizardView: View {
         let cfg = config
         // Mesh path: hand the job to the local node (it picks the executor per the
         // audit duty's linux+macos spread, with failover) instead of spawning here.
-        if MeshSpawnRow.isLive(store), useMesh {
+        if MeshSpawnRow.isLive(store), useMesh, store.meshRoutable(checkout: cfg.checkout) {
             meshDispatching = true
             status = "Dispatching over the mesh…"
             AuditLog.log("panel", "audit", "\(trackingLabel) · via mesh")
-            store.meshDispatch(duty: "audit", prompt: cfg.buildPrompt()) { results, err in
+            store.meshDispatch(duty: "audit", prompt: cfg.buildPrompt(),
+                               repo: "\(cfg.targetRepo.owner)/\(cfg.targetRepo.repo)") { results, err in
                 meshDispatching = false
                 status = MeshSpawn.summarize(results, error: err)
             }
@@ -137,7 +141,7 @@ struct AuditWizardView: View {
                                  label: trackingLabel, prompt: cfg.buildPrompt(),
                                  prURL: nil, prNumber: nil,
                                  authorLogin: nil, duty: "audit",
-                                 workKey: "", counter: nil)
+                                 workKey: "", counter: nil, directory: cfg.checkout)
         status = "Launching \(term.title)…"
         Task {
             status = statusText(for: await store.dispatchAgent(job, source: .panel),

@@ -29,9 +29,13 @@ conversations, so "can you review it?" after "#412 is ready" is understood as a 
 A message listing several PRs or issues acts on all of them, up to twenty: each gets its own row and
 its own place in the queue, the first it names first. Each also gets its own kind of work, so
 "review #12 and fix issue #34" queues a review of #12 and a fix of #34. Comms acts only on the
-watched repo: triage is told to leave out references to other repositories, and GitHub links to
-their PRs, issues, discussions and commits, and `owner/repo#N` for another repo of this one's owner,
-are removed before its numbers are checked.
+watched repos, one per repo root, the first the primary: triage is told to leave out references to
+other repositories, and GitHub links to their PRs, issues, discussions and commits, and
+`owner/repo#N` for another repo of the target's owner, are removed before its numbers are checked.
+A bare number is the primary's; it is another watched repo's only when the message, or an earlier
+one of its conversation, names that repo ("diplomat#12", "#12 in diplomat"), so #12 in two repos
+is two targets. An investigation or a question is about the repo it names, the primary otherwise,
+and its agent works in that repo's checkout.
 
 So a "can you look at #412 when you get a chance?" lands #412's review ahead of every review you
 asked for - behind only what the monitors owe GitHub - and a "the installer dies on Node 22 for me"
@@ -72,7 +76,7 @@ Slack text is written by other people, so Comms treats it as data from end to en
   recognised reference to another repository, is dropped. An unknown action, a review / fix / bump left with no
   number, or an injection whose quoted evidence does not appear in the message itself (case, runs of
   whitespace and the fence's `|` quoting aside), becomes `none`. Each number must name an **open** PR
-  (for a review) or an **open** issue (for a fix) of the watched repo, or nothing is queued for it.
+  (for a review) or an **open** issue (for a fix) of its watched repo, or nothing is queued for it.
 - A batch with an `injection` among its answers is **triaged again, one message per call**, each
   with only its own conversation's earlier pings, and those answers stand: nobody is banned, and
   nothing is asked, on the strength of another batch message's words. A banned sender's messages, and messages triaged as injections, are

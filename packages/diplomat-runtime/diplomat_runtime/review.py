@@ -23,10 +23,12 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+import weakref
 from dataclasses import dataclass, replace
 from enum import Enum
 
-from . import appconfig, comms, core, runner
+from . import appconfig, comms, core, localrepos, runner
 from .configbase import PRSweepConfig, listed_payload
 from .depths import DepthLadder
 from .prref import LocalRepo
@@ -111,6 +113,8 @@ class ReviewConfig(PRSweepConfig):
     specific_pr: str = ""
     # The checkouts listed in Settings that a pasted link in ``specific_pr`` may name.
     local_repos: tuple[LocalRepo, ...] = ()
+    # The repo root a bare number targets; None = the configured repo.
+    home: LocalRepo | None = None
     # The "final pass" escalation: a culminating full-E2E verdict pass. Off by default.
     final_pass: bool = False
     # Soft-approve: when a review-only PR comes back perfectly clean, submit a COMMENT
@@ -199,7 +203,8 @@ class ReviewConfig(PRSweepConfig):
         only the scope changes. The disposition comes from the sweep's own target
         rather than a fresh ``gh`` poll: a sweep already knows whose PRs it asked for,
         and polling per PR would be one shell-out apiece to re-learn it. No listed
-        checkouts: a bare number never reaches one, so they would only be stored."""
+        checkouts: a bare number never reaches one, so they would only be stored. The
+        home root stays, being what the bare number names."""
         return replace(
             self,
             target=PRTarget.SPECIFIC,
@@ -229,7 +234,7 @@ class ReviewConfig(PRSweepConfig):
             "finalPass": self.final_pass,
             "softApprove": self.soft_approve,
             "specificAuthor": self.disposition.value,
-            **listed_payload(self.local_repos),
+            **listed_payload(self.local_repos, self.home),
         }
 
     def build_prompt(self) -> str:
@@ -296,24 +301,109 @@ def default_repo_path() -> str:
     return os.path.expanduser(f"~/dev/{core.config()['repo']}")
 
 
-def stored_repo_path() -> str:
-    """The repo root picked in Settings, or "" when unset.
+def repo_root_paths() -> list[str]:
+    """The repo roots as entered, primary first: the ``DIPLOMAT_REPO`` env override
+    (one root), else the roots picked in Settings, else :func:`default_repo_path`.
 
     Read from the shared :mod:`appconfig` file rather than this front-end's QSettings:
     a mesh node spawns agents from its own stdlib-only process, which has no Store and
     no Qt to ask. Re-read per call, so changing the setting reaches a running node."""
-    return appconfig.get(appconfig.REPO_ROOT).strip()
+    env = os.environ.get("DIPLOMAT_REPO")
+    if env:
+        return [env]
+    return appconfig.repo_roots() or [default_repo_path()]
+
+
+#: Seconds :func:`repo_roots` keeps one resolution of the paths. Twin of
+#: ``RepoPaths.rootsTTL``.
+ROOTS_TTL = 60.0
+
+_roots_cache: tuple[tuple, float, list[LocalRepo], bool, bool, bool] | None = None
+_roots_followers: list[weakref.WeakMethod] = []
+
+
+def follow_roots(method) -> None:
+    """Call the bound ``method`` whenever a re-read resolves the roots differently, on
+    whichever thread read them. Held weakly, so it never keeps its object alive."""
+    _roots_followers.append(weakref.WeakMethod(method))
+
+
+def _resolved_roots() -> tuple[list[LocalRepo], bool, bool, bool]:
+    """The roots, then :func:`roots_complete`, :func:`primary_resolved` and
+    :func:`roots_guessed` of that one reading."""
+    global _roots_cache
+    paths = repo_root_paths()
+    cfg = core.config()
+    configured = (cfg["owner"], cfg["repo"])
+    key = (tuple(paths), configured)
+    now = time.monotonic()
+    if _roots_cache is None or _roots_cache[0] != key or now - _roots_cache[1] >= ROOTS_TTL:
+        remotes = {p: out for p in map(os.path.expanduser, paths)
+                   if (out := localrepos.remote_config(p)) is not None}
+        before = _roots_cache[2] if _roots_cache else None
+        _roots_cache = (key, now, localrepos.resolve_roots(paths, remotes, configured),
+                        localrepos.all_resolve(paths, remotes),
+                        localrepos.primary_resolves(paths, remotes),
+                        localrepos.guessed(paths, remotes))
+        if before is not None and _roots_cache[2] != before:
+            for ref in list(_roots_followers):
+                method = ref()
+                if method is None:
+                    _roots_followers.remove(ref)
+                    continue
+                try:
+                    method()
+                except RuntimeError:  # a Qt object already deleted
+                    _roots_followers.remove(ref)
+    return _roots_cache[2], _roots_cache[3], _roots_cache[4], _roots_cache[5]
+
+
+def repo_roots() -> list[LocalRepo]:
+    """:func:`repo_root_paths` resolved to the repos they check out
+    (:func:`localrepos.resolve_roots`), never empty.
+
+    Kept for :data:`ROOTS_TTL` per list of paths, so a caller on a tick pays a ``git``
+    call per root at most that often, and a root that failed to resolve (a missing
+    checkout, a ``git`` timeout) or whose remotes changed is read again within it."""
+    return list(_resolved_roots()[0])
+
+
+def mesh_checkout() -> str | None:
+    """The checkout of the root that checks out the configured repo, or ``None`` when no
+    root does or none resolved (:func:`roots_guessed`). Only work there may go over the
+    mesh, and a job naming no repo (a peer predating repo routing means this one) runs
+    there."""
+    if roots_guessed():
+        return None
+    cfg = core.config()
+    slug = f"{cfg['owner']}/{cfg['repo']}".lower()
+    return next((r.path for r in repo_roots() if r.slug.lower() == slug), None)
+
+
+def roots_complete() -> bool:
+    """Whether every root path had a GitHub remote when :func:`repo_roots` last read
+    them (:func:`localrepos.all_resolve`). Until they all do, a repo missing from the
+    roots may be one that failed to resolve rather than one taken out of Settings."""
+    return _resolved_roots()[1]
+
+
+def primary_resolved() -> bool:
+    """Whether the first root path resolved when :func:`repo_roots` last read them
+    (:func:`localrepos.primary_resolves`). While it does not, the first root is another
+    repo, so a reference that names no repo has none to name."""
+    return _resolved_roots()[2]
+
+
+def roots_guessed() -> bool:
+    """Whether none of several root paths resolved when :func:`repo_roots` last read
+    them, leaving its one root a guess (:func:`localrepos.guessed`)."""
+    return _resolved_roots()[3]
 
 
 def repo_path() -> str:
-    """The local checkout the agent works in — the ``cd`` in every spawned session.
-
-    Strongest first: the ``DIPLOMAT_REPO`` env override (the escape hatch every other
-    ``DIPLOMAT_*`` knob follows), the repo root picked in Settings, then
-    :func:`default_repo_path`.
-    """
-    chosen = os.environ.get("DIPLOMAT_REPO") or stored_repo_path()
-    return os.path.expanduser(chosen) if chosen else default_repo_path()
+    """The primary root's checkout: where an agent works when nothing names another
+    repo, and the ``cd`` of every spawned session that has no checkout of its own."""
+    return repo_roots()[0].path
 
 
 class SpawnError(RuntimeError):

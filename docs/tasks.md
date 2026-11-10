@@ -4,7 +4,9 @@ The long-running task tracker. A **task** is something that outlives one PR - "p
 support", "Tor transport" - kept as a title, a few **tags** and its **links**: PRs and issues in any
 GitHub repo, Slack threads, any other URL. Diplomat follows the links, keeps the task's **history**,
 and derives a **status** with the **reason tags** behind it. Not to be confused with the panel's
-[Agent tasks](panel.md#agent-tasks) list, which is the agents running now.
+[Agent tasks](panel.md#agent-tasks) list, which is the agents running now. The *watched repo* below is
+the one [`assets/config.json`](../packages/diplomat-core/assets/config.json) targets, whichever
+[repo root](settings.md) checks it out.
 
 ## What it does
 

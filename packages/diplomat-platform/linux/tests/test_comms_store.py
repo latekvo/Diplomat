@@ -24,8 +24,9 @@ from test_comms_core import _stub_claude, slack  # noqa: F401 — fixture
 
 from diplomat_app import bans, issues
 from diplomat_app.store import Store, app_settings
-from diplomat_runtime import activity, autofix, comms, gh, review
+from diplomat_runtime import activity, autofix, comms, core, gh, review
 from diplomat_runtime.models import OpenIssue, OpenPR
+from diplomat_runtime.prref import LocalRepo
 
 pytest.importorskip("PySide6")
 
@@ -34,15 +35,20 @@ needs_core = pytest.mark.skipif(not CORE_BIN, reason="DIPLOMAT_CORE_BIN not set"
 
 NOW = datetime.now(timezone.utc)
 ME = {"userID": "UME", "teamID": "TOURS", "handle": "operator"}
+PRIMARY = "{owner}/{repo}".format(**core.config())
+
+
+def qkey(verb: str, number: int) -> str:
+    return autofix.queue_key(verb, f"{PRIMARY}#{number}")
 
 
 def _pr(number: int, author: str) -> OpenPR:
-    return OpenPR(number, f"PR {number}", f"https://github.com/o/r/pull/{number}",
+    return OpenPR(number, f"PR {number}", f"https://github.com/{PRIMARY}/pull/{number}",
                   False, author, NOW, None, [], None, [])
 
 
 def _issue(number: int, author: str = "carol") -> OpenIssue:
-    return OpenIssue(number, f"Issue {number}", f"https://github.com/o/r/issues/{number}",
+    return OpenIssue(number, f"Issue {number}", f"https://github.com/{PRIMARY}/issues/{number}",
                      author, "CONTRIBUTOR", NOW, NOW, 0, [], [], False)
 
 
@@ -200,7 +206,7 @@ def test_a_message_naming_several_queues_each_first_named_first_under_one_ping_l
     second = {**first, "id": first["id"] + "#13"}
     _tick(comms_store, monkeypatch,
           (second, _decision("review", 13)), (first, _decision("review", 12)), pings=[first])
-    assert [t.id for t in comms_store.queued_tasks][:2] == ["review:12", "review:13"]
+    assert [t.id for t in comms_store.queued_tasks][:2] == [qkey("review", 12), qkey("review", 13)]
     assert [e["id"] for e in _events() if e["kind"] == "action"] == [second["id"], first["id"]]
     assert [e["action"] for e in _feed_lines()].count("comms-ping") == 1
 
@@ -223,7 +229,7 @@ def test_a_message_asking_for_two_kinds_queues_each_as_its_own(comms_store, monk
           (row(8), _decision("review", 8)), (row(7), _decision("fix_issue", 7)),
           (first, _decision("review", 12)), pings=[first])
     keys = [t.id for t in comms_store.queued_tasks]
-    assert "review:12" in keys and "issues:7" in keys
+    assert qkey("review", 12) in keys and qkey("issues", 7) in keys
     assert not any(k.endswith((":8", ":13")) for k in keys)
     outcomes = {e["id"]: e["outcome"] for e in _events() if e["kind"] == "action"}
     assert outcomes[row(8)["id"]] == "#8 is not a PR of this repo"
@@ -303,45 +309,45 @@ def test_a_tick_that_cannot_sign_in_is_an_error_and_no_one(comms_store, monkeypa
 def test_a_review_ask_is_queued_at_the_front_of_band_1(comms_store, monkeypatch):
     _sweep_review(comms_store, 1, 2)
     comms_store.request_issue_sweep(issues.IssueConfig(target=issues.Target.ALL, me="alice"))
-    assert [t.id for t in comms_store.queued_tasks] == ["review:13", "review:1", "review:2",
-                                                        "issues:7"]
+    assert [t.id for t in comms_store.queued_tasks] == [qkey("review", 13), qkey("review", 1), qkey("review", 2),
+                                                        qkey("issues", 7)]
     m = _message(1, "can you review #12?")
     _tick(comms_store, monkeypatch, (m, _decision("review", 12)))
 
     assert [t.id for t in comms_store.queued_tasks] == [
-        "review:12", "review:13", "review:1", "review:2", "issues:7"]
-    ask = next(r for r in comms_store.requested_work if r.key == "review:12")
+        qkey("review", 12), qkey("review", 13), qkey("review", 1), qkey("review", 2), qkey("issues", 7)]
+    ask = next(r for r in comms_store.requested_work if r.key == qkey("review", 12))
     # The Review wizard's single-PR default for someone else's PR.
-    assert (ask.author, ask.url) == ("bob", "https://github.com/o/r/pull/12")
+    assert (ask.author, ask.url) == ("bob", f"https://github.com/{PRIMARY}/pull/12")
     assert ask.config["specificPR"] == "12"
     assert ask.config["target"] == "specific"
     assert ask.config["specificAuthor"] == "theirs"
     assert ask.config["depth"] == review.default_depth_id()
     action = [e for e in _events() if e["kind"] == "action"]
     assert action == [{"at": action[0]["at"], "id": m["id"], "kind": "action",
-                       "label": ask.label, "queueKey": "review:12",
+                       "label": ask.label, "queueKey": qkey("review", 12),
                        "outcome": "review of #12 queued, at the front of its band"}]
     feed = [(e["action"], e["detail"]) for e in _feed_lines()]
     assert feed == [
         ("comms-ping", "DM from kacper: can you review #12?"),
         ("comms-review", f"{ask.label} — review of #12 queued, at the front of its band;"
                          " asked by kacper in DM")]
-    assert comms_store.comms_items[0]["queueKey"] == "review:12"
+    assert comms_store.comms_items[0]["queueKey"] == qkey("review", 12)
 
 
 @needs_core
 def test_a_review_of_my_own_pr_is_the_mine_disposition(comms_store, monkeypatch):
     _tick(comms_store, monkeypatch, _ask(1, "review", 13))
     ask = comms_store.requested_work[0]
-    assert (ask.key, ask.author, ask.config["specificAuthor"]) == ("review:13", "", "mine")
+    assert (ask.key, ask.author, ask.config["specificAuthor"]) == (qkey("review", 13), "", "mine")
 
 
 @needs_core
 def test_an_ask_already_queued_keeps_its_ask_and_moves_up(comms_store, monkeypatch):
     _sweep_review(comms_store, 1, 13)
     _tick(comms_store, monkeypatch, _ask(1, "review", 13))
-    assert [t.id for t in comms_store.queued_tasks][:1] == ["review:13"]
-    assert [r.key for r in comms_store.requested_work].count("review:13") == 1
+    assert [t.id for t in comms_store.queued_tasks][:1] == [qkey("review", 13)]
+    assert [r.key for r in comms_store.requested_work].count(qkey("review", 13)) == 1
     assert _events()[-1]["outcome"] == \
         "review of #13 was already queued, at the front of its band"
 
@@ -352,10 +358,10 @@ def test_a_fix_ask_is_queued_at_the_front_of_band_2(comms_store, monkeypatch):
     comms_store.request_issue_sweep(issues.IssueConfig(target=issues.Target.ALL, me="alice"))
     _sweep_review(comms_store, 1)
     assert [t.id for t in comms_store.queued_tasks] == [
-        "review:13", "review:1", "issues:31", "issues:7"]
+        qkey("review", 13), qkey("review", 1), qkey("issues", 31), qkey("issues", 7)]
     _tick(comms_store, monkeypatch, (_message(1, "please fix #7"), _decision("fix_issue", 7)))
     assert [t.id for t in comms_store.queued_tasks] == [
-        "review:13", "review:1", "issues:7", "issues:31"]
+        qkey("review", 13), qkey("review", 1), qkey("issues", 7), qkey("issues", 31)]
     assert _events()[-1]["outcome"] == "fix of issue #7 was already queued, at the front of its band"
 
 
@@ -382,8 +388,8 @@ def test_a_fix_for_an_issue_the_panel_did_not_fetch_is_asked_of_github(comms_sto
                             "number,url,author,state"]
     ask = comms_store.requested_work[0]
     assert (ask.key, ask.author, ask.config["specificIssue"], ask.config["target"]) == (
-        "issues:8", "dana", "8", "specific")
-    assert [r.key for r in comms_store.requested_work] == ["issues:8"]
+        qkey("issues", 8), "dana", "8", "specific")
+    assert [r.key for r in comms_store.requested_work] == [qkey("issues", 8)]
     outcomes = [e["outcome"] for e in _events() if e["kind"] == "action"]
     assert outcomes[1:] == ["issue #9 is closed", "#10 is not an issue of this repo"]
 
@@ -394,17 +400,17 @@ def test_a_bump_moves_everything_queued_for_that_number(comms_store, monkeypatch
     comms_store.request_issue_sweep(issues.IssueConfig(target=issues.Target.ALL, me="alice"))
     _sweep_review(comms_store, 1, 2)
     assert [t.id for t in comms_store.queued_tasks] == [
-        "review:13", "review:1", "review:2", "issues:31", "issues:2"]
+        qkey("review", 13), qkey("review", 1), qkey("review", 2), qkey("issues", 31), qkey("issues", 2)]
     before = list(comms_store.requested_work)
 
     _tick(comms_store, monkeypatch, (_message(1, "any news on #2?"), _decision("bump", 2)),
           _ask(2, "bump", 99))
 
     assert [t.id for t in comms_store.queued_tasks] == [
-        "review:2", "review:13", "review:1", "issues:2", "issues:31"]
+        qkey("review", 2), qkey("review", 13), qkey("review", 1), qkey("issues", 2), qkey("issues", 31)]
     assert comms_store.requested_work == before, "a bump asks for nothing new"
     outcomes = [e["outcome"] for e in _events() if e["kind"] == "action"]
-    assert outcomes == ["moved review:2, issues:2 to the front of its band",
+    assert outcomes == [f"moved {qkey('review', 2)}, {qkey('issues', 2)} to the front of its band",
                         "nothing queued for #99"]
     assert all("queueKey" not in e for e in _events())
 
@@ -417,7 +423,7 @@ def test_an_investigation_is_band_3_and_outlives_a_restart(comms_store, monkeypa
 
     number = int(m["ts"].replace(".", ""))
     key = f"investigate:{number}"
-    assert [t.id for t in comms_store.queued_tasks] == ["review:13", "review:1", key]
+    assert [t.id for t in comms_store.queued_tasks] == [qkey("review", 13), qkey("review", 1), key]
     assert autofix.queue_band(key) == 3
     task = comms_store.queued_tasks[-1]
     sent = time.strftime("%H:%M:%S", time.localtime(float(m["ts"])))
@@ -496,11 +502,11 @@ def test_a_comms_run_records_when_it_started_and_finished(comms_store, monkeypat
     m, d = _ask(1, "review", 12)
     _tick(comms_store, monkeypatch, (m, d))
     _sweep_review(comms_store, 1)
-    entry = next(t for t in comms_store.queued_tasks if t.id == "review:1")
+    entry = next(t for t in comms_store.queued_tasks if t.id == qkey("review", 1))
     assert comms_store._run_queued_task(entry, forced=True) == "spawned"
     assert [e["kind"] for e in _events()] == ["action"], "not a Comms ask"
 
-    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    entry = next(t for t in comms_store.queued_tasks if t.id == qkey("review", 12))
     assert comms_store._run_queued_task(entry, forced=True) == "spawned"
     started = _events()[-1]
     assert (started["kind"], started["id"], started["label"]) == (
@@ -508,7 +514,7 @@ def test_a_comms_run_records_when_it_started_and_finished(comms_store, monkeypat
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", started["at"])
     comms_store.refresh_comms_feed()
 
-    running = [autofix.RunningAgent(12, started["label"], "review", True)]
+    running = [autofix.RunningAgent(12, started["label"], "review", True, item=_item(12))]
     monkeypatch.setattr(Store, "running_tasks", property(lambda s: running))
     comms_store._note_comms_runs()
     assert _events()[-1]["kind"] == "started", "still running"
@@ -523,11 +529,11 @@ def test_a_comms_run_records_when_it_started_and_finished(comms_store, monkeypat
 
 
 def test_a_run_back_in_the_queue_is_not_finished(comms_store, monkeypatch):
-    comms_store.comms_items = [{"message": {"id": "D1:1.1"}, "queueKey": "review:12",
+    comms_store.comms_items = [{"message": {"id": "D1:1.1"}, "queueKey": qkey("review", 12),
                                 "label": "Review · #12 · deep", "startedAt": "x", "at": "x"}]
     monkeypatch.setattr(Store, "running_tasks", property(lambda s: []))
     comms_store.queued_tasks = [autofix.QueuedTask(
-        id="review:12", job=autofix.AgentJob(kind="review", audit_action="review",
+        id=qkey("review", 12), job=autofix.AgentJob(kind="review", audit_action="review",
                                              label="Review · #12 · deep", prompt="p"),
         attempt=1)]
     comms_store._note_comms_runs()
@@ -564,6 +570,150 @@ def test_the_lines_python_writes_fold_through_the_real_cli():
         "investigation queued", "investigate:1", "Investigate · Slack · x")
     assert (item["at"], item["startedAt"], item["finishedAt"]) == (
         "2026-10-27T10:00:00Z", "2026-10-27T10:02:00Z", "2026-10-27T10:09:00Z")
+
+
+# MARK: - several repo roots
+
+#: The second repo root, spelled as its remote spells it.
+WIDGET = LocalRepo("acme", "Widget", "/src/widget")
+
+
+def _two_roots(monkeypatch) -> None:
+    owner, repo = PRIMARY.split("/")
+    roots = [LocalRepo(owner, repo, "/src/primary"), WIDGET]
+    monkeypatch.setattr(review, "repo_roots", lambda: roots)
+
+
+def _in(repo: str, action: str, number: int) -> dict:
+    """A decision naming ``#number`` of ``repo`` ("" = the primary root)."""
+    return {**_decision(action, number),
+            "targets": [{"action": action, "number": number, "repo": repo}]}
+
+
+def test_the_tick_watches_every_root_primary_first(comms_store, monkeypatch):
+    _two_roots(monkeypatch)
+    assert comms_store.comms_settings_payload()["repos"] == [PRIMARY, "acme/Widget"]
+
+
+@needs_core
+def test_the_same_number_in_two_roots_is_two_asks(comms_store, monkeypatch):
+    _two_roots(monkeypatch)
+    asked: list = []
+    monkeypatch.setattr("diplomat_runtime.gh.run", _github({
+        ("pr", 12): ("OPEN", "https://github.com/acme/Widget/pull/12", "dana")}, asked))
+    _tick(comms_store, monkeypatch,
+          (_message(1, "review #12 please"), _in("", "review", 12)),
+          (_message(2, "review widget#12 please"), _in("acme/widget", "review", 12)))
+
+    assert [a[:5] for a in asked] == [["pr", "view", "12", "--repo", "acme/Widget"]], (
+        "the panel's #12 is the primary's, not widget's")
+    assert [(r.key, r.repo, r.author) for r in comms_store.requested_work] == [
+        (qkey("review", 12), PRIMARY, "bob"),
+        ("review:acme/widget#12", "acme/widget", "dana")]
+    assert [r.config["home"]["path"] for r in comms_store.requested_work] == [
+        "/src/primary", "/src/widget"]
+    assert [e["outcome"] for e in _events() if e["kind"] == "action"] == [
+        f"review of {PRIMARY.split('/')[1]}#12 queued, at the front of its band",
+        "review of widget#12 queued, at the front of its band"]
+
+
+@needs_core
+def test_an_ask_in_another_root_works_in_its_checkout(comms_store, monkeypatch):
+    _two_roots(monkeypatch)
+    asked: list = []
+    monkeypatch.setattr("diplomat_runtime.gh.run", _github({
+        ("issue", 500): ("OPEN", "https://github.com/acme/Widget/issues/500", "dana")},
+        asked))
+    _tick(comms_store, monkeypatch,
+          (_message(1, "fix widget#500"), _in("acme/widget", "fix_issue", 500)),
+          (_message(2, "fix #7"), _in("", "fix_issue", 7)))
+
+    assert asked[0][3:5] == ["--repo", "acme/Widget"]
+    widget, primary = comms_store.requested_work
+    assert (widget.key, widget.config["home"]) == (
+        "issues:acme/widget#500", {"owner": "acme", "repo": "Widget", "path": "/src/widget"})
+    tasks = {t.id: t for t in comms_store.queued_tasks}
+    assert tasks[widget.key].job.checkout == "/src/widget"
+    assert tasks[primary.key].job.checkout == "/src/primary"
+
+
+@needs_core
+def test_an_investigation_of_another_root_works_in_its_checkout(comms_store, monkeypatch):
+    _two_roots(monkeypatch)
+    widget = {**_decision("investigate", 0, "widget hangs"), "repo": "acme/widget"}
+    _tick(comms_store, monkeypatch, (_message(1, "widget hangs on start"), widget),
+          (_message(2, "the screenshot tool hangs"), _decision("investigate", 0, "hangs")))
+
+    there, here = comms_store.requested_work
+    assert (there.config["owner"], there.config["checkout"], there.repo) == (
+        "acme", "/src/widget", "acme/widget")
+    assert "checkout" not in here.config
+    tasks = {t.id: t for t in comms_store.queued_tasks}
+    assert (tasks[there.key].job.checkout, tasks[here.key].job.checkout) == (
+        "/src/widget", "/src/primary")
+
+
+@needs_core
+def test_an_investigation_of_a_repo_no_longer_a_root_is_refused_as_a_review_is(
+        comms_store, monkeypatch):
+    owner, repo = PRIMARY.split("/")
+    monkeypatch.setattr(review, "repo_roots", lambda: [LocalRepo(owner, repo, "/src/primary")])
+    widget = {**_decision("investigate", 0, "widget hangs"), "repo": "acme/widget"}
+    _tick(comms_store, monkeypatch, (_message(1, "widget hangs on start"), widget))
+
+    assert comms_store.requested_work == []
+    assert [e["outcome"] for e in _events() if e["kind"] == "action"] == [
+        "investigation of acme/widget not queued: it is not a repo root"]
+
+
+@needs_core
+@pytest.mark.parametrize("label, running", [
+    ("Issues · widget#9005 · deep", True),
+    (f"Issues · {PRIMARY.split('/')[1]}#9005 · deep", False),
+])
+def test_a_fix_running_in_another_root_is_known_by_its_repo_label(comms_store, monkeypatch,
+                                                                 label, running):
+    _two_roots(monkeypatch)
+    monkeypatch.setattr("diplomat_runtime.gh.run", _github({
+        ("issue", 9005): ("OPEN", "https://github.com/acme/Widget/issues/9005", "dana")}, []))
+    _rows(monkeypatch, [autofix.RunningAgent(0, label, "issues", True, started_at=DISPATCHED)])
+    _tick(comms_store, monkeypatch, (_message(1, "fix widget#9005"),
+                                     _in("acme/widget", "fix_issue", 9005)))
+    outcome = next(e for e in _events() if e["kind"] == "action")["outcome"]
+    assert outcome == ("already running" if running
+                       else "fix of issue widget#9005 queued, at the front of its band")
+
+
+@needs_core
+def test_a_bump_moves_only_its_own_roots_item(comms_store, monkeypatch):
+    _two_roots(monkeypatch)
+    monkeypatch.setattr("diplomat_runtime.gh.run", _github({
+        ("pr", 12): ("OPEN", "https://github.com/acme/Widget/pull/12", "dana")}, []))
+    _tick(comms_store, monkeypatch,
+          (_message(1, "review widget#12"), _in("acme/widget", "review", 12)),
+          (_message(2, "review #12"), _in("", "review", 12)),
+          (_message(3, "review #13"), _in("", "review", 13)))
+    order = [qkey("review", 13), qkey("review", 12), "review:acme/widget#12"]
+    assert [t.id for t in comms_store.queued_tasks] == order
+
+    _tick(comms_store, monkeypatch, (_message(4, "#12 first please"), _in("", "bump", 12)))
+    assert [t.id for t in comms_store.queued_tasks] == [order[1], order[0], order[2]]
+    assert _events()[-1]["outcome"] == f"moved {order[1]} to the front of its band"
+
+
+def test_a_queue_key_a_single_repo_build_logged_is_the_primary_roots(comms_store):
+    comms.comms_dir().mkdir(parents=True)
+    review_ping, investigation = _message(1), _message(2)
+    _logged((review_ping, _decision("review", 42)), (investigation, _decision("investigate")))
+    comms.append_event("action", review_ping["id"], outcome="review of #42 queued",
+                       queue_key="review:42", label="Review · #42 · deep")
+    comms.append_event("action", investigation["id"], outcome="investigation queued",
+                       queue_key="investigate:1761580002000100", label="Investigate")
+    comms_store.refresh_comms_feed()
+    assert sorted(i["queueKey"] for i in comms_store.comms_items) == [
+        "investigate:1761580002000100", qkey("review", 42)]
+    assert set(comms_store._comms_owned) == {
+        "investigate:1761580002000100", qkey("review", 42)}
 
 
 # MARK: - unread, errors, notifications
@@ -671,7 +821,7 @@ def test_a_review_of_a_pr_the_panel_did_not_fetch_is_asked_of_github(comms_store
                                       ["pr", "view", "502"], ["pr", "view", "503"]]
     assert asked[0][3:] == ["--repo", "software-mansion/argent", "--json",
                             "number,url,author,state"]
-    assert [r.key for r in comms_store.requested_work] == ["review:500", "review:12"]
+    assert [r.key for r in comms_store.requested_work] == [qkey("review", 500), qkey("review", 12)]
     ask = comms_store.requested_work[0]
     assert (ask.author, ask.url, ask.config["specificAuthor"]) == ("dana", pull(500), "theirs")
     outcomes = [e["outcome"] for e in _events() if e["kind"] == "action"]
@@ -753,7 +903,7 @@ def test_a_feed_read_before_a_pings_line_never_lands_after_it(comms_store, monke
     ticked.join(10)
     assert not settle.is_alive() and not ticked.is_alive()
 
-    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    entry = next(t for t in comms_store.queued_tasks if t.id == qkey("review", 12))
     assert comms_store._run_queued_task(entry, forced=True) == "spawned"
     assert _kinds_by_id()[m["id"]] == ["action", "started"]
 
@@ -778,7 +928,7 @@ def test_a_dispatch_while_the_ask_is_being_taken_still_records_its_start(comms_s
     ticked = threading.Thread(target=lambda: _tick(comms_store, monkeypatch, (m, d)))
     ticked.start()
     assert queued.wait(10)
-    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    entry = next(t for t in comms_store.queued_tasks if t.id == qkey("review", 12))
     verdicts: list = []
     drain = threading.Thread(
         target=lambda: verdicts.append(comms_store._run_queued_task(entry, forced=True)))
@@ -813,7 +963,7 @@ def test_every_ping_that_asked_for_the_work_sees_it_start_and_finish(comms_store
         "review of #12 queued, at the front of its band",
         "review of #12 was already queued, at the front of its band"]
 
-    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    entry = next(t for t in comms_store.queued_tasks if t.id == qkey("review", 12))
     assert comms_store._run_queued_task(entry, forced=True) == "spawned"
     ids = (first[0]["id"], second[0]["id"])
     assert _kinds_by_id() == {i: ["action", "started"] for i in ids}
@@ -831,7 +981,7 @@ def test_a_start_waits_out_a_settle_already_under_way(comms_store, monkeypatch):
     _spawn_recorder(monkeypatch)
     m, d = _ask(1, "review", 12)
     _tick(comms_store, monkeypatch, (m, d))
-    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    entry = next(t for t in comms_store.queued_tasks if t.id == qkey("review", 12))
     comms_store._settle_lock.acquire()
     done = threading.Event()
     worker = threading.Thread(target=lambda: (comms_store._note_comms_started(entry),
@@ -853,7 +1003,7 @@ def test_work_a_peer_already_runs_has_started_too(comms_store, monkeypatch):
     _tick(comms_store, monkeypatch, (m, d))
     monkeypatch.setattr(comms_store, "dispatch_agent",
                         lambda *a, **k: autofix.VERDICT_STAND_DOWN)
-    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    entry = next(t for t in comms_store.queued_tasks if t.id == qkey("review", 12))
     assert comms_store._run_queued_task(entry, forced=True) == autofix.VERDICT_STAND_DOWN
     assert _kinds_by_id() == {m["id"]: ["action", "started"]}
 
@@ -870,7 +1020,7 @@ def test_every_asker_is_owned_before_the_feed_is_read_back(comms_store, monkeypa
     monkeypatch.setattr(comms, "feed", unreadable)
     first, second = _ask(1, "review", 12), _ask(2, "review", 12)
     _tick(comms_store, monkeypatch, first, second)
-    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    entry = next(t for t in comms_store.queued_tasks if t.id == qkey("review", 12))
     assert comms_store._run_queued_task(entry, forced=True) == "spawned"
     assert _kinds_by_id() == {first[0]["id"]: ["action", "started"],
                               second[0]["id"]: ["action", "started"]}
@@ -881,7 +1031,7 @@ def test_the_jobs_column_moves_on_at_the_spawn_not_at_the_next_tick(comms_store,
                                                                     monkeypatch):
     _spawn_recorder(monkeypatch)
     _tick(comms_store, monkeypatch, _ask(1, "review", 12))
-    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    entry = next(t for t in comms_store.queued_tasks if t.id == qkey("review", 12))
     fired = []
     comms_store.comms_changed.connect(lambda: fired.append(1))
     assert comms_store._run_queued_task(entry, forced=True) == "spawned"
@@ -898,7 +1048,7 @@ def test_a_run_that_ends_while_comms_is_off_is_still_finished(comms_store, monke
     m, d = _ask(1, "review", 12)
     _tick(comms_store, monkeypatch, (m, d))
     comms_store.comms_enabled = False
-    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    entry = next(t for t in comms_store.queued_tasks if t.id == qkey("review", 12))
     assert comms_store._run_queued_task(entry, forced=True) == "spawned"
     assert _kinds_by_id()[m["id"]] == ["action", "started"]
 
@@ -917,6 +1067,10 @@ def test_a_run_that_ends_while_comms_is_off_is_still_finished(comms_store, monke
 DISPATCHED = 1761500000.0
 
 
+def _item(number: int) -> str:
+    return f"{PRIMARY.lower()}#{number}"
+
+
 def _rows(monkeypatch, rows: list) -> list:
     monkeypatch.setattr(Store, "running_tasks", property(lambda s: list(rows)))
     return rows
@@ -925,10 +1079,10 @@ def _rows(monkeypatch, rows: list) -> list:
 def _review_req(number: int, author: str = "bob") -> autofix.QueuedTask:
     """The review-request monitor's queued find on PR ``number``."""
     return autofix.QueuedTask(
-        id=f"review-req:{number}", attempt=1,
+        id=qkey("review-req", number), attempt=1,
         job=autofix.AgentJob(kind="review", audit_action="review-req",
                              label=f"Review-req · #{number} (@{author}) +verdict",
-                             prompt="p", pr_url=f"https://github.com/o/r/pull/{number}",
+                             prompt="p", pr_url=f"https://github.com/{PRIMARY}/pull/{number}",
                              pr_number=number, author_login=author,
                              counter="review_requests"))
 
@@ -936,7 +1090,7 @@ def _review_req(number: int, author: str = "bob") -> autofix.QueuedTask:
 @needs_core
 def test_a_review_an_agent_is_already_on_is_not_asked_for_again(comms_store, monkeypatch):
     row = autofix.RunningAgent(12, "Auto · Review-req · #12 (@bob) +verdict", "review", True,
-                               started_at=DISPATCHED)
+                               started_at=DISPATCHED, item=_item(12))
     rows = _rows(monkeypatch, [row])
     m, d = _ask(1, "review", 12)
     _tick(comms_store, monkeypatch, (m, d))
@@ -944,7 +1098,7 @@ def test_a_review_an_agent_is_already_on_is_not_asked_for_again(comms_store, mon
     assert comms_store.queued_tasks == [] and comms_store.requested_work == []
     action, started = _events()
     assert (action["outcome"], action["queueKey"], action["label"]) == (
-        "already running", "review:12", row.label)
+        "already running", qkey("review", 12), row.label)
     assert (started["kind"], started["id"], started["label"], started["at"]) == (
         "started", m["id"], row.label,
         comms.iso(datetime.fromtimestamp(DISPATCHED, timezone.utc)))
@@ -977,7 +1131,7 @@ def test_a_fix_already_running_is_known_by_its_issues_label(comms_store, monkeyp
         assert comms_store.queued_tasks == []
     else:
         assert outcome == "fix of issue #9005 queued, at the front of its band"
-        assert [t.id for t in comms_store.queued_tasks] == ["issues:9005"]
+        assert [t.id for t in comms_store.queued_tasks] == [qkey("issues", 9005)]
 
 
 @needs_core
@@ -989,11 +1143,11 @@ def test_a_review_the_monitor_has_queued_is_not_asked_for_again(comms_store, mon
     m, d = _ask(1, "review", 12)
     _tick(comms_store, monkeypatch, (m, d))
 
-    assert [t.id for t in comms_store.queued_tasks] == ["review-req:12", "review-req:40"]
+    assert [t.id for t in comms_store.queued_tasks] == [qkey("review-req", 12), qkey("review-req", 40)]
     assert comms_store.requested_work == []
     [action] = _events()
     assert (action["outcome"], action["queueKey"], action["label"]) == (
-        "already queued, at the front of its band", "review-req:12", twin.job.label)
+        "already queued, at the front of its band", qkey("review-req", 12), twin.job.label)
 
     # The queue's dispatch starts it, under the label its row wears.
     monkeypatch.setattr(comms_store, "dispatch_agent", lambda *a, **k: "spawned")
@@ -1001,7 +1155,7 @@ def test_a_review_the_monitor_has_queued_is_not_asked_for_again(comms_store, mon
     started = _events()[-1]
     assert (started["kind"], started["label"]) == ("started", "Auto · " + twin.job.label)
     rows.append(autofix.RunningAgent(12, "Auto · " + twin.job.label, "review", True,
-                                     started_at=DISPATCHED))
+                                     started_at=DISPATCHED, item=_item(12)))
     comms_store._note_comms_runs()
     assert _kinds_by_id()[m["id"]] == ["action", "started"], "still running"
     rows.clear()
@@ -1012,10 +1166,10 @@ def test_a_review_the_monitor_has_queued_is_not_asked_for_again(comms_store, mon
     comms_store.queued_tasks = [_review_req(13, "alice")]
     m2, d2 = _ask(2, "review", 13)
     _tick(comms_store, monkeypatch, (m2, d2))
-    assert _events()[-1]["queueKey"] == "review-req:13"
+    assert _events()[-1]["queueKey"] == qkey("review-req", 13)
     comms_store.queued_tasks = []
     row = autofix.RunningAgent(13, "Auto · Review-req · #13 (@alice) +verdict", "review",
-                               True, started_at=DISPATCHED)
+                               True, started_at=DISPATCHED, item=_item(13))
     rows.append(row)
     comms_store._note_comms_runs()
     started = _events()[-1]
@@ -1042,9 +1196,9 @@ def test_a_review_the_switched_off_monitor_holds_is_taken_and_drains(comms_store
     assert comms_store.requested_work == []
     [action] = _events()
     assert (action["outcome"], action["queueKey"]) == (
-        "already queued, at the front of its band", "review-req:12")
+        "already queued, at the front of its band", qkey("review-req", 12))
     assert not comms_store.is_held(held)
-    assert [t.id for t in comms_store.drainable_tasks] == ["review-req:12"]
+    assert [t.id for t in comms_store.drainable_tasks] == [qkey("review-req", 12)]
 
 
 @needs_core
@@ -1058,16 +1212,37 @@ def test_a_find_a_ping_took_stays_queued_until_it_runs(comms_store, monkeypatch)
     _tick(comms_store, monkeypatch, (m, d))
     comms_store._staged_queue = []
     comms_store.commit_queue()
-    assert [t.id for t in comms_store.queued_tasks] == ["review-req:12"]
+    assert [t.id for t in comms_store.queued_tasks] == [qkey("review-req", 12)]
     assert [e["kind"] for e in _events()] == ["action"]
 
     comms_store._comms_adopted = {}  # as after a relaunch
     comms_store.commit_queue()
     assert comms_store.queued_tasks == []
-    assert _events()[-1]["outcome"] == f"{comms.LEFT_QUEUE} (review-req:12)"
-    assert "review-req:12" not in comms_store._comms_owned
+    assert _events()[-1]["outcome"] == f"{comms.LEFT_QUEUE} ({qkey('review-req', 12)})"
+    assert qkey("review-req", 12) not in comms_store._comms_owned
     comms_store.review_requests_enabled = False
     assert comms_store.is_held(_review_req(12))
+
+
+@needs_core
+def test_a_find_a_ping_took_leaves_once_its_root_is_taken_out(comms_store, monkeypatch):
+    """Kept for its ping, it would otherwise wait forever: the drain starts nothing in a
+    repo no root is, and no monitor offers it again."""
+    _rows(monkeypatch, [])
+    comms_store.queued_tasks = [_review_req(12)]
+    m, d = _ask(1, "review", 12)
+    _tick(comms_store, monkeypatch, (m, d))
+    monkeypatch.setattr(review, "repo_roots", lambda: [LocalRepo("o", "elsewhere", "/x")])
+    # While a root is unresolved, its repo missing may be that one.
+    monkeypatch.setattr(review, "roots_complete", lambda: False)
+    comms_store._staged_queue = []
+    comms_store.commit_queue()
+    assert [t.id for t in comms_store.queued_tasks] == [qkey("review-req", 12)]
+    monkeypatch.setattr(review, "roots_complete", lambda: True)
+    comms_store._staged_queue = []
+    comms_store.commit_queue()
+    assert comms_store.queued_tasks == []
+    assert _events()[-1]["outcome"] == f"{comms.LEFT_QUEUE} ({qkey('review-req', 12)})"
 
 
 @needs_core
@@ -1083,7 +1258,7 @@ def test_a_ping_whose_run_never_started_is_started_by_its_retry(comms_store, mon
     label = "Auto · " + twin.job.label
     # The 8-second poll publishes the run's row while its spawn waits for the pid file.
     comms_store.queued_tasks = []
-    rows.append(autofix.RunningAgent(12, label, "review", True, started_at=DISPATCHED))
+    rows.append(autofix.RunningAgent(12, label, "review", True, started_at=DISPATCHED, item=_item(12)))
     comms_store._note_comms_runs()
     rows.clear()
 
@@ -1094,10 +1269,10 @@ def test_a_ping_whose_run_never_started_is_started_by_its_retry(comms_store, mon
     assert comms_store._run_queued_task(twin, forced=True) == "failed"
     [item] = comms_store.comms_items
     assert item["outcome"] == f"{comms.NEVER_STARTED} (Ghostty opened no window)"
-    assert "review-req:12" in comms_store._comms_owned
+    assert qkey("review-req", 12) in comms_store._comms_owned
 
     retry = autofix.RunningAgent(12, label + " · retry 2", "review", True,
-                                 started_at=DISPATCHED + 60)
+                                 started_at=DISPATCHED + 60, item=_item(12))
     rows.append(retry)
     comms_store._note_comms_runs()
     [item] = comms_store.comms_items
@@ -1122,7 +1297,7 @@ def test_a_ping_an_apply_never_acted_on_is_acted_on_by_the_next_tick(comms_store
     _tick(comms_store, monkeypatch)
     [action] = _events()
     assert (action["id"], action["outcome"], action["queueKey"]) == (
-        m["id"], "review of #12 queued, at the front of its band", "review:12")
+        m["id"], "review of #12 queued, at the front of its band", qkey("review", 12))
     assert shown == [], "no notification for a ping hours old"
     _tick(comms_store, monkeypatch)
     assert len(_events()) == 1
@@ -1152,7 +1327,7 @@ def test_a_run_whose_terminal_never_ran_it_is_not_done(comms_store, monkeypatch)
     _spawn_recorder(monkeypatch)
     m, d = _ask(1, "review", 12)
     _tick(comms_store, monkeypatch, (m, d))
-    entry = next(t for t in comms_store.queued_tasks if t.id == "review:12")
+    entry = next(t for t in comms_store.queued_tasks if t.id == qkey("review", 12))
     assert comms_store._run_queued_task(entry, forced=True) == "spawned"
     assert _kinds_by_id()[m["id"]] == ["action", "started"]
 
@@ -1168,16 +1343,16 @@ def test_a_run_whose_terminal_never_ran_it_is_not_done(comms_store, monkeypatch)
                         r"command \(no pid file \d+s after dispatch\)\)", item["outcome"])
     assert not item.get("finishedAt")
     assert commsview.job_status(item, set()) == "not queued"
-    assert commsview.job_status(item, {"review:12"}) == "queued"
+    assert commsview.job_status(item, {qkey("review", 12)}) == "queued"
 
 
-@pytest.mark.parametrize("key, waiting", [("review-req:12", True), ("review:12", False)])
+@pytest.mark.parametrize("key, waiting", [(qkey("review-req", 12), True), (qkey("review", 12), False)])
 def test_only_a_monitors_find_that_left_the_queue_starts_from_the_rows(comms_store,
                                                                        monkeypatch, key,
                                                                        waiting):
     """A find still queued has not started, whoever is on its PR; an ask starts at its
     own dispatch (`_note_comms_started`), never from somebody else's agent."""
-    _rows(monkeypatch, [autofix.RunningAgent(12, "Review · #12 · deep", "review", True)])
+    _rows(monkeypatch, [autofix.RunningAgent(12, "Review · #12 · deep", "review", True, item=_item(12))])
     comms_store.comms_items = [{"message": {"id": "D1:1.1"}, "queueKey": key,
                                 "label": "Review-req · #12 (@bob)", "at": "x"}]
     comms_store.queued_tasks = [_review_req(12)] if waiting else []
@@ -1190,11 +1365,11 @@ def test_a_settle_with_nothing_to_start_or_finish_reads_no_rows(comms_store, mon
     monkeypatch.setattr(Store, "running_tasks",
                         property(lambda s: pytest.fail("read the agent rows")))
     comms_store.comms_items = [
-        {"message": {"id": "D1:1.1"}, "queueKey": "review:12", "label": "Review · #12 · deep",
+        {"message": {"id": "D1:1.1"}, "queueKey": qkey("review", 12), "label": "Review · #12 · deep",
          "at": "x"},
-        {"message": {"id": "D1:1.2"}, "queueKey": "review-req:40", "label": "Review-req · #40",
+        {"message": {"id": "D1:1.2"}, "queueKey": qkey("review-req", 40), "label": "Review-req · #40",
          "at": "x"},
-        {"message": {"id": "D1:1.3"}, "queueKey": "review:13", "label": "Review · #13 · deep",
+        {"message": {"id": "D1:1.3"}, "queueKey": qkey("review", 13), "label": "Review · #13 · deep",
          "at": "x", "startedAt": "x", "finishedAt": "x"}]
     comms_store.queued_tasks = [_review_req(40)]
     comms_store._note_comms_runs()

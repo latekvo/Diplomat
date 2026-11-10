@@ -12,8 +12,8 @@ import DiplomatCore
 /// enough to answer both token questions the Telemetry screen asks, and neither
 /// needs anything Anthropic doesn't already write to disk:
 ///
-/// * **how much of this machine's spend went on the monitored repo** — sum every
-///   turn, split by whether its `cwd` is inside the repo the agents work in;
+/// * **how much of this machine's spend went on the monitored repos** — sum every
+///   turn, split by whether its `cwd` is inside a repo root the agents work in;
 /// * **what one auto-task cost** — find the transcript whose opening user message
 ///   *is* the prompt staged for that agent, and sum that file alone.
 ///
@@ -55,17 +55,19 @@ enum UsageScan {
 
     // MARK: - What counts as this repo
 
-    /// The directories whose Claude sessions count as work on this repo: the
-    /// checkout the agents `cd` into, plus its worktree siblings at
-    /// `<root>-worktrees/*`. A branch worked on in a worktree is the same project by
-    /// any honest reading, and every agent dispatched through one would otherwise
-    /// land in "everything else" and make the split lie.
+    /// The directories whose Claude sessions count as work on these repos: each repo
+    /// root the agents `cd` into, plus its worktree siblings at `<root>-worktrees/*`. A
+    /// branch worked on in a worktree is the same project by any honest reading, and
+    /// every agent dispatched through one would otherwise land in "everything else"
+    /// and make the split lie.
     static func repoRoots() -> [String] {
-        let root = URL(fileURLWithPath: RepoPaths.agentRepo).standardizedFileURL.path
-        guard !root.isEmpty, root != "/" else { return [] }
-        let parent = (root as NSString).deletingLastPathComponent
-        let name = (root as NSString).lastPathComponent
-        return [root, (parent as NSString).appendingPathComponent("\(name)-worktrees")]
+        RepoPaths.roots.flatMap { repo -> [String] in
+            let root = URL(fileURLWithPath: repo.path).standardizedFileURL.path
+            guard !root.isEmpty, root != "/" else { return [] }
+            let parent = (root as NSString).deletingLastPathComponent
+            let name = (root as NSString).lastPathComponent
+            return [root, (parent as NSString).appendingPathComponent("\(name)-worktrees")]
+        }
     }
 
     /// Whether a record's `cwd` sits under one of the repo roots. Compared as path

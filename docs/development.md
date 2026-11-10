@@ -313,7 +313,7 @@ Cadences and paths are overridable too, for tuning: `DIPLOMAT_AUTOFIX_SECS`,
 `DIPLOMAT_APIWATCH_SECS`, `DIPLOMAT_PROC_POLL_SECS` (min 2s), `DIPLOMAT_MESH_POLL_SECS`,
 `DIPLOMAT_CORE` (where the shared `assets/` live), `DIPLOMAT_DEVICE_ALLOCATOR_DIR`,
 `DIPLOMAT_NODE` / `DIPLOMAT_PYTHON` (the `node` / `python3` to use),
-`DIPLOMAT_REPO` (the agents' repo root - outranks Settings ▸ *Repo root*) and
+`DIPLOMAT_REPO` (a single repo root for the agents - outranks Settings ▸ *Repo roots*) and
 `DIPLOMAT_CONFIG` (where that shared `config.json` lives).
 
 ## Architecture
@@ -438,7 +438,7 @@ packages/
         ReviewWizard.swift         Review-PRs wizard + AgentSpawner (staged prompt file, done sentinel, Ghostty/iTerm/Terminal)
         IssueWizard.swift          the Fix-issues wizard
         ConflictWizard.swift / AuditWizard.swift   the Resolve-conflicts and Full-E2E-test wizards
-        SettingsView.swift         settings (username, repo root, monitors + auto-approve + task cap + rate-limit budget, watcher, tools, terminal, allocator)
+        SettingsView.swift         settings (username, repo roots, monitors + auto-approve + task cap + rate-limit budget, watcher, tools, terminal, allocator)
         Store.swift                ObservableObject; settings + the monitor/watcher loops; logic in ToolData
         AutofixMonitor.swift       the monitors' GitHub reads (monitor-prs / review-requests queries)
         AutofixStatus.swift        the monitor heartbeat behind the status pill
@@ -481,7 +481,7 @@ packages/
         HangWatch.swift            the main-thread hang watch, its samples, the 15-minute heartbeat
         AppLogTest.swift           self-test of both (DIPLOMAT_APPLOG_TEST)
         RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → the checkout the bundle sits in → the one it recorded → ~/dev/diplomat),
-                                   the sibling packages it reaches for, and the agents' repo root
+                                   the sibling packages it reaches for, and the agents' repo roots
         AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares
       install/                 ← build-app + the autostart / auto-update (un)installers (launchd)
       tests/                   ← installers.sh: what those two installers write, run against stubs

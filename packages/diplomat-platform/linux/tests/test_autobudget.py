@@ -17,7 +17,7 @@ import time
 import pytest
 
 from diplomat_runtime import activity, appconfig, autobudget, autofix, telemetry
-from test_autofix import _spawn_recorder, store  # noqa: F401 — the shared
+from test_autofix import _fixture_root, _spawn_recorder, store  # noqa: F401 — the shared
 # Store fixture and spawn stub, reused rather than rebuilt: a second copy would
 # be a second set of probe stubs to keep in step with the real one.
 
@@ -590,7 +590,7 @@ def test_an_auto_dispatch_is_deferred_and_queued(store, monkeypatch, broke):
     assert calls == [], "nothing was spawned"
     # Deferred, not dropped: it is staged for this cycle's queue like any other hold.
     store.commit_queue()
-    assert [e.id for e in store.queued_tasks] == ["review:9"]
+    assert [e.id for e in store.queued_tasks] == ["review:o/r#9"]
 
 
 def test_an_auto_dispatch_is_deferred_when_the_money_runs_out(store, monkeypatch):
@@ -610,7 +610,7 @@ def test_an_auto_dispatch_is_deferred_when_the_money_runs_out(store, monkeypatch
     line = [e for e in activity.read() if e.action == "no-budget"][0]
     assert "OpenRouter key limit left" in line.detail
     store.commit_queue()
-    assert [e.id for e in store.queued_tasks] == ["review:9"]
+    assert [e.id for e in store.queued_tasks] == ["review:o/r#9"]
 
 
 def test_a_panel_spawn_is_never_gated_by_the_budget(store, monkeypatch, broke):
@@ -630,8 +630,8 @@ def test_the_drain_stops_at_the_budget_and_keeps_its_queue(store, monkeypatch, b
     calls = _spawn_recorder(monkeypatch)
     monkeypatch.setattr(type(store), "_auto_tasks_running", lambda self: 0)
     store.queued_tasks = [
-        autofix.QueuedTask("review:3", _job(number=3), 1),
-        autofix.QueuedTask("review:4", _job(number=4), 1),
+        autofix.QueuedTask("review:o/r#3", _job(number=3), 1),
+        autofix.QueuedTask("review:o/r#4", _job(number=4), 1),
     ]
 
     store._drain_queued_tasks([], closed=set())
@@ -639,11 +639,11 @@ def test_the_drain_stops_at_the_budget_and_keeps_its_queue(store, monkeypatch, b
     assert calls == []
     # The one it tried is re-staged rather than dropped — a refusal writes no attempt
     # record, so it is offered again at the end of this very cycle…
-    assert [e.id for e in store._staged_queue] == ["review:3"]
+    assert [e.id for e in store._staged_queue] == ["review:o/r#3"]
     # …and the first refusal ends the drain, because every entry behind it would be
     # priced against the same windows and get the same answer. The untried one is
     # still on the list its own monitor will re-offer.
-    assert [e.id for e in store.queued_tasks] == ["review:4"]
+    assert [e.id for e in store.queued_tasks] == ["review:o/r#4"]
 
 
 def test_execute_now_overrides_the_budget(store, monkeypatch, broke):
@@ -651,7 +651,7 @@ def test_execute_now_overrides_the_budget(store, monkeypatch, broke):
     know something the ledger does not."""
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     calls = _spawn_recorder(monkeypatch)
-    entry = autofix.QueuedTask("review:3", _job(number=3), 1)
+    entry = autofix.QueuedTask("review:o/r#3", _job(number=3), 1)
     store.queued_tasks = [entry]
 
     store._execute_queued_task(entry)

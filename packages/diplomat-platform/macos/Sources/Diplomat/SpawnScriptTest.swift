@@ -425,6 +425,26 @@ enum SpawnScriptTest {
         check("a box that cannot drive Ghostty stays",
               Store.terminalChoiceMigration(stored: "iterm", ghosttyUsable: false) == nil)
 
+        // A self-test reaching a dispatch past a free bay would start a real agent.
+        print("\nheadless: which runs may open a terminal")
+        let may = AgentSpawner.mayOpenTerminals(in:)
+        check("the live app may", may([:]) && may(["DIPLOMAT_QUEUE_TEST": "0"]))
+        check("…and the two tests that drive real windows",
+              may(["DIPLOMAT_TRACK_TEST": "1"]) && may(["DIPLOMAT_SPAWN_FOCUS_TEST": "1"]))
+        check("…but no other self-test, this one included",
+              !may(["DIPLOMAT_QUEUE_TEST": "1"]) && !may(["DIPLOMAT_SPAWN_SCRIPT_TEST": "1"])
+                  && !may(["DIPLOMAT_RENDER": "panel"]))
+        check("…nor one of those run beside another",
+              !may(["DIPLOMAT_TRACK_TEST": "1", "DIPLOMAT_COMMS_TEST": "1"]))
+        let refusedBefore = AgentSpawner.refusedTerminals
+        var refusal: Error?
+        do { _ = try AgentSpawner.runSpawn(command: "true", terminal: .terminal) }
+        catch { refusal = error }
+        check("the terminal launch every spawn shares refuses this run, counted",
+              refusal.map { "\($0)" } == "\(AgentSpawner.SpawnError.headless)"
+                  && AgentSpawner.refusedTerminals == refusedBefore + 1,
+              "got \(refusal.map { "\($0)" } ?? "no error")")
+
         print(failures.isEmpty
               ? "\nSPAWN_SCRIPT_TEST OK"
               : "\nSPAWN_SCRIPT_TEST FAILED  [\(failures.joined(separator: ", "))]")

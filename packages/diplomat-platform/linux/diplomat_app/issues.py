@@ -69,6 +69,8 @@ class IssueConfig(RepoConfig):
     #: The checkouts listed in Settings that a pasted link in ``specific_issue`` may
     #: name.
     local_repos: tuple[LocalRepo, ...] = ()
+    #: The repo root a bare number targets; None = the configured repo.
+    home: LocalRepo | None = None
 
     #: Skip every issue that already has an assignee — somebody is on it already.
     unassigned_only: bool = True
@@ -134,7 +136,7 @@ class IssueConfig(RepoConfig):
         to SPECIFIC: it is what still says this issue was swept rather than named, and
         so that the run re-checks the state the sweep selected on before working an
         issue whose turn came hours later. No listed checkouts: a swept issue is the
-        configured repo's, so they would only be stored."""
+        home repo's, so they would only be stored."""
         return replace(self, specific_issue=str(number), local_repos=())
 
     @property
@@ -147,8 +149,8 @@ class IssueConfig(RepoConfig):
     @property
     def issue_ref(self) -> PRRef:
         """The single-issue field parsed as a number / URL / ``owner/repo#n``
-        shorthand, checked against the configured repo, then ``local_repos``."""
-        owner, repo = self.configured_repo
+        shorthand, checked against :attr:`home_repo`, then ``local_repos``."""
+        owner, repo = self.home_repo
         return parse_pr_ref(self.specific_issue, owner, repo, kind="issues",
                             also=self.local_repos)
 
@@ -181,7 +183,7 @@ class IssueConfig(RepoConfig):
             "openPRs": self.open_prs,
             "commentOnIssue": self.comment_on_issue,
             "includeFeatures": self.include_features,
-            **listed_payload(self.local_repos),
+            **listed_payload(self.local_repos, self.home),
         }
 
     def build_prompt(self) -> str:

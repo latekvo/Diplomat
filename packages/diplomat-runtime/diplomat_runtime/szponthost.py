@@ -59,9 +59,11 @@ class DiplomatHost(szpont_host.Host):
 
         activity.log("mesh", action, detail)
 
-    def run_job(self, prompt: str, done_path: str | None) -> str:
+    def run_job(self, prompt: str, done_path: str | None,
+                work_key: str | None = None, repo: str | None = None) -> str:
         """Open a terminal running the configured agent runner on the staged prompt,
-        exactly like a local SPAWN AGENT.
+        exactly like a local SPAWN AGENT, in the repo root ``repo`` or ``work_key``
+        names (:func:`_checkout_for`).
 
         macOS goes through ``osascript`` (Terminal.app on the same shell command
         the Linux spawner builds); Linux uses the applet's own spawner, which
@@ -69,9 +71,10 @@ class DiplomatHost(szpont_host.Host):
         """
         from . import review, runner
 
+        checkout = _checkout_for(work_key or "", repo or "")
         settings = _stage_hooks(done_path)
         if platform.system() == "Darwin":
-            return _spawn_macos(prompt, done_path, settings)
+            return _spawn_macos(prompt, done_path, settings, checkout)
         prompt_file = None
         try:
             # Before the prompt is staged, as on macOS: a job refused for its token
@@ -83,9 +86,10 @@ class DiplomatHost(szpont_host.Host):
             if runner.selected() == runner.OPENCODE:
                 prompt_file = review.write_prompt(prompt)
                 staged = {"prompt_file": prompt_file,
-                          "opencode_session": review.stage_opencode_session(prompt_file)}
+                          "opencode_session": review.stage_opencode_session(
+                              prompt_file, checkout)}
             return review.spawn(prompt, None, done_path=done_path,
-                                settings_file=settings, **staged)
+                                settings_file=settings, checkout=checkout, **staged)
         except review.SpawnError as exc:
             if prompt_file:
                 review.discard_prompt(prompt_file)
@@ -93,7 +97,7 @@ class DiplomatHost(szpont_host.Host):
 
     def work_already_running(self, work_key: str) -> bool:
         """Is a live ``claude`` agent for this work key's PR already up on THIS
-        machine? Reuses the ORIGINATING side's matcher (``live_pr_numbers``) so
+        machine? Reuses the ORIGINATING side's matcher (``live_pr_items``) so
         both sides agree on what "an agent is on this PR" means. Keyed on the PR,
         not the exact work key, so a fresh push (new ``@sha``) can't dodge it.
 
@@ -101,12 +105,14 @@ class DiplomatHost(szpont_host.Host):
         drops work — the same trade the store's ``_live_pr_agents`` makes.
         """
         from . import autofix
+        from .prref import item_key
 
         ref = autofix.parse_work_key(work_key)
         if ref is None:
             return False
         _kind, owner, repo, number = ref
-        return number in autofix.live_pr_numbers(_ps_dump(), owner, repo)
+        return item_key(owner, repo, number) in autofix.live_pr_items(
+            _ps_dump(), {f"{owner}/{repo}"})
 
     def at_job_capacity(self, running_keys: list[str]) -> bool:
         """Should a dispatch routed here be declined and failed over to another
@@ -155,20 +161,23 @@ class DiplomatHost(szpont_host.Host):
         An unreadable tmux degrades the other way, to "everything is working", so a
         node that cannot see its panes declines work rather than piling it on.
 
-        Automatic work that names no PR (an issue fix, a sweep) is invisible to that
-        scan, so it is counted from the run book the applet writes instead
-        (:func:`autofix.running_unscoped_auto_runs`), against the same dump and screens.
+        The scan covers every repo root's PRs. Automatic work that names no PR (an
+        issue fix, a sweep) is invisible to it, so it is counted from the run book the
+        applet writes instead (:func:`autofix.running_unscoped_auto_runs`), against the
+        same dump and screens.
 
         The idle subtraction is taken from the union, entries of ``running_keys``
         included, so it has to be sound about an agent this node started moments ago —
-        which is why :func:`autofix.idle_pr_numbers` reads a process's age before its
+        which is why :func:`autofix.idle_pr_items` reads a process's age before its
         screen. A booting agent shows the bare prompt of a finished one, and subtracted
         there it hands back the bay its own dispatch just took.
         """
-        from . import (agentregistry, appconfig, autobudget, autofix, core, diskfloor,
-                       review, tmuxwatch)
+        from . import (agentregistry, appconfig, autobudget, autofix, diskfloor, review,
+                       tmuxwatch)
+        from .prref import item_key
 
-        disk = diskfloor.lowest([review.repo_path(), str(Path.home() / ".diplomat")])
+        roots = review.repo_roots()
+        disk = diskfloor.lowest([r.path for r in roots] + [str(Path.home() / ".diplomat")])
         if disk is not None and disk.low:
             self.log("mesh-low-disk", f"Declined a peer's job — {diskfloor.describe(disk)}")
             return True
@@ -179,22 +188,21 @@ class DiplomatHost(szpont_host.Host):
                          f"Declined a peer's job — {autobudget.shortfall(budget)}")
                 return True
 
-        cfg = core.config()
+        slugs = {r.slug.lower() for r in roots}
         mine = {
-            ref[3] for ref in (autofix.parse_work_key(k) for k in running_keys)
+            item_key(*ref[1:]) for ref in (autofix.parse_work_key(k) for k in running_keys)
             if ref is not None
         }
         dump = _ps_dump()
         book = agentregistry.load()
-        live = autofix.live_pr_numbers(dump, cfg["owner"], cfg["repo"])
+        live = autofix.live_pr_items(dump, slugs)
         # `or {}` is the "everything is working" degradation this docstring promises:
         # tmux answering `None` means it could not be read, and no tty then resolves
         # to a tail, so nothing is subtracted as idle.
         tails = tmuxwatch.pane_tails_for_ttys(
-            autofix.agent_ttys(dump, cfg["owner"], cfg["repo"])
-            | autofix.unscoped_auto_ttys(book, dump)
+            autofix.agent_ttys(dump, slugs) | autofix.unscoped_auto_ttys(book, dump)
         ) or {}
-        idle = autofix.idle_pr_numbers(dump, tails, cfg["owner"], cfg["repo"])
+        idle = autofix.idle_pr_items(dump, tails, slugs)
         return (autofix.running_auto_tasks(live, mine, set(), idle)
                 + autofix.running_unscoped_auto_runs(book, dump, tails, time.time())
                 >= appconfig.auto_task_limit())
@@ -224,6 +232,31 @@ class DiplomatHost(szpont_host.Host):
             log("mesh", "warn", f"{label} {line}")
 
 
+def _checkout_for(work_key: str, repo: str = "") -> str | None:
+    """Where a job runs: the repo root checking out ``repo`` (``owner/name``), else the
+    repo ``work_key`` names, else the configured repo's (:func:`review.mesh_checkout`).
+    Raises :class:`szpont_host.NoRunner` for a repo with no root here, so the
+    dispatcher fails the job over to a machine that has one, or for any job while no
+    root resolves (:func:`review.roots_guessed`)."""
+    from . import autofix, review
+
+    if review.roots_guessed():
+        raise szpont_host.NoRunner("no repo root on this machine resolves to a GitHub checkout")
+    if repo:
+        slug = repo.lower()
+    else:
+        ref = autofix.parse_work_key(work_key) if work_key else None
+        if ref is None:
+            if (checkout := review.mesh_checkout()) is None:
+                raise szpont_host.NoRunner("no checkout of the configured repo on this machine")
+            return checkout
+        slug = f"{ref[1]}/{ref[2]}".lower()
+    root = next((r for r in review.repo_roots() if r.slug.lower() == slug), None)
+    if root is None:
+        raise szpont_host.NoRunner(f"no checkout of {slug} on this machine")
+    return root.path
+
+
 def _review_url(work_key: str) -> str:
     """The PR URL behind a review work key (``autofix.work_key``), "" for any other."""
     from . import autofix
@@ -249,7 +282,7 @@ def _ps_dump() -> str:
     ``ps: etimes: keyword not found`` to stderr and exits non-zero. The tty
     leads because it is what
     joins a ``claude`` process to the tmux pane showing it
-    (:func:`autofix.idle_pr_numbers`); the age is beside it because that same answer
+    (:func:`autofix.idle_pr_items`); the age is beside it because that same answer
     must not read a booting agent as an idle one. The argv scan splits both off
     (:func:`autofix.agent_lines`): a 2.x TUI's line carries no prompt, only
     ``--session <id>``, which :func:`opencodeapi.session_arg` matches against the
@@ -308,7 +341,7 @@ def _stage_hooks(done_path: str | None) -> str | None:
 
 
 def _spawn_macos(prompt: str, done_path: str | None,
-                 settings_file: str | None = None) -> str:
+                 settings_file: str | None = None, checkout: str | None = None) -> str:
     """Terminal.app via ``osascript``, on the shell command the Linux spawner
     builds. Returns the staged prompt path."""
     from . import review
@@ -321,7 +354,8 @@ def _spawn_macos(prompt: str, done_path: str | None,
     try:
         shell_cmd = review.shell_command(
             prompt_file, done_path, settings_file=settings_file,
-            opencode_session=review.stage_opencode_session(prompt_file))
+            opencode_session=review.stage_opencode_session(prompt_file, checkout),
+            checkout=checkout)
         script = f'tell application "Terminal" to do script {_applescript_quote(shell_cmd)}'
         try:
             review.popen_detached(["osascript", "-e", script])

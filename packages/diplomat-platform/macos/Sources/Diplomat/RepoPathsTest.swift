@@ -1,3 +1,4 @@
+import DiplomatCore
 import Foundation
 
 /// Self-test for where the app finds its own checkout - `DIPLOMAT_REPOPATHS_TEST=1`.
@@ -10,7 +11,9 @@ import Foundation
 ///
 /// The order of the five readings is what this pins: `DIPLOMAT_SELF_REPO`, the tree
 /// an unbundled run's assets sit in, the checkout around the bundle, the checkout
-/// `build-app.sh` recorded in Info.plist, then `~/dev/diplomat`.
+/// `build-app.sh` recorded in Info.plist, then `~/dev/diplomat`. Also how long a
+/// resolution of the repo roots is kept (`RepoPaths.rootsTTL`), and what an Add in
+/// Settings stores (`RepoPaths.rootPaths(adding:to:)`).
 ///
 ///     DIPLOMAT_REPOPATHS_TEST=1 swift run Diplomat
 ///
@@ -74,6 +77,79 @@ enum RepoPathsTest {
               "got \(root(env: elsewhere.path, assets: devAssets))")
         check("…and an empty one is unset",
               root(env: "") == checkout.path, "got \(root(env: ""))")
+
+        // A root that fails to resolve once is read again after `rootsTTL`, not dropped
+        // until Settings opens. Off the main thread, where a read waits for git.
+        print("repopaths: a repo root that resolves late")
+        func git(_ args: String...) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            p.arguments = args
+            p.standardOutput = Pipe()
+            p.standardError = Pipe()
+            try? p.run()
+            p.waitUntilExit()
+        }
+        let early = scratch.appendingPathComponent("early").path
+        let late = scratch.appendingPathComponent("late").path
+        git("init", "-q", early)
+        git("-C", early, "remote", "add", "origin", "git@github.com:o/early.git")
+        let t0 = Date()
+        final class Box { var value: (roots: [String], complete: Bool, primary: Bool, guessed: Bool)
+            = ([], false, false, false) }
+        func read(_ at: TimeInterval, _ paths: [String]? = nil)
+            -> (roots: [String], complete: Bool, primary: Bool, guessed: Bool) {
+            let out = Box()
+            let done = DispatchSemaphore(value: 0)
+            Thread {
+                let r = RepoPaths.resolved(for: paths ?? [early, late], now: t0.addingTimeInterval(at))
+                out.value = (r.roots.map(\.slug), r.complete, r.primaryResolved, r.guessed)
+                done.signal()
+            }.start()
+            done.wait()
+            return out.value
+        }
+        let first = read(0)
+        check("a missing checkout is left out, and the roots say not every path resolved",
+              first.roots == ["o/early"] && !first.complete && first.primary && !first.guessed,
+              "got \(first)")
+        git("init", "-q", late)
+        git("-C", late, "remote", "add", "origin", "git@github.com:o/late.git")
+        let kept = read(RepoPaths.rootsTTL - 1)
+        check("…a resolution is kept for rootsTTL", kept.roots == ["o/early"], "got \(kept)")
+        let again = read(RepoPaths.rootsTTL)
+        check("…and then read again, so the checkout that appeared is a root",
+              again.roots == ["o/early", "o/late"] && again.complete, "got \(again)")
+        let gone = scratch.appendingPathComponent("gone").path
+        let goneFirst = read(0, [gone, early])
+        check("a first path that does not resolve leaves the next one's repo first, no primary",
+              goneFirst.roots == ["o/early"] && !goneFirst.primary && !goneFirst.guessed,
+              "got \(goneFirst)")
+        let none = read(0, [gone, scratch.appendingPathComponent("gone2").path])
+        check("…and none of several resolving leaves the one root a guess",
+              !none.primary && none.guessed, "got \(none)")
+        RepoPaths.invalidateRoots()
+
+        print("repopaths: a root's line in Settings")
+        let bare = scratch.appendingPathComponent("bare").path
+        git("init", "-q", bare)
+        let standIn = [PRRef.LocalRepo(owner: "o", repo: "configured", path: bare)]
+        let resolvedLine = SettingsView.rootStatus(0, bare, roots: standIn, guessed: false)
+        check("a resolved first root reads as the primary",
+              resolvedLine == ("o/configured - primary", false), "got \(resolvedLine)")
+        let guessedLine = SettingsView.rootStatus(0, bare, roots: standIn, guessed: true)
+        check("…and a guessed one as unresolved, not a checkout of the configured repo",
+              guessedLine.warn && guessedLine.text.hasPrefix("No GitHub remote"), "got \(guessedLine)")
+
+        print("repopaths: adding roots in Settings")
+        let defaultRoot = RepoPaths.defaultAgentRepo
+        let seeded = RepoPaths.rootPaths(adding: ["/src/x"], to: [])
+        check("an Add over none listed keeps the default root, first", seeded == [defaultRoot, "/src/x"],
+              "got \(seeded)")
+        let more = RepoPaths.rootPaths(adding: ["/src/y", "/src/x"], to: ["/src/x"])
+        check("…over a list appends what it does not hold", more == ["/src/x", "/src/y"], "got \(more)")
+        let same = RepoPaths.rootPaths(adding: [defaultRoot], to: [])
+        check("…and picking the default over none lists it once", same == [defaultRoot], "got \(same)")
 
         if failures.isEmpty { print("repopaths: all passed") }
         else { print("repopaths: FAILED \(failures.count): \(failures.joined(separator: "; "))") }

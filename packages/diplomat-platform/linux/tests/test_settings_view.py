@@ -287,7 +287,8 @@ def test_other_repos_are_added_named_by_their_remote_and_removed(view, tmp_path,
     assert _other_repo_rows(view) == [["software-mansion/radon", str(radon)],
                                       ["⚠ No GitHub remote", str(plain)]]
     assert view._other_repos_pill.text() == "check this"
-    assert [r.repo for r in view.store.local_repos] == ["radon"]
+    assert [r.repo for r in view.store.local_repos] == ["argent", "radon"], \
+        "the repo root comes first"
 
     plain_row = view._other_repos_list.itemAt(1).widget()
     plain_row.findChild(QPushButton).click()

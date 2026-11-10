@@ -43,14 +43,24 @@ AT_PROMPT = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+ta
 TMUX_WRAPPED = AT_PROMPT + '\n[159] 0:zsh*  "OpenCode" 16:31 24-sie-26'
 
 
+SLUG = "o/r"
+
+
+def item(n: int) -> str:
+    return f"{SLUG}#{n}"
+
+
 def rec(**kw) -> A.RunRecord:
     """A local, auto-triggered run dispatched 60s ago on PR #337, pid 4242, tty
-    pts/3 — overridden per case."""
+    pts/3 — overridden per case. A PR number given without a link gets the fixture
+    repo's link to it."""
     base = dict(run_id="r1", dispatched_at=T0 - 60, pr_number=337,
-                pr_url="https://github.com/o/r/pull/337", kind="review",
-                label="Auto · Review · #337", source=A.SOURCE_AUTO,
+                kind="review", label="Auto · Review · #337", source=A.SOURCE_AUTO,
                 placement=A.PLACEMENT_LOCAL, pid=4242, tty="pts/3")
     base.update(kw)
+    if "pr_url" not in kw:
+        n = base["pr_number"]
+        base["pr_url"] = f"https://github.com/{SLUG}/pull/{n}" if n is not None else ""
     return A.RunRecord(**base)
 
 
@@ -58,7 +68,7 @@ def released(**kw) -> A.RunRecord:
     """The record :func:`A.release_ended` leaves for :func:`rec`'s run once it ended
     with its agent still up: the run's pid, tty and stamp, nothing that made it a
     dispatch."""
-    base = dict(run_id="untracked:337", label="", kind="", untracked=True,
+    base = dict(run_id="untracked:o/r#337", label="", kind="", untracked=True,
                 released=True)
     base.update(kw)
     return rec(**base)
@@ -79,7 +89,8 @@ def ev(*, processes=None, sentinels=None, tails=None, claims=None,
 
     Empty, not unavailable: these cases are about a machine that was successfully
     looked at and had nothing on it. A case that wants "the probe failed" says so by
-    passing an explicit ``Observation.unavailable``.
+    passing an explicit ``Observation.unavailable``. A bare PR number in ``merged``
+    or as a ``live_agents`` key stands for that PR of the fixture repo (:func:`item`).
 
     ``tokens`` defaults to PRESENT-and-TRUE, which is the one default here that is not
     "nothing on it". Every case is then resolved with the run deadline armed AND its
@@ -91,6 +102,14 @@ def ev(*, processes=None, sentinels=None, tails=None, claims=None,
         if v is None:
             return A.Observation.present(empty)
         return v if isinstance(v, A.Observation) else A.Observation.present(v)
+
+    def keyed(n):
+        return item(n) if isinstance(n, int) else n
+
+    if isinstance(merged, set):
+        merged = {keyed(n) for n in merged}
+    if isinstance(live_agents, dict):
+        live_agents = {keyed(n): tty for n, tty in live_agents.items()}
 
     return A.Evidence(
         processes=obs(processes, {}),
@@ -178,9 +197,9 @@ CASES = [
         activity={"r1": ("idle", T0 - 5)}),
      A.FINISHED, "its CLI reported the turn over"),
     ("an untracked agent's own turn report ends it like any other",
-     rec(run_id="untracked:337", untracked=True, label="", kind=""),
+     rec(run_id="untracked:o/r#337", untracked=True, label="", kind=""),
      ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
-        activity={"untracked:337": ("idle", T0 - 5)}),
+        activity={"untracked:o/r#337": ("idle", T0 - 5)}),
      A.FINISHED, "its CLI reported the turn over"),
     ("a peer's run whose CLI reported the turn over is over",
      rec(placement=A.PLACEMENT_MESH_PEER, node="brick", work_key="review:337:sha",
@@ -421,7 +440,7 @@ CASES = [
     # compare against — and one that outlived its agent too would hold that PR against
     # a fresh agent, and a bay of the cap, for the life of the applet.
     ("an untracked agent found in the table is running",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0),
      ev(processes={}, tails={"pts/3": WORKING}, live_agents={337: "pts/3"}),
      A.RUNNING, "found in process table"),
@@ -429,12 +448,12 @@ CASES = [
     # retired, it is rebuilt by the next tick with a fresh stamp and the same agent
     # takes the bay straight back. The deadline releases its bay instead.
     ("an untracked agent is never aged out for having no pid",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0 - 99999),
      ev(processes={}, tails={"pts/3": WORKING}, live_agents={337: "pts/3"}),
      A.RUNNING, "found in process table"),
     ("an untracked agent at its prompt gives its bay back like any other",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0),
      ev(processes={}, tails={"pts/3": AT_PROMPT}, live_agents={337: "pts/3"}),
      A.AWAITING_INPUT, "found in process table; at the prompt"),
@@ -442,29 +461,29 @@ CASES = [
     # is rebuilt from the same sighting on the next tick and retired again, forever,
     # and its PR reads free while the agent sits open on it.
     ("an untracked agent whose session ended its turn is at its prompt, not over",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0),
      ev(processes={}, tails={"pts/3": WORKING}, live_agents={337: "pts/3"},
-        sessions={"untracked:337": A.SessionState(busy=False)}),
+        sessions={"untracked:o/r#337": A.SessionState(busy=False)}),
      A.AWAITING_INPUT, "found in process table; at the prompt"),
     ("an untracked agent whose session is mid-turn is running",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0),
      ev(processes={}, tails={"pts/3": AT_PROMPT}, live_agents={337: "pts/3"},
-        sessions={"untracked:337": A.SessionState(busy=True)}),
+        sessions={"untracked:o/r#337": A.SessionState(busy=True)}),
      A.RUNNING, "found in process table; its session is mid-turn"),
     ("an untracked agent gone from the table is over",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0),
      ev(processes={}, tails={"pts/3": WORKING}, live_agents={}),
      A.FINISHED, "gone from the process table"),
     ("a matured clock does not do it for a synthesized run either",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0, quiet_digest="d", quiet_since=T0 - A.QUIET_TIMEOUT),
      ev(processes={}, tails={}, live_agents={}),
      A.FINISHED, "gone from the process table"),
     ("an untracked agent whose scan could not be read is unknown",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0),
      ev(processes={}, tails={"pts/3": WORKING},
         live_agents=A.Observation.unavailable("ps failed")),
@@ -472,33 +491,33 @@ CASES = [
     # A landed PR does not make the agent leave, and the scan re-books whatever an
     # ending drops: ended here, it would be retired and re-made on every tick.
     ("an untracked agent is not ended by its PR landing",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0),
      ev(processes={}, tails={"pts/3": AT_PROMPT}, live_agents={337: "pts/3"},
         merged={337}),
      A.AWAITING_INPUT, "found in process table; at the prompt"),
-    # untracked:844 and untracked:1065 on the operator's Mac: screens unreadable for
+    # untracked:o/r#844 and untracked:o/r#1065 on the operator's Mac: screens unreadable for
     # sixteen days, RUNNING on every pass, and nothing able to end a run nobody
     # dispatched. The deadline bounds the bay rather than the run.
     ("an untracked agent nobody can look at gives its bay back past the deadline",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0 - PAST_DEADLINE),
      ev(processes={}, tails=BLIND, live_agents={337: "pts/3"}),
      A.RUNNING, "screen are unreadable (the terminals would not answer); first seen "
                 "5h ago, so the 4h deadline releases its bay"),
     ("an untracked agent nobody can look at keeps its bay short of the deadline",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0 - (A.RUN_DEADLINE - 60)),
      ev(processes={}, tails=BLIND, live_agents={337: "pts/3"}),
      A.RUNNING, "found in process table; screen are unreadable"),
     ("an untracked agent exactly on the deadline gives its bay back",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0 - A.RUN_DEADLINE),
      ev(processes={}, tails=BLIND, live_agents={337: "pts/3"}),
      A.RUNNING, "first seen 4h ago, so the 4h deadline releases its bay"),
     # The scan failing is the pass nobody could look at, and that bay is kept.
     ("an untracked agent the scan could not look for keeps its bay past the deadline",
-     rec(run_id="untracked:337", pid=None, tty="pts/3", untracked=True,
+     rec(run_id="untracked:o/r#337", pid=None, tty="pts/3", untracked=True,
          dispatched_at=T0 - PAST_DEADLINE),
      ev(processes={}, tails=BLIND, live_agents=A.Observation.unavailable("ps failed")),
      A.UNKNOWN, "the agent scan ps failed"),
@@ -804,12 +823,12 @@ def test_a_window_that_would_not_close_leaves_its_run_counted():
     over = A.resolve_one(ended, working, T0, A.RUN_DEADLINE)
     assert over.state == A.FINISHED and over.expired, over.reason
     assert not A.cap_load([ended], {"r1": over})
-    assert not A.in_flight([ended], {"r1": over}, 337)
+    assert not A.in_flight([ended], {"r1": over}, item(337))
 
     again = A.resolve_one(kept, working, T0, A.RUN_DEADLINE)
     assert again.state == A.RUNNING, again.reason
     assert A.cap_load([kept], {"r1": again}) == {"r1"}
-    assert A.in_flight([kept], {"r1": again}, 337)
+    assert A.in_flight([kept], {"r1": again}, item(337))
     assert not A.reapable([kept], {"r1": again}), "and nothing to close until it fires"
 
 
@@ -823,7 +842,7 @@ def test_a_refused_reap_never_silences_a_rung_above_the_backstops():
         ("the sentinel",
          dataclasses.replace(live, sentinels=A.Observation.present({"r1"}))),
         ("the PR landing",
-         dataclasses.replace(live, merged_prs=A.Observation.present({337}))),
+         dataclasses.replace(live, merged_prs=A.Observation.present({item(337)}))),
         ("the agent's own report",
          dataclasses.replace(live,
                              activity=A.Observation.present({"r1": (completion.IDLE, T0)}))),
@@ -916,7 +935,7 @@ def test_every_state_is_reachable_from_the_table():
 #: 2026-09-11T13:58:46Z, "Auto · Review · #844 — its CLI reported the turn over", the
 #: app's first tick after a relaunch.
 RETIRE_AT = 1789135126.0
-#: One tick later: the `dispatchedAt` runs.json carries for `untracked:844`.
+#: One tick later: the `dispatchedAt` runs.json carries for `untracked:o/r#844`.
 NEXT_TICK = 1789135135.893142
 #: pid 958, `claude … --settings ~/.diplomat/agents/1788961177-8abb0820/hooks.json
 #: Review PR #844 …`, STARTED Wed Sep 9 15:39:38 CEST.
@@ -924,24 +943,25 @@ AGENT_958_START = 1788961178.0
 RUN_844 = "1788961177-8abb0820"
 #: When the book below was frozen.
 FROZEN_AT = 1790587500.0
-#: runs.json as frozen, verbatim.
+#: runs.json as frozen, with each record's run id and link in the item-keyed form
+#: the scan books them under.
 FROZEN_RUNS = [
     {"claimSeenAt": None, "dispatchedAt": 1789135135.893142, "kind": "", "label": "",
      "ledgerKey": "", "node": "", "pid": None, "placement": "local", "prNumber": 844,
-     "prUrl": "", "quietDigest": "", "quietSince": None, "reapRefusedAt": None,
-     "runId": "untracked:844", "source": "auto", "tty": "ttys021", "untracked": True,
+     "prUrl": "https://github.com/o/r/pull/844", "quietDigest": "", "quietSince": None,
+     "reapRefusedAt": None, "runId": "untracked:o/r#844", "source": "auto", "tty": "ttys021", "untracked": True,
      "workKey": ""},
     {"claimSeenAt": None, "dispatchedAt": 1789157191.1891789, "kind": "", "label": "",
      "ledgerKey": "", "node": "", "pid": None, "placement": "local", "prNumber": 1065,
-     "prUrl": "", "quietDigest": "", "quietSince": None, "reapRefusedAt": None,
-     "runId": "untracked:1065", "source": "auto", "tty": "ttys019", "untracked": True,
+     "prUrl": "https://github.com/o/r/pull/1065", "quietDigest": "", "quietSince": None,
+     "reapRefusedAt": None, "runId": "untracked:o/r#1065", "source": "auto", "tty": "ttys019", "untracked": True,
      "workKey": ""},
 ]
 
 
 def _run_844() -> A.RunRecord:
     return A.RunRecord(run_id=RUN_844, dispatched_at=1788961177.0, pr_number=844,
-                       kind="review", label="Auto · Review · #844",
+                       pr_url="https://github.com/o/r/pull/844", kind="review", label="Auto · Review · #844",
                        source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL,
                        ledger_key="review:844", pid=958, tty="ttys021")
 
@@ -961,7 +981,7 @@ def _settle(t: A.Tick) -> list[A.RunRecord]:
 
 def test_a_run_that_ended_alive_is_not_rebooked_as_a_bay_holder():
     """#148 as it happened. Retired on its turn report, #844's agent sat on at its
-    prompt, and nine seconds later the scan had booked it again as `untracked:844`:
+    prompt, and nine seconds later the scan had booked it again as `untracked:o/r#844`:
     RUNNING with no screen to read, one of a cap of one, for sixteen days."""
     reported = {RUN_844: (completion.IDLE, RETIRE_AT - 30)}
     t1 = A.tick([_run_844()], _mac(RETIRE_AT, activity=reported), RETIRE_AT, 1,
@@ -970,14 +990,14 @@ def test_a_run_that_ended_alive_is_not_rebooked_as_a_bay_holder():
 
     assert t2.cap_load == set()
     assert t2.free_slots == 1
-    assert t2.in_flight(844) is False
+    assert t2.in_flight(item(844)) is False
     assert [r.run_id for r in t1.retirable] == [RUN_844]
     (heir,) = t2.records
     assert (heir.run_id, heir.pid, heir.tty, heir.dispatched_at) == \
-        ("untracked:844", 958, "ttys021", 1788961177.0)
+        ("untracked:o/r#844", 958, "ttys021", 1788961177.0)
     assert heir.released and heir.untracked
     assert (heir.label, heir.kind, heir.ledger_key) == ("", "", "")
-    assert t2.states["untracked:844"].reason == \
+    assert t2.states["untracked:o/r#844"].reason == \
         "released; pid 958 alive; screen are unreadable (the terminals would not answer)"
 
 
@@ -991,8 +1011,8 @@ def test_a_released_agent_at_its_prompt_leaves_its_pr_free():
                 RETIRE_AT, 1, A.RUN_DEADLINE)
     t2 = A.tick(_settle(t1), _mac(NEXT_TICK, tails=at_prompt), NEXT_TICK, 1,
                 A.RUN_DEADLINE)
-    assert t2.in_flight(844) is False
-    assert t2.states["untracked:844"].state == A.AWAITING_INPUT
+    assert t2.in_flight(item(844)) is False
+    assert t2.states["untracked:o/r#844"].state == A.AWAITING_INPUT
 
 
 def test_a_run_its_cli_reported_over_leaves_the_list():
@@ -1006,10 +1026,10 @@ def test_a_run_its_cli_reported_over_leaves_the_list():
                 RETIRE_AT, 1, A.RUN_DEADLINE)
     t2 = A.tick(_settle(t1), _mac(NEXT_TICK, tails=at_prompt), NEXT_TICK, 1,
                 A.RUN_DEADLINE)
-    assert "untracked:844" in t1.states
+    assert "untracked:o/r#844" in t1.states
     assert [r.run_id for r, _ in t1.rows] == [RUN_844]
     assert t2.rows == []
-    assert t2.states["untracked:844"].state == A.AWAITING_INPUT
+    assert t2.states["untracked:o/r#844"].state == A.AWAITING_INPUT
 
 
 def test_a_released_agent_working_again_is_drawn():
@@ -1021,8 +1041,8 @@ def test_a_released_agent_working_again_is_drawn():
     t2 = A.tick(_settle(t1), _mac(NEXT_TICK, tails={"ttys021": WORKING}), NEXT_TICK,
                 1, A.RUN_DEADLINE)
     assert [(r.run_id, s.state, s.reason) for r, s in t2.rows] == \
-        [("untracked:844", A.RUNNING, "released; pid 958 alive; working")]
-    assert t2.cap_load == set() and t2.in_flight(844) is False
+        [("untracked:o/r#844", A.RUNNING, "released; pid 958 alive; working")]
+    assert t2.cap_load == set() and t2.in_flight(item(844)) is False
 
 
 def test_an_untracked_agent_nobody_ended_is_still_drawn():
@@ -1032,7 +1052,7 @@ def test_an_untracked_agent_nobody_ended_is_still_drawn():
                ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
                   live_agents={337: "pts/3"}), T0, 1)
     assert [(r.run_id, s.state) for r, s in t.rows] == \
-        [("untracked:337", A.AWAITING_INPUT)]
+        [("untracked:o/r#337", A.AWAITING_INPUT)]
 
 
 #: A released agent in each holding state but RUNNING: nothing saw it working.
@@ -1046,7 +1066,7 @@ RELEASED_UNSEEN = [
 @pytest.mark.parametrize("record, evidence, state", RELEASED_UNSEEN)
 def test_a_released_agent_nothing_saw_working_is_not_drawn(record, evidence, state):
     t = A.tick([record], evidence, T0, 1)
-    assert t.states["untracked:337"].state == state
+    assert t.states["untracked:o/r#337"].state == state
     assert t.rows == []
 
 
@@ -1059,17 +1079,17 @@ def test_a_released_agents_window_is_still_closed_when_its_screen_goes_still():
     seen = dict(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
                 live_agents={337: "pts/3"})
     later = A.tick([released(**still)], ev(**seen), T0, 1)
-    assert [r.run_id for r in later.reapable] == ["untracked:337"]
+    assert [r.run_id for r in later.reapable] == ["untracked:o/r#337"]
 
     at_once = A.tick([rec(**still)],
                      ev(**seen, activity={"r1": (completion.IDLE, T0 - 5)}), T0, 1)
-    assert sorted(r.run_id for r in at_once.retirable) == ["r1", "untracked:337"]
-    assert [r.run_id for r in at_once.reapable] == ["untracked:337"]
+    assert sorted(r.run_id for r in at_once.retirable) == ["r1", "untracked:o/r#337"]
+    assert [r.run_id for r in at_once.reapable] == ["untracked:o/r#337"]
 
 
 def test_a_released_agent_leaves_the_book_with_its_agent():
     t = A.tick([released()], ev(processes={}, live_agents={}), T0, 1)
-    assert [r.run_id for r in t.retirable] == ["untracked:337"]
+    assert [r.run_id for r in t.retirable] == ["untracked:o/r#337"]
     assert t.reapable == []
 
 
@@ -1078,7 +1098,7 @@ def test_a_released_agent_is_held_to_its_own_tty():
     scan instead would move it onto whatever session the scan names first, carrying
     none of that screen's stillness."""
     (same,) = A.synthesize_untracked([released(quiet_digest="d", quiet_since=T0)],
-                                     A.Observation.present({337: "pts/9"}), T0 + 8)
+                                     A.Observation.present({item(337): "pts/9"}), T0 + 8)
     assert (same.tty, same.quiet_since) == ("pts/3", T0)
 
 
@@ -1089,7 +1109,7 @@ def test_nothing_is_released_for_an_agent_that_is_not_the_runs_own():
     t = A.tick([rec()], theirs, T0, 1)
     assert [r.run_id for r in t.retirable] == ["r1"]
     assert not any(r.released for r in t.records)
-    assert A.tick(_settle(t), theirs, T0 + 8, 1).cap_load == {"untracked:337"}
+    assert A.tick(_settle(t), theirs, T0 + 8, 1).cap_load == {"untracked:o/r#337"}
 
 
 @pytest.mark.parametrize("backstop,record,screen", [
@@ -1139,8 +1159,8 @@ def test_runs_that_end_beside_another_on_their_pr_are_released_too():
                   live_agents={337: "pts/3"}, activity={"r1": idle, "r2": idle}),
                T0, 1)
     assert [(r.run_id, r.pid) for r in t.records if r.released] == \
-        [("untracked:337", 4242), ("untracked:337:5", 5)]
-    assert t.in_flight(337)
+        [("untracked:o/r#337", 4242), ("untracked:o/r#337:5", 5)]
+    assert t.in_flight(item(337))
 
 
 def test_a_second_run_on_a_released_agents_pr_is_released_beside_it():
@@ -1154,13 +1174,13 @@ def test_a_second_run_on_a_released_agents_pr_is_released_beside_it():
     second = rec(run_id="r2", pid=5, tty="pts/4")
     t = A.tick([released(), second],
                seen({4242: proc(), 5: proc(tty="pts/4")}), T0, 1, A.RUN_DEADLINE)
-    assert sorted(r.run_id for r in _settle(t)) == ["untracked:337", "untracked:337:5"]
+    assert sorted(r.run_id for r in _settle(t)) == ["untracked:o/r#337", "untracked:o/r#337:5"]
     for dt in (8, 16):
         t = A.tick(_settle(t), seen({5: proc(elapsed=60 + dt, tty="pts/4")}),
                    T0 + dt, 1, A.RUN_DEADLINE)
-    assert [(r.run_id, r.released) for r in t.records] == [("untracked:337:5", True)]
+    assert [(r.run_id, r.released) for r in t.records] == [("untracked:o/r#337:5", True)]
     assert t.cap_load == set()
-    assert t.in_flight(337) is False
+    assert t.in_flight(item(337)) is False
 
 
 def test_a_mesh_placed_run_on_a_released_agents_pr_does_not_take_its_tty():
@@ -1174,8 +1194,8 @@ def test_a_mesh_placed_run_on_a_released_agents_pr_does_not_take_its_tty():
                ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT, "pts/4": WORKING},
                   live_agents={337: "pts/3"}, activity=busy), T0 + 8, 1)
     assert [(r.run_id, r.tty) for r in t.records] == \
-        [("untracked:337", "pts/3"), ("r2", "")]
-    assert t.in_flight(337)
+        [("untracked:o/r#337", "pts/3"), ("r2", "")]
+    assert t.in_flight(item(337))
 
     t = A.tick(_settle(t), ev(processes={}, tails={"pts/4": WORKING},
                               live_agents={337: "pts/4"}, activity=busy), T0 + 16, 1)
@@ -1185,7 +1205,7 @@ def test_a_mesh_placed_run_on_a_released_agents_pr_does_not_take_its_tty():
 def test_a_pid_less_record_does_not_follow_the_scan_onto_anothers_tty():
     (same, other) = A.synthesize_untracked(
         [released(pid=None), rec(run_id="r2", pid=None, tty="pts/4")],
-        A.Observation.present({337: "pts/4"}), T0 + 8)
+        A.Observation.present({item(337): "pts/4"}), T0 + 8)
     assert (same.tty, other.tty) == ("pts/3", "pts/4")
 
 
@@ -1212,7 +1232,7 @@ def test_the_frozen_untracked_records_give_their_bays_back():
                FROZEN_AT, 1, A.RUN_DEADLINE)
     assert t.cap_load == set()
     assert t.free_slots == 1
-    assert t.in_flight(844) and t.in_flight(1065)
+    assert t.in_flight(item(844)) and t.in_flight(item(1065))
     assert t.retirable == [] and t.reapable == []
     assert all(t.states[r.run_id].state == A.RUNNING and t.states[r.run_id].lapsed
                for r in book)
@@ -1224,10 +1244,10 @@ def test_the_frozen_untracked_records_give_their_bays_back():
     (10 * 24 * 3600, None, True),   # the operator's switch is off
 ])
 def test_an_untracked_bay_is_held_until_the_deadline(age, deadline, holds):
-    record = rec(run_id="untracked:337", pid=None, untracked=True,
+    record = rec(run_id="untracked:o/r#337", pid=None, untracked=True,
                  dispatched_at=T0 - age)
     t = A.tick([record], ev(tails=BLIND, live_agents={337: "pts/3"}), T0, 1, deadline)
-    assert (t.cap_load == {"untracked:337"}) is holds
+    assert (t.cap_load == {"untracked:o/r#337"}) is holds
 
 
 def test_only_an_untracked_run_past_the_deadline_is_marked_lapsed():
@@ -1369,8 +1389,8 @@ def test_an_unreadable_claim_book_ages_nothing_out():
 
 
 def test_a_live_pr_with_no_record_becomes_an_untracked_run():
-    out = A.synthesize_untracked([], A.Observation.present({404: "pts/7"}), T0)
-    assert [r.run_id for r in out] == ["untracked:404"]
+    out = A.synthesize_untracked([], A.Observation.present({item(404): "pts/7"}), T0)
+    assert [r.run_id for r in out] == ["untracked:o/r#404"]
     assert out[0].untracked and out[0].source == A.SOURCE_AUTO
 
 
@@ -1378,17 +1398,17 @@ def test_an_untracked_run_carries_the_tty_its_agent_was_found_on():
     """Without it nothing can read that agent's screen, so it would count as working
     until its window closed however long ago it finished — a bay held for nothing,
     which is the state the cap exists to prevent."""
-    out = A.synthesize_untracked([], A.Observation.present({404: "pts/7"}), T0)
+    out = A.synthesize_untracked([], A.Observation.present({item(404): "pts/7"}), T0)
     assert out[0].tty == "pts/7"
     states = A.resolve(out, ev(tails={"pts/7": AT_PROMPT},
                                live_agents={404: "pts/7"}), T0)
-    assert states["untracked:404"].state == A.AWAITING_INPUT
+    assert states["untracked:o/r#404"].state == A.AWAITING_INPUT
     assert A.cap_load(out, states) == set(), "an idle untracked agent gives its bay back"
 
 
 def test_a_live_pr_that_already_has_a_record_is_not_duplicated():
     out = A.synthesize_untracked([rec(pr_number=404)],
-                                 A.Observation.present({404: "pts/7"}), T0)
+                                 A.Observation.present({item(404): "pts/7"}), T0)
     assert [r.run_id for r in out] == ["r1"]
 
 
@@ -1397,10 +1417,10 @@ def test_a_kept_record_follows_its_prs_sighting_to_a_new_tty():
     sighting the moment the first exits. A record left on the gone one has no screen
     to be judged by at all — and must not carry the old screen's stillness onto the
     new window, which would close it on somebody else's twenty minutes."""
-    kept = A.synthesize_untracked([], A.Observation.present({404: "pts/7"}), T0)
+    kept = A.synthesize_untracked([], A.Observation.present({item(404): "pts/7"}), T0)
     still = [dataclasses.replace(kept[0], quiet_digest="abc", quiet_since=T0)]
 
-    (moved,) = A.synthesize_untracked(still, A.Observation.present({404: "pts/9"}),
+    (moved,) = A.synthesize_untracked(still, A.Observation.present({item(404): "pts/9"}),
                                       T0 + 8)
 
     assert moved.tty == "pts/9"
@@ -1411,9 +1431,31 @@ def test_a_sighting_with_no_tty_does_not_blank_the_one_a_record_has():
     """``ps`` reports "?" for an agent with no controlling terminal, and the scan
     passes that on as an empty tty. Keeping the screen there is is strictly better
     than swapping it for none."""
-    kept = A.synthesize_untracked([], A.Observation.present({404: "pts/7"}), T0)
-    (same,) = A.synthesize_untracked(kept, A.Observation.present({404: ""}), T0 + 8)
+    kept = A.synthesize_untracked([], A.Observation.present({item(404): "pts/7"}), T0)
+    (same,) = A.synthesize_untracked(kept, A.Observation.present({item(404): ""}), T0 + 8)
     assert same.tty == "pts/7"
+
+
+def test_two_repos_prs_of_one_number_are_two_untracked_runs():
+    """One sighting each, so neither one's record stands in for the other's agent."""
+    out = A.synthesize_untracked(
+        [rec(pr_number=404)],
+        A.Observation.present({item(404): "pts/7", "o/other#404": "pts/8"}), T0)
+    assert [(r.run_id, r.pr_url, r.tty) for r in out] == [
+        ("r1", "https://github.com/o/r/pull/404", "pts/3"),
+        ("untracked:o/other#404", "https://github.com/o/other/pull/404", "pts/8")]
+
+
+def test_another_repos_evidence_says_nothing_about_this_run():
+    """A merge, a sighting or a dedup answer about #337 of another repo."""
+    other = "o/other#337"
+    states = A.resolve([rec(pid=None, dispatched_at=T0 - 600)],
+                       ev(merged={other}, live_agents={other: "pts/3"}), T0)
+    assert states["r1"].state not in (A.MERGED, A.RUNNING)
+    states = A.resolve([rec()], ev(processes={4242: proc()}, tails={"pts/3": WORKING}),
+                       T0)
+    assert A.in_flight([rec()], states, item(337))
+    assert not A.in_flight([rec()], states, other)
 
 
 def test_an_unreadable_scan_synthesizes_nothing():
@@ -1445,13 +1487,13 @@ def test_in_flight_blocks_on_every_state_that_is_not_over(state_case, blocks):
         "a finished agent does not block": ev(processes={}),
     }
     records, states = _resolved([rec()], evidences[state_case])
-    assert A.in_flight(records, states, 337) is blocks, state_case
+    assert A.in_flight(records, states, item(337)) is blocks, state_case
 
 
 def test_in_flight_is_scoped_to_the_pr_asked_about():
     records, states = _resolved([rec()], ev(processes={4242: proc()}))
-    assert A.in_flight(records, states, 337) is True
-    assert A.in_flight(records, states, 999) is False
+    assert A.in_flight(records, states, item(337)) is True
+    assert A.in_flight(records, states, item(999)) is False
 
 
 def test_the_cap_counts_automatic_agents_that_run_here():
@@ -1537,7 +1579,7 @@ def test_a_runner_that_reported_its_turn_over_is_retired_like_any_other():
     assert sorted(r.run_id for r in A.retirable(records, states)) == \
         ["hooked", "served"]
     assert A.cap_load(records, states) == set()
-    assert A.in_flight(records, states, 337) is False
+    assert A.in_flight(records, states, item(337)) is False
 
 
 @pytest.mark.parametrize("limit,occupied,want", [
@@ -1627,7 +1669,7 @@ def test_a_pid_less_run_adopts_the_tty_the_prompt_scan_found_it_on():
     and no screen means it reads as working until its window closes."""
     out = A.adopt_ttys([rec(tty="", pid=None)],
                        A.Observation.present({4242: proc(tty="pts/9")}),
-                       A.Observation.present({337: "pts/5"}))
+                       A.Observation.present({item(337): "pts/5"}))
     assert out[0].tty == "pts/5"
     states = A.resolve(out, ev(processes={}, live_agents={337: "pts/5"},
                                tails={"pts/5": AT_PROMPT}), T0)
@@ -1638,7 +1680,7 @@ def test_a_pid_less_run_adopts_the_tty_the_prompt_scan_found_it_on():
 def test_a_run_with_neither_a_pid_nor_a_sighting_adopts_nothing():
     out = A.adopt_ttys([rec(tty="", pid=None, pr_number=None)],
                        A.Observation.present({4242: proc(tty="pts/9")}),
-                       A.Observation.present({337: "pts/5"}))
+                       A.Observation.present({item(337): "pts/5"}))
     assert out[0].tty == ""
 
 

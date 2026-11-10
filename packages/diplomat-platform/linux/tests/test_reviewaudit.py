@@ -147,7 +147,7 @@ def test_audit_asks_for_my_reviews_on_that_pr(monkeypatch):
     monkeypatch.setattr(gh, "graphql", graphql)
     assert reviewaudit.audit(URL, "alice", SINCE) == [
         "left its review PENDING — never submitted, so only I can see it"]
-    assert seen == {"name": "my-reviews", "with_repo": False,
+    assert seen == {"name": "my-reviews",
                     "variables": {"owner": "acme", "name": "widgets", "me": "alice"},
                     "typed_variables": {"number": "7"}}
 

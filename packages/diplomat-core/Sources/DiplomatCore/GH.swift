@@ -207,8 +207,7 @@ public enum GH {
         var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
     }
 
-    /// Run a shared `assets/graphql` query. When `withRepo` is true the repo
-    /// coordinates from `assets/config.json` are passed as `$owner`/`$name`.
+    /// Run a shared `assets/graphql` query. A `repo` is passed as `$owner`/`$name`.
     /// `variables` go through gh's `-f`, which sends the value as a string;
     /// `typedVariables` through `-F`, which lets gh parse it into the JSON type the
     /// query declares — the spelling a `Boolean!` needs.
@@ -217,14 +216,13 @@ public enum GH {
     /// so a single retry turns a transient blip into a non-event. It lives here
     /// rather than in `run` because that one also carries mutations (`pr merge`),
     /// which must never be replayed.
-    public static func graphql(_ queryName: String, withRepo: Bool,
+    public static func graphql(_ queryName: String, repo: (owner: String, repo: String)?,
                                variables: [(String, String)] = [],
                                typedVariables: [(String, String)] = []) async throws -> Data {
         let query = try CoreAssets.graphql(queryName)
         var args = ["api", "graphql", "-f", "query=\(query)"]
-        if withRepo {
-            let cfg = try CoreAssets.config()
-            args += ["-f", "owner=\(cfg.owner)", "-f", "name=\(cfg.repo)"]
+        if let repo {
+            args += ["-f", "owner=\(repo.owner)", "-f", "name=\(repo.repo)"]
         }
         for (k, v) in variables { args += ["-f", "\(k)=\(v)"] }
         for (k, v) in typedVariables { args += ["-F", "\(k)=\(v)"] }

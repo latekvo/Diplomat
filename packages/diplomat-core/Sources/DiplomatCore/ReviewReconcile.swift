@@ -112,20 +112,20 @@ public enum ReviewReconcile {
     /// is `reported`. A run that died, failed, was reaped or ran on a peer says nothing
     /// about whether it meant to post, so its request stays on the retry ladder.
     public static func concluded(_ retired: [AgentState.RunRecord],
-                                 verdicts: [String: AgentState.Resolution]) -> Set<Int> {
-        Set(retired.compactMap { r -> Int? in
+                                 verdicts: [String: AgentState.Resolution]) -> Set<String> {
+        Set(retired.compactMap { r -> String? in
             guard r.ledgerKey.hasPrefix(AutofixMesh.kindReviewReq + ":"),
                   verdicts[r.runID]?.reported == true else { return nil }
-            return r.prNumber
+            return r.item
         })
     }
 
-    /// `attempts` with each of `prs`' records stamped concluded, keyed by PR number as
-    /// the review-request monitor keys them.
-    public static func conclude(_ attempts: [String: ReviewAttempt], prs: Set<Int>,
+    /// `attempts` with each of `prs`' records stamped concluded, keyed by item
+    /// (`PRRef.itemKey`) as the review-request monitor keys them.
+    public static func conclude(_ attempts: [String: ReviewAttempt], prs: Set<String>,
                                 at now: Date) -> [String: ReviewAttempt] {
         var out = attempts
-        for pr in prs where out[String(pr)] != nil { out[String(pr)]?.concludedAt = now }
+        for item in prs where out[item] != nil { out[item]?.concludedAt = now }
         return out
     }
 

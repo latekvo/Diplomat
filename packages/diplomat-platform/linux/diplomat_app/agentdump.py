@@ -79,7 +79,7 @@ def run() -> int:
     # The subsets whose window goes with the record — "why did my terminal close".
     print(f"  windows reaped   {sorted(r.run_id for r in t.reapable)}")
     print(f"  windows closed   {sorted(r.run_id for r in t.close_on_retire)}")
-    prs = sorted({r.pr_number for r in t.records if r.pr_number is not None})
+    prs = sorted({r.item for r in t.records if r.item is not None})
     if prs:
         blocked = [pr for pr in prs if t.in_flight(pr)]
         print(f"  PRs read as in-flight  {blocked}")

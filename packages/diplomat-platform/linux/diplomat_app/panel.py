@@ -11,6 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -28,7 +29,7 @@ from PySide6.QtCore import QUrl
 import html
 import time
 
-from diplomat_runtime import activity, agentstate, autofix, core
+from diplomat_runtime import activity, agentstate, autofix, review
 from diplomat_runtime.models import Fmt
 from . import deviceallocator, glyphs, szpont
 from .commsview import CommsView
@@ -424,9 +425,16 @@ class Panel(QWidget):
         name = QLabel("Diplomat")
         name.setStyleSheet("font-weight: 700; font-size: 14px;")
         row.addWidget(name)
-        repo = QLabel(f"{core.config()['owner']}/{core.config()['repo']}")
-        repo.setStyleSheet(muted(9))
-        row.addWidget(repo)
+        self.repo_label = QLabel()
+        self.repo_label.setStyleSheet(muted(9))
+        row.addWidget(self.repo_label)
+        self.repo_picker = QComboBox()
+        self.repo_picker.setAccessibleName("Repo root")
+        self.repo_picker.setToolTip("The repo root the lists, search and wizards work on")
+        self.repo_picker.activated.connect(self._pick_repo)
+        row.addWidget(self.repo_picker)
+        self.store.local_repos_changed.connect(self._refresh_repo_picker)
+        self._refresh_repo_picker()
         row.addStretch(1)
 
         self.spinner = QLabel("⟳")
@@ -477,7 +485,29 @@ class Panel(QWidget):
         quit_btn = _icon_button("⏻", "Quit")
         quit_btn.clicked.connect(self.quit_requested.emit)
         row.addWidget(quit_btn)
+        self.store.selected_repo_changed.connect(self._on_repo_selected)
         return row
+
+    def _refresh_repo_picker(self) -> None:
+        roots = review.repo_roots()
+        selected = self.store.selected_repo.slug.lower()
+        self.repo_label.setText(roots[0].slug)
+        self.repo_label.setVisible(len(roots) == 1)
+        self.repo_picker.setVisible(len(roots) > 1)
+        self.repo_picker.clear()
+        for r in roots:
+            self.repo_picker.addItem(r.slug, r.slug.lower())
+        self.repo_picker.setCurrentIndex(
+            next((i for i, r in enumerate(roots) if r.slug.lower() == selected), 0))
+
+    def _pick_repo(self, index: int) -> None:
+        slug = self.repo_picker.itemData(index)
+        if slug and slug != self.store.selected_repo.slug.lower():
+            self.store.select_repo(slug)
+
+    def _on_repo_selected(self) -> None:
+        self._refresh_repo_picker()
+        self.refresh_requested.emit()
 
     # MARK: main page
 
@@ -1165,8 +1195,7 @@ class Panel(QWidget):
 
     def _rebuild_lookup(self, n: int) -> None:
         r = self.store.lookup(n)
-        cfg = core.config()
-        link = r.url or f"https://github.com/{cfg['owner']}/{cfg['repo']}/issues/{n}"
+        link = r.url or f"https://github.com/{self.store.selected_repo.slug}/issues/{n}"
 
         container = QWidget()
         col = QVBoxLayout(container)

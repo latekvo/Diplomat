@@ -42,6 +42,8 @@ public struct PRSnapshot: Equatable {
         self.threadsIOwe = threadsIOwe
         self.headSha = headSha
     }
+
+    public var item: String? { PRRef.itemKey(url: url) }
 }
 
 public struct PRFingerprint: Codable, Equatable {
@@ -62,16 +64,17 @@ public enum AutofixEvent: Equatable {
 }
 
 public enum AutofixDiff {
-    /// Compare the prior fingerprints (keyed by PR number) against a fresh snapshot.
-    /// Returns the events to act on plus the fingerprints to persist for next time.
-    /// A PR with no prior entry is seeded silently (baseline — never dispatched on
+    /// Compare the prior fingerprints (keyed by `PRSnapshot.item`) against a fresh
+    /// snapshot. Returns the events to act on plus the fingerprints to persist for next
+    /// time. A PR with no prior entry is seeded silently (baseline, never dispatched on
     /// first sighting), so newly-opened PRs and the very first run don't fire.
-    public static func compute(prior: [Int: PRFingerprint], now: [PRSnapshot])
-        -> (events: [AutofixEvent], fingerprints: [Int: PRFingerprint]) {
+    public static func compute(prior: [String: PRFingerprint], now: [PRSnapshot])
+        -> (events: [AutofixEvent], fingerprints: [String: PRFingerprint]) {
         var events: [AutofixEvent] = []
-        var fingerprints: [Int: PRFingerprint] = [:]
+        var fingerprints: [String: PRFingerprint] = [:]
         for s in now {
-            let p = prior[s.number]
+            guard let item = s.item else { continue }
+            let p = prior[item]
             // GitHub returns UNKNOWN transiently while it recomputes mergeability;
             // carry the prior value forward so we neither lose nor fake a conflict.
             let mergeable = (s.mergeable == "UNKNOWN" || s.mergeable.isEmpty)
@@ -88,7 +91,7 @@ public enum AutofixDiff {
                     events.append(.review(s))
                 }
             }
-            fingerprints[s.number] = PRFingerprint(
+            fingerprints[item] = PRFingerprint(
                 mergeable: mergeable,
                 reviewDecision: s.reviewDecision,
                 threadsUnresolved: s.threadsUnresolved)
@@ -221,7 +224,7 @@ public enum AgentDispatchGate {
     }
 
     /// How many automatic agents are *working* on this device, counted in PRs (one
-    /// agent per PR is what the in-flight dedup guarantees).
+    /// agent per PR is what the in-flight dedup guarantees). Each set holds `PRRef.itemKey`s.
     ///
     /// Four inputs, because no single one of them is both complete and attributable:
     ///
@@ -256,9 +259,9 @@ public enum AgentDispatchGate {
     /// Only positive evidence of idleness qualifies (a session whose buffer was read
     /// and showed no interrupt hint): an agent whose terminal could not be read counts
     /// as working, so the failure direction stays the deferral, never the burst.
-    public static func runningAutoTasks(livePRs: Set<Int>, autoPRs: Set<Int>,
-                                        manualPRs: Set<Int>,
-                                        idlePRs: Set<Int> = []) -> Int {
+    public static func runningAutoTasks(livePRs: Set<String>, autoPRs: Set<String>,
+                                        manualPRs: Set<String>,
+                                        idlePRs: Set<String> = []) -> Int {
         livePRs.subtracting(manualPRs).union(autoPRs).subtracting(idlePRs).count
     }
 

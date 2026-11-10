@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import json
 import platform
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from diplomat_runtime import activity, core, review, szponthost
+from diplomat_runtime import activity, appconfig, core, review, szponthost
+from diplomat_runtime.prref import LocalRepo
 from szpontnet import config as mesh_config
 from szpontnet import host as szpont_host
 from szpontnet import spawnjob
@@ -29,6 +31,12 @@ _real_spawn_macos = szponthost._spawn_macos
 @pytest.fixture
 def host():
     return szponthost.DiplomatHost()
+
+
+@pytest.fixture(autouse=True)
+def _roots_resolved(monkeypatch):
+    """Whatever the developer's own config.json lists, a root resolved."""
+    monkeypatch.setattr(review, "roots_guessed", lambda: False)
 
 
 # ---- the wiring ----------------------------------------------------------
@@ -121,13 +129,160 @@ def test_run_job_uses_the_applets_terminal_spawner_on_linux(host, monkeypatch,
     monkeypatch.setattr(platform, "system", lambda: "Linux")
     monkeypatch.setattr(
         review, "spawn",
-        lambda prompt, term, done_path=None, settings_file=None: calls.append(
-            (prompt, term, done_path, settings_file)) or "/tmp/p.txt")
+        lambda prompt, term, done_path=None, settings_file=None, checkout=None:
+            calls.append((prompt, term, done_path, settings_file, checkout))
+            or "/tmp/p.txt")
 
     done = tmp_path / "done"
     assert host.run_job("do a review", str(done)) == "/tmp/p.txt"
     assert calls == [("do a review", None, str(done),
-                      str(tmp_path / "done.hooks.json"))]
+                      str(tmp_path / "done.hooks.json"), review.mesh_checkout())]
+
+
+def _two_roots(monkeypatch, tmp_path):
+    """Two repo roots, ``o/r`` the primary and ``o/other`` beside it."""
+    roots = [LocalRepo("o", "r", str(tmp_path / "r")),
+             LocalRepo("o", "other", str(tmp_path / "other"))]
+    monkeypatch.setattr(review, "repo_roots", lambda: roots)
+    return roots
+
+
+def test_run_job_spawns_in_the_root_its_work_key_names(host, monkeypatch, tmp_path):
+    """A peer's job is about one repo, and an agent started in another repo's checkout
+    reviews a branch that is not there. The slug is matched however the key cases it."""
+    _two_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    seen: list = []
+    monkeypatch.setattr(review, "spawn",
+                        lambda *a, checkout=None, **k: seen.append(checkout) or "/p")
+
+    host.run_job("x", str(tmp_path / "a"), "review:github.com/O/Other#7@abc")
+    host.run_job("x", str(tmp_path / "b"), "review:github.com/o/r#7@abc")
+    assert seen == [str(tmp_path / "other"), str(tmp_path / "r")]
+
+
+def test_a_job_naming_no_repo_runs_in_the_configured_repos_root(host, monkeypatch,
+                                                                tmp_path):
+    """An older peer names no repo, and means the configured one, which it works in."""
+    cfg = core.config()
+    configured = LocalRepo(cfg["owner"], cfg["repo"], str(tmp_path / "conf"))
+    monkeypatch.setattr(review, "repo_roots",
+                        lambda: [LocalRepo("o", "r", str(tmp_path / "r")), configured])
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    seen: list = []
+    monkeypatch.setattr(review, "spawn",
+                        lambda *a, checkout=None, **k: seen.append(checkout) or "/p")
+
+    host.run_job("x", str(tmp_path / "a"), "")
+    host.run_job("x", str(tmp_path / "b"))
+    assert seen == [configured.path] * 2
+
+    _two_roots(monkeypatch, tmp_path)
+    with pytest.raises(szpont_host.NoRunner):
+        host.run_job("x", str(tmp_path / "c"))
+    assert len(seen) == 2
+
+
+def test_a_fork_only_clone_takes_the_configured_repos_jobs(monkeypatch, tmp_path):
+    """A single-root install whose checkout has only its fork as ``origin``: the mesh
+    places the configured repo's jobs there instead of refusing every one."""
+    monkeypatch.delenv("DIPLOMAT_REPO", raising=False)
+    cfg = core.config()
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    for args in (["init", "-q"],
+                 ["remote", "add", "origin", f"git@github.com:someone/{cfg['repo']}.git"]):
+        subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
+    appconfig.set_repo_roots([str(clone)])
+
+    key = f"review:github.com/{cfg['owner']}/{cfg['repo']}#7@abc"
+    assert szponthost._checkout_for(key) == str(clone)
+    with pytest.raises(szpont_host.NoRunner):
+        szponthost._checkout_for(f"review:github.com/someone/{cfg['repo']}#7@abc")
+
+
+def test_a_jobs_repo_picks_its_root_over_the_work_keys(host, monkeypatch, tmp_path):
+    _two_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    seen: list = []
+    monkeypatch.setattr(review, "spawn",
+                        lambda *a, checkout=None, **k: seen.append(checkout) or "/p")
+
+    host.run_job("x", str(tmp_path / "a"), "review:github.com/o/r#7@abc", "O/Other")
+    host.run_job("x", str(tmp_path / "b"), None, "o/r")
+    with pytest.raises(szpont_host.NoRunner, match="^no checkout of x/y on this machine$"):
+        host.run_job("x", str(tmp_path / "c"), "review:github.com/o/r#7@abc", "x/y")
+    assert seen == [str(tmp_path / "other"), str(tmp_path / "r")]
+
+
+def test_no_job_runs_while_no_root_resolves(host, monkeypatch, tmp_path):
+    """The one root is then the configured repo at the first path, which may check out
+    another repo."""
+    cfg = core.config()
+    monkeypatch.setattr(review, "repo_roots",
+                        lambda: [LocalRepo(cfg["owner"], cfg["repo"], str(tmp_path / "r"))])
+    monkeypatch.setattr(review, "roots_guessed", lambda: True)
+    monkeypatch.setattr(review, "spawn", lambda *a, **k: pytest.fail("spawned"))
+    key = f"review:github.com/{cfg['owner']}/{cfg['repo']}#7@abc"
+
+    for job in ((key,), (None, f"{cfg['owner']}/{cfg['repo']}"), ("",)):
+        with pytest.raises(szpont_host.NoRunner, match=(
+                "^no repo root on this machine resolves to a GitHub checkout$")):
+            host.run_job("x", str(tmp_path / "a"), *job)
+
+
+def test_a_macos_job_runs_in_the_root_its_work_key_names(host, monkeypatch, tmp_path):
+    """Both the shell's ``cd`` and an OpenCode 2.x session are bound to that checkout."""
+    _two_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(szponthost, "_spawn_macos", _real_spawn_macos)
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(review, "check_token", lambda: None)
+    monkeypatch.setattr(review, "write_prompt", lambda prompt: str(tmp_path / "p.txt"))
+    seen: list = []
+    monkeypatch.setattr(review, "stage_opencode_session",
+                        lambda prompt_file, checkout=None: seen.append(checkout) or "ses")
+    monkeypatch.setattr(review, "shell_command",
+                        lambda *a, checkout=None, **k: seen.append(checkout) or "cmd")
+    monkeypatch.setattr(review, "popen_detached", lambda argv: None)
+
+    host.run_job("x", None, "review:github.com/o/other#7@abc")
+    assert seen == [str(tmp_path / "other")] * 2
+
+
+def test_an_opencode_session_is_staged_in_the_root_its_work_key_names(
+        host, monkeypatch, tmp_path):
+    from diplomat_runtime import runner
+
+    _two_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(runner, "selected", lambda: runner.OPENCODE)
+    monkeypatch.setattr(review, "check_token", lambda: None)
+    monkeypatch.setattr(review, "write_prompt", lambda prompt: str(tmp_path / "p.txt"))
+    staged: list = []
+    monkeypatch.setattr(review, "stage_opencode_session",
+                        lambda prompt_file, checkout=None: staged.append(checkout) or "ses")
+    monkeypatch.setattr(review, "spawn", lambda *a, **k: "/p")
+
+    host.run_job("x", None, "review:github.com/o/other#7@abc")
+    assert staged == [str(tmp_path / "other")]
+
+
+@pytest.mark.parametrize("system", ["Linux", "Darwin"])
+def test_a_job_for_a_repo_with_no_root_here_is_declined_before_anything_is_staged(
+        host, monkeypatch, tmp_path, system):
+    """Declined as the library's :class:`NoRunner`, so the dispatcher fails it over to
+    a machine with that checkout — and before the hooks are staged or a terminal is
+    asked for, so a declined job leaves nothing behind."""
+    _two_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(platform, "system", lambda: system)
+    spawned: list = []
+    monkeypatch.setattr(review, "spawn", lambda *a, **k: spawned.append(a) or "/p")
+    monkeypatch.setattr(szponthost, "_spawn_macos", lambda *a: spawned.append(a) or "/p")
+
+    with pytest.raises(szpont_host.NoRunner, match="^no checkout of x/y on this machine$"):
+        host.run_job("x", str(tmp_path / "done"), "conflicts:github.com/X/Y#7@abc")
+    assert spawned == []
+    assert not (tmp_path / "done.hooks.json").exists()
 
 
 def test_a_mesh_run_writes_its_exit_sentinel_when_the_TURN_ends(host, monkeypatch,
@@ -251,16 +406,17 @@ def test_the_real_ps_on_this_machine_answers_that_spelling():
 
 
 def test_a_live_agent_on_the_same_pr_is_reported(host, monkeypatch):
-    _ps_output(monkeypatch, "claude review PR #7 owner/repo\n")
-    monkeypatch.setattr("diplomat_runtime.autofix.live_pr_numbers",
-                        lambda out, owner, repo: {7})
+    _ps_output(monkeypatch, "claude Review PR #7 in owner/repo. Use the `gh` CLI.\n")
     assert host.work_already_running("review:github.com/owner/repo#7@abc123") is True
 
 
 def test_a_different_pr_is_not(host, monkeypatch):
-    _ps_output(monkeypatch, "claude review PR #9 owner/repo\n")
-    monkeypatch.setattr("diplomat_runtime.autofix.live_pr_numbers",
-                        lambda out, owner, repo: {9})
+    _ps_output(monkeypatch, "claude Review PR #9 in owner/repo. Use the `gh` CLI.\n")
+    assert host.work_already_running("review:github.com/owner/repo#7@abc123") is False
+
+
+def test_the_same_number_in_another_repo_is_not(host, monkeypatch):
+    _ps_output(monkeypatch, "claude Review PR #7 in owner/other. Use the `gh` CLI.\n")
     assert host.work_already_running("review:github.com/owner/repo#7@abc123") is False
 
 
@@ -300,11 +456,11 @@ def test_a_host_that_raises_never_costs_the_node_the_job(monkeypatch):
 
 
 def _agents_on(monkeypatch, prs: set[int]):
-    """Pretend ``ps`` shows a live agent for each of ``prs`` (the matcher itself is
-    covered by ``live_pr_numbers``' own tests)."""
+    """Pretend ``ps`` shows a live agent for each of ``prs``, PRs of ``o/r`` (the
+    matcher itself is covered by ``live_pr_items``' own tests)."""
     _ps_output(monkeypatch, "".join(f"claude … PR #{n} in o/r\n" for n in prs))
-    monkeypatch.setattr("diplomat_runtime.autofix.live_pr_numbers",
-                        lambda out, owner, repo: set(prs))
+    monkeypatch.setattr("diplomat_runtime.autofix.live_pr_items",
+                        lambda out, slugs: {f"o/r#{n}" for n in prs})
 
 
 def test_a_busy_machine_declines_peer_routed_work(host, monkeypatch):
@@ -352,7 +508,8 @@ def test_an_agent_the_node_started_seconds_ago_still_holds_its_bay(host, monkeyp
     def spawned(etime: str) -> bool:
         _ps_output(monkeypatch, f"pts/7    {etime} claude Review PR #5 in "
                                 f"{cfg['owner']}/{cfg['repo']}. Use the `gh` CLI.\n")
-        return host.at_job_capacity(["review:github.com/o/r#5@aa"])
+        return host.at_job_capacity(
+            [f"review:github.com/{cfg['owner']}/{cfg['repo']}#5@aa"])
 
     assert spawned("00:03") is True   # booting: the bay it took is still its own
     # …and once it really is back at its prompt, the bay is handed back as before —
@@ -411,9 +568,43 @@ def test_a_pr_run_in_the_book_is_not_counted_twice(host, monkeypatch):
     appconfig.set_int(appconfig.AUTO_TASK_LIMIT, 2)
     _ps_output(monkeypatch, f"pts/5    15:00 claude Review PR #5 in {cfg['owner']}/{cfg['repo']}\n")
     agentregistry.create_run(A.RunRecord(
-        run_id="r5", dispatched_at=0.0, pr_number=5, kind="review",
+        run_id="r5", dispatched_at=0.0, pr_number=5,
+        pr_url=f"https://github.com/{cfg['owner']}/{cfg['repo']}/pull/5", kind="review",
         source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL, pid=4105, tty="pts/5"), "P")
     assert host.at_job_capacity([]) is False
+
+
+def test_the_cap_counts_agents_on_every_root_and_tells_their_numbers_apart(
+        host, monkeypatch, tmp_path):
+    """#5 of one root and #5 of another are two agents in two bays; an agent on a repo
+    that is no root here is the operator's own business and fills none."""
+    from diplomat_runtime import appconfig
+
+    _two_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr("diplomat_runtime.tmuxwatch.pane_tails_for_ttys", lambda ttys: {})
+    appconfig.set_int(appconfig.AUTO_TASK_LIMIT, 2)
+    _ps_output(monkeypatch,
+               "pts/5    15:00 claude Review PR #5 in o/r. Use the `gh` CLI.\n"
+               "pts/6    15:00 claude Review PR #5 in o/elsewhere. Use the `gh` CLI.\n")
+    assert host.at_job_capacity([]) is False
+    _ps_output(monkeypatch,
+               "pts/5    15:00 claude Review PR #5 in o/r. Use the `gh` CLI.\n"
+               "pts/6    15:00 claude Review PR #5 in o/other. Use the `gh` CLI.\n")
+    assert host.at_job_capacity([]) is True
+
+
+def test_the_disk_floor_covers_every_root(host, monkeypatch, tmp_path):
+    """An agent's worktree lands beside whichever root its job names, so a full volume
+    under any of them is a reason to decline."""
+    from diplomat_runtime import diskfloor
+
+    _two_roots(monkeypatch, tmp_path)
+    asked: list = []
+    monkeypatch.setattr(diskfloor, "lowest", lambda paths: asked.append(paths))
+    _agents_on(monkeypatch, set())
+    host.at_job_capacity([])
+    assert asked == [[str(tmp_path / "r"), str(tmp_path / "other"),
+                      str(Path.home() / ".diplomat")]]
 
 
 def test_the_cap_is_the_one_the_applet_writes(host, monkeypatch):

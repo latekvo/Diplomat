@@ -278,6 +278,180 @@ check((try? JSONDecoder().decode(ReviewConfig.self,
                                  from: JSONSerialization.data(withJSONObject: stored))) != nil)
 print("PR-reference assertions passed")
 
+section("items across repos")
+check(PRRef.itemKey(owner: "Software-Mansion", repo: "Argent", number: 12) == "software-mansion/argent#12",
+      "an item key is lowercased")
+for (url, want) in [("https://github.com/Software-Mansion/Argent/pull/12", "software-mansion/argent#12"),
+                    ("https://github.com/o/r/issues/7#issuecomment-1", "o/r#7"),
+                    ("https://www.github.com/o/r.js/pull/3/files?w=1", "o/r.js#3"),
+                    ("http://github.com/o/r/pull/9/", "o/r#9"),
+                    ("github.com/o/r/pull/9", "o/r#9")] {
+    check(PRRef.itemKey(url: url) == want, "\(url) -> \(String(describing: PRRef.itemKey(url: url)))")
+}
+for url in ["https://gitlab.com/o/r/pull/1", "https://github.com.evil.io/o/r/pull/1",
+            "https://github.com/o/r/pull/12x", "https://github.com/o/r/compare/1",
+            "https://github.com/o/r/pull/0", "u1", ""] {
+    check(PRRef.itemKey(url: url) == nil, "\(url) names no item")
+}
+check(PRRef.splitItemKey("o/r.js#12").map { [$0.slug, String($0.number)] } == ["o/r.js", "12"],
+      "an item key splits into its slug and number")
+for bad in ["o/r#x", "or#1", "o/r/x#1", "/r#1", "o/#1", "#1", "o/r#", "o/r#+1", "12"] {
+    check(PRRef.splitItemKey(bad) == nil, "\(bad) is not an item key")
+}
+check(PRRef.migrateItemKey("12", primary: "O/R") == "o/r#12"
+      && PRRef.migrateItemKey("o/x#12", primary: "o/r") == "o/x#12"
+      && PRRef.migrateItemKey("abc", primary: "o/r") == "abc"
+      && PRRef.migrateItemKey("", primary: "o/r") == "",
+      "a single-repo build's bare number is the primary root's; anything else is left as is")
+check(PRRef.migrateQueueKey("conflicts:12", primary: "o/r") == "conflicts:o/r#12"
+      && PRRef.migrateQueueKey("review-req:o/x#12", primary: "o/r") == "review-req:o/x#12"
+      && PRRef.migrateQueueKey("investigate:1508284197000015", primary: "o/r")
+         == "investigate:1508284197000015"
+      && PRRef.migrateQueueKey("nocolon", primary: "o/r") == "nocolon"
+      && PRRef.migrateQueueKey("conflicts:", primary: "o/r") == "conflicts:",
+      "a legacy queue key moves into the primary root, save an investigation's Slack ts")
+check(PRRef.itemLabel(item: "software-mansion/argent#12", roots: 1) == "#12"
+      && PRRef.itemLabel(item: "software-mansion/argent#12", roots: 0) == "#12"
+      && PRRef.itemLabel(item: "software-mansion/argent#12", roots: 2) == "argent#12",
+      "a label names the repo only once there are several roots")
+
+section("repo roots")
+do {
+    let cfgSlug = (owner: "software-mansion", repo: "argent")
+    let fork = """
+    remote.origin.url git@github.com:me/argent.git
+    remote.upstream.url https://github.com/someone/else.git
+    remote.canon.url https://github.com/Software-Mansion/Argent.git
+    """
+    let radonRemotes = "remote.origin.url git@github.com:software-mansion/radon.git"
+    let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
+    let remotes = ["/w/fork": fork, "/w/radon": radonRemotes, "/w/plain": "",
+                   "/w/gitlab": "remote.origin.url git@gitlab.com:x/y.git",
+                   "\(home)/dev/radon2": radonRemotes]
+    let resolved = RepoRoots.resolve(paths: ["/w/fork", "/w/missing", "/w/radon", "/w/gitlab"],
+                                     remotes: remotes, configured: cfgSlug)
+    check(resolved == [PRRef.LocalRepo(owner: "software-mansion", repo: "argent", path: "/w/fork"),
+                       PRRef.LocalRepo(owner: "software-mansion", repo: "radon", path: "/w/radon")],
+          "a fork clone (origin me/argent) is the configured repo, named as configured, not by "
+          + "its sibling remote; a path that is no checkout or has no GitHub remote is "
+          + "skipped: \(resolved)")
+    let siblings = ["/radon": "remote.origin.url https://github.com/o/radon\n"
+                        + "remote.argent.url https://github.com/\(cfgSlug.owner)/\(cfgSlug.repo)\n"
+                        + "remote.fork.url https://github.com/me/argent",
+                    "/argent": "remote.origin.url https://github.com/\(cfgSlug.owner)/\(cfgSlug.repo)",
+                    "/odd": "remote.gh.url https://github.com/me/\(cfgSlug.repo)"]
+    check(RepoRoots.resolve(paths: ["/radon", "/argent"], remotes: siblings, configured: cfgSlug)
+          == [PRRef.LocalRepo(owner: "o", repo: "radon", path: "/radon"),
+              PRRef.LocalRepo(owner: cfgSlug.owner, repo: cfgSlug.repo, path: "/argent")],
+          "a sibling remote naming the configured repo does not take a checkout: its origin does")
+    check(RepoRoots.resolve(paths: ["/odd"], remotes: siblings, configured: cfgSlug)
+          == [PRRef.LocalRepo(owner: cfgSlug.owner, repo: cfgSlug.repo, path: "/odd")],
+          "with no upstream or origin, any remote may name it")
+    check(RepoRoots.resolve(paths: ["/argent"], remotes: siblings,
+                            configured: (cfgSlug.owner.uppercased(), cfgSlug.repo.uppercased()))
+          == [PRRef.LocalRepo(owner: cfgSlug.owner, repo: cfgSlug.repo, path: "/argent")],
+          "however the config cases it, the remote naming it is the root")
+    check(RepoRoots.resolve(paths: ["/w/radon"], remotes: ["/w/radon": fork + "\n" + radonRemotes],
+                            configured: ("x", "y")).map(\.slug) == ["someone/else"],
+          "with no configured remote, the first entry (upstream first) names the checkout")
+    check(RepoRoots.resolve(paths: ["/w/radon", "~/dev/radon2"], remotes: remotes,
+                            configured: cfgSlug).map(\.path) == ["/w/radon"],
+          "two paths naming one repo keep the first")
+    check(RepoRoots.resolve(paths: ["~/dev/radon2"], remotes: remotes, configured: cfgSlug)
+          == [PRRef.LocalRepo(owner: "software-mansion", repo: "radon", path: "\(home)/dev/radon2")],
+          "a leading ~ is expanded before the lookup, and the path kept expanded")
+    check(RepoRoots.resolve(paths: ["~/nowhere", "/w/plain"], remotes: remotes, configured: cfgSlug)
+          == [PRRef.LocalRepo(owner: "software-mansion", repo: "argent", path: "\(home)/nowhere")],
+          "nothing resolving falls back to the configured repo at the first path")
+    check(RepoRoots.resolve(paths: [], remotes: remotes, configured: cfgSlug).isEmpty,
+          "no paths, no roots")
+    let forkOnly = ["/w/forkonly": "remote.origin.url git@github.com:someone/ARGENT.git",
+                    "/w/moved": "remote.origin.url https://github.com/old-owner/argent\n"
+                        + "remote.upstream.url https://github.com/o/radon"]
+    check(RepoRoots.resolve(paths: ["/w/forkonly", "/w/moved"], remotes: forkOnly,
+                            configured: cfgSlug)
+          == [PRRef.LocalRepo(owner: "software-mansion", repo: "argent", path: "/w/forkonly")],
+          "a fork-only clone (origin someone/argent) answers for the configured repo, so "
+          + "another path naming it is skipped")
+    check(RepoRoots.resolve(paths: ["/w/moved"], remotes: forkOnly, configured: cfgSlug)
+          == [PRRef.LocalRepo(owner: "software-mansion", repo: "argent", path: "/w/moved")]
+          && RepoRoots.resolve(paths: ["/w/forkonly"], remotes: forkOnly,
+                               configured: ("x", "y")).map(\.slug) == ["someone/ARGENT"],
+          "a pre-transfer URL does too, ahead of an upstream; a remote of another name does not")
+    check(RepoRoots.allResolve(paths: ["/w/radon", "~/dev/radon2"], remotes: remotes)
+          && !RepoRoots.allResolve(paths: ["/w/radon", "/w/missing"], remotes: remotes)
+          && !RepoRoots.allResolve(paths: ["/w/radon", "/w/plain"], remotes: remotes)
+          && !RepoRoots.allResolve(paths: ["/w/gitlab"], remotes: remotes),
+          "every path resolves only while each has a GitHub remote")
+    let pair = ["/src/r", "/src/other"]
+    let both = ["/src/r": "remote.origin.url https://github.com/o/r",
+                "/src/other": "remote.origin.url https://github.com/o/other"]
+    let gitlabFirst = ["/src/r": "remote.origin.url https://gitlab.com/o/r",
+                       "/src/other": "remote.origin.url https://github.com/o/other"]
+    check(RepoRoots.primaryResolves(paths: pair, remotes: both)
+          && !RepoRoots.guessed(paths: pair, remotes: both),
+          "both paths resolving: the first root is the first path's, and not a guess")
+    check(!RepoRoots.primaryResolves(paths: pair, remotes: gitlabFirst)
+          && !RepoRoots.guessed(paths: pair, remotes: gitlabFirst),
+          "a first path with only a GitLab remote is no primary, the second still resolving")
+    check(!RepoRoots.primaryResolves(paths: pair, remotes: [:])
+          && RepoRoots.guessed(paths: pair, remotes: [:]),
+          "none of several resolving: no primary, and the one root a guess")
+    check(RepoRoots.primaryResolves(paths: ["/src/r"], remotes: [:])
+          && !RepoRoots.guessed(paths: ["/src/r"], remotes: [:]),
+          "a lone unresolved path is the primary it always was, not a guess")
+    check(RepoRoots.expand("~") == home && RepoRoots.expand("~user/x") == "~user/x"
+          && RepoRoots.expand("/a/b/") == "/a/b/",
+          "only a bare ~ or ~/ expands, and nothing else is touched")
+}
+
+section("home repo")
+do {
+    let radonHome = PRRef.LocalRepo(owner: "software-mansion", repo: "radon", path: "/r/radon")
+    var sweep = ReviewConfig(depth: "max", me: me)
+    sweep.home = radonHome
+    check(sweep.targetRepo == ("software-mansion", "radon") && sweep.checkout == "/r/radon",
+          "a sweep with a home targets and works in it")
+    check(sweep.buildPrompt().contains("software-mansion/radon")
+          && !sweep.buildPrompt().contains("\(cfg.owner)/\(cfg.repo)"),
+          "…and its prompt names it alone")
+    let one = sweep.forPR(12)
+    check(one.home == radonHome && one.prRef.number == 12 && one.prRef.repo == nil
+          && one.targetRepo == ("software-mansion", "radon") && one.checkout == "/r/radon"
+          && one.buildPrompt().contains("PR #12 in software-mansion/radon"),
+          "the per-PR config keeps the home, so a bare number is the home's")
+    var linked = ReviewConfig(depth: "max", target: .specific, me: me,
+                              specificPR: "https://github.com/\(cfg.owner)/\(cfg.repo)/pull/3")
+    linked.home = radonHome
+    check(linked.prRef.repoMismatch, "a link is checked against the home repo first")
+    linked.localRepos = [PRRef.LocalRepo(owner: cfg.owner, repo: cfg.repo, path: "/r/main")]
+    check(linked.isValid && linked.checkout == "/r/main"
+          && linked.targetRepo == (cfg.owner, cfg.repo),
+          "…then the listed ones, whose checkout wins over the home's")
+    var issue = IssueConfig(me: me).forIssue(7)
+    issue.home = radonHome
+    check(issue.issueRef.number == 7 && issue.checkout == "/r/radon"
+          && issue.buildPrompt().contains("software-mansion/radon"),
+          "an issue fix targets its home")
+    var conflict = ConflictConfig(me: me)
+    conflict.home = radonHome
+    check(conflict.targetRepo == ("software-mansion", "radon") && conflict.checkout == "/r/radon"
+          && conflict.buildPrompt().contains("software-mansion/radon"),
+          "a conflict sweep targets its home")
+    var audit = AuditConfig()
+    audit.home = radonHome
+    check(audit.buildPrompt().contains("software-mansion/radon")
+          && !audit.buildPrompt().contains("\(cfg.owner)/\(cfg.repo)")
+          && audit.checkout == "/r/radon",
+          "an audit audits its home, in its checkout")
+    check(ReviewConfig(depth: "max", me: me).checkout == nil
+          && AuditConfig().checkout == nil
+          && AuditConfig().targetRepo == (cfg.owner, cfg.repo),
+          "no home is the configured repo in the default root")
+    let roundTrip = try JSONDecoder().decode(ReviewConfig.self, from: JSONEncoder().encode(one))
+    check(roundTrip.home == radonHome, "a queued config keeps its home across a restart")
+}
+
 section("mesh model + snapshot decode")
 let mesh = try CoreAssets.mesh()
 print("mesh: platforms=\(mesh.platforms.map { $0.id }) tokens=\(mesh.tokens.map { $0.id }) "
@@ -1620,8 +1794,9 @@ print("issue prompt assertions passed")
 
 // ---- Auto-fix monitor diff (edge-triggering) ----
 section("autofix diff")
-func snap(_ n: Int, mergeable: String = "MERGEABLE", decision: String = "", threads: Int = 0) -> PRSnapshot {
-    PRSnapshot(number: n, title: "PR \(n)", url: "u\(n)", isDraft: false,
+func snap(_ n: Int, mergeable: String = "MERGEABLE", decision: String = "", threads: Int = 0,
+          repo: String = "o/r") -> PRSnapshot {
+    PRSnapshot(number: n, title: "PR \(n)", url: "https://github.com/\(repo)/pull/\(n)", isDraft: false,
                mergeable: mergeable, reviewDecision: decision, threadsUnresolved: threads)
 }
 // First run: everything seeds, nothing fires.
@@ -1632,18 +1807,29 @@ check(base.fingerprints.count == 2)
 let c = AutofixDiff.compute(prior: base.fingerprints, now: [snap(1, mergeable: "CONFLICTING"), snap(2, mergeable: "CONFLICTING", threads: 3)])
 check(c.events == [.conflict(snap(1, mergeable: "CONFLICTING"))], "clean->conflicting fires once")
 // More unresolved threads OR a new CHANGES_REQUESTED fires a review event.
-let rPrior = [1: PRFingerprint(mergeable: "MERGEABLE", reviewDecision: "", threadsUnresolved: 1)]
+let rPrior = ["o/r#1": PRFingerprint(mergeable: "MERGEABLE", reviewDecision: "", threadsUnresolved: 1)]
 check(AutofixDiff.compute(prior: rPrior, now: [snap(1, threads: 4)]).events == [.review(snap(1, threads: 4))])
 check(AutofixDiff.compute(prior: rPrior, now: [snap(1, decision: "CHANGES_REQUESTED", threads: 1)]).events
        == [.review(snap(1, decision: "CHANGES_REQUESTED", threads: 1))])
 // Our own "Fixed in <hash>" replies (threads resolved, verdict unchanged) must NOT fire.
-let selfReply = [1: PRFingerprint(mergeable: "MERGEABLE", reviewDecision: "CHANGES_REQUESTED", threadsUnresolved: 5)]
+let selfReply = ["o/r#1": PRFingerprint(mergeable: "MERGEABLE", reviewDecision: "CHANGES_REQUESTED", threadsUnresolved: 5)]
 check(AutofixDiff.compute(prior: selfReply, now: [snap(1, decision: "CHANGES_REQUESTED", threads: 0)]).events.isEmpty,
        "resolving threads must not retrigger")
 // UNKNOWN mergeable carries the prior value forward — no phantom conflict.
-let unk = [1: PRFingerprint(mergeable: "MERGEABLE", reviewDecision: "", threadsUnresolved: 0)]
+let unk = ["o/r#1": PRFingerprint(mergeable: "MERGEABLE", reviewDecision: "", threadsUnresolved: 0)]
 let u = AutofixDiff.compute(prior: unk, now: [snap(1, mergeable: "UNKNOWN")])
-check(u.events.isEmpty && u.fingerprints[1]?.mergeable == "MERGEABLE", "UNKNOWN carries prior forward")
+check(u.events.isEmpty && u.fingerprints["o/r#1"]?.mergeable == "MERGEABLE", "UNKNOWN carries prior forward")
+// Fingerprints are per item: #1 in another repo is a PR seen for the first time, so it
+// seeds silently rather than inheriting o/r#1's state and firing a conflict.
+let twoRepos = AutofixDiff.compute(prior: unk, now: [snap(1, mergeable: "CONFLICTING", repo: "o/other"),
+                                                     snap(1, repo: "O/R")])
+check(twoRepos.events.isEmpty && twoRepos.fingerprints.keys.sorted() == ["o/other#1", "o/r#1"],
+      "the same number in two repos is two fingerprints: \(twoRepos)")
+check(AutofixDiff.compute(prior: twoRepos.fingerprints,
+                          now: [snap(1, mergeable: "CONFLICTING", repo: "o/other"),
+                                snap(1, mergeable: "CONFLICTING")]).events
+      == [.conflict(snap(1, mergeable: "CONFLICTING"))],
+      "and only the repo whose PR turned conflicting fires")
 print("autofix diff assertions passed")
 
 // ---- mesh coordination (work keys + assignment gate) ----
@@ -1751,16 +1937,16 @@ check(AgentDispatchGate.clampAutoTaskLimit(3) == 3
       "the cap is held inside the range the stepper offers")
 check(AgentDispatchGate.runningAutoTasks(livePRs: [], autoPRs: [], manualPRs: []) == 0,
       "an idle machine runs nothing")
-check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: []) == 2,
+check(AgentDispatchGate.runningAutoTasks(livePRs: ["o/r#1", "o/r#2"], autoPRs: [], manualPRs: []) == 2,
       "a live agent nobody tracked counts as automatic (an applet restart loses the book)")
-check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: [1]) == 1,
+check(AgentDispatchGate.runningAutoTasks(livePRs: ["o/r#1", "o/r#2"], autoPRs: [], manualPRs: ["o/r#1"]) == 1,
       "…unless it is a known manual one — a click never spends the automatic budget")
-check(AgentDispatchGate.runningAutoTasks(livePRs: [], autoPRs: [3], manualPRs: []) == 1,
+check(AgentDispatchGate.runningAutoTasks(livePRs: [], autoPRs: ["o/r#3"], manualPRs: []) == 1,
       "a just-spawned agent counts before ps has caught up with it")
-check(AgentDispatchGate.runningAutoTasks(livePRs: [3], autoPRs: [3], manualPRs: []) == 1,
+check(AgentDispatchGate.runningAutoTasks(livePRs: ["o/r#3"], autoPRs: ["o/r#3"], manualPRs: []) == 1,
       "…and is not counted twice once it has")
-check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2, 3], autoPRs: [4],
-                                         manualPRs: [2]) == 3,
+check(AgentDispatchGate.runningAutoTasks(livePRs: ["o/r#1", "o/r#2", "o/r#3"], autoPRs: ["o/r#4"],
+                                         manualPRs: ["o/r#2"]) == 3,
       "1, 3 and 4")
 // An agent is spawned into an INTERACTIVE session, so finishing its work is not
 // exiting: it waits at its prompt, `ps` keeps showing it, and the bay it took is never
@@ -1768,25 +1954,28 @@ check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2, 3], autoPRs: [4],
 // evening, both bays of a cap of 2 held, automatic work still being deferred 12h later.
 // PARITY: the same six cases run against the Python twin in
 // diplomat-platform/linux/tests/test_autofix.py.
-check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: [],
-                                         idlePRs: [1]) == 1,
+check(AgentDispatchGate.runningAutoTasks(livePRs: ["o/r#1", "o/r#2"], autoPRs: [], manualPRs: [],
+                                         idlePRs: ["o/r#1"]) == 1,
       "an untracked agent back at its prompt gives its bay back")
-check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: [],
-                                         idlePRs: [1, 2]) == 0,
+check(AgentDispatchGate.runningAutoTasks(livePRs: ["o/r#1", "o/r#2"], autoPRs: [], manualPRs: [],
+                                         idlePRs: ["o/r#1", "o/r#2"]) == 0,
       "…and a machine of them is a machine with an empty cap")
-check(AgentDispatchGate.runningAutoTasks(livePRs: [1], autoPRs: [1], manualPRs: [],
-                                         idlePRs: [1]) == 0,
+check(AgentDispatchGate.runningAutoTasks(livePRs: ["o/r#1"], autoPRs: ["o/r#1"], manualPRs: [],
+                                         idlePRs: ["o/r#1"]) == 0,
       "a TRACKED agent that went quiet leaves too — idle is subtracted from the union, "
       + "or `autoPRs` would re-add the very agent being let go")
-check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: [],
+check(AgentDispatchGate.runningAutoTasks(livePRs: ["o/r#1", "o/r#2"], autoPRs: [], manualPRs: [],
                                          idlePRs: []) == 2,
       "nothing idle changes nothing")
-check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: [],
-                                         idlePRs: [9]) == 2,
+check(AgentDispatchGate.runningAutoTasks(livePRs: ["o/r#1", "o/r#2"], autoPRs: [], manualPRs: [],
+                                         idlePRs: ["o/r#9"]) == 2,
       "an idle PR nobody is running here is not this machine's business")
-check(AgentDispatchGate.runningAutoTasks(livePRs: [1, 2], autoPRs: [], manualPRs: []) == 2,
+check(AgentDispatchGate.runningAutoTasks(livePRs: ["o/r#1", "o/r#2"], autoPRs: [], manualPRs: []) == 2,
       "no evidence at all (the default) frees nothing — a terminal that cannot be read "
       + "must cost a deferral, never a burst")
+check(AgentDispatchGate.runningAutoTasks(livePRs: ["o/a#1", "o/b#1"], autoPRs: [],
+                                         manualPRs: ["o/a#1"], idlePRs: []) == 1,
+      "#1 in two repos is two agents: the panel spawn on one leaves the other counted")
 
 section("the device's spending budget")
 // PARITY: diplomat-platform/linux/tests/test_autofix.py asserts these exact numbers
@@ -1943,14 +2132,21 @@ check(AgentTaskQueue.freeSlots(limit: 1, running: 4) == 0,
 
 // Queue identity: two monitors owing the same PR are two tasks, and a push must
 // not lose the operator's place for either (so: not the sha-scoped mesh key).
-check(AgentTaskQueue.key(auditAction: "conflicts", number: 7) == "conflicts:7",
+check(AgentTaskQueue.key(auditAction: "conflicts", item: "o/r#7") == "conflicts:o/r#7",
       "queue key is the monitor's verb plus the item")
-check(AgentTaskQueue.key(auditAction: "review-req", number: 7)
-      != AgentTaskQueue.key(auditAction: "review-reply", number: 7),
+check(AgentTaskQueue.key(auditAction: "review-req", item: "o/r#7")
+      != AgentTaskQueue.key(auditAction: "review-reply", item: "o/r#7"),
       "one PR can owe two monitors — two tasks, two keys")
-check(AgentTaskQueue.key(auditAction: "review", number: 421)
-      != AgentTaskQueue.key(auditAction: "issues", number: 421),
-      "…and the verb is what keeps issue #421 off the PR of the same number")
+check(AgentTaskQueue.key(auditAction: "conflicts", item: PRRef.itemKey(owner: "o", repo: "a", number: 7))
+      != AgentTaskQueue.key(auditAction: "conflicts", item: PRRef.itemKey(owner: "o", repo: "b", number: 7)),
+      "…and #7 in two repos is two tasks")
+check(AgentTaskQueue.item(ofKey: "conflicts:o/r#7") == "o/r#7"
+      && AgentTaskQueue.item(ofKey: "review-req:o/r#7") == "o/r#7",
+      "a queue key gives back its item")
+check(AgentTaskQueue.item(ofKey: "investigate:1508284197000015") == nil
+      && AgentTaskQueue.item(ofKey: "conflicts:7") == nil
+      && AgentTaskQueue.item(ofKey: "nocolon") == nil,
+      "a Slack ts, a legacy bare number and a malformed key name no item")
 
 check(AgentTaskQueue.order(offered: ["a", "b", "c"], saved: []) == ["a", "b", "c"],
       "never arranged ⇒ the order the monitors found it in")
@@ -2039,32 +2235,39 @@ check(AgentTaskQueue.reorder(["conflicts:1", "conflicts:2"],
       == ["conflicts:2", "conflicts:1"],
       "within the conflict band a drag works like any other")
 
-check(AgentTaskQueue.stillOwed(auditAction: "conflicts", prNumber: 8,
-                               conflicting: [7], owingReply: [8], closed: []) == false,
+check(AgentTaskQueue.stillOwed(auditAction: "conflicts", item: "o/r#8",
+                               conflicting: ["o/r#7"], owingReply: ["o/r#8"], closed: []) == false,
       "a conflict fix on a PR this fetch no longer calls conflicting is work already done")
-check(AgentTaskQueue.stillOwed(auditAction: "conflicts", prNumber: 7,
-                               conflicting: [7], owingReply: [], closed: []),
+check(AgentTaskQueue.stillOwed(auditAction: "conflicts", item: "o/r#7",
+                               conflicting: ["o/r#7"], owingReply: [], closed: []),
       "…and one the fetch still calls conflicting is dispatched")
-check(AgentTaskQueue.stillOwed(auditAction: "review-reply", prNumber: 8,
-                               conflicting: [8], owingReply: [], closed: []) == false,
+check(AgentTaskQueue.stillOwed(auditAction: "review-reply", item: "o/r#8",
+                               conflicting: ["o/r#8"], owingReply: [], closed: []) == false,
       "a reply on a PR whose threads are answered is work already done")
-check(AgentTaskQueue.stillOwed(auditAction: "review-req", prNumber: 3,
+check(AgentTaskQueue.stillOwed(auditAction: "review-req", item: "o/r#3",
                                conflicting: [], owingReply: [], closed: []),
       "a review requested of me is not in this fetch to check — unanswerable is not stale")
 // A closed PR is the one answer that reaches every verb, including the two the fetches
 // above cannot speak for: a review of a merged diff is nobody's work.
-check(AgentTaskQueue.stillOwed(auditAction: "review-req", prNumber: 3,
-                               conflicting: [], owingReply: [], closed: [3]) == false,
+check(AgentTaskQueue.stillOwed(auditAction: "review-req", item: "o/r#3",
+                               conflicting: [], owingReply: [], closed: ["o/r#3"]) == false,
       "…until its PR closes, which no agent of mine can put back")
-check(AgentTaskQueue.stillOwed(auditAction: "review", prNumber: 31,
-                               conflicting: [], owingReply: [], closed: [31]) == false,
+check(AgentTaskQueue.stillOwed(auditAction: "review", item: "o/r#31",
+                               conflicting: [], owingReply: [], closed: ["o/r#31"]) == false,
       "a review the operator asked for goes the same way — merged is merged")
-check(AgentTaskQueue.stillOwed(auditAction: "conflicts", prNumber: 7,
-                               conflicting: [7], owingReply: [], closed: [7]) == false,
+check(AgentTaskQueue.stillOwed(auditAction: "conflicts", item: "o/r#7",
+                               conflicting: ["o/r#7"], owingReply: [], closed: ["o/r#7"]) == false,
       "closed outranks a fetch that still calls the PR conflicting")
-check(AgentTaskQueue.stillOwed(auditAction: "investigate", prNumber: 1508284197000015,
-                               conflicting: [], owingReply: [], closed: [1508284197000015]),
+check(AgentTaskQueue.stillOwed(auditAction: "investigate", item: "1508284197000015",
+                               conflicting: [], owingReply: [], closed: ["1508284197000015"]),
       "an investigation is about no PR, so no PR closing retires it, even one of its number")
+
+check(AgentTaskQueue.stillOwed(auditAction: "conflicts", item: "o/a#7",
+                               conflicting: ["o/a#7"], owingReply: [], closed: ["o/b#7"]),
+      "#7 closing in another repo retires nothing here")
+check(AgentTaskQueue.stillOwed(auditAction: "conflicts", item: "o/a#7",
+                               conflicting: ["o/b#7"], owingReply: [], closed: []) == false,
+      "…and #7 conflicting in another repo owes nothing here")
 
 section("agent state: what every dispatched run resolves to")
 // PARITY: the whole scenario table lives in
@@ -2081,6 +2284,7 @@ do {
              source: String = AgentDispatchGate.Source.auto.rawValue,
              workKey: String = "", seen: TimeInterval? = nil) -> AgentState.RunRecord {
         AgentState.RunRecord(runID: id, dispatchedAt: now - age, prNumber: 337,
+                             prURL: "https://github.com/o/r/pull/337",
                              source: source, placement: placement,
                              workKey: workKey, pid: pid, tty: tty, claimSeenAt: seen)
     }
@@ -2139,7 +2343,7 @@ do {
                 AgentState.Evidence(
         processes: .present([:]), sentinels: .present([]),
         tails: .present(["pts/5": working]), claims: .present([]),
-        mergedPRs: .present([]), liveAgents: .present([337: "pts/5"]))) == .running,
+        mergedPRs: .present([]), liveAgents: .present(["o/r#337": "pts/5"]))) == .running,
       "a pid-less run whose PR has a live agent is running, not unknown")
     check(state(rec("i", pid: nil, tty: "", age: 600, placement: .meshHere),
                 AgentState.Evidence(
@@ -2153,6 +2357,21 @@ do {
         claims: .present([]), mergedPRs: .present([]),
         liveAgents: .unavailable("ps could not be read"))) == .unknown,
       "...but a scan that failed ends nothing")
+    check(state(rec("h2", pid: nil, tty: "", age: 600, placement: .meshHere),
+                AgentState.Evidence(
+        processes: .present([:]), sentinels: .present([]),
+        tails: .present(["pts/5": working]), claims: .present([]),
+        mergedPRs: .present([]), liveAgents: .present(["o/other#337": "pts/5"]))) == .finished,
+      "an agent on #337 of ANOTHER repo is not this run's agent")
+    check(state(rec("m"), AgentState.Evidence(
+        processes: .present(alive), sentinels: .present([]),
+        tails: .present(["pts/3": working]), claims: .present([]),
+        mergedPRs: .present(["o/other#337"]))) == .running
+          && state(rec("m"), AgentState.Evidence(
+        processes: .present(alive), sentinels: .present([]),
+        tails: .present(["pts/3": working]), claims: .present([]),
+        mergedPRs: .present(["o/r#337"]))) == .merged,
+      "#337 merging in another repo leaves this run alone; its own merging ends it")
     // The outermost backstop, and the only rung that ends a run on the clock. Every
     // check above runs with it OFF (`resolveOne`'s default), which is what keeps them
     // about the rung each was written for.
@@ -2226,9 +2445,86 @@ do {
     check(t.capLoad == ["auto"],
       "the cap counts automatic agents that run HERE — not a click, not a peer's")
     check(t.freeSlots == 1, "one of two bays filled")
-    check(t.inFlight(prNumber: 337), "and the PR they are all on reads in-flight")
+    check(t.inFlight(item: "o/r#337"), "and the PR they are all on reads in-flight")
+    check(!t.inFlight(item: "o/other#337"), "…while #337 in another repo does not")
     check(t.retirable.isEmpty, "nothing retires while every run is live")
     print("agent state assertions passed")
+}
+
+section("agent state: one number in two repos")
+// Two roots both have a #5. Every place the resolver matches a run to evidence goes by
+// item, so neither repo's agent, merge or scan sighting is read as the other's.
+do {
+    let now: TimeInterval = 2_000_000
+    func run(_ id: String, _ slug: String, pid: Int? = nil, tty: String = "",
+             placement: AgentState.Placement = .meshHere) -> AgentState.RunRecord {
+        AgentState.RunRecord(runID: id, dispatchedAt: now - 600, prNumber: 5,
+                             prURL: "https://github.com/\(slug)/pull/5",
+                             placement: placement, pid: pid, tty: tty)
+    }
+    check(run("x", "O/A").item == "o/a#5", "a run's item is its URL's, lowercased")
+    check(AgentState.RunRecord(runID: "y", dispatchedAt: now,
+                               prURL: "https://github.com/o/a/pull/5").item == nil,
+          "a run about no PR number has no item, whatever its URL")
+    check(AgentState.RunRecord(runID: "z", dispatchedAt: now, prNumber: 5).item == nil,
+          "…and a PR number with no URL to place it names none either")
+
+    let scan: Observation<[String: String]> = .present(["o/a#5": "pts/1", "o/b#5": "pts/2"])
+    let synth = AgentState.synthesizeUntracked([], liveAgents: scan, now: now)
+    check(synth.map(\.runID) == ["untracked:o/a#5", "untracked:o/b#5"]
+          && synth.map(\.prURL) == ["https://github.com/o/a/pull/5",
+                                    "https://github.com/o/b/pull/5"]
+          && synth.allSatisfy { $0.prNumber == 5 && $0.untracked },
+          "two live agents on #5 in two repos are two untracked runs: \(synth.map(\.runID))")
+    let booked = AgentState.synthesizeUntracked([run("a", "o/a", tty: "pts/1")],
+                                                liveAgents: scan, now: now)
+    check(booked.map(\.runID) == ["a", "untracked:o/b#5"],
+          "a record on o/a#5 covers only o/a's agent: \(booked.map(\.runID))")
+    check(AgentState.synthesizeUntracked(synth, liveAgents: scan, now: now).count == 2,
+          "and the next tick makes no third")
+
+    let adopted = AgentState.adoptTTYs([run("a", "o/a")], processes: .present([:]),
+                                       liveAgents: .present(["o/b#5": "pts/2"]))
+    check(adopted[0].tty.isEmpty, "a pid-less run never adopts another repo's agent's tty")
+
+    // Each run ended by its merge with its agent still up and no pid to tell agents
+    // apart: released only when alone on its item, and o/b's run is not o/a's neighbour.
+    let ended = [run("a", "o/a", tty: "pts/1", placement: .local),
+                 run("b", "o/b", tty: "pts/2", placement: .local)]
+    let mergedBoth = AgentState.Evidence(
+        processes: .present([:]), sentinels: .present([]),
+        tails: .present(["pts/1": "\u{276F}", "pts/2": "\u{276F}"]), claims: .present([]),
+        mergedPRs: .present(["o/a#5", "o/b#5"]), liveAgents: scan)
+    let verdicts = AgentState.resolve(records: ended, evidence: mergedBoth, now: now)
+    let heirs = AgentState.releaseEnded(ended, states: verdicts, evidence: mergedBoth, now: now)
+    check(verdicts.values.allSatisfy { $0.state == .merged }
+          && heirs.map(\.0.runID).sorted() == ["untracked:o/a#5", "untracked:o/b#5"],
+          "two pid-less runs on #5 in two repos are each alone on their item: "
+          + "\(heirs.map(\.0.runID))")
+
+    let t = AgentState.tick(records: [run("a", "o/a", pid: 11, tty: "pts/1", placement: .local)],
+                            evidence: AgentState.Evidence(
+                                processes: .present([11: AgentState.ProcInfo(
+                                    tty: "pts/1", elapsed: 600, isAgent: true)]),
+                                sentinels: .present([]),
+                                tails: .present(["pts/1": "esc to interrupt"]),
+                                claims: .present([]), mergedPRs: .present([]),
+                                liveAgents: .present([:])),
+                            now: now, limit: 2)
+    check(t.inFlight(item: "o/a#5") && !t.inFlight(item: "o/b#5"),
+          "an agent on o/a#5 blocks a second there and nothing on o/b#5")
+
+    let roots: Set<String> = ["software-mansion/argent", "o/r.js"]
+    check(AgentState.promptItems("Review PR #12 in software-mansion/argent. Use the `gh` CLI",
+                                 slugs: roots) == ["software-mansion/argent#12"],
+          "the prompt's closing period is not part of the repo")
+    check(AgentState.promptItems("PR #3 in o/r.js. and PR #4 in O/R.JS now", slugs: roots)
+          == ["o/r.js#3", "o/r.js#4"],
+          "a repo whose name has a dot keeps it, and the slug is matched case-insensitively")
+    check(AgentState.promptItems("PR #9 in other/repo. PR #10 in o/r. PR #11 in o/r.jsx",
+                                 slugs: roots).isEmpty,
+          "a repo outside the roots, or one that only starts like a root, is no sighting")
+    print("cross-repo agent state assertions passed")
 }
 
 section("the run book's sidecars")
@@ -3179,8 +3475,9 @@ check(ReviewReconcile.decide(prior: concludedRec, stamp: "newer-stamp", inFlight
         == .dispatch(attemptNumber: 1), "…but a genuine re-request of it is a fresh one")
 do {
     let at = t0.timeIntervalSince1970
-    func run(_ id: String, kind: String, pr: Int) -> AgentState.RunRecord {
-        AgentState.RunRecord(runID: id, dispatchedAt: at - 600, prNumber: pr, kind: "review",
+    func run(_ id: String, kind: String, pr: Int, repo: String = "r") -> AgentState.RunRecord {
+        AgentState.RunRecord(runID: id, dispatchedAt: at - 600, prNumber: pr,
+                             prURL: "https://github.com/o/\(repo)/pull/\(pr)", kind: "review",
                              ledgerKey: "\(kind):github.com/o/r#\(pr)@abc", pid: 7000 + pr, tty: "ttys0\(pr)")
     }
     let runs = [run("idle", kind: AutofixMesh.kindReviewReq, pr: 11),
@@ -3200,7 +3497,7 @@ do {
         activity: .present(["idle": AgentState.TurnReport(verb: .idle, at: at - 5),
                             "ended": AgentState.TurnReport(verb: .ended, at: at - 5),
                             "reply": AgentState.TurnReport(verb: .idle, at: at - 5)])), now: at)
-    check(ReviewReconcile.concluded(runs, verdicts: verdicts) == [11, 15],
+    check(ReviewReconcile.concluded(runs, verdicts: verdicts) == ["o/r#11", "o/r#15"],
           "only a review-request run its own runner reported over concludes, got "
           + "\(ReviewReconcile.concluded(runs, verdicts: verdicts).sorted())")
     // A turn its provider refused did none of the work: the run failed, and says why.
@@ -3208,14 +3505,19 @@ do {
             && verdicts["refused"]?.reason.hasSuffix("its runner reported the turn failed: 402") == true,
           "a refused turn is a failure, got \(String(describing: verdicts["refused"]))")
     check(verdicts["session"]?.state == .finished, "a session that went idle well finished")
-    let book = ["11": a1old, "13": a1old]
-    let stamped = ReviewReconcile.conclude(book, prs: [11, 15], at: t0)
-    check(stamped["11"]?.concludedAt == t0 && stamped["13"]?.concludedAt == nil && stamped["15"] == nil,
-          "a conclusion stamps the record it answers and invents none")
+    let book = ["o/r#11": a1old, "o/r#13": a1old, "o/other#11": a1old]
+    let stamped = ReviewReconcile.conclude(book, prs: ["o/r#11", "o/r#15"], at: t0)
+    check(stamped["o/r#11"]?.concludedAt == t0 && stamped["o/r#13"]?.concludedAt == nil
+            && stamped["o/r#15"] == nil && stamped["o/other#11"]?.concludedAt == nil,
+          "a conclusion stamps the record it answers, in its own repo only, and invents none")
+    let otherRepo = [run("idle", kind: AutofixMesh.kindReviewReq, pr: 11, repo: "other")]
+    check(ReviewReconcile.concluded(otherRepo, verdicts: verdicts) == ["o/other#11"],
+          "a run concludes the request of its own repo's #11")
     let late = t0.addingTimeInterval(ReviewReconcile.retryMaxBackoff + 60)
-    check(ReviewReconcile.retained(stamped, owed: ["11": "s", "13": "s"], now: late).keys.sorted() == ["11"],
+    check(ReviewReconcile.retained(stamped, owed: ["o/r#11": "s", "o/r#13": "s"], now: late).keys.sorted()
+            == ["o/r#11"],
           "a concluded record outlives the backoff ceiling while its request is still owed")
-    check(ReviewReconcile.retained(stamped, owed: ["11": "newer-stamp"], now: late).isEmpty,
+    check(ReviewReconcile.retained(stamped, owed: ["o/r#11": "newer-stamp"], now: late).isEmpty,
           "…and is dropped once that request is no longer the one owed")
 }
 print("review reconcile assertions passed")
@@ -3514,6 +3816,8 @@ let goldenModes: [(String, String)] = [
     ("investigate", commsGoldenInvestigate.buildPrompt()),
     ("comms-classifier", CommsClassifier.prompt(settings: CommsSettings(
         owner: "software-mansion", repo: "argent", login: goldenMe))),
+    ("comms-classifier-multi", CommsClassifier.prompt(settings: CommsSettings(
+        repos: ["software-mansion/argent", "latekvo/diplomat"], login: goldenMe))),
 ]
 let goldenDir = try CoreAssets.assetsDir().appendingPathComponent("golden-prompts")
 if ProcessInfo.processInfo.environment["DIPLOMAT_GOLDEN_WRITE"] == "1" {
@@ -3712,8 +4016,8 @@ do {
 if ProcessInfo.processInfo.environment["DIPLOMAT_DUMP"] == "1" {
     section("live gh dump (cross-check vs Python)")
     let viewer = try await API.fetchViewerLogin()
-    let realPRs = try await API.fetchOpenPRs()
-    let realIssues = try await API.fetchOpenIssues()
+    let realPRs = try await API.fetchOpenPRs(owner: cfg.owner, repo: cfg.repo)
+    let realIssues = try await API.fetchOpenIssues(owner: cfg.owner, repo: cfg.repo)
     print("viewer @\(viewer) · PRs \(realPRs.count) · issues \(realIssues.count)")
     for kind in ToolKind.allCases {
         let c = ToolData.count(for: kind, prs: realPRs, issues: realIssues, me: viewer)

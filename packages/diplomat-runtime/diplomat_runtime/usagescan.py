@@ -8,8 +8,8 @@ with a ``usage`` block, and stamps each record with the ``cwd`` it ran in. That 
 enough to answer both token questions the Telemetry screen asks, and neither needs
 anything Anthropic doesn't already write to disk:
 
-* **how much of this machine's spend went on the monitored repo** — sum every
-  turn, split by whether its ``cwd`` is inside the repo the agents work in;
+* **how much of this machine's spend went on the monitored repos** — sum every
+  turn, split by whether its ``cwd`` is inside a repo root the agents work in;
 * **what one auto-task cost** — find the transcript whose opening user message *is*
   the prompt we staged for that agent, and sum that file alone.
 
@@ -76,20 +76,23 @@ def cursor_path() -> Path:
 
 
 def repo_roots() -> list[Path]:
-    """The directories whose Claude sessions count as work on this repo.
+    """The directories whose Claude sessions count as work on the monitored repos.
 
-    The checkout the agents ``cd`` into, plus its worktree siblings at
+    Every repo root the agents ``cd`` into, each with its worktree siblings at
     ``<root>-worktrees/*`` — a branch worked on in a worktree is the same project
     by any honest reading, and every agent this applet dispatches through a
     worktree would otherwise land in "everything else" and make the split lie.
     """
     from . import review
 
-    try:
-        root = Path(review.repo_path()).expanduser().resolve()
-    except (OSError, RuntimeError):
-        return []
-    return [root, root.parent / f"{root.name}-worktrees"]
+    out: list[Path] = []
+    for repo in review.repo_roots():
+        try:
+            root = Path(repo.path).expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
+        out += [root, root.parent / f"{root.name}-worktrees"]
+    return out
 
 
 def _is_repo_cwd(cwd: str, roots: list[Path]) -> bool:

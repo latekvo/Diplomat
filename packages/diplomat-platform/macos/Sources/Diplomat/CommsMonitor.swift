@@ -23,6 +23,17 @@ struct CommsTarget: Equatable {
 
 enum CommsTargetKind { case pr, issue }
 
+extension Store.RequestedConfig {
+    /// The checkout the ask's agent works in; nil means the primary repo root.
+    var checkout: String? {
+        switch self {
+        case .review(let cfg): return cfg.checkout
+        case .issues(let cfg): return cfg.checkout
+        case .investigate(let cfg): return cfg.checkout
+        }
+    }
+}
+
 extension Store {
     /// `DIPLOMAT_COMMS_SECS` (ignored unless finite), else `comms.json`'s `pollSecs`. Never
     /// under `minPollSecs` (a tick is two searches plus one per keyword, and a profile read
@@ -56,7 +67,15 @@ extension Store {
                       senderAllowlist: CommsSettings.allowlist(commsSenderAllowlistRaw),
                       bannedSenders: BanList.slackUserIDs(in: BanList.read()),
                       model: commsModel, batchSize: commsBatchSize,
-                      flushAfterSecs: commsFlushAfterSecs, login: effectiveMe)
+                      flushAfterSecs: commsFlushAfterSecs,
+                      repos: RepoPaths.roots.map(\.slug), login: effectiveMe)
+    }
+
+    /// The repo root a Comms repository names (`CommsSettings.canonical`: "" for the
+    /// primary); nil once it is no root.
+    static func commsRoot(_ repo: String) -> PRRef.LocalRepo? {
+        let roots = RepoPaths.roots
+        return repo.isEmpty ? roots.first : roots.first { $0.slug.lowercased() == repo.lowercased() }
     }
 
     var commsToggles: CommsToggles {
@@ -132,8 +151,15 @@ extension Store {
         return reading
     }
 
+    /// A queue key a single-repo build logged (`review:42`) is read as the primary root's.
     private func absorbCommsLog(_ events: [CommsEvent], _ items: [CommsItem], _ mark: CommsLogMark) {
         commsLog = CommsLogCache(events: events, mark: mark)
+        let primary = RepoPaths.roots.first?.slug ?? ""
+        let items = items.map { item -> CommsItem in
+            var item = item
+            item.queueKey = item.queueKey.map { PRRef.migrateQueueKey($0, primary: primary) }
+            return item
+        }
         if items != commsItems { commsItems = items }
     }
 
@@ -216,13 +242,29 @@ extension Store {
         guard commsEnabled, !Headless.active, !commsPollInFlight else { return }
         commsPollInFlight = true
         defer { commsPollInFlight = false }
+        await refreshRoots()
         let settings = commsSettings
-        let result = await Task.detached(priority: .utility) {
-            CommsWatch.tick(settings: settings,
-                            classify: { CommsClassifier.run($0, settings: settings) })
-        }.value
+        let result: CommsTickResult
+        if let held = commsHeldTick() {
+            result = held
+        } else {
+            result = await Task.detached(priority: .utility) {
+                CommsWatch.tick(settings: settings,
+                                classify: { CommsClassifier.run($0, settings: settings) })
+            }.value
+        }
         commsLastPoll = Date()
         await applyComms(result)
+    }
+
+    /// The tick a poll lands instead of the core's while the first root path does not
+    /// resolve (`primaryResolved`), else nil: a bare `#N` is read as the first root's,
+    /// which would be another repo's. Not private: the Comms self-test asks it.
+    func commsHeldTick() -> CommsTickResult? {
+        guard !primaryResolved else { return nil }
+        let first = RepoPaths.rootPaths.first ?? ""
+        return CommsTickResult(me: nil, items: [], error: "waiting for the first repo root, \(first), "
+                                   + "to resolve to a GitHub checkout")
     }
 
     /// Signs in the way a tick does, refreshing a dead login through Claude Code.
@@ -278,8 +320,11 @@ extension Store {
         let away = commsAway
         var replies: [CommsReplyRequest] = []
         if let reading = refreshComms() { await reading.value }
+        // Nothing logged is replayed while the tick is held (`commsHeldTick`): its "" repo
+        // would be the next root's.
         let stranded = commsItems.reversed().compactMap { i -> CommsTickResult.Item? in
-            guard i.outcome == nil, !fresh.contains(i.message.id), let d = i.decision else {
+            guard primaryResolved, i.outcome == nil, !fresh.contains(i.message.id),
+                  let d = i.decision else {
                 return nil
             }
             return CommsTickResult.Item(message: i.message, decision: d)
@@ -341,13 +386,14 @@ extension Store {
         guard let key = act.queueKey else { return nil }
         let kind: String
         let number: Int
+        var repo = ""
         switch effect {
-        case .review(let n):        (kind, number) = ("review", n)
-        case .fixIssue(let n):      (kind, number) = ("fix_issue", n)
-        case .investigate(let cfg): (kind, number) = ("investigate", cfg.number)
-        case .none, .bump, .ban:    return nil
+        case .review(let n, let r):   (kind, number, repo) = ("review", n, r)
+        case .fixIssue(let n, let r): (kind, number, repo) = ("fix_issue", n, r)
+        case .investigate(let cfg):   (kind, number) = ("investigate", cfg.number)
+        case .none, .bump, .ban:      return nil
         }
-        return CommsQueuedWork(kind: kind, number: number,
+        return CommsQueuedWork(kind: kind, number: number, repo: repo,
                                ahead: queuedTasks.firstIndex { $0.id == key } ?? 0,
                                bays: autoTaskLimit,
                                startedAt: act.running.map { Date(timeIntervalSince1970: $0.dispatchedAt) })
@@ -433,46 +479,67 @@ extension Store {
             let off = Store.switchedOff(item.decision.action)
             return CommsActResult(verb: "comms-ping", outcome: off ?? "ping only",
                                   feedLine: Store.pingLine(m))
-        case .review(let n):
+        case .review(let n, let repo):
+            guard let root = Store.commsRoot(repo) else {
+                return refused("comms-review", who, Store.notARoot(repo))
+            }
             let pr: CommsTarget
-            switch await commsLookup(.pr, n) {
+            switch await commsLookup(.pr, n, in: root) {
             case .found(let t) where t.isOpen: pr = t
-            case let other: return refused("comms-review", who, Store.notOpen("PR", n, other))
+            case let other: return refused("comms-review", who, Store.notOpen("PR", n, root, other))
             }
             let mine = !effectiveMe.isEmpty && pr.author.lowercased() == effectiveMe.lowercased()
             if !mine, BanList.isBanned(pr.author, in: bannedAuthors) {
-                return refused("comms-review", who, "@\(pr.author) is banned, so #\(n) was not queued")
+                return refused("comms-review", who, "@\(pr.author) is banned, so "
+                               + "\(Store.commsRef(n, in: root)) was not queued")
             }
-            let cfg = ReviewConfig(target: .specific, me: effectiveMe, specificPR: String(n),
+            var cfg = ReviewConfig(target: .specific, me: effectiveMe, specificPR: String(n),
                                    specificAuthor: mine ? .mine : .theirs)
+            cfg.home = root
             return queue(RequestedWork(number: n, url: pr.url, author: mine ? "" : pr.author,
                                        config: .review(cfg)),
                          verb: "comms-review", who: who, front: true)
-        case .fixIssue(let n):
+        case .fixIssue(let n, let repo):
+            guard let root = Store.commsRoot(repo) else {
+                return refused("comms-fix", who, Store.notARoot(repo))
+            }
             let issue: CommsTarget
-            switch await commsLookup(.issue, n) {
+            switch await commsLookup(.issue, n, in: root) {
             case .found(let t) where t.isOpen: issue = t
-            case let other: return refused("comms-fix", who, Store.notOpen("issue", n, other))
+            case let other: return refused("comms-fix", who, Store.notOpen("issue", n, root, other))
             }
             if BanList.isBanned(issue.author, in: bannedAuthors) {
-                return refused("comms-fix", who, "@\(issue.author) is banned, so #\(n) was not queued")
+                return refused("comms-fix", who, "@\(issue.author) is banned, so "
+                               + "\(Store.commsRef(n, in: root)) was not queued")
             }
-            let cfg = IssueConfig(target: .specific, me: effectiveMe, specificIssue: String(n))
+            var cfg = IssueConfig(target: .specific, me: effectiveMe, specificIssue: String(n))
+            cfg.home = root
             return queue(RequestedWork(number: n, url: issue.url, author: issue.author,
                                        config: .issues(cfg)),
                          verb: "comms-fix", who: who, front: true)
-        case .bump(let n):
-            let keys = queuedTasks.map(\.id).filter { $0.hasSuffix(":\(n)") }
+        case .bump(let n, let repo):
+            guard let root = Store.commsRoot(repo) else {
+                return refused("comms-bump", who, Store.notARoot(repo))
+            }
+            let ref = Store.commsRef(n, in: root)
+            let item = PRRef.itemKey(owner: root.owner, repo: root.repo, number: n)
+            let keys = queuedTasks.map(\.id).filter { AgentTaskQueue.item(ofKey: $0) == item }
             for key in keys { moveQueuedTaskToFront(key) }
-            let outcome = keys.isEmpty ? "nothing queued for #\(n)"
+            let outcome = keys.isEmpty ? "nothing queued for \(ref)"
                 : "moved \(keys.joined(separator: ", ")) to the front of its band"
             return CommsActResult(verb: "comms-bump", outcome: outcome,
-                                  feedLine: "Bump #\(n) asked by \(who) — \(outcome)")
-        case .investigate(let cfg):
+                                  feedLine: "Bump \(ref) asked by \(who) — \(outcome)")
+        case .investigate(var cfg):
+            let slug = "\(cfg.owner)/\(cfg.repo)".lowercased()
+            guard let root = Store.commsRoot(slug) else {
+                return refused("comms-investigate", who, Store.notARoot(slug))
+            }
+            cfg.checkout = root.path
             // The sender is the ask's ban dimension: the dispatch gate drops it if they
             // are banned while it waits.
             return queue(RequestedWork(number: cfg.number, url: cfg.permalink,
-                                       author: cfg.banLogin, config: .investigate(cfg)),
+                                       author: cfg.banLogin, config: .investigate(cfg),
+                                       repo: slug),
                          verb: "comms-investigate", who: who, front: false)
         case .ban(let b):
             let reporter = Store.commsReporter
@@ -542,15 +609,16 @@ extension Store {
         guard let parts = commsKeyParts(key), parts.verb == AgentTaskQueue.reviewAction else {
             return []
         }
-        return [AgentTaskQueue.key(auditAction: reviewRequestAction, number: parts.number)]
+        return [AgentTaskQueue.key(auditAction: reviewRequestAction, item: parts.item)]
     }
 
     private static let reviewRequestAction = "review-req"
 
-    private static func commsKeyParts(_ key: String) -> (verb: String, number: Int)? {
-        let parts = key.split(separator: ":", maxSplits: 1)
-        guard parts.count == 2, let n = Int(parts[1]) else { return nil }
-        return (String(parts[0]), n)
+    /// A queue key about a PR or an issue, split; nil for any other (an investigation's).
+    private static func commsKeyParts(_ key: String) -> (verb: String, item: String, number: Int)? {
+        guard let item = AgentTaskQueue.item(ofKey: key),
+              let number = PRRef.splitItemKey(item)?.number else { return nil }
+        return (String(key.prefix(while: { $0 != ":" })), item, number)
     }
 
     /// Any review agent on that PR (the dispatch gate treats every agent on a PR as that
@@ -558,16 +626,16 @@ extension Store {
     /// (`RequestedWork.label`, `IssueWizard`).
     private func commsRow(doing key: String) -> AgentRow? {
         guard let parts = Store.commsKeyParts(key) else { return nil }
-        let n = parts.number
         switch parts.verb {
         case AgentTaskQueue.reviewAction, Store.reviewRequestAction:
             return agentRows.first {
-                $0.record.prNumber == n && $0.record.kind == AgentTaskQueue.reviewAction
+                $0.record.item == parts.item && $0.record.kind == AgentTaskQueue.reviewAction
             }
         case AgentTaskQueue.issuesAction:
             return agentRows.first {
                 $0.record.kind == AgentTaskQueue.issuesAction
-                    && $0.record.label.contains("Issues · #\(n) · ")
+                    && $0.record.label.contains(
+                        "Issues · \(PRRef.itemLabel(item: parts.item, roots: RepoPaths.roots.count)) · ")
             }
         default:
             return nil
@@ -587,13 +655,26 @@ extension Store {
         }
     }
 
-    private static func notOpen(_ noun: String, _ n: Int, _ lookup: CommsLookup) -> String {
+    private static func notOpen(_ noun: String, _ n: Int, _ root: PRRef.LocalRepo,
+                                _ lookup: CommsLookup) -> String {
+        let ref = commsRef(n, in: root)
         switch lookup {
-        case .found(let t): return "\(noun) #\(n) is \(t.state.lowercased()), so nothing was queued"
-        case .missing:      return "no \(noun) #\(n) in this repo, so nothing was queued"
+        case .found(let t): return "\(noun) \(ref) is \(t.state.lowercased()), so nothing was queued"
+        case .missing:
+            let place = RepoPaths.roots.count > 1 ? root.slug : "this repo"
+            return "no \(noun) #\(n) in \(place), so nothing was queued"
         case .unasked(let why):
-            return "couldn't ask GitHub about \(noun) #\(n) (\(why)), so nothing was queued"
+            return "couldn't ask GitHub about \(noun) \(ref) (\(why)), so nothing was queued"
         }
+    }
+
+    private static func notARoot(_ repo: String) -> String {
+        "\(repo) is no longer a repo root, so nothing was done"
+    }
+
+    private static func commsRef(_ n: Int, in root: PRRef.LocalRepo) -> String {
+        PRRef.itemLabel(item: PRRef.itemKey(owner: root.owner, repo: root.repo, number: n),
+                        roots: RepoPaths.roots.count)
     }
 
     enum CommsLookup {
@@ -617,26 +698,28 @@ extension Store {
     }
 
     /// The panel's last fetch (open work only) first, then `gh` for what it lacks: an
-    /// issue a filtered list left out, a PR opened since, a closed one.
+    /// issue a filtered list left out, a PR opened since, a closed one. The panel lists
+    /// one root at a time, so only an entry of `root`'s counts.
     ///
     /// `gh issue view` answers a PR's number with that PR, so only an `/issues/` url is
     /// an issue.
-    private func commsLookup(_ kind: CommsTargetKind, _ n: Int) async -> CommsLookup {
+    private func commsLookup(_ kind: CommsTargetKind, _ n: Int,
+                             in root: PRRef.LocalRepo) async -> CommsLookup {
+        let item = PRRef.itemKey(owner: root.owner, repo: root.repo, number: n)
         switch kind {
         case .pr:
-            if let pr = prs.first(where: { $0.number == n }) {
+            if let pr = prs.first(where: { PRRef.itemKey(url: $0.url) == item }) {
                 return .found(CommsTarget(number: n, url: pr.url, author: pr.author, isOpen: true,
                                           state: "OPEN"))
             }
         case .issue:
-            if let issue = issues.first(where: { $0.number == n }) {
+            if let issue = issues.first(where: { PRRef.itemKey(url: $0.url) == item }) {
                 return .found(CommsTarget(number: n, url: issue.url, author: issue.author,
                                           isOpen: true, state: "OPEN"))
             }
         }
-        let (owner, repo) = CoreAssets.repoCoordinates()
         let verb = kind == .pr ? "pr" : "issue"
-        let args = [verb, "view", String(n), "--repo", "\(owner)/\(repo)",
+        let args = [verb, "view", String(n), "--repo", root.slug,
                     "--json", "number,url,author,state"]
         let data: Data
         do {
@@ -778,7 +861,8 @@ extension Store {
     /// The monitor finds pings adopted (`queue`) that a commit's offers left out: each
     /// stays queued until it runs, its monitor no longer offering it (a withdrawn request,
     /// a failed spawn it has not found again). One adopted before this launch has no task
-    /// here to put back, so its ping says it left the queue rather than read "queued"
+    /// here to put back, and one whose repo left the roots would never be started
+    /// (`drainQueuedTasks`), so its ping says it left the queue rather than read "queued"
     /// forever.
     func commsKeptAdopted(offered: [QueuedAgentTask]) -> [QueuedAgentTask] {
         let owned = commsOwnedKeys
@@ -792,7 +876,7 @@ extension Store {
                   let verb = Store.commsKeyParts(key)?.verb,
                   !AgentTaskQueue.requestedActions.contains(verb),
                   commsRow(doing: key) == nil else { continue }
-            if let task = commsAdopted[key] {
+            if let task = commsAdopted[key], !queuedRootGone(key) {
                 if !kept.contains(where: { $0.id == key }) { kept.append(task) }
             } else {
                 lines.append(CommsEvent(kind: .action, id: item.message.id,
@@ -1032,7 +1116,8 @@ extension Dump {
             let reasons = m.reasons.map(\.rawValue).joined(separator: ",")
             print("- \(m.place) from \(m.sender) [\(reasons)] ts=\(m.ts)")
             print("    text:     \(Store.snippet(m.text, max: 120))")
-            print("    decision: \(d.action.rawValue) #\(d.number)  \"\(d.summary)\"  (\(d.reason))")
+            let ref = CommsSettings.ref(d.number, repo: d.targets.first?.repo ?? "")
+            print("    decision: \(d.action.rawValue) \(ref)  \"\(d.summary)\"  (\(d.reason))")
             print("    would:    \(commsEffectLine(effect))")
         }
         print("\n(dry run: nothing was queued, logged to the feed, or notified)")
@@ -1044,11 +1129,17 @@ extension Dump {
     private static func commsEffectLine(_ effect: CommsEffect) -> String {
         switch effect {
         case .none:            return "nothing (ping only)"
-        case .bump(let n):     return "move what is queued for #\(n) to the front of its band"
-        case .review(let n):   return "queue a review of PR #\(n), if open, at the front of its band"
-        case .fixIssue(let n): return "queue a fix of issue #\(n), if open, at the front of its band"
+        case .bump(let n, let repo):
+            return "move what is queued for \(CommsSettings.ref(n, repo: repo)) to the front of its band"
+        case .review(let n, let repo):
+            return "queue a review of PR \(CommsSettings.ref(n, repo: repo)), if open, "
+                + "at the front of its band"
+        case .fixIssue(let n, let repo):
+            return "queue a fix of issue \(CommsSettings.ref(n, repo: repo)), if open, "
+                + "at the front of its band"
         case .investigate(let cfg):
-            return "queue \"\(cfg.label)\" (investigate:\(cfg.number)), report \(cfg.reportPath)"
+            return "queue \"\(cfg.label)\" (investigate:\(cfg.number)) about "
+                + "\(cfg.owner)/\(cfg.repo), report \(cfg.reportPath)"
         case .ban(let b):
             return "ban \(b.handle) (\(b.userID)) for prompt injection: "
                 + "\"\(Store.snippet(b.evidence))\""

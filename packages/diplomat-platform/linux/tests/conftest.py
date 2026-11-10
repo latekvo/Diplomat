@@ -170,7 +170,7 @@ def nothing_closed(monkeypatch):
 
     The third fetch of a cycle, and the only one whose neutral answer is not the one a
     missing stub gives: unreachable, it reads as a poll failure and stands the whole
-    drain down (:meth:`Store._fetch_closed_prs`), which would silently take the queue
+    drain down (:meth:`Store._fetch_my_prs`), which would silently take the queue
     out of every test that is not about closure. An empty set is what those were
     written against; a test about a PR leaving the open state names the numbers itself.
     """
@@ -189,7 +189,7 @@ def no_open_issues(monkeypatch):
     from diplomat_app import autofixmonitor
 
     real = autofixmonitor.fetch_open_issues
-    monkeypatch.setattr(autofixmonitor, "fetch_open_issues", lambda: [])
+    monkeypatch.setattr(autofixmonitor, "fetch_open_issues", lambda *a, **k: [])
     yield real
 
 

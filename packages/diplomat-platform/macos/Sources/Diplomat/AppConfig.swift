@@ -25,7 +25,11 @@ import DiplomatCore
 /// the mesh snapshot both front-ends already exchange there. Every reader re-reads on
 /// use, so a change lands on the next spawn instead of the next process start.
 enum AppConfig {
-    /// The agents' repo root (Settings → REPO ROOT). Same key on the Linux side.
+    /// The repo roots the agents work in, the first being the primary. Same key on the
+    /// Linux side.
+    static let repoRootsKey = "repoRoots"
+    /// The single repo root a build before `repoRootsKey` wrote: read while that key is
+    /// absent or empty, and removed by every write of it.
     static let repoRootKey = "repoRoot"
     /// How many automatic agents this machine runs at once. Same key on the Linux side.
     static let autoTaskLimitKey = "autoTaskLimit"
@@ -124,6 +128,47 @@ enum AppConfig {
         var obj = read()
         if value.isEmpty { obj.removeValue(forKey: key) } else { obj[key] = value }
         return write(obj)
+    }
+
+    /// The stored repo roots, trimmed, blank entries dropped: `repoRoots` when it lists
+    /// any, else the legacy `repoRoot`, else none. Trimmed because a newline would break
+    /// the spawn's AppleScript string literal (the Linux twin's `.strip()` does the same).
+    static var repoRoots: [String] {
+        let obj = read()
+        func clean(_ raw: [Any]) -> [String] {
+            raw.compactMap { ($0 as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+        let listed = clean(obj[repoRootsKey] as? [Any] ?? [])
+        return listed.isEmpty ? clean([obj[repoRootKey] ?? ""]) : listed
+    }
+
+    /// Store the repo roots, dropping the legacy single root in the same write so the two
+    /// can never disagree. An empty list removes both.
+    @discardableResult
+    static func setRepoRoots(_ paths: [String]) -> Bool {
+        var obj = read()
+        obj.removeValue(forKey: repoRootKey)
+        if paths.isEmpty { obj.removeValue(forKey: repoRootsKey) } else { obj[repoRootsKey] = paths }
+        return write(obj)
+    }
+
+    /// The repo roots exactly as stored, blanks included, else the legacy `repoRoot` as a
+    /// one-entry list: what Settings edits. A blank row stays in place while it is typed
+    /// over, so editing a field cannot reorder the list.
+    static var editableRepoRoots: [String] {
+        let obj = read()
+        let listed = (obj[repoRootsKey] as? [Any] ?? []).compactMap { $0 as? String }
+        if !listed.isEmpty { return listed }
+        let legacy = obj[repoRootKey] as? String ?? ""
+        return legacy.isEmpty ? [] : [legacy]
+    }
+
+    /// Store the list Settings edits; one with nothing but blanks removes both keys.
+    @discardableResult
+    static func setEditableRepoRoots(_ paths: [String]) -> Bool {
+        let blank = paths.allSatisfy { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return setRepoRoots(blank ? [] : paths)
     }
 
     /// `set` for a number, which has no "empty means remove" spelling of its own.

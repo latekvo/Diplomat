@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from test_autofix import _spawn_recorder, fake_probes, store  # noqa: F401 — fixture
 
-from diplomat_runtime import activity
+from diplomat_runtime import activity, core
 from diplomat_runtime.models import Filters, OpenIssue
 
 pytest.importorskip("PySide6")
@@ -24,11 +24,13 @@ NOW = datetime.now(timezone.utc)
 #: poll's drain starts nothing and the queue holds what the monitor put there.
 CAP_FULL = {90, 91}
 
+PRIMARY = "{owner}/{repo}".format(**core.config())
+
 
 def _filed(number: int, assoc: str = "NONE", *, minutes: float = 1, author: str = "",
            assignees=(), member_responded: bool = False) -> OpenIssue:
     at = NOW + timedelta(minutes=minutes)
-    return OpenIssue(number, f"Issue {number}", f"https://github.com/o/r/issues/{number}",
+    return OpenIssue(number, f"Issue {number}", f"https://github.com/{PRIMARY}/issues/{number}",
                      author or f"u{number}", assoc, at, at, 0, list(assignees), [],
                      member_responded)
 
@@ -74,7 +76,9 @@ def watched(store, monkeypatch):  # noqa: F811 — the shared Store fixture
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
                         lambda *a, **k: [])
-    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues", lambda: found)
+    store.asked = []
+    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues",
+                        lambda *repo: store.asked.append(repo) or found)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     store.found = found
     return store
@@ -92,10 +96,11 @@ def test_an_issue_filed_after_the_first_poll_is_queued_as_a_fix(watched):
     watched._autofix_poll_once()
 
     [ask] = watched.requested_work
-    assert (ask.key, ask.author, ask.url) == ("issues:7", "carol",
-                                              "https://github.com/o/r/issues/7")
+    assert (ask.key, ask.author, ask.url) == (f"issues:{PRIMARY}#7", "carol",
+                                              f"https://github.com/{PRIMARY}/issues/7")
+    assert ask.repo == PRIMARY and watched.asked[-1] == tuple(PRIMARY.split("/"))
     assert ask.config["target"] == "contributors"
-    assert [t.id for t in watched.queued_tasks] == ["issues:7"]
+    assert [t.id for t in watched.queued_tasks] == [f"issues:{PRIMARY}#7"]
     assert watched.queued_tasks[0].job.prompt == "PROMPT:issues:7"
     assert _feed("community-issue") == ["Issue #7 by @carol - fix queued"]
 
@@ -104,7 +109,7 @@ def test_an_issue_is_queued_once_even_after_its_ask_is_gone(watched):
     watched._autofix_poll_once()
     watched.found[:] = [_filed(7)]
     watched._autofix_poll_once()
-    watched.cancel_requested_work("issues:7")
+    watched.cancel_requested_work(f"issues:{PRIMARY}#7")
 
     watched._autofix_poll_once()
 
@@ -126,7 +131,7 @@ def test_switched_off_it_queues_nothing_and_restarts_from_the_next_scan(watched)
 
     watched.found.append(_filed(8, minutes=2))
     watched._autofix_poll_once()
-    assert [a.key for a in watched.requested_work] == ["issues:8"]
+    assert [a.key for a in watched.requested_work] == [f"issues:{PRIMARY}#8"]
 
 
 def test_a_banned_authors_issue_is_not_queued(watched, monkeypatch):
@@ -142,21 +147,26 @@ def test_a_banned_authors_issue_is_not_queued(watched, monkeypatch):
     assert _feed("ban-skip") == ["Issue #7 by @mallory - author is banned, not queued"]
 
 
-def test_a_failed_read_fails_the_poll_and_keeps_the_mark(watched, monkeypatch):
+def test_a_failed_read_is_logged_and_keeps_the_mark(watched, monkeypatch):
+    """Not a poll failure: nothing owed is read from it."""
     watched._autofix_poll_once()
 
-    def down():
+    def down(*repo):
         raise RuntimeError("gh: network down")
 
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues", down)
+    logged: list[str] = []
+    monkeypatch.setattr("diplomat_app.store.activity.log",
+                        lambda kind, event, text, *a, **k: logged.append(event))
     watched._autofix_poll_once()
-    assert "network down" in (watched.autofix_poll_error or "")
+    assert watched.autofix_poll_error is None
+    assert logged.count("root-read-failed") == 1
 
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues",
-                        lambda: watched.found)
+                        lambda *repo: watched.found)
     watched.found[:] = [_filed(7)]
     watched._autofix_poll_once()
-    assert [a.key for a in watched.requested_work] == ["issues:7"]
+    assert [a.key for a in watched.requested_work] == [f"issues:{PRIMARY}#7"]
 
 
 def test_an_issue_a_sweep_already_queued_is_not_asked_for_twice(watched):
@@ -168,7 +178,7 @@ def test_an_issue_a_sweep_already_queued_is_not_asked_for_twice(watched):
 
     watched._autofix_poll_once()
 
-    assert [a.key for a in watched.requested_work] == ["issues:7"]
+    assert [a.key for a in watched.requested_work] == [f"issues:{PRIMARY}#7"]
     assert _feed("community-issue") == []
 
 
@@ -188,4 +198,4 @@ def test_an_unreadable_mark_restarts_the_baseline_instead_of_failing_polls(watch
     assert watched.requested_work == []
     watched.found.append(_filed(8, minutes=2))
     watched._autofix_poll_once()
-    assert [a.key for a in watched.requested_work] == ["issues:8"]
+    assert [a.key for a in watched.requested_work] == [f"issues:{PRIMARY}#8"]

@@ -20,6 +20,25 @@ from diplomat_runtime.autofix import (
     decide,
     retry_delay,
 )
+from diplomat_runtime.prref import LocalRepo
+
+
+SLUG = "o/r"
+ROOT = LocalRepo("o", "r", "/src/r")
+
+
+def item(n: int) -> str:
+    return f"{SLUG}#{n}"
+
+
+@pytest.fixture(autouse=True)
+def _fixture_root(monkeypatch):
+    """The fixture repo as the one root, standing for the configured repo: a monitor
+    dispatches only work in a root, and the mesh takes only the configured repo's."""
+    from diplomat_runtime import review
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [ROOT])
+    monkeypatch.setattr(review, "mesh_checkout", lambda: ROOT.path)
 
 
 # MARK: - compute_diff (edge trigger)
@@ -29,7 +48,7 @@ def _snap(number=1, mergeable="MERGEABLE", review_decision="", unresolved=0, i_o
     return PRSnapshot(
         number=number,
         title=f"PR {number}",
-        url=f"https://x/pr/{number}",
+        url=f"https://github.com/{SLUG}/pull/{number}",
         is_draft=False,
         mergeable=mergeable,
         review_decision=review_decision,
@@ -41,38 +60,119 @@ def _snap(number=1, mergeable="MERGEABLE", review_decision="", unresolved=0, i_o
 def test_first_sighting_is_silent():
     events, fps = compute_diff({}, [_snap(mergeable="CONFLICTING", unresolved=3)])
     assert events == []  # never fire on a PR we've never seen before
-    assert fps[1].mergeable == "CONFLICTING"
+    assert fps[item(1)].mergeable == "CONFLICTING"
 
 
 def test_conflict_transition_fires_once():
-    prior = {1: PRFingerprint("MERGEABLE", "", 0)}
+    prior = {item(1): PRFingerprint("MERGEABLE", "", 0)}
     events, _ = compute_diff(prior, [_snap(mergeable="CONFLICTING")])
     assert ("conflict", ) == tuple(k for k, _ in events)
 
 
 def test_still_conflicting_does_not_refire():
-    prior = {1: PRFingerprint("CONFLICTING", "", 0)}
+    prior = {item(1): PRFingerprint("CONFLICTING", "", 0)}
     events, _ = compute_diff(prior, [_snap(mergeable="CONFLICTING")])
     assert events == []
 
 
 def test_unknown_mergeable_carries_prior_forward():
-    prior = {1: PRFingerprint("CONFLICTING", "", 0)}
+    prior = {item(1): PRFingerprint("CONFLICTING", "", 0)}
     events, fps = compute_diff(prior, [_snap(mergeable="UNKNOWN")])
     assert events == []  # not re-fired
-    assert fps[1].mergeable == "CONFLICTING"  # conflict state preserved, not lost
+    assert fps[item(1)].mergeable == "CONFLICTING"  # conflict state preserved, not lost
 
 
 def test_more_threads_fires_review():
-    prior = {1: PRFingerprint("MERGEABLE", "", 1)}
+    prior = {item(1): PRFingerprint("MERGEABLE", "", 1)}
     events, _ = compute_diff(prior, [_snap(unresolved=2)])
     assert ("review", ) == tuple(k for k, _ in events)
 
 
 def test_new_changes_requested_fires_review():
-    prior = {1: PRFingerprint("MERGEABLE", "", 0)}
+    prior = {item(1): PRFingerprint("MERGEABLE", "", 0)}
     events, _ = compute_diff(prior, [_snap(review_decision="CHANGES_REQUESTED")])
     assert ("review", ) == tuple(k for k, _ in events)
+
+
+# MARK: - two repos, one number
+#
+# GitHub numbers each repo on its own, so #1 of one repo root and #1 of another are
+# two PRs. Keyed by number they are one: the first repo's state answers for the second.
+
+OTHER = "o/other"
+
+
+def _other(number=1, **kw) -> PRSnapshot:
+    return dataclasses.replace(_snap(number, **kw),
+                               url=f"https://github.com/{OTHER}/pull/{number}")
+
+
+def test_a_pr_of_another_repo_is_a_first_sighting_not_a_transition():
+    prior = {f"{OTHER}#1": PRFingerprint("MERGEABLE", "", 0)}
+    events, fps = compute_diff(prior, [_snap(mergeable="CONFLICTING", unresolved=3)])
+    assert events == [] and set(fps) == {item(1)}
+
+
+def test_one_poll_tells_two_repos_prs_of_one_number_apart():
+    prior = {item(1): PRFingerprint("MERGEABLE", "", 0),
+             f"{OTHER}#1": PRFingerprint("MERGEABLE", "", 0)}
+    events, fps = compute_diff(prior, [_snap(mergeable="CONFLICTING"), _other()])
+    assert [(k, s.item) for k, s in events] == [("conflict", item(1))]
+    assert (fps[item(1)].mergeable, fps[f"{OTHER}#1"].mergeable) == (
+        "CONFLICTING", "MERGEABLE")
+
+
+def test_a_snapshot_whose_link_names_no_pr_is_passed_over():
+    snap = dataclasses.replace(_snap(mergeable="CONFLICTING"), url="https://x/pr/1")
+    assert compute_diff({}, [snap]) == ([], {})
+
+
+def test_the_queue_prices_a_row_against_its_own_repos_pr_only():
+    mine, theirs = item(7), f"{OTHER}#7"
+    assert autofix.still_owed("conflicts", mine, {mine}, set(), set())
+    assert not autofix.still_owed("conflicts", mine, {theirs}, set(), set())
+    assert not autofix.still_owed("review-reply", mine, set(), {theirs}, set())
+    assert autofix.still_owed("review-req", mine, set(), set(), {theirs})
+    assert not autofix.still_owed("review-req", mine, set(), set(), {mine})
+
+
+def test_a_conclusion_is_its_own_repos_request():
+    from diplomat_runtime import agentstate as A
+
+    def run(run_id, url):
+        return A.RunRecord(run_id=run_id, dispatched_at=0.0, pr_number=11, pr_url=url,
+                           kind="review", ledger_key=f"{autofix.WORK_REVIEW_REQ}:x")
+
+    runs = [run("a", "https://github.com/o/r/pull/11"),
+            run("b", f"https://github.com/{OTHER}/pull/11")]
+    verdicts = {"a": A.Resolution("a", A.FINISHED, "r", reported=True),
+                "b": A.Resolution("b", A.FINISHED, "pid absent")}
+    assert autofix.concluded(runs, verdicts) == {item(11)}
+    book = {item(11): ReviewAttempt("s", 0.0, 1), f"{OTHER}#11": ReviewAttempt("s", 0.0, 1)}
+    stamped = autofix.conclude(book, {item(11)}, 50.0)
+    assert (stamped[item(11)].concluded_at, stamped[f"{OTHER}#11"].concluded_at) == (
+        50.0, None)
+
+
+def test_a_queue_key_names_its_item_and_an_investigation_none():
+    assert autofix.item_of_key(autofix.queue_key("review-req", "o/r#7")) == "o/r#7"
+    assert autofix.item_of_key("investigate:1508284197000015") is None
+    assert autofix.item_of_key("review:7") is None
+    assert autofix.item_of_key("nonsense") is None
+
+
+def test_an_ask_is_keyed_by_its_repo_and_an_investigation_by_its_ts():
+    def ask(action, repo):
+        return autofix.RequestedWork(number=7, url="u", author="", repo=repo,
+                                     config={"kind": action})
+
+    assert ask("review", "O/R").key == "review:o/r#7"
+    assert ask("review", "O/R").item == "o/r#7"
+    assert ask("issues", OTHER).key == f"issues:{OTHER}#7"
+    assert (ask("investigate", "").key, ask("investigate", "").item) == (
+        "investigate:7", None)
+    back = autofix.RequestedWork.from_json(ask("review", OTHER).to_json())
+    assert back.repo == OTHER and back.key == f"review:{OTHER}#7"
 
 
 # MARK: - retry backoff + decide
@@ -126,6 +226,7 @@ def test_only_a_review_request_run_its_runner_reported_over_concludes():
 
     def run(run_id, kind, pr):
         return A.RunRecord(run_id=run_id, dispatched_at=0.0, pr_number=pr, kind="review",
+                           pr_url=f"https://github.com/{SLUG}/pull/{pr}",
                            ledger_key=f"{kind}:github.com/o/r#{pr}@abc")
 
     runs = [run("idle", autofix.WORK_REVIEW_REQ, 11), run("gone", autofix.WORK_REVIEW_REQ, 12),
@@ -133,17 +234,17 @@ def test_only_a_review_request_run_its_runner_reported_over_concludes():
     verdicts = {"idle": A.Resolution("idle", A.FINISHED, "r", reported=True),
                 "gone": A.Resolution("gone", A.FINISHED, "pid absent"),
                 "reply": A.Resolution("reply", A.FINISHED, "r", reported=True)}
-    assert autofix.concluded(runs, verdicts) == {11}
+    assert autofix.concluded(runs, verdicts) == {item(11)}
 
 
 def test_a_concluded_record_outlives_the_ceiling_only_while_its_request_is_owed():
-    book = {"11": ReviewAttempt("s", 0.0, 1), "13": ReviewAttempt("s", 0.0, 1)}
-    stamped = autofix.conclude(book, {11, 15}, 50.0)
-    assert stamped["11"].concluded_at == 50.0 and stamped["13"].concluded_at is None
-    assert "15" not in stamped, "a conclusion invents no record"
+    book = {item(11): ReviewAttempt("s", 0.0, 1), item(13): ReviewAttempt("s", 0.0, 1)}
+    stamped = autofix.conclude(book, {item(11), item(15)}, 50.0)
+    assert stamped[item(11)].concluded_at == 50.0 and stamped[item(13)].concluded_at is None
+    assert item(15) not in stamped, "a conclusion invents no record"
     late = autofix.RETRY_MAX_BACKOFF + 60
-    assert set(autofix.retained(stamped, {"11": "s", "13": "s"}, late)) == {"11"}
-    assert autofix.retained(stamped, {"11": "newer"}, late) == {}
+    assert set(autofix.retained(stamped, {item(11): "s", item(13): "s"}, late)) == {item(11)}
+    assert autofix.retained(stamped, {item(11): "newer"}, late) == {}
 
 
 # MARK: - ReviewRequest.owe_review
@@ -152,7 +253,8 @@ def test_a_concluded_record_outlives_the_ceiling_only_while_its_request_is_owed(
 def _req(requested_at=None, my_last_review_at=None, author_association="MEMBER",
          files=None, number=7, my_last_comment_at=None, author="bob"):
     return ReviewRequest(
-        number=number, title="t", url=f"https://x/pr/{number}", author=author,
+        number=number, title="t", url=f"https://github.com/{SLUG}/pull/{number}",
+        author=author,
         author_association=author_association, files=files or [],
         requested_at=requested_at, my_last_review_at=my_last_review_at,
         my_last_comment_at=my_last_comment_at,
@@ -329,6 +431,7 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
     deadline has its own scenarios in ``test_agent_state.py`` — and a test that wants it
     live says ``tokens=True``.
 
+    PRs are named by number, each one of the fixture repo (:func:`item`).
     ``live_prs`` are PRs with an agent this applet has no record of, as the legacy
     prompt-text scan finds them; each is given a tty and a screen, because without a
     screen such an agent can never be seen to finish its turn. ``idle_prs`` are the
@@ -346,9 +449,11 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
 
     live = (live_prs if isinstance(live_prs, A.Observation)
             else None if live_prs is None
-            else {pr: f"pts/{pr}" for pr in live_prs})
-    screens = {} if not isinstance(live, dict) else {
-        f"pts/{pr}": (AT_PROMPT if pr in idle_prs else WORKING) for pr in live}
+            else {item(pr): f"pts/{pr}" for pr in live_prs})
+    screens = {} if live_prs is None or isinstance(live_prs, A.Observation) else {
+        f"pts/{pr}": (AT_PROMPT if pr in idle_prs else WORKING) for pr in live_prs}
+    if merged is not None and not isinstance(merged, A.Observation):
+        merged = {item(pr) for pr in merged}
     screens.update(tails or {})
     # Bound out here: the store passes its own carried-forward reading as `tokens`, and
     # what this stub answers with is the test's, not the store's.
@@ -449,7 +554,7 @@ def test_the_poll_still_runs_with_both_monitors_off(store, monkeypatch):
     store._poll_lock.release()
 
     assert fetched == [1] and calls == []
-    assert [t.id for t in store.queued_tasks] == ["conflicts:8"]
+    assert [t.id for t in store.queued_tasks] == ["conflicts:o/r#8"]
 
 
 def test_conflict_dispatch_and_backoff(store, monkeypatch):
@@ -458,7 +563,7 @@ def test_conflict_dispatch_and_backoff(store, monkeypatch):
     snaps = [_snap(number=42, mergeable="CONFLICTING")]
     # Seed a prior fingerprint so it's not a first-sighting (edge is a no-op for
     # conflicts anyway; the level-triggered reconciler does the work).
-    store._save_fingerprints({42: PRFingerprint("MERGEABLE", "", 0)})
+    store._save_fingerprints({item(42): PRFingerprint("MERGEABLE", "", 0)})
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: snaps)
 
     store._poll_my_prs(snaps)
@@ -476,7 +581,7 @@ def test_in_flight_dedup(store, monkeypatch):
     store.review_requests_enabled = False
     calls = _spawn_recorder(monkeypatch, finish=False)  # agent still running
     snaps = [_snap(number=9, mergeable="CONFLICTING")]
-    store._save_fingerprints({9: PRFingerprint("MERGEABLE", "", 0)})
+    store._save_fingerprints({item(9): PRFingerprint("MERGEABLE", "", 0)})
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: snaps)
 
     store._poll_my_prs(snaps)
@@ -492,7 +597,7 @@ def test_review_request_verdict_gating(store, monkeypatch):
     # A clean PR by a trusted author → verdict allowed (final_pass=true in prompt).
     reqs = [_req(requested_at="2026-01-02", author_association="MEMBER", files=["a.py"])]
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs)
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 1 and "review" in calls[0]["prompt"]
     assert store.review_requests_handled == 1
 
@@ -502,7 +607,7 @@ def test_review_request_verdict_gating(store, monkeypatch):
                        files=["foo.skill.md"])]
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
                         lambda *a, **k: skill_reqs)
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 1  # dispatched (comments-only)
 
 
@@ -515,7 +620,7 @@ def test_unaddressed_count_and_ban_skip(store, monkeypatch):
     ]
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     # Dispatched + finished → no longer in-flight → counts as still unaddressed until
     # the reviewer resolves it (the reconciler will retry on the next poll).
     assert store.unaddressed_reviews == 1
@@ -535,17 +640,17 @@ def test_allowlist_keeps_an_unlisted_author_out_of_the_poll(store, monkeypatch):
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
     )
     store.review_allowlist_raw = "@Alice"
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 1                      # alice only
     assert calls[0]["prompt"].endswith(":8")    # her PR, not bob's #7
     assert store.review_requests_handled == 1
     assert store.unaddressed_reviews == 1       # alice's, retried; never bob's
-    assert store._load_attempts("reviewReqAttempts").keys() == {"8"}
+    assert store._load_attempts("reviewReqAttempts").keys() == {item(8)}
 
     # Clearing the list restores the default, and bob is owed again on the next poll.
     calls.clear()
     store.review_allowlist_raw = ""
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 1                      # bob; alice is inside her backoff
     assert store.unaddressed_reviews == 2
 
@@ -567,17 +672,17 @@ def test_an_excluded_request_is_dropped_where_a_held_one_would_queue(store, monk
     )
 
     store.review_allowlist_raw = "alice"
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     store.commit_queue()
     assert calls == []
-    assert [t.id for t in store.queued_tasks] == ["review-req:8"]   # never bob's
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#8"]   # never bob's
 
     # With no list, the same poll holds both — which is what makes the line above a
     # statement about the allowlist rather than about the hold.
     store.review_allowlist_raw = ""
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     store.commit_queue()
-    assert {t.id for t in store.queued_tasks} == {"review-req:7", "review-req:8"}
+    assert {t.id for t in store.queued_tasks} == {"review-req:o/r#7", "review-req:o/r#8"}
 
 
 def test_poll_error_surfaced_and_recovers(store, monkeypatch):
@@ -615,7 +720,7 @@ def test_build_prompt_failure_surfaces_as_poll_error_not_a_dead_worker(store, mo
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: []
     )
     snap = _snap(number=9, mergeable="CONFLICTING")           # a fresh conflict -> dispatch
-    store._save_fingerprints({9: PRFingerprint("MERGEABLE", "", 0)})
+    store._save_fingerprints({item(9): PRFingerprint("MERGEABLE", "", 0)})
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [snap])
 
     def boom_build(cfg):
@@ -742,7 +847,8 @@ def _mesh_store(monkeypatch, store, dispatch=None):
     monkeypatch.setattr(statefile, "node_running", lambda s=None: True)
     calls: list[tuple[str, str]] = []
 
-    def fake_dispatch(duty, prompt, target=None, api_key="", work_key="", timeout=60.0):
+    def fake_dispatch(duty, prompt, target=None, api_key="", work_key="", repo="",
+                      timeout=60.0):
         calls.append((duty, work_key))
         if dispatch is None:
             raise AssertionError("the mesh must not be consulted for this source")
@@ -783,7 +889,7 @@ def _poll_one_review(store, monkeypatch):
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: [_mesh_req()]
     )
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
 
 
 def test_review_request_runs_on_the_mesh(store, monkeypatch):
@@ -794,7 +900,7 @@ def test_review_request_runs_on_the_mesh(store, monkeypatch):
     _poll_one_review(store, monkeypatch)
     assert local == []                                     # ran on the mesh, not here
     assert calls == [("review", "review:github.com/o/r#7@abc123")]
-    assert list(store._load_attempts("reviewReqAttempts")) == ["7"]
+    assert list(store._load_attempts("reviewReqAttempts")) == [item(7)]
 
 
 def test_review_request_originates_without_assignment_standdown(store, monkeypatch):
@@ -807,7 +913,7 @@ def test_review_request_originates_without_assignment_standdown(store, monkeypat
     _poll_one_review(store, monkeypatch)
     assert calls == [("review", "review:github.com/o/r#7@abc123")]  # consulted, not stood down
     assert local == []
-    assert list(store._load_attempts("reviewReqAttempts")) == ["7"]
+    assert list(store._load_attempts("reviewReqAttempts")) == [item(7)]
 
 
 def test_review_request_suppressed_when_a_peer_owns_it(store, monkeypatch):
@@ -816,7 +922,7 @@ def test_review_request_suppressed_when_a_peer_owns_it(store, monkeypatch):
     _poll_one_review(store, monkeypatch)
     assert local == []                                     # a peer's agent owns the work
     # Recorded so we back off rather than re-poll the node every tick (still watching).
-    assert list(store._load_attempts("reviewReqAttempts")) == ["7"]
+    assert list(store._load_attempts("reviewReqAttempts")) == [item(7)]
 
 
 def test_review_request_falls_back_to_local_when_mesh_unreachable(store, monkeypatch):
@@ -1012,10 +1118,10 @@ def test_a_peer_run_is_never_retired_by_this_machines_process_table(store, monke
     from diplomat_runtime import agentstate as A
 
     register_run(1, placement=A.PLACEMENT_MESH_PEER, node="brick",
-                 work_key="review:1:sha", dispatched_at=time.time() - 3600)
+                 work_key="review:o/r#1:sha", dispatched_at=time.time() - 3600)
 
     # An empty local process table, and the claim still held: still running.
-    fake_probes(monkeypatch, processes={}, claims={"review:1:sha"})
+    fake_probes(monkeypatch, processes={}, claims={"review:o/r#1:sha"})
     assert store._auto_tasks_running() == 0, "a peer's agent spends the peer's budget"
     (row,) = store.running_tasks
     assert row.state == "running" and "brick" in row.reason
@@ -1059,7 +1165,10 @@ def test_where_the_mesh_placed_a_run_is_what_prices_it(store, monkeypatch):
 # MARK: - live-agent ps fallback (tracking-independent in-flight)
 
 
-def test_live_pr_numbers_parses_agents_only():
+ARGENT = "software-mansion/argent"
+
+
+def test_live_pr_items_parses_agents_only():
     dump = "\n".join(
         [
             # The spawning shell holds the unexpanded $(cat …), never the prompt.
@@ -1072,8 +1181,10 @@ def test_live_pr_numbers_parses_agents_only():
             "claude --dangerously-skip-permissions",
         ]
     )
-    assert autofix.live_pr_numbers(dump, "software-mansion", "argent") == {436, 369}
-    assert autofix.live_pr_numbers("", "software-mansion", "argent") == set()
+    assert autofix.live_pr_items(dump, {ARGENT}) == {f"{ARGENT}#436", f"{ARGENT}#369"}
+    assert autofix.live_pr_items(dump, {ARGENT, "other-org/other-repo"}) == {
+        f"{ARGENT}#436", f"{ARGENT}#369", "other-org/other-repo#99"}
+    assert autofix.live_pr_items("", {ARGENT}) == set()
 
 
 def test_in_flight_falls_back_to_live_ps_agents(store, monkeypatch):
@@ -1085,8 +1196,7 @@ def test_in_flight_falls_back_to_live_ps_agents(store, monkeypatch):
     store.review_requests_enabled = False
     calls = _spawn_recorder(monkeypatch, finish=False)
     snap = _snap(number=9, mergeable="CONFLICTING")
-    object.__setattr__(snap, "url", "https://github.com/o/r/pull/9")
-    store._save_fingerprints({9: PRFingerprint("MERGEABLE", "", 0)})
+    store._save_fingerprints({item(9): PRFingerprint("MERGEABLE", "", 0)})
     monkeypatch.setattr(
         "diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [snap]
     )
@@ -1436,7 +1546,7 @@ def test_an_agent_waiting_at_its_prompt_does_not_hold_a_bay():
     assert run({1, 2}, set(), set(), None) == 2       # no evidence ⇒ nothing freed
 
 
-def test_idle_pr_numbers_reads_the_pane_on_the_agents_own_tty():
+def test_idle_pr_items_reads_the_pane_on_the_agents_own_tty():
     """Which live agents are back at their prompt: the tty joins the `ps` line to the
     tmux pane showing that session, and the CLI's own interrupt hint says whether the
     turn is still running.
@@ -1457,33 +1567,31 @@ def test_idle_pr_numbers_reads_the_pane_on_the_agents_own_tty():
     at_prompt = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
     tails = {"pts/1": working, "pts/2": at_prompt}  # pts/3 has no pane at all
 
-    idle = autofix.idle_pr_numbers(dump, tails, "software-mansion", "argent")
-    assert idle == {22}, "only the agent whose own pane shows it at the prompt"
+    idle = autofix.idle_pr_items(dump, tails, {ARGENT})
+    assert idle == {f"{ARGENT}#22"}, "only the agent whose own pane shows it at the prompt"
     # No panes at all (tmux absent, or the dump failed) frees nothing.
-    assert autofix.idle_pr_numbers(dump, {}, "software-mansion", "argent") == set()
-    # A pane on a tty whose agent is on some other repo is not this repo's business.
-    assert autofix.idle_pr_numbers(dump, tails, "other-org", "other-repo") == set()
+    assert autofix.idle_pr_items(dump, {}, {ARGENT}) == set()
+    # A pane on a tty whose agent is on a repo that is no root is not our business.
+    assert autofix.idle_pr_items(dump, tails, {"other-org/other-repo"}) == set()
     # Only the agents' own panes are worth capturing — the tick that runs this must
     # not pay a `capture-pane` for every pane the developer happens to have open.
-    assert autofix.agent_ttys(dump, "software-mansion", "argent") == {"pts/1", "pts/2",
-                                                                     "pts/3"}
+    assert autofix.agent_ttys(dump, {ARGENT}) == {"pts/1", "pts/2", "pts/3"}
     # The argv scan reads the very same lines, so one `ps` pass answers both.
-    assert autofix.live_pr_numbers(dump, "software-mansion", "argent") == {11, 22, 33}
+    assert autofix.live_pr_items(dump, {ARGENT}) == {
+        f"{ARGENT}#11", f"{ARGENT}#22", f"{ARGENT}#33"}
 
 
 def test_the_agent_scans_still_read_a_ps_dump_with_no_tty_column():
-    """``live_pr_numbers`` predates both leading columns and is called on macOS
+    """``live_pr_items`` predates both leading columns and is called on macOS
     through the mesh node's own ``ps``; a dump whose first token is the command rather
     than a tty must still yield its PRs, and must not invent a tty that could match a
     real pane or an age that could pass for one."""
     dump = "claude Review PR #11 in software-mansion/argent. Use the `gh` CLI.\n"
-    assert autofix.live_pr_numbers(dump, "software-mansion", "argent") == {11}
-    assert autofix.agent_ttys(dump, "software-mansion", "argent") == {"claude"}
-    assert [a.elapsed for a in autofix.agent_lines(dump, "software-mansion",
-                                                   "argent")] == [None]
+    assert autofix.live_pr_items(dump, {ARGENT}) == {f"{ARGENT}#11"}
+    assert autofix.agent_ttys(dump, {ARGENT}) == {"claude"}
+    assert [a.elapsed for a in autofix.agent_lines(dump, {ARGENT})] == [None]
     # …and "claude" matches no pane, so nothing is ever read as idle off it.
-    assert autofix.idle_pr_numbers(dump, {"pts/1": "at the prompt"},
-                                   "software-mansion", "argent") == set()
+    assert autofix.idle_pr_items(dump, {"pts/1": "at the prompt"}, {ARGENT}) == set()
 
 
 def test_elapsed_seconds_reads_every_shape_of_ps_etime():
@@ -1516,18 +1624,16 @@ def test_an_agent_that_has_not_drawn_its_first_turn_is_not_idle():
         return f"pts/1    {etime} claude Review PR #11 in software-mansion/argent.\n"
 
     def idle(etime):
-        return autofix.idle_pr_numbers(dump(etime), {"pts/1": at_prompt},
-                                       "software-mansion", "argent")
+        return autofix.idle_pr_items(dump(etime), {"pts/1": at_prompt}, {ARGENT})
 
     assert grace == 45.0
     assert idle("00:02") == set()          # two seconds up: still booting
     assert idle("00:45") == set()          # exactly the grace is not yet past it
-    assert idle("00:46") == {11}           # past it, and the screen is believed
-    assert idle("12:00") == {11}
+    assert idle("00:46") == {f"{ARGENT}#11"}   # past it, and the screen is believed
+    assert idle("12:00") == {f"{ARGENT}#11"}
     # Live and counted the whole time — the grace holds a bay, it never hides an agent.
     for etime in ("00:02", "00:46"):
-        assert autofix.live_pr_numbers(dump(etime), "software-mansion",
-                                       "argent") == {11}
+        assert autofix.live_pr_items(dump(etime), {ARGENT}) == {f"{ARGENT}#11"}
 
 
 def test_clamp_auto_task_limit_holds_the_stepper_range():
@@ -1725,18 +1831,18 @@ def test_a_poll_dispatches_only_up_to_the_cap(store, monkeypatch):
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
     )
 
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == store.auto_task_limit == 2
 
     # A second poll while both are still running adds nothing.
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 2
 
     # Both agents finish → the cap frees up → the next poll takes the next two.
     for c in calls:
         with open(c["done"], "w") as fh:
             fh.write("0")
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 4
 
 
@@ -1759,7 +1865,7 @@ def test_a_review_run_that_finished_posting_nothing_is_not_dispatched_again(
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
                         lambda *a, **k: [req])
 
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
     assert len(calls) == 1
     (run,) = agentregistry.load()
     now = _time.time()
@@ -1775,10 +1881,10 @@ def test_a_review_run_that_finished_posting_nothing_is_not_dispatched_again(
     # Past every rung of the ladder, and past the ceiling the book is pruned at.
     key = "reviewReqAttempts"
     book = store._load_attempts(key)
-    book["7"] = dataclasses.replace(book["7"], last_dispatched_at=now - 4 * 3600)
+    book[item(7)] = dataclasses.replace(book[item(7)], last_dispatched_at=now - 4 * 3600)
     store._save_attempts(key, book)
-    store._poll_review_requests("o", "r")
-    store._poll_review_requests("o", "r")
+    store._poll_review_requests([ROOT])
+    store._poll_review_requests([ROOT])
 
     assert len(calls) == (2 if retried else 1)
     assert store.unaddressed_reviews == 0
@@ -2070,7 +2176,7 @@ def test_a_run_with_no_tty_is_closed_by_the_name_its_session_was_opened_under(
                           label="Auto · Review-req · #512")
     # An agent up on the PR, on no tty the scan could name — which is what makes this
     # run RUNNING for the deadline to overrule, and unreachable by the tty walk.
-    fake_probes(monkeypatch, live_prs=A.Observation.present({512: ""}), tokens=True)
+    fake_probes(monkeypatch, live_prs=A.Observation.present({item(512): ""}), tokens=True)
 
     t = store._agent_tick()
     assert [r.run_id for r in t.reapable] == [record.run_id], \
@@ -2184,7 +2290,7 @@ def test_the_poll_takes_the_merged_reading_the_top_rung_needs(store, monkeypatch
 
     taken = []
     monkeypatch.setattr("diplomat_app.probes.merged_prs",
-                        lambda prs: taken.append(prs) or A.Observation.present({7}))
+                        lambda prs: taken.append(prs) or A.Observation.present({item(7)}))
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     fake_probes(monkeypatch)
     monkeypatch.setattr(type(store), "effective_me", property(lambda self: ""))
@@ -2192,7 +2298,7 @@ def test_the_poll_takes_the_merged_reading_the_top_rung_needs(store, monkeypatch
     store._autofix_poll_once()
 
     assert taken, "the poll never asked which of the tracked PRs have landed"
-    assert store._merged_prs == A.Observation.present({7})
+    assert store._merged_prs == A.Observation.present({item(7)})
 
 
 def test_the_poll_reads_which_prs_landed_before_it_settles_the_agents(store, monkeypatch):
@@ -2288,11 +2394,11 @@ def test_the_budget_reading_is_taken_in_the_currencies_the_deadline_can_spend(
     run_under(801, "claude")
     run_under(802, "hermes", source=A.SOURCE_PANEL)
     run_under(803, "opencode", placement=A.PLACEMENT_MESH_PEER, node="brick",
-              work_key="review:803:sha")
+              work_key="review:o/r#803:sha")
     # No run directory, so no runner of its own — and left in, its "" would stand in
     # the selection and put a currency in the join that the rung cannot act on.
     agentregistry.save(agentregistry.load() + [
-        A.RunRecord(run_id="untracked:804", dispatched_at=time.time(), pr_number=804,
+        A.RunRecord(run_id="untracked:o/r#804", dispatched_at=time.time(), pr_number=804,
                     source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL, tty="pts/8",
                     untracked=True)])
 
@@ -2461,16 +2567,19 @@ def test_the_cap_spans_both_monitors(store, monkeypatch):
 # MARK: - the queue behind the cap
 
 
-def test_queue_key_names_the_verb_and_the_number():
+def test_queue_key_names_the_verb_and_the_item():
     """Stable across polls and restarts, which is what lets the operator's drag order
     outlive the list. Not the mesh work key: that one is scoped to a head sha, so a
     push during the wait would read as a different task."""
-    assert autofix.queue_key("conflicts", 7) == "conflicts:7"
+    assert autofix.queue_key("conflicts", item(7)) == "conflicts:o/r#7"
     # One PR can owe two monitors at once — a conflict AND an unaddressed review.
-    assert autofix.queue_key("review-req", 7) != autofix.queue_key("review-reply", 7)
-    # And the number is not even always a PR's: issue #7 and PR #7 are different work
-    # on different things, so a fix and a review of "7" must be two rows.
-    assert autofix.queue_key("issues", 7) != autofix.queue_key("review", 7)
+    assert (autofix.queue_key("review-req", item(7))
+            != autofix.queue_key("review-reply", item(7)))
+    # A fix and a review of one item are different work, so two rows.
+    assert autofix.queue_key("issues", item(7)) != autofix.queue_key("review", item(7))
+    # And #7 of another repo is another item.
+    assert autofix.queue_key("conflicts", "o/other#7") != autofix.queue_key(
+        "conflicts", item(7))
 
 
 def test_free_slots_never_go_negative():
@@ -2497,14 +2606,14 @@ def test_a_conflict_fix_sorts_last_whatever_the_arrangement_says():
     """The band outranks the arrangement — "always last" is not a default the operator
     can drag away from, because the next poll would re-band it and take it back."""
     order = autofix.queue_order
-    assert order(["conflicts:1", "review-req:2"], []) == ["review-req:2", "conflicts:1"]
-    assert (order(["conflicts:1", "review-req:2"], ["conflicts:1", "review-req:2"])
-            == ["review-req:2", "conflicts:1"])
+    assert order(["conflicts:o/r#1", "review-req:o/r#2"], []) == ["review-req:o/r#2", "conflicts:o/r#1"]
+    assert (order(["conflicts:o/r#1", "review-req:o/r#2"], ["conflicts:o/r#1", "review-req:o/r#2"])
+            == ["review-req:o/r#2", "conflicts:o/r#1"])
     # Within a band the arrangement still decides, and conflict fixes keep their own
     # order relative to each other.
-    assert (order(["conflicts:1", "conflicts:2", "review-req:3", "review-req:4"],
-                  ["review-req:4", "conflicts:2"])
-            == ["review-req:4", "review-req:3", "conflicts:2", "conflicts:1"])
+    assert (order(["conflicts:o/r#1", "conflicts:o/r#2", "review-req:o/r#3", "review-req:o/r#4"],
+                  ["review-req:o/r#4", "conflicts:o/r#2"])
+            == ["review-req:o/r#4", "review-req:o/r#3", "conflicts:o/r#2", "conflicts:o/r#1"])
     # A key with no verb (nothing the queue mints, but the saved list is read off
     # disk) bands with the ordinary work rather than sorting somewhere of its own.
     assert autofix.queue_band("a") == 0
@@ -2520,27 +2629,27 @@ def test_requested_work_waits_behind_the_monitors_and_ahead_of_a_conflict_fix():
     the read, where a Fix-issues sweep is our own backlog with nothing blocked on it —
     so a sweep of fifty issues never buries a review the operator also asked for."""
     order = autofix.queue_order
-    offered = ["conflicts:1", "investigate:6", "review:2", "review-req:3", "review-reply:4",
-               "issues:5"]
-    assert order(offered, []) == ["review-req:3", "review-reply:4",
-                                  "review:2", "issues:5", "investigate:6", "conflicts:1"]
+    offered = ["conflicts:o/r#1", "investigate:6", "review:o/r#2", "review-req:o/r#3", "review-reply:o/r#4",
+               "issues:o/r#5"]
+    assert order(offered, []) == ["review-req:o/r#3", "review-reply:o/r#4",
+                                  "review:o/r#2", "issues:o/r#5", "investigate:6", "conflicts:o/r#1"]
     # The arrangement cannot lift one out of its band: a saved list that drags the issue
     # fix ahead still drains the review before it, and one that drags the conflict fix
     # ahead of the investigation still runs it last.
-    assert order(offered, ["issues:5", "conflicts:1", "investigate:6", "review-req:3"]) == [
-        "review-req:3", "review-reply:4", "review:2", "issues:5", "investigate:6",
-        "conflicts:1"
+    assert order(offered, ["issues:o/r#5", "conflicts:o/r#1", "investigate:6", "review-req:o/r#3"]) == [
+        "review-req:o/r#3", "review-reply:o/r#4", "review:o/r#2", "issues:o/r#5", "investigate:6",
+        "conflicts:o/r#1"
     ]
-    assert (autofix.queue_band("review:2"), autofix.queue_band("issues:5"),
+    assert (autofix.queue_band("review:o/r#2"), autofix.queue_band("issues:o/r#5"),
             autofix.queue_band("investigate:6"),
-            autofix.queue_band("conflicts:1")) == (1, 2, 3, 4)
+            autofix.queue_band("conflicts:o/r#1")) == (1, 2, 3, 4)
     # An investigation is its own band, so a drag into the issue band is refused.
-    assert (autofix.queue_reorder(["issues:5", "investigate:6"], "investigate:6", "issues:5")
-            == ["issues:5", "investigate:6"])
+    assert (autofix.queue_reorder(["issues:o/r#5", "investigate:6"], "investigate:6", "issues:o/r#5")
+            == ["issues:o/r#5", "investigate:6"])
     # Review is its own band ahead of issues, so it drains first however the two were
     # arranged.
-    assert (order(["review:1", "issues:2"], ["issues:2"])
-            == ["review:1", "issues:2"])
+    assert (order(["review:o/r#1", "issues:o/r#2"], ["issues:o/r#2"])
+            == ["review:o/r#1", "issues:o/r#2"])
 
 
 def test_still_owed_retires_only_what_this_poll_can_answer():
@@ -2588,20 +2697,21 @@ def test_queue_reorder_can_reach_every_position():
     # Nor does one across the band boundary, in either direction: the arrangement it
     # would write down is one `queue_order` undoes on the next poll, so the drag is
     # refused outright instead of landing and springing back.
-    both = ["review-req:1", "review-req:2", "conflicts:3"]
-    assert ro(both, "conflicts:3", "review-req:1") == both
-    assert ro(both, "review-req:1", "conflicts:3") == both
+    both = ["review-req:o/r#1", "review-req:o/r#2", "conflicts:o/r#3"]
+    assert ro(both, "conflicts:o/r#3", "review-req:o/r#1") == both
+    assert ro(both, "review-req:o/r#1", "conflicts:o/r#3") == both
     # Within the conflict band a drag works like any other.
-    assert (ro(["conflicts:1", "conflicts:2"], "conflicts:1", "conflicts:2")
-            == ["conflicts:2", "conflicts:1"])
+    assert (ro(["conflicts:o/r#1", "conflicts:o/r#2"], "conflicts:o/r#1", "conflicts:o/r#2")
+            == ["conflicts:o/r#2", "conflicts:o/r#1"])
     # The requested-review band is a band like the other three: a drag out of it is
     # refused whichever side it is heading for.
-    three = ["review-req:1", "review:2", "conflicts:3"]
-    assert ro(three, "review:2", "review-req:1") == three
-    assert ro(three, "review:2", "conflicts:3") == three
+    three = ["review-req:o/r#1", "review:o/r#2", "conflicts:o/r#3"]
+    assert ro(three, "review:o/r#2", "review-req:o/r#1") == three
+    assert ro(three, "review:o/r#2", "conflicts:o/r#3") == three
     # A requested review and a requested issue fix are separate bands, so a drag
     # between them is refused like any other cross-band drag.
-    assert ro(["review:1", "issues:2"], "issues:2", "review:1") == ["review:1", "issues:2"]
+    assert ro(["review:o/r#1", "issues:o/r#2"], "issues:o/r#2", "review:o/r#1") == [
+        "review:o/r#1", "issues:o/r#2"]
 
 
 def test_work_over_the_cap_waits_in_the_queue(store, monkeypatch):
@@ -2621,7 +2731,7 @@ def test_work_over_the_cap_waits_in_the_queue(store, monkeypatch):
 
     assert len(calls) == 2
     assert [t.id for t in store.queued_tasks] == [
-        autofix.queue_key("review-req", n) for n in (3, 4, 5)
+        autofix.queue_key("review-req", item(n)) for n in (3, 4, 5)
     ]
     # Every slot of the cap is spent, so the panel draws no empty bays beside them.
     assert store.free_auto_slots == 0
@@ -2649,7 +2759,7 @@ def test_a_switched_off_monitor_queues_what_it_finds(store, monkeypatch):
     store._autofix_poll_once()
 
     assert calls == []  # nothing starts by itself
-    assert {t.id for t in store.queued_tasks} == {"conflicts:1", "review-req:2"}
+    assert {t.id for t in store.queued_tasks} == {"conflicts:o/r#1", "review-req:o/r#2"}
     assert all(store.is_paused(t.job.counter) for t in store.queued_tasks)
     assert store.drainable_tasks == []  # the drain may not touch a paused monitor's work
 
@@ -2658,7 +2768,7 @@ def test_a_switched_off_monitor_queues_what_it_finds(store, monkeypatch):
     # a 3-minute delay dressed as a switch.
     store._autofix_poll_once()
     assert calls == []
-    assert {t.id for t in store.queued_tasks} == {"conflicts:1", "review-req:2"}
+    assert {t.id for t in store.queued_tasks} == {"conflicts:o/r#1", "review-req:o/r#2"}
     # A paused monitor is not a saturated device: the cap's own bays are still open,
     # and the feed says nothing about capacity.
     assert store.free_auto_slots == 2
@@ -2688,7 +2798,7 @@ def test_a_conflict_fix_queues_behind_every_review_however_it_was_found(store, m
     # The reply and the review requested of me first, in the order they were found;
     # the conflict fix last, though its monitor ran before both of them.
     assert [t.id for t in store.queued_tasks] == [
-        "review-reply:2", "review-req:3", "conflicts:1",
+        "review-reply:o/r#2", "review-req:o/r#3", "conflicts:o/r#1",
     ]
 
 
@@ -2709,7 +2819,7 @@ def test_the_drain_drops_a_conflict_fix_the_work_ahead_of_it_already_did(store, 
 
     store._autofix_poll_once()
     assert [c["prompt"] for c in calls] == ["PROMPT:conflicts:7"]
-    assert [t.id for t in store.queued_tasks] == ["conflicts:8"]
+    assert [t.id for t in store.queued_tasks] == ["conflicts:o/r#8"]
     with open(calls[0]["done"], "w") as fh:
         fh.write("0")  # #7's agent exits → the bay the queue was waiting for
 
@@ -2732,9 +2842,9 @@ def test_the_queue_is_refreshed_even_with_no_room_to_start_anything(store, monke
     its first entry — so the refresh has to run over the whole queue before the
     capacity guard, not over the part a free bay happens to let it reach."""
     store.queued_tasks = [
-        autofix.QueuedTask("conflicts:8",
+        autofix.QueuedTask("conflicts:o/r#8",
                            _job(number=8, action="conflicts", counter="conflicts"), 1),
-        autofix.QueuedTask("conflicts:7",
+        autofix.QueuedTask("conflicts:o/r#7",
                            _job(number=7, action="conflicts", counter="conflicts"), 1),
     ]
     monkeypatch.setattr(type(store), "_auto_tasks_running", lambda self: 99)  # no bays
@@ -2745,7 +2855,7 @@ def test_the_queue_is_refreshed_even_with_no_room_to_start_anything(store, monke
         [_snap(number=7, mergeable="CONFLICTING"), _snap(number=8)], closed=set()
     )
 
-    assert [t.id for t in store.queued_tasks] == ["conflicts:7"]
+    assert [t.id for t in store.queued_tasks] == ["conflicts:o/r#7"]
 
 
 def test_the_drain_drops_every_row_whose_pr_has_left_the_open_state(store, monkeypatch):
@@ -2756,15 +2866,15 @@ def test_the_drain_drops_every_row_whose_pr_has_left_the_open_state(store, monke
     capacity, over the whole queue rather than the part a free bay lets the drain
     reach."""
     store.queued_tasks = [
-        autofix.QueuedTask("review-req:3",
+        autofix.QueuedTask("review-req:o/r#3",
                            _job(number=3, action="review-req",
                                 counter="review_requests"), 1),
-        autofix.QueuedTask("review-reply:4",
+        autofix.QueuedTask("review-reply:o/r#4",
                            _job(number=4, action="review-reply",
                                 counter="my_reviews"), 1),
-        autofix.QueuedTask("conflicts:7",
+        autofix.QueuedTask("conflicts:o/r#7",
                            _job(number=7, action="conflicts", counter="conflicts"), 1),
-        autofix.QueuedTask("conflicts:8",
+        autofix.QueuedTask("conflicts:o/r#8",
                            _job(number=8, action="conflicts", counter="conflicts"), 1),
     ]
     monkeypatch.setattr(type(store), "_auto_tasks_running", lambda self: 99)  # no bays
@@ -2775,10 +2885,10 @@ def test_the_drain_drops_every_row_whose_pr_has_left_the_open_state(store, monke
         [_snap(number=4, mergeable="CONFLICTING", i_owe=2),
          _snap(number=7, mergeable="CONFLICTING"),
          _snap(number=8, mergeable="CONFLICTING")],
-        closed={3, 4, 7},
+        closed={item(3), item(4), item(7)},
     )
 
-    assert [t.id for t in store.queued_tasks] == ["conflicts:8"]
+    assert [t.id for t in store.queued_tasks] == ["conflicts:o/r#8"]
 
 
 def test_a_pr_missing_from_the_closed_read_is_a_pr_that_is_still_open(store, monkeypatch):
@@ -2786,15 +2896,15 @@ def test_a_pr_missing_from_the_closed_read_is_a_pr_that_is_still_open(store, mon
     about the queue. So absence has to read as "open", or one busy afternoon of merges
     would push a waiting PR off the end of the read and empty the panel of it."""
     store.queued_tasks = [
-        autofix.QueuedTask("review-req:3",
+        autofix.QueuedTask("review-req:o/r#3",
                            _job(number=3, action="review-req",
                                 counter="review_requests"), 1),
     ]
     monkeypatch.setattr(type(store), "_auto_tasks_running", lambda self: 99)
 
-    store._drain_queued_tasks([], closed={4, 5, 99})
+    store._drain_queued_tasks([], closed={item(4), item(5), item(99)})
 
-    assert [t.id for t in store.queued_tasks] == ["review-req:3"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#3"]
 
 
 def test_a_review_request_on_a_landed_pr_is_dropped_before_the_drain_can_spawn_it(
@@ -2813,14 +2923,14 @@ def test_a_review_request_on_a_landed_pr_is_dropped_before_the_drain_can_spawn_i
     store.auto_task_limit = 1
 
     store._autofix_poll_once()
-    assert [t.id for t in store.queued_tasks] == ["review-req:4"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#4"]
     with open(calls[0]["done"], "w") as fh:
         fh.write("0")  # #3's agent exits → the bay #4 has been waiting for
 
     # #4 merged in the meantime. GitHub stops requesting a review on a merged PR, so
     # this cycle's request fetch is down to #3 — which the drain has not read yet.
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_closed_prs",
-                        lambda *a, **k: {4})
+                        lambda *a, **k: {item(4)})
     monkeypatch.setattr(
         "diplomat_app.autofixmonitor.fetch_review_requests",
         lambda *a, **k: [_req(number=3, requested_at="2026-01-02")],
@@ -2847,7 +2957,7 @@ def test_a_failed_closed_pr_read_holds_the_drain(store, monkeypatch):
 
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_closed_prs", boom)
     store.queued_tasks = [
-        autofix.QueuedTask("review-req:3",
+        autofix.QueuedTask("review-req:o/r#3",
                            _job(number=3, action="review-req",
                                 counter="review_requests"), 1),
     ]
@@ -2855,7 +2965,7 @@ def test_a_failed_closed_pr_read_holds_the_drain(store, monkeypatch):
     store._autofix_poll_once()
 
     assert calls == []  # a free bay, and nothing put in it
-    assert [t.id for t in store.queued_tasks] == ["review-req:3"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#3"]
     assert "gh timed out" in (store.autofix_poll_error or "")
 
 
@@ -2879,7 +2989,7 @@ def test_the_closed_pr_read_asks_for_closed_prs(nothing_closed, monkeypatch):
 
     monkeypatch.setattr("diplomat_runtime.gh.run", fake_run)
 
-    assert fetch_closed_prs("o", "r") == {41, 42}
+    assert fetch_closed_prs("o", "r") == {item(41), item(42)}
     assert "q=repo:o/r is:pr is:closed sort:updated-desc" in seen["args"]
 
 
@@ -2896,7 +3006,7 @@ def test_the_drain_still_starts_a_conflict_fix_the_branch_still_needs(store, mon
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: both)
 
     store._autofix_poll_once()
-    assert [t.id for t in store.queued_tasks] == ["conflicts:8"]
+    assert [t.id for t in store.queued_tasks] == ["conflicts:o/r#8"]
     with open(calls[0]["done"], "w") as fh:
         fh.write("0")
 
@@ -2920,7 +3030,7 @@ def test_a_review_request_is_drained_on_evidence_this_fetch_does_not_carry(store
     store.auto_task_limit = 1
 
     store._autofix_poll_once()
-    assert [t.id for t in store.queued_tasks] == ["review-req:4"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#4"]
     with open(calls[0]["done"], "w") as fh:
         fh.write("0")
 
@@ -2945,15 +3055,15 @@ def test_one_poll_offering_a_task_twice_queues_the_backoff_aware_one(store, monk
     monkeypatch.setattr(
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: []
     )
-    store._save_fingerprints({5: PRFingerprint("MERGEABLE", "", 0)})  # threads went up
+    store._save_fingerprints({item(5): PRFingerprint("MERGEABLE", "", 0)})  # threads went up
     store._save_attempts(
         "myReviewAttempts",
-        {"5": ReviewAttempt(autofix.STAMP_UNRESOLVED_REVIEW, _time.time() - 3600, 1)},
+        {item(5): ReviewAttempt(autofix.STAMP_UNRESOLVED_REVIEW, _time.time() - 3600, 1)},
     )
 
     store._autofix_poll_once()
 
-    assert [(t.id, t.attempt) for t in store.queued_tasks] == [("review-reply:5", 2)]
+    assert [(t.id, t.attempt) for t in store.queued_tasks] == [("review-reply:o/r#5", 2)]
 
 
 def test_a_switched_off_queue_starts_nothing_at_all(store, monkeypatch):
@@ -2975,7 +3085,7 @@ def test_a_switched_off_queue_starts_nothing_at_all(store, monkeypatch):
     store._autofix_poll_once()
 
     assert calls == []
-    assert [t.id for t in store.queued_tasks] == ["review-req:1", "review-req:2"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#1", "review-req:o/r#2"]
     assert store.drainable_tasks == []
     # A held queue is not a saturated device: both bays are open, and the feed says
     # nothing about capacity — the operator switched this off on purpose.
@@ -3033,9 +3143,9 @@ def test_the_drain_runs_the_queue_in_the_operators_order(store, monkeypatch):
     assert [c["prompt"] for c in calls] == ["PROMPT:review:1", "PROMPT:review:2"]
 
     # Send the last of the three waiting tasks to the front, then free one slot.
-    store.move_queued_task("review-req:5", "review-req:3")
+    store.move_queued_task("review-req:o/r#5", "review-req:o/r#3")
     assert [t.id for t in store.queued_tasks] == [
-        "review-req:5", "review-req:3", "review-req:4",
+        "review-req:o/r#5", "review-req:o/r#3", "review-req:o/r#4",
     ]
     with open(calls[0]["done"], "w") as fh:
         fh.write("0")
@@ -3057,7 +3167,7 @@ def test_a_queued_dispatch_records_the_attempt_the_monitor_would_have(store, mon
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
     )
     store._autofix_poll_once()
-    assert len(calls) == 2 and [t.id for t in store.queued_tasks] == ["review-req:3"]
+    assert len(calls) == 2 and [t.id for t in store.queued_tasks] == ["review-req:o/r#3"]
 
     # Free both slots and let the drain take #3; its agent then finishes without
     # leaving the review, so the PR is owed again on the next poll.
@@ -3069,7 +3179,7 @@ def test_a_queued_dispatch_records_the_attempt_the_monitor_would_have(store, mon
     with open(calls[-1]["done"], "w") as fh:
         fh.write("0")
 
-    record = store._load_attempts("reviewReqAttempts")["3"]
+    record = store._load_attempts("reviewReqAttempts")[item(3)]
     assert record.requested_at == "2026-01-02"  # the monitor's own stamp, not a second one
     assert record.attempts == 1
     # …so the 5-minute backoff is what holds the retry, rather than nothing at all.
@@ -3111,7 +3221,7 @@ def test_execute_now_says_why_when_nothing_opens(store, monkeypatch):
     """The row vanished and no terminal opened; a refusal the operator can't see is
     indistinguishable from a silent failure."""
     entry = autofix.QueuedTask(
-        id="review:9", job=_job(number=9, counter="my_reviews"), attempt=1
+        id="review:o/r#9", job=_job(number=9, counter="my_reviews"), attempt=1
     )
     _spawn_recorder(monkeypatch, finish=False)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
@@ -3130,14 +3240,14 @@ def test_execute_now_answers_the_press_before_the_worker_starts(store, monkeypat
     placement, a terminal. If the row only changed when that came back, the press would
     look like it had done nothing (or, worse, deleted the task)."""
     entry = autofix.QueuedTask(
-        id="review-req:3", job=_job(number=3, counter="review_requests"), attempt=1
+        id="review-req:o/r#3", job=_job(number=3, counter="review_requests"), attempt=1
     )
     store.queued_tasks = [entry]
     # The worker is stubbed out entirely, so what is asserted below is the state the
     # CALLING thread — the one that handled the click — left behind.
     monkeypatch.setattr(type(store), "_execute_queued_task", lambda self, e: None)
 
-    store.execute_queued_task_async("review-req:3")
+    store.execute_queued_task_async("review-req:o/r#3")
 
     assert store.queued_tasks == [] and store.starting_tasks == [entry]
 
@@ -3156,35 +3266,35 @@ def test_a_task_being_started_stays_on_the_panel(store, monkeypatch):
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
     )
     store._autofix_poll_once()
-    assert [t.id for t in store.queued_tasks] == ["review-req:3", "review-req:4"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#3", "review-req:o/r#4"]
 
     starting = store.queued_tasks[0]
     store._begin_starting(starting)
-    assert [t.id for t in store.queued_tasks] == ["review-req:4"]
-    assert [t.id for t in store.starting_tasks] == ["review-req:3"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#4"]
+    assert [t.id for t in store.starting_tasks] == ["review-req:o/r#3"]
     # Nor is it the drain's any more — it is already being started.
-    assert [t.id for t in store.drainable_tasks] == ["review-req:4"]
+    assert [t.id for t in store.drainable_tasks] == ["review-req:o/r#4"]
 
     # The work stays owed until the spawn answers and the attempt is recorded, so the
     # poll re-offers it. Published as queued as well, it would be two rows for one
     # task — the second promising a start that is already under way.
     store._autofix_poll_once()
-    assert [t.id for t in store.queued_tasks] == ["review-req:4"]
-    assert [t.id for t in store.starting_tasks] == ["review-req:3"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#4"]
+    assert [t.id for t in store.starting_tasks] == ["review-req:o/r#3"]
 
     # A start that comes to nothing is re-offered, so its key keeps its PLACE in the
     # arrangement rather than coming back at the end of a queue the operator ordered.
     store._end_starting(starting.id)
     store._autofix_poll_once()
-    assert [t.id for t in store.queued_tasks] == ["review-req:3", "review-req:4"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#3", "review-req:o/r#4"]
 
 
 def test_the_drain_skips_a_task_the_operator_started_under_it(store, monkeypatch):
     """The drain waits on a spawn per task, so the list moves while it walks: an
     "execute now" during one of those takes that row off the queue and starts it
     there and then. Reaching it anyway would dispatch one unit of work twice."""
-    a = autofix.QueuedTask("review-req:3", _job(number=3, counter="review_requests"), 1)
-    b = autofix.QueuedTask("review-req:4", _job(number=4, counter="review_requests"), 1)
+    a = autofix.QueuedTask("review-req:o/r#3", _job(number=3, counter="review_requests"), 1)
+    b = autofix.QueuedTask("review-req:o/r#4", _job(number=4, counter="review_requests"), 1)
     store.queued_tasks = [a, b]
     ran = []
 
@@ -3198,14 +3308,14 @@ def test_the_drain_skips_a_task_the_operator_started_under_it(store, monkeypatch
 
     store._drain_queued_tasks([], closed=set())  # neither fetch answers a review request
 
-    assert ran == ["review-req:3"]
+    assert ran == ["review-req:o/r#3"]
 
 
 def test_a_starting_task_holds_the_bay_it_is_about_to_fill(store):
     """Drawn free, the panel would stand a row that is launching next to the empty
     slot it is launching into — one row more than the cap allows."""
     entry = autofix.QueuedTask(
-        id="review-req:3", job=_job(number=3, counter="review_requests"), attempt=1
+        id="review-req:o/r#3", job=_job(number=3, counter="review_requests"), attempt=1
     )
     store.queued_tasks = [entry]
     assert store.auto_task_limit == 2 and store.free_auto_slots == 2
@@ -3223,7 +3333,7 @@ def test_a_dispatch_that_raises_leaves_no_row_starting(store, monkeypatch):
     those throwing would otherwise strand a row that never resolves, over work nothing
     re-offers. The same throw before the band existed cost only the poll it was in."""
     entry = autofix.QueuedTask(
-        id="review-req:3", job=_job(number=3, counter="review_requests"), attempt=1
+        id="review-req:o/r#3", job=_job(number=3, counter="review_requests"), attempt=1
     )
     store.queued_tasks = [entry]
 
@@ -3251,12 +3361,12 @@ def test_the_queue_is_rebuilt_from_live_evidence_every_poll(store, monkeypatch):
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: owed
     )
     store._autofix_poll_once()
-    assert [t.id for t in store.queued_tasks] == ["review-req:3", "review-req:4"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#3", "review-req:o/r#4"]
 
     # #3 gets its review by hand — GitHub stops offering it.
     owed = [r for r in owed if r.number != 3]
     store._autofix_poll_once()
-    assert [t.id for t in store.queued_tasks] == ["review-req:4"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#4"]
 
 
 def test_a_failed_cycle_freezes_the_queue_rather_than_emptying_it(store, monkeypatch):
@@ -3273,7 +3383,7 @@ def test_a_failed_cycle_freezes_the_queue_rather_than_emptying_it(store, monkeyp
     )
     store._autofix_poll_once()
     queued = list(store.queued_tasks)
-    assert [t.id for t in queued] == ["review-req:3"]
+    assert [t.id for t in queued] == ["review-req:o/r#3"]
 
     def boom(*a, **k):
         raise RuntimeError("gh: not authenticated")
@@ -3309,17 +3419,17 @@ def test_the_arrangement_outlives_the_list_and_the_applet(store, monkeypatch):
         "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: reqs
     )
     store._autofix_poll_once()
-    store.move_queued_task("review-req:5", "review-req:3")
+    store.move_queued_task("review-req:o/r#5", "review-req:o/r#3")
 
     fresh = Store()  # the applet restarts: no queue, but the arrangement is there
     fresh.me = "alice"
     assert fresh.queued_tasks == []
-    assert fresh.queued_task_order[:3] == ["review-req:5", "review-req:3", "review-req:4"]
+    assert fresh.queued_task_order[:3] == ["review-req:o/r#5", "review-req:o/r#3", "review-req:o/r#4"]
     fresh.pr_autofix_enabled = False
     fake_probes(monkeypatch, live_prs={1, 2})
     fresh._autofix_poll_once()
     assert [t.id for t in fresh.queued_tasks] == [
-        "review-req:5", "review-req:3", "review-req:4",
+        "review-req:o/r#5", "review-req:o/r#3", "review-req:o/r#4",
     ]
 
 
@@ -3355,7 +3465,7 @@ def test_a_spawn_failure_stops_the_drain_rather_than_clearing_the_queue(store, m
     # The first was tried and failed; the second was never touched, so it is still in
     # the panel rather than dropped alongside it.
     assert attempted == ["PROMPT:review:3"]
-    assert [t.id for t in store.queued_tasks] == ["review-req:4"]
+    assert [t.id for t in store.queued_tasks] == ["review-req:o/r#4"]
 
 
 def test_a_panel_spawn_is_never_queued(store, monkeypatch):
@@ -3596,7 +3706,7 @@ def test_a_finished_runs_agent_is_not_rebooked_against_its_pr(store, monkeypatch
     now = _time.time()
     rec = register_run(701, pid=7001, tty="pts/71", dispatched_at=now - 60)
     fake_probes(monkeypatch, processes=agent_alive(7001, tty="pts/71", elapsed=60),
-                live_prs=A.Observation.present({701: "pts/71"}),
+                live_prs=A.Observation.present({item(701): "pts/71"}),
                 tails={"pts/71": AT_PROMPT},
                 activity={rec.run_id: ("idle", now - 5)})
 
@@ -3605,7 +3715,7 @@ def test_a_finished_runs_agent_is_not_rebooked_against_its_pr(store, monkeypatch
 
     (heir,) = agentregistry.load()
     assert (heir.run_id, heir.pid, heir.dispatched_at, heir.released) == \
-        ("untracked:701", 7001, rec.dispatched_at, True)
+        ("untracked:o/r#701", 7001, rec.dispatched_at, True)
     assert not store._in_flight("https://github.com/o/r/pull/701")
     assert store.free_auto_slots == 2
 
@@ -3693,7 +3803,7 @@ def test_an_untracked_runs_stillness_clock_runs_across_ticks(store, monkeypatch)
     store._settle_agents()
 
     (first,) = agentregistry.load()
-    assert first.run_id == "untracked:337", "the synthesized record must be kept"
+    assert first.run_id == "untracked:o/r#337", "the synthesized record must be kept"
     assert first.quiet_since is None, \
         "the tick that makes a record has no screen of its own to compare against yet"
 
@@ -3722,7 +3832,7 @@ def test_an_untracked_agents_wedged_window_is_closed(store, monkeypatch):
     assert killed == ["pts/337"]
     assert agentregistry.load() == [], "and the record it was kept for is dropped"
     assert [e.detail for e in activity.read() if e.action == "kill-device"] == \
-        ["closed untracked:337's window — its screen has not changed in 20m"], \
+        ["closed untracked:o/r#337's window — its screen has not changed in 20m"], \
         "a closed window reaches the operator only through the feed"
 
 
@@ -3870,7 +3980,7 @@ def test_a_synthesized_run_gone_from_the_scan_is_not_reaped_either(store, monkey
     _age_the_stillness(A.QUIET_TIMEOUT + 5)
 
     fake_probes(monkeypatch, live_prs=set())
-    got = store._agent_tick().states["untracked:337"]
+    got = store._agent_tick().states["untracked:o/r#337"]
     assert got.state == A.FINISHED and "gone from the process table" in got.reason, \
         f"the run must end by the scan, or this pins nothing: {got.reason!r}"
 
@@ -3888,7 +3998,7 @@ def test_an_untracked_record_does_not_outlive_its_agent(store, monkeypatch):
     url = "https://github.com/o/r/pull/337"
     fake_probes(monkeypatch, live_prs={337})
     store._settle_agents()
-    assert [r.run_id for r in agentregistry.load()] == ["untracked:337"]
+    assert [r.run_id for r in agentregistry.load()] == ["untracked:o/r#337"]
     assert store._in_flight(url), "a live agent's PR is deduped against"
 
     fake_probes(monkeypatch, live_prs=set())  # its agent exited
@@ -3913,7 +4023,7 @@ def test_a_kept_records_tty_follows_its_prs_sighting_onto_disk(store, monkeypatc
     assert before.tty == "pts/337"
     assert before.quiet_since is not None, "the first window's clock is running"
 
-    fake_probes(monkeypatch, live_prs=A.Observation.present({337: "pts/9"}),
+    fake_probes(monkeypatch, live_prs=A.Observation.present({item(337): "pts/9"}),
                 tails={"pts/9": WORKING})
     store._settle_agents()
 
@@ -3948,7 +4058,7 @@ def test_the_merged_probe_is_never_asked_about_an_untracked_runs_pr(store, monke
 
     store.refresh_merged_statuses()
 
-    assert asked == [{512}]
+    assert asked == [{item(512)}]
 
 
 def test_an_unreadable_scan_does_not_drop_an_untracked_record(store, monkeypatch):
@@ -3964,7 +4074,7 @@ def test_an_unreadable_scan_does_not_drop_an_untracked_record(store, monkeypatch
     fake_probes(monkeypatch, live_prs=A.Observation.unavailable("ps failed"))
     store._settle_agents()
 
-    assert [r.run_id for r in agentregistry.load()] == ["untracked:337"]
+    assert [r.run_id for r in agentregistry.load()] == ["untracked:o/r#337"]
 
 
 def test_drawing_the_rows_retires_nothing_and_writes_nothing(store, monkeypatch,
@@ -3975,7 +4085,7 @@ def test_drawing_the_rows_retires_nothing_and_writes_nothing(store, monkeypatch,
     finding the lines in ~/.diplomat afterwards."""
     from diplomat_runtime import activity, agentregistry
 
-    register_run(512, pid=4242, tty="pts/3", ledger_key="review:512:abc",
+    register_run(512, pid=4242, tty="pts/3", ledger_key="review:o/r#512:abc",
                  dispatched_at=time.time() - 600)
     fake_probes(monkeypatch, processes={})  # its process is gone: retirable
     before = len(activity.read(500))

@@ -116,6 +116,93 @@ def test_a_registered_host_answers_all_six(monkeypatch):
     assert host.at_job_capacity(["one", "two"]) is True
 
 
+def test_a_host_that_takes_the_work_key_is_handed_it(monkeypatch):
+    monkeypatch.delenv("SZPONTNET_SPAWN", raising=False)
+    seen: list = []
+
+    class _Keyed(host.Host):
+        def run_job(self, prompt, done_path, work_key=None):
+            seen.append((prompt, done_path, work_key))
+            return "/p"
+
+    class _Swallows(host.Host):
+        def run_job(self, prompt, done_path, **extra):
+            seen.append(extra)
+            return "/p"
+
+    host.set_host(_Keyed())
+    spawnjob.spawn_job("work", done_path="/d", work_key="review:github.com/o/r#1@sha")
+    spawnjob.spawn_job("work")
+    host.set_host(_Swallows())
+    spawnjob.spawn_job("work", work_key="k")
+    assert seen == [("work", "/d", "review:github.com/o/r#1@sha"), ("work", None, None),
+                    {"work_key": "k", "repo": None}]
+
+
+def test_a_host_is_handed_each_keyword_its_signature_names(monkeypatch):
+    monkeypatch.delenv("SZPONTNET_SPAWN", raising=False)
+    seen: list = []
+
+    class _Both(host.Host):
+        def run_job(self, prompt, done_path, work_key=None, repo=None):
+            seen.append((work_key, repo))
+            return "/p"
+
+    class _RepoOnly(host.Host):
+        def run_job(self, prompt, done_path, repo=None):
+            seen.append(repo)
+            return "/p"
+
+    host.set_host(_Both())
+    spawnjob.spawn_job("work", work_key="k", repo="o/r")
+    host.set_host(_RepoOnly())
+    spawnjob.spawn_job("work", work_key="k", repo="o/r")
+    assert seen == [("k", "o/r"), "o/r"]
+
+
+def test_a_positional_only_parameter_of_the_same_name_is_not_a_keyword(monkeypatch):
+    """Passed by keyword, it would raise and decline the job on every machine."""
+    monkeypatch.delenv("SZPONTNET_SPAWN", raising=False)
+    seen: list = []
+
+    class _Positional(host.Host):
+        def run_job(self, prompt, done_path, work_key=None, repo=None, /):
+            seen.append((work_key, repo))
+            return "/p"
+
+    host.set_host(_Positional())
+    assert spawnjob.spawn_job("work", work_key="k", repo="o/r") == "/p"
+    assert seen == [(None, None)]
+
+
+def test_a_host_written_before_the_work_key_still_runs_jobs(monkeypatch):
+    """A third-party host with the two-argument signature predates the keyword; handed
+    it, the call raises and the job is declined on every machine that host runs."""
+    monkeypatch.delenv("SZPONTNET_SPAWN", raising=False)
+    impl = _Recording()
+    host.set_host(impl)
+    assert spawnjob.spawn_job("work", done_path="/d", work_key="k") == "/staged/prompt.txt"
+    impl.run_job = lambda prompt, done: impl.jobs.append((prompt, done)) or "/q"
+    assert spawnjob.spawn_job("again", work_key="k") == "/q"
+    assert impl.jobs == [("work", "/d"), ("again", None)]
+
+
+def test_a_hosts_signature_is_read_once(monkeypatch):
+    monkeypatch.delenv("SZPONTNET_SPAWN", raising=False)
+    read: list = []
+    real = host.inspect.signature
+    monkeypatch.setattr(host.inspect, "signature", lambda f: read.append(f) or real(f))
+
+    class _Once(host.Host):
+        def run_job(self, prompt, done_path, work_key=None):
+            return "/p"
+
+    host.set_host(_Once())
+    for _ in range(3):
+        spawnjob.spawn_job("work", work_key="k")
+    assert read == [_Once.run_job]
+
+
 def test_registering_late_still_takes_effect():
     """The resolved model is cached — it is read on every placement resolution and
     every advert — so registering after something has already asked must drop that

@@ -134,13 +134,15 @@ def job_status(item: dict, waiting: set[str]) -> str:
 
 
 def action_chip(decision: dict | None) -> tuple[str, str]:
-    """The triage's pill on a ping: its word (and number) and tint."""
+    """The triage's pill on a ping: its word (and number, as ``CommsSettings.ref``
+    writes it) and tint."""
     if not decision:
         return "AWAITING TRIAGE", _GREY
     action = str(decision.get("action", "none"))
     word = _ACTION_WORD.get(action, action)
     if decision.get("number"):
-        word += f" #{decision['number']}"
+        repo = str(((decision.get("targets") or [{}])[0] or {}).get("repo") or "")
+        word += f" {repo.rpartition('/')[2]}#{decision['number']}"
     return word.upper(), {"none": _GREY, "injection": _RED, "question": _PURPLE}.get(
         action, _GREEN)
 

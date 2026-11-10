@@ -84,9 +84,9 @@ enum SpawnTerminal: String, CaseIterable, Identifiable {
 /// `$(cat …)` so we never have to wrestle a multi-line prompt through nested
 /// shell + AppleScript quoting.
 enum AgentSpawner {
-    /// The local checkout the agent works in — Settings → REPO ROOT (see
-    /// `RepoPaths.agentRepo` for the full resolution). Read per spawn, so changing it
-    /// takes effect on the next agent without a restart. The `cd` is best-effort
+    /// The checkout an agent works in when its job names none: the primary of Settings →
+    /// REPO ROOTS (see `RepoPaths.agentRepo` for the full resolution). Read per spawn, so
+    /// changing it takes effect on the next agent without a restart. The `cd` is best-effort
     /// (`;`, not `&&`) so `claude` still starts if the path is wrong.
     static var repoPath: String { RepoPaths.agentRepo }
 
@@ -144,9 +144,12 @@ enum AgentSpawner {
         case osascript(code: Int32, stderr: String)
         case neverStarted(terminal: String, waited: TimeInterval, tokenItem: String = "")
         case noToken(item: String)
+        case headless
 
         var errorDescription: String? {
             switch self {
+            case .headless:
+                return "a headless self-test opens no agent terminal"
             case .write(let m): return "Couldn't stage prompt: \(m)"
             case .osascript(let code, let stderr):
                 let s = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -162,6 +165,39 @@ enum AgentSpawner {
                 return "no agent token in Keychain item '\(item)'"
             }
         }
+    }
+
+    /// The headless modes that open real terminal windows on purpose, and close them:
+    /// the tracking test (`TrackTest`) and the focus test (`Dump.spawnFocusTest`).
+    static let terminalModes: Set<String> = ["DIPLOMAT_TRACK_TEST", "DIPLOMAT_SPAWN_FOCUS_TEST"]
+
+    /// Whether a process started with `env` may open a terminal: the live app, or one
+    /// running no mode but `terminalModes`. Any other self-test that reaches a dispatch
+    /// past a free bay would otherwise start a real agent.
+    static func mayOpenTerminals(in env: [String: String]) -> Bool {
+        !Headless.isActive(in: env.filter { !terminalModes.contains($0.key) })
+    }
+
+    static let mayOpenTerminals = mayOpenTerminals(in: ProcessInfo.processInfo.environment)
+
+    private static let refusalLock = NSLock()
+    private static var refusals = 0
+
+    /// How many terminals `refuseHeadless` turned away in this process.
+    static var refusedTerminals: Int {
+        refusalLock.lock(); defer { refusalLock.unlock() }
+        return refusals
+    }
+
+    /// Throw `SpawnError.headless`, counted and said on stderr, where
+    /// `mayOpenTerminals` is false.
+    static func refuseHeadless() throws {
+        guard !mayOpenTerminals else { return }
+        refusalLock.lock()
+        refusals += 1
+        refusalLock.unlock()
+        FileHandle.standardError.write(Data("spawn-tripwire: refused a terminal\n".utf8))
+        throw SpawnError.headless
     }
 
     /// What a run's directory staged for its agent: the four paths the spawn is built
@@ -272,11 +308,12 @@ enum AgentSpawner {
 
     /// Open a new terminal window running `command`, returning the captured
     /// (windowID, sessionID, tty). The execution path shared by the real spawn and
-    /// the tracking self-test (`DIPLOMAT_TRACK_TEST`). `restoreFocusTo` bounces
-    /// focus back to that bundle id (background spawns) instead of activating the
-    /// terminal.
+    /// the tracking self-test (`DIPLOMAT_TRACK_TEST`), so the one place a self-test is
+    /// refused a terminal (`refuseHeadless`). `restoreFocusTo` bounces focus back to
+    /// that bundle id (background spawns) instead of activating the terminal.
     static func runSpawn(command: String, terminal term: SpawnTerminal,
                          restoreFocusTo restoreBID: String? = nil) throws -> (String, String, String) {
+        try refuseHeadless()
         if term == .ghostty { return try runGhosttySpawn(command: command, restoreFocusTo: restoreBID) }
         let captured = try runOsascriptCapturing(
             appleScript(for: term, shellCommand: command, restoreFocusTo: restoreBID))
@@ -844,7 +881,8 @@ struct ReviewWizardView: View {
             finalPass: finalPass,
             softApprove: softApprove,
             specificAuthor: specificAuthor)
-        cfg.localRepos = store.localRepos
+        cfg.home = store.selectedRoot
+        cfg.localRepos = store.wizardRepos
         return cfg
     }
 
@@ -966,7 +1004,8 @@ struct ReviewWizardView: View {
 
     /// A hint under the PR field when a pasted URL points at an unknown repo.
     private var prWarning: String? {
-        config.prRef.mismatchWarning("PR", anyListed: !store.localRepos.isEmpty)
+        config.prRef.mismatchWarning("PR", home: store.selectedRoot.slug,
+                                     anyListed: store.wizardRepos.count > 1)
     }
 
     private var scopeRow: some View {
@@ -1045,7 +1084,8 @@ struct ReviewWizardView: View {
                             // Only a single PR is a session the mesh could place: a
                             // sweep opens none, it queues one review per PR for this
                             // machine's own cap to start.
-                            routable: target == .specific && config.checkout == nil,
+                            routable: target == .specific
+                                && store.meshRoutable(checkout: config.checkout),
                             action: spawn)
     }
 
@@ -1054,7 +1094,9 @@ struct ReviewWizardView: View {
     /// queued a PR at a time and each of those rows is labelled by its own
     /// `Store.RequestedWork`.
     private var trackingLabel: String {
-        return "Review · \(config.prRef.label ?? "PR") · \(depth.title)"
+        let (owner, repo) = config.targetRepo
+        let item = config.prRef.number.map { store.itemLabel(owner: owner, repo: repo, number: $0) }
+        return "Review · \(item ?? "PR") · \(depth.title)"
     }
 
     /// The one PR this run concerns — the open-in-browser fallback when its window
@@ -1116,11 +1158,12 @@ struct ReviewWizardView: View {
         }
         // Mesh path: hand the job to the local node (it picks the executor, with
         // failover) instead of opening a terminal here — mirrors the Linux wizards.
-        if MeshSpawnRow.isLive(store), useMesh, cfg.checkout == nil {
+        if MeshSpawnRow.isLive(store), useMesh, store.meshRoutable(checkout: cfg.checkout) {
             meshDispatching = true
             status = "Dispatching over the mesh…"
             AuditLog.log("panel", "review", "\(trackingLabel) · via mesh")
-            store.meshDispatch(duty: "review", prompt: cfg.buildPrompt()) { results, err in
+            store.meshDispatch(duty: "review", prompt: cfg.buildPrompt(),
+                               repo: "\(cfg.targetRepo.owner)/\(cfg.targetRepo.repo)") { results, err in
                 meshDispatching = false
                 status = MeshSpawn.summarize(results, error: err)
             }
@@ -1133,7 +1176,7 @@ struct ReviewWizardView: View {
         let job = Store.AgentJob(kind: "review", auditAction: "review",
                                  label: trackingLabel, prompt: cfg.buildPrompt(),
                                  prURL: trackingPRURL,
-                                 prNumber: cfg.checkout == nil ? cfg.prRef.number : nil,
+                                 prNumber: store.isRootCheckout(cfg.checkout) ? cfg.prRef.number : nil,
                                  authorLogin: reviewedAuthorLogin, duty: "review",
                                  workKey: "", counter: nil, directory: cfg.checkout)
         status = "Launching \(term.title)…"

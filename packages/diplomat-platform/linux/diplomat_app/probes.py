@@ -15,16 +15,14 @@ bays, never an agent declared finished.
 
 from __future__ import annotations
 
-import json
 import os
-import re
 import shutil
 import subprocess
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from diplomat_runtime import apiwatch, core, runner, tmuxwatch
+from diplomat_runtime import apiwatch, runner, tmuxwatch
 from diplomat_runtime.agentstate import UNAVAILABLE, Evidence, Observation, ProcInfo, RunRecord
 
 #: How long a probe's answer is reused. The resolver re-runs for every question the
@@ -195,10 +193,12 @@ def ttys_running_an_agent(now: float) -> Observation:
         {p.tty for p in table.value.values() if p.is_agent and p.tty})
 
 
-def live_agents(dump: Observation, sessions: dict[int, str] | None = None,
+def live_agents(dump: Observation, slugs: set[str],
+                sessions: dict[str, str] | None = None,
                 held_pids: frozenset[int] | set[int] = frozenset(),
                 by_pid: dict[int, str] | None = None) -> Observation:
-    """PR number -> the tty of an agent visible in ``ps`` by its prompt text.
+    """Item key -> the tty of an agent visible in ``ps`` by its prompt text, on a PR
+    of a repo in ``slugs`` (:func:`autofix.prompt_items`).
 
     The pre-registry identity mechanism, kept for the two questions a pid cannot
     answer: agents this applet has no record of at all
@@ -211,7 +211,7 @@ def live_agents(dump: Observation, sessions: dict[int, str] | None = None,
 
     An OpenCode 2.x TUI carries only ``--session <id>`` in its argv, so its prompt is
     read from the service (:func:`opencodeapi.scan_text`). ``sessions``, when given, is
-    filled with PR number -> the session of the 2.x TUI that is that PR's sighting, and
+    filled with item key -> the session of the 2.x TUI that is that PR's sighting, and
     none for a PR first seen on another agent's line: the row's state is read from that
     session (:func:`adopt`), so it has to be the agent on the row's tty. ``by_pid``,
     when given, is filled with pid -> the session of the 2.x TUI at that pid.
@@ -224,17 +224,14 @@ def live_agents(dump: Observation, sessions: dict[int, str] | None = None,
     run that needs this scan's is one with no pid, and named its neighbour's it has no
     screen at all.
     """
-    from diplomat_runtime import opencodeapi
+    from diplomat_runtime import autofix, opencodeapi
 
     if not dump.ok:
         return Observation.unavailable(dump.reason)
-    cfg = core.config()
-    pattern = re.compile(
-        r"PR #(\d+) in " + re.escape(f"{cfg['owner']}/{cfg['repo']}"))
-    out: dict[int, str] = {}
-    held: dict[int, str] = {}
-    own_sessions: dict[int, str] = {}
-    held_sessions: dict[int, str] = {}
+    out: dict[str, str] = {}
+    held: dict[str, str] = {}
+    own_sessions: dict[str, str] = {}
+    held_sessions: dict[str, str] = {}
     # Parsed here against THIS dump's columns rather than through
     # `autofix.agent_lines`, which reads the tty as the FIRST token of a
     # `tty=,etime=,args=` dump. That is still right for its own caller (the mesh
@@ -254,8 +251,7 @@ def live_agents(dump: Observation, sessions: dict[int, str] | None = None,
         session_id = opencodeapi.session_arg(args)
         if session_id and by_pid is not None and pid.isdigit():
             by_pid[int(pid)] = session_id
-        for m in pattern.finditer(opencodeapi.scan_text(args)):
-            pr = int(m.group(1))
+        for pr in autofix.prompt_items(opencodeapi.scan_text(args), slugs):
             if pr in into:
                 continue
             into[pr] = "" if tty == "?" else tty.removeprefix("/dev/")
@@ -273,7 +269,7 @@ def live_agents(dump: Observation, sessions: dict[int, str] | None = None,
 _adopted: dict[str, str] = {}
 
 
-def adopt(records: list[RunRecord], sessions: dict[int, str],
+def adopt(records: list[RunRecord], sessions: dict[str, str],
           by_pid: dict[int, str]) -> None:
     """Give each untracked run the 2.x session the scan (:func:`live_agents`) found on
     its PR, so it is asked of the service and interrupted like a run this applet
@@ -284,7 +280,7 @@ def adopt(records: list[RunRecord], sessions: dict[int, str],
     for r in records:
         if not r.untracked:
             continue
-        session = (sessions.get(r.pr_number) if r.pid is None
+        session = (sessions.get(r.item) if r.pid is None
                    else by_pid.get(r.pid))
         if session:
             _adopted[r.run_id] = session
@@ -597,29 +593,30 @@ def mesh_claims(enabled: bool = True) -> Observation:
     return Observation.present(set(claims))
 
 
-def merged_prs(pr_numbers: set[int]) -> Observation:
-    """Which of these PRs GitHub calls MERGED — the one terminal outcome that
-    outranks anything a process is doing.
+def merged_prs(items: set[str]) -> Observation:
+    """Which of these PRs (item keys) GitHub calls MERGED — the one terminal outcome
+    that outranks anything a process is doing. Each is asked of its own repo.
 
     One ``gh`` call per PR, so this belongs on the slow refresh, not the 8-second
     tick. The reading is always PRESENT: a PR whose probe fails is simply absent from
     the answer, so a partial answer is still positive evidence about the PRs it
     covers, and an empty ask is a real "none of them".
     """
-    if not pr_numbers:
-        return Observation.present(set())
-    from diplomat_runtime import gh
-    cfg = core.config()
-    repo = f"{cfg['owner']}/{cfg['repo']}"
+    from diplomat_runtime.models import API
+    from diplomat_runtime.prref import split_item_key
+
     merged = set()
-    for n in sorted(pr_numbers):
+    for item in sorted(items):
+        split = split_item_key(item)
+        if split is None:
+            continue
+        (owner, repo), number = split[0].split("/", 1), split[1]
         try:
-            out = gh.run(["pr", "view", str(n), "--repo", repo, "--json", "state"])
-            state = json.loads(out).get("state")
+            state = API.fetch_pr_state(number, owner, repo)
         except Exception:  # noqa: BLE001 - a probe never raises into the tick
             continue
         if state == "MERGED":
-            merged.add(n)
+            merged.add(item)
     return Observation.present(merged)
 
 
@@ -675,10 +672,11 @@ def gather(records: list[RunRecord], now: float, *,
     # spawned since the last tick has not adopted one yet. Asking the records alone
     # would capture nothing for exactly the run that just started, and it would then
     # read as working for a whole tick longer than it was.
-    scan_sessions: dict[int, str] = {}
+    scan_sessions: dict[str, str] = {}
     by_pid: dict[int, str] = {}
     scan = _note("agent scan",
-                 live_agents(dump, scan_sessions,
+                 live_agents(dump, {r.slug.lower() for r in review.repo_roots()},
+                             scan_sessions,
                              held_pids={r.pid for r in records if r.pid is not None},
                              by_pid=by_pid),
                  now)

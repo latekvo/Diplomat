@@ -565,7 +565,7 @@ public enum TaskGrouper {
     /// The watched repo's open issues and PRs (`graphql/goal-candidates.graphql`), each body
     /// cut to `bodyChars`.
     static func fetch(bodyChars: Int) async throws -> [Candidate] {
-        try candidates(fromResponse: try await GH.graphql("goal-candidates", withRepo: true), bodyChars: bodyChars)
+        try candidates(fromResponse: try await GH.graphql("goal-candidates", repo: CoreAssets.repoCoordinates()), bodyChars: bodyChars)
     }
 
     static func candidates(fromResponse data: Data, bodyChars: Int) throws -> [Candidate] {

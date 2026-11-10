@@ -187,6 +187,7 @@ class WizardView(SpawnWizard):
             final_pass=self.final_pass.isChecked(),
             specific_author=self._specific_author,
             local_repos=self.store.local_repos,
+            home=self.store.selected_repo,
         )
 
     def _sync(self) -> None:
@@ -340,7 +341,10 @@ class WizardView(SpawnWizard):
 
     def _label(self) -> str:
         cfg = self._config()
-        scope = cfg.listed_scope or cfg.specific_pr.strip() or "PRs"
+        ref = cfg.single_ref
+        scope = (self.store.wizard_item_label(*cfg.target_repo, ref.number)
+                 if ref is not None and ref.number is not None
+                 else cfg.specific_pr.strip() or "PRs")
         return f"Review · {scope} · {cfg.depth}"
 
     def _author_login(self) -> str | None:

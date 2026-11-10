@@ -16,6 +16,7 @@ from diplomat_app.store import GoalOverlay, goal_overlay
 from diplomat_app.tasksview import TasksView
 from diplomat_runtime import agentregistry, agentstate, autofix, core, tasks
 from diplomat_runtime.autofix import PRSnapshot
+from diplomat_runtime.prref import LocalRepo
 from test_autofix import _spawn_recorder
 from test_tasks_store import _create, settle, watched
 from test_tasks_store import app, github, tstore  # noqa: F401 — fixtures
@@ -214,7 +215,7 @@ def test_a_proposed_goal_offers_its_three_answers(tstore, github, claude, no_age
     # Switching to auto starts its pass at once: the fix #1802 has no PR for yet.
     assert polls == ([1] if mode == "auto" else [])
     assert [r.key for r in tstore.requested_work] == (
-        ["issues:1802"] if mode == "auto" else [])
+        [f"issues:{_key(1802)}"] if mode == "auto" else [])
 
 
 def test_observe_auto_and_review_on_new_commits(tstore, github, no_agents, monkeypatch):
@@ -329,6 +330,41 @@ def test_the_plus_starts_a_fix_now_and_records_it(tstore, github, claude, no_age
     assert len(no_agents) == 1
 
 
+def _press_plus_among(store, github, monkeypatch, roots: list[LocalRepo]):
+    """The ``+`` on #1802 with ``roots`` as the repo roots: the jobs it dispatched and
+    the card errors it gave."""
+    from diplomat_runtime import review
+
+    task_id = _propose(store, github)
+    monkeypatch.setattr(review, "repo_roots", lambda: roots)
+    jobs, errors = [], []
+    monkeypatch.setattr(store, "dispatch_agent",
+                        lambda job, source, attempt=1: jobs.append(job) or "spawned")
+    store.tracked_task_edited.connect(lambda origin, why: errors.append(why))
+    _view, card = _expanded(store, task_id)
+    card.graph_rows[1][1].mouseReleaseEvent(_left_click())
+    settle(store)
+    return jobs, errors
+
+
+def test_the_plus_works_in_its_issues_root(tstore, github, claude, no_agents, monkeypatch):
+    cfg = core.config()
+    monkeypatch.setattr("diplomat_runtime.promptcore.build_prompt",
+                        lambda c: f"fix in {(c.get('home') or {}).get('path')}")
+    jobs, _ = _press_plus_among(tstore, github, monkeypatch, [
+        LocalRepo("o", "elsewhere", "/src/e"), LocalRepo(cfg["owner"], cfg["repo"], "/src/conf")])
+    assert [(j.checkout, j.prompt) for j in jobs] == [("/src/conf", "fix in /src/conf")]
+
+
+def test_the_plus_in_no_repo_root_starts_nothing(tstore, github, claude, no_agents,
+                                                 monkeypatch):
+    jobs, errors = _press_plus_among(tstore, github, monkeypatch,
+                                     [LocalRepo("o", "elsewhere", "/src/e")])
+    assert jobs == []
+    slug = _key(1802).partition("#")[0]
+    assert f"{slug} is not a repo root, so no fix was started" in errors
+
+
 def test_badges_are_the_overlay_sets(tstore, github, claude, no_agents, monkeypatch):
     task_id = _propose(tstore, github)
     monkeypatch.setattr(type(tstore), "goal_overlay", lambda self: GoalOverlay(
@@ -361,31 +397,47 @@ def test_an_archived_goal_shows_its_graph_and_no_actions(tstore, github, claude,
 
 
 def test_the_overlay_is_live_runs_and_queued_asks():
-    def run(n, label, kind, *, pr=None, released=False):
-        return agentstate.RunRecord(run_id=f"r{n}", dispatched_at=0, pr_number=pr,
+    cfg = core.config()
+    home = LocalRepo(cfg["owner"], cfg["repo"], "")
+    other = LocalRepo("acme", "widgets", "")
+
+    def run(n, label, kind, *, pr=None, released=False, repo=home):
+        url = f"https://github.com/{repo.slug}/pull/{pr}" if pr else ""
+        return agentstate.RunRecord(run_id=f"r{n}", dispatched_at=0, pr_number=pr, pr_url=url,
                                     kind=kind, label=label, released=released)
 
     records = [
         run(1, "Auto · Review-req · #1810 (@hubert)", "review", pr=1810),
         run(2, "Auto · Issues · #1802 · deep · retry 2", "issues"),
-        run(3, "Issues · #1803 · Quick", "issues"),
+        run(3, f"Issues · {cfg['repo']}#1803 · Quick", "issues"),
         # Ended, released, or not an issue fix: none is on anything.
         run(4, "Issues · #1804 · deep", "issues"),
         run(5, "Issues · #1805 · deep", "issues", released=True),
         run(6, "Review · #1806 · deep", "review", pr=1806),
         run(7, "Audit · Issues · #1807 · x", "audit"),
+        # Another root's PR and issue under the same numbers: not the goals'.
+        run(8, "Review-req · widgets#1813 (@hubert)", "review", pr=1813, repo=other),
+        run(9, "Issues · widgets#1814 · deep", "issues"),
     ]
     states = {f"r{n}": agentstate.Resolution(f"r{n}", s, "") for n, s in (
         (1, agentstate.RUNNING), (2, agentstate.STARTING), (3, agentstate.AWAITING_INPUT),
         (4, agentstate.FINISHED), (5, agentstate.RUNNING), (6, agentstate.MERGED),
-        (7, agentstate.RUNNING))}
-    asks = [autofix.RequestedWork(1811, "", "", {"kind": "review"}),
-            autofix.RequestedWork(1808, "", "", {"kind": "issues"})]
-    queued = [autofix.QueuedTask("conflicts:1812", autofix.AgentJob(
-        kind="conflicts", audit_action="conflicts", label="", prompt="", pr_number=1812), 1),
-        autofix.QueuedTask("issues:1809", autofix.AgentJob(
-            kind="issues", audit_action="issues", label="", prompt=""), 1)]
-    assert goal_overlay(records, states, asks, queued) == GoalOverlay(
+        (7, agentstate.RUNNING), (8, agentstate.RUNNING), (9, agentstate.RUNNING))}
+    asks = [autofix.RequestedWork(1811, "", "", {"kind": "review"}, repo=home.slug),
+            autofix.RequestedWork(1808, "", "", {"kind": "issues"}, repo=home.slug),
+            autofix.RequestedWork(1815, "", "", {"kind": "review"}, repo=other.slug),
+            autofix.RequestedWork(1816, "", "", {"kind": "issues"}, repo=other.slug)]
+
+    def task(key, kind, *, pr=None, repo=home):
+        url = f"https://github.com/{repo.slug}/pull/{pr}" if pr else None
+        return autofix.QueuedTask(key, autofix.AgentJob(
+            kind=kind, audit_action=kind, label="", prompt="", pr_url=url, pr_number=pr), 1)
+
+    queued = [task(f"conflicts:{_key(1812)}", "conflicts", pr=1812),
+              task(f"issues:{_key(1809)}", "issues"),
+              task("conflicts:acme/widgets#1817", "conflicts", pr=1817, repo=other),
+              task("issues:acme/widgets#1818", "issues")]
+    assert goal_overlay(records, states, asks, queued, home) == GoalOverlay(
         agent_prs=frozenset({1810}), agent_issues=frozenset({1802, 1803}),
         queued_prs=frozenset({1811, 1812}), queued_issues=frozenset({1808, 1809}))
 
@@ -424,18 +476,18 @@ def test_an_auto_goal_queues_its_fixes_and_reviews_and_fixes_my_findings(
     task_id = _auto_goal(tstore, github, "auto")
     _poll(tstore, monkeypatch)
     asks = {r.key: r for r in tstore.requested_work}
-    assert sorted(asks) == ["issues:1802", "review:1810", "review:1812"]
-    fix = asks["issues:1802"]
+    assert sorted(asks) == [f"issues:{_key(1802)}", f"review:{_key(1810)}", f"review:{_key(1812)}"]
+    fix = asks[f"issues:{_key(1802)}"]
     # The issue, re-checked as a sweep's is when its turn comes.
     assert (fix.url, fix.author, fix.config["target"], fix.config["specificIssue"],
             fix.config["includeFeatures"], fix.config["unassignedOnly"]) == (
         LONE, "kacper", "all", "1802", True, True)
-    review = asks["review:1810"]
+    review = asks[f"review:{_key(1810)}"]
     assert (review.author, review.config["depth"], review.config["specificPR"],
             review.config["leaveReviews"], review.config["specificAuthor"]) == (
         "hubert", "max", "1810", True, "theirs")
     # My own PR is reviewed as mine, and no author is banned-checked for it.
-    assert (asks["review:1812"].author, asks["review:1812"].config["specificAuthor"]) == ("", "mine")
+    assert (asks[f"review:{_key(1812)}"].author, asks[f"review:{_key(1812)}"].config["specificAuthor"]) == ("", "mine")
     # My PR's threads: the my-review path, though the PR auto-fix toggle is off.
     assert [c["prompt"] for c in no_agents] == ["PROMPT:review:1812"]
     assert [r.label for r in agentregistry.load()] == ["Auto · Review · #1812"]
@@ -448,6 +500,21 @@ def test_an_auto_goal_queues_its_fixes_and_reviews_and_fixes_my_findings(
     monkeypatch.setattr(tstore, "_request", lambda a: asked.append(a) or request(a))
     _poll(tstore, monkeypatch)
     assert asked == [] and len(tasks_events()) == lines
+
+
+def test_an_auto_goal_in_no_repo_root_asks_and_records_nothing(tstore, github, no_agents,
+                                                              monkeypatch):
+    """Goal work is the configured repo's. With no root for it, an ask would only be
+    dropped as in no root, after the goal had recorded it dispatched."""
+    from diplomat_runtime import review
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [LocalRepo("o", "elsewhere", "/src/e")])
+    tstore.pr_autofix_enabled = False
+    task_id = _auto_goal(tstore, github, "auto")
+    tstore._goal_fixes_starting.add(1802)  # an agent on a fix, which is recorded only in a root
+    _poll(tstore, monkeypatch)
+    assert tstore.requested_work == [] and no_agents == []
+    assert "dispatched" not in _task(task_id)["task"]
 
 
 def tasks_events() -> list[str]:
@@ -463,7 +530,7 @@ def test_an_observed_goal_queues_nothing(tstore, github, no_agents, monkeypatch,
     _poll(tstore, monkeypatch)
     assert tstore.requested_work == [] and no_agents == []
     # The monitor's own find, held by the toggle as ever.
-    assert [t.id for t in tstore.queued_tasks] == ["review-reply:1812"]
+    assert [t.id for t in tstore.queued_tasks] == [f"review-reply:{_key(1812)}"]
     assert "dispatched" not in _task(task_id)["task"]
 
 
@@ -492,7 +559,7 @@ def test_an_ask_whose_prompt_fails_is_left_for_the_next_pass(tstore, github, no_
 
     monkeypatch.setattr(promptcore, "build_prompt", wedged)
     _poll(tstore, monkeypatch)
-    assert sorted(r.key for r in tstore.requested_work) == ["issues:1802", "review:1812"]
+    assert sorted(r.key for r in tstore.requested_work) == [f"issues:{_key(1802)}", f"review:{_key(1812)}"]
     assert sorted(_task(task_id)["task"]["dispatched"]) == [
         f"fix:{_key(1802)}", f"review:{_key(1812)}@aaa1812"]
     assert ("auto", "goal", f"could not queue review:{_key(1810)}@aaa1810: "
@@ -516,7 +583,7 @@ def test_a_dispatched_record_that_fails_is_logged_not_fatal(tstore, github, no_a
     monkeypatch.setattr(tasks, "edit", refuse)
     _poll(tstore, monkeypatch)
     assert sorted(r.key for r in tstore.requested_work) == [
-        "issues:1802", "review:1810", "review:1812"]
+        f"issues:{_key(1802)}", f"review:{_key(1810)}", f"review:{_key(1812)}"]
     assert ("auto", "goal", "could not record " + ", ".join([
         f"fix:{_key(1802)}", f"review:{_key(1810)}@aaa1810", f"review:{_key(1812)}@aaa1812"])
         + ": diplomat-core tasks-edit failed: locked") in logged
@@ -527,7 +594,7 @@ def test_a_fix_whose_issue_has_an_agent_is_recorded_not_asked(tstore, github, no
     task_id = _auto_goal(tstore, github, "auto")
     tstore._goal_fixes_starting.add(1802)
     _poll(tstore, monkeypatch)
-    assert sorted(r.key for r in tstore.requested_work) == ["review:1810", "review:1812"]
+    assert sorted(r.key for r in tstore.requested_work) == [f"review:{_key(1810)}", f"review:{_key(1812)}"]
     assert f"fix:{_key(1802)}" in _task(task_id)["task"]["dispatched"]
 
 
@@ -540,13 +607,13 @@ def test_leaving_auto_withdraws_the_goals_asks_and_forgets_them(tstore, github, 
     monkeypatch.setattr(type(tstore), "run_autofix_poll_async", lambda self: None)
     task_id = _auto_goal(tstore, github, "auto")
     _poll(tstore, monkeypatch)
-    assert _asked(tstore) == ["issues:1802", "review:1810", "review:1812"]
+    assert _asked(tstore) == [f"issues:{_key(1802)}", f"review:{_key(1810)}", f"review:{_key(1812)}"]
     assert tstore._edit_tracked_task({"op": "mode", "id": task_id, "mode": "observe"}) is None
     assert _asked(tstore) == [] and not [t for t in tstore.queued_tasks if t.job.requested]
     assert "dispatched" not in _task(task_id)["task"]
     # So going back to auto asks for them again.
     assert tstore._edit_tracked_task({"op": "mode", "id": task_id, "mode": "auto"}) is None
-    assert _asked(tstore) == ["issues:1802", "review:1810", "review:1812"]
+    assert _asked(tstore) == [f"issues:{_key(1802)}", f"review:{_key(1810)}", f"review:{_key(1812)}"]
 
 
 @pytest.mark.parametrize("op", [{"op": "archive"}, {"op": "update", "pinnedStatus": "paused"}])
@@ -564,7 +631,7 @@ def test_dismissing_an_automated_proposal_withdraws_its_asks(tstore, github, cla
     monkeypatch.setattr(type(tstore), "run_autofix_poll_async", lambda self: None)
     task_id = _propose(tstore, github)
     assert tstore._edit_tracked_task({"op": "mode", "id": task_id, "mode": "auto"}) is None
-    assert _asked(tstore) == ["issues:1802"]
+    assert _asked(tstore) == [f"issues:{_key(1802)}"]
     assert tstore._edit_tracked_task({"op": "mode", "id": task_id, "mode": "dismissed"}) is None
     assert _asked(tstore) == []
 
@@ -577,4 +644,4 @@ def test_turning_review_on_new_commits_on_asks_for_the_reviews_at_once(tstore, g
     assert tstore._edit_tracked_task({"op": "mode", "id": task_id, "mode": "auto"}) is None
     assert _asked(tstore) == []
     assert tstore._edit_tracked_task({"op": "mode", "id": task_id, "reviewOnPush": True}) is None
-    assert _asked(tstore) == ["review:1810"]
+    assert _asked(tstore) == [f"review:{_key(1810)}"]

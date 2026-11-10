@@ -2472,7 +2472,7 @@ class MeshNode:
     async def dispatch(self, duty_id: str, prompt: str,
                        target: str | None = None,
                        api_key: str | None = None,
-                       work_key: str = "") -> list[dict]:
+                       work_key: str = "", repo: str = "") -> list[dict]:
         """Run a SzpontRequest under a duty's placement: one spawn per slot,
         failing over within each slot's candidate list. Returns one result dict
         per slot.
@@ -2491,6 +2491,8 @@ class MeshNode:
         the leaderless P2P path dedupes — a ``server`` node (runs locally) and an
         explicit ``target`` (the client overrode placement) bypass the claim. See
         szpontnet-spec/docs/12-work-claims.md.
+
+        ``repo`` (optional, ``owner/name``) rides on the job to the executor's host.
         """
         # The credential presented to an API-key-gated target: the per-request key
         # (from a control client / CLI) when given, else this node's own env key.
@@ -2545,7 +2547,7 @@ class MeshNode:
                 if node_id in used:
                     continue
                 status, reason = await self._dispatch_to(node_id, duty_id, prompt,
-                                                         req_key, work_key)
+                                                         req_key, work_key, repo)
                 if status == "spawned":
                     used.add(node_id)
                     outcome = {"slot": slot_platform, "node": node_id,
@@ -2565,10 +2567,11 @@ class MeshNode:
         return results
 
     async def _dispatch_to(self, node_id: str, duty_id: str, prompt: str,
-                           api_key: str = "", work_key: str = "") -> tuple[str, str]:
+                           api_key: str = "", work_key: str = "",
+                           repo: str = "") -> tuple[str, str]:
         job = Job(id=uuid.uuid4().hex, duty=duty_id, prompt=prompt,
                   requested_by=self.local.id, requested_at=time.time(),
-                  work_key=work_key)
+                  work_key=work_key, repo=repo)
         if node_id == self.local.id:
             status, reason, _ = self._run_local_request(job, "personal")  # to myself
             return status, reason
@@ -2785,7 +2788,8 @@ class MeshNode:
             return "declined", "at job capacity", False
         done_path = self._agent_done_path(wk) if wk else None
         try:
-            spawnjob.spawn_job(job.prompt, done_path=done_path)
+            spawnjob.spawn_job(job.prompt, done_path=done_path, work_key=wk or None,
+                               repo=job.repo or None)
         except spawnjob.JobSpawnError as exc:
             log("spawn-failed", f"Mesh job {job.duty} failed here: {exc}")
             if done_path:
@@ -3639,7 +3643,8 @@ class MeshNode:
             # and reports `suppressed` if a better peer already owns the work.
             work_key = str(msg.get("workKey", ""))
             results = await self.dispatch(duty, str(msg.get("prompt", "")),
-                                          target, api_key, work_key)
+                                          target, api_key, work_key,
+                                          str(msg.get("repo", "")))
             return {"t": "dispatch-result", "duty": duty, "results": results}
         if t == "claim":
             # The origination claim gate, stand-alone (szpontnet-spec/docs/12): a client

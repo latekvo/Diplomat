@@ -168,75 +168,92 @@ struct GoalOverlay: Equatable {
 }
 
 extension Store {
-    /// The agents and queued work behind `GoalOverlay`:
+    /// The agents and queued work behind `GoalOverlay`, `watched`'s alone (the goals are
+    /// its):
     /// - a PR has an agent while a run on it is in a blocking state (`AgentState.inFlight`'s
     ///   rule); an issue while an issue fix run's label (`RequestedWork.label`,
-    ///   `IssueWizard`: "Issues · #N · …") names it, or its goal fix is spawning
-    /// - queued: every queued or starting task about a PR, every `issues:N` one, and every
+    ///   `IssueWizard`: "Issues · #N · …" or "Issues · repo#N · …") names it, or its goal
+    ///   fix is spawning
+    /// - queued: every queued or starting task about a PR, every `issues:` one, and every
     ///   asked-for review or fix
     static func goalOverlay(rows: [AgentRow], queued: [QueuedAgentTask], requested: [RequestedWork],
-                            startingFixes: Set<Int>) -> GoalOverlay {
+                            startingFixes: Set<Int>, watched: PRRef.LocalRepo) -> GoalOverlay {
+        let slug = watched.slug.lowercased()
+        func number(_ item: String?) -> Int? {
+            guard let split = item.flatMap(PRRef.splitItemKey), split.slug == slug else { return nil }
+            return split.number
+        }
         var out = GoalOverlay(agentIssues: startingFixes)
         for row in rows where !row.record.released && AgentState.blocking.contains(row.state) {
-            if let n = row.record.prNumber {
-                out.agentPRs.insert(n)
+            if row.record.prNumber != nil {
+                if let n = number(row.record.item) { out.agentPRs.insert(n) }
             } else if row.record.kind == AgentTaskQueue.issuesAction,
-                      let n = issueNumber(inLabel: row.record.label) {
+                      let n = issueNumber(inLabel: row.record.label, repo: watched.repo) {
                 out.agentIssues.insert(n)
             }
         }
         let issueKey = AgentTaskQueue.issuesAction + ":"
         for task in queued {
-            if let n = task.job.prNumber {
-                out.queuedPRs.insert(n)
-            } else if task.id.hasPrefix(issueKey), let n = Int(task.id.dropFirst(issueKey.count)) {
+            if task.job.prNumber != nil {
+                if let n = number(task.job.item) { out.queuedPRs.insert(n) }
+            } else if task.id.hasPrefix(issueKey), let n = number(String(task.id.dropFirst(issueKey.count))) {
                 out.queuedIssues.insert(n)
             }
         }
         for ask in requested {
+            guard let n = number(ask.item) else { continue }
             switch ask.config {
-            case .review: out.queuedPRs.insert(ask.number)
-            case .issues: out.queuedIssues.insert(ask.number)
+            case .review: out.queuedPRs.insert(n)
+            case .issues: out.queuedIssues.insert(n)
             case .investigate: break
             }
         }
         return out
     }
 
-    /// N of the first "Issues · #N · " in `label`.
-    static func issueNumber(inLabel label: String) -> Int? {
-        guard let start = label.range(of: "Issues · #") else { return nil }
-        let rest = label[start.upperBound...]
+    /// N of the first "Issues · #N · " in `label`, or of "Issues · <repo>#N · ", the form
+    /// a label takes while several roots are loaded.
+    static func issueNumber(inLabel label: String, repo: String) -> Int? {
+        guard let start = label.range(of: "Issues · ") else { return nil }
+        var rest = label[start.upperBound...]
+        if rest.lowercased().hasPrefix(repo.lowercased() + "#") { rest = rest.dropFirst(repo.count) }
+        guard rest.hasPrefix("#") else { return nil }
+        rest = rest.dropFirst()
         let digits = rest.prefix(while: \.isNumber)
         guard !digits.isEmpty, rest.dropFirst(digits.count).hasPrefix(" · ") else { return nil }
         return Int(digits)
     }
 
     var goalOverlay: GoalOverlay {
-        Store.goalOverlay(rows: agentRows, queued: queuedTasks + startingTasks, requested: requestedWork,
-                          startingFixes: goalFixesStarting)
+        let (owner, repo) = CoreAssets.repoCoordinates()
+        return Store.goalOverlay(rows: agentRows, queued: queuedTasks + startingTasks, requested: requestedWork,
+                                 startingFixes: goalFixesStarting,
+                                 watched: PRRef.LocalRepo(owner: owner, repo: repo, path: ""))
     }
 
-    /// The operator's PRs whose review threads an `auto` goal wants fixed (`findings`).
-    var goalFindingPRs: Set<Int> {
-        Set(taskViews.flatMap(\.work).filter { $0.kind == .findings }.map(\.number))
+    /// The operator's PRs, as item keys, whose review threads an `auto` goal wants fixed
+    /// (`findings`).
+    var goalFindingItems: Set<String> {
+        Set(taskViews.flatMap(\.work).filter { $0.kind == .findings }.compactMap { PRRef.itemKey(url: $0.url) })
     }
 
     /// The automatic pass's fix of a goal issue: feature requests included, since the goal
     /// it serves is often one, and, as a sweep's, re-checked when its turn comes: one closed
     /// or assigned by then is left alone.
     func goalFixAsk(number: Int, url: String, author: String?) -> RequestedWork {
-        RequestedWork(number: number, url: url, author: author ?? "",
-                      config: .issues(IssueConfig(target: .all, me: effectiveMe, includeFeatures: true)
-                                        .forIssue(number)))
+        var cfg = IssueConfig(target: .all, me: effectiveMe, includeFeatures: true)
+        cfg.home = root(ofItem: PRRef.itemKey(url: url))
+        return RequestedWork(number: number, url: url, author: author ?? "",
+                             config: .issues(cfg.forIssue(number)))
     }
 
     /// The `+` press's fix: named, as the Fix-issues wizard's press names it, since the
     /// operator asked for this one.
     func goalPlusAsk(number: Int, url: String, author: String?) -> RequestedWork {
-        RequestedWork(number: number, url: url, author: author ?? "",
-                      config: .issues(IssueConfig(target: .specific, me: effectiveMe,
-                                                  specificIssue: String(number), includeFeatures: true)))
+        var cfg = IssueConfig(target: .specific, me: effectiveMe, specificIssue: String(number),
+                              includeFeatures: true)
+        cfg.home = root(ofItem: PRRef.itemKey(url: url))
+        return RequestedWork(number: number, url: url, author: author ?? "", config: .issues(cfg))
     }
 
     /// The goal and its `dispatched` fixes and reviews by queue key, when `edit` stops it
@@ -255,7 +272,7 @@ extension Store {
             guard let work = GoalWork.parse(key) else { continue }
             let verb = work.kind == GoalWork.Kind.fixIssue.rawValue ? AgentTaskQueue.issuesAction
                                                                      : AgentTaskQueue.reviewAction
-            asks[key] = AgentTaskQueue.key(auditAction: verb, number: work.ref.number)
+            asks[key] = AgentTaskQueue.key(auditAction: verb, item: work.ref.key)
         }
         return asks.isEmpty ? nil : (id, asks)
     }
@@ -278,10 +295,11 @@ extension Store {
     /// depth), comments only: no request's files are at hand to weigh a verdict against.
     func goalReviewAsk(_ item: GoalWork) -> RequestedWork {
         let mine = !effectiveMe.isEmpty && item.author?.lowercased() == effectiveMe.lowercased()
-        let cfg = ReviewConfig(depth: "max", target: .specific, me: effectiveMe, markReady: false,
+        var cfg = ReviewConfig(depth: "max", target: .specific, me: effectiveMe, markReady: false,
                                leaveReviews: true, replyToReviews: false, specificPR: String(item.number),
                                finalPass: false, softApprove: softApproveEnabled,
                                specificAuthor: mine ? .mine : .theirs)
+        cfg.home = root(ofItem: PRRef.itemKey(url: item.url))
         return RequestedWork(number: item.number, url: item.url, author: mine ? "" : item.author ?? "",
                              config: .review(cfg))
     }
@@ -290,12 +308,12 @@ extension Store {
     /// (`requestOne`, so the cap, the ban list and the queue switch apply), then recorded
     /// as `dispatched`, also when already asked for; a fix of an issue an agent is on is
     /// recorded without asking. `findings` needs nothing here: `isPaused` lets the my-PR
-    /// review reconcile run for `goalFindingPRs`.
+    /// review reconcile run for `goalFindingItems`. An item in no repo root is skipped.
     func runGoalPass() async {
         let overlay = goalOverlay
         for view in taskViews where !view.work.isEmpty {
             var started: [String] = []
-            for item in view.work {
+            for item in view.work where root(ofItem: PRRef.itemKey(url: item.url)) != nil {
                 switch item.kind {
                 case .fixIssue:
                     if !overlay.agentIssues.contains(item.number) {
@@ -318,18 +336,19 @@ extension Store {
 
     /// The `+` pill: a fix agent for its issue now, outside the cap like the Fix-issues
     /// wizard's single-issue press, recorded as `dispatched` once started. Nil once
-    /// started (or already on its way), else why not.
+    /// started (or already on its way), else why not. An issue in no repo root gets none,
+    /// as the automatic pass skips one.
     func startGoalFix(_ node: TaskGraph.Node, task id: String) async -> String? {
         guard let ref = GitHubRef(url: node.url) else { return "not a GitHub issue: \(node.url)" }
+        let item = PRRef.itemKey(url: node.url)
+        guard root(ofItem: item) != nil else {
+            let slug = item.flatMap(PRRef.splitItemKey)?.slug ?? node.url
+            return "\(slug) is not a repo root, so no fix was started"
+        }
         guard goalOverlay.badge(node, watched: CoreAssets.repoCoordinates()) == nil else { return nil }
         goalFixesStarting.insert(ref.number)
         defer { goalFixesStarting.remove(ref.number) }
-        let ask = goalPlusAsk(number: ref.number, url: node.url, author: node.author)
-        let action = ask.config.action
-        let job = AgentJob(kind: action, auditAction: action, label: ask.label,
-                           prompt: ask.config.buildPrompt(), prURL: nil, prNumber: nil,
-                           authorLogin: node.author, duty: action, workKey: "", counter: nil)
-        let outcome = await dispatchAgent(job, source: .panel)
+        let outcome = await dispatchAgent(goalPlusJob(node, number: ref.number), source: .panel)
         switch outcome {
         case .spawned, .standDown: break
         case .banned: return "@\(node.author ?? "") is banned, so no fix was started"
@@ -340,6 +359,16 @@ extension Store {
             AppLog.log("tasks", "goal \(id): could not record \(work): \(refusal)")
         }
         return nil
+    }
+
+    /// The `+` press's agent, in its issue's root checkout.
+    func goalPlusJob(_ node: TaskGraph.Node, number: Int) -> AgentJob {
+        let ask = goalPlusAsk(number: number, url: node.url, author: node.author)
+        let action = ask.config.action
+        return AgentJob(kind: action, auditAction: action, label: ask.label(roots: roots.count),
+                        prompt: ask.config.buildPrompt(), prURL: nil, prNumber: nil,
+                        authorLogin: node.author, duty: action, workKey: "", counter: nil,
+                        directory: ask.config.checkout)
     }
 
     /// One mode edit, then the automatic pass when the goal wants work started, without

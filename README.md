@@ -1,7 +1,7 @@
 # Diplomat (Szpont Yon)
 
 **Diplomat automates the maintainer's job.** It runs a team of coding agents against your GitHub
-repo, around the clock: they review PRs, keep your branches mergeable, reproduce and fix incoming
+repos, around the clock: they review PRs, keep your branches mergeable, reproduce and fix incoming
 issues, and act on what people ask you on Slack. You decide; they do the legwork.
 
 <img alt="The Diplomat panel" src="docs/img/panel.png" />

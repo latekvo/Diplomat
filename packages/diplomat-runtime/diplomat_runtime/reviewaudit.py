@@ -97,7 +97,7 @@ def audit(pr_url: str, me: str, since: float) -> list[str]:
     if coords is None:
         return []
     owner, repo, number = coords
-    env = gh.graphql("my-reviews", with_repo=False,
+    env = gh.graphql("my-reviews",
                      variables={"owner": owner, "name": repo, "me": me},
                      typed_variables={"number": str(number)})
     pr = (((env.get("data") or {}).get("repository") or {}).get("pullRequest")) or {}
