@@ -2342,7 +2342,7 @@ final class Store: ObservableObject {
             // holds the drain too — either of them, since a missing answer is not a
             // pass.
             if autofixPollError == nil, let snaps, let closed {
-                await drainQueuedTasks(snaps: snaps, closed: closed)
+                await drainQueuedTasks(snaps: snaps, closed: closed, read: read)
             }
             // Start this cycle's staging empty. A commit clears it too, so this is
             // what discards the offers of a cycle that failed part-way and never
@@ -2413,10 +2413,11 @@ final class Store: ObservableObject {
         return (snaps, closed, read)
     }
 
-    /// Slugs of the roots this cycle's read of my PRs failed in (`fetchMyPRs`).
+    /// Slugs of the roots this cycle's read of my PRs or of review requests failed in.
     private var heldSlugs: Set<String> = []
 
-    /// Whether `item` is in a root this cycle's read of my PRs failed in.
+    /// Whether `item` is in a root this cycle's read of my PRs or of review requests
+    /// failed in.
     private func inUnreadRoot(_ item: String) -> Bool {
         PRRef.splitItemKey(item).map { heldSlugs.contains($0.slug) } ?? false
     }
@@ -2660,6 +2661,7 @@ final class Store: ObservableObject {
             return
         }
         noteRootsRead("Review requests", read: read, failed: failed)
+        heldSlugs.formUnion(failed.map { $0.root.slug.lowercased() })
         let banned = BanList.read()
         let now = Date()
         let prior = loadReviewReqAttempts()
@@ -3042,10 +3044,21 @@ final class Store: ObservableObject {
     /// so walking the whole queue into the same failure would clear the panel of every
     /// queued row at once, for a reason none of them caused.
     ///
+    /// A task in a repo outside `read` (the roots this cycle read, by default every
+    /// root) is neither priced nor started: nothing this cycle speaks for it, and a root
+    /// just taken out of Settings is no longer the operator's to work. This cycle's
+    /// commit keeps or drops its row (`commitQueue`).
+    ///
     /// Not private: the refresh pass is what `QueueTest` drives. It runs before the
     /// capacity guard and starts nothing by itself, so a self-test at capacity — the
     /// state that whole test sets up — exercises it without a spawn.
-    func drainQueuedTasks(snaps: [PRSnapshot], closed: Set<String>) async {
+    func drainQueuedTasks(snaps: [PRSnapshot], closed: Set<String>,
+                          read: [PRRef.LocalRepo]? = nil) async {
+        let polled = Set((read ?? roots).map { $0.slug.lowercased() })
+        func outside(_ entry: QueuedAgentTask) -> Bool {
+            AgentTaskQueue.item(ofKey: entry.id).flatMap(PRRef.splitItemKey)
+                .map { !polled.contains($0.slug.lowercased()) } ?? false
+        }
         let conflicting = Set(snaps.filter { $0.mergeable == "CONFLICTING" }.compactMap(\.item))
         let owingReply = Set(snaps.filter { $0.threadsIOwe > 0 }.compactMap(\.item))
         // Dropped here rather than left for this cycle's commit to omit: the commit is
@@ -3057,9 +3070,8 @@ final class Store: ObservableObject {
         // A task with no PR to ask about stands: that is a Fix-issues ask, numbered
         // in the issue space, and pricing issue #421 against the PRs closed this cycle
         // would retire it for something that happened to the PR of the same number.
-        // Nor does one in a root whose read failed: nothing this cycle speaks for it.
         let answered = queuedTasks.filter { entry in
-            guard let item = entry.job.item, !inUnreadRoot(item) else { return false }
+            guard let item = entry.job.item, !outside(entry) else { return false }
             return !AgentTaskQueue.stillOwed(auditAction: entry.job.auditAction,
                                              item: item,
                                              conflicting: conflicting,
@@ -3083,10 +3095,9 @@ final class Store: ObservableObject {
             // The list moves under this loop: it awaits a spawn per task, and an
             // "execute now" during one of those takes its row off the queue and
             // starts it there and then. Re-reading the queue is what keeps the drain
-            // from dispatching that same task a second time when it reaches it. A
-            // task in a root whose read failed waits: nothing this cycle speaks for it.
-            guard queuedTasks.contains(where: { $0.id == entry.id }),
-                  entry.job.item.map(inUnreadRoot) != true else { continue }
+            // from dispatching that same task a second time when it reaches it.
+            guard queuedTasks.contains(where: { $0.id == entry.id }), !outside(entry)
+            else { continue }
             guard await agentTick().tick.capLoad.count < autoTaskLimit else { return }
             // Finding room here is what re-arms the saturation notice. The gate's own
             // reset sits behind the capacity measurement this path skips, so without
