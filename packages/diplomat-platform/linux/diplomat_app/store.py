@@ -808,6 +808,16 @@ class Store(QObject):
                 out.append(repo)
         return tuple(out)
 
+    @staticmethod
+    def wizard_item_label(owner: str, repo: str, number: int) -> str:
+        """A wizard's single item: :func:`item_label` in a repo root, else the whole
+        ``owner/repo#N``. The Comms adoption of a running fix matches it."""
+        slug = f"{owner}/{repo}"
+        roots = review.repo_roots()
+        if slug.lower() not in {r.slug.lower() for r in roots}:
+            return f"{slug}#{number}"
+        return item_label(item_key(owner, repo, number), len(roots))
+
     def is_root(self, repo: LocalRepo | None) -> bool:
         """Whether ``repo`` is one of the repo roots: work there is deduped by item and
         may be routed over the mesh, unlike work in another listed checkout."""

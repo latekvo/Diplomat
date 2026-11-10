@@ -351,6 +351,31 @@ def test_a_link_to_another_root_is_deduped_by_its_number(wizard_store, dispatche
         (9, "https://github.com/o/r/pull/9", None)]
 
 
+@pytest.mark.parametrize("selected, text", [
+    ("o/other", "12"), ("o/other", "https://github.com/o/other/issues/12"),
+    ("o/r", "https://github.com/o/other/issues/12")])
+def test_comms_adopts_a_fix_the_issues_wizard_is_running(wizard_store, dispatched,
+                                                         selected, text):
+    from diplomat_app import issues
+    from diplomat_app.issuewizardview import IssueWizardView
+    from diplomat_app.store import Store
+
+    wizard_store.select_repo(selected)
+    w = IssueWizardView(wizard_store)
+    w.target.setCurrentIndex(w.target.findData(issues.Target.SPECIFIC))
+    w.specific_issue.setText(text)
+    w._spawn()
+    [job] = dispatched
+    rows = [autofix.RunningAgent(pr_number=None, label=job.label,
+                                 kind=autofix.QUEUE_ISSUES_ACTION, tracked=True)]
+
+    assert job.label.startswith("Issues · other#12 · ")
+    assert Store._comms_row_doing(
+        autofix.queue_key(autofix.QUEUE_ISSUES_ACTION, "o/other#12"), rows) is rows[0]
+    assert Store._comms_row_doing(
+        autofix.queue_key(autofix.QUEUE_ISSUES_ACTION, "o/r#12"), rows) is None
+
+
 # ---- the header and Settings ------------------------------------------------
 
 
