@@ -30,6 +30,7 @@ export function sandbox({ hosts = {}, sshConfig = '', known = [], settings = {} 
     FAKE_SSH_HOSTS: file('hosts.json', JSON.stringify(hosts)),
     FAKE_KNOWN_HOSTS: file('known_hosts', known.map((h) => `${h} ${pub}\n`).join('')),
     FAKE_SSH_LOG: file('ssh.log', ''),
+    FAKE_SSH_FAILS: dir,
   };
   const kill = () => core.killDaemonsUnder(DAEMON_JS, 'RM_BASE_DIR', env.RM_BASE_DIR);
   core.onInterrupt(kill);
@@ -37,6 +38,8 @@ export function sandbox({ hosts = {}, sshConfig = '', known = [], settings = {} 
     dir,
     env,
     setHosts: (h) => fs.writeFileSync(env.FAKE_SSH_HOSTS, JSON.stringify(h)),
+    // The next `n` probes of `target` fail as a name that does not resolve.
+    failNext: (target, n) => fs.writeFileSync(path.join(dir, target), String(n)),
     // Each probe's ssh arguments; its target is the word before the remote command.
     probes: () => fs.readFileSync(env.FAKE_SSH_LOG, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)),
     probed: () => fs.readFileSync(env.FAKE_SSH_LOG, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l).at(-2)),

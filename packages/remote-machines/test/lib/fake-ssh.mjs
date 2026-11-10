@@ -4,6 +4,7 @@
 //   - `ssh -G <target>` prints what that entry resolves to (an unknown target resolves
 //     to itself), with FAKE_KNOWN_HOSTS as the known_hosts file and `extra` lines
 //     ('proxyjump j', 'hostkeyalias a') appended;
+//   - a probe of a target fails to resolve while FAKE_SSH_FAILS/<target> counts down;
 //   - a probe of a target with behavior 'auth' or 'refused' fails the way ssh does, and
 //     'hang' never answers while a grandchild holds its stderr (as a ProxyCommand does);
 //     otherwise probe.sh runs on this machine, after `delayMs` if set, with each
@@ -13,6 +14,7 @@
 
 import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const hosts = JSON.parse(fs.readFileSync(process.env.FAKE_SSH_HOSTS, 'utf8'));
@@ -39,6 +41,14 @@ const target = args[args.length - 2];
 const probeArgs = args[args.length - 1].split(' ').slice(3); // after `sh -s --`
 fs.appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify(args)}\n`);
 const h = hosts[target] ?? {};
+// FAKE_SSH_FAILS/<target> holds how many more probes of it fail to resolve its name.
+const failsFile = path.join(process.env.FAKE_SSH_FAILS ?? '/nonexistent', target);
+const fails = Number(fs.existsSync(failsFile) && fs.readFileSync(failsFile, 'utf8'));
+if (fails > 0) {
+  fs.writeFileSync(failsFile, String(fails - 1));
+  process.stderr.write(`ssh: Could not resolve hostname ${h.hostname ?? target}: nodename nor servname provided, or not known\n`);
+  process.exit(255);
+}
 if (h.behavior === 'auth') {
   process.stderr.write(`${h.user ?? 'me'}@${h.hostname ?? target}: Permission denied (publickey).\n`);
   process.exit(255);
