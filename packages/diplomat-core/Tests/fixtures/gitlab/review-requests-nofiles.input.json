@@ -1,0 +1,67 @@
+{
+  "data": {
+    "project": {
+      "projectMembers": {
+        "nodes": [
+          {
+            "user": {
+              "username": "alice"
+            }
+          },
+          {
+            "user": {
+              "username": "bob"
+            }
+          }
+        ]
+      },
+      "mergeRequests": {
+        "nodes": [
+          {
+            "iid": "22",
+            "title": "Files not asked",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/22",
+            "diffHeadSha": "7777777777777777777777777777777777777777",
+            "author": {
+              "username": "Alice"
+            },
+            "activity": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-06T09:00:00+01:00",
+                  "body": "requested review from @carol"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": []
+            }
+          },
+          {
+            "iid": "19",
+            "title": "Deleted author",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/19",
+            "diffHeadSha": "8888888888888888888888888888888888888888",
+            "author": null,
+            "activity": {
+              "nodes": []
+            },
+            "comments": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "carol"
+                  },
+                  "createdAt": "2026-11-03T09:00:00+01:00"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,196 @@
+{
+  "data": {
+    "project": {
+      "mergeRequests": {
+        "nodes": [
+          {
+            "iid": "12",
+            "title": "Conflicted",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/12",
+            "draft": false,
+            "diffHeadSha": "1111111111111111111111111111111111111111",
+            "conflicts": true,
+            "detailedMergeStatus": "CONFLICT",
+            "approved": false,
+            "reviewers": {
+              "nodes": []
+            },
+            "discussions": {
+              "nodes": [
+                {
+                  "resolvable": true,
+                  "resolved": false,
+                  "notes": {
+                    "nodes": [
+                      {
+                        "author": {
+                          "username": "bob"
+                        },
+                        "body": "First.",
+                        "userPermissions": {
+                          "resolveNote": true
+                        }
+                      },
+                      {
+                        "author": {
+                          "username": "bob"
+                        },
+                        "body": "Still wrong.",
+                        "userPermissions": {
+                          "resolveNote": true
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "resolvable": true,
+                  "resolved": false,
+                  "notes": {
+                    "nodes": [
+                      {
+                        "author": {
+                          "username": "bob"
+                        },
+                        "body": "Out of my hands.",
+                        "userPermissions": {
+                          "resolveNote": false
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "resolvable": false,
+                  "resolved": false,
+                  "notes": {
+                    "nodes": [
+                      {
+                        "author": {
+                          "username": "alice"
+                        },
+                        "body": "changed the description",
+                        "userPermissions": {
+                          "resolveNote": true
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "iid": "8",
+            "title": "Unchecked, approved",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/8",
+            "draft": true,
+            "diffHeadSha": "2222222222222222222222222222222222222222",
+            "conflicts": false,
+            "detailedMergeStatus": "UNCHECKED",
+            "approved": true,
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "bob",
+                  "mergeRequestInteraction": {
+                    "reviewState": "APPROVED"
+                  }
+                }
+              ]
+            },
+            "discussions": {
+              "nodes": [
+                {
+                  "resolvable": true,
+                  "resolved": true,
+                  "notes": {
+                    "nodes": [
+                      {
+                        "author": {
+                          "username": "bob"
+                        },
+                        "body": "Fine.",
+                        "userPermissions": {
+                          "resolveNote": true
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "iid": "7",
+            "title": "Draft status, changes requested",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/7",
+            "draft": true,
+            "diffHeadSha": "3333333333333333333333333333333333333333",
+            "conflicts": false,
+            "detailedMergeStatus": "DRAFT_STATUS",
+            "approved": false,
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "bob",
+                  "mergeRequestInteraction": {
+                    "reviewState": "REQUESTED_CHANGES"
+                  }
+                },
+                {
+                  "username": "carol",
+                  "mergeRequestInteraction": {
+                    "reviewState": "UNREVIEWED"
+                  }
+                }
+              ]
+            },
+            "discussions": {
+              "nodes": [
+                {
+                  "resolvable": true,
+                  "resolved": false,
+                  "notes": {
+                    "nodes": [
+                      {
+                        "author": null,
+                        "body": "A deleted user asked.",
+                        "userPermissions": {
+                          "resolveNote": true
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "iid": "6",
+            "title": "Preparing, review required",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/6",
+            "draft": false,
+            "diffHeadSha": "4444444444444444444444444444444444444444",
+            "conflicts": false,
+            "detailedMergeStatus": "PREPARING",
+            "approved": false,
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "carol",
+                  "mergeRequestInteraction": {
+                    "reviewState": "UNREVIEWED"
+                  }
+                }
+              ]
+            },
+            "discussions": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

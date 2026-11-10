@@ -1,0 +1,12 @@
+{
+  "data": {
+    "project": {
+      "mergeRequest": {
+        "state": "locked",
+        "author": {
+          "username": "alice"
+        }
+      }
+    }
+  }
+}

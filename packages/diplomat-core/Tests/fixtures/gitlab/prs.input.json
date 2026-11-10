@@ -1,0 +1,269 @@
+{
+  "data": {
+    "project": {
+      "projectMembers": {
+        "nodes": [
+          {
+            "user": {
+              "username": "alice"
+            }
+          },
+          {
+            "user": {
+              "username": "bob"
+            }
+          }
+        ]
+      },
+      "mergeRequests": {
+        "nodes": [
+          {
+            "iid": "12",
+            "title": "Conflicted, changes requested over an approval",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/12",
+            "draft": false,
+            "createdAt": "2026-11-01T09:00:00+01:00",
+            "conflicts": true,
+            "detailedMergeStatus": "CONFLICT",
+            "approved": true,
+            "author": {
+              "username": "alice"
+            },
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "bob",
+                  "mergeRequestInteraction": {
+                    "reviewState": "REQUESTED_CHANGES"
+                  }
+                },
+                {
+                  "username": "carol",
+                  "mergeRequestInteraction": {
+                    "reviewState": "APPROVED"
+                  }
+                }
+              ]
+            },
+            "diffStats": [
+              {
+                "path": "src/a.rs"
+              },
+              {
+                "path": "skills/x/SKILL.md"
+              }
+            ],
+            "discussions": {
+              "nodes": [
+                {
+                  "resolvable": true,
+                  "resolved": false,
+                  "notes": {
+                    "nodes": [
+                      {
+                        "author": {
+                          "username": "bob"
+                        },
+                        "body": "Please rename this.",
+                        "userPermissions": {
+                          "resolveNote": true
+                        }
+                      },
+                      {
+                        "author": {
+                          "username": "alice"
+                        },
+                        "body": "Done.",
+                        "userPermissions": {
+                          "resolveNote": true
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "resolvable": false,
+                  "resolved": false,
+                  "notes": {
+                    "nodes": [
+                      {
+                        "author": {
+                          "username": "alice"
+                        },
+                        "body": "added 1 commit",
+                        "userPermissions": {
+                          "resolveNote": true
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "notes": {
+              "nodes": [
+                {
+                  "createdAt": "2026-11-01T09:00:01+01:00",
+                  "body": "marked this merge request as **draft**"
+                },
+                {
+                  "createdAt": "2026-11-02T10:00:00+01:00",
+                  "body": "marked this merge request as **ready**"
+                },
+                {
+                  "createdAt": "2026-11-03T10:00:00+01:00",
+                  "body": "marked this merge request as **draft**"
+                },
+                {
+                  "createdAt": "2026-11-04T10:00:00+01:00",
+                  "body": "marked this merge request as **ready**"
+                },
+                {
+                  "createdAt": "2026-11-04T11:00:00+01:00",
+                  "body": "requested review from @bob"
+                }
+              ]
+            }
+          },
+          {
+            "iid": "11",
+            "title": "Checking, approved, deleted author",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/11",
+            "draft": true,
+            "createdAt": "2026-10-30T09:00:00+01:00",
+            "conflicts": false,
+            "detailedMergeStatus": "CHECKING",
+            "approved": true,
+            "author": null,
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "bob",
+                  "mergeRequestInteraction": {
+                    "reviewState": "APPROVED"
+                  }
+                }
+              ]
+            },
+            "diffStats": [],
+            "discussions": {
+              "nodes": [
+                {
+                  "resolvable": true,
+                  "resolved": true,
+                  "notes": {
+                    "nodes": [
+                      {
+                        "author": {
+                          "username": "bob"
+                        },
+                        "body": "Nit.",
+                        "userPermissions": {
+                          "resolveNote": true
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "resolvable": true,
+                  "resolved": false,
+                  "notes": {
+                    "nodes": []
+                  }
+                }
+              ]
+            },
+            "notes": {
+              "nodes": [
+                {
+                  "createdAt": "2026-10-30T09:00:01+01:00",
+                  "body": "assigned to @alice"
+                }
+              ]
+            }
+          },
+          {
+            "iid": "10",
+            "title": "Status not computed, review requested",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/10",
+            "draft": false,
+            "createdAt": "2026-10-29T09:00:00+01:00",
+            "conflicts": false,
+            "detailedMergeStatus": null,
+            "approved": false,
+            "author": {
+              "username": "bob"
+            },
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "carol",
+                  "mergeRequestInteraction": {
+                    "reviewState": "UNREVIEWED"
+                  }
+                }
+              ]
+            },
+            "diffStats": [
+              {
+                "path": "README.md"
+              }
+            ],
+            "discussions": {
+              "nodes": []
+            },
+            "notes": {
+              "nodes": []
+            }
+          },
+          {
+            "iid": "9",
+            "title": "Mergeable, no reviewers",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/9",
+            "draft": false,
+            "createdAt": "2026-10-28T09:00:00+01:00",
+            "conflicts": false,
+            "detailedMergeStatus": "MERGEABLE",
+            "approved": false,
+            "author": {
+              "username": "zed"
+            },
+            "reviewers": {
+              "nodes": []
+            },
+            "diffStats": [
+              {
+                "path": "docs/guide.md"
+              }
+            ],
+            "discussions": {
+              "nodes": [
+                {
+                  "resolvable": true,
+                  "resolved": false,
+                  "notes": {
+                    "nodes": [
+                      {
+                        "author": {
+                          "username": "alice"
+                        },
+                        "body": "Why?",
+                        "userPermissions": {
+                          "resolveNote": false
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "notes": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

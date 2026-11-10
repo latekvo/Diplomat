@@ -1,0 +1,117 @@
+{
+  "data": {
+    "search": {
+      "nodes": [
+        {
+          "number": 12,
+          "title": "Conflicted",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/12",
+          "isDraft": false,
+          "mergeable": "CONFLICTING",
+          "reviewDecision": null,
+          "headRefOid": "1111111111111111111111111111111111111111",
+          "reviewThreads": {
+            "nodes": [
+              {
+                "isResolved": false,
+                "viewerCanResolve": true,
+                "comments": {
+                  "totalCount": 2,
+                  "nodes": [
+                    {
+                      "author": {
+                        "login": "bob"
+                      },
+                      "body": "Still wrong."
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "viewerCanResolve": false,
+                "comments": {
+                  "totalCount": 1,
+                  "nodes": [
+                    {
+                      "author": {
+                        "login": "bob"
+                      },
+                      "body": "Out of my hands."
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "number": 8,
+          "title": "Unchecked, approved",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/8",
+          "isDraft": true,
+          "mergeable": "UNKNOWN",
+          "reviewDecision": "APPROVED",
+          "headRefOid": "2222222222222222222222222222222222222222",
+          "reviewThreads": {
+            "nodes": [
+              {
+                "isResolved": true,
+                "viewerCanResolve": true,
+                "comments": {
+                  "totalCount": 1,
+                  "nodes": [
+                    {
+                      "author": {
+                        "login": "bob"
+                      },
+                      "body": "Fine."
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "number": 7,
+          "title": "Draft status, changes requested",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/7",
+          "isDraft": true,
+          "mergeable": "MERGEABLE",
+          "reviewDecision": "CHANGES_REQUESTED",
+          "headRefOid": "3333333333333333333333333333333333333333",
+          "reviewThreads": {
+            "nodes": [
+              {
+                "isResolved": false,
+                "viewerCanResolve": true,
+                "comments": {
+                  "totalCount": 1,
+                  "nodes": [
+                    {
+                      "author": null,
+                      "body": "A deleted user asked."
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "number": 6,
+          "title": "Preparing, review required",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/6",
+          "isDraft": false,
+          "mergeable": "UNKNOWN",
+          "reviewDecision": "REVIEW_REQUIRED",
+          "headRefOid": "4444444444444444444444444444444444444444",
+          "reviewThreads": {
+            "nodes": []
+          }
+        }
+      ]
+    }
+  }
+}
