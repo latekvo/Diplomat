@@ -2382,7 +2382,8 @@ final class Store: ObservableObject {
     /// roots both were read in. A root either read fails in is left out and held
     /// (`heldSlugs`): its queued tasks, fingerprints and attempt records stand untouched
     /// rather than be read as done. Only when every root's read fails is it a poll
-    /// failure, and both reads `nil`, which stands every consumer down.
+    /// failure: both reads are `nil`, which stands their consumers down, and every root
+    /// is returned, so the reads after this one fail on their own.
     private func fetchMyPRs(_ polled: [PRRef.LocalRepo]) async
         -> (snaps: [PRSnapshot]?, closed: Set<String>?, read: [PRRef.LocalRepo]) {
         var snaps: [PRSnapshot] = []
@@ -2406,7 +2407,7 @@ final class Store: ObservableObject {
         heldSlugs = Set(failed.map { $0.root.slug.lowercased() })
         if read.isEmpty, let first = failed.first {
             notePollFailure(first.error)
-            return (nil, nil, read)
+            return (nil, nil, polled)
         }
         noteRootsRead("PRs", read: read, failed: failed)
         return (snaps, closed, read)

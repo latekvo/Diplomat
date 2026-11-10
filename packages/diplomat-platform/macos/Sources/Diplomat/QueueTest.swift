@@ -1401,9 +1401,14 @@ enum QueueTest {
         }
         setenv(DiskFloor.envOverride, "0", 1)
         heldFail("author", "alpha", true)
+        try? FileManager.default.removeItem(at: heldLog)
         await store.runAutofixPollOnce()
+        let outageAsked = (try? String(contentsOf: heldLog, encoding: .utf8)) ?? ""
         check("my PRs unreadable in every root fail the poll",
               store.autofixPollError?.contains("cannot be searched") == true)
+        check("…and every root's review requests are still asked",
+              outageAsked.contains("q=repo:o1/alpha review-requested:")
+                  && outageAsked.contains("q=repo:o2/beta review-requested:"))
         heldFail("author", "alpha", false)
         heldFail("author", "beta", false)
         heldAnswer("author", "beta", nil)
