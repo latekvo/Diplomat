@@ -144,9 +144,12 @@ enum AgentSpawner {
         case osascript(code: Int32, stderr: String)
         case neverStarted(terminal: String, waited: TimeInterval, tokenItem: String = "")
         case noToken(item: String)
+        case headless
 
         var errorDescription: String? {
             switch self {
+            case .headless:
+                return "a headless self-test opens no agent terminal"
             case .write(let m): return "Couldn't stage prompt: \(m)"
             case .osascript(let code, let stderr):
                 let s = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -162,6 +165,39 @@ enum AgentSpawner {
                 return "no agent token in Keychain item '\(item)'"
             }
         }
+    }
+
+    /// The headless modes that open real terminal windows on purpose, and close them:
+    /// the tracking test (`TrackTest`) and the focus test (`Dump.spawnFocusTest`).
+    static let terminalModes: Set<String> = ["DIPLOMAT_TRACK_TEST", "DIPLOMAT_SPAWN_FOCUS_TEST"]
+
+    /// Whether a process started with `env` may open a terminal: the live app, or one
+    /// running no mode but `terminalModes`. Any other self-test that reaches a dispatch
+    /// past a free bay would otherwise start a real agent.
+    static func mayOpenTerminals(in env: [String: String]) -> Bool {
+        !Headless.isActive(in: env.filter { !terminalModes.contains($0.key) })
+    }
+
+    static let mayOpenTerminals = mayOpenTerminals(in: ProcessInfo.processInfo.environment)
+
+    private static let refusalLock = NSLock()
+    private static var refusals = 0
+
+    /// How many terminals `refuseHeadless` turned away in this process.
+    static var refusedTerminals: Int {
+        refusalLock.lock(); defer { refusalLock.unlock() }
+        return refusals
+    }
+
+    /// Throw `SpawnError.headless`, counted and said on stderr, where
+    /// `mayOpenTerminals` is false.
+    static func refuseHeadless() throws {
+        guard !mayOpenTerminals else { return }
+        refusalLock.lock()
+        refusals += 1
+        refusalLock.unlock()
+        FileHandle.standardError.write(Data("spawn-tripwire: refused a terminal\n".utf8))
+        throw SpawnError.headless
     }
 
     /// What a run's directory staged for its agent: the four paths the spawn is built
@@ -272,11 +308,12 @@ enum AgentSpawner {
 
     /// Open a new terminal window running `command`, returning the captured
     /// (windowID, sessionID, tty). The execution path shared by the real spawn and
-    /// the tracking self-test (`DIPLOMAT_TRACK_TEST`). `restoreFocusTo` bounces
-    /// focus back to that bundle id (background spawns) instead of activating the
-    /// terminal.
+    /// the tracking self-test (`DIPLOMAT_TRACK_TEST`), so the one place a self-test is
+    /// refused a terminal (`refuseHeadless`). `restoreFocusTo` bounces focus back to
+    /// that bundle id (background spawns) instead of activating the terminal.
     static func runSpawn(command: String, terminal term: SpawnTerminal,
                          restoreFocusTo restoreBID: String? = nil) throws -> (String, String, String) {
+        try refuseHeadless()
         if term == .ghostty { return try runGhosttySpawn(command: command, restoreFocusTo: restoreBID) }
         let captured = try runOsascriptCapturing(
             appleScript(for: term, shellCommand: command, restoreFocusTo: restoreBID))

@@ -15,8 +15,9 @@ import DiplomatCore
 /// book never overlap.
 ///
 /// It reaches the at-capacity branch honestly — a real `dispatchAgent` call against
-/// a real cap — so it never spawns an agent, needs no `gh` auth and no terminal
-/// automation, and can run on a CI runner:
+/// a real cap — and a dispatch that gets past it is refused its terminal
+/// (`AgentSpawner.refuseHeadless`), so it never spawns an agent, needs no `gh` auth and
+/// no terminal automation, and can run on a CI runner:
 ///
 ///   DIPLOMAT_QUEUE_TEST=1 swift run Diplomat
 ///
@@ -80,8 +81,8 @@ enum QueueTest {
         /// Stand one automatic agent up, the way a dispatch books it: a record with no
         /// pid yet, which is exactly what a spawn nothing has observed yet looks like —
         /// and which holds a bay of the cap from the moment it is written. Only for
-        /// `AgentState.spawnGrace`, though: past it the bay frees and the drain starts
-        /// REAL agents, so a section whose polls may outlast it dates it `ahead`.
+        /// `AgentState.spawnGrace`, though: past it the bay frees, and a section whose
+        /// polls may outlast it dates it `ahead` to keep its work queued.
         func bookAgent(_ number: Int, label: String = "", ahead: TimeInterval = 0) {
             let now = Date().timeIntervalSince1970
             AgentRegistry.createRun(
@@ -1673,6 +1674,32 @@ enum QueueTest {
               store.requestedWork.map(\.key) == [legacyInvKey]
                   && store.queuedTasks.map(\.id) == [legacyInvKey]
                   && feedDetails("queue-drop").count == dropsBefore + 2)
+
+        // 34. Past a free bay a dispatch reaches the terminal, which no self-test may
+        //     open (`AgentSpawner.refuseHeadless`): it fails, counted, and no agent runs.
+        emptyBook()
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.queueAutoRun = true
+        store.autoTaskLimit = 1
+        let refusedBefore = AgentSpawner.refusedTerminals
+        let freeBay = await store.dispatchAgent(job(91, author: "qt-outsider", counter: nil),
+                                                source: .auto)
+        // A terminal answers its AppleScript before the agent's shell starts.
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        probe.arguments = ["-f", agents.path]
+        let found = Pipe()
+        probe.standardOutput = found
+        try? probe.run()
+        probe.waitUntilExit()
+        let spawned = String(decoding: found.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .split(separator: "\n").count
+        check("a dispatch past a free bay fails, its terminal refused once, and starts no agent",
+              freeBay == .failed(AgentSpawner.SpawnError.headless.localizedDescription)
+                  && AgentSpawner.refusedTerminals == refusedBefore + 1 && spawned == 0
+                  && AgentRegistry.load().isEmpty)
         store.queueAutoRun = autoRun
         store.prAutofixEnabled = heldAsk.prAutofix
         store.reviewRequestsEnabled = heldAsk.reviewReqs
