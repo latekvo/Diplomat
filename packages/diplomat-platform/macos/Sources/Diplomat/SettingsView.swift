@@ -308,10 +308,17 @@ struct SettingsView: View {
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
     }
 
-    /// The line under a root. A relative path and a missing checkout are judged before
-    /// the resolved list is asked, since the list stands the configured repo in for a
-    /// lone root that has no remote. Mirrors `settingsview._refresh_repo_ui`.
     private func rootStatus(_ i: Int, _ raw: String) -> (text: String, warn: Bool) {
+        SettingsView.rootStatus(i, raw, roots: store.roots, guessed: store.rootsGuessed)
+    }
+
+    /// The line under the `i`th root, `roots` being the resolved ones and `guessed`
+    /// whether they are a guess (`RepoRoots.guessed`). A relative path and a missing
+    /// checkout are judged before the resolved list is asked, since the list stands the
+    /// configured repo in for a lone root that has no remote, and for the first of
+    /// several none of which resolved. Mirrors `settingsview._refresh_repo_ui`.
+    nonisolated static func rootStatus(_ i: Int, _ raw: String, roots: [PRRef.LocalRepo],
+                                       guessed: Bool) -> (text: String, warn: Bool) {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return ("Blank - skipped", true) }
         switch RepoPaths.rootState(trimmed) {
@@ -325,7 +332,7 @@ struct SettingsView: View {
             break
         }
         let path = RepoRoots.expand(trimmed)
-        guard let root = store.roots.first(where: { $0.path == path }) else {
+        guard !guessed, let root = roots.first(where: { $0.path == path }) else {
             return ("No GitHub remote, or a repo an earlier root already names - skipped", true)
         }
         return (i == 0 ? "\(root.slug) - primary" : root.slug, false)

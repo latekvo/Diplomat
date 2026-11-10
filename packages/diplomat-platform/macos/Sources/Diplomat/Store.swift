@@ -181,6 +181,26 @@ final class Store: ObservableObject {
         roots.first { $0.slug.lowercased() == selectedRepo } ?? roots[0]
     }
 
+    /// Whether repo `slug` was taken out of the roots: every root resolved, and none is
+    /// that repo.
+    private func rootGone(_ slug: String) -> Bool {
+        rootsResolved && !roots.contains { $0.slug.lowercased() == slug.lowercased() }
+    }
+
+    /// `rootGone` for an ask's repo; an ask naming none runs in the primary root.
+    private func askRootGone(_ entry: RequestedWork) -> Bool {
+        !entry.repo.isEmpty && rootGone(entry.repo)
+    }
+
+    /// `rootGone` for the task queued as `key`: its item's repo, or for an investigation
+    /// the repo it was asked in.
+    func queuedRootGone(_ key: String) -> Bool {
+        if let slug = AgentTaskQueue.item(ofKey: key).flatMap(PRRef.splitItemKey)?.slug {
+            return rootGone(slug)
+        }
+        return requestedWork.first { $0.key == key }.map(askRootGone) ?? false
+    }
+
     /// The root an item key names, or nil for a repo no root is a checkout of.
     func root(ofItem item: String?) -> PRRef.LocalRepo? {
         guard let slug = item.flatMap(PRRef.splitItemKey)?.slug else { return nil }
@@ -3063,7 +3083,7 @@ final class Store: ObservableObject {
         let polled = Set((read ?? roots).map { $0.slug.lowercased() })
         func outside(_ entry: QueuedAgentTask) -> Bool {
             guard let slug = AgentTaskQueue.item(ofKey: entry.id).flatMap(PRRef.splitItemKey)?
-                .slug.lowercased() else { return false }
+                .slug.lowercased() else { return queuedRootGone(entry.id) }
             return !polled.contains(slug)
                 || (entry.job.auditAction == "review-req"
                     && rootsUnread.contains("\(Store.reviewRequestsRead):\(slug)"))
@@ -3202,8 +3222,9 @@ final class Store: ObservableObject {
         /// names nobody (my own PRs, an association scope).
         let author: String
         let config: RequestedConfig
-        /// The lowercased slug of the repo the PR or issue is in, whose root the ask runs
-        /// in; "" for an investigation, which is in none.
+        /// The lowercased slug of the repo the PR or issue is in, or an investigation is
+        /// about, whose root the ask runs in; "" for an investigation stored before asks
+        /// named one, which runs in the primary root.
         var repo: String
 
         /// This ask's identity everywhere it has one: the queued task's id, the row
@@ -3442,7 +3463,9 @@ final class Store: ObservableObject {
     /// to exercise the offer without a live GitHub fetch.
     func offerRequestedWork() {
         for entry in requestedWork {
-            if let task = requestedTask(entry) {
+            // An investigation, or an ask stored without its home, would still run in
+            // the primary root: its repo leaving the roots drops it all the same.
+            if let task = requestedTask(entry), !askRootGone(entry) {
                 stagedQueue.append(task)
             } else if rootsResolved {
                 forgetRequested(entry.key)

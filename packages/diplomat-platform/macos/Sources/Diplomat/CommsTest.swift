@@ -97,6 +97,8 @@ enum CommsTest {
                                author: "dave", isOpen: true, state: "OPEN"),
             90046: CommsTarget(number: 90046, url: "https://github.com/o/r/pull/90046",
                                author: "dave", isOpen: true, state: "OPEN"),
+            90047: CommsTarget(number: 90047, url: "https://github.com/o/r/pull/90047",
+                               author: "dave", isOpen: true, state: "OPEN"),
             90101: CommsTarget(number: 90101, url: "https://github.com/o/r/pull/90101",
                              author: "dave", isOpen: true, state: "OPEN"),
             90102: CommsTarget(number: 90102, url: "https://github.com/o/r/pull/90102",
@@ -325,6 +327,8 @@ enum CommsTest {
         check("…and survives the encode a restart reads back",
               reloaded != nil && reloaded?.label == live?.label
                 && reloaded?.config.buildPrompt() == live?.config.buildPrompt())
+        check("…naming the repo it is about, so its leaving the roots drops it",
+              live?.repo == "o/r" && reloaded?.repo == "o/r")
         if case .investigate(let cfg)? = reloaded?.config {
             check("…as an investigation of that message",
                   cfg.messageID == askInvestigate.message.id
@@ -557,6 +561,30 @@ enum CommsTest {
         check("…after which it holds the monitor's find no more", store.isHeld(held))
         store.reviewRequestsEnabled = true
         store.queuedTasks.removeAll { $0.id == "review-req:o/r#90043" }
+
+        // Kept for its ping, a find whose repo left the roots would wait forever: the
+        // drain starts nothing outside them, and no monitor offers it again.
+        let goneFind = monitorFind("review-req", 90047, "Review-req · #90047 (@dave)")
+        let queueBeforeGone = store.queuedTasks
+        store.queuedTasks = [goneFind] + store.queuedTasks
+        let askRootGone = item(.review, 90047)
+        await apply([askRootGone])
+        let elsewhereRoot = checkout("elsewhere", remote: "o/elsewhere")
+        await useRoots([elsewhereRoot, scratch.appendingPathComponent("roots/unresolved").path])
+        await store.refreshRoots()
+        store.commitQueue()
+        check("a find a ping took stays queued while its repo may be a root that failed to resolve",
+              ids().contains("review-req:o/r#90047")
+                && outcome(askRootGone) == "already queued, at the front of its band")
+        await useRoots([elsewhereRoot])
+        await store.refreshRoots()
+        store.commitQueue()
+        check("…and leaves the queue, said, once every root resolved and none is its repo",
+              !ids().contains("review-req:o/r#90047")
+                && outcome(askRootGone) == "\(Store.commsLeftQueueOutcome) (review-req:o/r#90047)")
+        await useRoots([primaryRoot])
+        await store.refreshRoots()
+        store.queuedTasks = queueBeforeGone
 
         // The queue's dispatch of a find a ping took starts it, under its row's label.
         let queuedTwin = monitorFind("review-req", 90046, "Review-req · #90046 (@dave)")
