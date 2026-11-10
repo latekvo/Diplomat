@@ -1,0 +1,113 @@
+{
+  "data": {
+    "search": {
+      "nodes": [
+        {
+          "number": 21,
+          "title": "Two reviewers, one swapped out",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/21",
+          "author": {
+            "login": "bob"
+          },
+          "authorAssociation": "MEMBER",
+          "headRefOid": "5555555555555555555555555555555555555555",
+          "timelineItems": {
+            "nodes": [
+              {
+                "createdAt": "2026-11-05T09:00:00+01:00",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              },
+              {
+                "createdAt": "2026-11-05T09:00:00+01:00",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "dave"
+                }
+              },
+              {
+                "createdAt": "2026-11-05T11:00:00+01:00",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "erin"
+                }
+              }
+            ]
+          },
+          "reviews": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "dave"
+                },
+                "submittedAt": "2026-11-05T12:00:00+01:00"
+              },
+              {
+                "author": {
+                  "login": "carol"
+                },
+                "submittedAt": "2026-11-05T13:00:00+01:00"
+              }
+            ]
+          },
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "carol"
+                },
+                "createdAt": "2026-11-05T15:00:00+01:00"
+              },
+              {
+                "author": null,
+                "createdAt": "2026-11-05T16:00:00+01:00"
+              }
+            ]
+          },
+          "files": {
+            "nodes": [
+              {
+                "path": "skills/y/SKILL.md"
+              },
+              {
+                "path": "src/b.rs"
+              }
+            ]
+          }
+        },
+        {
+          "number": 20,
+          "title": "Outside author",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/20",
+          "author": {
+            "login": "Zed"
+          },
+          "authorAssociation": "NONE",
+          "headRefOid": "6666666666666666666666666666666666666666",
+          "timelineItems": {
+            "nodes": [
+              {
+                "createdAt": "2026-11-04T09:00:00+01:00",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              }
+            ]
+          },
+          "reviews": {
+            "nodes": []
+          },
+          "comments": {
+            "nodes": []
+          },
+          "files": {
+            "nodes": []
+          }
+        }
+      ]
+    }
+  }
+}

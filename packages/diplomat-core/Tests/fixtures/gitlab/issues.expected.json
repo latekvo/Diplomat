@@ -1,0 +1,93 @@
+{
+  "data": {
+    "repository": {
+      "issues": {
+        "nodes": [
+          {
+            "number": 5,
+            "title": "Crash from an outsider",
+            "url": "https://gitlab.example.com/group/sub/proj/-/issues/5",
+            "createdAt": "2026-11-07T09:00:00+01:00",
+            "updatedAt": "2026-11-08T09:00:00+01:00",
+            "authorAssociation": "NONE",
+            "author": {
+              "login": "zed"
+            },
+            "assignees": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": [
+                {
+                  "name": "bug"
+                },
+                {
+                  "name": "ios"
+                }
+              ]
+            },
+            "comments": {
+              "totalCount": 2,
+              "nodes": [
+                {
+                  "authorAssociation": "MEMBER"
+                },
+                {
+                  "authorAssociation": "NONE"
+                }
+              ]
+            }
+          },
+          {
+            "number": 4,
+            "title": "Member's own, assigned",
+            "url": "https://gitlab.example.com/group/sub/proj/-/issues/4",
+            "createdAt": "2026-11-06T09:00:00+01:00",
+            "updatedAt": "2026-11-06T09:00:00+01:00",
+            "authorAssociation": "MEMBER",
+            "author": {
+              "login": "Alice"
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "login": "bob"
+                }
+              ]
+            },
+            "labels": {
+              "nodes": []
+            },
+            "comments": {
+              "totalCount": 0,
+              "nodes": []
+            }
+          },
+          {
+            "number": 3,
+            "title": "Deleted author",
+            "url": "https://gitlab.example.com/group/sub/proj/-/issues/3",
+            "createdAt": "2026-11-05T09:00:00+01:00",
+            "updatedAt": "2026-11-05T10:00:00+01:00",
+            "authorAssociation": "NONE",
+            "author": null,
+            "assignees": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": []
+            },
+            "comments": {
+              "totalCount": 1,
+              "nodes": [
+                {
+                  "authorAssociation": "NONE"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

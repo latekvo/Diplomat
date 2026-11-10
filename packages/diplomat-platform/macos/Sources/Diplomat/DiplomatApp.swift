@@ -458,12 +458,20 @@ enum SingleInstance {
 
 /// Prints every tool's output to stdout — the GUI's data layer, exercised end to end.
 enum Dump {
+    /// The first repo root and who is signed in to its host.
+    static func primary() async throws -> (root: PRRef.LocalRepo, me: String) {
+        let (owner, repo) = CoreAssets.repoCoordinates()
+        let root = RepoPaths.roots.first ?? PRRef.LocalRepo(owner: owner, repo: repo, path: "")
+        let me = root.isGitLab ? try await API.fetchGitLabViewer(host: root.host)
+                               : try await API.fetchViewerLogin()
+        return (root, me)
+    }
+
     static func run() async {
         do {
-            let me = try await API.fetchViewerLogin()
-            let (owner, repo) = CoreAssets.repoCoordinates()
-            let prs = try await API.fetchOpenPRs(owner: owner, repo: repo)
-            let issues = try await API.fetchOpenIssues(owner: owner, repo: repo)
+            let (root, me) = try await primary()
+            let prs = try await API.fetchOpenPRs(root)
+            let issues = try await API.fetchOpenIssues(root)
             print("== viewer: @\(me) · open PRs: \(prs.count) · open issues: \(issues.count) ==\n")
 
             let t1 = Filters.skillPRs(prs).sorted { $0.number > $1.number }
@@ -512,10 +520,9 @@ enum Dump {
     /// Exercises the reverse-lookup path through the real Store logic.
     static func lookup(_ n: Int) async {
         do {
-            let me = try await API.fetchViewerLogin()
-            let (owner, repo) = CoreAssets.repoCoordinates()
-            let prs = try await API.fetchOpenPRs(owner: owner, repo: repo)
-            let issues = try await API.fetchOpenIssues(owner: owner, repo: repo)
+            let (root, me) = try await primary()
+            let prs = try await API.fetchOpenPRs(root)
+            let issues = try await API.fetchOpenIssues(root)
             let r = await MainActor.run { () -> LookupResult in
                 let s = Store()
                 s.me = me
@@ -835,15 +842,16 @@ enum Dump {
     /// prompts the monitor would spawn. Opens no terminal.
     static func autofixPoll() async {
         do {
-            let me = try await API.fetchViewerLogin()
-            let (owner, repo) = CoreAssets.repoCoordinates()
-            let snaps = try await AutofixMonitor.fetchSnapshots(owner: owner, repo: repo, me: me)
-            print("== autofix poll: @\(me) · \(owner)/\(repo) · \(snaps.count) open PRs ==\n")
+            let (root, me) = try await Dump.primary()
+            let snaps = try await AutofixMonitor.fetchSnapshots(root: root, me: me)
+            print("== autofix poll: @\(me) · \(root.host)/\(root.slug) · \(snaps.count) open PRs ==\n")
             for s in snaps.sorted(by: { $0.number > $1.number }) {
                 print("  #\(s.number)  \(s.mergeable)  "
                     + "decision=\(s.reviewDecision.isEmpty ? "-" : s.reviewDecision)  "
                     + "unresolved=\(s.threadsUnresolved) iOwe=\(s.threadsIOwe)  \(s.isDraft ? "draft" : "ready")")
             }
+            let closed = try await AutofixMonitor.fetchClosedPRs(root: root)
+            print("\nrecently closed/merged PRs: \(closed.count)")
 
             // First-run: baseline seeds, nothing dispatched.
             let (baseEvents, fps) = AutofixDiff.compute(prior: [:], now: snaps)
@@ -874,17 +882,20 @@ enum Dump {
                     + "\(ev.contains(.conflict(conflicted)) ? "✓ conflict on #\(s.number)" : "✗")")
 
                 print("\n----- CONFLICT prompt it would spawn (#\(s.number)) -----")
-                print(ConflictConfig(target: .specific, me: me, specificPR: String(s.number)).buildPrompt())
+                var conflict = ConflictConfig(target: .specific, me: me, specificPR: String(s.number))
+                conflict.home = root
+                print(conflict.buildPrompt())
                 print("\n----- REVIEW prompt it would spawn (#\(s.number), Deep · known-mine · flags off/off/on) -----")
-                print(ReviewConfig(depth: "deep", target: .specific, me: me,
-                                   markReady: false, leaveReviews: false, replyToReviews: true,
-                                   specificPR: String(s.number), specificAuthor: .mine).buildPrompt())
+                var review = ReviewConfig(depth: "deep", target: .specific, me: me,
+                                          markReady: false, leaveReviews: false, replyToReviews: true,
+                                          specificPR: String(s.number), specificAuthor: .mine)
+                review.home = root
+                print(review.buildPrompt())
             }
 
             // Review-request feed: PRs where someone asked for MY review, with the
             // owe-a-review decision (request newer than my last review).
-            let reqs = try await AutofixMonitor.fetchReviewRequests(owner: owner, repo: repo, me: me,
-                                                                    includeFiles: true)
+            let reqs = try await AutofixMonitor.fetchReviewRequests(root: root, me: me, includeFiles: true)
             let policy = VerdictPolicy()   // default (all suppressors on) for the dump
             print("\n== review-requested-of-me: \(reqs.count) open PR(s) ==")
             let nowStamp = Date()
@@ -922,14 +933,16 @@ enum Dump {
             } ?? false
             print("\n----- COMPREHENSIVE REVIEW prompt (review-requested #\(sample), max · leave comments · "
                 + "\(sampleVerdict ? "→ VERDICT" : "→ NO verdict")) -----")
-            print(ReviewConfig(depth: "max", target: .specific, me: me,
-                               markReady: false, leaveReviews: true, replyToReviews: false,
-                               specificPR: String(sample), finalPass: sampleVerdict,
-                               specificAuthor: .theirs).buildPrompt())
+            var comprehensive = ReviewConfig(depth: "max", target: .specific, me: me,
+                                             markReady: false, leaveReviews: true, replyToReviews: false,
+                                             specificPR: String(sample), finalPass: sampleVerdict,
+                                             specificAuthor: .theirs)
+            comprehensive.home = root
+            print(comprehensive.buildPrompt())
 
             // New community issues: the scan the monitor runs, against a mark a week back
             // (a live mark is the newest issue, which would show nothing).
-            let open = try await API.fetchOpenIssues(owner: owner, repo: repo)
+            let open = try await API.fetchOpenIssues(root)
             let weekAgo = Date().addingTimeInterval(-7 * 86400)
             let scan = Filters.newCommunityIssues(open, since: weekAgo, now: Date())
             print("\n== new community issues: \(scan.fresh.count) of \(open.count) open issue(s) "
@@ -942,7 +955,9 @@ enum Dump {
             print("→ next mark: \(scan.since)")
             if let first = scan.fresh.first {
                 print("\n----- COMMUNITY FIX prompt (#\(first.number)) -----")
-                print(IssueConfig(target: .contributors, me: me).forIssue(first.number).buildPrompt())
+                var fix = IssueConfig(target: .contributors, me: me).forIssue(first.number)
+                fix.home = root
+                print(fix.buildPrompt())
             }
 
             // Mesh coordination: every machine scans and routes each find through

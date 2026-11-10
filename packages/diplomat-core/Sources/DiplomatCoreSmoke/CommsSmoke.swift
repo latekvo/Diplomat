@@ -3274,7 +3274,7 @@ private func multiRepoSmoke() throws {
     check(try settings(#"{"owner":"Software-Mansion","repo":"Argent"}"#).repos == [primary]
           && (try settings("{}")).repos == [primary],
           "settings saved before several repos read as the one they name, else config.json's")
-    check(try settings(#"{"repos":["Software-Mansion/Argent"," latekvo/diplomat ","bad","","a/b/c","#
+    check(try settings(#"{"repos":["Software-Mansion/Argent"," latekvo/diplomat ","bad","","a//c","/b","#
                        + #""software-mansion/argent"],"owner":"x","repo":"y"}"#).repos == [primary, second],
           "repos win over owner/repo, lowercased, without the blank, malformed and repeated")
     let encoded = String(decoding: try JSONEncoder().encode(two), as: UTF8.self)

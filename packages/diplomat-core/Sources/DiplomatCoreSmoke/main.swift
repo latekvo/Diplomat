@@ -256,9 +256,10 @@ for url in ["git@github.com:software-mansion/radon.git", "https://github.com/sof
             "https://github.com/software-mansion/radon.git/", "ssh://git@github.com/software-mansion/radon.git",
             "https://user@github.com/software-mansion/radon.git",
             "ssh://git@github.com:22/software-mansion/radon.git"] {
-    check(PRRef.LocalRepo.coordinates(remoteURL: url) ?? ("", "") == ("software-mansion", "radon"), url)
+    check(PRRef.LocalRepo.coordinates(remoteURL: url) ?? ("", "", "")
+          == ("github.com", "software-mansion", "radon"), url)
 }
-check(PRRef.LocalRepo.coordinates(remoteURL: "git@gitlab.com:software-mansion/radon.git") == nil)
+check(PRRef.LocalRepo.coordinates(remoteURL: "git@bitbucket.org:software-mansion/radon.git") == nil)
 check(PRRef.LocalRepo.coordinates(remoteURL: "https://github.com.evil.io/a/b") == nil)
 check(PRRef.LocalRepo.coordinates(remoteURL: "/srv/git/radon.git") == nil)
 let remotes = """
@@ -269,7 +270,9 @@ remote.upstream.url https://github.com/software-mansion/radon.git
 remote.dup.url https://github.com/Software-Mansion/Radon
 """
 check(PRRef.LocalRepo.entries(path: "/r", remotes: remotes).map(\.slug)
-      == ["software-mansion/radon", "me/radon", "me/thing"])
+      == ["software-mansion/radon", "me/radon", "me/thing", "x/y"]
+      && PRRef.LocalRepo.entries(path: "/r", remotes: remotes).map(\.host)
+      == ["github.com", "github.com", "github.com", "gitlab.com"])
 check(PRRef.LocalRepo.entries(path: "/r", remotes: "").isEmpty)
 // A queued config stored before the field existed still decodes.
 var stored = try JSONSerialization.jsonObject(with: JSONEncoder().encode(single("337"))) as! [String: Any]
@@ -295,7 +298,7 @@ for url in ["https://gitlab.com/o/r/pull/1", "https://github.com.evil.io/o/r/pul
 }
 check(PRRef.splitItemKey("o/r.js#12").map { [$0.slug, String($0.number)] } == ["o/r.js", "12"],
       "an item key splits into its slug and number")
-for bad in ["o/r#x", "or#1", "o/r/x#1", "/r#1", "o/#1", "#1", "o/r#", "o/r#+1", "12"] {
+for bad in ["o/r#x", "or#1", "o//x#1", "o/r/#1", "/r#1", "o/#1", "#1", "o/r#", "o/r#+1", "12"] {
     check(PRRef.splitItemKey(bad) == nil, "\(bad) is not an item key")
 }
 check(PRRef.migrateItemKey("12", primary: "O/R") == "o/r#12"
@@ -327,14 +330,17 @@ do {
     let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
     let remotes = ["/w/fork": fork, "/w/radon": radonRemotes, "/w/plain": "",
                    "/w/gitlab": "remote.origin.url git@gitlab.com:x/y.git",
+                   "/w/bitbucket": "remote.origin.url git@bitbucket.org:x/y.git",
                    "\(home)/dev/radon2": radonRemotes]
-    let resolved = RepoRoots.resolve(paths: ["/w/fork", "/w/missing", "/w/radon", "/w/gitlab"],
+    let resolved = RepoRoots.resolve(paths: ["/w/fork", "/w/missing", "/w/radon", "/w/bitbucket",
+                                             "/w/gitlab"],
                                      remotes: remotes, configured: cfgSlug)
     check(resolved == [PRRef.LocalRepo(owner: "software-mansion", repo: "argent", path: "/w/fork"),
-                       PRRef.LocalRepo(owner: "software-mansion", repo: "radon", path: "/w/radon")],
+                       PRRef.LocalRepo(owner: "software-mansion", repo: "radon", path: "/w/radon"),
+                       PRRef.LocalRepo(owner: "x", repo: "y", path: "/w/gitlab", host: "gitlab.com")],
           "a fork clone (origin me/argent) is the configured repo, named as configured, not by "
-          + "its sibling remote; a path that is no checkout or has no GitHub remote is "
-          + "skipped: \(resolved)")
+          + "its sibling remote; a gitlab.com remote resolves to itself; a path that is no "
+          + "checkout or has neither a GitHub nor a GitLab remote is skipped: \(resolved)")
     let siblings = ["/radon": "remote.origin.url https://github.com/o/radon\n"
                         + "remote.argent.url https://github.com/\(cfgSlug.owner)/\(cfgSlug.repo)\n"
                         + "remote.fork.url https://github.com/me/argent",
@@ -381,19 +387,27 @@ do {
     check(RepoRoots.allResolve(paths: ["/w/radon", "~/dev/radon2"], remotes: remotes)
           && !RepoRoots.allResolve(paths: ["/w/radon", "/w/missing"], remotes: remotes)
           && !RepoRoots.allResolve(paths: ["/w/radon", "/w/plain"], remotes: remotes)
-          && !RepoRoots.allResolve(paths: ["/w/gitlab"], remotes: remotes),
-          "every path resolves only while each has a GitHub remote")
+          && !RepoRoots.allResolve(paths: ["/w/bitbucket"], remotes: remotes)
+          && RepoRoots.allResolve(paths: ["/w/gitlab"], remotes: remotes),
+          "every path resolves only while each has a GitHub or GitLab remote")
     let pair = ["/src/r", "/src/other"]
     let both = ["/src/r": "remote.origin.url https://github.com/o/r",
                 "/src/other": "remote.origin.url https://github.com/o/other"]
+    let otherFirst = ["/src/r": "remote.origin.url https://bitbucket.org/o/r",
+                      "/src/other": "remote.origin.url https://github.com/o/other"]
     let gitlabFirst = ["/src/r": "remote.origin.url https://gitlab.com/o/r",
                        "/src/other": "remote.origin.url https://github.com/o/other"]
     check(RepoRoots.primaryResolves(paths: pair, remotes: both)
           && !RepoRoots.guessed(paths: pair, remotes: both),
           "both paths resolving: the first root is the first path's, and not a guess")
-    check(!RepoRoots.primaryResolves(paths: pair, remotes: gitlabFirst)
-          && !RepoRoots.guessed(paths: pair, remotes: gitlabFirst),
-          "a first path with only a GitLab remote is no primary, the second still resolving")
+    check(!RepoRoots.primaryResolves(paths: pair, remotes: otherFirst)
+          && !RepoRoots.guessed(paths: pair, remotes: otherFirst),
+          "a first path with only a Bitbucket remote is no primary, the second still resolving")
+    check(RepoRoots.primaryResolves(paths: pair, remotes: gitlabFirst)
+          && !RepoRoots.guessed(paths: pair, remotes: [
+              "/src/r": gitlabFirst["/src/r"]!,
+              "/src/other": "remote.origin.url https://gitlab.example.com/g/sub/other"]),
+          "a first path with a GitLab remote is the primary, and two GitLab paths no guess")
     check(!RepoRoots.primaryResolves(paths: pair, remotes: [:])
           && RepoRoots.guessed(paths: pair, remotes: [:]),
           "none of several resolving: no primary, and the one root a guess")
@@ -3776,6 +3790,7 @@ print("comms assertions passed")
 try await tasksSmoke()
 try await goalsSmoke()
 print("tasks assertions passed")
+try await gitlabSmoke()
 
 // ---- Golden prompts (cross-platform parity) ----
 // Every prompt mode both front-ends can assemble is compared byte-for-byte against a
@@ -3785,6 +3800,9 @@ print("tasks assertions passed")
 // DiplomatCoreSmoke.
 section("golden prompts")
 let goldenMe = "testuser"
+// A GitLab home: the one input the GitLab goldens add to their GitHub twins.
+let goldenGitLab = PRRef.LocalRepo(owner: "group/sub", repo: "proj", path: "/w/proj",
+                                   host: "gitlab.example.com")
 let goldenModes: [(String, String)] = [
     ("review-mine-max", ReviewConfig(depth: "max", me: goldenMe).buildPrompt()),
     ("review-user-max", ReviewConfig(depth: "max", target: .someone, username: "someuser",
@@ -3818,6 +3836,13 @@ let goldenModes: [(String, String)] = [
         owner: "software-mansion", repo: "argent", login: goldenMe))),
     ("comms-classifier-multi", CommsClassifier.prompt(settings: CommsSettings(
         repos: ["software-mansion/argent", "latekvo/diplomat"], login: goldenMe))),
+    ("review-single-gitlab", { var c = ReviewConfig(depth: "max", target: .specific, me: goldenMe,
+                                                    specificPR: "337")
+                               c.home = goldenGitLab
+                               return c.buildPrompt() }()),
+    ("issues-single-gitlab", { var c = IssueConfig(target: .specific, me: goldenMe, specificIssue: "421")
+                               c.home = goldenGitLab
+                               return c.buildPrompt() }()),
 ]
 let goldenDir = try CoreAssets.assetsDir().appendingPathComponent("golden-prompts")
 if ProcessInfo.processInfo.environment["DIPLOMAT_GOLDEN_WRITE"] == "1" {
@@ -4157,8 +4182,9 @@ do {
 if ProcessInfo.processInfo.environment["DIPLOMAT_DUMP"] == "1" {
     section("live gh dump (cross-check vs Python)")
     let viewer = try await API.fetchViewerLogin()
-    let realPRs = try await API.fetchOpenPRs(owner: cfg.owner, repo: cfg.repo)
-    let realIssues = try await API.fetchOpenIssues(owner: cfg.owner, repo: cfg.repo)
+    let configured = PRRef.LocalRepo(owner: cfg.owner, repo: cfg.repo, path: "")
+    let realPRs = try await API.fetchOpenPRs(configured)
+    let realIssues = try await API.fetchOpenIssues(configured)
     print("viewer @\(viewer) · PRs \(realPRs.count) · issues \(realIssues.count)")
     for kind in ToolKind.allCases {
         let c = ToolData.count(for: kind, prs: realPRs, issues: realIssues, me: viewer)

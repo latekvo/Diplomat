@@ -488,12 +488,13 @@ extension Store {
             case .found(let t) where t.isOpen: pr = t
             case let other: return refused("comms-review", who, Store.notOpen("PR", n, root, other))
             }
-            let mine = !effectiveMe.isEmpty && pr.author.lowercased() == effectiveMe.lowercased()
+            let login = (try? await me(for: root)) ?? ""
+            let mine = !login.isEmpty && pr.author.lowercased() == login.lowercased()
             if !mine, BanList.isBanned(pr.author, in: bannedAuthors) {
                 return refused("comms-review", who, "@\(pr.author) is banned, so "
                                + "\(Store.commsRef(n, in: root)) was not queued")
             }
-            var cfg = ReviewConfig(target: .specific, me: effectiveMe, specificPR: String(n),
+            var cfg = ReviewConfig(target: .specific, me: login, specificPR: String(n),
                                    specificAuthor: mine ? .mine : .theirs)
             cfg.home = root
             return queue(RequestedWork(number: n, url: pr.url, author: mine ? "" : pr.author,
@@ -512,7 +513,8 @@ extension Store {
                 return refused("comms-fix", who, "@\(issue.author) is banned, so "
                                + "\(Store.commsRef(n, in: root)) was not queued")
             }
-            var cfg = IssueConfig(target: .specific, me: effectiveMe, specificIssue: String(n))
+            var cfg = IssueConfig(target: .specific, me: (try? await me(for: root)) ?? "",
+                                  specificIssue: String(n))
             cfg.home = root
             return queue(RequestedWork(number: n, url: issue.url, author: issue.author,
                                        config: .issues(cfg)),
@@ -686,8 +688,10 @@ extension Store {
     }
 
     /// `gh pr|issue view`'s "no such number". "Could not resolve to a Repository" shares
-    /// the prefix but means the repo itself could not be seen.
+    /// the prefix but means the repo itself could not be seen, as GitLab's
+    /// "404 Project Not Found" does beside its "404 Not found".
     static func ghSaysNotFound(_ error: Error) -> Bool {
+        if case GHError.glabProcess(_, let stderr) = error { return stderr.contains("404 Not found") }
         guard case GHError.process(_, let stderr) = error else { return false }
         return stderr.contains("Could not resolve to") && stderr.contains("with the number of")
     }
@@ -697,9 +701,9 @@ extension Store {
         return flat.count > max ? String(flat.prefix(max - 1)) + "…" : flat
     }
 
-    /// The panel's last fetch (open work only) first, then `gh` for what it lacks: an
-    /// issue a filtered list left out, a PR opened since, a closed one. The panel lists
-    /// one root at a time, so only an entry of `root`'s counts.
+    /// The panel's last fetch (open work only) first, then `gh` (`glab` on GitLab) for what
+    /// it lacks: an issue a filtered list left out, a PR opened since, a closed one. The
+    /// panel lists one root at a time, so only an entry of `root`'s counts.
     ///
     /// `gh issue view` answers a PR's number with that PR, so only an `/issues/` url is
     /// an issue.
@@ -718,30 +722,40 @@ extension Store {
                                           isOpen: true, state: "OPEN"))
             }
         }
-        let verb = kind == .pr ? "pr" : "issue"
-        let args = [verb, "view", String(n), "--repo", root.slug,
+        let args: [String]
+        if root.isGitLab {
+            let project = root.slug.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? root.slug
+            args = ["api", "--hostname", root.host,
+                    "projects/\(project)/\(kind == .pr ? "merge_requests" : "issues")/\(n)"]
+        } else {
+            args = [kind == .pr ? "pr" : "issue", "view", String(n), "--repo", root.slug,
                     "--json", "number,url,author,state"]
+        }
         let data: Data
         do {
+            let raw: Data
             if Headless.active, let stub = Store.commsGHOverride {
-                data = try await stub(args)
+                raw = try await stub(args)
             } else {
-                data = try await GH.run(args)
+                raw = root.isGitLab ? try await GLab.run(args) : try await GH.run(args)
             }
+            data = root.isGitLab ? try GitLab.itemView(raw) : raw
         } catch {
             if Store.ghSaysNotFound(error) { return .missing }
             let why = (error as? LocalizedError)?.errorDescription ?? "\(error)"
             return .unasked(Store.snippet(why, max: 120))
         }
+        let tool = root.isGitLab ? "glab" : "gh"
         guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let state = obj["state"] as? String else {
-            return .unasked("gh printed no PR or issue")
+              let raw = obj["state"] as? String else {
+            return .unasked("\(tool) printed no PR or issue")
         }
         let url = obj["url"] as? String ?? ""
-        if kind == .issue, !url.contains("/issues/") { return .missing }
+        // GitLab numbers merge requests and issues apart, so its issue answer is an issue.
+        if kind == .issue, !root.isGitLab, !url.contains("/issues/") { return .missing }
         let author = (obj["author"] as? [String: Any])?["login"] as? String ?? ""
-        return .found(CommsTarget(number: n, url: url, author: author, isOpen: state == "OPEN",
-                                  state: state))
+        return .found(CommsTarget(number: n, url: url, author: author, isOpen: raw == "OPEN",
+                                  state: raw))
     }
 
     /// Logs only transitions: a dead login fails every poll, and a line per poll would bury

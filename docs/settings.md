@@ -120,13 +120,20 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   first is the *primary*. Blank = `~/dev/<repo>` for whichever repo
   [`assets/config.json`](../packages/diplomat-core/assets/config.json) targets, which
   **Add…** on a blank list keeps as the first root. Each
-  root is known by one GitHub repo, read from its remotes: the `assets/config.json`
-  repo if its `upstream` or `origin` (any remote, with neither) names it or a repo of
-  the same name under another owner (a fork's `origin`, an old owner's URL), else
-  `upstream`, else `origin`. A reading older than a
+  root is known by one GitHub or GitLab repo, read from its remotes: the
+  `assets/config.json` repo if its `upstream` or `origin` (any remote, with neither)
+  names it or a GitHub repo of the same name under another owner (a fork's `origin`, an
+  old owner's URL), else `upstream`, else `origin`. A remote is GitLab on gitlab.com, on
+  any host whose first label is `gitlab` (`gitlab.example.com`), and on every host
+  `glab` is configured for (the `hosts:` of its `config.yml`); a GitLab project's owner
+  is its whole namespace (`group/sub`). A GitLab root is read through `glab`, signed in
+  to its host, and "me" there is glab's user on that host, not the GitHub username
+  above; its agents are told to use `glab`. GitHub-only whatever the roots: Tasks
+  mirroring, the review audit, goal grouping and the username override. A GitLab root
+  is never the configured repo, so its work stays off the mesh. A reading older than a
   minute is taken again when next asked, so a checkout that appears later is picked up by
   the next poll. A row warns when the path isn't absolute, has no `.git`, or has no
-  GitHub remote - such a root is not watched, and two roots naming the same repo count
+  GitHub or GitLab remote - such a root is not watched, and two roots naming the same repo count
   once. A lone root stands for the `assets/config.json` repo even then; with several and
   none resolving, the monitors stand down, and while the first does not resolve, Comms
   waits (a bare `#N` would name the next root's issue). Every automatic job (the
@@ -141,7 +148,7 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
 - **Other repos** - more local checkouts, added with **Add…**, that are never watched.
   A PR or issue link (URL or `owner/repo#N`) pasted into a wizard may name any of them
   or any repo root: the prompt targets that repo and its agent starts in that
-  checkout. Each is known by its GitHub remotes (`upstream` is the one shown, then
+  checkout. Each is known by its GitHub and GitLab remotes (`upstream` is the one shown, then
   `origin`), so a fork clone takes links to both. A run in one of these never goes over
   the mesh: only the configured repo's root's work does (see [Diplomat Mesh](mesh.md)). Bare numbers and sweeps target the repo picked
   in the panel header.

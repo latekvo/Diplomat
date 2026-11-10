@@ -733,7 +733,7 @@ struct ContentView: View {
 
     private func lookupView(_ n: Int) -> some View {
         let r = store.lookup(n)
-        let link = r.url ?? "https://github.com/\(store.selectedRoot.slug)/issues/\(n)"
+        let link = r.url ?? store.selectedRoot.webURL(.issues, number: n)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("#\(n)").font(.title3.bold().monospaced())

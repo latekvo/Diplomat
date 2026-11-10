@@ -2,23 +2,24 @@ import Foundation
 import DiplomatCore
 
 /// The checkouts besides the repo root that the wizards accept links to (Settings →
-/// OTHER REPOS), each read for the GitHub repos its remotes name.
+/// OTHER REPOS), each read for the GitHub and GitLab repos its remotes name.
 enum LocalRepos {
     struct Checkout: Equatable {
         /// As entered; `~` is expanded only for the lookup and the spawn.
         let path: String
-        /// Its GitHub remotes, the one Settings names it by first. Empty for a path that
-        /// is no checkout or has no GitHub remote: listed, but no link resolves to it.
+        /// Its GitHub and GitLab remotes, the one Settings names it by first. Empty for a
+        /// path that is no checkout or has neither: listed, but no link resolves to it.
         let repos: [PRRef.LocalRepo]
     }
 
     /// One `git` call per path: keep it off the main actor.
     static func resolve(_ paths: [String]) -> [Checkout] {
-        paths.map { raw in
+        let hosts = GLab.configuredHosts()
+        return paths.map { raw in
             let path = (raw as NSString).expandingTildeInPath
             guard RepoPaths.isCheckout(path) else { return Checkout(path: raw, repos: []) }
-            return Checkout(path: raw, repos: PRRef.LocalRepo.entries(path: path,
-                                                                      remotes: remotes(of: path)))
+            return Checkout(path: raw, repos: PRRef.LocalRepo.entries(
+                path: path, remotes: remotes(of: path), gitlabHosts: hosts))
         }
     }
 

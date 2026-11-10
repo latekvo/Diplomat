@@ -1108,6 +1108,91 @@ enum QueueTest {
         store.pinRoots([rootA, rootB])
         check("with the configured repo in no root, nothing may",
               !store.meshRoutable(routed(rootA.path)) && !store.meshRoutable(routed(nil)))
+        let gitlabNamesake = PRRef.LocalRepo(owner: cfgOwner, repo: cfgRepo,
+                                             path: feed.appendingPathComponent("namesake").path,
+                                             host: "gitlab.example.com")
+        store.pinRoots([gitlabNamesake, rootB])
+        check("a GitLab project of the configured repo's name is not the configured repo",
+              !store.meshRoutable(routed(nil)) && !store.meshRoutable(checkout: gitlabNamesake.path))
+        store.pinRoots([rootA, rootB])
+
+        // 24a. "Me" in a GitLab root is glab's user on its host, read once; a read that
+        //      fails leaves it unknown, to be asked again.
+        let glabStub = feed.appendingPathComponent("glab")
+        let glabCalls = feed.appendingPathComponent("glab-calls")
+        try? ("#!/bin/sh\necho x >> '\(glabCalls.path)'\nprintf '%s\\n' \"$@\" > '\(feed.path)/glab-argv'\n"
+              + "cat '\(feed.path)/glab-out'\nexit 0\n")
+            .write(to: glabStub, atomically: true, encoding: .utf8)
+        chmod(glabStub.path, 0o755)
+        setenv("DIPLOMAT_GLAB", glabStub.path, 1)
+        func glabAnswers(_ s: String) {
+            try? s.write(to: feed.appendingPathComponent("glab-out"), atomically: true, encoding: .utf8)
+        }
+        func glabCallCount() -> Int {
+            ((try? String(contentsOf: glabCalls, encoding: .utf8)) ?? "").split(separator: "\n").count
+        }
+        func meIn(_ root: PRRef.LocalRepo) async -> String {
+            do { return try await store.me(for: root) }
+            catch { return "error: \((error as? LocalizedError)?.errorDescription ?? "\(error)")" }
+        }
+        glabAnswers(#"{"data":{"currentUser":null}}"#)
+        let onGitLab = PRRef.LocalRepo(owner: "g/sub", repo: "p", path: "", host: "gitlab.example.com")
+        let signedOut = await meIn(onGitLab)
+        check("a GitLab host glab is not signed in to has no me: \(signedOut)",
+              signedOut == "error: not signed in to gitlab.example.com"
+                && store.knownMe(for: onGitLab).isEmpty)
+        glabAnswers(#"{"data":{"currentUser":{"username":"gl-me"}}}"#)
+        let glFirst = await meIn(onGitLab)
+        let glSecond = await meIn(PRRef.LocalRepo(owner: "x", repo: "y", path: "", host: "gitlab.example.com"))
+        check("…once signed in, glab's user, asked once per host: \(glFirst) \(glabCallCount())",
+              glFirst == "gl-me" && glSecond == "gl-me" && glabCallCount() == 2
+                && store.knownMe(for: onGitLab) == "gl-me")
+        let overrideBefore = store.usernameOverride
+        store.usernameOverride = "alice"
+        check("…while a GitHub root's me stays the GitHub one",
+              await meIn(rootA) == "alice" && store.knownMe(for: rootA) == "alice"
+                && store.knownMe(for: nil) == "alice")
+        store.usernameOverride = overrideBefore
+
+        // 24a'. The monitors' reads of a GitLab root, through glab and the GitHub parsers,
+        //       on the shared parity fixtures.
+        let fixtures = (try? CoreAssets.assetsDir())?.deletingLastPathComponent()
+            .appendingPathComponent("Tests/fixtures/gitlab")
+        func fixture(_ name: String) -> String {
+            fixtures.flatMap { try? String(contentsOf: $0.appendingPathComponent(name), encoding: .utf8) } ?? ""
+        }
+        func searchNodes(_ name: String) -> Int {
+            let obj = (try? JSONSerialization.jsonObject(with: Data(fixture(name).utf8))) as? [String: Any]
+            let search = (obj?["data"] as? [String: Any])?["search"] as? [String: Any]
+            return (search?["nodes"] as? [Any])?.count ?? -1
+        }
+        func glabArgv() -> [String] {
+            ((try? String(contentsOf: feed.appendingPathComponent("glab-argv"), encoding: .utf8)) ?? "")
+                .split(separator: "\n").map(String.init)
+        }
+        glabAnswers(fixture("monitor-prs.input.json"))
+        let snaps = (try? await AutofixMonitor.fetchSnapshots(root: onGitLab, me: "gl-me")) ?? []
+        check("a GitLab root's open merge requests are snapshotted: \(snaps.count)",
+              !snaps.isEmpty && snaps.count == searchNodes("monitor-prs.expected.json")
+                && glabArgv().contains("path=g/sub/p") && glabArgv().contains("author=gl-me"))
+        glabAnswers(fixture("closed-prs.input.json"))
+        let closedMRs = (try? await AutofixMonitor.fetchClosedPRs(root: onGitLab)) ?? []
+        check("…its closed ones keyed by its nested slug: \(closedMRs.sorted())",
+              !closedMRs.isEmpty && closedMRs.count == searchNodes("closed-prs.expected.json")
+                && closedMRs.allSatisfy { $0.hasPrefix("g/sub/p#") })
+        glabAnswers(fixture("review-requests.input.json"))
+        let asks = (try? await AutofixMonitor.fetchReviewRequests(root: onGitLab, me: "gl-me",
+                                                                 includeFiles: true)) ?? []
+        check("…and its review requests: \(asks.count)",
+              !asks.isEmpty && asks.count == searchNodes("review-requests.expected.json")
+                && glabArgv().contains("reviewer=gl-me") && glabArgv().contains("withFiles=true"))
+        glabAnswers(#"{"data":{"project":{"mergeRequest":{"state":"merged","author":null}}}}"#)
+        let landed = await AgentProbes.mergedPRs(["g/sub/p#7"], roots: [rootA, onGitLab])
+        check("a GitLab root's merged merge request is asked of glab on its host",
+              { if case .present(let s) = landed { return s == ["g/sub/p#7"] }; return false }()
+                && glabArgv().contains("gitlab.example.com")
+                && glabArgv().contains("iid=7"))
+        unsetenv("DIPLOMAT_GLAB")
 
         // 24b. A review-request record outlives a poll its root's path failed to resolve
         //      for: o/other#7's run concluded long ago and the request is still owed.
@@ -1214,7 +1299,7 @@ enum QueueTest {
         store.requestedWork = []
         store.queuedTasks = []
         store.autofixPollError = nil
-        let guessedMessage = "no repo root in Settings resolves to a GitHub checkout"
+        let guessedMessage = "no repo root in Settings resolves to a GitHub or GitLab checkout"
         store.pinRoots([configuredRoot], complete: false, primary: false, guessed: true)
         for _ in 0..<50 {
             await store.runAutofixPollOnce()

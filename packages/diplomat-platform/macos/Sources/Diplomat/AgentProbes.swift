@@ -545,19 +545,21 @@ enum AgentProbes {
 
     // MARK: - GitHub
 
-    /// Which of these items (`PRRef.itemKey`) GitHub calls MERGED: the one terminal
-    /// outcome that outranks anything a process is doing. Each is asked of its own repo.
+    /// Which of these items (`PRRef.itemKey`) GitHub (or GitLab, for an item of a GitLab
+    /// root among `roots`) calls MERGED: the one terminal outcome that outranks anything a
+    /// process is doing. Each is asked of its own repo; one in no root is asked of GitHub.
     ///
     /// One `gh` call per PR, so this belongs on the slow refresh, not the process poll. A
     /// PR whose probe fails is simply absent from the answer; a partial answer is still
     /// positive evidence about the PRs it covers.
-    static func mergedPRs(_ items: Set<String>) async -> Observation<Set<String>> {
+    static func mergedPRs(_ items: Set<String>, roots: [PRRef.LocalRepo]) async -> Observation<Set<String>> {
         guard !items.isEmpty else { return .present([]) }
         var merged = Set<String>()
         for item in items.sorted() {
             guard let (slug, n) = PRRef.splitItemKey(item) else { continue }
-            let parts = slug.split(separator: "/").map(String.init)
-            if let state = try? await API.fetchPRState(number: n, owner: parts[0], repo: parts[1]),
+            let root = roots.first { $0.isGitLab && $0.slug.lowercased() == slug }
+                ?? PRRef.splitSlug(slug).map { PRRef.LocalRepo(owner: $0.owner, repo: $0.repo, path: "") }
+            if let root, let state = try? await API.fetchPRState(number: n, root: root),
                state == "MERGED" {
                 merged.insert(item)
             }

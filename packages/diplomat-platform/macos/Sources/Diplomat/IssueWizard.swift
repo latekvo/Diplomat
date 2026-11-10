@@ -78,7 +78,7 @@ struct IssueWizardView: View {
             depth: depth.id,
             target: target,
             username: username,
-            me: store.effectiveMe,
+            me: store.knownMe(for: store.selectedRoot),
             specificIssue: specificIssue,
             unassignedOnly: unassignedOnly,
             assignToMe: assignToMe,
@@ -165,8 +165,8 @@ struct IssueWizardView: View {
             }
             .transition(rowTransition)
         case .mine:
-            if !store.effectiveMe.isEmpty {
-                Text("issues opened by @\(store.effectiveMe)")
+            if !store.knownMe(for: store.selectedRoot).isEmpty {
+                Text("issues opened by @\(store.knownMe(for: store.selectedRoot))")
                     .font(.caption2).foregroundStyle(.secondary)
                     .transition(rowTransition)
             }

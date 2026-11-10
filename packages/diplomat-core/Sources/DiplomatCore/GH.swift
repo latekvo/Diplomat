@@ -1,13 +1,20 @@
 import Foundation
 
-/// Errors surfaced by the `gh` shell-out layer. Flaky-by-design: we just bubble
-/// the real failure up to the UI instead of trying to be clever.
+/// Errors surfaced by the `gh` and `glab` shell-out layers. Flaky-by-design: we just
+/// bubble the real failure up to the UI instead of trying to be clever.
 public enum GHError: LocalizedError {
     case ghNotFound
     case loginShellStalled(shell: String, seconds: TimeInterval)
     case process(code: Int32, stderr: String)
     case timeout(seconds: TimeInterval)
     case graphql(messages: [String])
+    case glabNotFound
+    case glabProcess(code: Int32, stderr: String)
+    case glabTimeout(seconds: TimeInterval)
+    /// A read that could not be made, or answered without what it asked about: a GitLab
+    /// project that does not exist or cannot be seen, no signed-in user, no such merge
+    /// request.
+    case unanswered(String)
 
     public var errorDescription: String? {
         switch self {
@@ -24,6 +31,15 @@ public enum GHError: LocalizedError {
             return "gh timed out after \(Int(seconds))s"
         case .graphql(let messages):
             return "GraphQL: \(messages.joined(separator: "; "))"
+        case .glabNotFound:
+            return "`glab` CLI not found. Install GitLab CLI and run `glab auth login`."
+        case .glabProcess(let code, let stderr):
+            let s = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "glab exited \(code): \(s.isEmpty ? "(no stderr)" : s)"
+        case .glabTimeout(let seconds):
+            return "glab timed out after \(Int(seconds))s"
+        case .unanswered(let message):
+            return message
         }
     }
 }
@@ -138,10 +154,20 @@ public enum GH {
         let stderr: String
     }
 
-    /// `run`, whatever the exit status. stdout/stderr are redirected to temp files so
-    /// large payloads can't deadlock a pipe buffer (and no cross-thread captures).
+    /// `run`, whatever the exit status.
     static func output(_ args: [String], timeout: TimeInterval = timeout) async throws -> Output {
         let path = try ghPath()
+        return try await execute(path, args, timeout: timeout,
+                                 timedOut: GHError.timeout(seconds: timeout),
+                                 failedToLaunch: { forget(path) })
+    }
+
+    /// Run the CLI at `path` with `args` for at most `timeout`, then `timedOut` is thrown.
+    /// stdout/stderr are redirected to temp files so large payloads can't deadlock a pipe
+    /// buffer (and no cross-thread captures). `failedToLaunch` runs when the binary would
+    /// not start. `GLab` runs through here too.
+    static func execute(_ path: String, _ args: [String], timeout: TimeInterval,
+                        timedOut: Error, failedToLaunch: @escaping () -> Void) async throws -> Output {
         let tmp = FileManager.default.temporaryDirectory
         let outURL = tmp.appendingPathComponent("diplomat-\(UUID().uuidString).out")
         let errURL = tmp.appendingPathComponent("diplomat-\(UUID().uuidString).err")
@@ -174,10 +200,10 @@ public enum GH {
             // own right then is still resumed exactly once. The handler must not hold
             // the deadline: the deadline holds the process, the process its handler,
             // and a launch that fails leaves nothing to break that ring.
-            let timedOut = Flag()
+            let expired = Flag()
             proc.terminationHandler = { p in
-                if timedOut.isSet {
-                    cont.resume(throwing: GHError.timeout(seconds: timeout))
+                if expired.isSet {
+                    cont.resume(throwing: timedOut)
                     return
                 }
                 let outData = (try? Data(contentsOf: outURL)) ?? Data()
@@ -188,13 +214,13 @@ public enum GH {
             // Darwin keeps the handler of a process that never ran until it is cleared.
             do { try proc.run() } catch {
                 proc.terminationHandler = nil
-                forget(path)
+                failedToLaunch()
                 cont.resume(throwing: error)
                 return
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 guard proc.isRunning else { return }
-                timedOut.set()
+                expired.set()
                 stop(proc)
             }
         }

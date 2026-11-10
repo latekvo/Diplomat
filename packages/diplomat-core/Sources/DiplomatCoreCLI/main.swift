@@ -175,11 +175,12 @@ if args[1] == "agent-registry" {
 func str(_ key: String, _ def: String = "") -> String { obj[key] as? String ?? def }
 func flag(_ key: String, _ def: Bool) -> Bool { JSONInput.flag(obj[key], def) }
 
-/// One `{"owner", "repo", "path"}` object, or nil when it is not one.
+/// One `{"owner", "repo", "path"}` object, with `"host"` for a GitLab repo, or nil when it
+/// is not one.
 func localRepo(_ raw: Any?) -> PRRef.LocalRepo? {
     guard let d = raw as? [String: Any], let o = d["owner"] as? String,
           let r = d["repo"] as? String, let p = d["path"] as? String else { return nil }
-    return PRRef.LocalRepo(owner: o, repo: r, path: p)
+    return PRRef.LocalRepo(owner: o, repo: r, path: p, host: d["host"] as? String ?? PRRef.LocalRepo.github)
 }
 
 let localRepos: [PRRef.LocalRepo] = (obj["localRepos"] as? [Any] ?? []).compactMap(localRepo)
