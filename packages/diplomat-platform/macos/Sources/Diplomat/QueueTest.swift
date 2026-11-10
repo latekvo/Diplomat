@@ -1024,6 +1024,15 @@ enum QueueTest {
               store.requestedWork.map(\.key) == [fixA, fixB]
                   && store.requestedWork.map(\.repo) == ["o1/alpha", "o2/beta"]
                   && store.queuedTasks.first { $0.id == fixB }?.job.directory == rootB.path)
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.pinRoots([rootA])
+        store.queueCommunityIssues([filedIn(rootA, 81, minutes: 12)], root: rootA)
+        store.pinRoots([rootA, rootB])
+        store.queueCommunityIssues([filedIn(rootB, 83, minutes: 14), filedIn(rootB, 84, minutes: 15),
+                                    filedIn(rootB, 85, minutes: 16)], root: rootB)
+        check("a root removed and added back queues none of what was filed meanwhile",
+              store.requestedWork.isEmpty)
         store.communityIssuesEnabled = false
         store.requestedWork = []
         store.queuedTasks = []
@@ -1109,16 +1118,21 @@ enum QueueTest {
               Store.communityMarks(legacyMark, primary: "o1/alpha") == ["o1/alpha": legacyMark]
                   && Store.communityMarks(["o2/beta": legacyMark], primary: "o1/alpha")
                       == ["o2/beta": legacyMark])
-        let legacyAsk = Store.RequestedWork(number: 4, url: "https://github.com/o1/alpha/pull/4",
-                                            author: "", config: .review(sweep.forPR(4)))
+        let legacyAsks = [
+            Store.RequestedWork(number: 4, url: "https://github.com/o1/alpha/pull/4",
+                                author: "", config: .review(sweep.forPR(4))),
+            Store.RequestedWork(number: 5, url: "https://github.com/O2/Beta/pull/5",
+                                author: "", config: .review(sweep.forPR(5))),
+            Store.RequestedWork(number: 6, url: "", author: "", config: .review(sweep.forPR(6))),
+        ]
         var legacyJSON = (try? JSONSerialization.jsonObject(
-            with: JSONEncoder().encode([legacyAsk]))) as? [[String: Any]] ?? []
+            with: JSONEncoder().encode(legacyAsks))) as? [[String: Any]] ?? []
         legacyJSON = legacyJSON.map { var e = $0; e["repo"] = nil; return e }
         let decoded = Store.decodeRequestedWork(
-            try? JSONSerialization.data(withJSONObject: legacyJSON), primary: "o1/alpha")
-        check("an ask stored without its repo is the primary root's",
-              decoded.map(\.repo) == ["o1/alpha"]
-                  && decoded.map(\.key) == [AgentTaskQueue.key(auditAction: "review", item: "o1/alpha#4")])
+            try? JSONSerialization.data(withJSONObject: legacyJSON), configured: "O1/Alpha")
+        check("an ask stored without its repo is its link's, else the configured repo's",
+              decoded.map(\.repo) == ["o1/alpha", "o2/beta", "o1/alpha"]
+                  && decoded.first?.key == AgentTaskQueue.key(auditAction: "review", item: "o1/alpha#4"))
         store.pinRoots([argent])
 
         // 13. The redirect above is the only thing between a run of this test and the

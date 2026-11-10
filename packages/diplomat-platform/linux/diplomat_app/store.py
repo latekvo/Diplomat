@@ -1073,12 +1073,21 @@ class Store(QObject):
             return []
         if not isinstance(rows, list):
             return []
-        parsed = [autofix.RequestedWork.from_json(r) for r in rows if isinstance(r, dict)]
-        primary = self._primary().slug.lower()
-        # A row single-repo builds stored names no repo: it was the primary's.
-        return [r if r.repo or r.action == autofix.QUEUE_INVESTIGATE_ACTION
-                else dataclasses.replace(r, repo=primary)
-                for r in parsed if r is not None]
+        parsed = [w for r in rows if isinstance(r, dict)
+                  if (w := autofix.RequestedWork.from_json(r)) is not None]
+        legacy = [not w.repo and w.action != autofix.QUEUE_INVESTIGATE_ACTION
+                  for w in parsed]
+        if not any(legacy):
+            return parsed
+        # A row a single-repo build stored names no repo: its link's, else the one repo
+        # those builds knew. Written back so a later primary root never re-homes it.
+        cfg = core.config()
+        configured = f"{cfg['owner']}/{cfg['repo']}".lower()
+        migrated = [dataclasses.replace(
+                        w, repo=(item_key_from_url(w.url) or configured).partition("#")[0])
+                    if old else w for w, old in zip(parsed, legacy)]
+        self.requested_work = migrated
+        return migrated
 
     @requested_work.setter
     def requested_work(self, value: list[autofix.RequestedWork]) -> None:
@@ -1728,8 +1737,8 @@ class Store(QObject):
         dispatched, can be cancelled, and re-reads its issue when its turn comes.
 
         Each root keeps its own mark, and one with none is baselined on its first read,
-        so adding a root never queues its backlog. A root whose read failed keeps its
-        mark."""
+        so adding a root never queues its backlog. A removed root's mark is dropped, so
+        re-adding it does not either. A root whose read failed keeps its mark."""
         if not self.community_issues_enabled:
             return
         marks = self._community_marks()
@@ -1764,7 +1773,9 @@ class Store(QObject):
                 if queued:
                     activity.log("auto", "community-issue", f"{who} - fix queued")
             marks[slug] = mark.isoformat()
-        self._settings.setValue("communityIssuesSince", json.dumps(marks))
+        current = {r.slug.lower() for r in roots}
+        self._settings.setValue("communityIssuesSince", json.dumps(
+            {k: v for k, v in marks.items() if k in current}))
 
     def _read_goal_work(self) -> list[tuple[str, dict]]:
         """Re-read the tasks, keep the PRs whose threads an ``auto`` goal wants fixed

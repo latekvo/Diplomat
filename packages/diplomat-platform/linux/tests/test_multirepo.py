@@ -161,6 +161,23 @@ def test_each_root_keeps_its_own_issue_mark_and_a_new_one_starts_now(quiet, monk
         ("o/r", 11), ("o/r", 12), ("o/other", 22)]
 
 
+def test_a_root_removed_and_added_back_queues_none_of_its_backlog(quiet, monkeypatch):
+    quiet.community_issues_enabled = True
+    _by_repo(monkeypatch, "fetch_open_issues", {
+        "o/r": [_issue(PRIMARY, 11, NOW - timedelta(minutes=30))],
+        "o/other": [_issue(SECOND, 21, NOW - timedelta(minutes=30))]})
+    quiet._poll_community_issues([PRIMARY, SECOND])
+    quiet._poll_community_issues([PRIMARY])
+    assert set(json.loads(quiet._settings.value("communityIssuesSince"))) == {"o/r"}
+
+    later = NOW + timedelta(hours=1)
+    _by_repo(monkeypatch, "fetch_open_issues", {
+        "o/other": [_issue(SECOND, n, later + timedelta(minutes=n)) for n in (22, 23, 24)]})
+    quiet._poll_community_issues([PRIMARY, SECOND])
+
+    assert quiet.requested_work == []
+
+
 def test_state_from_a_single_repo_build_names_the_primary_root(quiet):
     s = quiet._settings
     s.setValue("queuedTaskOrder", ["conflicts:5", "review-req:o/other#6", "investigate:1.2"])
@@ -174,6 +191,31 @@ def test_state_from_a_single_repo_build_names_the_primary_root(quiet):
     for key in ("reviewReqAttempts", "myReviewAttempts", "myConflictAttempts"):
         assert sorted(quiet._load_attempts(key)) == ["o/other#7", "o/r#7"], key
     assert list(quiet._load_fingerprints()) == ["o/r#5"]
+
+
+def test_a_legacy_ask_keeps_its_repo_whichever_root_is_primary(store, monkeypatch):  # noqa: F811
+    """A row a single-repo build stored names no repo: its link's, else the configured
+    repo's, written back on the first read so no later primary re-homes it."""
+    from diplomat_runtime import core
+
+    cfg = core.config()
+    configured = f"{cfg['owner']}/{cfg['repo']}".lower()
+    home = LocalRepo(cfg["owner"], cfg["repo"], "/src/home")
+    review_cfg = {"kind": "review", "specificPR": "7", "depth": "deep"}
+    rows = [autofix.RequestedWork(number=7, url="https://github.com/O/There/pull/7",
+                                  author="", config=review_cfg).to_json(),
+            autofix.RequestedWork(number=8, url="", author="", config=review_cfg).to_json()]
+    for row in rows:
+        del row["repo"]
+    store._settings.setValue("requestedReviews", json.dumps(rows))
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [SECOND, home])
+    assert [w.repo for w in store.requested_work] == ["o/there", configured]
+    stored = json.loads(store._settings.value("requestedReviews"))
+    assert [r["repo"] for r in stored] == ["o/there", configured]
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [home, SECOND])
+    assert [w.repo for w in store.requested_work] == ["o/there", configured]
 
 
 def test_an_ask_whose_root_is_gone_is_dropped_and_said(quiet):
