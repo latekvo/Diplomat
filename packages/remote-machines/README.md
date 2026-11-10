@@ -124,7 +124,13 @@ A machine gets warnings for load above its core count, memory pressure (or under
 free), swap over 75% used where there is no pressure reading (Linux; macOS keeps the swap
 files it grew, so its used/total stays high on a healthy machine), and under 20 GB of
 free disk. Machines without warnings come
-first, then the rest, each group ordered by spare cores.
+first, then the rest, each group ordered by spare cores weighted by the ARM bias:
+`remoteMachineArmBias` in `~/.diplomat/config.json` (0-100, default 70, set by the
+Machines screen's slider) is the percentage an ARM machine's spare cores count, and the
+rest is what any other machine's count. At 70, an x86 machine needs over 7/3 the spare
+cores of an ARM one to be listed above it; at 50 the order is by spare cores alone. The
+bias reorders machines and changes nothing else; a change to it is applied within a
+second (`RM_CONFIG_POLL_MS`).
 
 Each machine in the snapshot carries `usage`, the two fractions the ranking and the
 warnings judge it by: `cpu`, the 1-minute load per core (above 1 when overloaded), and

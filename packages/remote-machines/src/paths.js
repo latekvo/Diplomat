@@ -17,10 +17,14 @@ export const IDS_PATH = path.join(BASE_DIR, 'machine-ids.json'); // {candidate k
 export const LOG_PATH = path.join(BASE_DIR, 'daemon.log');
 
 // Diplomat's cross-process settings, relocated by the same DIPLOMAT_CONFIG the
-// applets honour: remoteMachineHosts, remoteMachineExclude and remoteMachineExcludeUntil.
+// applets honour: remoteMachineHosts, remoteMachineExclude, remoteMachineExcludeUntil and
+// remoteMachineArmBias.
 export const CONFIG_PATH = process.env.DIPLOMAT_CONFIG
   ? process.env.DIPLOMAT_CONFIG.replace(/^~(?=$|\/)/, os.homedir())
   : path.join(os.homedir(), '.diplomat', 'config.json');
+
+// ARM's share, in percent, of the ranking's weight when remoteMachineArmBias is unset.
+export const ARM_BIAS_DEFAULT = 70;
 
 export const SSH_BIN = process.env.RM_SSH || 'ssh';
 export const SSH_KEYGEN_BIN = process.env.RM_SSH_KEYGEN || 'ssh-keygen';

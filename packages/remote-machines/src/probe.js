@@ -159,11 +159,21 @@ export function warnings({ info, load }) {
 }
 
 /// Cores left over once the current load (the freshest reading, the 1-minute one) is served.
-/// Machines are ranked by this.
+/// Machines are ranked by this (byRank).
 export function spareCores({ info, load }) {
   const used = load?.last1m;
   return info.cores == null || used == null ? null : Math.round(Math.max(0, info.cores - used) * 10) / 10;
 }
+
+/// Best first: machines without warnings, then by spare cores weighted by the operator's
+/// ARM bias `armPct` (0-100): an ARM CPU's spare cores count armPct%, any other's the rest.
+/// Views as the snapshot lists them.
+export const byRank = (armPct) => {
+  armPct = Math.min(100, Math.max(0, armPct)); // past either end, one CPU's weight goes negative and flips its order
+  const score = (m) => (m.spareCores ?? 0) * (/^(arm|aarch)/i.test(m.os?.arch ?? '') ? armPct : 100 - armPct);
+  return (a, b) => (a.warnings.length > 0) - (b.warnings.length > 0) || score(b) - score(a)
+    || (b.spareCores ?? 0) - (a.spareCores ?? 0);
+};
 
 const frac = (v) => Math.round(v * 1000) / 1000;
 

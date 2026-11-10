@@ -2,8 +2,8 @@ import Foundation
 
 /// The remote-machines daemon's files as the Machines screens read them
 /// (`packages/remote-machines`): the snapshot (`state.json`), the usage history
-/// (`history.json`), and the operator's exclusions in config.json. Decode and pure logic
-/// only, so it is checked by the core smoke test on Linux too.
+/// (`history.json`), and the operator's exclusions and ARM bias in config.json. Decode
+/// and pure logic only, so it is checked by the core smoke test on Linux too.
 
 // MARK: - state.json
 
@@ -392,4 +392,34 @@ public struct MachineExclusions: Equatable {
         }
         return next
     }
+}
+
+// MARK: - ARM bias (config.json)
+
+/// `remoteMachineArmBias`: the percentage an ARM machine's spare cores count in the
+/// daemon's ranking (`byRank` in `probe.js`), any other machine's counting the rest. It
+/// reorders the pool and changes nothing else.
+public enum MachineArmBias {
+    /// Same key, default and range on the Linux side.
+    public static let key = "remoteMachineArmBias"
+    public static let defaultPercent = 70
+    public static let range = 0...100
+    /// The slider's stops; a hand edit between them is kept.
+    public static let step = 5
+
+    /// The percentage the daemon ranks by for a number read from config.json: the
+    /// default when it is not finite, else clamped to `range` as the daemon clamps it,
+    /// rounded to the whole percent the slider shows.
+    public static func percent(_ value: Double) -> Int {
+        guard value.isFinite else { return defaultPercent }
+        let clamped = min(Double(range.upperBound), max(Double(range.lowerBound), value))
+        return Int(clamped.rounded())
+    }
+
+    /// `ARM 70 : 30 x86`.
+    public static func badge(_ percent: Int) -> String {
+        "ARM \(percent) : \(range.upperBound - percent) x86"
+    }
+
+    public static let summary = "Only changes the order machines are preferred in."
 }

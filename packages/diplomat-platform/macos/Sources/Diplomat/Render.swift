@@ -1446,6 +1446,7 @@ enum Render {
             install.daemonRunning = !mode.hasSuffix("idle")
         }
         store.machinesInstall = install
+        store.remoteMachineArmBias = MachineArmBias.defaultPercent
         func at(_ msAgo: Double) -> String {
             MachinesSnapshot.isoString(Date(timeIntervalSince1970: (now - msAgo) / 1000))
         }

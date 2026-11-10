@@ -37,6 +37,7 @@ struct MachinesScreen: View {
         .task(id: onScreen) {
             guard live, onScreen else { return }
             while !Task.isCancelled {
+                store.reloadMachineArmBias()
                 await store.refreshMachinesState()
                 tick = Date()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -115,12 +116,34 @@ struct MachinesScreen: View {
                     .disabled(!refreshable)
                 }
             }
+            armBias
             if let snap = snapshot, snap.daemon == nil {
                 note(MachinesText.daemonPredatesScreen, tint: .orange)
             }
             if store.machineExclusionFailed {
                 note(AllocatorUI.saveError, tint: .red)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var armBias: some View {
+        let range = MachineArmBias.range
+        SettingRow(title: "ARM bias", summary: MachineArmBias.summary, stacked: true) {
+            SliderSetting(label: "ARM bias",
+                          value: Binding(
+                              get: { Double(store.remoteMachineArmBias) },
+                              set: { store.remoteMachineArmBias = Int($0.rounded()) }
+                          ),
+                          range: Double(range.lowerBound)...Double(range.upperBound),
+                          step: Double(MachineArmBias.step),
+                          badge: MachineArmBias.badge(store.remoteMachineArmBias),
+                          minLabel: "x86 first", maxLabel: "ARM first",
+                          tint: .teal)
+                .tooltip(MachinesUI.armBiasHelp)
+        }
+        if store.machineArmBiasSaveFailed {
+            note(AllocatorUI.saveError, tint: .red)
         }
     }
 
@@ -285,6 +308,9 @@ enum MachinesUI {
 
     static let restartHelp = "Stop the running daemon and start this checkout's. Its table "
         + "is rebuilt by the next scan."
+
+    static let armBiasHelp = "ARM's share of the ranking weight: an ARM machine's spare cores "
+        + "count this percent, any other's the rest. At 50, machines are ranked by spare cores alone."
 
     static var summary: String {
         let pkg = RemoteMachines.package
