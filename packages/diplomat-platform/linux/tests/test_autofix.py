@@ -34,6 +34,14 @@ def item(n: int) -> str:
     return f"{SLUG}#{n}"
 
 
+@pytest.fixture(autouse=True)
+def _fixture_root(monkeypatch):
+    """The fixture repo as the one root: a monitor dispatches only work in a root."""
+    from diplomat_runtime import review
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [ROOT])
+
+
 # MARK: - compute_diff (edge trigger)
 
 
