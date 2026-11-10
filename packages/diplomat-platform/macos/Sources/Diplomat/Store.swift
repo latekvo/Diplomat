@@ -3995,7 +3995,7 @@ final class Store: ObservableObject {
             tag = soft ? " ~soft-approve (\(why))" : " −verdict (\(why))"
         }
         let key = item(url: r.url, number: r.number)
-        let root = root(ofItem: key)
+        guard let root = root(ofItem: key) else { return false }
         var cfg = ReviewConfig(depth: "max", target: .specific, me: effectiveMe,
                                markReady: false, leaveReviews: true, replyToReviews: false,
                                specificPR: String(r.number), finalPass: verdict,
@@ -4010,7 +4010,7 @@ final class Store: ObservableObject {
                            ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
                                                             prURL: r.url, headSha: r.headSha),
                            counter: .reviewRequests, attemptStamp: AttemptStamp.reviewRequest(r),
-                           directory: root?.path)
+                           directory: root.path)
         return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
     }
 
@@ -4054,7 +4054,8 @@ final class Store: ObservableObject {
                                      source: AgentDispatchGate.Source,
                                      headSha: String = "") async -> DispatchOutcome {
         let key = item(url: url, number: number)
-        let root = root(ofItem: key)
+        // An item in no root is skipped: that number in the primary is another PR.
+        guard let root = root(ofItem: key) else { return .failed("\(key) is in no repo root") }
         var cfg = ConflictConfig(target: .specific, me: effectiveMe, specificPR: String(number))
         cfg.home = root
         let job = AgentJob(kind: "conflicts", auditAction: "conflicts",
@@ -4066,7 +4067,7 @@ final class Store: ObservableObject {
                            ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindConflicts,
                                                             prURL: url, headSha: headSha),
                            counter: .conflicts, attemptStamp: AttemptStamp.conflicting,
-                           directory: root?.path)
+                           directory: root.path)
         return await dispatchAgent(job, source: source, attemptNumber: attemptNumber)
     }
 
@@ -4076,7 +4077,7 @@ final class Store: ObservableObject {
     @discardableResult
     private func dispatchMyReview(_ s: PRSnapshot, attemptNumber: Int = 1) async -> Bool {
         let key = item(url: s.url, number: s.number)
-        let root = root(ofItem: key)
+        guard let root = root(ofItem: key) else { return false }
         var cfg = ReviewConfig(depth: "deep", target: .specific, me: effectiveMe,
                                markReady: false, leaveReviews: false, replyToReviews: true,
                                specificPR: String(s.number), specificAuthor: .mine)
@@ -4090,7 +4091,7 @@ final class Store: ObservableObject {
                            ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReply,
                                                             prURL: s.url, headSha: s.headSha),
                            counter: .myReviews, attemptStamp: AttemptStamp.unresolvedReview,
-                           directory: root?.path)
+                           directory: root.path)
         return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
     }
 

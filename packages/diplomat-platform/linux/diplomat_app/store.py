@@ -738,11 +738,16 @@ class Store(QObject):
         return review.repo_roots()[0]
 
     @staticmethod
+    def _root_named(item: str | None) -> LocalRepo | None:
+        """The repo root an item key (or slug) is in, or ``None``. A monitor dispatch of
+        an item in none is skipped: that number in the primary is another PR."""
+        slug = (item or "").partition("#")[0].lower()
+        return next((r for r in review.repo_roots() if r.slug.lower() == slug), None)
+
+    @staticmethod
     def _root_of(item: str | None) -> LocalRepo:
         """The repo root an item key (or slug) is in, else the primary."""
-        roots = review.repo_roots()
-        slug = (item or "").partition("#")[0].lower()
-        return next((r for r in roots if r.slug.lower() == slug), roots[0])
+        return Store._root_named(item) or review.repo_roots()[0]
 
     @staticmethod
     def _checkout_of(root: LocalRepo) -> str | None:
@@ -2249,7 +2254,9 @@ class Store(QObject):
     def _dispatch_conflict_fix(
         self, number: int, url: str, attempt: int, source: str, head_sha: str = ""
     ) -> bool:
-        root = self._root_of(item_key_from_url(url))
+        root = self._root_named(item_key_from_url(url))
+        if root is None:
+            return False
         job = autofix.AgentJob(
             kind="conflicts",
             audit_action="conflicts",
@@ -2270,7 +2277,9 @@ class Store(QObject):
         return self.dispatch_agent(job, source, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
 
     def _dispatch_my_review(self, s, attempt: int = 1) -> bool:
-        root = self._root_of(s.item)
+        root = self._root_named(s.item)
+        if root is None:
+            return False
         job = autofix.AgentJob(
             kind="review",
             audit_action="review-reply",
@@ -2308,7 +2317,9 @@ class Store(QObject):
         else:
             why = "auto-approvals off" if not self.auto_approve_enabled else ", ".join(reasons)
             tag = f" ~soft-approve ({why})" if soft else f" -verdict ({why})"
-        root = self._root_of(r.item)
+        root = self._root_named(r.item)
+        if root is None:
+            return False
         job = autofix.AgentJob(
             kind="review",
             audit_action=REVIEW_REQ_ACTION,
@@ -2818,7 +2829,9 @@ class Store(QObject):
                 pr_number=entry.number if is_pr else None,
                 author_login=entry.author or None,
                 duty=entry.action,
-                checkout=checkout or (where if where != review.repo_path() else None),
+                # A root's checkout is wherever that root is now, not where it was asked.
+                checkout=checkout if entry.repo else (
+                    where if where != review.repo_path() else None),
             ),
             attempt=1,
         )

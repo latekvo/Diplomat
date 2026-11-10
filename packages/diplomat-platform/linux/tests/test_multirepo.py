@@ -248,6 +248,20 @@ def test_an_issue_sweep_asks_of_its_home_root_and_works_in_its_checkout(quiet):
     assert [t.job.checkout for t in quiet._staged_queue] == ["/src/other"]
 
 
+def test_an_ask_works_where_its_root_is_now_not_where_it_was_asked(quiet):
+    def ask(root: LocalRepo, old_path: str) -> autofix.RequestedWork:
+        home = {"owner": root.owner, "repo": root.repo, "path": old_path}
+        return autofix.RequestedWork(
+            number=3, url=f"https://github.com/{root.slug}/pull/3", author="",
+            config={"kind": "review", "specificPR": "3", "depth": "deep", "home": home},
+            repo=root.slug)
+
+    quiet.requested_work = [ask(PRIMARY, "/old/r"), ask(SECOND, "/old/other")]
+    quiet._offer_requested_work()
+
+    assert [t.job.checkout for t in quiet._staged_queue] == [None, "/src/other"]
+
+
 def test_an_ask_whose_root_is_gone_is_dropped_and_said(quiet):
     quiet.requested_work = [
         autofix.RequestedWork(number=3, url="https://github.com/o/gone/pull/3", author="",
@@ -291,6 +305,22 @@ def test_the_disk_floor_measures_every_root(quiet, monkeypatch):
     quiet._dispatch_conflict_fix(5, "https://github.com/o/other/pull/5", 1, autofix.SOURCE_AUTO)
 
     assert measured == ["/src/r", "/src/other", str(Path.home() / ".diplomat")]
+
+
+def test_a_monitor_dispatch_in_no_root_is_skipped(quiet, monkeypatch):
+    jobs: list[autofix.AgentJob] = []
+    monkeypatch.setattr(quiet, "dispatch_agent",
+                        lambda job, source, attempt=1: jobs.append(job) or "spawned")
+    gone = "https://github.com/o/gone/pull/5"
+    snap = PRSnapshot(number=5, title="t", url=gone, is_draft=False, mergeable="MERGEABLE",
+                      review_decision="", threads_unresolved=1, threads_i_owe=1, head_sha="s")
+    req = ReviewRequest(number=5, title="t", url=gone, author="bob", author_association="MEMBER",
+                        files=[], requested_at="2026-01-02", my_last_review_at=None, head_sha="s")
+
+    assert not quiet._dispatch_conflict_fix(5, gone, 1, autofix.SOURCE_AUTO)
+    assert not quiet._dispatch_my_review(snap)
+    assert not quiet._dispatch_review_request(req)
+    assert jobs == []
 
 
 def test_usage_counts_every_root_and_its_worktrees(roots):
