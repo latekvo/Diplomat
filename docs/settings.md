@@ -115,8 +115,8 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
     it gives its task-cap slot back and the monitor that owed the work dispatches it
     again.
 - **Repo roots** - the local checkouts Diplomat watches and every spawned agent `cd`s
-  into, one row each with a **Choose…** directory picker (type a path if you prefer; a
-  leading `~` expands), **↑** to move it up and **✕** to remove it, plus **Add…**. The
+  into, one row each with a **Choose…** directory picker (on macOS the path can also be
+  typed; a leading `~` expands), **↑** to move it up and **✕** to remove it, plus **Add…**. The
   first is the *primary*. Blank = `~/dev/<repo>` for whichever repo
   [`assets/config.json`](../packages/diplomat-core/assets/config.json) targets. Each
   root is known by one GitHub repo, read from its remotes: the `assets/config.json`

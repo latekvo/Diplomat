@@ -201,7 +201,7 @@ enum RepoPaths {
     /// How Settings describes one stored root. A relative entry gets its own state:
     /// `isCheckout` would judge it against THIS app's working directory while the spawn's
     /// `cd` runs in the terminal's — the two disagree, so neither verdict is honest.
-    /// Mirrors `settingsview._repo_state` on Linux.
+    /// Mirrors `settingsview._root_problem` on Linux.
     enum RootState { case ok, notAbsolute, notACheckout }
 
     static func rootState(_ raw: String) -> RootState {

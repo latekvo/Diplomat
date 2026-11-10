@@ -211,20 +211,22 @@ relaunch. Manage it with `./install/install-watchdog.sh` /
 
 A two-pane screen matching macOS. Most persist via `QSettings`
 (`~/.config/diplomat/…`); the exceptions are the keys a stdlib-only mesh node reads
-too - the repo root, the agent runner and model, the automatic-task cap and the
+too - the repo roots, the agent runner and model, the automatic-task cap and the
 spending budget's four knobs - and the run deadline beside the cap, which live in
 the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/diplomat_runtime/appconfig.py)):
 
 - **GitHub username** — overrides the `gh`-authenticated login for the "My …" tools.
-- **Repo root** — the local checkout every spawned agent `cd`s into, with a
-  **Browse…** picker. Blank = `~/dev/<repo>` for the repo `assets/config.json`
-  targets; `DIPLOMAT_REPO` still outranks both. The hint warns when the path isn't
-  absolute, or has no `.git` (the spawn's `cd` is best-effort, so the agent would
-  otherwise start in `$HOME` unnoticed). Not in `QSettings`: it lives in the
-  shared `~/.diplomat/config.json` (`appconfig.py`) because a mesh node is a
-  separate, stdlib-only process with no Qt — so a job that lands over the mesh
-  uses the same checkout, and a *running* node picks up a change on its next
-  spawn.
+- **Repo roots** — the local checkouts Diplomat watches and spawned agents `cd`
+  into, one row each with **Choose…**, **↑** (the first is the primary) and **✕**,
+  plus **Add…**. None = `~/dev/<repo>` for the repo `assets/config.json` targets;
+  `DIPLOMAT_REPO` outranks the list with a single root. A row warns when its path
+  isn't absolute, has no `.git` (the spawn's `cd` is best-effort, so the agent would
+  otherwise start in `$HOME` unnoticed) or has no GitHub remote. Every automatic job
+  covers every root; the panel works on the one picked in its header. Not in
+  `QSettings`: it lives in the shared `~/.diplomat/config.json` (`appconfig.py`)
+  because a mesh node is a separate, stdlib-only process with no Qt — so a job that
+  lands over the mesh uses the same checkouts, and a *running* node picks up a
+  change on its next spawn.
 - **Auto-queue fixes for my PRs / Auto-queue reviews that request me** — the two
   monitor toggles with live
   status, and under the review-requests one the **author allowlist** (*Only these
@@ -245,7 +247,7 @@ the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/di
   agent a wizard press opens on the spot is never capped and doesn't count against
   it; work over the cap is not dropped — it waits in the [Agent tasks](#agent-tasks)
   list, in the order you put it, and whatever is left of the cap shows there as empty
-  slots. In `~/.diplomat/config.json` for the same reason as the repo root — the node
+  slots. In `~/.diplomat/config.json` for the same reason as the repo roots — the node
   that runs peer-routed work has no Qt, and a machine with two answers to "how many
   at once" has no cap at all.
 - **Hold work when the limit runs low** - the
@@ -339,7 +341,7 @@ that is not listed (every macOS self-test), or a flag set to anything but `1` - 
 the launcher with exit 64 before it can start the GUI.
 
 Also overridable: `DIPLOMAT_REPO` (the agents' working dir — outranks Settings ▸
-*Repo root*, whose own default is `~/dev/<repo>`), `DIPLOMAT_CONFIG` (where the
+*Repo roots* with one root, whose own default is `~/dev/<repo>`), `DIPLOMAT_CONFIG` (where the
 shared `config.json` lives),
 `DIPLOMAT_CORE_BIN`, `DIPLOMAT_AUTOFIX_SECS` (floor 30s), `DIPLOMAT_APIWATCH_SECS`
 (floor 5s), `DIPLOMAT_SHELL`, `DIPLOMAT_PYTHON`, `DIPLOMAT_NPM`.

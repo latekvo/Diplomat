@@ -403,7 +403,7 @@ class SettingsView(QWidget):
         """Why a picked path is no usable root, or "" for none. A relative one gets its
         own: an "is it a checkout?" stat would be judged against THIS process's working
         directory while the spawn's ``cd`` runs in the terminal's. Mirrors
-        ``RepoPaths.agentRepoState`` in Swift."""
+        ``RepoPaths.rootState`` in Swift."""
         where = os.path.expanduser(path)
         if not os.path.isabs(where):
             return "Not an absolute path"
