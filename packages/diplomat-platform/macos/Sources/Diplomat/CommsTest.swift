@@ -1645,6 +1645,23 @@ enum CommsTest {
               outcome(investigateGone) == "o/second is no longer a repo root, so nothing was done"
                 && asked("investigate:\(CommsTS.number(investigateGone.message.ts)!)") == nil)
 
+        // MARK: an unresolved first root
+        let missingFirst = scratch.appendingPathComponent("roots/missing").path
+        await useRoots([missingFirst, secondRoot])
+        await store.refreshRoots()
+        let heldTick = store.commsHeldTick()
+        check("while the first root path does not resolve, a tick is held: no pings, no items",
+              heldTick == CommsTickResult(me: nil, items: [], error: "waiting for the first repo root, "
+                                          + "\(missingFirst), to resolve to a GitHub checkout"))
+        if let heldTick { await store.applyComms(heldTick) }
+        check("…and says why as the Comms error", heldTick != nil && store.commsError == heldTick?.error)
+        await useRoots([primaryRoot, secondRoot])
+        await store.refreshRoots()
+        check("a first root path that resolves ticks as before", store.commsHeldTick() == nil)
+        await store.applyComms(CommsTickResult(me: nil, items: [], error: nil))
+        await useRoots([primaryRoot])
+        await store.refreshRoots()
+
         // MARK: refreshing from the log
         let events = CommsLog.eventsURL()
         guard let mark = store.commsLog.mark,

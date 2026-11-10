@@ -242,13 +242,29 @@ extension Store {
         guard commsEnabled, !Headless.active, !commsPollInFlight else { return }
         commsPollInFlight = true
         defer { commsPollInFlight = false }
+        await refreshRoots()
         let settings = commsSettings
-        let result = await Task.detached(priority: .utility) {
-            CommsWatch.tick(settings: settings,
-                            classify: { CommsClassifier.run($0, settings: settings) })
-        }.value
+        let result: CommsTickResult
+        if let held = commsHeldTick() {
+            result = held
+        } else {
+            result = await Task.detached(priority: .utility) {
+                CommsWatch.tick(settings: settings,
+                                classify: { CommsClassifier.run($0, settings: settings) })
+            }.value
+        }
         commsLastPoll = Date()
         await applyComms(result)
+    }
+
+    /// The tick a poll lands instead of the core's while the first root path does not
+    /// resolve (`primaryResolved`), else nil: a bare `#N` is read as the first root's,
+    /// which would be another repo's. Not private: the Comms self-test asks it.
+    func commsHeldTick() -> CommsTickResult? {
+        guard !primaryResolved else { return nil }
+        let first = RepoPaths.rootPaths.first ?? ""
+        return CommsTickResult(me: nil, items: [], error: "waiting for the first repo root, \(first), "
+                                   + "to resolve to a GitHub checkout")
     }
 
     /// Signs in the way a tick does, refreshing a dead login through Claude Code.

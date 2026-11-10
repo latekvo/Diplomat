@@ -94,13 +94,15 @@ enum RepoPathsTest {
         git("init", "-q", early)
         git("-C", early, "remote", "add", "origin", "git@github.com:o/early.git")
         let t0 = Date()
-        final class Box { var value: (roots: [String], complete: Bool) = ([], false) }
-        func read(_ at: TimeInterval) -> (roots: [String], complete: Bool) {
+        final class Box { var value: (roots: [String], complete: Bool, primary: Bool, guessed: Bool)
+            = ([], false, false, false) }
+        func read(_ at: TimeInterval, _ paths: [String]? = nil)
+            -> (roots: [String], complete: Bool, primary: Bool, guessed: Bool) {
             let out = Box()
             let done = DispatchSemaphore(value: 0)
             Thread {
-                let r = RepoPaths.resolved(for: [early, late], now: t0.addingTimeInterval(at))
-                out.value = (r.roots.map(\.slug), r.complete)
+                let r = RepoPaths.resolved(for: paths ?? [early, late], now: t0.addingTimeInterval(at))
+                out.value = (r.roots.map(\.slug), r.complete, r.primaryResolved, r.guessed)
                 done.signal()
             }.start()
             done.wait()
@@ -108,7 +110,8 @@ enum RepoPathsTest {
         }
         let first = read(0)
         check("a missing checkout is left out, and the roots say not every path resolved",
-              first.roots == ["o/early"] && !first.complete, "got \(first)")
+              first.roots == ["o/early"] && !first.complete && first.primary && !first.guessed,
+              "got \(first)")
         git("init", "-q", late)
         git("-C", late, "remote", "add", "origin", "git@github.com:o/late.git")
         let kept = read(RepoPaths.rootsTTL - 1)
@@ -116,6 +119,14 @@ enum RepoPathsTest {
         let again = read(RepoPaths.rootsTTL)
         check("…and then read again, so the checkout that appeared is a root",
               again.roots == ["o/early", "o/late"] && again.complete, "got \(again)")
+        let gone = scratch.appendingPathComponent("gone").path
+        let goneFirst = read(0, [gone, early])
+        check("a first path that does not resolve leaves the next one's repo first, no primary",
+              goneFirst.roots == ["o/early"] && !goneFirst.primary && !goneFirst.guessed,
+              "got \(goneFirst)")
+        let none = read(0, [gone, scratch.appendingPathComponent("gone2").path])
+        check("…and none of several resolving leaves the one root a guess",
+              !none.primary && none.guessed, "got \(none)")
         RepoPaths.invalidateRoots()
 
         print("repopaths: adding roots in Settings")
