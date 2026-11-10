@@ -667,12 +667,10 @@ extension Store {
         }
     }
 
-    /// A ping logged before its repository stopped being a root.
     private static func notARoot(_ repo: String) -> String {
         "\(repo) is no longer a repo root, so nothing was done"
     }
 
-    /// `#N`, or `<repo>#N` while several roots are loaded, as job labels name it.
     private static func commsRef(_ n: Int, in root: PRRef.LocalRepo) -> String {
         PRRef.itemLabel(item: PRRef.itemKey(owner: root.owner, repo: root.repo, number: n),
                         roots: RepoPaths.roots.count)

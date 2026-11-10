@@ -22,8 +22,6 @@ enum LocalRepos {
         }
     }
 
-    /// The checkout's `remote.*.url` lines (`git config --local --get-regexp`), or "" when
-    /// git cannot read them.
     static func remotes(of path: String) -> String {
         git(["-C", path, "config", "--local", "--get-regexp", #"^remote\..*\.url$"#]) ?? ""
     }

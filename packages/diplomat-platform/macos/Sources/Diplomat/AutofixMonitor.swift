@@ -16,7 +16,7 @@ enum AutofixMonitor {
         return try parse(data, me: me)
     }
 
-    /// The items (`PRRef.itemKey`) of the PRs this repo has recently merged or closed —
+    /// The items (`PRRef.itemKey`) of the PRs this repo has recently merged or closed:
     /// what the queue is re-checked against (`assets/graphql/closed-prs`).
     ///
     /// Not scoped to me, to my queue, or to a monitor's verb: any PR can be sitting in

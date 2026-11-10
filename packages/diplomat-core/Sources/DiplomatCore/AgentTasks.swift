@@ -112,13 +112,12 @@ public enum AgentTaskQueue {
     /// #421 and PR #421 are unrelated pieces of work, and only the verb says which
     /// one a key names.
     ///
-    /// `item` is a `PRRef.itemKey`, save for an investigation, whose is its Slack ts.
+    /// `item` is a `PRRef.itemKey`, or an investigation's Slack ts.
     public static func key(auditAction: String, item: String) -> String {
         "\(auditAction):\(item)"
     }
 
-    /// The item a queue key is about, or nil for one about no repo's item (an
-    /// investigation's).
+    /// The item a queue key is about; nil for an investigation's.
     public static func item(ofKey key: String) -> String? {
         guard let colon = key.firstIndex(of: ":") else { return nil }
         let item = String(key[key.index(after: colon)...])

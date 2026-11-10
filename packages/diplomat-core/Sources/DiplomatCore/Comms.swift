@@ -115,8 +115,7 @@ public enum CommsAction: String, Codable, CaseIterable, Sendable {
 public struct CommsAsk: Codable, Equatable, Sendable {
     public let action: CommsAction
     public let number: Int
-    /// The watched repository it is in, as a lowercased slug; "" for the primary one
-    /// (`CommsSettings.canonical`). Written only when not "".
+    /// Its repository as `CommsSettings.canonical` writes it; "" (the primary) is not encoded.
     public let repo: String
 
     public init(_ action: CommsAction, _ number: Int, repo: String = "") {
@@ -125,7 +124,6 @@ public struct CommsAsk: Codable, Equatable, Sendable {
         self.repo = repo
     }
 
-    /// `#12`, or `argent#12` outside the primary repository.
     public var ref: String { CommsSettings.ref(number, repo: repo) }
 
     private enum CodingKeys: String, CodingKey { case action, number, repo }
@@ -163,8 +161,8 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// What the message is written in: a key of `replies.languages`, or anything else for
     /// English. Only ever looks up fixed words, so a message steering it steers nothing.
     public let language: String
-    /// For an `investigate` or a `question`, the watched repository the message is about,
-    /// as `CommsAsk.repo` names one; "" otherwise. Written only when not "".
+    /// For an `investigate` or a `question`, the message's repository as in `CommsAsk.repo`;
+    /// "" otherwise.
     public let repo: String
 
     /// The first target's number; 0 for none.
@@ -177,8 +175,8 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     static let maxText = 240
 
     /// `targets` wins; without it, `numbers` (else `number`) are targets of `action`. A
-    /// target whose number is not positive, or whose action needs none, is dropped, and so
-    /// is one naming a number of a repository an earlier target named already.
+    /// target whose number is not positive, or whose action needs none, is dropped, as is one
+    /// whose repository and number an earlier target has.
     public init(action: CommsAction, number: Int = 0, numbers: [Int] = [],
                 targets: [CommsAsk] = [], summary: String,
                 reason: String, evidence: String = "", language: String = defaultLanguage,
@@ -544,8 +542,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     /// A queue shorter than `batchSize` is triaged once its newest message is this old.
     public var flushAfterSecs: Int
     /// The watched repositories (the front-end's repo roots) as lowercased `owner/repo`
-    /// slugs, the primary first; never empty. A message's PRs, issues and reports are
-    /// these repositories', a bare number the primary's.
+    /// slugs, the primary first; never empty. A bare number is the primary's.
     public private(set) var repos: [String]
     /// The operator's GitHub login; the classifier is told the message was sent to it.
     public var login: String
@@ -580,7 +577,6 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         self.login = login
     }
 
-    /// The primary repository's coordinates.
     public var owner: String { coordinates(of: "").owner }
     public var repo: String { coordinates(of: "").repo }
 
@@ -926,11 +922,11 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
     public var text: String
     public var summary: String
     public var reportPath: String
-    /// The repository the message is about: the decision's (`CommsDecision.repo`).
+    /// The decision's repository (`CommsDecision.repo`).
     public var owner: String
     public var repo: String
-    /// That repository's checkout, where the agent works; nil for the front-end's primary
-    /// repo root. Set by the front-end, which alone knows the paths.
+    /// That repository's checkout; nil for the primary repo root. Set by the front-end,
+    /// which alone knows the paths.
     public var checkout: String?
 
     public static let kind = "investigate"

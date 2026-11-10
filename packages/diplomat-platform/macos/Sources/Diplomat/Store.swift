@@ -70,11 +70,10 @@ final class Store: ObservableObject {
         UserDefaults.standard.set(data, forKey: key)
     }
 
-    /// What a headless self-test that sets it reads and `persistJSON` writes in place of
-    /// UserDefaults, so records can carry from one poll to the next. By key name.
+    /// Headless only: what `persistJSON` writes in place of UserDefaults, by key, so
+    /// records carry from one poll to the next.
     var headlessJSON: [String: Data]?
 
-    /// The JSON `persistJSON` stored under `key`.
     private func storedJSON(forKey key: String) -> Data? {
         if Headless.active, let stored = headlessJSON { return stored[key] }
         return UserDefaults.standard.data(forKey: key)
@@ -215,7 +214,6 @@ final class Store: ObservableObject {
         return root(ofItem: key) == nil ? "\(owner)/\(repo)#\(number)" : itemLabel(key)
     }
 
-    /// How a job label names an item, given how many roots are loaded.
     func itemLabel(_ item: String) -> String {
         PRRef.itemLabel(item: item, roots: roots.count)
     }
@@ -2323,7 +2321,7 @@ final class Store: ObservableObject {
             // whole point of the check is that it reads THIS cycle's evidence, not the
             // one the queue was built from.
             //
-            // And which PRs have left the open state — the one thing that fetch cannot
+            // And which PRs have left the open state: the one thing that fetch cannot
             // answer, because it lists what is open and the queue has to be checked
             // against what is not. Every verb answers to it, the operator's own ask
             // included (`AgentTaskQueue.stillOwed`). A root either read fails in is
@@ -2416,8 +2414,6 @@ final class Store: ObservableObject {
     /// Slugs of the roots this cycle's read of my PRs or of review requests failed in.
     private var heldSlugs: Set<String> = []
 
-    /// Whether `item` is in a root this cycle's read of my PRs or of review requests
-    /// failed in.
     private func inUnreadRoot(_ item: String) -> Bool {
         PRRef.splitItemKey(item).map { heldSlugs.contains($0.slug) } ?? false
     }
@@ -2655,7 +2651,7 @@ final class Store: ObservableObject {
         for root in polled {
             do {
                 // Only pull changed-file paths (a big slice of the query cost) when
-                // auto-approvals are on — they're only used to gate the verdict, which is
+                // auto-approvals are on; they're only used to gate the verdict, which is
                 // off by default.
                 reqs += try await AutofixMonitor.fetchReviewRequests(
                     owner: root.owner, repo: root.repo, me: effectiveMe,
@@ -4253,8 +4249,7 @@ final class Store: ObservableObject {
         persistJSON(map, forKey: Keys.myReviewAttempts)
     }
 
-    /// The primary root's slug: whose item a key a single-repo build stored as a bare
-    /// number is.
+    /// The primary root's slug, which owns the bare-number keys a single-repo build stored.
     private var primarySlug: String { roots[0].slug.lowercased() }
     /// The item a fetched PR's URL names, else `number` in `slug`.
     nonisolated static func item(url: String, number: Int, slug: String) -> String {
@@ -4279,12 +4274,12 @@ final class Store: ObservableObject {
     /// Items (`PRRef.itemKey`) currently being merged (drives the row button's spinner +
     /// guards double-taps).
     @Published var mergingPRs: Set<String> = []
-    /// Items with a PR-scoped spawn in flight — same double-tap guard as `mergingPRs`,
+    /// Items with a PR-scoped spawn in flight: same double-tap guard as `mergingPRs`,
     /// inserted before the seconds-long spawn await (see `dispatchAgent`).
     @Published var resolvingPRs: Set<String> = []
 
-    /// Merge an approved PR of the panel's root straight from the applet — squash,
-    /// matching the repo's convention — instead of opening the website. Refreshes on
+    /// Merge an approved PR of the panel's root straight from the applet (squash,
+    /// matching the repo's convention) instead of opening the website. Refreshes on
     /// success so the PR drops off the Approved list; surfaces any error (e.g. checks
     /// still pending).
     func mergePR(_ pr: OpenPR) async {

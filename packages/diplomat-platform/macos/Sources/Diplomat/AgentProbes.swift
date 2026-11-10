@@ -545,7 +545,7 @@ enum AgentProbes {
 
     // MARK: - GitHub
 
-    /// Which of these items (`PRRef.itemKey`) GitHub calls MERGED — the one terminal
+    /// Which of these items (`PRRef.itemKey`) GitHub calls MERGED: the one terminal
     /// outcome that outranks anything a process is doing. Each is asked of its own repo.
     ///
     /// One `gh` call per PR, so this belongs on the slow refresh, not the process poll. A

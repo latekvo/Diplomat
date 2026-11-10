@@ -58,9 +58,8 @@ public enum RepoRoots {
     /// from before the repo moved), and otherwise its first remote (`LocalRepo.entries`
     /// order). Another remote naming it is a sibling fetched from, not what the checkout
     /// is. A path with no GitHub remote is skipped, and a repo two paths name keeps the
-    /// first. When nothing resolves, the first path stands for the configured repo, which
-    /// is how a single missing or remote-less checkout has always been worked (`guessed`
-    /// tells the case of several).
+    /// first. When nothing resolves, the first path stands for the configured repo
+    /// (`guessed` tells when that is a guess among several).
     public static func resolve(paths: [String], remotes: [String: String],
                                configured: (owner: String, repo: String)) -> [PRRef.LocalRepo] {
         let want = "\(configured.owner)/\(configured.repo)".lowercased()
@@ -96,10 +95,10 @@ public enum RepoRoots {
         }
     }
 
-    /// Whether `resolve`'s first root is the first path's own repo: always with one path
-    /// (the fallback is the single root it always was), else only while the first path
-    /// has a GitHub remote. Without one the next path's repo stands first, so "the
-    /// primary" names another repo. Python twin: `localrepos.primary_resolves`.
+    /// Whether `resolve`'s first root is the first path's own repo: always with one path,
+    /// else only while the first path has a GitHub remote. Without one the next path's
+    /// repo stands first, so "the primary" names another repo. Python twin:
+    /// `localrepos.primary_resolves`.
     public static func primaryResolves(paths: [String], remotes: [String: String]) -> Bool {
         guard paths.count >= 2 else { return true }
         let first = expand(paths[0])

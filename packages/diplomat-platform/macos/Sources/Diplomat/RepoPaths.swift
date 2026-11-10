@@ -1,11 +1,10 @@
 import Foundation
 import DiplomatCore
 
-/// The repository roots the app cares about: its OWN checkout (`root` — the source tree
+/// The repository roots the app cares about: its OWN checkout (`root`, the source tree
 /// behind self-update and the mesh node) and the TARGET repos the agents work in
-/// (`roots`, the first of which is `agentRepo` — Settings → REPO ROOTS). They are
-/// unrelated paths; keeping both here keeps the two resolutions from being confused for
-/// each other.
+/// (`roots`, Settings → REPO ROOTS, the first being `agentRepo`). Unrelated paths, kept
+/// side by side so the two are never confused.
 ///
 /// `root` is the source tree behind both the self-update (git pull + rebuild) and the
 /// mesh node (`python3 -m szpontnet`, which runs from `runtimePackage` with
@@ -111,7 +110,7 @@ enum RepoPaths {
 
     // MARK: - the TARGET repos (where the agents work)
 
-    /// The repo roots, as stored (a `~` left unexpanded), the first being the primary —
+    /// The repo roots, as stored (a `~` left unexpanded), the first being the primary:
     /// local clones of the *target* repos, NOT Diplomat's own source tree (`root`).
     ///
     /// Strongest first: the `DIPLOMAT_REPO` env override, a single root (every other
@@ -137,14 +136,12 @@ enum RepoPaths {
     /// failed to resolve, or whose remotes changed, is read again within that. A read on
     /// the main thread never waits for git: it answers the last resolution of these
     /// paths, or with none as though no root had a remote (the primary path standing for
-    /// the configured repo, which is what a single root has always meant), and resolves
-    /// in the background for the next read.
+    /// the configured repo), and resolves in the background for the next read.
     static var roots: [PRRef.LocalRepo] { resolved(for: rootPaths).roots }
 
     /// Seconds a resolution of the roots is kept. Twin of `review.ROOTS_TTL`.
     static let rootsTTL: TimeInterval = 60
 
-    /// One reading of the root paths' remotes, and what it says.
     struct RootsReading: Equatable {
         let roots: [PRRef.LocalRepo]
         /// Every path had a GitHub remote (`RepoRoots.allResolve`).
@@ -163,7 +160,7 @@ enum RepoPaths {
         }
     }
 
-    /// The reading of a list of paths taken earlier, else a fresh one.
+    /// The cached reading of `paths`, else a fresh one.
     static func resolved(for paths: [String], now: Date = Date()) -> RootsReading {
         rootsLock.lock()
         let cached = rootsCache.flatMap { $0.paths == paths ? $0 : nil }
@@ -242,7 +239,7 @@ enum RepoPaths {
 
     /// How Settings describes one stored root. A relative entry gets its own state:
     /// `isCheckout` would judge it against THIS app's working directory while the spawn's
-    /// `cd` runs in the terminal's — the two disagree, so neither verdict is honest.
+    /// `cd` runs in the terminal's; the two disagree, so neither verdict is honest.
     /// Mirrors `settingsview._root_problem` on Linux.
     enum RootState { case ok, notAbsolute, notACheckout }
 

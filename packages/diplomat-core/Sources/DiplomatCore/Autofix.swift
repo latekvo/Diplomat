@@ -43,7 +43,6 @@ public struct PRSnapshot: Equatable {
         self.headSha = headSha
     }
 
-    /// This PR's `PRRef.itemKey`, read off `url`.
     public var item: String? { PRRef.itemKey(url: url) }
 }
 
@@ -67,7 +66,7 @@ public enum AutofixEvent: Equatable {
 public enum AutofixDiff {
     /// Compare the prior fingerprints (keyed by `PRSnapshot.item`) against a fresh
     /// snapshot. Returns the events to act on plus the fingerprints to persist for next
-    /// time. A PR with no prior entry is seeded silently (baseline — never dispatched on
+    /// time. A PR with no prior entry is seeded silently (baseline, never dispatched on
     /// first sighting), so newly-opened PRs and the very first run don't fire.
     public static func compute(prior: [String: PRFingerprint], now: [PRSnapshot])
         -> (events: [AutofixEvent], fingerprints: [String: PRFingerprint]) {
@@ -225,8 +224,7 @@ public enum AgentDispatchGate {
     }
 
     /// How many automatic agents are *working* on this device, counted in PRs (one
-    /// agent per PR is what the in-flight dedup guarantees). Each set holds item keys
-    /// (`PRRef.itemKey`), so one number in two repos is two PRs.
+    /// agent per PR is what the in-flight dedup guarantees). Each set holds `PRRef.itemKey`s.
     ///
     /// Four inputs, because no single one of them is both complete and attributable:
     ///

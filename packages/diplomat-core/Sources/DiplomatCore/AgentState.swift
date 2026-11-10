@@ -353,8 +353,7 @@ public enum AgentState {
         /// — the cap bounds what this box runs, not what it dispatched.
         public var runsHere: Bool { placement != .meshPeer }
 
-        /// The item this run is about (`PRRef.itemKey`), read off `prURL`; nil for a run
-        /// about no PR, which nothing dedups against.
+        /// This run's `PRRef.itemKey`; nil for a run about no PR.
         public var item: String? { prNumber == nil ? nil : PRRef.itemKey(url: prURL) }
     }
 
@@ -373,7 +372,7 @@ public enum AgentState {
         public var mergedPRs: Observation<Set<String>>
         /// Item → the tty of an agent found by its prompt text in the process table
         /// (`promptItems`). The pre-registry identity mechanism, and still the only
-        /// evidence about a run whose terminal this applet did not open — a mesh
+        /// evidence about a run whose terminal this applet did not open: a mesh
         /// placement that landed back here, whose pid file belongs to the node that
         /// spawned it.
         public var liveAgents: Observation<[String: String]>
@@ -1097,11 +1096,8 @@ public enum AgentState {
     // MARK: - Untracked agents
 
     /// The items an agent's prompt names, in order: each `PR #<n> in <owner>/<repo>` whose
-    /// repo is one of `slugs` (lowercase slugs). What the process-table scan matches.
-    ///
-    /// The prompts end that sentence with a period, which a repo name may also contain,
-    /// so a trailing `.` the roots do not account for is dropped before the slug is
-    /// looked up.
+    /// repo is one of `slugs` (lowercase). A trailing `.` no slug has is the prompt's
+    /// sentence end, not the repo name's.
     public static func promptItems(_ text: String, slugs: Set<String>) -> [String] {
         guard let re = try? NSRegularExpression(pattern: #"PR #([0-9]+) in ([\w.-]+)/([\w.-]+)"#)
         else { return [] }

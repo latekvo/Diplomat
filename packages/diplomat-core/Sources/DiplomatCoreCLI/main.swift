@@ -182,7 +182,6 @@ func localRepo(_ raw: Any?) -> PRRef.LocalRepo? {
     return PRRef.LocalRepo(owner: o, repo: r, path: p)
 }
 
-/// The `localRepos` entries; malformed ones are dropped.
 let localRepos: [PRRef.LocalRepo] = (obj["localRepos"] as? [Any] ?? []).compactMap(localRepo)
 /// The repo a bare number, a sweep or an audit targets; absent (or malformed) for
 /// `assets/config.json`'s.

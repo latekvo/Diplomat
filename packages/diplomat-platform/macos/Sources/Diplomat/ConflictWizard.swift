@@ -144,7 +144,7 @@ struct ConflictWizardView: View {
         return "https://github.com/\(owner)/\(repo)/pull/\(n)"
     }
 
-    /// The single PR's number (single-PR mode only) — with `trackingPRURL`, the
+    /// The single PR's number (single-PR mode only); with `trackingPRURL`, the
     /// pipeline's dedup key. Nil for a PR outside the repo roots, which no monitor keys.
     private var specificNumber: Int? {
         target == .specific && store.isRootCheckout(config.checkout) ? config.prRef.number : nil

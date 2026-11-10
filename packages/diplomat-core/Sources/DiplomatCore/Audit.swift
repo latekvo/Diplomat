@@ -26,12 +26,10 @@ public struct AuditConfig {
         self.openPRs = openPRs
     }
 
-    /// The audited repo (owner, repo).
     public var targetRepo: (owner: String, repo: String) {
         PRRef.LocalRepo.coordinates(home: home)
     }
 
-    /// Where the agent works: `home`'s checkout, nil without one.
     public var checkout: String? { home?.path }
 
     /// A whole-repo audit needs no user input, so it is always spawnable.

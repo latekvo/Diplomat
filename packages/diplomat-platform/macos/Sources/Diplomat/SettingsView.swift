@@ -331,7 +331,6 @@ struct SettingsView: View {
         return (i == 0 ? "\(root.slug) - primary" : root.slug, false)
     }
 
-    /// Directory picker for the roots to add.
     private func chooseRepoRoots() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -344,7 +343,6 @@ struct SettingsView: View {
                                                   to: store.repoRootPaths)
     }
 
-    /// Directory picker for one root's new path.
     private func chooseRepoRoot(replacing i: Int) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
