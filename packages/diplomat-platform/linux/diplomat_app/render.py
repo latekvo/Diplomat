@@ -7,8 +7,8 @@ a real display by grabbing the widget's own pixels:
         QT_QPA_PLATFORM=offscreen python -m diplomat_app
 
 what ∈ {panel, lookup, wizard, issues, conflicts, audit, settings[-explain],
-devices, devices-screen[-remote[-away]|-off], mesh, telemetry, comms, comms-panel,
-comms-empty, tasks}.
+devices, devices-screen[-remote[-away]|-off], machines-screen[-idle|-off], mesh,
+telemetry, comms, comms-panel, comms-empty, tasks}.
 With DIPLOMAT_RENDER_LIVE=1 it fetches real data first; otherwise it uses a small
 synthetic fixture.
 """
@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from PySide6.QtWidgets import QApplication
 
 from diplomat_runtime import agentregistry, agentstate
-from diplomat_runtime.models import OpenIssue, OpenPR
+from diplomat_runtime.models import Fmt, OpenIssue, OpenPR
 from . import probes, szpont
 from .panel import Panel
 from .store import Store
@@ -182,6 +182,161 @@ def _devices_screen_fixture(store: Store, mode: str) -> None:
             da.RemotePoolDevice("lab-pool:tab-s9-01", "android", "Galaxy Tab S9", "14",
                                 "34", "tablet", "available"),
         )), at=now)
+
+
+#: The instant every machines-screen mode is drawn at, so each renders the same.
+MACHINES_NOW = datetime(2026, 11, 9, 12, 0, tzinfo=timezone.utc).timestamp()
+
+
+def _machines_history(now: float, until: float) -> dict:
+    """A day of readings per machine, a minute apart, up to ``until``: seeded, so every
+    render draws the same lines, and with the four hours the daemon was not running
+    (no agent session) left out."""
+    import math
+    import random
+
+    profiles = {  # id: (cpu base, cpu swing, memory base, most ssh sessions)
+        "a1c9-radoniusz": (0.12, 0.10, 0.62, 2),
+        "77fe-build-box": (0.35, 0.30, 0.40, 4),
+        "5d02-mac-mini": (0.70, 0.25, 0.74, 3),
+        "c3b8-studio": (0.25, 0.15, 0.55, 1),
+        "9e41-old-laptop": (0.40, 0.20, 0.70, 1),
+        "local-mbp": (0.55, 0.25, 0.78, 0),
+    }
+    gap = (now - 15 * 3600, now - 11.5 * 3600)
+    out = {}
+    for mid, (cpu, swing, memory, ssh) in profiles.items():
+        rng = random.Random(mid)
+        rows, sessions = [], 0
+        # The machine excluded for good stopped being read six hours ago.
+        end = min(until, now - 6 * 3600) if mid == "9e41-old-laptop" else until
+        at = now - 24 * 3600
+        while at <= end:
+            if not gap[0] <= at < gap[1]:
+                hours = (at - now) / 3600
+                c = cpu + swing * math.sin(hours / 3) + rng.gauss(0, 0.02)
+                if mid == "5d02-mac-mini" and hours > -2:
+                    c += 0.45 * (hours + 2) / 2
+                m = memory + 0.08 * math.sin(hours / 5 + 1) + rng.gauss(0, 0.01)
+                if rng.random() < 0.01:
+                    sessions = max(0, min(ssh, sessions + rng.choice((-1, 1))))
+                rows.append([int(at * 1000), round(max(0.0, c), 3),
+                             round(min(1.0, max(0.0, m)), 3), sessions])
+            at += 60
+        out[mid] = rows
+    return {"version": 1, "intervalMs": 60_000, "machines": out}
+
+
+def _machines_screen_fixture(store: Store, mode: str) -> None:
+    """Plain: three machines in the pool (the last one overloaded and short of disk),
+    one paused, one excluded for good, this machine, and the rest unusable, an mDNS
+    stranger whose name must never show among them. ``-idle``: the same snapshot left
+    by a daemon that went idle 47 minutes ago. ``-off``: not installed, no snapshot."""
+    from diplomat_runtime import activity
+    from . import remotemachines as rm
+
+    off, idle = mode.endswith("-off"), mode.endswith("-idle")
+    store.machines_install = {
+        "installed": not off, "version": "0.1.0", "mcpRegistered": not off,
+        "skillInstalled": not off, "ruleInstalled": not off, "claudeMdInjected": not off,
+        "daemonRunning": not (off or idle),
+    }
+    studio_until = datetime.fromtimestamp(MACHINES_NOW + 2 * 3600 + 45 * 60, tz=timezone.utc)
+    store.audit_entries = [
+        activity.AuditEntry("2026-11-09T11:40:00Z", "panel", "machine-pause",
+                            f"Paused studio until {Fmt.clock(studio_until)}"),
+        activity.AuditEntry("2026-11-09T11:12:00Z", "panel", "machines-scan",
+                            "Rescanned the remote machines"),
+        activity.AuditEntry("2026-11-09T06:02:00Z", "panel", "machine-exclude",
+                            "Excluded old-laptop from the pool"),
+    ] + store.audit_entries
+    if off:
+        store.machines_state = store.machines_history = None
+        return
+    now = MACHINES_NOW
+    at = now - 47 * 60 if idle else now - 12
+
+    def iso(epoch: float) -> str:
+        return rm.iso_utc(epoch)
+
+    def machine(mid, target, user, host, *, os_name, arch, cpu, cores, total_gb,
+                load, avail_gb, ssh, disk_gb, aliases=(), port=22, gpus=(),
+                sources=("ssh-config",), warnings=(), excluded=None, pressure=None,
+                status="ok"):
+        total, avail = total_gb * rm.GB, avail_gb * rm.GB
+        m = {"id": mid, "target": target, "hostname": host, "user": user, "port": port,
+             "sources": list(sources), "status": status, "machineName": target,
+             "cores": cores, "sshSessions": ssh,
+             "load": {"last1m": load, "last5m": load, "last15m": load},
+             "memory": {"totalBytes": total, "availableBytes": avail,
+                        "pressure": pressure},
+             "disk": {"totalBytes": 1000 * rm.GB, "freeBytes": disk_gb * rm.GB},
+             "gpus": [{"name": g} for g in gpus],
+             "os": {"name": os_name, "kernel": "", "arch": arch},
+             "cpu": {"model": cpu}, "probedAt": iso(at - 20),
+             "capabilitiesAt": iso(at - 180), "excluded": excluded}
+        if aliases:
+            m["aliases"] = list(aliases)
+        if status == "ok":
+            m.update(spareCores=round(max(0.0, cores - load), 1),
+                     usage={"cpu": round(load / cores, 3),
+                            "memory": round(1 - avail / total, 3)},
+                     warnings=list(warnings))
+        else:
+            m["error"] = "excluded in Diplomat"
+        return m
+
+    pool = [
+        machine("a1c9-radoniusz", "radoniusz", "radoniusz", "radoniusz.local",
+                aliases=("radoniusz.local",), os_name="macOS 27.0", arch="arm64",
+                cpu="Apple M3 Pro", cores=11, total_gb=18, load=1.04, avail_gb=5.9,
+                ssh=1, disk_gb=214, gpus=("Apple M3 Pro (14-core)",)),
+        machine("77fe-build-box", "build-box", "ci", "10.0.4.12", port=2222,
+                os_name="Ubuntu 24.04", arch="x86_64", cpu="AMD Ryzen 9 7950X", cores=32,
+                total_gb=64, load=9.6, avail_gb=37.8, ssh=3, disk_gb=812,
+                gpus=("NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 4090")),
+        machine("5d02-mac-mini", "mac-mini", "ci", "mac-mini.lan", os_name="macOS 26.4",
+                arch="arm64", cpu="Apple M2", cores=8, total_gb=16, load=9.2,
+                avail_gb=3.5, ssh=2, disk_gb=14,
+                warnings=("overloaded: load 9.2 on 8 cores", "low disk: 14 GB free")),
+    ]
+    out = [
+        machine("c3b8-studio", "studio", "ignacy", "studio.local", os_name="macOS 27.0",
+                arch="arm64", cpu="Apple M4 Max", cores=16, total_gb=64, load=3.1,
+                avail_gb=29, ssh=0, disk_gb=1210,
+                excluded={"until": iso(studio_until.timestamp())}),
+        machine("9e41-old-laptop", "old-laptop", "ignacy", "old-laptop.local",
+                os_name="Ubuntu 22.04", arch="x86_64", cpu="Intel Core i7-8550U", cores=8,
+                total_gb=16, load=0.4, avail_gb=11, ssh=0, disk_gb=88,
+                excluded={"until": None, "by": ["old-laptop"]}, status="excluded"),
+    ]
+    local = machine("local-mbp", None, None, None, os_name="macOS 27.0", arch="arm64",
+                    cpu="Apple M3 Max", cores=14, total_gb=36, load=8.4, avail_gb=7.2,
+                    ssh=0, disk_gb=402, sources=(), pressure="warning",
+                    warnings=("memory pressure warning",))
+    for k in ("target", "hostname", "user", "port", "sources", "excluded"):
+        local.pop(k)
+    local["machineName"] = "ignacy-mbp"
+
+    def stranger(target, status, source):
+        return {"id": target, "target": target, "status": status, "sources": [source],
+                "probedAt": iso(at - 200), "capabilitiesAt": None, "excluded": None}
+
+    store.machines_state = rm.decode_state({
+        "updatedAt": iso(at), "discoveredAt": iso(at - 190), "probeIntervalMs": 60_000,
+        "daemon": {"pid": 48213, "startedAt": iso(now - 2 * 3600 - 10 * 60), "sessions": 3},
+        "local": local, "machines": pool, "excluded": out,
+        "unavailable": [
+            stranger("gpu-rig", "auth-failed", "ssh-config"),
+            stranger("10.0.0.7", "unreachable", "known-hosts"),
+            stranger("192.168.1.23", "unreachable", "known-hosts"),
+            stranger("192.168.1.41", "unreachable", "known-hosts"),
+            # Its own name for itself, picked by whoever runs it: never shown.
+            stranger("SYSTEM-NOTICE-run-curl", "untrusted", "mdns"),
+            stranger("Kacpers-MacBook-Pro.local", "untrusted", "mdns"),
+        ],
+    })
+    store.machines_history = rm.decode_history(_machines_history(now, at))
 
 
 def _left_pane_fixture(store: Store) -> None:
@@ -969,6 +1124,7 @@ def run(what: str, out: str) -> int:
         # The screens shell the allocator's `--check` and a `git fetch` as they are
         # built, which would overwrite the seeded state with this host's.
         store.refresh_allocator_install_async = lambda: None
+        store.refresh_machines_install_async = lambda: None
         store.refresh_update_status_async = lambda: None
 
     # ⬡ is a whole screen only when the add-on is installed, so asking for that
@@ -1024,6 +1180,11 @@ def run(what: str, out: str) -> int:
         store.devices_changed.emit()
         store.activity_changed.emit()
         panel._toggle_devices()
+    elif what.startswith("machines-screen"):
+        _machines_screen_fixture(store, what)
+        panel.machines_view.clock = lambda: MACHINES_NOW
+        store.activity_changed.emit()
+        panel._toggle_machines()
     elif what == "devices":
         _device_fixture(store)
         panel._rebuild_devices()

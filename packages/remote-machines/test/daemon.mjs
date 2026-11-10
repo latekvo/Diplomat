@@ -1,8 +1,9 @@
 // The daemon over its real unix socket, against fake hosts: one machine reached under two
 // names is listed once, failures are classified, an untrusted host is never contacted,
 // machines are ranked by spare cores with warned ones last, a refresh re-reads the load,
-// refreshes arriving together share a scan,
-// the snapshot reaches state.json, and the daemon exits once its last session is gone.
+// refreshes arriving together share a scan, each reading reaches history.json, the
+// operator's exclusions take a machine out of the pool, the snapshot reaches state.json,
+// and the daemon exits once its last session is gone.
 // Run: node test/daemon.mjs
 
 import assert from 'node:assert/strict';
@@ -25,7 +26,7 @@ const healthy = {
 };
 const hosts = (busyLoad) => ({
   busy: { hostname: 'busy.local', overrides: { ...healthy, machine_id: 'M-BUSY', loadavg: `${busyLoad} ${busyLoad} 1` } },
-  idle: { hostname: 'idle.local', overrides: { ...healthy, machine_id: 'M-IDLE', loadavg: '0.50 0.50 0.50' } },
+  idle: { hostname: 'idle.local', overrides: { ...healthy, machine_id: 'M-IDLE', loadavg: '0.50 0.50 0.50', ssh_sessions: '3' } },
   'idle-ip': { hostname: '192.168.1.7', overrides: { ...healthy, machine_id: 'M-IDLE', loadavg: '0.50 0.50 0.50' } },
   // The most spare cores, but nearly out of disk.
   full: { hostname: 'full.local', overrides: { ...healthy, machine_id: 'M-FULL', ncpu: '64', loadavg: '0 0 0', disk_kb: `${TiB} 1000` } },
@@ -43,13 +44,33 @@ const sb = sandbox({
 });
 Object.assign(process.env, sb.env, {
   RM_IDLE_EXIT_MS: '1500', RM_CLIENT_CHECK_MS: '200', RM_PROBE_INTERVAL_MS: '700', RM_LOAD_GAP_MIN_MS: '500',
+  RM_CONFIG_POLL_MS: '100',
 });
+const settings = (obj) => fs.writeFileSync(sb.env.DIPLOMAT_CONFIG, JSON.stringify(obj));
+const stateWhen = async (ok, what) => {
+  const deadline = Date.now() + 8000;
+  let st;
+  while (Date.now() < deadline) {
+    st = await callDaemon('GET', '/state');
+    if (ok(st)) return st;
+    await delay(50);
+  }
+  assert.fail(`${what}: ${JSON.stringify({ machines: st.machines.map((m) => m.target), excluded: st.excluded.map((m) => [m.target, m.excluded]) })}`);
+};
+const historyFile = () => JSON.parse(fs.readFileSync(path.join(sb.env.RM_BASE_DIR, 'history.json'), 'utf8'));
 const { callDaemon, spawnDaemon, daemonHealth } = await import('../src/ipc.js');
 
 let checks = 0;
 const check = async (name, fn) => { await fn(); checks++; console.log(`  PASS ${name}`); };
 // A stand-in agent session: the daemon serves it while this process lives.
 const session = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+
+// What an earlier daemon left: one row past the history's reach, one within it.
+const earlier = Date.now() - 5000;
+fs.mkdirSync(sb.env.RM_BASE_DIR, { recursive: true });
+fs.writeFileSync(path.join(sb.env.RM_BASE_DIR, 'history.json'), JSON.stringify({
+  version: 1, machines: { 'M-GONE': [[Date.now() - 25 * 3600e3, 0.5, 0.5, 0]], 'M-IDLE': [[earlier, 0.9, 0.9, 9]] },
+}));
 
 try {
   await spawnDaemon(12000);
@@ -80,10 +101,26 @@ try {
   await check('a machine carries its capabilities and load', () => {
     const m = s.machines[0];
     assert.equal(m.machineId, 'M-IDLE');
+    assert.equal(m.id, 'M-IDLE');
     assert.equal(m.cores, 8);
+    assert.equal(m.sshSessions, 3);
+    assert.equal(m.excluded, null);
     assert.deepEqual(m.load, { last1m: 0.5, last5m: 0.5, last15m: 0.5, sinceLastScan: null });
     assert.ok(m.os?.name && m.tools && m.capabilitiesAt && m.probedAt);
     assert.deepEqual(m.sources, ['ssh-config', 'known-hosts']);
+  });
+
+  await check('usage is the load per core and the share of RAM not available, as the ranking reads them', () => {
+    assert.deepEqual(s.machines.map((m) => m.usage), [
+      { cpu: 0.063, memory: 0.5 }, { cpu: 0.75, memory: 0.5 }, { cpu: 0, memory: 0.5 },
+    ]);
+    // 8 cores at load 6 leaves 2: spareCores is cores × (1 − cpu).
+    assert.equal(s.machines[1].spareCores, 2);
+  });
+
+  await check('the snapshot names the daemon and the sessions it serves', () => {
+    assert.ok(s.daemon.pid > 0 && Date.parse(s.daemon.startedAt));
+    assert.equal(s.daemon.sessions, 1);
   });
 
   await check('failures are classified and an untrusted host is never contacted', () => {
@@ -94,7 +131,7 @@ try {
 
   await check('every probe is unattended and refuses a new or changed host key', () => {
     for (const args of sb.probes()) {
-      for (const opt of ['BatchMode=yes', 'StrictHostKeyChecking=yes', 'ControlMaster=no', 'ClearAllForwardings=yes']) {
+      for (const opt of ['BatchMode=yes', 'StrictHostKeyChecking=yes', 'ControlMaster=no', 'ControlPath=none', 'ClearAllForwardings=yes']) {
         assert.ok(args.includes(opt), `${opt} missing from ${JSON.stringify(args)}`);
       }
       assert.equal(args.at(-3), '--', `the target can be read as an option: ${JSON.stringify(args)}`);
@@ -127,6 +164,67 @@ try {
     // The one in flight plus the one they all joined; a periodic scan may slip in too.
     const scans = sb.probed().filter((t) => t === 'idle').length - before;
     assert.ok(scans >= 1 && scans <= 3, `${scans} scans for 6 refreshes`);
+  });
+
+  await check('each new reading goes into history.json once, keyed by machine id', async () => {
+    const before = historyFile().machines['M-IDLE'];
+    assert.deepEqual(before[0], [earlier, 0.9, 0.9, 9], 'an earlier daemon\'s rows are kept');
+    assert.ok(before.length >= 2);
+    for (const row of before.slice(1)) {
+      assert.equal(row.length, 4);
+      assert.deepEqual(row.slice(1), [0.063, 0.5, 3]);
+    }
+    const at = before.map((r) => r[0]);
+    assert.deepEqual(at, [...new Set(at)].sort((a, b) => a - b), 'one row per reading, oldest first');
+    await callDaemon('POST', '/scan', { full: true });
+    const after = historyFile();
+    assert.ok(after.machines['M-IDLE'].length > before.length);
+    assert.equal(after.intervalMs, 700);
+    // Unreachable and untrusted machines have no readings to keep, and a row older than a
+    // day is dropped.
+    assert.deepEqual(Object.keys(after.machines).sort(), ['M-BUSY', 'M-FULL', 'M-IDLE', s.local.id].sort());
+  });
+
+  await check('a scan asked for without a session attaches nothing', async () => {
+    const r = await callDaemon('POST', '/scan', {});
+    assert.equal(r.daemon.sessions, 1);
+  });
+
+  await check('a machine excluded for a while leaves the pool but is still read, under all its names', async () => {
+    const until = new Date(Date.now() + 3600e3).toISOString();
+    const sooner = new Date(Date.now() + 1800e3).toISOString();
+    // Paused under two of its names, until different times, one of them by its host name.
+    settings({ remoteMachineExcludeUntil: { 'idle-ip': until, 'IDLE.LOCAL': sooner, busy: new Date(Date.now() - 1000).toISOString() } });
+    const st = await stateWhen((x) => x.excluded.length === 1, 'idle excluded');
+    assert.deepEqual(st.machines.map((m) => m.target), ['busy', 'full'], 'an exclusion that has run out counts for nothing');
+    assert.equal(st.excluded[0].target, 'idle');
+    // The later time holds, and every entry naming it is listed, for the UI to take back.
+    assert.equal(st.excluded[0].excluded.until, until);
+    assert.deepEqual(st.excluded[0].excluded.by.sort(), ['IDLE.LOCAL', 'idle-ip']);
+    const probes = sb.probed().filter((t) => t === 'idle').length;
+    const again = await callDaemon('POST', '/scan', { full: true });
+    assert.ok(sb.probed().filter((t) => t === 'idle').length > probes, 'still read');
+    assert.equal(again.excluded[0].usage.cpu, 0.063);
+  });
+
+  await check('a machine excluded for good is not contacted until it is let back in', async () => {
+    settings({ remoteMachineExclude: ['IDLE.local'] });
+    const st = await stateWhen((x) => x.excluded.length === 1 && x.excluded[0].status === 'excluded', 'idle excluded for good');
+    assert.deepEqual(st.excluded.map((m) => [m.target, m.excluded]), [['idle', { until: null, by: ['IDLE.local'] }]]);
+    assert.deepEqual(st.machines.map((m) => m.target), ['busy', 'full']);
+    // Its other name reaches the same machine id: it is not listed in its place.
+    assert.ok(!st.unavailable.some((m) => m.target === 'idle-ip'));
+    const probes = sb.probed().filter((t) => t === 'idle' || t === 'idle-ip').length;
+    await callDaemon('POST', '/scan', { full: true });
+    await callDaemon('POST', '/scan', { full: true });
+    assert.equal(sb.probed().filter((t) => t === 'idle' || t === 'idle-ip').length, probes);
+    settings({});
+    const back = await stateWhen((x) => x.machines.some((m) => m.target === 'idle'), 'idle back');
+    assert.deepEqual(back.excluded, []);
+    assert.equal(back.machines.find((m) => m.target === 'idle').status, 'ok');
+    // The exclusions republished the snapshot without new readings; none was kept twice.
+    const at = historyFile().machines['M-IDLE'].map((r) => r[0]);
+    assert.equal(new Set(at).size, at.length);
   });
 
   await check('a refresh re-reads the load and re-ranks', async () => {

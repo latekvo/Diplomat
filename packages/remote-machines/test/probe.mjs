@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { sandbox, inSandbox } from './lib/sandbox.mjs';
+import { sandbox, inSandbox, SRC } from './lib/sandbox.mjs';
 
 const HANG_S = 677; // a sleep this test can find again by its argument
 const sb = sandbox({
@@ -46,7 +46,28 @@ try {
     const named = process.platform === 'darwin' || /^model name/m.test(fs.readFileSync('/proc/cpuinfo', 'utf8'));
     if (named) assert.ok(m.cpu.model, JSON.stringify(m.cpu));
     assert.ok(m.tools.git, 'git is on every CI runner and dev machine');
+    // Read locally there is no session of this probe's own to leave out; ps is on every
+    // CI runner and dev machine.
+    assert.ok(Number.isInteger(m.sshSessions) && m.sshSessions >= 0, String(m.sshSessions));
     assert.ok(Math.abs(m.bootTime - (Date.now() / 1000 - os.uptime())) < 120, 'boot time');
+  });
+
+  await check('SSH sessions are counted from sshd\'s process titles, less the probe\'s own over ssh', () => {
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'rm-ps-'));
+    try {
+      fs.writeFileSync(path.join(bin, 'ps'), [
+        '#!/bin/sh',
+        "printf '%s\\n' 'sshd-session: alice@notty' 'sshd-session: alice [priv]' 'sshd: bob@pts/0' 'sshd: bob [priv]' \\",
+        "  '/usr/sbin/sshd -D [listener] 0 of 10-100 startups' 'vim sshd: x@y' 'sshd-session: carol [net]'",
+        '',
+      ].join('\n'), { mode: 0o755 });
+      const count = (...args) => /^ssh_sessions=(.*)$/m.exec(execFileSync('sh', [path.join(SRC, 'probe.sh'), ...args], {
+        encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, SSH_CONNECTION: '10.0.0.1 5 10.0.0.2 22' },
+      }))[1];
+      // Run locally, an inherited SSH_CONNECTION is no session of the probe's.
+      assert.equal(count('load'), '2');
+      assert.equal(count('load', 'ssh'), '1');
+    } finally { fs.rmSync(bin, { recursive: true, force: true }); }
   });
 
   await check('a load probe leaves capabilities out', async () => {

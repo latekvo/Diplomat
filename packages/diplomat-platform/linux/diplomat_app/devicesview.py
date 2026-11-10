@@ -8,6 +8,8 @@ from __future__ import annotations
 import html
 import os
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from PySide6 import QtGui
@@ -139,28 +141,58 @@ RESTART_HELP = ("Stop the running daemon and start this checkout's. Agents keep 
                 "the old daemon exits, and a remote device goes back to its pool.")
 
 
-def restart_button(store: Store) -> QPushButton:
+@dataclass(frozen=True)
+class Installer:
+    """What the install controls drive: one Node package's installer, as the Store
+    runs it (the device allocator's, or the remote machines')."""
+
+    ready: Callable[[], bool]
+    busy: Callable[[], bool]
+    install: Callable[[], None]
+    uninstall: Callable[[], None]
+    start: Callable[[], None]
+    restart: Callable[[], None]
+    recheck: Callable[[], None]
+    restart_help: str
+
+
+def allocator_installer(store: Store) -> Installer:
+    return Installer(
+        ready=allocator_ready, busy=lambda: store.allocator_busy,
+        install=store.install_allocator_async, uninstall=store.uninstall_allocator_async,
+        start=store.start_allocator_daemon_async,
+        restart=store.restart_allocator_daemon_async,
+        recheck=store.refresh_allocator_install_async, restart_help=RESTART_HELP)
+
+
+def restart_button(store: Store, installer: Installer | None = None) -> QPushButton:
+    installer = installer or allocator_installer(store)
     button = QPushButton("Restart daemon")
-    button.setToolTip(RESTART_HELP)
-    button.setEnabled(allocator_ready() and not store.allocator_busy)
-    button.clicked.connect(store.restart_allocator_daemon_async)
+    button.setToolTip(installer.restart_help)
+    button.setEnabled(installer.ready() and not installer.busy())
+    button.clicked.connect(installer.restart)
     return button
 
 
-def start_button(store: Store) -> QPushButton:
+def start_button(store: Store, installer: Installer | None = None) -> QPushButton:
+    installer = installer or allocator_installer(store)
     button = QPushButton("Start daemon")
-    button.setEnabled(allocator_ready() and not store.allocator_busy)
-    button.clicked.connect(store.start_allocator_daemon_async)
+    button.setEnabled(installer.ready() and not installer.busy())
+    button.clicked.connect(installer.start)
     return button
 
 
 class AllocatorControls(QWidget):
+    """Install, uninstall, start, restart and re-check for ``installer`` (default: the
+    device allocator's), with the parts of the install it reports."""
+
     _MARKS = (("mcpRegistered", "MCP"), ("skillInstalled", "skill"),
               ("ruleInstalled", "rule"), ("claudeMdInjected", "CLAUDE.md"))
 
-    def __init__(self, store: Store, *, offers_daemon: bool = False) -> None:
+    def __init__(self, store: Store, *, offers_daemon: bool = False,
+                 installer: Installer | None = None) -> None:
         super().__init__()
-        self.store = store
+        self._installer = installer = installer or allocator_installer(store)
         self._offers_daemon = offers_daemon
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
@@ -186,19 +218,19 @@ class AllocatorControls(QWidget):
         buttons.setSpacing(8)
         self.install = QPushButton("Install")
         self.install.setStyleSheet("font-weight: 700;")
-        self.install.clicked.connect(store.install_allocator_async)
+        self.install.clicked.connect(installer.install)
         buttons.addWidget(self.install)
         self.uninstall = QPushButton("Uninstall")
-        self.uninstall.clicked.connect(store.uninstall_allocator_async)
+        self.uninstall.clicked.connect(installer.uninstall)
         buttons.addWidget(self.uninstall)
-        self.start = start_button(store)
+        self.start = start_button(store, installer)
         buttons.addWidget(self.start)
-        self.restart = restart_button(store)
+        self.restart = restart_button(store, installer)
         buttons.addWidget(self.restart)
         self.recheck = QPushButton("⟲")
         self.recheck.setFixedWidth(34)
         self.recheck.setToolTip("Re-check status")
-        self.recheck.clicked.connect(store.refresh_allocator_install_async)
+        self.recheck.clicked.connect(installer.recheck)
         buttons.addWidget(self.recheck)
         buttons.addStretch(1)
         col.addLayout(buttons)
@@ -221,8 +253,8 @@ class AllocatorControls(QWidget):
         self.uninstall.setVisible(installed)
         self.start.setVisible(self._offers_daemon and installed and not running)
         self.restart.setVisible(self._offers_daemon and installed and running)
-        idle = not self.store.allocator_busy
-        ready = allocator_ready() and idle
+        idle = not self._installer.busy()
+        ready = self._installer.ready() and idle
         for button in (self.install, self.start, self.restart):
             button.setEnabled(ready)
         self.uninstall.setEnabled(idle)
@@ -233,13 +265,17 @@ class _IdleLimitSlider(SliderSetting):
     """Re-read on ``store.changed`` and ``store.device_config_reloaded`` (config.json is
     also edited by hand)."""
 
-    def __init__(self, store: Store, attr: str, save, *, label: str, maximum: int,
+    #: A write to the shared config, for the screen to run and report on. A signal,
+    #: not a callback held here: that would be a slider -> screen -> slider cycle,
+    #: and PySide 6.12 segfaults collecting it.
+    write = Signal(object)
+
+    def __init__(self, store: Store, attr: str, *, label: str, maximum: int,
                  step: int) -> None:
         super().__init__(label=label, minimum=0, maximum=maximum, step=step,
                          min_label="never", max_label=f"{maximum} min", tint=_CYAN)
         self._store = store
         self._attr = attr
-        self._write = save
         self.set_badge_text(lambda n: "never" if n == 0 else f"{n} min")
         self.sync()
         self.changed.connect(self._on_changed)
@@ -250,16 +286,15 @@ class _IdleLimitSlider(SliderSetting):
         self.set_value(getattr(self._store, self._attr))
 
     def _on_changed(self, value: int) -> None:
-        self._write(lambda: setattr(self._store, self._attr, value))
+        self.write.emit(lambda: setattr(self._store, self._attr, value))
         self._store.changed.emit()
 
 
-def idle_limit_rows(store: Store, save) -> list[tuple[SliderSetting, SettingRow]]:
-    """``save`` runs one write to the shared config and says whether it landed."""
-    free = _IdleLimitSlider(store, "device_idle_free_minutes", save,
+def idle_limit_rows(store: Store) -> list[tuple[_IdleLimitSlider, SettingRow]]:
+    free = _IdleLimitSlider(store, "device_idle_free_minutes",
                             label="Shut down a free device after",
                             maximum=appconfig.MAX_DEVICE_IDLE_FREE_MINUTES, step=1)
-    leased = _IdleLimitSlider(store, "device_idle_leased_minutes", save,
+    leased = _IdleLimitSlider(store, "device_idle_leased_minutes",
                               label="Take a held device back after",
                               maximum=appconfig.MAX_DEVICE_IDLE_LEASED_MINUTES, step=5)
     return [
@@ -773,8 +808,9 @@ class DevicesView(QWidget):
                              stacked=True)
         reserve.set_summary(summary, color=tint)
         body.addWidget(reserve)
-        self._idle = idle_limit_rows(self.store, self._save)
-        for _slider, row in self._idle:
+        self._idle = idle_limit_rows(self.store)
+        for slider, row in self._idle:
+            slider.write.connect(self._save)
             body.addWidget(row)
         return card
 

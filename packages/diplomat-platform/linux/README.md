@@ -3,8 +3,8 @@
 The Linux port of the macOS app: a **regular desktop window** with the
 same dense panel of six `software-mansion/argent` triage tools, reverse lookup,
 the Review-PRs / Fix-issues / Resolve-conflicts / Full-E2E-test wizards, the full autonomous
-monitor stack, a Devices view of the device-allocator pool, the Mesh topology
-screen, and settings. It's a thin UI renderer over the shared [`assets/`](../../diplomat-core/assets)
+monitor stack, a Devices view of the device-allocator pool, a Machines view of the
+remote machines agents offload work to, the Mesh topology screen, and settings. It's a thin UI renderer over the shared [`assets/`](../../diplomat-core/assets)
 assets — and it doesn't re-implement prompt assembly at all: it shells out to the
 `diplomat-core` Swift binary, so the two front-ends are identical by construction.
 
@@ -332,6 +332,8 @@ DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
                                                        #   long-form paragraph, the only state that draws them)
                                                        #   devices-screen[-remote[-away]|-off] (the Devices
                                                        #   screen: no pool, signing in, away, daemon off)
+                                                       #   machines-screen[-idle|-off] (the Machines
+                                                       #   screen: daemon running, idle, not installed)
 DIPLOMAT_REFRESH_SECS=30 ./diplomat            # faster auto-refresh, for tuning
 ```
 

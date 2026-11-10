@@ -5,6 +5,7 @@ read one daemon the same way.
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import shutil
@@ -12,6 +13,7 @@ import socketserver
 import tempfile
 import threading
 import time
+import weakref
 from http.server import BaseHTTPRequestHandler
 
 import pytest
@@ -785,6 +787,22 @@ def test_the_idle_limit_sliders_open_on_the_stored_values(app):
     assert free.value() == 12
     assert leased.badge() == "never"
     view.deleteLater()
+
+
+def test_a_dropped_screen_is_freed_without_the_cycle_collector(app):
+    """PySide 6.12 segfaults collecting a live screen caught in a reference cycle, so
+    a dropped one must go by its reference count alone."""
+    from diplomat_app.devicesview import DevicesView
+    from diplomat_app.store import Store
+
+    view = DevicesView(Store(), live=False)
+    gone = weakref.ref(view)
+    gc.disable()
+    try:
+        del view
+        assert gone() is None
+    finally:
+        gc.enable()
 
 
 def test_idle_limits_set_by_hand_show_as_the_screen_opens(app, monkeypatch):

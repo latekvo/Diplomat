@@ -22,6 +22,10 @@ const text = formatSnapshot({
     machine({ target: 'ssh://box.local:2222', hostname: 'box.local', port: 2222 }),
     machine({ target: 'alpha', hostname: 'alpha.local', port: 22, sources: ['ssh-config'] }),
   ],
+  excluded: [
+    machine({ target: 'paused', excluded: { until: '2026-11-09T13:30:00Z' } }),
+    { target: 'banned', status: 'excluded', sources: ['ssh-config'], excluded: { until: null } },
+  ],
   unavailable: [
     { target: 'moved', status: 'key-changed', sources: ['ssh-config'] },
     { target: 'stranger', status: 'untrusted', sources: ['ssh-config'] },
@@ -45,6 +49,12 @@ check('a changed host key is told apart from a never-accepted one', () => {
 check('names other machines advertised over mDNS are counted, never quoted', () => {
   assert.ok(!text.includes('SYSTEM-NOTICE'), text);
   assert.match(text, /2 other machines advertising SSH on the network, never vetted/);
+});
+
+check('machines the operator took out of the pool are named as not usable, never offered', () => {
+  const at = new Date('2026-11-09T13:30:00Z').toTimeString().slice(0, 5);
+  assert.ok(text.includes(`Not usable (6) - taken out of the pool by the operator: paused (until ${at}), banned;`), text);
+  assert.ok(!/^\d+\. (paused|banned)/m.test(text), text);
 });
 
 check('the header points at a login shell', () => {

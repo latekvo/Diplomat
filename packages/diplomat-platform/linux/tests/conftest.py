@@ -426,6 +426,15 @@ def isolated_device_allocator(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_remote_machines(tmp_path, monkeypatch):
+    """Point the remote-machines snapshot, history and socket at an empty dir: a panel
+    built here otherwise draws the operator's machines, and Refresh would ask their
+    real daemon for a scan."""
+    monkeypatch.setenv("RM_BASE_DIR", str(tmp_path / "remote-machines"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolated_state_dir(tmp_path, monkeypatch):
     """Redirect ``~/.local/state/diplomat`` to a per-test temp dir: quitting the applet
     writes the operator-quit mark there, which would keep the operator's real tray from

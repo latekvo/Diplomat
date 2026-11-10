@@ -54,6 +54,9 @@ G_RECENT = "◴"     # the allocator's recent events
 G_ALLOCATOR = "▥"  # the allocator itself: daemon, install, idle limits
 G_REMOTE = "⇄"     # the remote device pool
 
+# --- Machines screen glyphs ------------------------------------------------
+G_MACHINES = "⊞"   # the remote machines an agent can offload work to
+
 # --- Settings card glyphs --------------------------------------------------
 # One per block of the Settings screen. Plain text symbols, like the rest of this
 # file: the obvious pictograms for these (⚡ gauge ⚠ ⬇) all carry an emoji

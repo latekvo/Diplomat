@@ -6,9 +6,9 @@
 //     ('proxyjump j', 'hostkeyalias a') appended;
 //   - a probe of a target with behavior 'auth' or 'refused' fails the way ssh does, and
 //     'hang' never answers while a grandchild holds its stderr (as a ProxyCommand does);
-//     otherwise probe.sh runs on this machine, with each `key=value` line whose key is
-//     in `overrides` replaced (machine_id, loadavg, disk_kb, ...) and `inject` lines
-//     added to its output.
+//     otherwise probe.sh runs on this machine, after `delayMs` if set, with each
+//     `key=value` line whose key is in `overrides` replaced (machine_id, loadavg,
+//     disk_kb, ...) and `inject` lines added to its output.
 // Every probe appends its arguments, as one JSON line, to FAKE_SSH_LOG.
 
 import fs from 'node:fs';
@@ -36,7 +36,7 @@ if (g !== -1) {
 
 // The target is the word before the remote command, which is the last argument.
 const target = args[args.length - 2];
-const mode = args[args.length - 1].split(' ').pop();
+const probeArgs = args[args.length - 1].split(' ').slice(3); // after `sh -s --`
 fs.appendFileSync(process.env.FAKE_SSH_LOG, `${JSON.stringify(args)}\n`);
 const h = hosts[target] ?? {};
 if (h.behavior === 'auth') {
@@ -51,7 +51,8 @@ if (h.behavior === 'hang') {
   spawnSync('sh', ['-c', `sleep ${h.sleep ?? 60} & wait`], { stdio: ['ignore', 'ignore', 'inherit'] });
   process.exit(255);
 }
-const r = spawnSync('sh', ['-s', '--', mode], { input: fs.readFileSync(0), encoding: 'utf8' });
+if (h.delayMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, h.delayMs);
+const r = spawnSync('sh', ['-s', '--', ...probeArgs], { input: fs.readFileSync(0), encoding: 'utf8' });
 const overrides = h.overrides ?? {};
 process.stdout.write(r.stdout.split('\n').map((line) => {
   const k = line.slice(0, line.indexOf('='));

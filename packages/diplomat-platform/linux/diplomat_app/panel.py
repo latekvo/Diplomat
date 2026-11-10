@@ -35,6 +35,7 @@ from . import deviceallocator, glyphs, szpont
 from .commsview import CommsView
 from .tasksview import TasksView
 from .devicesview import DevicesView
+from .machinesview import MachinesView
 from .settingsview import SettingsView
 from .store import Store, tool_by_id
 from .widgets import (
@@ -286,6 +287,16 @@ class Panel(QWidget):
         devices_scroll.setWidget(self.devices_view)
         self._screens["devices"] = self.body.addWidget(devices_scroll)
 
+        # Page: machines (the remote machines agents offload work to).
+        self.machines_view = MachinesView(store)
+        self.machines_view.done.connect(lambda: self._set_screen("main"))
+        machines_scroll = QScrollArea()
+        machines_scroll.setWidgetResizable(True)
+        machines_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        machines_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        machines_scroll.setWidget(self.machines_view)
+        self._screens["machines"] = self.body.addWidget(machines_scroll)
+
         # Page: telemetry (what the monitors cost and what they still owe). Sits
         # between Mesh and Settings, matching the header button order.
         self.telemetry_view = TelemetryView(store)
@@ -453,6 +464,10 @@ class Panel(QWidget):
         self.devices_btn = _BadgedButton(glyphs.G_DEVICES)
         self.devices_btn.clicked.connect(self._toggle_devices)
         row.addWidget(self.devices_btn)
+
+        self.machines_btn = _icon_button(glyphs.G_MACHINES, "Machines")
+        self.machines_btn.clicked.connect(self._toggle_machines)
+        row.addWidget(self.machines_btn)
 
         # No add-on, no ⬡ button: the screen behind it does not exist, and a
         # control that opens nothing is worse than an absent one.
@@ -1053,8 +1068,9 @@ class Panel(QWidget):
         self._update_results()
 
     def _set_screen(self, name: str) -> None:
-        """Flip the body to one of the screens: Actions ("main"), Devices, Comms, Tasks,
-        Telemetry, Settings, or — when the mesh add-on is installed — Mesh management."""
+        """Flip the body to one of the screens: Actions ("main"), Devices, Machines,
+        Comms, Tasks, Telemetry, Settings, or — when the mesh add-on is installed — Mesh
+        management."""
         self._screen = name
         self.body.setCurrentIndex(self._screens[name])
         self.devices_btn.set_state(
@@ -1064,6 +1080,10 @@ class Panel(QWidget):
             self.devices_view.opened()
         else:
             self.devices_view.closed()
+        if name == "machines":
+            self.machines_view.opened()
+        else:
+            self.machines_view.closed()
         if name == "mesh" and self.store.mesh_enabled:
             # Fresh topology the moment the screen opens (the 2s poll follows).
             self.store.refresh_mesh_state()
@@ -1086,6 +1106,9 @@ class Panel(QWidget):
 
     def _toggle_devices(self) -> None:
         self._set_screen("main" if self._screen == "devices" else "devices")
+
+    def _toggle_machines(self) -> None:
+        self._set_screen("main" if self._screen == "machines" else "machines")
 
     def _toggle_mesh(self) -> None:
         self._set_screen("main" if self._screen == "mesh" else "mesh")
@@ -1290,11 +1313,14 @@ class Panel(QWidget):
         self.store.refresh_auto_task_count_async()
         if self._screen == "devices":
             self.devices_view.opened()
+        if self._screen == "machines":
+            self.machines_view.opened()
         super().showEvent(event)
 
     def hideEvent(self, event) -> None:  # noqa: N802
-        # The Devices screen polls the installer only while it is on screen.
+        # The Devices and Machines screens poll only while they are on screen.
         self.devices_view.closed()
+        self.machines_view.closed()
         # Reopening lands on the panel, not on Settings. A minimize is a spontaneous
         # hide and keeps the screen.
         if self._screen == "settings" and not event.spontaneous():

@@ -193,7 +193,8 @@ def test_the_block_is_what_makes_the_difference(tmp_path):
     assert probe["mesh_enabled"] is True
     assert probe["mesh_button"] is True
     assert probe["mesh_screen"] is True
-    assert probe["screens"] == ["comms", "devices", "main", "mesh", "settings", "tasks", "telemetry"]
+    assert probe["screens"] == ["comms", "devices", "machines", "main", "mesh", "settings", "tasks",
+                                 "telemetry"]
     assert probe["mesh_timer"] is True
     assert probe["dispatch"] == "accepted"
 
@@ -215,7 +216,8 @@ def test_no_control_opens_a_screen_that_was_never_built(tmp_path):
     probe = _probe(tmp_path, blocked=True)
     assert probe["mesh_button"] is False
     assert probe["mesh_screen"] is False
-    assert probe["screens"] == ["comms", "devices", "main", "settings", "tasks", "telemetry"]
+    assert probe["screens"] == ["comms", "devices", "machines", "main", "settings", "tasks",
+                                 "telemetry"]
 
 
 def test_nothing_polls_a_mesh_that_cannot_exist(tmp_path):

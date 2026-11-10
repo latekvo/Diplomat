@@ -84,6 +84,10 @@ def test_glyph_falls_back_to_category_glyph() -> None:
         "comms-error", "comms-recovered", "comms-notice", "comms-reply")] == [
             "✉", "☑", "⊙", "↑", "⌕", "△", "✓", "△", "↩"]
     assert activity.color_for("comms-investigate") == "#007AFF"
+    # The Machines screen's own glyph, as macOS marks them all with server.rack.
+    assert {activity.glyph_for(v) for v in (
+        "machine-pause", "machine-resume", "machine-exclude", "machine-include",
+        "machines-install", "machines-uninstall", "machines-scan")} == {"⊞"}
 
 
 def test_read_absent_file_is_empty(tmp_path, monkeypatch) -> None:

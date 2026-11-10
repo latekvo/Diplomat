@@ -19,7 +19,9 @@ import DiplomatCore
 /// And four are for the device-allocator daemon, a Node process: the terminal spawns
 /// resolve to, published rather than set here, for it to open its repair agents in,
 /// the two idle limits it shuts devices down and takes them back by, and the module
-/// its remote device pool is lent through.
+/// its remote device pool is lent through. Two more are for the remote-machines daemon,
+/// another Node process: the machines the operator took out of its pool, for good or
+/// until a time.
 ///
 /// So those knobs live in the shared `~/.diplomat` tree, alongside the ban list and
 /// the mesh snapshot both front-ends already exchange there. Every reader re-reads on
@@ -70,6 +72,7 @@ enum AppConfig {
     /// device pool (`~` allowed); absent = no remote pool. Re-read by the daemon on
     /// every request.
     static let deviceRemoteProviderKey = "deviceRemoteProvider"
+    // The remote-machines keys are `MachineExclusions.excludeKey` and `.untilKey`.
 
     /// The runner every spawn on this machine uses, resolved here rather than at each
     /// call site because there are two, in different processes: this app's spawner and
@@ -128,6 +131,11 @@ enum AppConfig {
         var obj = read()
         if value.isEmpty { obj.removeValue(forKey: key) } else { obj[key] = value }
         return write(obj)
+    }
+
+    /// `set` for an edit that may touch any keys, such as `MachineExclusions.edits`.
+    static func update(_ edit: ([String: Any]) -> [String: Any]) -> Bool {
+        write(edit(read()))
     }
 
     /// The stored repo roots, trimmed, blank entries dropped: `repoRoots` when it lists

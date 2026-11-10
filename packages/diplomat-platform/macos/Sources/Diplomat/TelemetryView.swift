@@ -813,34 +813,6 @@ private struct QuotaChart: View {
     }
 }
 
-/// A single horizontal bar split between two quantities — the Diplomat share of this
-/// machine's tokens against everything else.
-private struct SplitBar: View {
-    let left: Double
-    let right: Double
-    let leftColor: Color
-    let rightColor: Color
-
-    var body: some View {
-        GeometryReader { geo in
-            let total = max(0, left) + max(0, right)
-            let split = total > 0 ? geo.size.width * max(0, left) / total : 0
-            HStack(spacing: 0) {
-                Rectangle().fill(leftColor).frame(width: split)
-                Rectangle().fill(rightColor.opacity(0.45))
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 5))
-        }
-    }
-}
-
-/// Chart axis labels, one styling for every tick on both charts. `.foregroundColor`
-/// (not `.foregroundStyle`) so this stays a `Text`, which is what
-/// `GraphicsContext.draw(_:at:)` takes.
-private func axisText(_ s: String) -> Text {
-    Text(s).font(.system(size: 8)).foregroundColor(Color(white: 0.55))
-}
-
 /// Month names, spelled out rather than left to a `DateFormatter` — that follows the
 /// process locale, so on a machine set to anything but English the chart axis would
 /// come out in a different language from every other word on the screen.

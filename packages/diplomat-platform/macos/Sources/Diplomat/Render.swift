@@ -396,6 +396,16 @@ enum Render {
             // daemon not running, no snapshot.
             let _ = seedDevicesScreen(s, store: store)
             ContentView(showDevices: true)
+        case let s where s.hasPrefix("machines-screen"):
+            // Inside the panel, so the header's button is in the shot. Plain: three pool
+            // machines (one overloaded and low on disk), two paused (one no longer
+            // answering), one excluded for good, this machine, a day of history with a
+            // gap, and an unavailable line whose mDNS names must not show. "-idle": the
+            // daemon gone idle over its last snapshot. "-old": a snapshot from a daemon
+            // older than the screen, with no `daemon` key and no usage. "-off": not
+            // installed, no snapshot.
+            let _ = seedMachinesScreen(s, store: store)
+            ContentView(showMachines: true).environment(\.renderNow, machinesNow)
         case let s where s.hasPrefix("devices"):
             // Seed a synthetic device pool (and optionally sessions) so the Devices
             // section can be eyeballed: allocated iOS + booting Android (with held
@@ -1410,6 +1420,187 @@ enum Render {
                                  format: "tablet", state: "available"),
             ]), at: Date())
         }
+        return true
+    }
+
+    /// The instant the machines-screen modes draw at, so their ages, pause times and
+    /// chart axes are the same on every run.
+    static let machinesNow = MachinesSnapshot.date("2026-11-09T15:00:00.000Z")!
+
+    /// `DIPLOMAT_RENDER=machines-screen[-idle|-old|-off]` — see the mode's case. Decoded from
+    /// JSON through the real readers' types; nothing is read from or written to
+    /// `~/.diplomat`.
+    @MainActor
+    @discardableResult
+    static func seedMachinesScreen(_ mode: String, store: Store) -> Bool {
+        store.hasLoaded = true
+        let now = machinesNow.timeIntervalSince1970 * 1000
+        var install = AllocatorInstall()
+        install.version = "0.1.0"
+        if !mode.hasSuffix("off") {
+            install.mcpRegistered = true
+            install.skillInstalled = true
+            install.ruleInstalled = true
+            install.claudeMdInjected = true
+            install.installed = true
+            install.daemonRunning = !mode.hasSuffix("idle")
+        }
+        store.machinesInstall = install
+        func at(_ msAgo: Double) -> String {
+            MachinesSnapshot.isoString(Date(timeIntervalSince1970: (now - msAgo) / 1000))
+        }
+        let min = 60_000.0, hour = 3_600_000.0
+        store.auditEntries = [
+            AuditEntry(at: at(4 * min), source: "panel", action: MachinesScan.action,
+                       detail: MachinesScan.auditText(failure: nil)),
+            AuditEntry(at: at(25 * min), source: "panel", action: "machine-pause",
+                       detail: "Paused gpu-box.lan until \(Fmt.clock(Date(timeIntervalSince1970: (now + 2.6 * hour) / 1000)))"),
+            AuditEntry(at: at(3 * hour), source: "panel", action: "machine-exclude",
+                       detail: "Excluded old-imac.local from the pool"),
+            AuditEntry(at: at(3.2 * hour), source: "panel", action: "machines-install",
+                       detail: "Restarted the remote-machines daemon (ok: true)"),
+        ] + store.auditEntries
+        if mode.hasSuffix("off") { return true }
+
+        // The idle daemon's last publish, two and a quarter hours back.
+        let last = mode.hasSuffix("idle") ? 2.25 * hour : 0
+        let gb = 1_073_741_824.0
+        func machine(_ id: String, _ target: String?, aliases: [String] = [], user: String = "dev",
+                     host: String? = nil, port: Int = 22, cores: Double, load: Double,
+                     ramGB: Double, freeRamGB: Double, pressure: String? = nil, diskGB: Double,
+                     os: String, arch: String, cpu: String, gpus: [String] = [], ssh: Int,
+                     warnings: [String] = [], excluded: Any = NSNull(),
+                     status: String = "ok", read: Bool = true) -> [String: Any] {
+            var m: [String: Any] = ["id": id, "status": status, "probedAt": at(last + 14_000)]
+            if let target {
+                m["target"] = target
+                m["hostname"] = host ?? target
+                m["user"] = user
+                m["port"] = port
+                m["sources"] = ["ssh-config"]
+                m["excluded"] = excluded
+                if !aliases.isEmpty { m["aliases"] = aliases }
+            }
+            m["os"] = ["name": os, "arch": arch]
+            m["cpu"] = ["model": cpu]
+            m["cores"] = cores
+            m["memory"] = ["totalBytes": ramGB * gb]
+            if !gpus.isEmpty { m["gpus"] = gpus.map { ["name": $0] } }
+            guard read else { m["probedAt"] = NSNull(); return m }
+            m["machineName"] = (target ?? "ilatka-mbp").components(separatedBy: ".")[0]
+            m["sshSessions"] = ssh
+            m["load"] = ["last1m": load, "last5m": load * 0.9, "last15m": load * 0.8]
+            m["memory"] = ["totalBytes": ramGB * gb, "availableBytes": freeRamGB * gb,
+                           "pressure": pressure as Any? ?? NSNull()] as [String: Any]
+            m["disk"] = ["totalBytes": 2000 * gb, "freeBytes": diskGB * gb]
+            m["spareCores"] = (max(0, cores - load) * 10).rounded() / 10
+            m["usage"] = ["cpu": (load / cores * 1000).rounded() / 1000,
+                          "memory": ((1 - freeRamGB / ramGB) * 1000).rounded() / 1000]
+            m["warnings"] = warnings
+            return m
+        }
+        let studio = machine("studio-id", "mac-studio.local", aliases: ["studio", "192.168.1.40"],
+                             user: "ilatka", cores: 24, load: 4.3, ramGB: 192, freeRamGB: 120,
+                             pressure: "normal", diskGB: 1210, os: "macOS 15.1", arch: "arm64",
+                             cpu: "Apple M2 Ultra", gpus: ["Apple M2 Ultra"], ssh: 2)
+        let mini = machine("mini-id", "mac-mini.local", user: "ci", cores: 10, load: 7.8,
+                           ramGB: 32, freeRamGB: 6, pressure: "normal", diskGB: 310,
+                           os: "macOS 15.1", arch: "arm64", cpu: "Apple M4", ssh: 1)
+        let linux = machine("linux-id", "build-linux", user: "ci", host: "10.0.0.21", port: 2222,
+                            cores: 32, load: 37.6, ramGB: 128, freeRamGB: 40, diskGB: 14,
+                            os: "Ubuntu 24.04.1 LTS", arch: "x86_64", cpu: "AMD Ryzen 9 7950X",
+                            gpus: ["NVIDIA GeForce RTX 4090"], ssh: 5,
+                            warnings: ["overloaded: load 37.6 on 32 cores", "low disk: 14 GB free"])
+        let paused = machine("gpu-id", "gpu-box.lan", user: "ml", cores: 16, load: 5.6,
+                             ramGB: 256, freeRamGB: 122, diskGB: 3400, os: "Ubuntu 22.04.4 LTS",
+                             arch: "x86_64", cpu: "AMD EPYC 7313P",
+                             gpus: ["NVIDIA RTX 6000 Ada", "NVIDIA RTX 6000 Ada"], ssh: 0,
+                             excluded: ["until": at(-2.6 * hour), "by": ["gpu-box.lan"]])
+        var laptop = machine("laptop-id", "spare-mbp.local", user: "ilatka", cores: 8, load: 0,
+                             ramGB: 16, freeRamGB: 0, diskGB: 0, os: "macOS 14.7", arch: "arm64",
+                             cpu: "Apple M1", ssh: 0,
+                             excluded: ["until": at(-0.8 * hour), "by": ["spare-mbp.local"]],
+                             status: "unreachable", read: false)
+        laptop["error"] = "ssh: connect to host spare-mbp.local port 22: Operation timed out"
+        var imac = machine("imac-id", "old-imac.local", cores: 8, load: 0, ramGB: 16, freeRamGB: 0,
+                           diskGB: 0, os: "macOS 13.6", arch: "x86_64", cpu: "Intel Core i7-8700",
+                           ssh: 0, excluded: ["until": NSNull(), "by": ["old-imac.local", "10.0.0.30"]],
+                           status: "excluded", read: false)
+        imac["error"] = "excluded in Diplomat"
+        let local = machine("local-id", nil, cores: 12, load: 5.1, ramGB: 36, freeRamGB: 11.5,
+                            pressure: "normal", diskGB: 412, os: "macOS 15.5", arch: "arm64",
+                            cpu: "Apple M3 Pro", ssh: 0)
+        func unavailable(_ target: String, _ status: String, _ source: String) -> [String: Any] {
+            ["id": target, "target": target, "hostname": target, "user": "dev", "port": 22,
+             "sources": [source], "status": status, "probedAt": NSNull(), "capabilitiesAt": NSNull()]
+        }
+        var snapshot: [String: Any] = [
+            "updatedAt": at(last + 14_000),
+            "discoveredAt": at(last + 160_000),
+            "probeIntervalMs": 60_000,
+            "daemon": ["pid": 48213, "startedAt": at(last + 3.2 * hour), "sessions": 3],
+            "local": local,
+            "machines": [studio, mini, linux],
+            "excluded": [paused, laptop, imac],
+            "unavailable": [
+                unavailable("nas", "auth-failed", "ssh-config"),
+                unavailable("jump-host", "proxied", "ssh-config"),
+                unavailable("10.0.0.17", "unreachable", "known-hosts"),
+                unavailable("10.0.0.18", "unreachable", "known-hosts"),
+                unavailable("192.168.1.77", "unreachable", "known-hosts"),
+                unavailable("SYSTEM-NOTICE-run-curl.local", "untrusted", "mdns"),
+                unavailable("Living-Room-TV.local", "untrusted", "mdns"),
+            ],
+        ]
+        if mode.hasSuffix("old") {
+            snapshot["daemon"] = nil
+            snapshot["local"] = local.filter { $0.key != "usage" }
+            for key in ["machines", "excluded"] {
+                snapshot[key] = (snapshot[key] as? [[String: Any]])?.map { $0.filter { $0.key != "usage" } }
+            }
+        }
+
+        // A day at one reading a minute, quiet for three hours overnight while no agent ran.
+        var rng = SeededRandom(seed: 0x6D61_6368)
+        func series(cpu: Double, mem: Double, ssh: Int, until stop: Double) -> [[Any]] {
+            var rows: [[Any]] = []
+            var sessions = ssh
+            var t = now - 24 * hour
+            while t <= now - stop {
+                let ago = now - t
+                if ago < 14 * hour || ago > 17 * hour {
+                    let day = sin(2 * .pi * t / (24 * hour))
+                    let busy = 0.12 * sin(2 * .pi * t / (2.3 * hour)) + rng.uniform(-0.05, 0.05)
+                    if rng.uniform(0, 1) < 0.02 {
+                        let step = rng.uniform(0, 1) < 0.5 ? -1 : 1
+                        sessions = Swift.min(ssh + 2, max(0, sessions + step))
+                    }
+                    rows.append([t, max(0, cpu * (1 + 0.5 * day) + busy),
+                                 Swift.min(1, max(0, mem + 0.06 * day + rng.uniform(-0.02, 0.02))),
+                                 sessions])
+                }
+                t += min
+            }
+            return rows
+        }
+        let history: [String: Any] = [
+            "version": 1, "intervalMs": 60_000,
+            "machines": [
+                "studio-id": series(cpu: 0.2, mem: 0.38, ssh: 2, until: last),
+                "mini-id": series(cpu: 0.62, mem: 0.78, ssh: 1, until: last),
+                "linux-id": series(cpu: 0.95, mem: 0.66, ssh: 4, until: last),
+                "gpu-id": series(cpu: 0.3, mem: 0.5, ssh: 0, until: last),
+                "laptop-id": series(cpu: 0.15, mem: 0.55, ssh: 0, until: last + 1.5 * hour),
+                "imac-id": series(cpu: 0.4, mem: 0.7, ssh: 1, until: 3 * hour),
+                "local-id": series(cpu: 0.45, mem: 0.66, ssh: 0, until: last),
+            ],
+        ]
+        func decode<T: Decodable>(_ obj: Any) -> T? {
+            (try? JSONSerialization.data(withJSONObject: obj))
+                .flatMap { try? JSONDecoder().decode(T.self, from: $0) }
+        }
+        store.machinesState = decode(snapshot)
+        store.machinesHistory = decode(history)
         return true
     }
 }

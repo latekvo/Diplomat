@@ -3999,6 +3999,147 @@ do {
     print("stalled login shell killed \(Int(Date().timeIntervalSince(stalledAt)))s after it was asked")
 }
 
+section("remote machines")
+do {
+    let json = #"""
+    {"updatedAt":"2026-11-09T12:00:00.000Z","probeIntervalMs":60000,
+     "local":{"id":"L","target":null,"status":"ok","cores":8,"usage":{"cpu":0.5,"memory":0.4}},
+     "machines":[{"id":"a","target":"a.local","aliases":["A2"],"status":"ok","excluded":null,
+                  "usage":{"cpu":1.2,"memory":0.3},"warnings":[]},
+                 {"id":"junk","status":5}],
+     "unavailable":[
+       {"id":"s1","target":"10.0.0.9","sources":["known-hosts"],"status":"unreachable"},
+       {"id":"s2","target":"10.0.0.8","sources":["known-hosts","ssh-config"],"status":"unreachable"},
+       {"id":"m1","target":"SYSTEM-NOTICE-run-curl.local","sources":["mdns"],"status":"untrusted"},
+       {"id":"k","target":"box","sources":["ssh-config"],"status":"key-changed"}]}
+    """#
+    let snap = try JSONDecoder().decode(MachinesSnapshot.self, from: Data(json.utf8))
+    check(snap.daemon == nil && snap.excluded.isEmpty, "an older daemon's snapshot has no daemon and no excluded")
+    check(snap.machines.map(\.id) == ["a"], "an unreadable machine costs only itself")
+    check(snap.local?.target == nil && snap.local?.excluded == nil, "local has no target")
+    check(snap.machines[0].names == ["a.local", "A2"], "names are the target and its aliases")
+    let summary = snap.unavailableSummary()
+    check(summary == ["not answering: 10.0.0.8", "host key changed since it was accepted: box",
+                      "1 old known_hosts addresses not answering",
+                      "1 other machines advertising SSH on the network, never vetted"],
+          "unavailable summary, got \(summary)")
+    check(!summary.joined().contains("SYSTEM-NOTICE"), "an mDNS stranger is never named")
+
+    let excl = #"{"id":"x","target":"x","status":"excluded","excluded":{"until":null}}"#
+    let paused = #"{"id":"p","target":"p","status":"ok","excluded":{"until":"2026-11-09T13:00:00.000Z"}}"#
+    let forGood = try JSONDecoder().decode(RemoteMachine.self, from: Data(excl.utf8))
+    let pause = try JSONDecoder().decode(RemoteMachine.self, from: Data(paused.utf8))
+    check(forGood.isExcludedForGood && forGood.pausedUntil == nil, "until null is for good")
+    check(!pause.isExcludedForGood
+          && pause.pausedUntil == MachinesSnapshot.date("2026-11-09T13:00:00Z"), "until a time is a pause")
+
+    check(UsageTone.cpu(1.01) == .over && UsageTone.cpu(1) == .high && UsageTone.cpu(0.74) == .normal)
+    check(UsageTone.memory(0.91) == .over && UsageTone.memory(0.9) == .high
+          && UsageTone.memory(0.75) == .high && UsageTone.memory(0.7) == .normal)
+
+    let now = MachinesSnapshot.date("2026-11-09T12:00:00Z")!
+    let base = MachineExclusions(exclude: ["Other"], until: [
+        "a2": "2026-11-09T18:00:00.000Z", "gone": "2026-11-09T11:00:00.000Z",
+        "later": "2026-11-10T00:00:00.000Z"])
+    let names = ["a.local", "A2"]
+    let p = base.applying(.pause(3600), target: "a.local", names: names, now: now)
+    check(p.until == ["a.local": "2026-11-09T13:00:00.000Z", "a2": "2026-11-09T18:00:00.000Z",
+                      "later": "2026-11-10T00:00:00.000Z"] && p.exclude == ["Other"],
+          "pause sets the target's time and drops expired, got \(p)")
+    let e = base.applying(.exclude, target: "a.local", names: names, now: now)
+    check(e.exclude == ["Other", "a.local"] && e.until == ["later": "2026-11-10T00:00:00.000Z"],
+          "exclude appends and clears every name's pause, got \(e)")
+    check(e.applying(.exclude, target: "A.LOCAL", names: names, now: now).exclude == ["Other", "a.local"],
+          "exclude never adds a name twice")
+    let r = base.applying(.resume, target: "a.local", names: names, now: now)
+    check(r.until == ["later": "2026-11-10T00:00:00.000Z"] && r.exclude == ["Other"], "resume, got \(r)")
+    let i = MachineExclusions(exclude: ["Other", "A.local", "a2"], until: ["A.LOCAL": "2026-11-10T00:00:00.000Z"])
+        .applying(.include, target: "a.local", names: names, now: now)
+    check(i.exclude == ["Other"] && i.until.isEmpty, "include clears both, without case, got \(i)")
+
+    // `excluded.by` can name a machine by an entry that is neither its target nor an alias.
+    check(snap.unavailableLine() == "Not usable (4) - not answering: 10.0.0.8; host key changed since "
+          + "it was accepted: box; 1 old known_hosts addresses not answering; 1 other machines "
+          + "advertising SSH on the network, never vetted.", "unavailable line, got \(snap.unavailableLine() ?? "nil")")
+    let none = try JSONDecoder().decode(MachinesSnapshot.self, from: Data(#"{"machines":[]}"#.utf8))
+    check(none.unavailableLine() == nil, "no unavailable line without unavailable machines")
+    check(forGood.excluded?.by == [], "an exclusion without by names nothing")
+    let byJSON = #"""
+    {"id":"b","target":"build-linux","status":"excluded","error":"excluded in Diplomat",
+     "excluded":{"until":null,"by":["build-linux","10.0.0.21"]}}
+    """#
+    let byIP = try JSONDecoder().decode(RemoteMachine.self, from: Data(byJSON.utf8))
+    let inc = MachineExclusions(exclude: ["Other", "10.0.0.21", "BUILD-LINUX"],
+                                until: ["10.0.0.21": "2026-11-10T00:00:00.000Z"])
+        .applying(.include, target: "build-linux", names: byIP.names, now: now)
+    check(inc.exclude == ["Other"] && inc.until.isEmpty, "include drops the by entries, got \(inc)")
+    let pausedByJSON = #"""
+    {"id":"q","target":"spare.local","status":"unreachable","error":"timed out",
+     "excluded":{"until":"2026-11-09T13:00:00.000Z","by":["Spare"]}}
+    """#
+    let pausedBy = try JSONDecoder().decode(RemoteMachine.self, from: Data(pausedByJSON.utf8))
+    let pausedConfig = MachineExclusions(exclude: [], until: ["spare": "2026-11-09T13:00:00.000Z"])
+    let res = pausedConfig.applying(.resume, target: "spare.local", names: pausedBy.names, now: now)
+    check(res.until.isEmpty, "resume drops a pause entered under another name, got \(res)")
+    let ex = pausedConfig.applying(.exclude, target: "spare.local", names: pausedBy.names, now: now)
+    check(ex.exclude == ["spare.local"] && ex.until.isEmpty, "exclude drops the by pause, got \(ex)")
+    check(pausedBy.problem == "⚠ unreachable: timed out" && byIP.problem == nil
+          && snap.machines[0].problem == nil, "a machine that could not be read says why")
+
+    let unparsed = MachineExclusions(exclude: [], until: ["odd": "next tuesday", "gone": "2026-11-09T11:00:00.000Z"])
+        .applying(.pause(60), target: "x", names: [], now: now)
+    check(unparsed.until["odd"] == "next tuesday" && unparsed.until["gone"] == nil,
+          "an unparseable pause time is kept, an expired one dropped, got \(unparsed)")
+
+    // Each edit is one key, the list first; an emptied key is removed, the rest kept.
+    let cfgIn: [String: Any] = ["repoRoot": "/r", MachineExclusions.excludeKey: ["a.local"],
+                                MachineExclusions.untilKey: ["a2": "2026-11-10T00:00:00.000Z"]]
+    let before = MachineExclusions(config: cfgIn)
+    check(before == MachineExclusions(exclude: ["a.local"], until: ["a2": "2026-11-10T00:00:00.000Z"]),
+          "exclusions read from config, got \(before)")
+    let after = before.applying(.include, target: "a.local", names: names, now: now)
+    let edits = after.edits(from: before)
+    check(edits.count == 2, "two keys changed, got \(edits.count)")
+    let first = edits[0](cfgIn)
+    check(first[MachineExclusions.excludeKey] == nil && first[MachineExclusions.untilKey] != nil,
+          "the list is written first, and an empty list removes its key")
+    let written = edits.reduce(cfgIn) { $1($0) }
+    check(written.keys.sorted() == ["repoRoot"], "both keys removed, others kept, got \(written)")
+    let paused2 = before.applying(.pause(3600), target: "b", names: [], now: now)
+    let pauseEdits = paused2.edits(from: before)
+    check(pauseEdits.count == 1
+          && (pauseEdits[0](cfgIn)[MachineExclusions.untilKey] as? [String: String])?["b"]
+             == "2026-11-09T13:00:00.000Z", "a pause writes only the pause map")
+    check(MachinesScan.body == ["full": true], "a scan asks for discovery and every probe, with no ownerPid")
+    check(MachinesScan.auditText(failure: nil) == "Rescanned the remote machines"
+          && MachinesScan.auditText(failure: "HTTP 500")
+             == "Rescanned the remote machines FAILED: HTTP 500",
+          "a scan's audit line matches Linux's and carries why it failed")
+
+    let agoCases: [(Double, String)] = [
+        (-5, "0 s ago"), (119.4, "119 s ago"), (119.5, "2 min ago"), (150, "3 min ago"),
+        (5370, "90 min ago"), (9000, "3 h ago"), (5.5 * 3600, "6 h ago"),
+        (2.5 * 86400, "3 d ago"),
+    ]
+    for (s, want) in agoCases {
+        check(MachinesText.ago(seconds: s) == want, "ago(\(s)) = \(MachinesText.ago(seconds: s)), want \(want)")
+    }
+    let pctCases: [(Double, String)] = [(0.125, "13%"), (0.994, "99%"), (-0.005, "0%"), (1.2, "120%")]
+    for (v, want) in pctCases {
+        check(MachinesText.percent(v) == want, "percent(\(v)) = \(MachinesText.percent(v)), want \(want)")
+    }
+
+    let hist = #"{"version":1,"intervalMs":60000,"machines":{"a":[[0,0.2,0.4,1],[60000,0.4,0.6,3],[120000,null,0.5,null],[600000,1.5,0.5,0]]}}"#
+    let h = try JSONDecoder().decode(MachineHistory.self, from: Data(hist.utf8))
+    let cols = MachineHistory.columns(h.machines["a"]!, from: 0, to: 600_000, width: 5, gapMs: 180_000)
+    check(cols.map(\.index) == [0, 1, 4], "columns, got \(cols)")
+    check(cols[0].cpu.map { abs($0 - 0.3) < 1e-9 } == true && cols[0].ssh == 3 && cols[0].breaksBefore,
+          "a column is the mean of cpu and the max of ssh, got \(cols[0])")
+    check(cols[1].cpu == nil && cols[1].memory == 0.5 && !cols[1].breaksBefore, "null stays null")
+    check(cols[2].breaksBefore, "a gap past three intervals breaks the line")
+    print("snapshot, exclusions and history columns ok")
+}
+
 // ---- GH: the override is read per call ----
 // With the stub deleted and DIPLOMAT_GH unset, the next call reaches the gh the box has
 // (the Linux CI container has none), never the stub's path; the live dump below goes

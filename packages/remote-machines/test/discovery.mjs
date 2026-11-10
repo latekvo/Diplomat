@@ -1,6 +1,7 @@
 // Discovery without the network: which names count as this network, what the ssh config,
 // known_hosts and mDNS sources yield, how candidates from several sources merge into one,
-// and that only a host whose key known_hosts already holds is trusted.
+// that only a host whose key known_hosts already holds is trusted, and which candidates an
+// exclusion names.
 // Run: node test/discovery.mjs
 
 import assert from 'node:assert/strict';
@@ -30,7 +31,6 @@ const sb = sandbox({
     '',
   ].join('\n'),
   known: ['alpha.local', '[10.0.0.9]:2222', 'pinned.example.com', 'fresh.lan', 'jumped.local', 'keyalias.example.com'],
-  settings: { remoteMachineHosts: ['pinned'], remoteMachineExclude: ['GONE'] },
 });
 fs.mkdirSync(path.join(sb.dir, 'conf.d'));
 fs.writeFileSync(path.join(sb.dir, 'conf.d', 'a.conf'), 'Host included\n');
@@ -80,10 +80,10 @@ try {
     assert.deepEqual(d.parseAvahi(avahi), [{ hostname: 'nas.local', port: 22 }]);
   });
 
-  const list = await d.candidates({ hosts: ['pinned', '-oProxyCommand=touch pwned', 'two words'], exclude: ['GONE'] });
+  const list = await d.candidates({ hosts: ['pinned', '-oProxyCommand=touch pwned', 'two words'] });
   const byTarget = Object.fromEntries(list.map((c) => [c.target, c]));
-  check('candidates merge sources, keep the config alias, drop off-network and excluded hosts', () => {
-    assert.deepEqual(list.map((c) => c.target).sort(), ['aliased', 'alpha', 'eqbox', 'fresh.lan', 'included', 'jumped', 'other', 'pinned']);
+  check('candidates merge sources, keep the config alias, drop off-network hosts', () => {
+    assert.deepEqual(list.map((c) => c.target).sort(), ['aliased', 'alpha', 'eqbox', 'fresh.lan', 'gone', 'included', 'jumped', 'other', 'pinned']);
     // alpha comes from the ssh config and known_hosts; the alias, with its user, wins.
     assert.deepEqual(byTarget.alpha.sources, ['ssh-config', 'known-hosts']);
     assert.deepEqual(byTarget.alpha.names, ['alpha', 'alpha.local']);
@@ -111,13 +111,20 @@ try {
     assert.equal(byTarget.alpha.proxied, false);
   });
 
-  const withoutAlpha = await d.candidates({ exclude: ['alpha'] });
-  const withoutMixed = await d.candidates({ exclude: ['MixedBox'] });
-  check('excluding an alias hides its host under every other name too', () => {
-    assert.ok(!withoutAlpha.some((c) => c.hostname === 'alpha.local'), JSON.stringify(withoutAlpha.map((c) => c.target)));
-    assert.ok(withoutAlpha.some((c) => c.target === 'fresh.lan'));
-    assert.ok(!withoutMixed.some((c) => c.hostname === 'fresh.lan'), JSON.stringify(withoutMixed.map((c) => c.target)));
-  });
+  const named = async (entries) => list.filter(await d.nameMatcher(entries)).map((c) => c.target).sort();
+  await (async () => {
+    const [byCase, byAlias, byOtherName, byNothing] = await Promise.all([
+      named(['GONE']), named(['MixedBox']), named(['alpha.local']), named(['mixedbox', 'nowhere']),
+    ]);
+    check('an exclusion names a target or host name in any case, and an alias names its host under every name', () => {
+      assert.deepEqual(byCase, ['gone']);
+      // MixedBox is no candidate itself; it resolves to the host fresh.lan is.
+      assert.deepEqual(byAlias, ['fresh.lan']);
+      assert.deepEqual(byOtherName, ['alpha']);
+      // ssh matches aliases case-sensitively, so a miscased alias resolves to nothing.
+      assert.deepEqual(byNothing, []);
+    });
+  })();
 
   check('a name that is not a plain host token is dropped', () => {
     assert.ok(!list.some((c) => c.names.some((n) => n.startsWith('-') || n.includes(' '))), JSON.stringify(list.map((c) => c.names)));
