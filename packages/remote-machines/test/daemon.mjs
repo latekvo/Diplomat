@@ -1,9 +1,9 @@
 // The daemon over its real unix socket, against fake hosts: one machine reached under two
 // names is listed once, failures are classified, an untrusted host is never contacted,
-// machines are ranked by spare cores with warned ones last, a refresh re-reads the load,
-// refreshes arriving together share a scan, each reading reaches history.json, the
-// operator's exclusions take a machine out of the pool, the snapshot reaches state.json,
-// and the daemon exits once its last session is gone.
+// machines are ranked by spare cores weighted by the ARM bias with warned ones last, a
+// refresh re-reads the load, refreshes arriving together share a scan, each reading
+// reaches history.json, the operator's exclusions take a machine out of the pool, the
+// snapshot reaches state.json, and the daemon exits once its last session is gone.
 // Run: node test/daemon.mjs
 
 import assert from 'node:assert/strict';
@@ -25,9 +25,9 @@ const healthy = {
   meminfo_MemTotal: '16000000', meminfo_MemAvailable: '8000000', meminfo_SwapTotal: '0', meminfo_SwapFree: '0',
 };
 const hosts = (busyLoad) => ({
-  busy: { hostname: 'busy.local', overrides: { ...healthy, machine_id: 'M-BUSY', loadavg: `${busyLoad} ${busyLoad} 1` } },
-  idle: { hostname: 'idle.local', overrides: { ...healthy, machine_id: 'M-IDLE', loadavg: '0.50 0.50 0.50', ssh_sessions: '3' } },
-  'idle-ip': { hostname: '192.168.1.7', overrides: { ...healthy, machine_id: 'M-IDLE', loadavg: '0.50 0.50 0.50' } },
+  busy: { hostname: 'busy.local', overrides: { ...healthy, arch: 'arm64', machine_id: 'M-BUSY', loadavg: `${busyLoad} ${busyLoad} 1` } },
+  idle: { hostname: 'idle.local', overrides: { ...healthy, arch: 'x86_64', machine_id: 'M-IDLE', loadavg: '0.50 0.50 0.50', ssh_sessions: '3' } },
+  'idle-ip': { hostname: '192.168.1.7', overrides: { ...healthy, arch: 'x86_64', machine_id: 'M-IDLE', loadavg: '0.50 0.50 0.50' } },
   // The most spare cores, but nearly out of disk.
   full: { hostname: 'full.local', overrides: { ...healthy, machine_id: 'M-FULL', ncpu: '64', loadavg: '0 0 0', disk_kb: `${TiB} 1000` } },
   // No machine_id override: it reports this machine's own, as this machine's mDNS name would.
@@ -228,10 +228,23 @@ try {
   });
 
   await check('a refresh re-reads the load and re-ranks', async () => {
-    sb.setHosts(hosts('0.10'));
+    // busy (ARM) now has 5 spare cores to idle's (x86) 7.5, which the default 70:30 bias outweighs.
+    sb.setHosts(hosts('3.00'));
     const r = await callDaemon('POST', '/scan', { ownerPid: session.pid, full: true });
     assert.deepEqual(r.machines.map((m) => m.target), ['busy', 'idle', 'full']);
-    assert.equal(r.machines[0].load.last1m, 0.1);
+    assert.equal(r.machines[0].load.last1m, 3);
+  });
+
+  await check('the ARM bias reorders machines as soon as it is set, and changes nothing else', async () => {
+    const before = await callDaemon('GET', '/state');
+    settings({ remoteMachineArmBias: 20 });
+    const st = await stateWhen((x) => x.machines[0].target === 'idle', 'idle first at 20');
+    assert.deepEqual(st.machines.map((m) => m.target), ['idle', 'busy', 'full']);
+    const strip = (x) => x.machines.map(({ probedAt, load, latencyMs, ...m }) => m).sort((a, b) => a.id.localeCompare(b.id));
+    assert.deepEqual(strip(st), strip(before));
+    settings({ remoteMachineArmBias: 'lots' });
+    await stateWhen((x) => x.machines[0].target === 'busy', 'busy first again at the default');
+    settings({});
   });
 
   await check('the daemon exits once its last session is gone, taking its socket along', async () => {

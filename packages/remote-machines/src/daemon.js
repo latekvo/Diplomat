@@ -14,6 +14,9 @@
 // history.json. It exits once no session it serves is alive for IDLE_EXIT_MS, so
 // nothing is probed for nobody.
 //
+// The operator sets how strongly ARM machines are preferred to others in Diplomat's
+// settings (remoteMachineArmBias); it changes the order machines are listed in, nothing else.
+//
 // The operator can take a machine out of the pool in Diplomat's settings: for good
 // (remoteMachineExclude: it is not contacted at all) or until a time
 // (remoteMachineExcludeUntil: it is still read, so its load stays on show). Either is
@@ -26,10 +29,10 @@ import { NO_ROUTE, jsonServer, listenSingleton, socketHealthy } from '../../daem
 import {
   BASE_DIR, SOCKET_PATH, DISCOVERY_PATH, STATE_PATH, HISTORY_PATH, IDS_PATH, LOG_PATH, CONFIG_PATH,
   PROBE_INTERVAL_MS, DISCOVERY_INTERVAL_MS, IDLE_EXIT_MS, CLIENT_CHECK_MS, LOAD_GAP_MIN_MS,
-  HISTORY_MS, CONFIG_POLL_MS,
+  HISTORY_MS, CONFIG_POLL_MS, ARM_BIAS_DEFAULT,
 } from './paths.js';
 import { candidates, killAll, mapLimit, nameMatcher, SOURCES } from './discovery.js';
-import { probe, describe, meanLoadBetween, spareCores, usage, warnings } from './probe.js';
+import { probe, describe, byRank, meanLoadBetween, spareCores, usage, warnings } from './probe.js';
 
 const log = createLog(LOG_PATH);
 
@@ -52,7 +55,9 @@ function settings() {
     ? Object.entries(until).map(([name, at]) => [name, typeof at === 'string' ? Date.parse(at) : NaN])
       .filter(([name, at]) => name.trim() && at > Date.now())
     : [];
-  return { hosts: list(c?.remoteMachineHosts), exclude: list(c?.remoteMachineExclude), paused };
+  const bias = c?.remoteMachineArmBias;
+  const armBias = typeof bias === 'number' && Number.isFinite(bias) ? bias : ARM_BIAS_DEFAULT;
+  return { hosts: list(c?.remoteMachineHosts), exclude: list(c?.remoteMachineExclude), paused, armBias };
 }
 
 // ---- exclusion --------------------------------------------------------------
@@ -286,9 +291,6 @@ function record(machines) {
   } catch (e) { log('history write failed', String(e)); }
 }
 
-// Best first: machines without warnings, then by spare cores.
-const byRank = (a, b) => (a.warnings.length > 0) - (b.warnings.length > 0) || (b.spareCores ?? 0) - (a.spareCores ?? 0);
-
 // The later of two exclusions (for good outlasts any time), named by the entries of both.
 function longer(a, b) {
   if (!a || !b) return a ?? b;
@@ -327,16 +329,17 @@ function publish() {
   const pausedViews = [...paused.values()];
   const read = (list) => list.filter((m) => m.status === 'ok' && m.id !== localId);
   record([local, ...live, ...read(pausedViews)]);
+  const rank = byRank(settings().armBias);
   snapshot = {
     updatedAt: new Date().toISOString(),
     discoveredAt: lastDiscoveryAt ? new Date(lastDiscoveryAt).toISOString() : null,
     probeIntervalMs: PROBE_INTERVAL_MS,
     daemon: { pid: process.pid, startedAt, sessions: clients.size },
     local,
-    machines: live.sort(byRank),
+    machines: live.sort(rank),
     // Excluded for a while (those read best first, then those that could not be), then for good.
     excluded: [
-      ...read(pausedViews).sort(byRank),
+      ...read(pausedViews).sort(rank),
       ...pausedViews.filter((m) => m.status !== 'ok').sort((a, b) => a.target.localeCompare(b.target)),
       ...[...forGood.values()].sort((a, b) => a.target.localeCompare(b.target)),
     ],

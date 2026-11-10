@@ -19,7 +19,7 @@ const sb = sandbox({
   },
 });
 Object.assign(process.env, sb.env);
-const { probe, describe, classify, meanLoadBetween, warnings, spareCores } = await import('../src/probe.js');
+const { probe, describe, classify, meanLoadBetween, warnings, spareCores, byRank } = await import('../src/probe.js');
 const sleepers = () => {
   try { return execFileSync('pgrep', ['-f', `sleep ${HANG_S}`], { encoding: 'utf8' }).trim(); } catch { return ''; }
 };
@@ -175,6 +175,23 @@ try {
     assert.deepEqual(warnings({ info: { ...base, memory: { ...base.memory, pressure: 'critical' } }, load }), ['memory pressure critical']);
     assert.deepEqual(warnings({ info: { ...base, disk: { freeBytes: 5 * GB } }, load }), ['low disk: 5 GB free']);
     assert.equal(spareCores({ info: base, load: { last1m: 2.04 } }), 6);
+  });
+
+  await check('the ranking weighs spare cores by the ARM bias, after warnings', () => {
+    const m = (target, arch, spare, warned = false) => ({ target, os: { arch }, spareCores: spare, warnings: warned ? ['x'] : [] });
+    const order = (pct, list) => [...list].sort(byRank(pct)).map((x) => x.target);
+    // At 70:30 an x86 machine needs over 7/3 the spare cores of an ARM one.
+    assert.deepEqual(order(70, [m('x86', 'x86_64', 6.9), m('arm', 'arm64', 3)]), ['arm', 'x86']);
+    assert.deepEqual(order(70, [m('x86', 'x86_64', 7.1), m('arm', 'aarch64', 3)]), ['x86', 'arm']);
+    assert.deepEqual(order(50, [m('x86', 'x86_64', 3.1), m('arm', 'arm64', 3)]), ['x86', 'arm']);
+    assert.deepEqual(order(30, [m('x86', 'x86_64', 3), m('arm', 'arm64', 6.9)]), ['x86', 'arm']);
+    // A warned machine stays below every unwarned one, whatever its CPU.
+    assert.deepEqual(order(100, [m('arm', 'arm64', 8, true), m('x86', 'x86_64', 1)]), ['x86', 'arm']);
+    // At an extreme the other CPU's machines still go by spare cores among themselves.
+    assert.deepEqual(order(100, [m('a', 'x86_64', 1), m('b', 'x86_64', 4), m('c', 'arm64', 0.5)]), ['c', 'b', 'a']);
+    // A bias past either end counts as that end.
+    assert.deepEqual(order(150, [m('a', 'x86_64', 1), m('b', 'x86_64', 4), m('c', 'arm64', 0.5)]), ['c', 'b', 'a']);
+    assert.deepEqual(order(-20, [m('a', 'arm64', 1), m('b', 'arm64', 4), m('c', 'x86_64', 0.5)]), ['c', 'b', 'a']);
   });
 
   await check('load since the last scan matches a simulated kernel', () => {
