@@ -106,7 +106,7 @@ struct AuditWizardView: View {
                             isValid: config.isValid && !meshDispatching,
                             tint: tint,
                             terminalTitle: AgentSpawner.resolved(store.terminal).title,
-                            routable: store.wizardMeshRoutable(config.checkout),
+                            routable: store.meshRoutable(checkout: config.checkout),
                             action: spawn)
     }
 
@@ -122,11 +122,12 @@ struct AuditWizardView: View {
         let cfg = config
         // Mesh path: hand the job to the local node (it picks the executor per the
         // audit duty's linux+macos spread, with failover) instead of spawning here.
-        if MeshSpawnRow.isLive(store), useMesh, store.wizardMeshRoutable(cfg.checkout) {
+        if MeshSpawnRow.isLive(store), useMesh, store.meshRoutable(checkout: cfg.checkout) {
             meshDispatching = true
             status = "Dispatching over the mesh…"
             AuditLog.log("panel", "audit", "\(trackingLabel) · via mesh")
-            store.meshDispatch(duty: "audit", prompt: cfg.buildPrompt()) { results, err in
+            store.meshDispatch(duty: "audit", prompt: cfg.buildPrompt(),
+                               repo: "\(cfg.targetRepo.owner)/\(cfg.targetRepo.repo)") { results, err in
                 meshDispatching = false
                 status = MeshSpawn.summarize(results, error: err)
             }

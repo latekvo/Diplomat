@@ -82,9 +82,10 @@ def mesh_live(monkeypatch):
     """Force the mesh path and capture what would be dispatched over it."""
     from diplomat_app.meshspawn import MeshSpawnRow
 
-    sent: list[str] = []
+    sent: list[tuple[str, str]] = []
     monkeypatch.setattr(MeshSpawnRow, "use_mesh", lambda self: True)
-    monkeypatch.setattr(MeshSpawnRow, "dispatch", lambda self, prompt: sent.append(prompt))
+    monkeypatch.setattr(MeshSpawnRow, "dispatch",
+                        lambda self, prompt, repo: sent.append((prompt, repo)))
     return sent
 
 
@@ -632,6 +633,34 @@ def test_every_wizard_re_enables_spawn_when_a_mesh_dispatch_returns(
 
     w._mesh_done([], "")
     assert w.spawn_btn.isEnabled()
+
+
+@pytest.mark.parametrize("build", [
+    pytest.param(_review_wizard, id="review"),
+    pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
+    pytest.param(lambda s: AuditWizardView(s), id="audit"),
+    pytest.param(_issue_wizard, id="issues"),
+])
+def test_every_wizards_mesh_dispatch_names_the_repo_it_targets(
+    store, mesh_live, monkeypatch, build
+):
+    """Without it a peer starts the job in its own primary root, which may check out
+    another repo."""
+    from diplomat_runtime.prref import LocalRepo
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [LocalRepo("O", "R", "/src/r")])
+    build(store)._spawn()
+    assert [repo for _, repo in mesh_live] == ["o/r"]
+
+
+def test_the_mesh_row_hands_the_store_its_repo(store, monkeypatch):
+    from diplomat_app.meshspawn import MeshSpawnRow
+
+    sent: list = []
+    monkeypatch.setattr(store, "mesh_dispatch",
+                        lambda duty, prompt, done, repo="": sent.append((duty, repo)))
+    MeshSpawnRow(store, "review").dispatch("P", "o/r")
+    assert sent == [("review", "o/r")]
 
 
 @pytest.mark.parametrize("build", [

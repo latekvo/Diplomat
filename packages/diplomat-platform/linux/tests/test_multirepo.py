@@ -298,21 +298,43 @@ def test_an_ask_whose_root_failed_to_resolve_is_kept_and_not_run(quiet, monkeypa
     assert [e for e in activity.read() if e.action == "queue-drop"] == []
 
 
-def test_the_mesh_never_takes_a_job_whose_checkout_is_no_root(store, roots, monkeypatch):  # noqa: F811
+def test_the_mesh_takes_only_the_primary_roots_work(store, roots, monkeypatch):  # noqa: F811
+    """A peer on a Diplomat from before repo routing runs every job in its single root,
+    so another root's work stays here. What does go names its repo."""
+    from szpontnet import ctl
     from test_autofix import _mesh_store, _spawned
 
     calls = _mesh_store(monkeypatch, store, dispatch=_spawned())
+    inner, repos = ctl.dispatch, []
+    monkeypatch.setattr(ctl, "dispatch",
+                        lambda *a, repo="", **k: repos.append(repo) or inner(*a, **k))
 
-    def job(checkout):
+    def job(repo, checkout):
         return autofix.AgentJob(kind="review", audit_action="review", label="L", prompt="P",
-                                pr_url="https://github.com/o/other/pull/3", pr_number=3,
-                                duty="review", work_key="review:github.com/o/other#3@s",
+                                pr_url=f"https://github.com/O/{repo}/pull/3", pr_number=3,
+                                duty="review", work_key=f"review:github.com/O/{repo}#3@s",
                                 checkout=checkout)
 
-    assert store._route_via_mesh(job("/src/gone")) == (None, False, "")
+    assert store._route_via_mesh(job("other", "/src/gone")) == (None, False, "")
+    assert store._route_via_mesh(job("other", "/src/other")) == (None, False, "")
     assert calls == []
-    assert store._route_via_mesh(job("/src/other"))[0] == "spawned"
-    assert calls == [("review", "review:github.com/o/other#3@s")]
+    assert store._route_via_mesh(job("r", None))[0] == "spawned"
+    assert store._route_via_mesh(job("r", "/src/r"))[0] == "spawned"
+    assert calls == [("review", "review:github.com/O/r#3@s")] * 2
+    assert repos == ["o/r"] * 2
+
+
+def test_a_wizards_mesh_dispatch_carries_its_repo(store, monkeypatch):  # noqa: F811
+    from szpontnet import ctl
+
+    sent: list = []
+    monkeypatch.setattr("diplomat_app.szpont.require", lambda: None)
+    monkeypatch.setattr(store, "start_background", lambda work, name=None: work())
+    monkeypatch.setattr(store, "refresh_mesh_state", lambda: None)
+    monkeypatch.setattr(ctl, "dispatch",
+                        lambda duty, prompt, repo="": sent.append((duty, repo)) or [])
+    store.mesh_dispatch("review", "P", repo="o/other")
+    assert sent == [("review", "o/other")]
 
 
 def test_the_closed_pr_read_covers_every_root(quiet, monkeypatch):

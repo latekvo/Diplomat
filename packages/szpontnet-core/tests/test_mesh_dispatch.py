@@ -157,6 +157,33 @@ def test_an_explicit_target_is_asked_and_never_failed_over(simnet):
     simnet.run(scenario())
 
 
+def test_a_control_dispatchs_repo_reaches_the_executors_host(simnet):
+    """A machine with a checkout per repo starts the job in the one it names."""
+    async def scenario():
+        a = await simnet.node("a")
+        b = await simnet.node("b")
+        await simnet.linked(a, b)
+
+        for msg in ({"repo": "o/r"}, {}):
+            reply = await a.ctl({"t": "dispatch", "duty": "review", "prompt": "p",
+                                 "target": b.id, **msg})
+            assert [r["status"] for r in reply["results"]] == ["spawned"]
+        assert b.job_repos == ["o/r", None]
+
+    simnet.run(scenario())
+
+
+def test_the_control_client_sends_a_repo_only_when_given(monkeypatch):
+    from szpontnet import ctl
+
+    sent: list = []
+    monkeypatch.setattr(ctl, "request",
+                        lambda msg, timeout=10.0: sent.append(msg) or {"results": []})
+    ctl.dispatch("review", "p", repo="o/r")
+    ctl.dispatch("review", "p")
+    assert [m.get("repo", "absent") for m in sent] == ["o/r", "absent"]
+
+
 def test_dispatching_to_a_node_we_have_no_link_to_fails_the_slot(simnet):
     async def scenario():
         a = await simnet.node("a")

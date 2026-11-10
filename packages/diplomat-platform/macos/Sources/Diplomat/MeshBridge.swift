@@ -287,13 +287,15 @@ enum MeshBridge {
     /// `workKey` (optional) opts the dispatch into origination dedup: the node
     /// claims the key, and if a live peer already owns the work returns a single
     /// `suppressed` slot instead of routing a second run. The EXECUTOR holds that
-    /// claim for its agent's lifetime (szpontnet-spec/docs/12).
+    /// claim for its agent's lifetime (szpontnet-spec/docs/12). `repo` (`owner/name`)
+    /// names the repo the job works on, for the executor's host.
     static func dispatch(duty: String, prompt: String, target: String? = nil,
-                         workKey: String = "", port: Int,
+                         workKey: String = "", repo: String = "", port: Int,
                          timeout: TimeInterval = 60) throws -> [[String: Any]] {
         var msg: [String: Any] = ["t": "dispatch", "duty": duty, "prompt": prompt]
         if let target { msg["target"] = target }
         if !workKey.isEmpty { msg["workKey"] = workKey }
+        if !repo.isEmpty { msg["repo"] = repo }
         let reply = try request(msg, port: port, timeout: timeout)
         return (reply["results"] as? [[String: Any]]) ?? []
     }

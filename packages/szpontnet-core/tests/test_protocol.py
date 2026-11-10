@@ -29,3 +29,15 @@ def test_an_integer_past_the_parsers_digit_limit_is_dropped_not_fatal():
         pytest.skip("this interpreter has no integer digit limit")
     digits = b"9" * (limit + 1)
     assert protocol.decode(b'{"t":"heartbeat","n":' + digits + b"}\n") is None
+
+
+def test_a_jobs_repo_rides_the_wire_only_when_set():
+    """Omitted when empty, like ``workKey``, so a job without one is byte-identical to
+    what an older node sends."""
+    job = protocol.Job(id="j", duty="review", prompt="p", requested_by="n",
+                       requested_at=1.0, repo="o/r")
+    assert job.to_dict()["repo"] == "o/r"
+    assert protocol.Job.from_dict(job.to_dict()) == job
+    bare = protocol.Job(id="j", duty="review", prompt="p", requested_by="n", requested_at=1.0)
+    assert "repo" not in bare.to_dict()
+    assert protocol.Job.from_dict(bare.to_dict()).repo == ""

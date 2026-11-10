@@ -47,8 +47,8 @@ def mismatch_warning(noun: str, cfg) -> str:
 def mesh_applicable(cfg, opens_session: bool) -> bool:
     """Whether the mesh row may route this spawn: only one that opens a session (a
     Review or Fix-issues scope opens none, it queues one per item for this machine's
-    own cap), and only one in the primary root, the checkout a peer starts a job with
-    no work key in."""
+    own cap), and only one in the primary root, since a peer on a Diplomat from before
+    repo routing runs every job in its single root."""
     return opens_session and cfg.checkout in (None, review.repo_path())
 
 
@@ -163,7 +163,7 @@ class SpawnWizard(QWidget):
             self._restyle_spawn()
             self.status.setText("Dispatching over the mesh…")
             activity.log("panel", self._kind, f"{label} · via mesh")
-            self.mesh_row.dispatch(cfg.build_prompt())
+            self.mesh_row.dispatch(cfg.build_prompt(), "/".join(cfg.target_repo).lower())
             return
         # Local: the SAME pipeline the auto-monitor rides — dedup, ban check,
         # registration — only the trigger (this click) and its policies differ

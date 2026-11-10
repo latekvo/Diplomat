@@ -136,7 +136,43 @@ def test_a_host_that_takes_the_work_key_is_handed_it(monkeypatch):
     host.set_host(_Swallows())
     spawnjob.spawn_job("work", work_key="k")
     assert seen == [("work", "/d", "review:github.com/o/r#1@sha"), ("work", None, None),
-                    {"work_key": "k"}]
+                    {"work_key": "k", "repo": None}]
+
+
+def test_a_host_is_handed_each_keyword_its_signature_names(monkeypatch):
+    monkeypatch.delenv("SZPONTNET_SPAWN", raising=False)
+    seen: list = []
+
+    class _Both(host.Host):
+        def run_job(self, prompt, done_path, work_key=None, repo=None):
+            seen.append((work_key, repo))
+            return "/p"
+
+    class _RepoOnly(host.Host):
+        def run_job(self, prompt, done_path, repo=None):
+            seen.append(repo)
+            return "/p"
+
+    host.set_host(_Both())
+    spawnjob.spawn_job("work", work_key="k", repo="o/r")
+    host.set_host(_RepoOnly())
+    spawnjob.spawn_job("work", work_key="k", repo="o/r")
+    assert seen == [("k", "o/r"), "o/r"]
+
+
+def test_a_positional_only_parameter_of_the_same_name_is_not_a_keyword(monkeypatch):
+    """Passed by keyword, it would raise and decline the job on every machine."""
+    monkeypatch.delenv("SZPONTNET_SPAWN", raising=False)
+    seen: list = []
+
+    class _Positional(host.Host):
+        def run_job(self, prompt, done_path, work_key=None, repo=None, /):
+            seen.append((work_key, repo))
+            return "/p"
+
+    host.set_host(_Positional())
+    assert spawnjob.spawn_job("work", work_key="k", repo="o/r") == "/p"
+    assert seen == [(None, None)]
 
 
 def test_a_host_written_before_the_work_key_still_runs_jobs(monkeypatch):

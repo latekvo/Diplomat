@@ -100,7 +100,7 @@ def _spawn_override(prompt_file: str, template: str, done_path: str | None = Non
 
 
 def spawn_job(prompt: str, done_path: str | None = None,
-              work_key: str | None = None) -> str:
+              work_key: str | None = None, repo: str | None = None) -> str:
     """Stage the prompt and launch the agent. Returns the prompt-file path;
     raises :class:`JobSpawnError` when this machine can't take the job (the
     dispatcher then fails over to the next candidate).
@@ -109,7 +109,8 @@ def spawn_job(prompt: str, done_path: str | None = None,
     how the executor learns its work-claim can be freed (szpontnet-spec/docs/12). Both
     paths wire it: a ``SZPONTNET_SPAWN`` runner is handed it as
     ``SZPONTNET_DONE_FILE`` to touch itself, and a host runner is passed it
-    directly. ``work_key`` reaches a host runner alone (:func:`host.run_job`).
+    directly. ``work_key`` and ``repo`` reach a host runner alone
+    (:func:`host.run_job`).
     """
     template = env_get("SPAWN")
     if template:
@@ -118,7 +119,7 @@ def spawn_job(prompt: str, done_path: str | None = None,
             _spawn_override(prompt_file, template, done_path)
         return prompt_file
     try:
-        return host.run_job(prompt, done_path, work_key)
+        return host.run_job(prompt, done_path, work_key, repo)
     except JobSpawnError:
         raise
     except Exception as exc:  # noqa: BLE001 - see below

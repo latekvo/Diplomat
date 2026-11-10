@@ -166,16 +166,15 @@ final class Store: ObservableObject {
         return roots.first { $0.slug.lowercased() == slug }
     }
 
-    /// Whether `path` is a root's checkout: work there is the mesh's to place, and work in
-    /// an OTHER REPOS checkout never is.
+    /// Whether `path` is a root's checkout rather than an OTHER REPOS one.
     func isRootCheckout(_ path: String?) -> Bool {
         guard let path else { return false }
         return roots.contains { $0.path == path }
     }
 
-    /// Whether a wizard run in `checkout` may go over the mesh. A wizard dispatch carries
-    /// no work key, so the executor works in its PRIMARY root.
-    func wizardMeshRoutable(_ checkout: String?) -> Bool {
+    /// Whether work in `checkout` may go over the mesh: only the primary root's, since a
+    /// peer on a Diplomat from before repo routing runs every job in its single root.
+    func meshRoutable(checkout: String?) -> Bool {
         checkout == nil || checkout == roots.first?.path
     }
 
@@ -3597,8 +3596,10 @@ final class Store: ObservableObject {
               let snap = meshState, MeshBridge.nodeRunning(snap) else { return .local }
         let port = snap.tcpPort ?? 0
         let (duty, prompt, workKey) = (job.duty, job.prompt, job.workKey)
+        let repo = job.item.flatMap(PRRef.splitItemKey)?.slug ?? ""
         let results: [[String: Any]]? = await Task.detached(priority: .userInitiated) {
-            try? MeshBridge.dispatch(duty: duty, prompt: prompt, workKey: workKey, port: port)
+            try? MeshBridge.dispatch(duty: duty, prompt: prompt, workKey: workKey,
+                                     repo: repo, port: port)
         }.value
         guard let results, !results.isEmpty else { return .local }  // unreachable → fail-open
         let statuses = results.map { ($0["status"] as? String) ?? "failed" }
@@ -3626,11 +3627,10 @@ final class Store: ObservableObject {
     }
 
     /// Whether the mesh may place `job` at all: it needs a work key to claim, and must
-    /// work in a repo root, since the executor finds its checkout by the key's repo among
-    /// its own roots and an OTHER REPOS checkout is no root of anyone's. Not private: the
-    /// queue self-test asks it.
+    /// work in the primary root (`meshRoutable(checkout:)`). Not private: the queue
+    /// self-test asks it.
     func meshRoutable(_ job: AgentJob) -> Bool {
-        !job.workKey.isEmpty && (job.directory == nil || isRootCheckout(job.directory))
+        !job.workKey.isEmpty && meshRoutable(checkout: job.directory)
     }
 
     /// The node the panel names for this dispatch: the first slot with the deciding
@@ -4609,13 +4609,18 @@ final class Store: ObservableObject {
     /// store's `mesh_dispatch`). The local node picks the executor per the dispatch
     /// strategy and walks failover candidates; the per-slot result dicts (or a transport
     /// error) land in `completion` on the main actor, and the activity feed re-reads so
-    /// the node's mesh-dispatch entries appear immediately.
-    func meshDispatch(duty: String, prompt: String,
+    /// the node's mesh-dispatch entries appear immediately. `repo` (`owner/name`) is the
+    /// repo the job works on.
+    func meshDispatch(duty: String, prompt: String, repo: String,
                       completion: @escaping ([[String: Any]], String?) -> Void) {
         let port = meshState?.tcpPort ?? 0
+        let repo = repo.lowercased()
         Task { [weak self] in
             let outcome: ([[String: Any]], String?) = await Task.detached(priority: .userInitiated) {
-                do { return (try MeshBridge.dispatch(duty: duty, prompt: prompt, port: port), nil) }
+                do {
+                    return (try MeshBridge.dispatch(duty: duty, prompt: prompt, repo: repo,
+                                                    port: port), nil)
+                }
                 catch { return ([], (error as? LocalizedError)?.errorDescription ?? "\(error)") }
             }.value
             guard let self else { return }

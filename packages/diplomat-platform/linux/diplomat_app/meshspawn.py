@@ -119,11 +119,13 @@ class MeshSpawnRow(QWidget):
 
     # MARK: - dispatch
 
-    def dispatch(self, prompt: str) -> None:
-        """Fire the mesh dispatch; listen on ``dispatched`` for the outcome."""
+    def dispatch(self, prompt: str, repo: str) -> None:
+        """Fire the mesh dispatch of a job on ``repo`` (``owner/name``); listen on
+        ``dispatched`` for the outcome."""
         self.store.mesh_dispatch(
             self.duty_id, prompt,
             lambda results, err: self.dispatched.emit(results or [], err or ""),
+            repo=repo,
         )
 
     @staticmethod

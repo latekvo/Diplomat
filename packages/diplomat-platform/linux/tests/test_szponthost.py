@@ -175,6 +175,56 @@ def test_a_fork_only_clone_takes_the_configured_repos_jobs(monkeypatch, tmp_path
         szponthost._checkout_for(f"review:github.com/someone/{cfg['repo']}#7@abc")
 
 
+def test_a_jobs_repo_picks_its_root_over_the_work_keys(host, monkeypatch, tmp_path):
+    _two_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    seen: list = []
+    monkeypatch.setattr(review, "spawn",
+                        lambda *a, checkout=None, **k: seen.append(checkout) or "/p")
+
+    host.run_job("x", str(tmp_path / "a"), "review:github.com/o/r#7@abc", "O/Other")
+    host.run_job("x", str(tmp_path / "b"), None, "o/r")
+    with pytest.raises(szpont_host.NoRunner, match="^no checkout of x/y on this machine$"):
+        host.run_job("x", str(tmp_path / "c"), "review:github.com/o/r#7@abc", "x/y")
+    assert seen == [str(tmp_path / "other"), str(tmp_path / "r")]
+
+
+def test_a_macos_job_runs_in_the_root_its_work_key_names(host, monkeypatch, tmp_path):
+    """Both the shell's ``cd`` and an OpenCode 2.x session are bound to that checkout."""
+    _two_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(szponthost, "_spawn_macos", _real_spawn_macos)
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(review, "check_token", lambda: None)
+    monkeypatch.setattr(review, "write_prompt", lambda prompt: str(tmp_path / "p.txt"))
+    seen: list = []
+    monkeypatch.setattr(review, "stage_opencode_session",
+                        lambda prompt_file, checkout=None: seen.append(checkout) or "ses")
+    monkeypatch.setattr(review, "shell_command",
+                        lambda *a, checkout=None, **k: seen.append(checkout) or "cmd")
+    monkeypatch.setattr(review, "popen_detached", lambda argv: None)
+
+    host.run_job("x", None, "review:github.com/o/other#7@abc")
+    assert seen == [str(tmp_path / "other")] * 2
+
+
+def test_an_opencode_session_is_staged_in_the_root_its_work_key_names(
+        host, monkeypatch, tmp_path):
+    from diplomat_runtime import runner
+
+    _two_roots(monkeypatch, tmp_path)
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(runner, "selected", lambda: runner.OPENCODE)
+    monkeypatch.setattr(review, "check_token", lambda: None)
+    monkeypatch.setattr(review, "write_prompt", lambda prompt: str(tmp_path / "p.txt"))
+    staged: list = []
+    monkeypatch.setattr(review, "stage_opencode_session",
+                        lambda prompt_file, checkout=None: staged.append(checkout) or "ses")
+    monkeypatch.setattr(review, "spawn", lambda *a, **k: "/p")
+
+    host.run_job("x", None, "review:github.com/o/other#7@abc")
+    assert staged == [str(tmp_path / "other")]
+
+
 @pytest.mark.parametrize("system", ["Linux", "Darwin"])
 def test_a_job_for_a_repo_with_no_root_here_is_declined_before_anything_is_staged(
         host, monkeypatch, tmp_path, system):
