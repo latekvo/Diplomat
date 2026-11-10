@@ -1089,8 +1089,8 @@ def test_one_roots_unreadable_prs_hold_no_other_roots_work(quiet, monkeypatch):
 
 
 def test_a_read_failing_in_every_root_fails_the_poll(quiet, monkeypatch):
-    """And the other reads are still asked of every root, as before any root's read
-    could fail on its own: one that answers is no less true for it."""
+    """The other reads are still asked of every root: one that answers is no less true
+    for it."""
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: (
         _ for _ in ()).throw(RuntimeError("gh: network down")))
     asked = _by_repo(monkeypatch, "fetch_review_requests", {})

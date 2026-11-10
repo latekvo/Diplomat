@@ -37,7 +37,6 @@ class PRSnapshot:
 
     @property
     def item(self) -> str | None:
-        """This PR's item key (:func:`prref.item_key`), read off its link."""
         return item_key_from_url(self.url)
 
 
@@ -218,7 +217,6 @@ class ReviewRequest:
 
     @property
     def item(self) -> str | None:
-        """This PR's item key, read off its link."""
         return item_key_from_url(self.url)
 
     @property
@@ -937,8 +935,8 @@ def still_owed(audit_action: str, item: str, conflicting: set[str],
     ``item`` and the sets are item keys. Only ever asked about a task whose number is
     a PR's. A Fix-issues ask the operator made is numbered in the other space entirely,
     and the caller stands it down rather than pricing issue #421 against the PRs closed
-    this cycle. An investigation is
-    numbered by a Slack ts and is about no PR, so it always stands."""
+    this cycle. An investigation is numbered by a Slack ts and is about no PR, so it
+    always stands."""
     if audit_action == QUEUE_INVESTIGATE_ACTION:
         return True
     if item in closed:
@@ -1060,7 +1058,6 @@ class AgentJob:
 
     @property
     def item(self) -> str | None:
-        """The PR this job is on, as an item key, or ``None`` when it is on none."""
         return item_key_from_url(self.pr_url or "") if self.pr_number is not None else None
 
     @property

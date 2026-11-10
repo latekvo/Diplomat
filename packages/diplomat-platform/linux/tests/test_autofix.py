@@ -23,14 +23,11 @@ from diplomat_runtime.autofix import (
 from diplomat_runtime.prref import LocalRepo
 
 
-#: The repo every fixture PR is in.
 SLUG = "o/r"
-#: The fixture repo as a repo root, for the passes that take the roots they read.
 ROOT = LocalRepo("o", "r", "/src/r")
 
 
 def item(n: int) -> str:
-    """The item key of fixture PR #n."""
     return f"{SLUG}#{n}"
 
 
@@ -1168,7 +1165,6 @@ def test_where_the_mesh_placed_a_run_is_what_prices_it(store, monkeypatch):
 # MARK: - live-agent ps fallback (tracking-independent in-flight)
 
 
-#: The repo the scan fixtures' agents were prompted about.
 ARGENT = "software-mansion/argent"
 
 

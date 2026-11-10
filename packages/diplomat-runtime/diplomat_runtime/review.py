@@ -303,8 +303,7 @@ def default_repo_path() -> str:
 
 def repo_root_paths() -> list[str]:
     """The repo roots as entered, primary first: the ``DIPLOMAT_REPO`` env override
-    (one root, the escape hatch every other ``DIPLOMAT_*`` knob follows), else the
-    roots picked in Settings, else :func:`default_repo_path`.
+    (one root), else the roots picked in Settings, else :func:`default_repo_path`.
 
     Read from the shared :mod:`appconfig` file rather than this front-end's QSettings:
     a mesh node spawns agents from its own stdlib-only process, which has no Store and
@@ -372,9 +371,8 @@ def repo_roots() -> list[LocalRepo]:
 def mesh_checkout() -> str | None:
     """The checkout of the root that checks out the configured repo, or ``None`` when no
     root does or none resolved (:func:`roots_guessed`). Only work there may go over the
-    mesh, and a job that names no repo runs there: a peer on a Diplomat from before repo
-    routing names none, and runs every job in its single root, a checkout of that same
-    repo."""
+    mesh, and a job naming no repo (a peer predating repo routing means this one) runs
+    there."""
     if roots_guessed():
         return None
     cfg = core.config()

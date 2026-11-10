@@ -39,7 +39,6 @@ PRIMARY = "{owner}/{repo}".format(**core.config())
 
 
 def qkey(verb: str, number: int) -> str:
-    """The queue key of ``verb`` on the configured repo's ``#number``."""
     return autofix.queue_key(verb, f"{PRIMARY}#{number}")
 
 

@@ -339,7 +339,6 @@ class Store(QObject):
     # Emitted when the repo roots or the other checkouts listed in Settings change, so
     # the wizards re-judge a link they are already holding and the header re-lists.
     local_repos_changed = Signal()
-    # Emitted when the header's picker selects another repo root.
     selected_repo_changed = Signal()
 
     # How many agent screens must be read without once showing the CLI's interrupt
@@ -480,10 +479,7 @@ class Store(QObject):
         # has succeeded: a failed fetch means "we no longer know what is owed", which
         # is not the same as "nothing is owed", and must not empty the list.
         self._staged_queue: list[autofix.QueuedTask] = []
-        # The task each stored ask has been built into, as ((config, label, checkout),
-        # task) by queue key - an assembled prompt is the expensive half and cannot
-        # change while the ask stands, so it is built once rather than once per poll
-        # (:meth:`_requested_task`).
+        # Memo of :meth:`_requested_task` by queue key: ((config, label, checkout), task).
         self._requested_tasks: dict[str, tuple[tuple, autofix.QueuedTask]] = {}
         # Asks already reported as un-assemblable, so the poll says it once rather
         # than every cycle for as long as the ask stands (:meth:`_note_unbuildable_ask`).
@@ -726,8 +722,8 @@ class Store(QObject):
         ``DIPLOMAT_REPO`` outranks both. Stored raw (a typed ``~/…`` is expanded at
         use) so each row shows back exactly what was entered.
 
-        Not in QSettings: a mesh node spawns agents from its own stdlib-only process,
-        which has no Qt — see :mod:`appconfig`."""
+        Not in QSettings: a mesh node's stdlib-only process reads it too
+        (:mod:`appconfig`)."""
         return appconfig.repo_roots()
 
     @repo_root_paths.setter
@@ -755,7 +751,6 @@ class Store(QObject):
 
     @staticmethod
     def _primary() -> LocalRepo:
-        """The primary repo root (:func:`review.repo_roots`)."""
         return review.repo_roots()[0]
 
     @staticmethod
@@ -767,7 +762,6 @@ class Store(QObject):
 
     @staticmethod
     def _root_of(item: str | None) -> LocalRepo:
-        """The repo root an item key (or slug) is in, else the primary."""
         return Store._root_named(item) or review.repo_roots()[0]
 
     @property
@@ -1571,12 +1565,11 @@ class Store(QObject):
                 self._note_poll_failure(
                     "no repo root in Settings resolves to a GitHub checkout")
             else:
-                # Every root, each fetch concatenated across them: one drain, one
-                # diff and one commit see every repo, and the telemetry ledger is
-                # reconciled once per kind against the union (a per-root
-                # `observe_owed` would clear the other roots' pending work).
-                # With it, whether every root path resolved: both prunes below go by
-                # this reading, not one taken after the poll's slow fetches.
+                # Every root's fetches concatenated: one drain, diff and commit see every
+                # repo, and the telemetry ledger reconciles once per kind against the
+                # union (a per-root `observe_owed` would clear the other roots' pending
+                # work). Both prunes below go by this `complete`, not one read after the
+                # slow fetches.
                 roots, complete = review.repo_roots(), review.roots_complete()
                 # One fetch of my PRs per cycle, taken before anything acts on it:
                 # the drain re-checks the waiting queue against it and the
@@ -1584,12 +1577,10 @@ class Store(QObject):
                 # than inside the monitor is what lets the queue be checked at all —
                 # the drain runs first, and the whole point of the check is that it
                 # reads THIS cycle's evidence, not the one the queue was built from.
-                # And which PRs have left the open state — the one thing that fetch
-                # cannot answer, because it lists what is open and the queue has to
-                # be checked against what is not. Every verb answers to it, the
-                # operator's own ask included (:func:`autofix.still_owed`). A root
-                # either read fails in is left out of everything below, as one that
-                # failed to resolve is.
+                # And which PRs left the open state, which that fetch cannot list; every
+                # verb answers to it, the operator's own ask included
+                # (:func:`autofix.still_owed`). A root either read fails in is left out
+                # of everything below, like one that failed to resolve.
                 snaps, closed, read = self._fetch_my_prs(roots)
                 complete = complete and len(read) == len(roots)
                 # The queue first, in the operator's order: a slot that freed since
@@ -1690,8 +1681,6 @@ class Store(QObject):
                 activity.log("auto", "root-read-recovered", f"{what} of {r.slug} readable again")
 
     def _held(self, item: str) -> bool:
-        """Whether ``item`` is in a root this cycle's read of my PRs or of review
-        requests failed in."""
         return item.partition("#")[0] in self._held_slugs
 
     def _poll_my_prs(self, snaps: list) -> None:
@@ -1799,10 +1788,9 @@ class Store(QObject):
 
         Each root keeps its own mark, and one with none is baselined on its first read,
         so adding a root never queues its backlog. A removed root's mark is dropped, so
-        re-adding it does not either. A root whose read failed keeps its mark (and is
-        logged, :meth:`_note_roots_read`), as does
-        every root while one fails to resolve (``complete``: :func:`review.roots_complete`
-        of the reading ``roots`` came from)."""
+        re-adding it does not either. A root whose read failed keeps its mark (logged by
+        :meth:`_note_roots_read`), as does every root while one fails to resolve
+        (``complete``: :func:`review.roots_complete` of the reading ``roots`` came from)."""
         if not self.community_issues_enabled:
             return
         marks = self._community_marks()
@@ -2961,9 +2949,9 @@ class Store(QObject):
         offending ask by. Skipping keeps the ask for a later poll, which is what a
         core mid-self-update wants anyway.
 
-        An ask in a repo that is no longer a root is dropped: nothing here works in that
-        repo any more. While a root path fails to resolve (:func:`review.roots_complete`)
-        its repo may be that one, so the ask is kept and skipped instead."""
+        An ask in a repo that is no longer a root is dropped. While a root path fails to
+        resolve (:func:`review.roots_complete`) its repo may be that one, so the ask is
+        kept and skipped instead."""
         # Read together: the roots are re-read on a timer, and an ask is forgotten only
         # when the reading that left its repo out had every root path resolved.
         roots, complete = review.repo_roots(), review.roots_complete()

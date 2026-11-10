@@ -43,12 +43,10 @@ AT_PROMPT = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+ta
 TMUX_WRAPPED = AT_PROMPT + '\n[159] 0:zsh*  "OpenCode" 16:31 24-sie-26'
 
 
-#: The repo every fixture PR is in.
 SLUG = "o/r"
 
 
 def item(n: int) -> str:
-    """The item key of fixture PR #n."""
     return f"{SLUG}#{n}"
 
 
