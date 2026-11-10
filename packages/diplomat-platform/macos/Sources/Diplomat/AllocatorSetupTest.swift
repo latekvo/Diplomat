@@ -148,6 +148,30 @@ enum AllocatorSetupTest {
                   "got \(got), expected (\(wantFree), \(wantLeased))")
         }
 
+        // ---- the remote-machines ARM bias, from the same file ----
+
+        /// The key is spelled out, so it pins what the remote-machines daemon reads.
+        func armBias(_ raw: String?) -> Int {
+            let json = raw.map { #"{"remoteMachineArmBias":\#($0)}"# } ?? "{}"
+            try? json.write(to: AppConfig.url, atomically: true, encoding: .utf8)
+            return AppConfig.remoteMachineArmBias
+        }
+        // (case, value in the file, expected)
+        let biasCases: [(String, String?, Int)] = [
+            ("an absent key reads as the default", nil, 70),
+            ("an in-range value is kept", "35", 35),
+            ("0 is kept, not read as absent", "0", 0),
+            ("a fraction rounds as the slider shows it", "72.5", 73),
+            ("a bool is not a number", "true", 70),
+            ("a string is not a number", #""40""#, 70),
+            ("below the range clamps, as the daemon does", "-5", 0),
+            ("past the range clamps, as the daemon does", "1e300", 100),
+        ]
+        for (name, raw, want) in biasCases {
+            let got = armBias(raw)
+            check("ARM bias: \(name)", got == want, "got \(got), expected \(want)")
+        }
+
         // ---- the daemon's snapshot, with and without a remote pool ----
 
         func snapshot(_ json: String) -> DeviceState? {
@@ -283,7 +307,7 @@ enum AllocatorSetupTest {
             ("DIPLOMAT_CLAUDE_DIR", scratch.appendingPathComponent("claude").path),
             ("DIPLOMAT_QUOTA_PROBE", "0"),
         ] { setenv(name, value, 1) }
-        try? #"{"deviceRemoteProvider":"~/operator/own-pool.mjs"}"#
+        try? #"{"deviceRemoteProvider":"~/operator/own-pool.mjs","remoteMachineArmBias":35}"#
             .write(to: AppConfig.url, atomically: true, encoding: .utf8)
         let store = Store()
         func feed() -> [String] {
@@ -356,6 +380,8 @@ enum AllocatorSetupTest {
         // ---- the provider, which config.json holds and is also set by hand ----
 
         check("the provider is read from config.json", store.deviceRemoteProvider == "~/operator/own-pool.mjs")
+        check("the ARM bias is read from config.json", store.remoteMachineArmBias == 35,
+              "got \(store.remoteMachineArmBias)")
         try? #"{"deviceRemoteProvider":"~/by/hand.mjs"}"#.write(to: AppConfig.url, atomically: true, encoding: .utf8)
         store.reloadDeviceConfig()
         check("a provider set by hand is picked up on reload", store.deviceRemoteProvider == "~/by/hand.mjs")
@@ -386,6 +412,37 @@ enum AllocatorSetupTest {
         setenv("DIPLOMAT_CONFIG", scratch.appendingPathComponent("config.json").path, 1)
         store.deviceIdleLeasedMinutes = 45
         check("…until a change lands", !store.deviceIdleSaveFailed && AppConfig.deviceIdleLeasedMinutes == 45)
+
+        // ---- the ARM bias the Machines screen sets ----
+
+        try? #"{"remoteMachineArmBias":40,"deviceIdleFreeMinutes":7}"#
+            .write(to: AppConfig.url, atomically: true, encoding: .utf8)
+        store.reloadMachineArmBias()
+        check("an ARM bias set by hand is picked up on reload", store.remoteMachineArmBias == 40,
+              "got \(store.remoteMachineArmBias)")
+        try? #"{"remoteMachineArmBias":250}"#.write(to: AppConfig.url, atomically: true, encoding: .utf8)
+        store.reloadMachineArmBias()
+        check("…read as the daemon reads it, and not written back",
+              store.remoteMachineArmBias == 100
+                && (try? String(contentsOf: AppConfig.url, encoding: .utf8)) == #"{"remoteMachineArmBias":250}"#)
+        store.remoteMachineArmBias = 55
+        let biasFile = AppConfig.read()
+        check("the slider writes the integer to the daemon's key",
+              (biasFile["remoteMachineArmBias"] as? NSNumber).map { CFGetTypeID($0) != CFBooleanGetTypeID()
+                  && $0.doubleValue == 55 } == true,
+              "got \(biasFile)")
+        store.remoteMachineArmBias = 130
+        check("…clamped in memory and on disk", store.remoteMachineArmBias == 100
+                && AppConfig.remoteMachineArmBias == 100,
+              "got \(store.remoteMachineArmBias), \(AppConfig.remoteMachineArmBias)")
+        setenv("DIPLOMAT_CONFIG", blocker.appendingPathComponent("config.json").path, 1)
+        store.remoteMachineArmBias = 20
+        check("an ARM bias that cannot be saved says so, and reads back the file",
+              store.machineArmBiasSaveFailed && store.remoteMachineArmBias == 70,
+              "got \(store.machineArmBiasSaveFailed), \(store.remoteMachineArmBias)")
+        setenv("DIPLOMAT_CONFIG", scratch.appendingPathComponent("config.json").path, 1)
+        store.remoteMachineArmBias = 25
+        check("…until a change lands", !store.machineArmBiasSaveFailed && AppConfig.remoteMachineArmBias == 25)
         store.writesConfig = false
 
         // ---- the remote card over a snapshot from a daemon with no remote pool ----
