@@ -172,10 +172,16 @@ final class Store: ObservableObject {
         return roots.contains { $0.path == path }
     }
 
-    /// Whether work in `checkout` may go over the mesh: only the primary root's, since a
-    /// peer on a Diplomat from before repo routing runs every job in its single root.
+    /// Whether work in `checkout` (nil: the primary root) may go over the mesh: only the
+    /// configured repo's root's, since a peer on a Diplomat from before repo routing runs
+    /// every job in its single root, a checkout of the configured repo. The primary root
+    /// need not be that one: roots can be reordered, or the configured repo's path fail to
+    /// resolve. No root of the configured repo, nothing goes.
     func meshRoutable(checkout: String?) -> Bool {
-        checkout == nil || checkout == roots.first?.path
+        let (owner, repo) = CoreAssets.repoCoordinates()
+        let configured = "\(owner)/\(repo)".lowercased()
+        guard let home = roots.first(where: { $0.slug.lowercased() == configured }) else { return false }
+        return (checkout ?? roots.first?.path) == home.path
     }
 
     /// The label for a wizard's single item in `owner/repo`: an OTHER REPOS item spells
@@ -3650,8 +3656,8 @@ final class Store: ObservableObject {
     }
 
     /// Whether the mesh may place `job` at all: it needs a work key to claim, and must
-    /// work in the primary root (`meshRoutable(checkout:)`). Not private: the queue
-    /// self-test asks it.
+    /// work in the configured repo's root (`meshRoutable(checkout:)`). Not private: the
+    /// queue self-test asks it.
     func meshRoutable(_ job: AgentJob) -> Bool {
         !job.workKey.isEmpty && meshRoutable(checkout: job.directory)
     }

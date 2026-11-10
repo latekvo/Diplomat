@@ -1079,20 +1079,32 @@ enum QueueTest {
         store.requestedWork = []
         store.queuedTasks = []
 
-        // 24. Only the primary root's work is the mesh's to place.
+        // 24. Only the configured repo's root's work is the mesh's to place, the primary
+        //     root being another repo here.
         func routed(_ directory: String?) -> Store.AgentJob {
             Store.AgentJob(kind: "review", auditAction: "review-req", label: "", prompt: "",
                            prURL: nil, prNumber: nil, authorLogin: nil, duty: "review",
                            workKey: "review-req:github.com/o2/beta#5@b5", counter: nil,
                            directory: directory)
         }
-        check("a job in the primary root may go over the mesh",
-              store.meshRoutable(routed(rootA.path)) && store.meshRoutable(routed(nil)))
-        check("…one in another root or an OTHER REPOS checkout may not",
-              !store.meshRoutable(routed(rootB.path))
-                && !store.meshRoutable(routed(feed.appendingPathComponent("other").path)))
-        check("a wizard run goes over the mesh only from the primary root",
-              store.meshRoutable(checkout: rootA.path) && !store.meshRoutable(checkout: rootB.path))
+        let (cfgOwner, cfgRepo) = CoreAssets.repoCoordinates()
+        let configuredRoot = PRRef.LocalRepo(owner: cfgOwner.uppercased(), repo: cfgRepo,
+                                             path: feed.appendingPathComponent("configured").path)
+        store.pinRoots([rootA, configuredRoot])
+        check("a job in the configured repo's root may go over the mesh",
+              store.meshRoutable(routed(configuredRoot.path)))
+        check("…one in the primary root, another repo, may not, nor one naming no checkout",
+              !store.meshRoutable(routed(rootA.path)) && !store.meshRoutable(routed(nil)))
+        check("…nor one in an OTHER REPOS checkout",
+              !store.meshRoutable(routed(feed.appendingPathComponent("other").path)))
+        check("a wizard run goes over the mesh only from the configured repo's root",
+              store.meshRoutable(checkout: configuredRoot.path) && !store.meshRoutable(checkout: rootA.path))
+        store.pinRoots([configuredRoot, rootB])
+        check("with the configured repo the primary root, a job naming no checkout may",
+              store.meshRoutable(routed(nil)) && !store.meshRoutable(routed(rootB.path)))
+        store.pinRoots([rootA, rootB])
+        check("with the configured repo in no root, nothing may",
+              !store.meshRoutable(routed(rootA.path)) && !store.meshRoutable(routed(nil)))
 
         // 24b. A review-request record outlives a poll its root's path failed to resolve
         //      for: o/other#7's run concluded long ago and the request is still owed.
