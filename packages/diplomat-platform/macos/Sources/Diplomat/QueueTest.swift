@@ -1286,6 +1286,11 @@ enum QueueTest {
             echo "$*" | grep -o 'q=repo:[^ ]* [^ ]*' >> '\(heldLog.path)'
             case "$*" in *"issues(states: OPEN"*)
               echo "$*" | grep -o 'name=[a-z]*' | sed 's/^/issues-/' >> '\(heldLog.path)'
+              case "$*" in *"name=Beta"*)
+                if [ -f '\(heldDir.path)'/fail-issues-Beta ]; then
+                  echo 'HTTP 404: Could not resolve to a Repository' >&2; exit 1
+                fi ;;
+              esac
               echo '\(noIssues)'; exit 0 ;;
             esac
             for slug in o1/alpha o2/beta O2/Beta; do
@@ -1525,6 +1530,95 @@ enum QueueTest {
         setenv(DiskFloor.envOverride, "0", 1)
         store.queueAutoRun = autoRun
         heldAnswer("review-requested", "beta", nil)
+
+        // 30. A queued review request waits while its root's review requests stay
+        //     unreadable: the hold its failed read gives it lasts a cycle, the marker
+        //     the whole streak. A mixed-case root, item keys being lowercase.
+        store.pinRoots([rootA, mixed])
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.autofixPollError = nil
+        store.queueAutoRun = false
+        heldAnswer("review-requested", "Beta", requestedPR("O2/Beta", 7))
+        await store.runAutofixPollOnce()
+        let waitingReq = AgentTaskQueue.key(auditAction: "review-req", item: "o2/beta#7")
+        check("a mixed-case root's review request queues while the queue is off",
+              store.queuedTasks.map(\.id).contains(waitingReq))
+        heldFail("review-requested", "Beta", true)
+        await store.runAutofixPollOnce()
+        check("…and stands while that root's review requests are unreadable",
+              store.queuedTasks.map(\.id).contains(waitingReq))
+        store.queueAutoRun = true
+        setenv(DiskFloor.envOverride, "99999999999999999999", 1)
+        if Store.agentDisk()?.low == true {
+            let lowDiskBefore = feedDetails("low-disk").count
+            store.autoTaskLimit = 2
+            await store.runAutofixPollOnce()
+            check("…and a later cycle's drain does not start it while the read still fails",
+                  store.queuedTasks.map(\.id).contains(waitingReq)
+                      && feedDetails("low-disk").count == lowDiskBefore)
+            heldFail("review-requested", "Beta", false)
+            await store.runAutofixPollOnce()
+            check("…until the read succeeds again, when it is dispatched",
+                  feedDetails("low-disk").count == lowDiskBefore + 1
+                      && store.queuedTasks.map(\.id).contains(waitingReq))
+            store.autoTaskLimit = 1
+        } else {
+            check("the disk floor holds every dispatch for the waiting-request check", false)
+        }
+        setenv(DiskFloor.envOverride, "0", 1)
+        store.queueAutoRun = autoRun
+        heldFail("review-requested", "Beta", false)
+        heldAnswer("review-requested", "Beta", nil)
+        store.queuedTasks = []
+
+        // 31. A root taken out of Settings loses its unread markers, so added back it
+        //     logs its next failed read.
+        func issuesUnread() -> Int {
+            feedDetails("root-read-failed").filter { $0.hasPrefix("Issues of O2/Beta unreadable") }.count
+        }
+        let unreadBefore = issuesUnread()
+        store.communityIssuesEnabled = true
+        heldFail("issues", "Beta", true)
+        await store.runAutofixPollOnce()
+        await store.runAutofixPollOnce()
+        check("a mixed-case root's failed read is logged once while it stays a root",
+              issuesUnread() == unreadBefore + 1)
+        store.pinRoots([rootA])
+        await store.runAutofixPollOnce()
+        store.pinRoots([rootA, mixed])
+        await store.runAutofixPollOnce()
+        check("a root's failed read is logged again once it is taken out and added back",
+              issuesUnread() == unreadBefore + 2)
+        heldFail("issues", "Beta", false)
+        await store.runAutofixPollOnce()
+        store.communityIssuesEnabled = false
+
+        // 32. An investigation, about no repo's item, is never outside the roots read.
+        store.requestedWork = []
+        store.queuedTasks = []
+        let invNumber = 9_100_001
+        let investigation = InvestigateConfig(
+            number: invNumber, messageID: "qt-inv", sender: "qt", channel: "qt", permalink: "",
+            text: "t", summary: "s", reportPath: feed.appendingPathComponent("inv.md").path,
+            owner: "O2", repo: "Beta")
+        store.requestOne(Store.RequestedWork(number: invNumber, url: "", author: "",
+                                             config: .investigate(investigation), repo: "o2/beta"))
+        let invKey = AgentTaskQueue.key(auditAction: InvestigateConfig.kind, item: String(invNumber))
+        let invQueued = store.queuedTasks.map(\.id) == [invKey]
+        store.queueAutoRun = true
+        setenv(DiskFloor.envOverride, "99999999999999999999", 1)
+        if Store.agentDisk()?.low == true {
+            store.autoTaskLimit = 2
+            await store.drainQueuedTasks(snaps: [], closed: [], read: [rootA, mixed])
+            store.autoTaskLimit = 1
+            check("the drain tries an investigation whatever roots it read",
+                  invQueued && store.queuedTasks.isEmpty)
+        } else {
+            check("the disk floor holds every dispatch for the investigation check", false)
+        }
+        setenv(DiskFloor.envOverride, "0", 1)
+        store.queueAutoRun = autoRun
         store.prAutofixEnabled = heldAsk.prAutofix
         store.reviewRequestsEnabled = heldAsk.reviewReqs
         store.headlessJSON = nil
