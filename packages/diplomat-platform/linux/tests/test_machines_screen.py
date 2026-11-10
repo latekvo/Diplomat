@@ -1,17 +1,20 @@
 """The Machines screen and what it stands on: the remote-machines snapshot and history
-as the daemon writes them, the exclusions the screen writes to the shared config, and
-the one daemon route it calls.
+as the daemon writes them, the exclusions and the ARM bias the screen writes to the
+shared config, and the one daemon route it calls.
 """
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import shutil
 import socketserver
 import tempfile
 import threading
+import weakref
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 
 import pytest
 
@@ -315,6 +318,134 @@ def test_an_include_takes_every_name_out_of_both_and_drops_keys_left_empty():
     write_config({"repoRoot": "/r", "remoteMachineExclude": ["Keep"]})
     rm.include(rm.Machine(id="k", status="excluded", target="keep"), NOW)
     assert config() == {"repoRoot": "/r"}
+
+
+# MARK: the ARM bias
+
+REPO = Path(__file__).resolve().parents[4]
+
+
+def test_the_arm_bias_key_and_default_are_the_daemons():
+    daemon = (REPO / "packages/remote-machines/src/daemon.js").read_text(encoding="utf-8")
+    paths = (REPO / "packages/remote-machines/src/paths.js").read_text(encoding="utf-8")
+    assert f"c?.{appconfig.REMOTE_MACHINE_ARM_BIAS};" in daemon
+    assert (f"export const ARM_BIAS_DEFAULT = {appconfig.DEFAULT_REMOTE_MACHINE_ARM_BIAS};"
+            in paths)
+    assert appconfig.REMOTE_MACHINE_ARM_BIAS == "remoteMachineArmBias"
+
+
+def test_an_absent_arm_bias_reads_as_70():
+    assert appconfig.remote_machine_arm_bias() == 70
+    write_config({"repoRoot": "/r"})
+    assert appconfig.remote_machine_arm_bias() == 70
+
+
+@pytest.mark.parametrize("junk", [True, False, "40", None, [40], {"v": 40}])
+def test_an_arm_bias_that_is_not_a_number_reads_as_the_default(junk):
+    """``true`` is the trap: a bool is an int in Python, and would read as 1."""
+    write_config({appconfig.REMOTE_MACHINE_ARM_BIAS: junk})
+    assert appconfig.remote_machine_arm_bias() == 70
+
+
+@pytest.mark.parametrize("raw, shown", [
+    (0, 0), (35, 35), (100, 100), (-20, 0), (250, 100), (42.4, 42), (1e300, 100)])
+def test_an_arm_bias_is_clamped_as_the_daemon_clamps_it(raw, shown):
+    write_config({appconfig.REMOTE_MACHINE_ARM_BIAS: raw})
+    assert appconfig.remote_machine_arm_bias() == shown
+
+
+def test_the_store_writes_the_arm_bias_clamped_and_keeps_the_other_keys(app):
+    from diplomat_app.store import Store
+
+    write_config({"repoRoot": "/r", "remoteMachineExclude": ["old"]})
+    store = Store()
+    assert store.remote_machine_arm_bias == 70
+    store.remote_machine_arm_bias = 25
+    assert config() == {"repoRoot": "/r", "remoteMachineExclude": ["old"],
+                        appconfig.REMOTE_MACHINE_ARM_BIAS: 25}
+    assert store.remote_machine_arm_bias == 25
+    store.remote_machine_arm_bias = -5
+    assert config()[appconfig.REMOTE_MACHINE_ARM_BIAS] == 0
+    store.remote_machine_arm_bias = 101
+    assert config()[appconfig.REMOTE_MACHINE_ARM_BIAS] == 100
+
+
+def test_the_arm_bias_slider_writes_its_key_as_an_integer(app):
+    from diplomat_app.machinesview import MachinesView
+    from diplomat_app.store import Store
+
+    write_config({"repoRoot": "/r"})
+    view = MachinesView(Store(), live=False)
+    control = view.arm_bias
+    assert (control.minimum(), control.maximum(), control._step) == (0, 100, 5)
+    assert control.value() == 70
+    assert control.badge() == "ARM 70 : 30 x86"
+    assert config() == {"repoRoot": "/r"}
+    control._slider.setValue(35)
+    assert config() == {"repoRoot": "/r", "remoteMachineArmBias": 35}
+    assert type(config()["remoteMachineArmBias"]) is int
+    assert control.badge() == "ARM 35 : 65 x86"
+    control._slider.setValue(100)
+    assert config()["remoteMachineArmBias"] == 100
+    assert control.badge() == "ARM 100 : 0 x86"
+    assert "Only changes the order machines are preferred in." in _texts(view)
+    view.deleteLater()
+
+
+def test_an_arm_bias_set_by_hand_shows_as_the_screen_opens_and_on_its_poll(app, monkeypatch):
+    from diplomat_app.machinesview import MachinesView
+    from diplomat_app.store import Store
+
+    monkeypatch.setattr(Store, "refresh_machines_state", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_machines_install_async", lambda self: None)
+    write_config({appconfig.REMOTE_MACHINE_ARM_BIAS: 20})
+    view = MachinesView(Store(), live=False)
+    assert view.arm_bias.value() == 20
+    write_config({appconfig.REMOTE_MACHINE_ARM_BIAS: 85})
+    view.opened()
+    assert view.arm_bias.badge() == "ARM 85 : 15 x86"
+    write_config({appconfig.REMOTE_MACHINE_ARM_BIAS: 10})
+    view._state_timer.timeout.emit()
+    assert view.arm_bias.value() == 10
+    assert config() == {appconfig.REMOTE_MACHINE_ARM_BIAS: 10}
+    view.deleteLater()
+
+
+def test_an_arm_bias_the_disk_refuses_says_so(app, monkeypatch):
+    from diplomat_app.machinesview import MachinesView
+    from diplomat_app.store import Store
+
+    view = MachinesView(Store(), live=False)
+
+    def full(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    real = appconfig.write_atomic
+    monkeypatch.setattr(appconfig, "write_atomic", full)
+    view.arm_bias._slider.setValue(40)
+    assert appconfig.remote_machine_arm_bias() == 70
+    assert not view._save_error.isHidden()
+    assert "Couldn't save that change (No space left on device)" in view._save_error.text()
+    monkeypatch.setattr(appconfig, "write_atomic", real)
+    view.arm_bias._slider.setValue(45)
+    assert appconfig.remote_machine_arm_bias() == 45
+    assert view._save_error.isHidden()
+    view.deleteLater()
+
+
+def test_a_dropped_machines_screen_is_freed_without_the_cycle_collector(app):
+    """PySide 6.12 segfaults collecting a live screen caught in a reference cycle."""
+    from diplomat_app.machinesview import MachinesView
+    from diplomat_app.store import Store
+
+    view = MachinesView(Store(), live=False)
+    gone = weakref.ref(view)
+    gc.disable()
+    try:
+        del view
+        assert gone() is None
+    finally:
+        gc.enable()
 
 
 def test_the_store_writes_off_the_gui_thread_and_logs_what_happened(app, monkeypatch):

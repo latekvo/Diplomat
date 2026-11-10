@@ -261,26 +261,27 @@ class AllocatorControls(QWidget):
         self.recheck.setEnabled(idle)
 
 
-class _IdleLimitSlider(SliderSetting):
-    """Re-read on ``store.changed`` and ``store.device_config_reloaded`` (config.json is
-    also edited by hand)."""
+class ConfigSlider(SliderSetting):
+    """A slider over the Store property ``attr``, which lives in the shared config.
+    Re-read on ``store.changed`` and on ``reload`` (config.json is also edited by
+    hand); without one, the screen calls :meth:`sync` itself."""
 
     #: A write to the shared config, for the screen to run and report on. A signal,
     #: not a callback held here: that would be a slider -> screen -> slider cycle,
     #: and PySide 6.12 segfaults collecting it.
     write = Signal(object)
 
-    def __init__(self, store: Store, attr: str, *, label: str, maximum: int,
-                 step: int) -> None:
-        super().__init__(label=label, minimum=0, maximum=maximum, step=step,
-                         min_label="never", max_label=f"{maximum} min", tint=_CYAN)
+    def __init__(self, store: Store, attr: str, *, reload, badge: Callable[[int], str],
+                 **slider) -> None:
+        super().__init__(**slider)
         self._store = store
         self._attr = attr
-        self.set_badge_text(lambda n: "never" if n == 0 else f"{n} min")
+        self.set_badge_text(badge)
         self.sync()
         self.changed.connect(self._on_changed)
         store.changed.connect(self.sync)
-        store.device_config_reloaded.connect(self.sync)
+        if reload is not None:
+            reload.connect(self.sync)
 
     def sync(self) -> None:
         self.set_value(getattr(self._store, self._attr))
@@ -290,13 +291,21 @@ class _IdleLimitSlider(SliderSetting):
         self._store.changed.emit()
 
 
-def idle_limit_rows(store: Store) -> list[tuple[_IdleLimitSlider, SettingRow]]:
-    free = _IdleLimitSlider(store, "device_idle_free_minutes",
-                            label="Shut down a free device after",
-                            maximum=appconfig.MAX_DEVICE_IDLE_FREE_MINUTES, step=1)
-    leased = _IdleLimitSlider(store, "device_idle_leased_minutes",
-                              label="Take a held device back after",
-                              maximum=appconfig.MAX_DEVICE_IDLE_LEASED_MINUTES, step=5)
+def _idle_limit_slider(store: Store, attr: str, *, label: str, maximum: int,
+                       step: int) -> ConfigSlider:
+    return ConfigSlider(store, attr, reload=store.device_config_reloaded,
+                        badge=lambda n: "never" if n == 0 else f"{n} min",
+                        label=label, minimum=0, maximum=maximum, step=step,
+                        min_label="never", max_label=f"{maximum} min", tint=_CYAN)
+
+
+def idle_limit_rows(store: Store) -> list[tuple[ConfigSlider, SettingRow]]:
+    free = _idle_limit_slider(store, "device_idle_free_minutes",
+                              label="Shut down a free device after",
+                              maximum=appconfig.MAX_DEVICE_IDLE_FREE_MINUTES, step=1)
+    leased = _idle_limit_slider(store, "device_idle_leased_minutes",
+                                label="Take a held device back after",
+                                maximum=appconfig.MAX_DEVICE_IDLE_LEASED_MINUTES, step=5)
     return [
         (free, SettingRow(
             "Shut down a free device after", free, stacked=True,

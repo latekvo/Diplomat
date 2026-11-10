@@ -1,6 +1,7 @@
 """The Machines screen, twin of the macOS one: the remote-machines MCP's status, one
 panel per machine it can offload work to (best first, as agents are told to pick
-them), and the controls that take a machine out of that pool.
+them), the controls that take a machine out of that pool, and the ARM bias that
+orders it.
 """
 
 from __future__ import annotations
@@ -22,12 +23,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from diplomat_runtime import activity
+from diplomat_runtime import activity, appconfig
 from diplomat_runtime.models import Fmt
 from . import deviceallocator as da
 from . import glyphs
 from . import remotemachines as rm
-from .devicesview import AllocatorControls, Installer, allocator_pill
+from .devicesview import AllocatorControls, ConfigSlider, Installer, allocator_pill
 from .store import Store
 from .telemetryview import SplitBar, legend, qcolor
 from .widgets import ActivityRow, GlyphLabel, Pill, SettingRow, muted, settings_card, tint_bg
@@ -115,6 +116,24 @@ def machines_installer(store: Store) -> Installer:
         start=store.start_machines_daemon_async,
         restart=store.restart_machines_daemon_async,
         recheck=store.refresh_machines_install_async, restart_help=RESTART_HELP)
+
+
+def arm_bias_badge(arm: int) -> str:
+    return f"ARM {arm} : {appconfig.MAX_REMOTE_MACHINE_ARM_BIAS - arm} x86"
+
+
+def arm_bias_row(store: Store) -> tuple[ConfigSlider, SettingRow]:
+    slider = ConfigSlider(store, "remote_machine_arm_bias", reload=None,
+                          badge=arm_bias_badge, label="Prefer ARM machines",
+                          minimum=0, maximum=appconfig.MAX_REMOTE_MACHINE_ARM_BIAS,
+                          step=5, min_label="prefer x86", max_label="prefer ARM",
+                          tint=_TEAL)
+    slider.setToolTip("ARM's share of the ranking weight: an ARM machine's spare cores "
+                      "count this percent, any other's the rest. At 50, machines are "
+                      "ranked by spare cores alone.")
+    return slider, SettingRow(
+        "Prefer ARM machines", slider, stacked=True,
+        summary="Only changes the order machines are preferred in.")
 
 
 def machine_events(entries: list) -> list:
@@ -396,6 +415,10 @@ class MachinesView(QWidget):
         root.setSpacing(12)
         root.addLayout(self._build_header())
 
+        self._save_error = _note("", _RED)
+        self._save_error.hide()
+        root.addWidget(self._save_error)
+
         body = QHBoxLayout()
         body.setSpacing(12)
         left = QVBoxLayout()
@@ -434,6 +457,7 @@ class MachinesView(QWidget):
             self.store.refresh_machines_install_async()
             self._state_timer.start()
             self._install_timer.start()
+        self.arm_bias.sync()
         self.rebuild()
 
     def closed(self) -> None:
@@ -442,7 +466,20 @@ class MachinesView(QWidget):
 
     def _tick(self) -> None:
         self.store.refresh_machines_state()
+        self.arm_bias.sync()
         self._refresh_ages()
+
+    def _save(self, write) -> bool:
+        try:
+            write()
+        except OSError as exc:
+            self._save_error.setText(f"⚠ Couldn't save that change "
+                                     f"({exc.strerror or exc}), so it has no effect "
+                                     "until it is made again.")
+            self._save_error.show()
+            return False
+        self._save_error.hide()
+        return True
 
     def _refresh_ages(self) -> None:
         now = self.clock()
@@ -605,6 +642,9 @@ class MachinesView(QWidget):
         install = SettingRow("Offload work to other machines", self.controls, stacked=True)
         install.set_summary(summary, color=tint)
         body.addWidget(install)
+        self.arm_bias, bias_row = arm_bias_row(self.store)
+        self.arm_bias.write.connect(self._save)
+        body.addWidget(bias_row)
         return card
 
     def _refresh_status(self) -> None:
