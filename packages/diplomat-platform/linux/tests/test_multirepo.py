@@ -296,6 +296,56 @@ def test_the_mesh_never_takes_a_job_whose_checkout_is_no_root(store, roots, monk
     assert calls == [("review", "review:github.com/o/other#3@s")]
 
 
+def test_the_closed_pr_read_covers_every_root(quiet, monkeypatch):
+    asked = _by_repo(monkeypatch, "fetch_closed_prs", {})
+
+    quiet._autofix_poll_once()
+
+    assert asked == ["o/r", "o/other"]
+
+
+def test_a_comms_bump_moves_the_named_roots_item(quiet):
+    def task(key):
+        return autofix.QueuedTask(id=key, job=autofix.AgentJob(
+            kind="review", audit_action="review", label=key, prompt="P", pr_url=None,
+            pr_number=None, duty="review"), attempt=1)
+
+    quiet.queued_tasks = [task(k) for k in ("review:o/r#9", "review:o/r#5", "review:o/other#5")]
+
+    quiet._comms_bump(5, "o/other")
+    assert [t.id for t in quiet.queued_tasks] == [
+        "review:o/other#5", "review:o/r#9", "review:o/r#5"]
+    quiet._comms_bump(5, "")
+    assert [t.id for t in quiet.queued_tasks][0] == "review:o/r#5"
+
+
+def test_a_prompt_names_an_item_whatever_the_slugs_case():
+    text = "Review PR #5 in O/Other. Use the `gh` CLI"
+    assert list(autofix.prompt_items(text, {"O/Other"})) == ["o/other#5"]
+
+
+def test_a_run_with_a_pr_number_but_no_pr_link_holds_an_unscoped_bay():
+    from diplomat_runtime import agentstate
+
+    run = agentstate.RunRecord(run_id="r1", dispatched_at=0.0, pr_number=5, pr_url="",
+                               tty="ttys003")
+    assert run.item is None
+    assert autofix.unscoped_auto_ttys([run], "ttys003 01:00 claude do it\n") == {"ttys003"}
+
+
+def test_the_tick_scans_for_live_agents_on_every_root(roots, monkeypatch):
+    from diplomat_app import probes
+    from diplomat_runtime import agentstate
+
+    monkeypatch.setattr(probes, "_ps_dump", lambda now: agentstate.Observation.present(
+        "  42 ttys003 60 claude Review PR #5 in o/other. Use the `gh` CLI\n"
+        "  43 ttys004 60 claude Review PR #6 in o/r. Use the `gh` CLI\n"))
+
+    scan = probes.gather([], 0.0, mesh_enabled=False).live_agents
+
+    assert scan.value == {"o/other#5": "ttys003", "o/r#6": "ttys004"}
+
+
 def test_the_disk_floor_measures_every_root(quiet, monkeypatch):
     measured: list[str] = []
     monkeypatch.setenv(diskfloor.ENV_OVERRIDE, "1")
