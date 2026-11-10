@@ -1,0 +1,23 @@
+# A GitLab project's open merge requests for the panel: the GitLab twin of prs.graphql,
+# adapted into its shape (number = iid). Members answer every author association, as
+# GitLab has none. System notes carry the ready-for-review time.
+query($path: ID!) {
+  project(fullPath: $path) {
+    projectMembers(first: 100, relations: [DIRECT, INHERITED]) { nodes { user { username } } }
+    mergeRequests(state: opened, first: 50, sort: CREATED_DESC) {
+      nodes {
+        iid title webUrl draft createdAt conflicts detailedMergeStatus approved
+        author { username }
+        reviewers { nodes { username mergeRequestInteraction { reviewState } } }
+        diffStats { path }
+        discussions(first: 50) {
+          nodes {
+            resolvable resolved
+            notes(first: 20) { nodes { author { username } body userPermissions { resolveNote } } }
+          }
+        }
+        notes(last: 30, filter: ONLY_ACTIVITY) { nodes { createdAt body } }
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+# The PR auto-fix monitor's snapshot of my open merge requests: the GitLab twin of
+# monitor-prs.graphql. A resolvable discussion is a review thread.
+query($path: ID!, $author: String!) {
+  project(fullPath: $path) {
+    mergeRequests(state: opened, authorUsername: $author, first: 30, sort: UPDATED_DESC) {
+      nodes {
+        iid title webUrl draft diffHeadSha conflicts detailedMergeStatus approved
+        reviewers { nodes { username mergeRequestInteraction { reviewState } } }
+        discussions(first: 40) {
+          nodes {
+            resolvable resolved
+            notes(first: 20) { nodes { author { username } body userPermissions { resolveNote } } }
+          }
+        }
+      }
+    }
+  }
+}

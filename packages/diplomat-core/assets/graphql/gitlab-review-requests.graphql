@@ -1,0 +1,17 @@
+# Merge requests that request MY review: the GitLab twin of review-requests.graphql.
+# GitLab records a review request, an approval and a requested change only as system
+# notes, so the activity notes carry those times, and comments are the rest.
+query($path: ID!, $reviewer: String!, $withFiles: Boolean!) {
+  project(fullPath: $path) {
+    projectMembers(first: 100, relations: [DIRECT, INHERITED]) { nodes { user { username } } }
+    mergeRequests(state: opened, reviewerUsername: $reviewer, first: 30, sort: UPDATED_DESC) {
+      nodes {
+        iid title webUrl diffHeadSha
+        author { username }
+        diffStats @include(if: $withFiles) { path }
+        activity: notes(last: 40, filter: ONLY_ACTIVITY) { nodes { author { username } createdAt body } }
+        comments: notes(last: 20, filter: ONLY_COMMENTS) { nodes { author { username } createdAt } }
+      }
+    }
+  }
+}
