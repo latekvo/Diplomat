@@ -130,7 +130,7 @@ def test_run_job_uses_the_applets_terminal_spawner_on_linux(host, monkeypatch,
     done = tmp_path / "done"
     assert host.run_job("do a review", str(done)) == "/tmp/p.txt"
     assert calls == [("do a review", None, str(done),
-                      str(tmp_path / "done.hooks.json"), None)]
+                      str(tmp_path / "done.hooks.json"), review.mesh_checkout())]
 
 
 def _two_roots(monkeypatch, tmp_path):
@@ -152,9 +152,29 @@ def test_run_job_spawns_in_the_root_its_work_key_names(host, monkeypatch, tmp_pa
 
     host.run_job("x", str(tmp_path / "a"), "review:github.com/O/Other#7@abc")
     host.run_job("x", str(tmp_path / "b"), "review:github.com/o/r#7@abc")
-    host.run_job("x", str(tmp_path / "c"), "")
-    host.run_job("x", str(tmp_path / "d"))
-    assert seen == [str(tmp_path / "other"), str(tmp_path / "r"), None, None]
+    assert seen == [str(tmp_path / "other"), str(tmp_path / "r")]
+
+
+def test_a_job_naming_no_repo_runs_in_the_configured_repos_root(host, monkeypatch,
+                                                                tmp_path):
+    """An older peer names no repo, and means the configured one, which it works in."""
+    cfg = core.config()
+    configured = LocalRepo(cfg["owner"], cfg["repo"], str(tmp_path / "conf"))
+    monkeypatch.setattr(review, "repo_roots",
+                        lambda: [LocalRepo("o", "r", str(tmp_path / "r")), configured])
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    seen: list = []
+    monkeypatch.setattr(review, "spawn",
+                        lambda *a, checkout=None, **k: seen.append(checkout) or "/p")
+
+    host.run_job("x", str(tmp_path / "a"), "")
+    host.run_job("x", str(tmp_path / "b"))
+    assert seen == [configured.path] * 2
+
+    _two_roots(monkeypatch, tmp_path)
+    with pytest.raises(szpont_host.NoRunner):
+        host.run_job("x", str(tmp_path / "c"))
+    assert len(seen) == 2
 
 
 def test_a_fork_only_clone_takes_the_configured_repos_jobs(monkeypatch, tmp_path):

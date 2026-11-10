@@ -41,9 +41,9 @@ receiving machine opens its own terminal running its own agent runner exactly li
 SPAWN AGENT (dispatches are the **Mesh**-category rows in the activity feed), in its own
 [repo root](settings.md#settings) for the job's repo. If the first target declines - gone,
 out of tokens, or with no root for that repo - the dispatch fails over to the next
-candidate by rank. Only work in this machine's primary root goes over the mesh; work in
+candidate by rank. Only work in the root that checks out the configured repo goes over the mesh; work in
 any other root runs here, since a peer on a Diplomat from before repo routing runs every
-job in its single root. While the mesh is live, the four wizards grow a
+job in its single root, a checkout of that repo. While the mesh is live, the four wizards grow a
 **⬡ Run on mesh** row (checked by default, with a preview of where the duty
 currently routes): SPAWN AGENT then hands the job to the node instead of always
 opening a local terminal - on both front-ends. The two wizards with a scope offer the

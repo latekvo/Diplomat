@@ -1254,7 +1254,7 @@ def prompt_items(text: str, slugs: set[str]):
 def live_pr_items(ps_output: str, slugs: set[str]) -> set[str]:
     """Item keys of ``claude`` agents alive in a ``ps`` args dump, on a PR of one of
     the repos in ``slugs`` — the tracking-independent half of the monitor's in-flight
-    dedup (twin of ProcessMonitor.liveAgentPRNumbers on macOS).
+    dedup (twin of AgentProbes.liveAgents on macOS).
 
     Every single-PR prompt the applet dispatches names its PR (:func:`prompt_items`)
     and ``claude`` receives the whole prompt as one argv, so a live agent is visible

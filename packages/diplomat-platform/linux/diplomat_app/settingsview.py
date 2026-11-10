@@ -375,7 +375,8 @@ class SettingsView(QWidget):
         chosen = QFileDialog.getExistingDirectory(
             self, "Add a repo root", os.path.dirname(review.repo_path())
         )
-        paths = self.store.repo_root_paths
+        # None listed stands for the default root, which the first pick joins.
+        paths = self.store.repo_root_paths or [review.default_repo_path()]
         if chosen and chosen not in paths:
             self._set_roots([*paths, chosen])
 
@@ -1048,7 +1049,7 @@ class SettingsView(QWidget):
                    "you and your keywords. Each one is a ping (the ✉ screen, the "
                    "activity feed, a notification), and is triaged by one model call "
                    "with no tools and no MCP servers, which only answers what it asks "
-                   "for. A review or issue fix of this repo, a nudge to hurry one, or a "
+                   "for. A review or issue fix in a repo root, a nudge to hurry one, or a "
                    "reported problem to investigate is then queued like any other ask: "
                    "the ban list, the task cap and the spending budget all still "
                    "apply. Your own messages, bots and people from other workspaces "
@@ -1091,7 +1092,7 @@ class SettingsView(QWidget):
             "comms_act_requests",
             "“Can you review #12?” queues that review at the front of the requested "
             "reviews, as the Review wizard would run it; an issue fix likewise. Only an "
-            "open PR or issue of this repo.")
+            "open PR or issue in a repo root.")
         self._sw_comms_bumps = self._comms_switch(
             inner, "Bump queued work", st.comms_act_bumps, "comms_act_bumps",
             "“Any news on #12?” moves whatever is already queued for #12 to the front "

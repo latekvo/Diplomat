@@ -36,10 +36,12 @@ def item(n: int) -> str:
 
 @pytest.fixture(autouse=True)
 def _fixture_root(monkeypatch):
-    """The fixture repo as the one root: a monitor dispatches only work in a root."""
+    """The fixture repo as the one root, standing for the configured repo: a monitor
+    dispatches only work in a root, and the mesh takes only the configured repo's."""
     from diplomat_runtime import review
 
     monkeypatch.setattr(review, "repo_roots", lambda: [ROOT])
+    monkeypatch.setattr(review, "mesh_checkout", lambda: ROOT.path)
 
 
 # MARK: - compute_diff (edge trigger)

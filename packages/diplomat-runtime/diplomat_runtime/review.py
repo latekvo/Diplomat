@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import weakref
 from dataclasses import dataclass, replace
 from enum import Enum
 
@@ -319,6 +320,13 @@ def repo_root_paths() -> list[str]:
 ROOTS_TTL = 60.0
 
 _roots_cache: tuple[tuple, float, list[LocalRepo], bool] | None = None
+_roots_followers: list[weakref.WeakMethod] = []
+
+
+def follow_roots(method) -> None:
+    """Call the bound ``method`` whenever a re-read resolves the roots differently, on
+    whichever thread read them. Held weakly, so it never keeps its object alive."""
+    _roots_followers.append(weakref.WeakMethod(method))
 
 
 def _resolved_roots() -> tuple[list[LocalRepo], bool]:
@@ -331,8 +339,19 @@ def _resolved_roots() -> tuple[list[LocalRepo], bool]:
     if _roots_cache is None or _roots_cache[0] != key or now - _roots_cache[1] >= ROOTS_TTL:
         remotes = {p: out for p in map(os.path.expanduser, paths)
                    if (out := localrepos.remote_config(p)) is not None}
+        before = _roots_cache[2] if _roots_cache else None
         _roots_cache = (key, now, localrepos.resolve_roots(paths, remotes, configured),
                         localrepos.all_resolve(paths, remotes))
+        if before is not None and _roots_cache[2] != before:
+            for ref in list(_roots_followers):
+                method = ref()
+                if method is None:
+                    _roots_followers.remove(ref)
+                    continue
+                try:
+                    method()
+                except RuntimeError:  # a Qt object already deleted
+                    _roots_followers.remove(ref)
     return _roots_cache[2], _roots_cache[3]
 
 
@@ -344,6 +363,16 @@ def repo_roots() -> list[LocalRepo]:
     call per root at most that often, and a root that failed to resolve (a missing
     checkout, a ``git`` timeout) or whose remotes changed is read again within it."""
     return list(_resolved_roots()[0])
+
+
+def mesh_checkout() -> str | None:
+    """The checkout of the root that checks out the configured repo, or ``None`` when no
+    root does. Only work there may go over the mesh, and a job that names no repo runs
+    there: a peer on a Diplomat from before repo routing names none, and runs every job
+    in its single root, a checkout of that same repo."""
+    cfg = core.config()
+    slug = f"{cfg['owner']}/{cfg['repo']}".lower()
+    return next((r.path for r in repo_roots() if r.slug.lower() == slug), None)
 
 
 def roots_complete() -> bool:

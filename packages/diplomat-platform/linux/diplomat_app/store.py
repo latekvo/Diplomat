@@ -615,6 +615,7 @@ class Store(QObject):
         self._shown_slug: str | None = None
         # The roots as :meth:`_follow_roots` last saw them resolved.
         self._seen_roots: list[tuple[str, str]] | None = None
+        review.follow_roots(self._follow_roots)
 
         # Re-point a hidden default selection.
         if self.selected in self.hidden_tools:
@@ -733,7 +734,8 @@ class Store(QObject):
     def _follow_roots(self) -> None:
         """Follow a change in the resolved roots with the picker and the panel lists:
         an edit in Settings, or a re-read (:data:`review.ROOTS_TTL`) that finds a root
-        path resolving differently."""
+        path resolving differently (:func:`review.follow_roots`), as soon as either
+        happens. Until then a sweep or a wizard would read one root's lists as another's."""
         seen = [(r.slug.lower(), r.path) for r in review.repo_roots()]
         if seen == self._seen_roots:
             return
@@ -1430,7 +1432,6 @@ class Store(QObject):
 
     def refresh(self) -> None:
         """Synchronous full refresh. The GUI runs this on a worker thread."""
-        self._follow_roots()
         self.is_loading = True
         self.error = None
         self.loading_changed.emit(True)
@@ -1564,8 +1565,9 @@ class Store(QObject):
                 # diff and one commit see every repo, and the telemetry ledger is
                 # reconciled once per kind against the union (a per-root
                 # `observe_owed` would clear the other roots' pending work).
-                roots = review.repo_roots()
-                self._follow_roots()
+                # With it, whether every root path resolved: both prunes below go by
+                # this reading, not one taken after the poll's slow fetches.
+                roots, complete = review.repo_roots(), review.roots_complete()
                 # One fetch of my PRs per cycle, taken before anything acts on it:
                 # the drain re-checks the waiting queue against it and the
                 # reconcilers below diff from the same list. Fetching it here rather
@@ -1604,8 +1606,8 @@ class Store(QObject):
                 # queues what it finds instead of dispatching it (see is_paused).
                 if snaps is not None:
                     self._poll_my_prs(snaps)
-                self._poll_review_requests(roots)
-                self._poll_community_issues(roots)
+                self._poll_review_requests(roots, complete)
+                self._poll_community_issues(roots, complete)
                 self._request_goal_work(goal_work)
                 # Last, so the monitors' finds keep the places they were found in:
                 # the operator's own sweep bands behind them anyway, and a fifty-item
@@ -1742,7 +1744,7 @@ class Store(QObject):
             return {str(k): str(v) for k, v in marks.items()}
         return {self._primary().slug.lower(): raw} if raw else {}
 
-    def _poll_community_issues(self, roots: list[LocalRepo]) -> None:
+    def _poll_community_issues(self, roots: list[LocalRepo], complete: bool = True) -> None:
         """Queue one fix for each issue the community filed in a root since its last
         scan.
 
@@ -1754,7 +1756,8 @@ class Store(QObject):
         Each root keeps its own mark, and one with none is baselined on its first read,
         so adding a root never queues its backlog. A removed root's mark is dropped, so
         re-adding it does not either. A root whose read failed keeps its mark, as does
-        every root while one fails to resolve (:func:`review.roots_complete`)."""
+        every root while one fails to resolve (``complete``: :func:`review.roots_complete`
+        of the reading ``roots`` came from)."""
         if not self.community_issues_enabled:
             return
         marks = self._community_marks()
@@ -1789,7 +1792,7 @@ class Store(QObject):
                 if queued:
                     activity.log("auto", "community-issue", f"{who} - fix queued")
             marks[slug] = mark.isoformat()
-        if review.roots_complete():
+        if complete:
             current = {r.slug.lower() for r in roots}
             marks = {k: v for k, v in marks.items() if k in current}
         self._settings.setValue("communityIssuesSince", json.dumps(marks))
@@ -1821,12 +1824,12 @@ class Store(QObject):
         agent_issues = self.goal_overlay().agent_issues if fixes else frozenset()
         for task_id, w in work:
             number, url, author = int(w["number"]), str(w["url"]), str(w.get("author") or "")
-            if w["kind"] == "fix-issue" and number in agent_issues:
-                done.setdefault(task_id, []).append(str(w["key"]))
-                continue
             item = item_key_from_url(url) or ""
             root = self._root_named(item)
             if root is None:
+                continue
+            if w["kind"] == "fix-issue" and number in agent_issues:
+                done.setdefault(task_id, []).append(str(w["key"]))
                 continue
             if w["kind"] == "fix-issue":
                 config = self._goal_fix_config(number, root)
@@ -1888,13 +1891,13 @@ class Store(QObject):
         if error:
             activity.log("auto", "goal", f"could not forget {', '.join(sorted(waiting))}: {error}")
 
-    def _poll_review_requests(self, roots: list[LocalRepo]) -> None:
+    def _poll_review_requests(self, roots: list[LocalRepo], complete: bool = True) -> None:
         """Dispatch the reviews requested of me in every root. A read that fails in any
         root stands the whole pass down: a concluded record is kept only while the pass
         sees its request owed (:func:`autofix.retained`), so a partial read would drop
         the unread root's and re-dispatch them. For the same reason, while a root fails
-        to resolve (:func:`review.roots_complete`) the records of repos no polled root
-        is a checkout of are all kept."""
+        to resolve (``complete``, as for :meth:`_poll_community_issues`) the records of
+        repos no polled root is a checkout of are all kept."""
         try:
             reqs = [r for root in roots
                     for r in autofixmonitor.fetch_review_requests(
@@ -1947,7 +1950,7 @@ class Store(QObject):
         # re-request is fresh (:func:`autofix.retained`).
         records = {**self._load_attempts(key), **dispatched}
         kept = autofix.retained(records, {r.item: r.stamp for r in owed}, now)
-        if not review.roots_complete():
+        if not complete:
             polled = {r.slug.lower() for r in roots}
             kept |= {k: a for k, a in records.items() if k.partition("#")[0] not in polled}
         self._save_attempts(key, kept)
@@ -1988,9 +1991,7 @@ class Store(QObject):
         run's liveness is the executor's origination claim and nothing else."""
         if not self.mesh_enabled or not job.work_key:
             return None, False, ""
-        # Primary-root work only: a peer on a Diplomat from before repo routing runs
-        # every job in its single root.
-        if job.checkout not in (None, review.repo_path()):
+        if (job.checkout or review.repo_path()) != review.mesh_checkout():
             return None, False, ""
 
         from szpontnet import ctl, statefile
@@ -2900,11 +2901,13 @@ class Store(QObject):
         An ask in a repo that is no longer a root is dropped: nothing here works in that
         repo any more. While a root path fails to resolve (:func:`review.roots_complete`)
         its repo may be that one, so the ask is kept and skipped instead."""
-        roots = review.repo_roots()
+        # Read together: the roots are re-read on a timer, and an ask is forgotten only
+        # when the reading that left its repo out had every root path resolved.
+        roots, complete = review.repo_roots(), review.roots_complete()
         slugs = {r.slug.lower() for r in roots}
         for entry in self.requested_work:
             if entry.repo and entry.repo.lower() not in slugs:
-                if review.roots_complete():
+                if complete:
                     self._forget_requested(entry.key)
                     activity.log("panel", "queue-drop",
                                  f"{entry.label_among(len(roots))} - {entry.repo} is no "

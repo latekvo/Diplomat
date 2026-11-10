@@ -12,8 +12,8 @@ import DiplomatCore
 /// enough to answer both token questions the Telemetry screen asks, and neither
 /// needs anything Anthropic doesn't already write to disk:
 ///
-/// * **how much of this machine's spend went on the monitored repo** — sum every
-///   turn, split by whether its `cwd` is inside the repo the agents work in;
+/// * **how much of this machine's spend went on the monitored repos** — sum every
+///   turn, split by whether its `cwd` is inside a repo root the agents work in;
 /// * **what one auto-task cost** — find the transcript whose opening user message
 ///   *is* the prompt staged for that agent, and sum that file alone.
 ///

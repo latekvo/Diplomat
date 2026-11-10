@@ -158,7 +158,7 @@
       "_comment": "Named for what it actually measures: the split is by the cwd each Claude turn ran in, so it counts every session in the monitored repo — the agents this applet dispatches, and the operator's own work in the same checkout. Calling it 'Diplomat' would claim an attribution the cwd cannot make.",
       "id": "tokenShare",
       "title": "Spent on this repo",
-      "blurb": "Share of this machine's Claude tokens spent in the repo the agents work in (Settings \u2192 repo root, and its worktrees) rather than everywhere else.",
+      "blurb": "Share of this machine's Claude tokens spent in the repo roots the agents work in (Settings \u2192 repo roots, and their worktrees) rather than everywhere else.",
       "unit": "percent",
       "emoji": "⚖",
       "linuxGlyph": "◑",

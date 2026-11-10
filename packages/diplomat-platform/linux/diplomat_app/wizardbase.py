@@ -47,9 +47,8 @@ def mismatch_warning(noun: str, cfg) -> str:
 def mesh_applicable(cfg, opens_session: bool) -> bool:
     """Whether the mesh row may route this spawn: only one that opens a session (a
     Review or Fix-issues scope opens none, it queues one per item for this machine's
-    own cap), and only one in the primary root, since a peer on a Diplomat from before
-    repo routing runs every job in its single root."""
-    return opens_session and cfg.checkout in (None, review.repo_path())
+    own cap), and only one in the configured repo's root (:func:`review.mesh_checkout`)."""
+    return opens_session and (cfg.checkout or review.repo_path()) == review.mesh_checkout()
 
 
 class SpawnWizard(QWidget):

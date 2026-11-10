@@ -234,7 +234,7 @@ class DiplomatHost(szpont_host.Host):
 
 def _checkout_for(work_key: str, repo: str = "") -> str | None:
     """Where a job runs: the repo root checking out ``repo`` (``owner/name``), else the
-    repo ``work_key`` names, or ``None`` for the primary root when neither names one.
+    repo ``work_key`` names, else the configured repo's (:func:`review.mesh_checkout`).
     Raises :class:`szpont_host.NoRunner` for a repo with no root here, so the
     dispatcher fails the job over to a machine that has one."""
     from . import autofix, review
@@ -244,7 +244,9 @@ def _checkout_for(work_key: str, repo: str = "") -> str | None:
     else:
         ref = autofix.parse_work_key(work_key) if work_key else None
         if ref is None:
-            return None
+            if (checkout := review.mesh_checkout()) is None:
+                raise szpont_host.NoRunner("no checkout of the configured repo on this machine")
+            return checkout
         slug = f"{ref[1]}/{ref[2]}".lower()
     root = next((r for r in review.repo_roots() if r.slug.lower() == slug), None)
     if root is None:

@@ -18,7 +18,7 @@ import pytest
 from test_autofix import fake_probes, store  # noqa: F401 — fixture
 
 from diplomat_runtime import (
-    activity, appconfig, autofix, diskfloor, review, telemetry, usagescan,
+    activity, appconfig, autofix, diskfloor, localrepos, review, telemetry, usagescan,
 )
 from diplomat_runtime.autofix import PRSnapshot, ReviewRequest
 from diplomat_runtime.models import API, OpenIssue, OpenPR
@@ -34,8 +34,10 @@ NOW = datetime.now(timezone.utc)
 
 @pytest.fixture
 def roots(monkeypatch):
+    """The two roots, the primary standing for the configured repo on the mesh."""
     monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, SECOND])
     monkeypatch.setattr(review, "roots_complete", lambda: True)
+    monkeypatch.setattr(review, "mesh_checkout", lambda: PRIMARY.path)
 
 
 @pytest.fixture
@@ -186,9 +188,7 @@ def test_a_root_that_failed_to_resolve_keeps_its_issue_mark(quiet, monkeypatch):
     _by_repo(monkeypatch, "fetch_open_issues", {
         "o/other": [_issue(SECOND, 21, NOW - timedelta(minutes=30))]})
     quiet._poll_community_issues([PRIMARY, SECOND])
-    monkeypatch.setattr(review, "roots_complete", lambda: False)
-    quiet._poll_community_issues([PRIMARY])
-    monkeypatch.setattr(review, "roots_complete", lambda: True)
+    quiet._poll_community_issues([PRIMARY], complete=False)
 
     filed = NOW + timedelta(minutes=5)
     _by_repo(monkeypatch, "fetch_open_issues", {"o/other": [_issue(SECOND, 22, filed)]})
@@ -208,13 +208,26 @@ def test_a_root_that_failed_to_resolve_keeps_its_concluded_reviews(quiet, monkey
     long_ago = time.time() - autofix.RETRY_MAX_BACKOFF - 60
     quiet._save_attempts("reviewReqAttempts", {"o/other#7": autofix.ReviewAttempt(
         "2026-01-02", long_ago, 1, concluded_at=long_ago)})
-    monkeypatch.setattr(review, "roots_complete", lambda: False)
-    quiet._poll_review_requests([PRIMARY])
-    monkeypatch.setattr(review, "roots_complete", lambda: True)
+    quiet._poll_review_requests([PRIMARY], complete=False)
 
     quiet._poll_review_requests([PRIMARY, SECOND])
 
     assert dispatched == []
+
+
+def test_a_poll_goes_by_the_roots_reading_it_started_with(quiet, monkeypatch):
+    """The roots are re-read on a timer, possibly during the poll's fetches: a root back
+    by the end of the poll was still missing from the list it polled."""
+    quiet.community_issues_enabled = True
+    marks = {"o/r": NOW.isoformat(), "o/other": NOW.isoformat()}
+    quiet._settings.setValue("communityIssuesSince", json.dumps(marks))
+    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY])
+    readings = iter([False])
+    monkeypatch.setattr(review, "roots_complete", lambda: next(readings, True))
+
+    quiet._autofix_poll_once()
+
+    assert set(json.loads(quiet._settings.value("communityIssuesSince"))) == {"o/r", "o/other"}
 
 
 def test_a_queued_task_keeps_its_root_when_another_becomes_primary(quiet, monkeypatch):
@@ -374,9 +387,10 @@ def test_an_ask_whose_root_failed_to_resolve_is_kept_and_not_run(quiet, monkeypa
     assert [e for e in activity.read() if e.action == "queue-drop"] == []
 
 
-def test_the_mesh_takes_only_the_primary_roots_work(store, roots, monkeypatch):  # noqa: F811
+def test_the_mesh_takes_only_the_configured_repos_work(store, roots, monkeypatch):  # noqa: F811
     """A peer on a Diplomat from before repo routing runs every job in its single root,
-    so another root's work stays here. What does go names its repo."""
+    a checkout of the configured repo, so another root's work stays here, whichever
+    root is primary. What does go names its repo."""
     from szpontnet import ctl
     from test_autofix import _mesh_store, _spawned
 
@@ -398,6 +412,24 @@ def test_the_mesh_takes_only_the_primary_roots_work(store, roots, monkeypatch): 
     assert store._route_via_mesh(job("r", "/src/r"))[0] == "spawned"
     assert calls == [("review", "review:github.com/O/r#3@s")] * 2
     assert repos == ["o/r"] * 2
+
+    monkeypatch.setattr(review, "mesh_checkout", lambda: SECOND.path)
+    assert store._route_via_mesh(job("r", None)) == (None, False, "")
+    assert store._route_via_mesh(job("other", "/src/other"))[0] == "spawned"
+    monkeypatch.setattr(review, "mesh_checkout", lambda: None)
+    assert store._route_via_mesh(job("r", "/src/r")) == (None, False, "")
+    assert len(calls) == 3
+
+
+def test_the_mesh_checkout_is_the_configured_repos_root(monkeypatch):
+    from diplomat_runtime import core
+
+    cfg = core.config()
+    configured = LocalRepo(cfg["owner"].upper(), cfg["repo"], "/src/conf")
+    monkeypatch.setattr(review, "repo_roots", lambda: [SECOND, configured])
+    assert review.mesh_checkout() == "/src/conf"
+    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, SECOND])
+    assert review.mesh_checkout() is None
 
 
 def test_a_wizards_mesh_dispatch_carries_its_repo(store, monkeypatch):  # noqa: F811
@@ -474,6 +506,22 @@ def test_the_disk_floor_measures_every_root(quiet, monkeypatch):
     assert measured == ["/src/r", "/src/other", str(Path.home() / ".diplomat")]
 
 
+def test_asks_are_forgotten_by_one_roots_reading(quiet, monkeypatch):
+    """A re-read mid-pass that has every root resolved says nothing of the reading
+    that left these repos out."""
+    readings = iter([False])
+    monkeypatch.setattr(review, "roots_complete", lambda: next(readings, True))
+    quiet.requested_work = [
+        autofix.RequestedWork(number=n, url=f"https://github.com/o/gone/pull/{n}", author="",
+                              config={"kind": "review", "specificPR": str(n), "depth": "deep"},
+                              repo="o/gone")
+        for n in (3, 4)]
+
+    quiet._offer_requested_work()
+
+    assert [w.number for w in quiet.requested_work] == [3, 4]
+
+
 def test_a_monitor_dispatch_in_no_root_is_skipped(quiet, monkeypatch):
     jobs: list[autofix.AgentJob] = []
     monkeypatch.setattr(quiet, "dispatch_agent",
@@ -543,6 +591,28 @@ def test_switching_roots_shows_its_last_fetch_and_refetches_it(quiet, monkeypatc
     assert fetched == ["o/r", "o/other"]
 
 
+def test_a_pick_during_a_fetch_is_fetched_before_the_lists_change(quiet, monkeypatch):
+    """A refresh already running is the only one: the panel's next ask is dropped
+    while it runs."""
+    lists = {"o/r": [_pr(PRIMARY, 5)], "o/other": [_pr(SECOND, 6)]}
+    fetched: list[str] = []
+
+    def fetch(o, r):
+        fetched.append(f"{o}/{r}")
+        if len(fetched) == 1:
+            quiet.select_repo("o/other")
+        return lists[f"{o}/{r}"]
+
+    monkeypatch.setattr(API, "fetch_viewer_login", staticmethod(lambda: "alice"))
+    monkeypatch.setattr(API, "fetch_open_prs", staticmethod(fetch))
+    monkeypatch.setattr(API, "fetch_open_issues", staticmethod(lambda o, r: []))
+
+    quiet.refresh()
+
+    assert fetched == ["o/r", "o/other"]
+    assert quiet.prs == lists["o/other"]
+
+
 def test_the_selection_outlives_the_process_and_falls_back_to_the_primary(quiet):
     from diplomat_app.store import Store
 
@@ -601,11 +671,18 @@ def test_a_bare_number_means_the_selected_root(wizard_store, dispatched):
     assert (job.pr_number, job.checkout) == (5, "/src/other")
 
 
-def test_a_wizard_follows_the_picker(wizard_store):
+def test_a_wizard_follows_the_picker(wizard_store, monkeypatch):
     w = _review_wizard(wizard_store, "5")
     assert w._config().home == PRIMARY and w.mesh_row._applicable
     wizard_store.select_repo("o/other")
     assert w._config().home == SECOND and not w.mesh_row._applicable
+
+    # The mesh row follows the configured repo's root, not the primary.
+    monkeypatch.setattr(review, "mesh_checkout", lambda: SECOND.path)
+    w._sync()
+    assert w.mesh_row._applicable
+    wizard_store.select_repo("o/r")
+    assert not w.mesh_row._applicable
 
 
 def test_a_link_to_another_root_is_deduped_by_its_number(wizard_store, dispatched):
@@ -686,47 +763,51 @@ def test_the_header_offers_a_picker_only_with_several_roots(make_panel):
     assert two.store.selected_repo == SECOND and refreshed == [1]
 
 
-def test_the_header_follows_a_root_that_resolves_later(make_panel, monkeypatch):
-    """The roots are re-read every minute (:data:`review.ROOTS_TTL`): one that did not
-    resolve when the panel was built joins the picker, and the lists follow the stored
-    selection to it."""
-    panel = make_panel([PRIMARY])
-    store_ = panel.store
-    store_._settings.setValue("selectedRepo", "o/other")
-    lists = {"o/r": [_pr(PRIMARY, 5)], "o/other": [_pr(SECOND, 6)]}
-    monkeypatch.setattr(API, "fetch_viewer_login", staticmethod(lambda: "alice"))
-    monkeypatch.setattr(API, "fetch_open_prs", staticmethod(lambda o, r: lists[f"{o}/{r}"]))
-    monkeypatch.setattr(API, "fetch_open_issues", staticmethod(lambda o, r: []))
-    store_.refresh()
-    assert panel.repo_picker.isHidden() and store_.prs == lists["o/r"]
+@pytest.fixture
+def remotes(monkeypatch):
+    """The roots resolved for real, from these checkouts' remotes: drop one to make its
+    path fail to resolve. :func:`_reread` ages the reading past its TTL."""
+    table = {"/src/r": "remote.origin.url https://github.com/o/r.git\n",
+             "/src/other": "remote.origin.url https://github.com/o/other.git\n"}
+    monkeypatch.setattr(review, "repo_root_paths", lambda: ["/src/r", "/src/other"])
+    monkeypatch.setattr(localrepos, "remote_config", lambda p: table.get(p))
+    monkeypatch.setattr(review, "_roots_cache", None)
+    return table
 
-    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, SECOND])
-    store_.refresh()
+
+def _reread() -> None:
+    review._roots_cache = (review._roots_cache[0], float("-inf"), *review._roots_cache[2:])
+    review.repo_roots()
+
+
+def test_the_header_and_lists_follow_a_root_that_resolves_later(app, remotes, monkeypatch):
+    """Whoever re-reads the roots: one that did not resolve when the panel was built
+    joins the picker, and the lists follow the stored selection to it at once."""
+    from diplomat_app.panel import Panel
+    from diplomat_app.store import Store
+
+    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
+    fake_probes(monkeypatch)
+    other = remotes.pop("/src/other")
+    store_ = Store()
+    store_.me = "alice"
+    store_._settings.setValue("selectedRepo", "o/other")
+    store_._panel_data = {"o/r": ([_pr(PRIMARY, 5)], [], NOW),
+                          "o/other": ([_pr(SECOND, 6)], [], NOW)}
+    store_._show_panel_data(store_.selected_repo)
+    panel = Panel(store_)
+    assert panel.repo_picker.isHidden() and store_.prs == [_pr(PRIMARY, 5)]
+    refetch: list[int] = []
+    panel.refresh_requested.connect(lambda: refetch.append(1))
+
+    remotes["/src/other"] = other
+    _reread()
 
     assert not panel.repo_picker.isHidden()
     assert panel.repo_picker.currentData() == "o/other"
-    assert store_.prs == lists["o/other"]
-
-
-def test_the_monitor_poll_follows_the_roots_too(quiet, monkeypatch):
-    """Between panel refreshes, a root that resolves again takes the lists back to it."""
-    quiet._settings.setValue("selectedRepo", "o/other")
-    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY])
-    quiet._panel_data = {"o/r": ([_pr(PRIMARY, 5)], [], NOW),
-                         "o/other": ([_pr(SECOND, 6)], [], NOW)}
-    quiet._show_panel_data(quiet.selected_repo)
-    quiet._follow_roots()
-    followed: list[str] = []
-    quiet.local_repos_changed.connect(lambda: followed.append("roots"))
-    quiet.selected_repo_changed.connect(lambda: followed.append("selected"))
-    quiet._autofix_poll_once()
-    assert followed == []
-
-    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, SECOND])
-    quiet._autofix_poll_once()
-
-    assert followed == ["roots", "selected"]
-    assert quiet.prs == [_pr(SECOND, 6)]
+    assert store_.prs == [_pr(SECOND, 6)] and refetch == [1]
+    panel.deleteLater()
 
 
 def _checkout(tmp_path: Path, name: str) -> str:
@@ -736,6 +817,32 @@ def _checkout(tmp_path: Path, name: str) -> str:
     subprocess.run(["git", "-C", str(where), "remote", "add", "origin",
                     f"git@github.com:o/{name}.git"], check=True)
     return str(where)
+
+
+def test_adding_a_root_with_none_listed_keeps_the_default_one(app, tmp_path, monkeypatch):
+    """With none listed the agents work in the default root, which an added one joins
+    rather than replaces."""
+    from PySide6.QtWidgets import QFileDialog
+
+    from diplomat_app.settingsview import SettingsView
+    from diplomat_app.store import Store
+
+    monkeypatch.delenv("DIPLOMAT_REPO", raising=False)
+    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
+    appconfig.set_repo_roots([])
+    view = SettingsView(Store())
+    other = _checkout(tmp_path, "other")
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", staticmethod(lambda *a: other))
+    view._add_root()
+    assert appconfig.repo_roots() == [review.default_repo_path(), other]
+
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a: review.default_repo_path()))
+    appconfig.set_repo_roots([])
+    view._add_root()
+    assert review.repo_root_paths() == [review.default_repo_path()]
+    view.deleteLater()
 
 
 def test_the_roots_list_adds_raises_and_removes_through_the_config(app, tmp_path,

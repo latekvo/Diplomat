@@ -511,6 +511,7 @@ def test_an_auto_goal_in_no_repo_root_asks_and_records_nothing(tstore, github, n
     monkeypatch.setattr(review, "repo_roots", lambda: [LocalRepo("o", "elsewhere", "/src/e")])
     tstore.pr_autofix_enabled = False
     task_id = _auto_goal(tstore, github, "auto")
+    tstore._goal_fixes_starting.add(1802)  # an agent on a fix, which is recorded only in a root
     _poll(tstore, monkeypatch)
     assert tstore.requested_work == [] and no_agents == []
     assert "dispatched" not in _task(task_id)["task"]
