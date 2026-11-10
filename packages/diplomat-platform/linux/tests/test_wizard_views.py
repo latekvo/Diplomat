@@ -787,7 +787,7 @@ def test_the_configured_repo_still_spawns_in_the_repo_root(store, dispatched, lo
     w._spawn()
     job, _ = dispatched[0]
     assert job.checkout is None and job.pr_number == 455
-    assert job.label.startswith("Review · 455 · ")
+    assert job.label.startswith("Review · #455 · ")
 
 
 def test_listing_a_repo_re_judges_a_link_already_in_the_field(store, monkeypatch):

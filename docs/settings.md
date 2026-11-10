@@ -143,7 +143,7 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   or any repo root: the prompt targets that repo and its agent starts in that
   checkout. Each is known by its GitHub remotes (`upstream` is the one shown, then
   `origin`), so a fork clone takes links to both. A run in one of these never goes over
-  the mesh - a peer has no root for it. Bare numbers and sweeps target the repo picked
+  the mesh: only the configured repo's root's work does (see [Diplomat Mesh](mesh.md)). Bare numbers and sweeps target the repo picked
   in the panel header.
 - **Auto-queue fixes for my PRs / Auto-queue reviews that request me** - the two
   monitor toggles, with live status: PRs watched, reviews done so far, "N

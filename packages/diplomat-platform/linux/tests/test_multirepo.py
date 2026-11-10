@@ -386,11 +386,12 @@ def test_the_drain_starts_nothing_in_a_root_just_taken_out(quiet, monkeypatch):
     monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY])
     quiet.queue_auto_run = True
     started: list[str] = []
-    monkeypatch.setattr(quiet, "dispatch_agent", lambda job, source, attempt=1: (
+    monkeypatch.setattr(quiet, "dispatch_agent", lambda job, source, attempt=1, **kw: (
         started.append(job.label) or "spawned"))
 
     quiet._autofix_poll_once()
 
+    assert quiet.autofix_poll_error is None
     assert started == [] and quiet.queued_tasks == [] and quiet.requested_work == []
     assert [e.detail for e in activity.read() if e.action == "queue-drop"][-1].endswith(
         "o/other is no longer a repo root, not run")
@@ -696,6 +697,19 @@ def test_a_bare_number_means_the_selected_root(wizard_store, dispatched):
     w._spawn()
     [job] = dispatched
     assert (job.pr_number, job.checkout) == (5, "/src/other")
+    assert job.label.startswith("Review · other#5 · ")
+
+
+def test_a_conflict_run_names_the_selected_root(wizard_store, dispatched):
+    from diplomat_app.conflictwizardview import ConflictWizardView
+
+    wizard_store.select_repo("o/other")
+    w = ConflictWizardView(wizard_store)
+    w.target.setCurrentIndex(w.target.findData(PRTarget.SPECIFIC))
+    w.specific_pr.setText("5")
+    w._spawn()
+    [job] = dispatched
+    assert job.label == "Resolve conflicts · other#5"
 
 
 def test_a_wizard_follows_the_picker(wizard_store, monkeypatch):
@@ -1152,3 +1166,85 @@ def test_a_held_root_is_known_however_its_slug_is_cased(quiet, monkeypatch):
                         lambda roots, complete=True: seen.append(complete))
     quiet._autofix_poll_once()
     assert quiet._held("o/other#6") and seen == [False]
+
+
+def _starts(st, monkeypatch) -> list[str]:
+    started: list[str] = []
+    monkeypatch.setattr(st, "dispatch_agent", lambda job, source, attempt=1, **kw: (
+        started.append(job.label) or "spawned"))
+    return started
+
+
+def test_the_drain_starts_a_mixed_case_roots_tasks_and_an_investigation(quiet, monkeypatch):
+    """A root's slug keeps its remote's case; queue keys are lowercase. An investigation's
+    key names no item, so no root is outside it."""
+    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, LocalRepo("O", "Other", "/src/other")])
+    quiet.queue_auto_run = False
+    quiet.review_requests_enabled = True
+    _by_repo(monkeypatch, "fetch_review_requests", {"O/Other": [_requested(SECOND, 7)]})
+    quiet.requested_work = [autofix.RequestedWork(
+        number=1, url="", author="", config={"kind": "investigate"}, repo="o/r")]
+    quiet._autofix_poll_once()
+    assert sorted(t.id for t in quiet.queued_tasks) == ["investigate:1", "review-req:o/other#7"]
+    quiet.queue_auto_run = True
+    started = _starts(quiet, monkeypatch)
+
+    quiet._drain_queued_tasks([], set())
+
+    assert len(started) == 2
+
+
+def test_a_review_request_waits_while_its_roots_requests_stay_unreadable(quiet, monkeypatch):
+    """Its row stands on a failed read; until a read speaks for it again, nothing says
+    the request is still open."""
+    quiet.queue_auto_run = False
+    quiet.review_requests_enabled = True
+    _by_repo(monkeypatch, "fetch_review_requests", {"o/other": [_requested(SECOND, 7)]})
+    quiet._autofix_poll_once()
+    _unreadable(monkeypatch, "fetch_review_requests", {})
+    quiet._autofix_poll_once()
+    quiet.queue_auto_run = True
+    started = _starts(quiet, monkeypatch)
+
+    quiet._autofix_poll_once()
+    assert started == [] and [t.id for t in quiet.queued_tasks] == ["review-req:o/other#7"]
+
+    _by_repo(monkeypatch, "fetch_review_requests", {"o/other": [_requested(SECOND, 7)]})
+    quiet._autofix_poll_once()
+    assert len(started) == 1
+
+
+def test_a_mixed_case_roots_failed_review_request_read_holds_it(quiet, monkeypatch):
+    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, LocalRepo("O", "Other", "/src/other")])
+    _unreadable(monkeypatch, "fetch_review_requests", {}, bad="O/Other")
+    quiet._autofix_poll_once()
+    assert quiet._held("o/other#7")
+
+
+def test_a_community_issue_is_named_among_every_root_when_one_is_unread(quiet, monkeypatch):
+    quiet.community_issues_enabled = True
+    _by_repo(monkeypatch, "fetch_open_issues", {})
+    quiet._poll_community_issues([PRIMARY, SECOND])
+    _by_repo(monkeypatch, "fetch_open_issues", {
+        "o/r": [_issue(PRIMARY, 12, NOW + timedelta(hours=1))]})
+    logged: list[str] = []
+    monkeypatch.setattr(activity, "log", lambda kind, event, text, *a, **k: logged.append(text))
+
+    quiet._poll_community_issues([PRIMARY], complete=False)
+
+    assert any(t.startswith("Issue r#12 by @u12") for t in logged), logged
+
+
+def test_a_root_taken_out_and_added_back_logs_its_failed_read_again(quiet, monkeypatch):
+    quiet.community_issues_enabled = True
+    _by_repo(monkeypatch, "fetch_snapshots", {})
+    _unreadable(monkeypatch, "fetch_open_issues", {})
+    logged: list[str] = []
+    monkeypatch.setattr(activity, "log", lambda kind, event, text, *a, **k: (
+        logged.append(event)))
+    quiet._autofix_poll_once()
+    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY])
+    quiet._autofix_poll_once()
+    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, SECOND])
+    quiet._autofix_poll_once()
+    assert logged.count("root-read-failed") == 2

@@ -839,8 +839,8 @@ class Store(QObject):
         return item_label(item_key(owner, repo, number), len(roots))
 
     def is_root(self, repo: LocalRepo | None) -> bool:
-        """Whether ``repo`` is one of the repo roots: work there is deduped by item and
-        may be routed over the mesh, unlike work in another listed checkout."""
+        """Whether ``repo`` is one of the repo roots: work there is deduped by item,
+        unlike work in another listed checkout."""
         return repo is not None and repo.slug.lower() in {
             r.slug.lower() for r in review.repo_roots()}
 
@@ -1675,6 +1675,8 @@ class Store(QObject):
                          failed: list[tuple[LocalRepo, Exception]]) -> None:
         """Log ``what`` of a root unreadable once per run of failed reads, and readable
         again once it reads. Not a poll failure: the other roots' work goes on."""
+        configured = {r.slug.lower() for r in review.repo_roots()}
+        self._roots_unread = {k for k in self._roots_unread if k.partition(":")[2] in configured}
         for r, exc in failed:
             key = f"{what}:{r.slug.lower()}"
             if key not in self._roots_unread:
@@ -1688,7 +1690,8 @@ class Store(QObject):
                 activity.log("auto", "root-read-recovered", f"{what} of {r.slug} readable again")
 
     def _held(self, item: str) -> bool:
-        """Whether ``item`` is in a root this cycle's read of my PRs failed in."""
+        """Whether ``item`` is in a root this cycle's read of my PRs or of review
+        requests failed in."""
         return item.partition("#")[0] in self._held_slugs
 
     def _poll_my_prs(self, snaps: list) -> None:
@@ -3067,13 +3070,19 @@ class Store(QObject):
 
         A task in a repo outside ``read`` (the roots this cycle read, by default every
         root) is neither priced nor started: nothing this cycle speaks for it, and a root
-        just taken out of Settings is no longer the operator's to work. This cycle's
-        commit keeps or drops its row (:meth:`commit_queue`)."""
+        just taken out of Settings is no longer the operator's to work. Nor is a review
+        request in a root whose last read of review requests failed. This cycle's commit
+        keeps or drops its row (:meth:`commit_queue`)."""
         polled = {r.slug.lower() for r in (review.repo_roots() if read is None else read)}
 
         def outside(entry: autofix.QueuedTask) -> bool:
-            split = split_item_key(entry.id.partition(":")[2])
-            return split is not None and split[0].lower() not in polled
+            action, _, item = entry.id.partition(":")
+            split = split_item_key(item)
+            if split is None:
+                return False
+            slug = split[0].lower()
+            return slug not in polled or (
+                action == REVIEW_REQ_ACTION and f"Review requests:{slug}" in self._roots_unread)
 
         conflicting = {s.item for s in snaps if s.mergeable == "CONFLICTING"}
         owing_reply = {s.item for s in snaps if s.threads_i_owe > 0}
