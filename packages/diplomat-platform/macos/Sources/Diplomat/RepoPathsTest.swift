@@ -78,6 +78,15 @@ enum RepoPathsTest {
         check("…and an empty one is unset",
               root(env: "") == checkout.path, "got \(root(env: ""))")
 
+        // What the Update button asks before it runs git.
+        let priorRepo = ProcessInfo.processInfo.environment["DIPLOMAT_SELF_REPO"]
+        setenv("DIPLOMAT_SELF_REPO", elsewhere.path, 1)
+        check("a root with no .git is no checkout to update", !RepoPaths.checkoutPresent)
+        setenv("DIPLOMAT_SELF_REPO", checkout.path, 1)
+        check("…and one with it is, whatever else the tree holds", RepoPaths.checkoutPresent)
+        if let priorRepo { setenv("DIPLOMAT_SELF_REPO", priorRepo, 1) }
+        else { unsetenv("DIPLOMAT_SELF_REPO") }
+
         // A root that fails to resolve once is read again after `rootsTTL`, not dropped
         // until Settings opens. Off the main thread, where a read waits for git.
         print("repopaths: a repo root that resolves late")
