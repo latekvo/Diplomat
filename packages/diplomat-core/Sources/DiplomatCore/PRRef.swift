@@ -2,15 +2,15 @@ import Foundation
 
 /// A PR or issue reference parsed from a wizard's single-item text field.
 ///
-/// The field accepts a bare number (`337`, `#337`), a full GitHub URL
-/// (`https://github.com/owner/repo/pull/337`, with any trailing path/query), a GitLab one
-/// (`https://<host>/group/sub/proj/-/merge_requests/337`), or the `owner/repo#337`
-/// shorthand, whose owner may be a nested GitLab namespace (`group/sub/proj#337`, and
-/// `group/sub/proj!337` for a merge request). When the input names a repo (URL or
-/// shorthand) it's checked against the home repo (the root the wizard works on, else the
-/// configured repo) and then the local checkouts listed in Settings, so a link to an
-/// unknown project is rejected instead of silently reviewing the wrong PR. Shared verbatim
-/// with the shared runtime (see `prref.py`).
+/// The field accepts a bare number (`337`, `#337`, and `!337` for a GitLab home's merge
+/// request), a full GitHub URL (`https://github.com/owner/repo/pull/337`, with any trailing
+/// path/query), a GitLab one (`https://<host>/group/sub/proj/-/merge_requests/337`), or the
+/// `owner/repo#337` shorthand, whose owner may be a nested GitLab namespace
+/// (`group/sub/proj#337`, and `group/sub/proj!337` for a merge request). When the input
+/// names a repo (URL or shorthand) it's checked against the home repo (the root the wizard
+/// works on, else the configured repo) and then the local checkouts listed in Settings, so
+/// a link to an unknown project is rejected instead of silently reviewing the wrong PR.
+/// Shared verbatim with the shared runtime (see `prref.py`).
 public struct PRRef: Equatable {
     /// A local checkout, a repo root or one a link may target besides the home repo: one
     /// GitHub or GitLab remote of it (`host`, `owner`/`repo`) and where it is cloned
@@ -119,9 +119,11 @@ public struct PRRef: Equatable {
         if let g = firstMatch(s, #"^((?:[\w.-]+/)*[\w.-]+)/([\w.-]+)"# + mark + #"([0-9]+)$"#) {
             return named(host: nil, owner: g[1], repo: g[2], number: g[3], want: want, also: also)
         }
-        // A bare number, with an optional leading '#'. ASCII digits only — Int() alone
-        // also accepts "+337", which the Python port rejects.
-        let bare = s.hasPrefix("#") ? String(s.dropFirst()) : s
+        // A bare number, with an optional leading '#', or '!' for a merge request of a GitLab
+        // home. ASCII digits only — Int() alone also accepts "+337", which the Python port
+        // rejects.
+        let bang = kind == .pull && want.host != LocalRepo.github
+        let bare = s.hasPrefix("#") || (bang && s.hasPrefix("!")) ? String(s.dropFirst()) : s
         if !bare.isEmpty, bare.allSatisfy({ $0.isASCII && $0.isNumber }),
            let n = Int(bare), n > 0 { return PRRef(number: n, repoMismatch: false) }
 

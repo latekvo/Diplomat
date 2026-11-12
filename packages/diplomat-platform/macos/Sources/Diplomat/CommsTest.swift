@@ -1625,8 +1625,9 @@ enum CommsTest {
         await useRoots([primaryRoot, secondRoot, thirdRoot])
         await store.refreshRoots()
         store.pinGitLabMe("yuki-me", host: "gitlab.example.com")
-        check("a GitLab root is watched by its nested slug",
-              store.commsSettings.repos == ["o/r", "o/second", "g/sub/third"])
+        check("a GitLab root is watched by its nested slug, on its host",
+              store.commsSettings.repos == ["o/r", "o/second", "g/sub/third"]
+                && store.commsSettings.gitlabHosts == ["g/sub/third": "gitlab.example.com"])
         ghCalls = []
         let onGitLab = targeted([CommsAsk(.review, 90300, repo: "g/sub/third"),
                                  CommsAsk(.fixIssue, 90304, repo: "g/sub/third")])

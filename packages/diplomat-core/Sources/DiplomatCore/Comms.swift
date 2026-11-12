@@ -176,18 +176,18 @@ public struct CommsDecision: Codable, Equatable, Sendable {
 
     /// `targets` wins; without it, `numbers` (else `number`) are targets of `action`. A
     /// target whose number is not positive, or whose action needs none, is dropped, as is one
-    /// whose repository and number an earlier target has.
+    /// naming the item an earlier target names (`sameItem`, on `settings`' repositories).
     public init(action: CommsAction, number: Int = 0, numbers: [Int] = [],
                 targets: [CommsAsk] = [], summary: String,
                 reason: String, evidence: String = "", language: String = defaultLanguage,
-                repo: String = "") {
+                repo: String = "", settings: CommsSettings? = nil) {
         let reason = Self.clip(reason)
         let evidence = action == .injection ? Self.unquoted(evidence) : ""
         let asked = !targets.isEmpty ? targets
             : (numbers.isEmpty ? [number] : numbers).map { CommsAsk(action, $0) }
         var kept: [CommsAsk] = []
         for t in asked where t.number > 0 && t.action.needsNumber
-            && !kept.contains(where: { $0.number == t.number && $0.repo == t.repo }) {
+            && !kept.contains(where: { Self.sameItem($0, t, settings: settings) }) {
             kept.append(t)
         }
         self.summary = Self.clip(summary)
@@ -257,7 +257,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
             let named = repo.isEmpty || sent.contains {
                 CommsMatch.containsWord($0, String(repo.split(separator: "/").last ?? ""))
             }
-            if kept.contains(where: { $0.number == ask.number && $0.repo == ask.repo }) { continue }
+            if kept.contains(where: { Self.sameItem($0, ask, settings: settings) }) { continue }
             if named, texts[repo, default: []].contains(where: {
                 CommsMatch.containsWord($0, String(t.number)) }) {
                 kept.append(ask)
@@ -268,14 +268,21 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         guard kept != targets else { return self }
         guard !dropped.isEmpty else {
             return CommsDecision(action: action, targets: kept, summary: summary, reason: reason,
-                                 language: language)
+                                 language: language, settings: settings)
         }
         let noun = dropped.count == 1 ? "a number" : "numbers"
         let place = settings.repos.count == 1 ? "in this repository" : "in that watched repository"
         let why = "answered \(Self.describe(dropped, tagged: true)), \(noun) neither the message "
             + "nor its conversation names \(place); \(reason)"
         return CommsDecision(action: kept.isEmpty ? .none : action, targets: kept,
-                             summary: summary, reason: why, language: language)
+                             summary: summary, reason: why, language: language, settings: settings)
+    }
+
+    /// Whether two targets name one item: the same number in the same repository, and on
+    /// GitLab, which numbers merge requests and issues apart, the same action too.
+    static func sameItem(_ a: CommsAsk, _ b: CommsAsk, settings: CommsSettings?) -> Bool {
+        a.number == b.number && a.repo == b.repo
+            && (a.action == b.action || settings?.gitlabHost(a.repo) == nil)
     }
 
     func targeting(_ t: CommsAsk) -> CommsDecision {
@@ -297,15 +304,17 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// `CommsSettings.canonical` slug, the primary by default) taken out: GitHub links and
     /// GitLab ones (`<host>/<namespace>/<project>/-/merge_requests|issues|work_items/N`,
     /// any host) with their Slack or markdown label, `owner/repo#N` for another repository
-    /// of `repo`'s owner or another watched one, and `name#N` for a repository a link names
-    /// or another watched one. A number there is not one of `repo`'s, even when `repo` has a
-    /// PR that happens to wear it. Any other `word#N` or `word/word#N` stays, for the
-    /// classifier to judge: `PR#12`, `fix/login#12` and `swmansion/argent#12` cannot be
-    /// told from a foreign reference here.
+    /// of `repo`'s owner (a namespace of any depth) or another watched one, and `name#N` for
+    /// a repository a link names or another watched one; for a `repo` on GitLab, `!N` as
+    /// well as `#N`. A number there is not one of `repo`'s, even when `repo` has a PR that
+    /// happens to wear it. Any other `word#N` or `word/word#N` stays, for the classifier to
+    /// judge: `PR#12`, `fix/login#12` and `swmansion/argent#12` cannot be told from a
+    /// foreign reference here.
     public static func ownRepoText(_ text: String, settings: CommsSettings,
                                    repo target: String = "") -> String {
         let (home, name) = settings.coordinates(of: target)
         let slug = "\(home)/\(name)".lowercased()
+        let mark = settings.gitlabHost(target) == nil ? "#" : "[#!]"
         // Two groups per form, owner and repo, so every link alternative below holds four.
         let url = #"(?:(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues|discussions|commit)/\w+"#
             + #"|(?:https?://)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::[0-9]+)?/((?:[\w.-]+/)*[\w.-]+)/([\w.-]+)/-/(?:merge_requests|issues|work_items)/[0-9]+)"#
@@ -313,7 +322,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
             pattern: #"<\#(url)[^\s>|]*(?:\|[^>\n]*)?>"#
                 + #"|\[[^\[\]\n]*\]\(\#(url)[^\s)]*\)"#
                 + #"|\#(url)(?:/[\w./-]*)?(?:#[A-Za-z][\w-]*)?"#
-                + #"|(?<![\w./-])([A-Za-z0-9][A-Za-z0-9-]*)/([\w.-]+)#\d+"#,
+                + #"|(?<![\w./-])([A-Za-z0-9][\w.-]*(?:/[\w.-]+)*)/([\w.-]+)"# + mark + #"\d+"#,
             options: [.caseInsensitive]) else { return text }
         let source = text as NSString
         let out = NSMutableString(string: text)
@@ -337,7 +346,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         }
         var kept = out as String
         for name in others {
-            let pattern = "(?<![\\w.-])" + NSRegularExpression.escapedPattern(for: name) + "#\\d+"
+            let pattern = "(?<![\\w.-])" + NSRegularExpression.escapedPattern(for: name) + mark + "\\d+"
             guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
             else { continue }
             kept = re.stringByReplacingMatches(in: kept, range: NSRange(kept.startIndex..., in: kept),
@@ -386,7 +395,8 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// the object: an unknown action, or a number that is missing, fractional, a string or
     /// a boolean, lands in `init` as something it refuses. A target without an action
     /// takes the decision's. An older log line has `numbers`, or `number` alone, and no
-    /// `repo`: the primary repository's.
+    /// `repo`: the primary repository's. The decoder's `settingsKey`, when set, is `init`'s
+    /// `settings`.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let summary = (try? c.decode(String.self, forKey: .summary)) ?? ""
@@ -406,8 +416,11 @@ public struct CommsDecision: Codable, Equatable, Sendable {
                   targets: targets, summary: summary, reason: reason,
                   evidence: (try? c.decode(String.self, forKey: .evidence)) ?? "",
                   language: (try? c.decode(String.self, forKey: .language)) ?? Self.defaultLanguage,
-                  repo: (try? c.decode(String.self, forKey: .repo)) ?? "")
+                  repo: (try? c.decode(String.self, forKey: .repo)) ?? "",
+                  settings: decoder.userInfo[Self.settingsKey] as? CommsSettings)
     }
+
+    static let settingsKey = CodingUserInfoKey(rawValue: "commsSettings")!
 
     /// `number` beside `targets`: the Linux ping row reads it.
     public func encode(to encoder: Encoder) throws {
@@ -443,7 +456,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// A batch's answers, `count` of them, the nth answering message n + 1: the first
     /// entry of `decisions` naming it, or a `none` saying it went unanswered. Nil, as for
     /// `answer(in:)`, for output with no answer at all.
-    static func answers(in output: Data, count: Int) -> [CommsDecision]? {
+    static func answers(in output: Data, count: Int, settings: CommsSettings? = nil) -> [CommsDecision]? {
         let entries: [Any]
         switch answerObject(in: output, key: "decisions") {
         case nil:
@@ -462,7 +475,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
             guard let data = try? JSONSerialization.data(withJSONObject: entry),
                   let n = (try? JSONDecoder().decode(Slot.self, from: data))?.message,
                   n >= 1, n <= count, out[n - 1] == nil else { continue }
-            out[n - 1] = decode(entry)
+            out[n - 1] = decode(entry, settings: settings)
         }
         return out.map { $0 ?? .none("the classifier gave this message no answer") }
     }
@@ -503,16 +516,15 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         return nil
     }
 
-    private static func decode(_ object: [String: Any]?) -> CommsDecision {
-        guard let object, let data = try? JSONSerialization.data(withJSONObject: object) else {
+    /// `settings` reaches `init(from:)` as the decoder's `settingsKey`.
+    private static func decode(_ object: [String: Any]?, settings: CommsSettings? = nil) -> CommsDecision {
+        let decoder = JSONDecoder()
+        decoder.userInfo[settingsKey] = settings
+        guard let object, let data = try? JSONSerialization.data(withJSONObject: object),
+              let decision = try? decoder.decode(CommsDecision.self, from: data) else {
             return .none("the classifier's answer was not a JSON object")
         }
-        return decode(data)
-    }
-
-    private static func decode(_ data: Data) -> CommsDecision {
-        (try? JSONDecoder().decode(CommsDecision.self, from: data))
-            ?? .none("the classifier's answer was not a JSON object")
+        return decision
     }
 
     /// A model answering in prose sometimes wraps it in a Markdown code fence.
@@ -549,14 +561,17 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     public private(set) var repos: [String]
     /// The operator's GitHub login; the classifier is told the message was sent to it.
     public var login: String
+    /// The host of each of `repos` on GitLab, by slug; one not here is on GitHub.
+    public private(set) var gitlabHosts: [String: String]
 
     /// `repos` without the blank, malformed and repeated; with none left, the one repo
-    /// `owner`/`repo` name, else `assets/config.json`'s.
+    /// `owner`/`repo` name, else `assets/config.json`'s. `gitlabHosts` keeps the slugs
+    /// `repos` holds, any case.
     public init(keywords: [String] = [], senderAllowlist: [String] = [],
                 bannedSenders: [String] = [],
                 model: String? = nil, maxPerTick: Int? = nil, batchSize: Int? = nil,
                 flushAfterSecs: Int? = nil, owner: String? = nil, repo: String? = nil,
-                repos: [String] = [], login: String = "") {
+                repos: [String] = [], login: String = "", gitlabHosts: [String: String] = [:]) {
         let assets = try? CoreAssets.comms()
         let coordinates = CoreAssets.repoCoordinates()
         self.keywords = keywords
@@ -578,6 +593,19 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         self.repos = slugs.isEmpty
             ? ["\(owner ?? coordinates.owner)/\(repo ?? coordinates.repo)".lowercased()] : slugs
         self.login = login
+        var hosts: [String: String] = [:]
+        for (slug, host) in gitlabHosts {
+            let s = slug.trimmingCharacters(in: .whitespaces).lowercased()
+            let h = host.trimmingCharacters(in: .whitespaces).lowercased()
+            if self.repos.contains(s), !h.isEmpty { hosts[s] = h }
+        }
+        self.gitlabHosts = hosts
+    }
+
+    /// The GitLab host of watched repository `slug` (any case, "" for the primary); nil for
+    /// one on GitHub or not watched.
+    public func gitlabHost(_ slug: String) -> String? {
+        canonical(slug).flatMap { gitlabHosts[$0.isEmpty ? repos[0] : $0] }
     }
 
     public var owner: String { coordinates(of: "").owner }
@@ -624,7 +652,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case keywords, senderAllowlist, bannedSenders, model, maxPerTick, batchSize,
-             flushAfterSecs, owner, repo, repos, login
+             flushAfterSecs, owner, repo, repos, login, gitlabHosts
         case keywordsRaw, senderAllowlistRaw
     }
 
@@ -646,7 +674,8 @@ public struct CommsSettings: Codable, Equatable, Sendable {
                   owner: try c.decodeIfPresent(String.self, forKey: .owner),
                   repo: try c.decodeIfPresent(String.self, forKey: .repo),
                   repos: try c.decodeIfPresent([String].self, forKey: .repos) ?? [],
-                  login: try c.decodeIfPresent(String.self, forKey: .login) ?? "")
+                  login: try c.decodeIfPresent(String.self, forKey: .login) ?? "",
+                  gitlabHosts: try c.decodeIfPresent([String: String].self, forKey: .gitlabHosts) ?? [:])
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -660,6 +689,7 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         try c.encode(flushAfterSecs, forKey: .flushAfterSecs)
         try c.encode(repos, forKey: .repos)
         try c.encode(login, forKey: .login)
+        if !gitlabHosts.isEmpty { try c.encode(gitlabHosts, forKey: .gitlabHosts) }
     }
 }
 

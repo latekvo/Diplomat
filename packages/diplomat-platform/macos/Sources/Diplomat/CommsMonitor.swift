@@ -68,7 +68,9 @@ extension Store {
                       bannedSenders: BanList.slackUserIDs(in: BanList.read()),
                       model: commsModel, batchSize: commsBatchSize,
                       flushAfterSecs: commsFlushAfterSecs,
-                      repos: RepoPaths.roots.map(\.slug), login: effectiveMe)
+                      repos: RepoPaths.roots.map(\.slug), login: effectiveMe,
+                      gitlabHosts: Dictionary(RepoPaths.roots.filter(\.isGitLab).map { ($0.slug, $0.host) },
+                                              uniquingKeysWith: { first, _ in first }))
     }
 
     /// The repo root a Comms repository names (`CommsSettings.canonical`: "" for the

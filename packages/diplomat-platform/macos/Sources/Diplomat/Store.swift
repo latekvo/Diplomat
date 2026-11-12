@@ -2755,9 +2755,19 @@ final class Store: ObservableObject {
     /// conflict that already existed when the monitor first saw the PR (which the
     /// edge-trigger baselines) still gets an agent. The record is pruned once the PR is
     /// known mergeable again.
-    private func reconcileMyConflicts(snaps: [PRSnapshot], now: Date) async {
+    ///
+    /// A GitLab merge request GitLab has not checked (`AgentTaskQueue.conflicting`) is
+    /// offered again only when its fix is already queued, as the commit keeps only what
+    /// this cycle offered: an unchecked status keeps a fix, never starts one.
+    ///
+    /// Not private: the queue self-test drives it.
+    func reconcileMyConflicts(snaps: [PRSnapshot], now: Date) async {
         var attempts = loadMyConflictAttempts()
-        let conflicted = snaps.filter { $0.mergeable == "CONFLICTING" }
+        let queued = Set(queuedTasks.filter { $0.job.auditAction == "conflicts" }.compactMap(\.job.item))
+        let owed = AgentTaskQueue.conflicting(snaps, roots: roots)
+        let conflicted = snaps.filter { s in
+            s.mergeable == "CONFLICTING" || s.item.map { owed.contains($0) && queued.contains($0) } == true
+        }
         for s in conflicted {
             let key = item(url: s.url, number: s.number)
             let inFlight = await self.inFlight(key)

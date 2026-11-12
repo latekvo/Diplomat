@@ -11,20 +11,26 @@ public enum GLab {
     /// Where glab is looked for before `PATH`.
     public static let candidatePaths = ["/opt/homebrew/bin/glab", "/usr/local/bin/glab", "/usr/bin/glab"]
 
-    /// `$DIPLOMAT_GLAB`, else the first candidate, else the first `glab` on `PATH`. A found
-    /// path is kept until it fails to launch.
+    /// `$DIPLOMAT_GLAB`, else `locate`'s answer. A found path is kept until it fails to launch.
     static func glabPath() throws -> String {
         let env = ProcessInfo.processInfo.environment
         if let o = env["DIPLOMAT_GLAB"], !o.isEmpty { return o }
         pathLock.lock()
         defer { pathLock.unlock() }
         if let p = cachedPath { return p }
-        let onPath = (env["PATH"] ?? "").split(separator: ":").map { "\($0)/glab" }
-        guard let found = (candidatePaths + onPath).first(where: {
-            FileManager.default.isExecutableFile(atPath: $0)
-        }) else { throw GHError.glabNotFound }
+        guard let found = locate(env: env) else { throw GHError.glabNotFound }
         cachedPath = found
         return found
+    }
+
+    /// The first of `candidates`, else the first `glab` on `env`'s `PATH`, else the one
+    /// `env`'s `SHELL` names as a login shell: an app started by launchd has a bare `PATH`.
+    public static func locate(env: [String: String], candidates: [String] = candidatePaths) -> String? {
+        let onPath = (env["PATH"] ?? "").split(separator: ":").map { "\($0)/glab" }
+        if let found = (candidates + onPath).first(where: {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }) { return found }
+        return LoginShell.locate("glab", shell: env["SHELL"] ?? "/bin/sh")
     }
 
     private static func forget(_ path: String) {
@@ -55,10 +61,14 @@ public enum GLab {
         ["-R", "https://\(host)/\(slug)"]
     }
 
-    /// Project `slug` as a REST path's `projects/:id` takes it, URL-encoded.
+    /// Project `slug` as a REST path's `projects/:id` takes it: percent-encoded but for
+    /// the unreserved ASCII `A-Za-z0-9-._~`.
     public static func projectID(_ slug: String) -> String {
-        slug.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? slug
+        slug.addingPercentEncoding(withAllowedCharacters: unreserved) ?? slug
     }
+
+    private static let unreserved = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
     /// Run a shared `assets/graphql/<queryName>` query against `host`. `variables` go
     /// through `-f` (strings), `typedVariables` through `-F` (parsed into the declared type,
@@ -75,22 +85,36 @@ public enum GLab {
         for (k, v) in variables { args += ["-f", "\(k)=\(v)"] }
         for (k, v) in typedVariables { args += ["-F", "\(k)=\(v)"] }
         let path = variables.first { $0.0 == "path" }?.1
-
-        var lastError: Error?
-        for attempt in 0..<2 {
-            do {
-                let out = try await output(args)
-                try check(out.stdout, path: path, host: host)
-                guard out.status == 0 else {
-                    throw GHError.glabProcess(code: out.status, stderr: out.stderr)
-                }
-                return out.stdout
-            } catch {
-                lastError = error
-                if attempt == 0 { try? await Task.sleep(nanoseconds: 800_000_000) }
+        return try await twice {
+            let out = try await output(args)
+            try check(out.stdout, path: path, host: host)
+            guard out.status == 0 else {
+                throw GHError.glabProcess(code: out.status, stderr: out.stderr)
             }
+            return out.stdout
         }
-        throw lastError!
+    }
+
+    /// The members of project `slug` on `host` among user `ids`: one REST read per chunk
+    /// of them (`GitLab.memberPaths`), each retried once as `graphql`, any failure thrown
+    /// as a failed read's.
+    public static func members(host: String, slug: String, ids: [Int]) async throws -> Set<Int> {
+        var found = Set<Int>()
+        for path in GitLab.memberPaths(slug: slug, ids: ids) {
+            found.formUnion(try await twice {
+                try GitLab.memberIDs(try await run(["api", "--hostname", host, path]))
+            })
+        }
+        return found
+    }
+
+    /// `call()`, asked once more after a pause when it throws; the second failure is the
+    /// one thrown.
+    private static func twice<T>(_ call: () async throws -> T) async throws -> T {
+        do { return try await call() } catch {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            return try await call()
+        }
     }
 
     /// The failure a GraphQL answer holds: an `errors` array, or no `project` for a query
