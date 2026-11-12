@@ -836,15 +836,12 @@ class Store(QObject):
 
     @property
     def local_repos(self) -> tuple[LocalRepo, ...]:
-        """The wizards' ``local_repos``: the repo roots, then every repo the other
-        listed checkouts answer for, one per slug with the root's winning."""
-        out: list[LocalRepo] = []
-        seen: set[str] = set()
-        for repo in (*review.repo_roots(), *localrepos.local_repos(self.local_checkouts)):
-            if repo.slug.lower() not in seen:
-                seen.add(repo.slug.lower())
-                out.append(repo)
-        return tuple(out)
+        """The wizards' ``local_repos``: the repo roots, then every repo the listed
+        checkouts answer for that no root's slug names. Twin of ``Store.wizardRepos``."""
+        roots = review.repo_roots()
+        taken = {r.slug.lower() for r in roots}
+        return (*roots, *(r for r in localrepos.local_repos(self.local_checkouts)
+                          if r.slug.lower() not in taken))
 
     @staticmethod
     def wizard_item_label(owner: str, repo: str, number: int) -> str:
@@ -3138,7 +3135,9 @@ class Store(QObject):
         just taken out of Settings is no longer the operator's to work. Nor is a review
         request in a root whose last read of review requests failed. This cycle's commit
         keeps or drops its row (:meth:`commit_queue`)."""
-        polled = {r.slug.lower() for r in (review.repo_roots() if read is None else read)}
+        roots = review.repo_roots() if read is None else read
+        polled = {r.slug.lower() for r in roots}
+        lab = {r.slug.lower() for r in roots if r.is_gitlab}
 
         def outside(entry: autofix.QueuedTask) -> bool:
             action, _, item = entry.id.partition(":")
@@ -3149,7 +3148,10 @@ class Store(QObject):
             return slug not in polled or (
                 action == REVIEW_REQ_ACTION and f"Review requests:{slug}" in self._roots_unread)
 
-        conflicting = {s.item for s in snaps if s.mergeable == "CONFLICTING"}
+        # GitLab leaves a merge request's status unchecked after a push to its target
+        # until something asks it again, so there an undecided one still conflicts.
+        conflicting = {s.item for s in snaps if s.mergeable == "CONFLICTING"
+                       or s.mergeable == "UNKNOWN" and (s.item or "").partition("#")[0] in lab}
         owing_reply = {s.item for s in snaps if s.threads_i_owe > 0}
         # Dropped here rather than left for this cycle's commit to omit: the commit is
         # the far side of two monitor runs, and a row already known to be answered
@@ -3723,11 +3725,12 @@ class Store(QObject):
         """Warn about each retired review run whose review did not go through
         GitHub's lifecycle (:mod:`diplomat_runtime.reviewaudit`). ``me`` is the gh
         login, not the username override: a PENDING review is listed to its author
-        alone, and the agent posts as the login."""
+        alone, and the agent posts as the login. A run on a GitLab merge request has no
+        review the audit reads (:func:`reviewaudit.audit`), so it needs no gh login."""
         logged = False
         for label, source, url, since in runs:
             try:
-                if not me:
+                if not me and reviewaudit.pr_coordinates(url):
                     raise ValueError("the gh login is not known yet")
                 found = reviewaudit.audit(url, me, since)
             except Exception as exc:  # noqa: BLE001 — a check that could not run says so
@@ -4241,6 +4244,7 @@ class Store(QObject):
                 if root is not None:
                     entry["target"] = self._comms_lookup(
                         effect["kind"], int(effect.get("number") or 0), root)
+                    entry["me"] = self._comms_me(root)
             elif effect.get("kind") == "ban":
                 entry["reported"] = self._comms_report_ban(effect["ban"])
             items.append(entry)
@@ -4283,6 +4287,13 @@ class Store(QObject):
     @staticmethod
     def _comms_repo_name(root: LocalRepo) -> str:
         return "this repo" if len(review.repo_roots()) == 1 else root.slug
+
+    def _comms_me(self, root: LocalRepo) -> str:
+        """:meth:`me_for`, or "" while it cannot be read: then nothing is mine."""
+        try:
+            return self.me_for(root)
+        except Exception:  # noqa: BLE001 — any failed read leaves the login unknown
+            return ""
 
     def _comms_lookup(self, kind: str, number: int, root: LocalRepo) -> dict | None:
         """``{number, url, author, state}`` of ``root``'s ``#number``, open or not;
@@ -4488,11 +4499,11 @@ class Store(QObject):
         if kind == "review":
             verb = "comms-review"
             outcome, work = self._comms_review(number, repo, entry.get("root"),
-                                               entry.get("target"))
+                                               entry.get("target"), entry.get("me", ""))
         elif kind == "fix_issue":
             verb = "comms-fix"
             outcome, work = self._comms_fix(number, repo, entry.get("root"),
-                                            entry.get("target"))
+                                            entry.get("target"), entry.get("me", ""))
         elif kind == "investigate":
             verb, front = "comms-investigate", False
             outcome, work = self._comms_investigate(effect["config"])
@@ -4600,24 +4611,24 @@ class Store(QObject):
         return bool(login) and bans.is_banned(login, bans.read())
 
     def _comms_review(self, number: int, repo: str, root: LocalRepo | None,
-                      found: dict | None) -> tuple[str, autofix.RequestedWork | None]:
+                      found: dict | None, me: str) -> tuple[str, autofix.RequestedWork | None]:
         """``("review of #N", the ask)`` (the Review wizard's single-PR default) or
         ``(why there is none, None)``. ``root`` is :meth:`_comms_root`'s answer for
-        ``repo``, ``found`` :meth:`_comms_lookup`'s."""
+        ``repo``, ``found`` :meth:`_comms_lookup`'s, ``me`` :meth:`_comms_me`'s."""
         if root is None:
             return f"{repo}#{number} is not in a repo root", None
         ref = self._comms_ref(root, number)
         if found is None:
             return f"{ref} is not a PR of {self._comms_repo_name(root)}", None
         if "error" in found:
-            return f"couldn't ask GitHub about PR {ref} ({found['error']})", None
+            return (f"couldn't ask {'GitLab' if root.is_gitlab else 'GitHub'} about PR {ref} "
+                    f"({found['error']})"), None
         state = str(found.get("state", ""))
         if state.upper() != "OPEN":
             return f"PR {ref} is {state.lower()}", None
         author = str(found.get("author", ""))
         if self._comms_banned(author):
             return f"PR {ref} is by @{author}, who is banned; not queued", None
-        me = self.known_me(root)
         mine = bool(me) and author.lower() == me.lower()
         cfg = review.ReviewConfig(
             target=PRTarget.SPECIFIC, specific_pr=str(number), me=me,
@@ -4628,7 +4639,7 @@ class Store(QObject):
             config=cfg.prompt_payload(), repo=root.slug.lower())
 
     def _comms_fix(self, number: int, repo: str, root: LocalRepo | None,
-                   found: dict | None) -> tuple[str, autofix.RequestedWork | None]:
+                   found: dict | None, me: str) -> tuple[str, autofix.RequestedWork | None]:
         """``("fix of issue #N", the ask)`` (the Fix-issues wizard's) or ``(why there is
         none, None)``, as :meth:`_comms_review`. Unlike a wizard fix it carries the
         issue's author as the ban dimension: somebody on Slack named the issue, not the
@@ -4639,7 +4650,8 @@ class Store(QObject):
         if found is None:
             return f"{ref} is not an issue of {self._comms_repo_name(root)}", None
         if "error" in found:
-            return f"couldn't ask GitHub about issue {ref} ({found['error']})", None
+            return (f"couldn't ask {'GitLab' if root.is_gitlab else 'GitHub'} about issue {ref} "
+                    f"({found['error']})"), None
         # GitLab numbers merge requests apart from issues, so its issue answer is one.
         if not root.is_gitlab and "/issues/" not in str(found.get("url", "")):
             return f"{ref} is a pull request, not an issue", None
@@ -4648,7 +4660,6 @@ class Store(QObject):
         author = str(found.get("author", ""))
         if self._comms_banned(author):
             return f"issue {ref} is by @{author}, who is banned; not queued", None
-        me = self.known_me(root)
         mine = bool(me) and author.lower() == me.lower()
         cfg = issues.IssueConfig(target=issues.Target.SPECIFIC,
                                  specific_issue=str(number), me=me, home=root)

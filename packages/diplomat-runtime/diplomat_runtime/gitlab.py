@@ -54,6 +54,14 @@ def _mergeable(mr: dict) -> str:
     return "UNKNOWN" if status is None or status in _UNDECIDED else "MERGEABLE"
 
 
+def rest_mergeable(obj: dict) -> str:
+    """A REST ``projects/:id/merge_requests/:iid`` answer's mergeable, mapped as the
+    GraphQL one is."""
+    status = obj.get("detailed_merge_status")
+    return _mergeable({"conflicts": obj.get("has_conflicts"),
+                       "detailedMergeStatus": status.upper() if status else None})
+
+
 def _review_decision(mr: dict) -> str | None:
     reviewers = _nodes(mr.get("reviewers"))
     states = {((r.get("mergeRequestInteraction") or {}).get("reviewState")) for r in reviewers}
@@ -66,19 +74,22 @@ def _review_decision(mr: dict) -> str | None:
 
 def _threads(mr: dict) -> dict:
     """Resolvable discussions as GitHub review threads, which are asked
-    ``comments(last: 1)``: the count of every note, and the last one."""
+    ``comments(last: 1)``: the count of the notes people wrote, and the last of them.
+    A system note (a push's "changed this line") is no comment, so it never answers
+    the thread; whether I can resolve it is still read off its last note."""
     out = []
     for d in _nodes(mr.get("discussions")):
         if d.get("resolvable") is not True:
             continue
         notes = _nodes(d.get("notes"))
-        last = notes[-1] if notes else None
+        said = [n for n in notes if n.get("system") is not True]
+        last = said[-1] if said else None
         out.append({
             "isResolved": bool(d.get("resolved")),
-            "viewerCanResolve": (last.get("userPermissions") or {}).get("resolveNote")
-            if last else None,
+            "viewerCanResolve": (notes[-1].get("userPermissions") or {}).get("resolveNote")
+            if notes else None,
             "comments": {
-                "totalCount": len(notes),
+                "totalCount": len(said),
                 "nodes": [{"author": _login(last.get("author")), "body": last.get("body")}]
                 if last else [],
             },

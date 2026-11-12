@@ -304,6 +304,14 @@ def test_no_login_says_it_could_not_check(monkeypatch):
                      "the gh login is not known yet"]
 
 
+def test_a_merge_request_run_needs_no_gh_login(monkeypatch):
+    """Only a github.com PR's reviews are read, so a GitLab run is not one the missing
+    gh login kept from being checked."""
+    mr = "https://gitlab.example.com/group/sub/proj/-/merge_requests/7"
+    _, warns = _retire(monkeypatch, [_run("r1", pr_url=mr)], me="")
+    assert warns == []
+
+
 def test_the_username_override_is_not_who_is_asked(monkeypatch):
     from diplomat_app.store import Store
 

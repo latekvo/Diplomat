@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from test_autofix import fake_probes, store  # noqa: F401 — fixture
+from test_comms_store import needs_core
 
 from diplomat_runtime import (
     autofix, configbase, core, gh, gitlab, glab, localrepos, prref, review,
@@ -51,11 +52,12 @@ def test_every_fixture_has_an_adapter():
 
 def test_the_queries_ask_what_their_adapters_read():
     """System-note discussions fill the discussions page, a thread's adapted comment is
-    its LAST note, a request older than the activity window falls back on the MR's
-    creation, and no adapter of ``prs`` reads members."""
+    its LAST note that is no system note, a request older than the activity window falls
+    back on the MR's creation, and no adapter of ``prs`` reads members."""
     for name in ("prs", "monitor-prs"):
         text = core.read_graphql(f"gitlab-{name}")
-        assert "discussions(first: 100)" in text and "notes(last: 20)" in text, name
+        assert "discussions(first: 100)" in text, name
+        assert "notes(last: 20) { nodes { system author" in text, name
     assert "projectMembers" not in core.read_graphql("gitlab-prs")
     requests = core.read_graphql("gitlab-review-requests")
     assert "notes(last: 100, filter: ONLY_ACTIVITY)" in requests
@@ -67,18 +69,28 @@ def test_the_queries_ask_what_their_adapters_read():
 
 class FakeGlab:
     """``glab.run`` answering each shared ``gitlab-*`` query from ``answers`` (a dict,
-    or an exception to raise), recording ``(query, -f/-F variables, host)``."""
+    or an exception to raise), recording ``(query, -f/-F variables, host)``; a REST
+    path from ``rest`` the same way, recorded in ``rest_asked``, and one missing
+    there is a 404."""
 
     def __init__(self, monkeypatch, **answers):
         self.answers = {k.replace("_", "-"): v for k, v in answers.items()}
         self.asked: list[tuple[str, dict, str]] = []
         self.argv: list[list[str]] = []
+        self.rest: dict[str, dict | Exception] = {}
+        self.rest_asked: list[str] = []
         self._names = {core.read_graphql(f"gitlab-{q}"): q for q in QUERIES}
         monkeypatch.setattr(glab, "run", self)
         monkeypatch.setattr(glab.time, "sleep", lambda s: None)
 
     def __call__(self, args, timeout=60.0):
         self.argv.append(args)
+        if "graphql" not in args:
+            self.rest_asked.append(args[-1])
+            answer = self.rest.get(args[-1], gh.GHError("glab exited 1: 404 Not found"))
+            if isinstance(answer, Exception):
+                raise answer
+            return json.dumps(answer).encode()
         pairs = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a in ("-f", "-F"))
         name = self._names[pairs.pop("query")]
         self.asked.append((name, pairs, args[args.index("--hostname") + 1]))
@@ -164,6 +176,45 @@ def test_the_monitor_reads_ask_for_me_by_username(monkeypatch):
                                 "withFiles": "false"}
     assert [s.number for s in snaps][:2] == [12, 8] and snaps[0].mergeable == "CONFLICTING"
     assert [r.number for r in reqs] == [22, 19]
+
+
+def test_an_undecided_merge_status_takes_the_answer_of_a_recheck(monkeypatch):
+    """GraphQL never makes GitLab recheck a merge request it left unchecked; the REST
+    read with ``with_merge_status_recheck`` does, and only undecided ones are asked."""
+    from diplomat_app import autofixmonitor
+
+    fake = FakeGlab(monkeypatch, monitor_prs=_fixture("monitor-prs", "input"))
+    path = "projects/group%2Fsub%2Fproj/merge_requests/{}?with_merge_status_recheck=true"
+    fake.rest = {path.format(8): {"has_conflicts": True, "detailed_merge_status": "conflict"},
+                 path.format(6): {"has_conflicts": False, "detailed_merge_status": "mergeable"}}
+    snaps = autofixmonitor.fetch_snapshots(LAB, "carol")
+    assert fake.rest_asked == [path.format(8), path.format(6)]
+    assert {s.number: s.mergeable for s in snaps} == {
+        12: "CONFLICTING", 8: "CONFLICTING", 7: "MERGEABLE", 6: "MERGEABLE"}
+
+    fake.rest = {path.format(8): {"has_conflicts": False, "detailed_merge_status": "checking"}}
+    snaps = autofixmonitor.fetch_snapshots(LAB, "carol")  # #6's recheck fails
+    assert {s.number: s.mergeable for s in snaps}[8] == "UNKNOWN"
+    assert {s.number: s.mergeable for s in snaps}[6] == "UNKNOWN"
+
+
+def test_the_drain_keeps_a_conflict_fix_on_an_undecided_merge_request(lab_only, monkeypatch):
+    """An undecided GitHub PR has answered its conflict; an undecided GitLab one may
+    just not have been rechecked since its target moved."""
+    from dataclasses import replace
+
+    from test_autofix import _job, _snap
+
+    lab_only.queued_tasks = [
+        autofix.QueuedTask(key, replace(_job(number=n, action="conflicts", counter="conflicts"),
+                                        pr_url=url), 1)
+        for key, n, url in (("conflicts:group/sub/proj#6", 6, LAB.link("pull", 6)),
+                            ("conflicts:o/r#8", 8, HUB.link("pull", 8)))]
+    monkeypatch.setattr(type(lab_only), "_auto_tasks_running", lambda self: 99)  # no bays
+    snaps = [replace(_snap(number=6, mergeable="UNKNOWN"), url=LAB.link("pull", 6)),
+             _snap(number=8, mergeable="UNKNOWN")]
+    lab_only._drain_queued_tasks(snaps, closed=set(), read=[HUB, LAB])
+    assert [t.id for t in lab_only.queued_tasks] == ["conflicts:group/sub/proj#6"]
 
 
 def test_a_request_older_than_the_activity_window_is_answered_inside_it(monkeypatch):
@@ -388,9 +439,30 @@ def test_comms_fixes_a_gitlab_issue_served_as_a_work_item(lab_only, monkeypatch)
     url = f"https://{HOST}/group/sub/proj/-/work_items/5"
     what, ask = lab_only._comms_fix(5, "group/sub/proj", LAB,
                                     {"number": 5, "url": url, "author": "bob",
-                                     "state": "OPEN"})
+                                     "state": "OPEN"}, "carol")
     assert ask is not None, what
     assert (ask.number, ask.url, ask.author) == (5, url, "bob")
+
+
+@needs_core
+def test_comms_asks_gitlab_who_i_am_and_names_it_when_it_cannot_ask(lab_only, monkeypatch):
+    """A Comms review of my own merge request is mine though no read has asked glab
+    who I am yet, and a lookup glab could not answer says GitLab could not be asked."""
+    from test_comms_store import _ask, _events, _tick
+
+    lab_only.has_loaded = True
+    lab_only.comms_enabled = True
+    fake = FakeGlab(monkeypatch, viewer={"data": {"currentUser": {"username": "carol"}}})
+    mrs = "projects/group%2Fsub%2Fproj/merge_requests/{}".format
+    fake.rest = {mrs(12): {"iid": 12, "web_url": LAB.link("pull", 12), "state": "opened",
+                           "author": {"username": "carol"}},
+                 mrs(13): gh.GHError("glab exited 1: glab: 502 Bad Gateway")}
+    assert lab_only.known_me(LAB) == ""
+    _tick(lab_only, monkeypatch, _ask(1, "review", 12), _ask(2, "review", 13))
+    ask = lab_only.requested_work[0]
+    assert (ask.number, ask.author, ask.config["specificAuthor"]) == (12, "", "mine")
+    assert [e["outcome"] for e in _events() if e["kind"] == "action"][-1] == (
+        "couldn't ask GitLab about PR #13 (glab exited 1: glab: 502 Bad Gateway)")
 
 
 def test_a_roots_links_are_its_hosts():
@@ -527,10 +599,10 @@ def test_a_gitlab_checkout_is_its_own_root_and_never_the_configured_repo():
         LocalRepo("me", "argent", "/mixed")]
 
 
-def test_a_github_remote_outranks_a_gitlab_origin_as_it_did_before_gitlab_resolved():
-    """A GitLab mirror checked out beside a GitHub remote resolves to the GitHub repo it
-    always did: the configured one when the remote names it, else that GitHub sibling.
-    Only a checkout with no GitHub remote is a GitLab root, upstream before origin."""
+def test_a_github_remote_outranks_a_gitlab_origin():
+    """A GitLab mirror checked out beside a GitHub remote resolves to the GitHub repo:
+    the configured one when the remote names it, else that GitHub sibling. Only a
+    checkout with no GitHub remote is a GitLab root, upstream before origin."""
     remotes = {
         "/mirror": "remote.origin.url git@gitlab.com:acme/widget.git\n"
                    "remote.github.url git@github.com:acme/widget.git\n",
@@ -548,6 +620,40 @@ def test_a_github_remote_outranks_a_gitlab_origin_as_it_did_before_gitlab_resolv
     label = localrepos.Checkout("/sibling", tuple(localrepos.entries(
         "/sibling", remotes["/sibling"]))).slug
     assert label == "someone/else"
+
+
+MIRRORED = ("remote.upstream.url git@gitlab.com:acme/widget.git\n"
+            "remote.origin.url git@github.com:acme/widget.git\n")
+
+
+def test_a_checkouts_github_remote_is_its_first_repo():
+    """Within a checkout GitHub ranks before GitLab, so a link that names no host, and
+    the label Settings shows, are the GitHub repo's even under a GitLab upstream."""
+    found = localrepos.entries("/w", MIRRORED)
+    assert found == [LocalRepo("acme", "widget", "/w"),
+                     LocalRepo("acme", "widget", "/w", "gitlab.com")]
+    for ref in ("acme/widget#5", "https://github.com/acme/widget/pull/5"):
+        assert parse_pr_ref(ref, "o", "r", also=found).repo == found[0], ref
+    assert parse_pr_ref("https://gitlab.com/acme/widget/-/merge_requests/5", "o", "r",
+                        also=found).repo == found[1]
+    assert localrepos.Checkout("/w", tuple(found)).slug == "acme/widget"
+    assert localrepos.entries("/w", "remote.upstream.url git@gitlab.com:a/b.git\n"
+                                    "remote.origin.url git@gitlab.com:c/d.git\n"
+                                    "remote.zz.url git@github.com:e/f.git\n") == [
+        LocalRepo("e", "f", "/w"), LocalRepo("a", "b", "/w", "gitlab.com"),
+        LocalRepo("c", "d", "/w", "gitlab.com")]
+
+
+def test_the_wizards_keep_a_listed_checkouts_repo_on_each_host(lab_only):
+    """A listed checkout's GitHub repo and its GitLab mirror of the same slug are two
+    repos a pasted link can name; only a root's slug takes a listed repo's place."""
+    lab_only._local_checkouts = [
+        localrepos.Checkout("/w", tuple(localrepos.entries("/w", MIRRORED))),
+        localrepos.Checkout("/x", (LocalRepo("Group/Sub", "Proj", "/x"),
+                                   LocalRepo("e", "f", "/x")))]
+    assert lab_only.local_repos == (LAB, LocalRepo("acme", "widget", "/w"),
+                                    LocalRepo("acme", "widget", "/w", "gitlab.com"),
+                                    LocalRepo("e", "f", "/x"))
 
 
 def test_a_gitlab_root_is_never_the_meshs_checkout(monkeypatch):

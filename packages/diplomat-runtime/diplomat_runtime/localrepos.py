@@ -149,9 +149,9 @@ def remote_config(path: str) -> str | None:
 def entries(path: str, remotes: str, only: tuple[str, ...] = (),
             hosts: frozenset[str] = GITLAB_HOSTS) -> list[LocalRepo]:
     """Every GitHub or GitLab remote in ``remotes`` (:func:`remote_config` output), or
-    every one named in ``only``, as a repo cloned at ``path``, each once: ``upstream``
-    first, then ``origin``, then the rest in config order. Twin of
-    ``LocalRepo.entries(path:remotes:only:)``."""
+    every one named in ``only``, as a repo cloned at ``path``, each once: the GitHub
+    ones before the GitLab ones, and within each ``upstream`` first, then ``origin``,
+    then the rest in config order. Twin of ``LocalRepo.entries(path:remotes:only:)``."""
     named: list[tuple[str, LocalRepo]] = []
     for line in remotes.split("\n"):
         key, sep, url = line.partition(" ")
@@ -163,7 +163,8 @@ def entries(path: str, remotes: str, only: tuple[str, ...] = (),
         named.append((key[len("remote."):-len(".url")],
                       LocalRepo(coords[1], coords[2], path, coords[0])))
     ranked = sorted(range(len(named)),
-                    key=lambda i: (named[i][0] != "upstream", named[i][0] != "origin", i))
+                    key=lambda i: (named[i][1].is_gitlab, named[i][0] != "upstream",
+                                   named[i][0] != "origin", i))
     out: list[LocalRepo] = []
     seen: set[str] = set()
     for i in ranked:
@@ -188,11 +189,8 @@ class Checkout:
 
     @property
     def slug(self) -> str | None:
-        """What Settings names it by: its first GitHub repo, as :func:`resolve_roots`
-        ranks a GitHub remote over a GitLab one, else its first."""
-        pick = next((r for r in self.repos if not r.is_gitlab), None) or next(
-            iter(self.repos), None)
-        return pick.slug if pick else None
+        """What Settings names it by: its first repo (:func:`entries`)."""
+        return self.repos[0].slug if self.repos else None
 
 
 def inspect(path: str, hosts: frozenset[str] = GITLAB_HOSTS) -> Checkout:
@@ -243,7 +241,7 @@ def resolve_roots(paths: list[str], remotes: dict[str, str],
         if pick is None and any(r.repo.lower() == configured[1].lower() for r in own):
             pick = LocalRepo(configured[0], configured[1], where)
         if pick is None and found:
-            pick = (hub or found)[0]
+            pick = found[0]
         if pick is None or _identity(pick) in seen:
             continue
         seen.add(_identity(pick))

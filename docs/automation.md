@@ -330,7 +330,9 @@ task drops out the moment the work is taken by an agent, resolved, or its author
 banned or outside the auto-review list. Every poll also re-checks the rows it is about to run against the fetches it
 has just made - a conflict fix on a PR GitHub no longer calls conflicting, or a
 reply on threads that have been answered, leaves the list instead of opening an
-agent on work somebody already did. **A PR that has merged or closed retires every
+agent on work somebody already did. GitLab rechecks a merge request's merge status only
+when asked, so each of mine it reads as undecided is asked once more per poll, and one
+still undecided keeps its conflict fix. **A PR that has merged or closed retires every
 kind of row that names it**, whoever queued it: waiting for a bay can take a day at
 two at a time, and a review of a landed diff is one nobody will read. (A queued fix
 is numbered in the ISSUE space and no PR speaks for it, so that pass steps over it:

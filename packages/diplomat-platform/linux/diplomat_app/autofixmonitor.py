@@ -17,6 +17,7 @@ nothing is committed until a cycle succeeds. So they go through
 from __future__ import annotations
 
 import json
+import urllib.parse
 
 from diplomat_runtime import core, gh, gitlab, glab
 from diplomat_runtime.autofix import PRSnapshot, ReviewRequest
@@ -61,10 +62,28 @@ def _parse_snapshots(env: dict, me: str) -> list[PRSnapshot]:
     return out
 
 
+def _recheck(root: LocalRepo, number: int) -> str:
+    """GitLab checks a merge request's status lazily: after a push to its target it
+    reads unchecked until something asks again, and a GraphQL read never does. The
+    REST read of one merge request asks it to recheck, and answers definitively when
+    it can. A failed read leaves it undecided."""
+    project = urllib.parse.quote(root.slug, safe="")
+    path = f"projects/{project}/merge_requests/{number}?with_merge_status_recheck=true"
+    try:
+        return gitlab.rest_mergeable(json.loads(
+            glab.run(["api", "--hostname", root.host, path], timeout=30)))
+    except Exception:  # noqa: BLE001 — never costs the root its read
+        return "UNKNOWN"
+
+
 def fetch_snapshots(root: LocalRepo, me: str) -> list[PRSnapshot]:
-    """One GraphQL search over my open, authored PRs (``assets/graphql/monitor-prs``)."""
+    """One GraphQL search over my open, authored PRs (``assets/graphql/monitor-prs``),
+    and on GitLab a recheck of each one whose merge status is undecided."""
     if root.is_gitlab:
         env = gitlab.monitor_prs(glab.project("gitlab-monitor-prs", root, {"author": me}))
+        for node in env["data"]["search"]["nodes"]:
+            if node["mergeable"] == "UNKNOWN":
+                node["mergeable"] = _recheck(root, node["number"])
     else:
         q = f"repo:{root.slug} author:{me} is:pr is:open"
         env = gh.graphql("monitor-prs", variables={"q": q})
