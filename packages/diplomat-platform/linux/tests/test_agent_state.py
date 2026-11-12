@@ -1442,7 +1442,7 @@ def test_records_and_evidence_survive_a_json_round_trip():
 def test_a_record_naming_another_machine_reads_as_any_other_run():
     """A book on disk may carry keys this build has no field for. They are ignored, and
     the run is judged by its pid like every run."""
-    stored = {**rec().to_json(), "placement": "mesh-peer", "node": "brick",
+    stored = {**rec().to_json(), "placement": "elsewhere", "node": "brick",
               "workKey": "review:github.com/o/r#337@abc", "claimSeenAt": T0 - 1}
     record = A.RunRecord.from_json(stored)
     assert record == rec()
