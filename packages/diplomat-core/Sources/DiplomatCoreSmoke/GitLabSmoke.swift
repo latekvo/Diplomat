@@ -322,6 +322,12 @@ func gitlabSmoke() async throws {
     var review = ReviewConfig(depth: "max", target: .specific, me: "testuser", specificPR: "337")
     review.home = home
     noted(review.buildPrompt(), "review single")
+    for author in [SpecificAuthor.mine, .theirs] {
+        var known = ReviewConfig(depth: "max", target: .specific, me: "testuser", specificPR: "337",
+                                 specificAuthor: author)
+        known.home = home
+        noted(known.buildPrompt(), "review single, \(author)")
+    }
     var sweep = ReviewConfig(depth: "max", me: "testuser")
     sweep.home = home
     noted(sweep.buildPrompt(), "review sweep")
