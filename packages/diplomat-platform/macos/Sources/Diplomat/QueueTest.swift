@@ -70,8 +70,8 @@ enum QueueTest {
         // records; it cannot control `ps`, and the cap load is not a fold over records
         // alone — `AgentState.synthesizeUntracked` makes every live agent with no record
         // an occupying `untracked:<pr>` one. So on the machine this is written on, whose
-        // ordinary state is agents up, the two placement assertions below counted
-        // whichever of the developer's own sessions was mid-turn or had an unreadable
+        // ordinary state is agents up, the cap assertions below would count
+        // whichever of the developer's own sessions is mid-turn or has an unreadable
         // screen — a verdict the box decides, not the fixture. Present-and-empty, not
         // unavailable: a machine that was looked at and had nothing on it, which is what
         // every assertion here means by a quiet box.
@@ -129,7 +129,7 @@ enum QueueTest {
             Store.AgentJob(kind: "review", auditAction: action,
                            label: label ?? "Review-req · #\(number)", prompt: "",
                            prURL: "https://github.com/software-mansion/argent/pull/\(number)",
-                           prNumber: number, authorLogin: author, duty: "review", workKey: "",
+                           prNumber: number, authorLogin: author,
                            counter: counter,
                            attemptStamp: Store.AttemptStamp.unresolvedReview)
         }
@@ -203,8 +203,7 @@ enum QueueTest {
         _ = await offer(Store.AgentJob(kind: "review", auditAction: "sweep",
                                        label: "Sweep · #9", prompt: "",
                                        prURL: "https://github.com/software-mansion/argent/pull/9",
-                                       prNumber: 9, authorLogin: nil, duty: "review",
-                                       workKey: "", counter: nil))
+                                       prNumber: 9, authorLogin: nil, counter: nil))
         store.commitQueue()
         check("work no monitor owns is not queued", store.queuedTasks.isEmpty)
 
@@ -288,8 +287,8 @@ enum QueueTest {
         check("more agents up than the cap allows is zero slots, never negative",
               store.freeAutoSlots == 0)
 
-        // 10. Starting a task takes seconds — a `ps` scan, a mesh round-trip, an
-        //    AppleScript terminal — and for all of them it belongs to neither list.
+        // 10. Starting a task takes seconds — a `ps` scan, an AppleScript
+        //    terminal — and for all of them it belongs to neither list.
         //    Held in neither, "execute now" reads as the click DELETING the row: it
         //    goes on the press, and a session appears in its place later, which is
         //    indistinguishable from a task that was dropped.
@@ -382,61 +381,6 @@ enum QueueTest {
         check("…and says why nothing opened",
               store.error?.contains("already on this PR") == true)
         store.error = nil
-
-        // 11. A task the mesh runs on a peer is still a task this panel shows. Before
-        //    the mesh row existed, "execute now" on peer-routed work took the queued
-        //    row away and put nothing in its place, which reads exactly like the click
-        //    dropping the task. What it leaves instead is a record like any other,
-        //    which the resolver then holds for as long as the executor's lease.
-        //
-        //    How long that is, is pure and pinned by the shared scenario table
-        //    (`AgentState`, `test_agent_state.py`) — what is on trial here is that the
-        //    record the mesh path writes carries what the resolver needs to do it.
-        emptyBook()
-        let meshKey = "review:github.com/software-mansion/argent#77@abc123"
-        var meshJob = job(77)
-        meshJob.workKey = meshKey
-        store.trackMeshRun(meshJob, node: "softoobox", attemptNumber: 1)
-        let peer = AgentRegistry.load().first
-        check("a job the mesh took becomes a record, not a gap",
-              AgentRegistry.load().count == 1 && peer?.placement == .meshPeer)
-        check("…that names the node it runs on", peer?.node == "softoobox")
-        check("…under the label it would have run under here",
-              peer?.label == "Auto · Review-req · #77")
-        // The lease is the only evidence about a peer's run that ever crosses the
-        // machine boundary; without the key there is nothing to resolve it against.
-        check("…keyed by the lease the executor claims it under", peer?.workKey == meshKey)
-        // Its process is on another machine, so no store here holds its session. A
-        // runner recorded would point the session probe at somebody else's.
-        check("…and names no runner, because the run is not ours to ask",
-              AgentRegistry.runRunner(peer?.runID ?? "").isEmpty)
-
-        // It runs elsewhere, so it spends none of THIS device's budget — a peer-routed
-        // job that closed a local bay would cap the machine on work it isn't doing.
-        check("a peer's run holds none of this device's bays",
-              await store.agentTick().tick.capLoad.isEmpty)
-
-        // 11b. The other placement the mesh can make: back onto the machine that asked.
-        //    That agent is a process HERE, so it spends a bay from the moment it is
-        //    placed. Waiting for `ps` to notice is what let a poll dispatch its whole
-        //    backlog into one cap — every gate in the burst measured the same machine,
-        //    seconds before any of its new agents were visible.
-        emptyBook()
-        var homeJob = job(78)
-        homeJob.workKey = "review:github.com/software-mansion/argent#78@abc123"
-        store.trackMeshRun(homeJob, node: "softoobox", attemptNumber: 1, onThisMachine: true)
-        let home = AgentRegistry.load().first
-        check("a mesh run placed back here spends one of this device's bays",
-              await store.agentTick().tick.capLoad == Set([home?.runID ?? ""]))
-        check("…and is still a mesh run, held by its lease like any other",
-              home?.placement == .meshHere && home?.workKey == homeJob.workKey)
-        // The node spawns through the same seam a local dispatch does, so this run is
-        // under the configured runner — and that is what decides which store it is
-        // asked of and priced from. Left blank it would be asked of none and priced
-        // off `~/.claude`, which holds no transcript of a foreign runner's work.
-        check("…under the runner that spawned it, so it can be asked and priced",
-              AgentRegistry.runRunner(home?.runID ?? "") == AppConfig.agentRunner.rawValue)
-        emptyBook()
 
         // 12. The refresh the drain makes before it starts anything. A queued task
         //    carries the verdict of the poll that staged it, and by the time a bay
@@ -986,13 +930,13 @@ enum QueueTest {
         let pending = Set(TelemetryLog.load().tasks
             .filter { $0.queuedAt != nil && $0.clearedAt == nil }.map(\.key))
         let owedKeys = [
-            AutofixMesh.ledgerKey(kind: AutofixMesh.kindConflicts,
+            AutofixWork.ledgerKey(kind: AutofixWork.kindConflicts,
                                   prURL: "https://github.com/o1/alpha/pull/90007", headSha: "a7"),
-            AutofixMesh.ledgerKey(kind: AutofixMesh.kindConflicts,
+            AutofixWork.ledgerKey(kind: AutofixWork.kindConflicts,
                                   prURL: "https://github.com/o2/beta/pull/90007", headSha: "b7"),
-            AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
+            AutofixWork.ledgerKey(kind: AutofixWork.kindReviewReq,
                                   prURL: "https://github.com/o1/alpha/pull/90005", headSha: "a5"),
-            AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
+            AutofixWork.ledgerKey(kind: AutofixWork.kindReviewReq,
                                   prURL: "https://github.com/o2/beta/pull/90005", headSha: "b5"),
         ]
         check("the ledger holds every root's owed work, none cleared by another root's read",
@@ -1082,37 +1026,10 @@ enum QueueTest {
         store.requestedWork = []
         store.queuedTasks = []
 
-        // 24. Only the configured repo's root's work is the mesh's to place, the primary
-        //     root being another repo here.
-        func routed(_ directory: String?) -> Store.AgentJob {
-            Store.AgentJob(kind: "review", auditAction: "review-req", label: "", prompt: "",
-                           prURL: nil, prNumber: nil, authorLogin: nil, duty: "review",
-                           workKey: "review-req:github.com/o2/beta#5@b5", counter: nil,
-                           directory: directory)
-        }
-        let (cfgOwner, cfgRepo) = CoreAssets.repoCoordinates()
-        let configuredRoot = PRRef.LocalRepo(owner: cfgOwner.uppercased(), repo: cfgRepo,
-                                             path: feed.appendingPathComponent("configured").path)
-        store.pinRoots([rootA, configuredRoot])
-        check("a job in the configured repo's root may go over the mesh",
-              store.meshRoutable(routed(configuredRoot.path)))
-        check("…one in the primary root, another repo, may not, nor one naming no checkout",
-              !store.meshRoutable(routed(rootA.path)) && !store.meshRoutable(routed(nil)))
-        check("…nor one in an OTHER REPOS checkout",
-              !store.meshRoutable(routed(feed.appendingPathComponent("other").path)))
-        check("a wizard run goes over the mesh only from the configured repo's root",
-              store.meshRoutable(checkout: configuredRoot.path) && !store.meshRoutable(checkout: rootA.path))
-        store.pinRoots([configuredRoot, rootB])
-        check("with the configured repo the primary root, a job naming no checkout may",
-              store.meshRoutable(routed(nil)) && !store.meshRoutable(routed(rootB.path)))
-        store.pinRoots([rootA, rootB])
-        check("with the configured repo in no root, nothing may",
-              !store.meshRoutable(routed(rootA.path)) && !store.meshRoutable(routed(nil)))
-
-        // 24b. A review-request record outlives a poll its root's path failed to resolve
-        //      for: o/other#7's run concluded long ago and the request is still owed.
-        //      A poll of o/r alone keeps what `retainedReviewReqAttempts` returns; the
-        //      next poll, of both roots, decides on that.
+        // 24. A review-request record outlives a poll its root's path failed to resolve
+        //     for: o/other#7's run concluded long ago and the request is still owed.
+        //     A poll of o/r alone keeps what `retainedReviewReqAttempts` returns; the
+        //     next poll, of both roots, decides on that.
         let polledR = PRRef.LocalRepo(owner: "o", repo: "r", path: "/src/r")
         let reqAt = "2026-11-01T10:00:00Z"
         let concludedRec = ReviewAttempt(
@@ -1189,7 +1106,7 @@ enum QueueTest {
                   && decoded.first?.key == AgentTaskQueue.key(auditAction: "review", item: "o1/alpha#4"))
 
         // 27. Several root paths none of which resolved: the one root is a guess, so the
-        //     monitor poll stands down before any fetch, and the mesh takes nothing.
+        //     monitor poll stands down before any fetch.
         //     Then one root's unreadable issues: logged once per streak, failing no poll.
         let rootsLog = feed.appendingPathComponent("gh-roots.log")
         let issuesFail = feed.appendingPathComponent("gh-roots.fail")
@@ -1215,6 +1132,9 @@ enum QueueTest {
         store.queuedTasks = []
         store.autofixPollError = nil
         let guessedMessage = "no repo root in Settings resolves to a GitHub checkout"
+        let (cfgOwner, cfgRepo) = CoreAssets.repoCoordinates()
+        let configuredRoot = PRRef.LocalRepo(owner: cfgOwner.uppercased(), repo: cfgRepo,
+                                             path: feed.appendingPathComponent("configured").path)
         store.pinRoots([configuredRoot], complete: false, primary: false, guessed: true)
         for _ in 0..<50 {
             await store.runAutofixPollOnce()
@@ -1225,10 +1145,7 @@ enum QueueTest {
         check("no root path resolving stands the monitor poll down, fetching nothing",
               store.autofixPollError == guessedMessage && !guessedAsked.contains("q=repo:")
                   && !guessedAsked.contains("issues(states: OPEN") && store.queuedTasks.isEmpty)
-        check("…and the mesh takes nothing, the configured repo's root being a guess",
-              !store.meshRoutable(checkout: configuredRoot.path))
         store.pinRoots([configuredRoot])
-        check("…which it does once that root resolves", store.meshRoutable(checkout: configuredRoot.path))
 
         func unreadLines() -> [(action: String, detail: String)] {
             let text = (try? String(contentsOf: feed.appendingPathComponent("audit.jsonl"),

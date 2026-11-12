@@ -101,7 +101,7 @@ public enum AgentTaskStatus: Int, Comparable, CaseIterable {
 /// each poll until each is dispatched.
 public enum AgentTaskQueue {
     /// A queued task's identity, stable across polls and applet restarts: the
-    /// monitor's verb plus the item it is about. Not the mesh work key — that one is
+    /// monitor's verb plus the item it is about. Not the ledger key — that one is
     /// scoped to a head sha, so a push during the wait would read as a different task
     /// and lose the operator's place for it.
     ///
@@ -231,9 +231,7 @@ public enum AgentTaskQueue {
     /// Keys that are no longer offered fall out — the work was taken by an agent,
     /// resolved, or its author banned or outside the auto-review list — because a
     /// queue that outlived its evidence would hand "execute now" a task GitHub no
-    /// longer owes. (Not a mesh claim: the cap outranks the mesh gate, so a device
-    /// with anything queued is by definition one that never asked a peer. Peer-owned work leaves the queue when the drain
-    /// reaches it and the mesh answers.)
+    /// longer owes.
     ///
     /// Asked-for work, then conflict fixes, fall to the back in band order whatever order
     /// they were found in (`band`). The monitors find their work

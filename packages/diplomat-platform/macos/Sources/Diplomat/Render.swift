@@ -216,21 +216,6 @@ enum Render {
             // `-unsaved` draws the warning over a change config.json refused.
             let _ = w.hasSuffix("unsaved") ? seedUnsaved(store) : false
             SettingsView(isPresented: .constant(true))
-        case let m where m.hasPrefix("mesh"):
-            // The ⬡ Mesh screen over a synthetic topology (the macOS analogue of the
-            // Linux render.py `mesh` fixture): a macOS self node, one strong healthy
-            // Linux peer, one weak dead peer, the three duties with one platform
-            // shortfall — plus the trust/accounting fields the node gossips since the
-            // trust layer landed, and both WAN states an edge can be in (a peer this
-            // pair can re-form with off the LAN, and one it cannot). A headless mode
-            // never persists nor starts a node.
-            // `mesh-blocked` additionally sets beaconBlocked, snapshotting the loud
-            // "device is not discoverable" banner.
-            let _ = seedMesh(store, blocked: m.contains("blocked"))
-            // `mesh-reminder` pre-opens the "Marked as Personal" in-panel modal (with its
-            // "Don't show again" checkbox) so its layout is snapshot-verifiable headlessly.
-            MeshView(isPresented: .constant(true),
-                     seedTrustReminder: m.contains("reminder") ? "newbox" : nil)
         case let s where s.hasPrefix("telemetry"):
             // The Telemetry screen over a synthetic ledger (the macOS analogue of
             // the Linux render.py `_telemetry_ledger_fixture`). "telemetry-panel"
@@ -313,7 +298,7 @@ enum Render {
             // Suffix-driven states: "wizard" (mine), "-other" (someone else's →
             // handle field), "-specific" (specific PR → PR field), "-wrong"
             // (specific PR with a URL pointing at another repo → warning), "-listed"
-            // (a URL to a repo listed under OTHER REPOS → accepted, no mesh row).
+            // (a URL to a repo listed under OTHER REPOS → accepted).
             let wrong = s.contains("wrong")
             let banned = s.contains("banned")
             let listed = s.contains("listed")
@@ -332,9 +317,6 @@ enum Render {
                 ? (banned || s.contains("theirs") ? .theirs : (s.contains("mine") ? .mine : nil))
                 : nil
             if banned { let _ = seedFoobarBan(store) }
-            // The mesh fixture makes the "⬡ Run on mesh" row + destination preview
-            // visible in wizard snapshots (parity with the Linux render fixtures).
-            let _ = seedMesh(store)
             ReviewWizardView(scrolls: false,
                              seedTarget: target,
                              seedSpecificPR: specific ? pr : nil,
@@ -354,7 +336,6 @@ enum Render {
                 : listed ? "https://github.com/software-mansion/radon/pull/291"
                 : "https://github.com/software-mansion/argent/pull/455"
             if listed { let _ = seedListedRepos(store) }
-            let _ = seedMesh(store)
             ConflictWizardView(scrolls: false,
                                seedTarget: specific ? .specific : (other ? .someone : .mine),
                                seedSpecificPR: specific ? pr : nil,
@@ -373,7 +354,6 @@ enum Render {
                 : listed ? "https://github.com/software-mansion/radon/issues/7"
                 : "https://github.com/software-mansion/argent/issues/455"
             if listed { let _ = seedListedRepos(store) }
-            let _ = seedMesh(store)
             IssueWizardView(scrolls: false,
                             seedTarget: specific ? .specific : (other ? .someone : .all),
                             seedSpecificIssue: specific ? issue : nil,
@@ -383,7 +363,6 @@ enum Render {
         case let s where s.hasPrefix("audit"):
             // Suffix-driven toggles: "-issues" pre-checks fix-open-issues, "-prs"
             // pre-checks open-PRs, "-all" both — so each state can be eyeballed.
-            let _ = seedMesh(store)
             AuditWizardView(scrolls: false,
                             seedFixIssues: s.contains("issues") || s.contains("all"),
                             seedOpenPRs: s.contains("prs") || s.contains("all"))
@@ -656,18 +635,18 @@ enum Render {
                 outcome: "ping only")
         }
         let leak = message(300, "grace", "diplomat", [.keyword],
-                           "after the mesh e2e suite finishes there are still szpontnet nodes "
-                           + "running on loopback ports, is that expected?", keyword: "szpontnet")
+                           "after the e2e suite finishes there are still simulator-server processes "
+                           + "running on loopback ports, is that expected?", keyword: "simulator-server")
         let leakAsk = CommsDecision(action: .investigate, number: 0,
-                                    summary: "Mesh e2e leaves szpontnet nodes running",
+                                    summary: "E2E leaves simulator-server processes running",
                                     reason: "A reported leak with no PR or issue named.")
         let leakCfg = InvestigateConfig(message: leak, decision: leakAsk, settings: settings,
                                         reportDir: reports)
         log(leak, minutesAgo: 300, leakAsk, outcome: "queued", key: "investigate:\(leakCfg.number)",
             label: leakCfg.label, started: 296, finished: 251)
         try? FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
-        try? "# Mesh e2e leaves nodes running\n".write(toFile: leakCfg.reportPath,
-                                                       atomically: true, encoding: .utf8)
+        try? "# E2E leaves simulator-servers running\n".write(toFile: leakCfg.reportPath,
+                                                              atomically: true, encoding: .utf8)
 
         let flaky = message(190, "dave", "argent-dev", [.keyword],
                             "can someone fix #431? the flaky simulator test failed CI three times today",
@@ -860,7 +839,7 @@ enum Render {
                                        tags: ["area:network", "kind:feature"],
                                        links: [gh("pr", 1688), gh("pr", 1402, in: "software-mansion", "radon-ide")]),
                                12 * 24)
-        try edit(.create(title: "Tor transport for the mesh", tags: ["area:mesh", "kind:feature"],
+        try edit(.create(title: "Tor transport for remote devices", tags: ["area:network", "kind:feature"],
                                    links: [gh("pr", 1601), gh("issue", 1540)]), 40 * 24)
         let release = try edit(.create(title: "Release 0.9 checklist", tags: ["kind:chore", "release"],
                                        links: [slack2, "https://docs.google.com/document/d/1x0-release-notes"]),
@@ -897,9 +876,9 @@ enum Render {
                                    state: "OPEN", isDraft: true, ci: "SUCCESS")),
             p1402: .found(TaskItem(kind: "pr", title: "Network panel for iOS apps", url: p1402,
                                    state: "OPEN", reviewDecision: "REVIEW_REQUIRED", ci: "SUCCESS")),
-            p1601: .found(TaskItem(kind: "pr", title: "mesh: Tor onion transport", url: p1601,
+            p1601: .found(TaskItem(kind: "pr", title: "net: Tor onion transport", url: p1601,
                                    state: "OPEN", reviewDecision: "APPROVED", ci: "SUCCESS")),
-            i1540: .found(TaskItem(kind: "issue", title: "Mesh across NATs", url: i1540, state: "OPEN")),
+            i1540: .found(TaskItem(kind: "issue", title: "Remote devices across NATs", url: i1540, state: "OPEN")),
             p1731: .found(TaskItem(kind: "pr", title: "feat: Vega screen recording", url: p1731,
                                    state: "OPEN", isDraft: true, ci: "PENDING")),
             i1730: .found(TaskItem(kind: "issue", title: "Record the Fire TV screen", url: i1730, state: "OPEN")),
@@ -920,9 +899,9 @@ enum Render {
                                    state: "OPEN", reviewDecision: "APPROVED", ci: "SUCCESS",
                                    reviews: [review("r2", p1688, "filip131311", 20, "APPROVED")])),
             p1402: first[p1402]!,
-            p1601: .found(TaskItem(kind: "pr", title: "mesh: Tor onion transport", url: p1601,
+            p1601: .found(TaskItem(kind: "pr", title: "net: Tor onion transport", url: p1601,
                                    state: "MERGED", reviewDecision: "APPROVED", ci: "SUCCESS", mergedAt: ago(9 * 24))),
-            i1540: .found(TaskItem(kind: "issue", title: "Mesh across NATs", url: i1540, state: "CLOSED",
+            i1540: .found(TaskItem(kind: "issue", title: "Remote devices across NATs", url: i1540, state: "CLOSED",
                                    closedAt: ago(9 * 24))),
             p1731: first[p1731]!, i1730: first[i1730]!, i1590: first[i1590]!,
         ]
@@ -953,71 +932,6 @@ enum Render {
         try CommsLog.encoder.encode(round2.mirror).write(to: dir.appendingPathComponent("mirror.json"))
     }
 
-    /// Synthetic mesh topology (the macOS analogue of the Linux render.py
-    /// `_mesh_fixture`): a macOS self node, one strong healthy Linux peer, one weak
-    /// dead peer, and the three duties with one platform shortfall — including the
-    /// trust/accounting fields the node gossips since the trust layer landed. Our own
-    /// pid makes `nodeRunning` read "live". A headless mode never persists the enable
-    /// nor starts a node (`Headless.active` guards in the Store).
-    @discardableResult
-    private static func seedMesh(_ store: Store, blocked: Bool = false) -> Bool {
-        let selfID = "n-self-mbp", peerOK = "n-soft-strong", peerDead = "n-soft-weak"
-        let peerBanned = "n-flaky-box"
-        let peerNew = "n-newbox"
-        let json = """
-        {"pid": \(getpid()), "tcpPort": 40878, "v": 1,
-         "beaconBlocked": \(blocked),
-         "self": {"id": "\(selfID)", "name": "mbp", "platform": "macos", "tier": 2,
-                  "tokens": "ok", "sees": ["\(peerOK)"],
-                  "tokensAuto": true, "tokensPct": 0.64,
-                  "tokensWeekPct": 0.73,
-                  "fingerprint": "aa11bb22cc33dd44",
-                  "stats": {"plan": "max-5x", "usageAvg": 0.6, "quotaLeft": 4.4}},
-         "peers": [
-           {"id": "\(peerOK)", "name": "softoobox", "platform": "linux", "tier": 4,
-            "tokens": "ok", "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
-            "tokensAuto": false, "tokensPct": 0.31,
-            "tokensWeekPct": 0.55,
-            "sees": ["\(selfID)"], "verified": true, "fingerprint": "ee55ff66aa77bb88",
-            "trust": "personal", "surplus": 0.75, "transport": "lan", "wan": "iroh",
-            "stats": {"plan": "pro", "usageAvg": 0.25, "quotaLeft": 1.0, "surplus": 0.75}},
-           {"id": "\(peerNew)", "name": "newbox", "platform": "windows", "tier": 3,
-            "tokens": "ok", "link": "up", "addr": "192.168.1.44", "lastSeenSecsAgo": 0.8,
-            "tokensAuto": true, "tokensPct": 0.9,
-            "sees": ["\(selfID)"], "verified": true, "fingerprint": "cc99dd00ee11ff22",
-            "trust": "foreign", "surplus": 0.4,
-            "stats": {"plan": "pro", "usageAvg": 0.1, "quotaLeft": 0.5, "surplus": 0.4}},
-           {"id": "\(peerDead)", "name": "soft-weak", "platform": "linux", "tier": 5,
-            "tokens": "low", "link": "down", "addr": "192.168.1.37", "lastSeenSecsAgo": 42,
-            "tokensPct": 0.2,
-            "sees": [], "verified": false, "fingerprint": "", "trust": "foreign",
-            "surplus": 0, "transport": "lan", "wan": ""},
-           {"id": "\(peerBanned)", "name": "flaky-box", "platform": "linux", "tier": 3,
-            "tokens": "ok", "link": "up", "addr": "192.168.1.48", "lastSeenSecsAgo": 2.0,
-            "sees": [], "verified": true, "fingerprint": "dd00ee11ff22aa33",
-            "trust": "banned", "surplus": 0}],
-         "trusted": [{"fingerprint": "ee55ff66aa77bb88", "label": "softoobox"}],
-         "banned": [{"fingerprint": "dd00ee11ff22aa33", "node": "\(peerBanned)",
-                     "label": "flaky-box", "bannedAt": 1784057240.5,
-                     "reason": "accepted SzpontRequest b1c2 (review) and failed to deliver: no response to readiness reminder"}],
-         "defaultTrust": "foreign",
-         "assignments": {
-           "review": {"duty": "review", "assigned": ["\(peerOK)"], "shortfall": []},
-           "conflicts": {"duty": "conflicts", "assigned": ["\(selfID)"], "shortfall": []},
-           "audit": {"duty": "audit", "assigned": ["\(selfID)"],
-                     "shortfall": [{"platform": "linux", "missing": 1}]}},
-         "wan": {"preferred": "iroh",
-                 "transports": {
-                   "iroh": {"enabled": true, "ready": true,
-                            "address": "\(String(repeating: "3f", count: 32))"},
-                   "tor": {"enabled": true, "ready": false, "address": null}}},
-         "overrides": {"rev": 0, "updatedBy": "", "duties": {}}}
-        """
-        store.meshEnabled = true  // headless-guarded: persists nothing, starts nothing
-        store.meshState = MeshSnapshot.decode(json.data(using: .utf8)!)
-        return true
-    }
-
     /// For a render mode carrying `-procs`, inject fake agent rows and queued
     /// tasks so the whole Agent-tasks list can be eyeballed: every session status the
     /// list draws, the sort that puts the sessions wanting a human on top and the
@@ -1042,35 +956,24 @@ enum Render {
         // developer's own agents and terminals happen to be up when the picture is taken.
         let now = Date().timeIntervalSince1970
         func row(_ number: Int?, _ kind: String, _ label: String, _ state: AgentState.RunState,
-                 placement: AgentState.Placement = .local, node: String = "",
                  source: AgentDispatchGate.Source = .panel, reason: String = "",
                  untracked: Bool = false) -> Store.AgentRow {
             var record = AgentState.RunRecord(
                 runID: "r-\(number ?? 0)-\(kind)", dispatchedAt: now - 900,
                 prNumber: number, prURL: number.map { "https://github.com/x/pull/\($0)" } ?? "",
-                kind: kind, label: label, source: source.rawValue, placement: placement,
-                node: node)
+                kind: kind, label: label, source: source.rawValue)
             record.untracked = untracked
-            // Every agent running on THIS machine can be clicked — by the handle its
-            // spawn kept, or, for one nobody dispatched, by walking its own process out
-            // to the window showing it. Only the mesh row has neither, which is what it
-            // is here to show.
-            if placement == .local { record.tty = "ttys0\(number ?? 0)" }
-            let window = placement == .local && !untracked
-                ? AgentWindows.Handle(terminal: "iterm", windowID: "\(number ?? 0)",
+            // Every agent can be clicked — by the handle its spawn kept, or, for one
+            // nobody dispatched, by walking its own process out to the window showing it.
+            record.tty = "ttys0\(number ?? 0)"
+            let window = untracked ? nil
+                : AgentWindows.Handle(terminal: "iterm", windowID: "\(number ?? 0)",
                                       sessionID: "s\(number ?? 0)")
-                : nil
             return Store.AgentRow(record: record, state: state, reason: reason, window: window)
         }
         store.pinAgentRows([
             row(337, "review", "Review · #337 · Deep", .running),
             row(462, "review", "Review · #462 · Full E2E", .awaitingInput),
-            // Work this device handed to the mesh: it runs on a peer, so the row has no
-            // window at all and says where instead. Seeded because it is the one row
-            // family whose whole point is a state no local session can reach — a running
-            // agent with nothing on this machine behind it.
-            row(489, "conflicts", "Auto · Resolve · #489", .running,
-                placement: .meshPeer, node: "softoobox", source: .auto),
             // An agent nobody here dispatched, found only by the prompt scan — what an
             // applet restart or a hand-started session leaves behind. It has no label of
             // its own, which is the case the row's fallback naming is for.
@@ -1109,8 +1012,8 @@ enum Render {
         // Pinned like the rows above, and for the same reason: the cap comes from the
         // shared config file, so an operator who raised theirs would change how many
         // empty bays this picture has. Two are held — the untracked agent and the one
-        // nothing is known about, both automatic and both on this machine — which
-        // leaves two free beside the one the starting task has taken.
+        // nothing is known about, both automatic — which leaves two free beside the one
+        // the starting task has taken.
         store.autoTaskLimit = 5
         store.pinAutoTasksMeasured(2)
         return true
@@ -1134,7 +1037,7 @@ enum Render {
                 kind: kind, auditAction: auditAction, label: label, prompt: "",
                 prURL: isPR ? "https://github.com/software-mansion/argent/pull/\(number)" : nil,
                 prNumber: isPR ? number : nil,
-                authorLogin: nil, duty: kind, workKey: "", counter: counter),
+                authorLogin: nil, counter: counter),
             attemptNumber: attemptNumber)
     }
 

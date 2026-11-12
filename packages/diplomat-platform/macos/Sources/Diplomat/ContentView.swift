@@ -5,11 +5,11 @@ import DiplomatCore
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @State private var query = ""
-    /// Which of the eight screens the body shows: Actions ("main"), Devices, Machines, Comms,
-    /// Tasks, Mesh, Telemetry or Settings.
+    /// Which of the seven screens the body shows: Actions ("main"), Devices, Machines, Comms,
+    /// Tasks, Telemetry or Settings.
     @State private var screen: PanelScreen
 
-    enum PanelScreen { case main, devices, machines, comms, tasks, mesh, telemetry, settings }
+    enum PanelScreen { case main, devices, machines, comms, tasks, telemetry, settings }
 
     /// `showSettings` / `showTelemetry` / `showDevices` / `showMachines` / `showComms` /
     /// `showTasks` seed the initial screen — used by the headless render to snapshot those
@@ -74,9 +74,6 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .machines:
                 MachinesScreen(isPresented: presenting(.machines))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            case .mesh:
-                MeshView(isPresented: presenting(.mesh))
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .telemetry:
                 TelemetryView(isPresented: presenting(.telemetry))
@@ -144,10 +141,6 @@ struct ContentView: View {
             machinesButton
             commsButton
             tasksButton
-            Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .mesh ? .main : .mesh } } label: {
-                Image(systemName: screen == .mesh ? "hexagon.fill" : "hexagon")
-                    .foregroundStyle(screen == .mesh ? Color.accentColor : .primary)
-            }.buttonStyle(.borderless).tooltip("Mesh management")
             Button { withAnimation(.easeInOut(duration: 0.15)) { screen = screen == .telemetry ? .main : .telemetry } } label: {
                 Image(systemName: screen == .telemetry ? "chart.bar.xaxis" : "chart.bar")
                     .foregroundStyle(screen == .telemetry ? Color.accentColor : .primary)
@@ -450,7 +443,6 @@ struct ContentView: View {
         case .quota:      return .yellow
         case .merge:      return .green
         case .bans:       return .red
-        case .mesh:       return .teal
         case .comms:      return .blue
         case .system:     return .gray
         }
@@ -870,35 +862,15 @@ private struct AgentRunRow: View {
     /// before its shell has started.
     private static let noTerminalHelp =
         "No window to raise yet — this agent is not on a terminal this machine can see."
-    private static func meshHelp(_ node: String) -> String {
-        node.isEmpty
-            ? "Running on a mesh node. Nothing to focus here — the agent is on another machine."
-            : "Running on mesh node \(node). Nothing to focus here — the agent is on that machine."
-    }
-    /// Why a row cannot be clicked: nothing here can reach its terminal.
-    private static func helpText(for record: AgentState.RunRecord) -> String {
-        switch record.placement {
-        case .meshPeer:          return meshHelp(record.node)
-        case .meshHere, .local:  return noTerminalHelp
-        }
-    }
-    /// The note beside the status word. Built here rather than in the `Text(...)`
-    /// itself: a ternary inside a ViewBuilder call is what has tipped this file past
-    /// the type-checker's time limit on CI's slower runner before.
-    private static func meshNote(_ node: String) -> String {
-        node.isEmpty ? "· on mesh" : "· on mesh @\(node)"
-    }
 
     var body: some View {
         HStack(spacing: 6) {
             // Clickable when this applet can reach the terminal: the handle its own spawn
             // kept, or — for an agent it did not open — the agent's process, walked out to
-            // whatever window is showing it. An agent on a peer has neither, and offering
-            // the click and doing nothing would read as a session whose window had gone
-            // missing. The two answers differ because the status line says "on mesh" for a
-            // peer row, which a local "no terminal here" would contradict.
+            // whatever window is showing it. With neither, offering the click and doing
+            // nothing would read as a session whose window had gone missing.
             if !row.isFocusable {
-                content.tooltip(AgentRunRow.helpText(for: row.record))
+                content.tooltip(AgentRunRow.noTerminalHelp)
             } else {
                 Button(action: onTap) { content.contentShape(Rectangle()) }
                     .buttonStyle(.plain)
@@ -949,18 +921,8 @@ private struct AgentRunRow: View {
         // decided once, in the core.
         HStack(spacing: 3) {
             AgentTaskStatusLabel(status: row.status)
-            // WHERE, next to what — the same shape the queued row uses for the note that
-            // its monitor is off. Without it a mesh row is indistinguishable from a local
-            // session whose window this machine has simply lost.
-            if row.record.placement != .local {
-                Text(AgentRunRow.meshNote(row.record.node))
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            // WHY nothing is known, which is the difference between two entirely
-            // different things to go and fix — a revoked automation permission and a
-            // mesh node that stopped.
+            // WHY nothing is known: what to go and fix, a revoked automation permission
+            // say, is named only there.
             if row.state == .unknown, !row.reason.isEmpty {
                 Text("· \(row.reason)")
                     .font(.system(size: 9))
@@ -1157,7 +1119,7 @@ private struct QueuedTaskRow: View {
 // MARK: - Starting agent-task row
 
 /// A queued task whose dispatch is under way — clicked, or reached by the drain —
-/// waiting on a mesh round-trip and a terminal spawn that take seconds between them.
+/// waiting on a terminal spawn that takes seconds.
 ///
 /// It is the queued row minus the two handles that would now be lies (the order no
 /// longer decides when it runs; it is already running past the cap) and with the

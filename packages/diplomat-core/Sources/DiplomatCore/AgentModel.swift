@@ -21,11 +21,6 @@ import Foundation
 ///   is what is read, newest first, falling back to what its settings ask for on a
 ///   machine that has no transcripts yet.
 ///
-/// The answer is the **dispatching** machine's, which is the rule the rest of the
-/// prompt already follows (repo coordinates, the @handle, every toggle): a job the
-/// mesh routes to a peer is assembled here and shipped as finished text, so it names
-/// the model of the machine that assembled it rather than the one that runs it.
-///
 /// Resolved per prompt build, except what Claude Code last ran: walking its transcripts
 /// takes a second or more on a machine with thousands, and every queued task's prompt is
 /// rebuilt on every monitor poll, so `detected()` remembers that answer for

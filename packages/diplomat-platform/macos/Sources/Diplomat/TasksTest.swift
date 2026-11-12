@@ -353,8 +353,8 @@ enum TasksTest {
         func task(_ id: String, pr: Int?, in slug: String = "\(owner)/\(repo)") -> Store.QueuedAgentTask {
             Store.QueuedAgentTask(id: id, job: Store.AgentJob(kind: "review", auditAction: "review", label: id,
                                                               prompt: "", prURL: pr.map { url($0, in: slug) },
-                                                              prNumber: pr, authorLogin: nil, duty: "review",
-                                                              workKey: "", counter: nil),
+                                                              prNumber: pr, authorLogin: nil,
+                                                              counter: nil),
                                   attemptNumber: 1)
         }
         let issueURL = "https://github.com/\(owner)/\(repo)/issues/1801"

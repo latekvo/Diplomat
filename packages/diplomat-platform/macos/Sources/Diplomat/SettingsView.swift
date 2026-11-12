@@ -42,7 +42,6 @@ struct SettingsView: View {
                     apiWatchSection
                     commsSection
                     allocatorSection
-                    meshSection
                     updateSection
                 }
                 .frame(width: MainRoot.columnWidth, alignment: .topLeading)
@@ -58,7 +57,6 @@ struct SettingsView: View {
             await store.refreshAllocatorInstall()
             // Cheap local git fetch/compare — off the UI thread inside the Store.
             store.refreshUpdateStatus()
-            if store.meshEnabled { await store.meshTick() }
         }
     }
 
@@ -396,8 +394,7 @@ struct SettingsView: View {
 
     private static let otherReposDetail = """
         Paste a PR or issue link to one of these and its agent starts in that \
-        checkout, never over the mesh. Each is known by its GitHub remotes, \
-        `upstream` first.
+        checkout. Each is known by its GitHub remotes, `upstream` first.
         """
 
     private func otherRepoRow(_ path: String, checkout: LocalRepos.Checkout?,
@@ -448,7 +445,7 @@ struct SettingsView: View {
 
     /// How much automatic work this machine may run, and whether it can afford to. Its
     /// own card, beside the monitors rather than under them: both rows bound *every*
-    /// automatic agent — the monitors above and anything a mesh peer routes here.
+    /// automatic agent, whichever monitor found its work.
     private var limitsSection: some View {
         let n = store.autoTaskLimit
         return SettingsCard(symbol: "speedometer", title: "LIMITS", tint: .orange,
@@ -660,8 +657,8 @@ struct SettingsView: View {
     /// `Text(...)` in a builder is what tips this file over the type-checker's time
     /// limit on a CI runner, while still compiling here.
     private static let autoTaskLimitDetail = """
-        Across every monitor, a PR sweep's reviews, and anything a mesh peer routes \
-        here. The agent a wizard press opens on the spot is outside the cap; a review it \
+        Across every monitor and a PR sweep's reviews. \
+        The agent a wizard press opens on the spot is outside the cap; a review it \
         queues instead is inside. Work over the cap waits in Agent tasks, in the \
         order you put it, and starts when a bay frees — unless you switch off \
         Auto-execute queue there.
@@ -1141,41 +1138,6 @@ struct SettingsView: View {
     private static let allocatorDetail = AllocatorUI.summary + " Installs an MCP server, "
         + "a skill and an always-on rule. Reclaims a device when its agent dies or it sits "
         + "idle past the limits on the Devices screen."
-
-    // MARK: mesh (LAN P2P duty coordination)
-
-    private var meshSection: some View {
-        SettingsCard(symbol: "hexagon.fill", title: "MESH (LAN P2P)", tint: .mint,
-                     pill: meshPill) {
-            SettingRow(title: "Coordinate duties with this LAN",
-                       detail: SettingsView.meshDetail) {
-                switchControl("Coordinate duties with this LAN", $store.meshEnabled)
-            }
-        }
-    }
-
-    private static let meshDetail = """
-        Routes reviews, conflict fixes and audits to whichever machine fits the \
-        policy. Runs a small peer-to-peer node that discovers the other Diplomat machines on \
-        your LAN (UDP beacons); placement is surplus-first by default, token- and \
-        platform-aware. Configure the whole mesh from the ⬡ Mesh screen (the ⬡ button \
-        in the panel header). Off by default; no node opens on the network until you \
-        enable it here.
-        """
-
-    private var meshPill: StatusPill {
-        guard store.meshEnabled else {
-            return StatusPill(text: "off", tint: .secondary, symbol: "bolt.slash.fill")
-        }
-        guard MeshBridge.nodeRunning(store.meshState) else {
-            return store.meshState == nil
-                ? StatusPill(text: "starting…", tint: .orange, symbol: "hourglass")
-                : StatusPill(text: "node not running", tint: .orange, symbol: "bolt.slash.fill")
-        }
-        let peers = store.meshState?.peers.count ?? 0
-        return StatusPill(text: "\(peers) peer\(peers == 1 ? "" : "s")", tint: .green,
-                          symbol: "bolt.fill")
-    }
 
     // MARK: applet update
 

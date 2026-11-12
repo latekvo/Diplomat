@@ -12,9 +12,9 @@ import Foundation
 /// disagree about whether your agent is still running. `test_agent_state_parity.py`
 /// drives both over the scenario table and diffs this output.
 ///
-/// The whole pipeline is emitted, not just the resolver, because the order of the three
-/// steps is itself a decision the two sides have to share: claims are observed BEFORE
-/// resolving (so a sighting taken this tick counts this tick), and untracked agents are
+/// The whole pipeline is emitted, not just the resolver, because the order of its
+/// steps is itself a decision the two sides have to share: screens are observed BEFORE
+/// resolving (so a change seen this tick counts this tick), and untracked agents are
 /// synthesized AFTER (so a live agent that already has a record is not duplicated).
 ///
 /// Input:
@@ -26,8 +26,8 @@ import Foundation
 ///                 "liveAgents": {"status": "present", "value": {"o/r#404": "pts/3"}}, … } }
 /// ```
 /// Output: the resolved rows in display order, every record's verdict whether drawn or
-/// not, every projection, and the records as the pipeline left them — so a claim
-/// sighting written by the wrong step is a diff.
+/// not, every projection, and the records as the pipeline left them — so a stillness
+/// clock written by the wrong step is a diff.
 enum AgentStateCommand {
     static func run(_ obj: [String: Any]) {
         let now = (obj["now"] as? NSNumber)?.doubleValue ?? 0
@@ -46,8 +46,7 @@ enum AgentStateCommand {
         }
         func verdict(_ s: AgentState.Resolution) -> [String: Any] {
             ["state": s.state.rawValue, "reason": s.reason, "wedged": s.wedged,
-             "expired": s.expired, "unfindable": s.unfindable, "lapsed": s.lapsed,
-             "reported": s.reported]
+             "expired": s.expired, "lapsed": s.lapsed, "reported": s.reported]
         }
         let out: [String: Any] = [
             "rows": t.rows.map { r, s in verdict(s).merging(["runId": r.runID]) { $1 } },
@@ -71,11 +70,10 @@ enum AgentStateCommand {
                           "quietTimeout": AgentState.quietTimeout,
                           "spawnGrace": AgentState.spawnGrace],
             "records": t.records.map { r -> [String: Any] in
-                ["runId": r.runID, "claimSeenAt": r.claimSeenAt.map { $0 as Any } ?? NSNull(),
+                ["runId": r.runID,
                  "untracked": r.untracked, "released": r.released, "source": r.source,
                  "pid": r.pid.map { $0 as Any } ?? NSNull(), "tty": r.tty,
                  "dispatchedAt": r.dispatchedAt,
-                 "placement": r.placement.rawValue,
                  "quietDigest": r.quietDigest,
                  "quietSince": r.quietSince.map { $0 as Any } ?? NSNull(),
                  "reapRefusedAt": r.reapRefusedAt.map { $0 as Any } ?? NSNull()]
@@ -123,7 +121,6 @@ enum AgentStateCommand {
             },
             sentinels: decodeObs(d["sentinels"]) { ($0 as? [String]).map(Set.init) },
             tails: decodeObs(d["tails"]) { $0 as? [String: String] },
-            claims: decodeObs(d["claims"]) { ($0 as? [String]).map(Set.init) },
             mergedPRs: decodeObs(d["mergedPrs"]) { ($0 as? [String]).map(Set.init) },
             liveAgents: decodeObs(d["liveAgents"]) { v in
                 (v as? [String: Any])?.mapValues { $0 as? String ?? "" }
@@ -162,14 +159,9 @@ enum AgentStateCommand {
             kind: d["kind"] as? String ?? "",
             label: d["label"] as? String ?? "",
             source: d["source"] as? String ?? AgentDispatchGate.Source.auto.rawValue,
-            placement: AgentState.Placement(rawValue: d["placement"] as? String ?? "local")
-                ?? .local,
-            node: d["node"] as? String ?? "",
-            workKey: d["workKey"] as? String ?? "",
             ledgerKey: d["ledgerKey"] as? String ?? "",
             pid: AgentRegistry.integer(d["pid"]),
             tty: d["tty"] as? String ?? "",
-            claimSeenAt: AgentRegistry.number(d["claimSeenAt"]),
             quietDigest: d["quietDigest"] as? String ?? "",
             quietSince: AgentRegistry.number(d["quietSince"]),
             reapRefusedAt: AgentRegistry.number(d["reapRefusedAt"]),

@@ -51,7 +51,7 @@ enum AutofixMonitor {
         let files: [String]         // changed file paths (for skill/installer verdict gating)
         let requestedAt: String?    // latest "review requested from me" (ISO8601)
         let myLastReviewAt: String? // my latest review submission (ISO8601)
-        let headSha: String         // head commit sha — the mesh work key's "@sha" part
+        let headSha: String         // head commit sha — the ledger key's "@sha" part
         let myLastCommentAt: String? // my latest top-level comment (ISO8601)
 
         /// The most recent time I responded to this PR — a formal review submission OR a

@@ -2,13 +2,9 @@ import Foundation
 import DiplomatCore
 
 /// The repository roots the app cares about: its OWN checkout (`root`, the source tree
-/// behind self-update and the mesh node) and the TARGET repos the agents work in
+/// behind self-update: git pull + rebuild) and the TARGET repos the agents work in
 /// (`roots`, Settings → REPO ROOTS, the first being `agentRepo`). Unrelated paths, kept
 /// side by side so the two are never confused.
-///
-/// `root` is the source tree behind both the self-update (git pull + rebuild) and the
-/// mesh node (`python3 -m szpontnet`, which runs from `runtimePackage` with
-/// `szpontnetPackage` on its import path).
 ///
 /// The checkout is located by, in order: an explicit env override, the layout
 /// inferred when running unbundled (`swift run`, where the shared assets resolve to
@@ -23,7 +19,7 @@ enum RepoPaths {
 
     /// The checkout root. Env-overridable; falls back to the conventional clone path
     /// (a personal, single-checkout setup). Everything that lives beside the app in
-    /// this monorepo — the SzpontNet library, the device-allocator package — hangs off
+    /// this monorepo — the device-allocator package, the install scripts — hangs off
     /// here, so a moved or renamed checkout relocates all of them together.
     static var root: URL {
         locate(env: ProcessInfo.processInfo.environment["DIPLOMAT_SELF_REPO"],
@@ -79,17 +75,6 @@ enum RepoPaths {
     /// under it, so the layout is spelled once rather than at each use.
     static var packages: URL { root.appendingPathComponent("packages") }
 
-    /// The SzpontNet library's project dir (what goes on a node's `PYTHONPATH`).
-    static var szpontnetPackage: URL { packages.appendingPathComponent("szpontnet-core") }
-
-    /// Diplomat's platform-neutral Python runtime — the half below the UI that both
-    /// front-ends run. macOS reaches for it to get `diplomat_runtime.szponthost`, the
-    /// module that puts Diplomat behind a mesh node; the other front-end's package is
-    /// no part of that, and this app never resolves it.
-    static var runtimePackage: URL {
-        packages.appendingPathComponent("diplomat-runtime")
-    }
-
     /// This app's own package dir, and the scripts inside it that build the bundle
     /// and register it with launchd.
     static var macosPackage: URL {
@@ -97,16 +82,9 @@ enum RepoPaths {
     }
     static var installDir: URL { macosPackage.appendingPathComponent("install") }
 
-    /// True when `root` looks like an actual checkout, so the UI can disable the Update
-    /// button / mesh spawn with a clear reason instead of failing obscurely on a missing
-    /// directory. Both trees, because a node spawn needs both: the library it runs, and
-    /// the runtime holding the host module that puts Diplomat behind it.
-    static var checkoutPresent: Bool {
-        let fm = FileManager.default
-        return fm.fileExists(atPath: root.appendingPathComponent(".git").path)
-            && fm.fileExists(atPath: szpontnetPackage.appendingPathComponent("szpontnet").path)
-            && fm.fileExists(atPath: runtimePackage.appendingPathComponent("diplomat_runtime").path)
-    }
+    /// True when `root` is an actual checkout, so the UI can disable the Update button
+    /// with a clear reason instead of failing obscurely on a missing directory.
+    static var checkoutPresent: Bool { isCheckout(root.path) }
 
     // MARK: - the TARGET repos (where the agents work)
 
@@ -119,8 +97,8 @@ enum RepoPaths {
     /// `~/dev/<repo>`. The Settings hint calls the env override out when it's set, so a
     /// shadowed field is never a silent no-op.
     ///
-    /// Re-read on every use (a spawn, a hint refresh): the pick lives in the shared
-    /// `AppConfig` file precisely so a change reaches a *running* mesh node too.
+    /// Re-read on every use (a spawn, a hint refresh), so a pick lands on the next
+    /// spawn.
     static var rootPaths: [String] {
         let env = ProcessInfo.processInfo.environment["DIPLOMAT_REPO"] ?? ""
         if !env.isEmpty { return [env] }

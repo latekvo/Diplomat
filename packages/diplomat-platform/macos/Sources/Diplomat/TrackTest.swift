@@ -99,41 +99,36 @@ enum TrackTest {
                 && AgentProbes.shortTTY("ttys013") == "ttys013")
 
         // 3. The registry round-trip, through a real directory — the book both front-ends
-        //    and the mesh node read. A mesh placement back on THIS machine is the reading
-        //    a round-trip can silently lose: reloaded as a peer's it frees a bay this
-        //    device is in fact using, and the cap spends it twice.
+        //    read.
         let now = Date().timeIntervalSince1970
-        var mesh = AgentState.RunRecord(
+        var kept = AgentState.RunRecord(
             runID: AgentRegistry.newRunID(now: now), dispatchedAt: now, prNumber: 7,
             prURL: "https://github.com/a/b/pull/7", kind: "review",
             label: "Auto · Review · #7", source: AgentDispatchGate.Source.auto.rawValue,
-            placement: .meshHere, node: "softoobox",
-            workKey: "review:github.com/a/b#7@sha", ledgerKey: "l7")
-        mesh.pid = 4021
-        mesh.tty = "ttys991"
-        AgentRegistry.createRun(mesh, prompt: "review it")
-        let reloaded = AgentRegistry.load().first { $0.runID == mesh.runID }
-        check("a record survives the book byte for byte", reloaded == mesh)
-        check("…including that the mesh put it back on this machine",
-              reloaded?.placement == .meshHere && reloaded?.runsHere == true)
+            ledgerKey: "l7")
+        kept.pid = 4021
+        kept.tty = "ttys991"
+        AgentRegistry.createRun(kept, prompt: "review it")
+        let reloaded = AgentRegistry.load().first { $0.runID == kept.runID }
+        check("a record survives the book byte for byte", reloaded == kept)
         check("the prompt is kept beside the run, so a restart can still price it",
-              AgentRegistry.prompt(mesh.runID) == "review it")
+              AgentRegistry.prompt(kept.runID) == "review it")
 
         // 3b. The three sidecars a macOS run adds beside the shared record, and the one
         //     only this platform has: the window handle a click raises.
-        AgentRegistry.stageRunner(mesh.runID, AgentRunner.opencode.rawValue)
-        _ = AgentRegistry.stagePort(mesh.runID, 47_910)
-        AgentWindows.stage(mesh.runID, .init(terminal: "iterm", windowID: "999",
+        AgentRegistry.stageRunner(kept.runID, AgentRunner.opencode.rawValue)
+        _ = AgentRegistry.stagePort(kept.runID, 47_910)
+        AgentWindows.stage(kept.runID, .init(terminal: "iterm", windowID: "999",
                                              sessionID: "SID"))
         check("a run remembers which CLI ran it and where its server answers",
-              AgentRegistry.runRunner(mesh.runID) == AgentRunner.opencode.rawValue
-                && AgentRegistry.port(mesh.runID) == 47_910)
-        check("…and where its window is", AgentWindows.handle(mesh.runID)?.windowID == "999")
+              AgentRegistry.runRunner(kept.runID) == AgentRunner.opencode.rawValue
+                && AgentRegistry.port(kept.runID) == 47_910)
+        check("…and where its window is", AgentWindows.handle(kept.runID)?.windowID == "999")
         check("a run this applet never spawned has no handle staged",
               AgentWindows.handle("never-existed") == nil)
-        AgentRegistry.forget([mesh.runID])
+        AgentRegistry.forget([kept.runID])
         check("forgetting a run takes its whole directory, sidecars and all",
-              AgentRegistry.load().isEmpty && AgentWindows.handle(mesh.runID) == nil)
+              AgentRegistry.load().isEmpty && AgentWindows.handle(kept.runID) == nil)
 
         // 4. Focus script embeds the captured ids (so it targets the right window), and
         //    addresses the window by id rather than searching for it: `activate` returns
@@ -253,7 +248,7 @@ enum TrackTest {
               rowFor("", handle: staged).isFocusable)
         check("…one nobody dispatched, by the tty its agent is on",
               rowFor("ttys029", handle: nil).isFocusable)
-        check("…and one running on a peer by neither",
+        check("…and one with neither is not",
               !rowFor("", handle: nil).isFocusable)
 
         // 5. Snapshot parse computes "threads I owe" (the offline-review reconcile signal):
@@ -370,7 +365,6 @@ enum TrackTest {
             let records = AgentRegistry.adoptPids(AgentRegistry.load())
             let evidence = AgentProbes.gather(records: records, now: at, slugs: ["o/r"],
                                               directory: AgentSpawner.repoPath,
-                                              meshEnabled: false, meshState: nil,
                                               merged: .present([]),
                                               // This self-test spawns and watches one
                                               // real agent within seconds; the deadline

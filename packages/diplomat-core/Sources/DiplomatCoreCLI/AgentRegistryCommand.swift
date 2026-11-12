@@ -4,8 +4,8 @@ import Foundation
 /// `diplomat-core agent-registry` — write records through the Swift registry and read
 /// them back, so the on-disk format can be diffed against the Python twin.
 ///
-/// The book at `~/.diplomat/agents/runs.json` is read and written by BOTH front-ends,
-/// and by the mesh node asking whether this machine has room. That makes its field
+/// The book at `~/.diplomat/agents/runs.json` is read and written by BOTH front-ends.
+/// That makes its field
 /// names a cross-language contract rather than a Swift detail: a renamed property that
 /// only one side follows does not fail anything loudly — the other side simply reads a
 /// run with no label, no source and no ledger key, which is indistinguishable from the
@@ -17,7 +17,7 @@ import Foundation
 ///
 /// Input:  `{ "mode": "read" }`
 ///      or `{ "mode": "write", "runs": [ {…}, … ] }`
-///      or `{ "mode": "hooks", "activityPath": "…", "donePath": "…" | null }`
+///      or `{ "mode": "hooks", "activityPath": "…" }`
 /// Output: `{ "runs": [ … ] }` — whatever the registry holds afterwards, as it decodes
 /// it — or, for `hooks`, `{ "settings": {…} }`. `$DIPLOMAT_AGENTS_DIR` says where; the
 /// test points it at a temp dir.
@@ -29,8 +29,7 @@ import Foundation
 enum AgentRegistryCommand {
     static func run(_ obj: [String: Any]) {
         if (obj["mode"] as? String) == "hooks" {
-            emitHooks(activityPath: obj["activityPath"] as? String ?? "",
-                      donePath: obj["donePath"] as? String)
+            emitHooks(activityPath: obj["activityPath"] as? String ?? "")
             return
         }
         if (obj["mode"] as? String) == "write" {
@@ -47,9 +46,8 @@ enum AgentRegistryCommand {
 
     /// The `--settings` payload this side would stage, re-parsed so the comparison is
     /// over the commands rather than over JSON key order.
-    private static func emitHooks(activityPath: String, donePath: String?) {
-        guard let json = AgentCompletion.settingsJSON(activityPath: activityPath,
-                                                      donePath: donePath),
+    private static func emitHooks(activityPath: String) {
+        guard let json = AgentCompletion.settingsJSON(activityPath: activityPath),
               let settings = try? JSONSerialization.jsonObject(
                   with: Data(json.utf8)) else {
             die("could not build the hook settings", 1)
@@ -67,10 +65,8 @@ enum AgentRegistryCommand {
             "runId": r.runID, "dispatchedAt": r.dispatchedAt,
             "prNumber": r.prNumber.map { $0 as Any } ?? NSNull(),
             "prUrl": r.prURL, "kind": r.kind, "label": r.label, "source": r.source,
-            "placement": r.placement.rawValue, "node": r.node, "workKey": r.workKey,
             "ledgerKey": r.ledgerKey, "pid": r.pid.map { $0 as Any } ?? NSNull(),
-            "tty": r.tty, "claimSeenAt": r.claimSeenAt.map { $0 as Any } ?? NSNull(),
-            "quietDigest": r.quietDigest,
+            "tty": r.tty, "quietDigest": r.quietDigest,
             "quietSince": r.quietSince.map { $0 as Any } ?? NSNull(),
             "reapRefusedAt": r.reapRefusedAt.map { $0 as Any } ?? NSNull(),
             "untracked": r.untracked, "released": r.released,
@@ -86,14 +82,9 @@ enum AgentRegistryCommand {
             kind: d["kind"] as? String ?? "",
             label: d["label"] as? String ?? "",
             source: d["source"] as? String ?? AgentDispatchGate.Source.auto.rawValue,
-            placement: AgentState.Placement(rawValue: d["placement"] as? String ?? "local")
-                ?? .local,
-            node: d["node"] as? String ?? "",
-            workKey: d["workKey"] as? String ?? "",
             ledgerKey: d["ledgerKey"] as? String ?? "",
             pid: AgentRegistry.integer(d["pid"]),
             tty: d["tty"] as? String ?? "",
-            claimSeenAt: AgentRegistry.number(d["claimSeenAt"]),
             quietDigest: d["quietDigest"] as? String ?? "",
             quietSince: AgentRegistry.number(d["quietSince"]),
             reapRefusedAt: AgentRegistry.number(d["reapRefusedAt"]),

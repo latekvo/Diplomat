@@ -119,7 +119,7 @@ enum LowDiskTest {
             Store.AgentJob(kind: "review", auditAction: "review-req",
                            label: "Review-req · #\(number)", prompt: "",
                            prURL: "https://github.com/software-mansion/argent/pull/\(number)",
-                           prNumber: number, authorLogin: nil, duty: "review", workKey: "",
+                           prNumber: number, authorLogin: nil,
                            counter: .reviewRequests,
                            attemptStamp: Store.AttemptStamp.unresolvedReview)
         }
@@ -178,8 +178,8 @@ enum LowDiskTest {
 
         // MARK: the run book
 
-        // What the floor lets through - a manual start, a mesh landing - is still booked
-        // before it runs, and a book the disk refuses must refuse the run with it.
+        // What the floor lets through - a manual start - is still booked before it
+        // runs, and a book the disk refuses must refuse the run with it.
         setenv("DIPLOMAT_AGENTS_DIR", vol.appendingPathComponent("agents").path, 1)
         func record(_ number: Int) -> AgentState.RunRecord {
             let now = Date().timeIntervalSince1970
@@ -284,12 +284,6 @@ enum LowDiskTest {
         _ = run(["/usr/bin/git", "init", "-q", "--bare", "-b", "main", origin.path])
         _ = run(["/usr/bin/git", "init", "-q", "-b", "main", seed.path])
         _ = git(["remote", "add", "origin", origin.path], in: seed)
-        // What `RepoPaths.checkoutPresent` asks of a checkout.
-        for pkg in ["packages/szpontnet-core/szpontnet", "packages/diplomat-runtime/diplomat_runtime"] {
-            let dir = seed.appendingPathComponent(pkg)
-            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            fm.createFile(atPath: dir.appendingPathComponent("__init__.py").path, contents: Data())
-        }
         commit("v1")
         _ = run(["/usr/bin/git", "clone", "-q", origin.path, checkout.path])
         commit("v2")
@@ -434,7 +428,7 @@ enum LowDiskTest {
         store.autoBudgetGate = false
         store.agentModel = "model-b"
         check("a setting the full volume refuses says so", store.configSaveFailed)
-        check("…and reads back what the file holds, as the mesh node behind it does",
+        check("…and reads back what the file holds",
               store.autoTaskLimit == 2 && AppConfig.autoTaskLimit == 2 && store.autoBudgetGate
                 && store.agentModel == "model-a",
               "\(store.autoTaskLimit) \(store.autoBudgetGate) \(store.agentModel)")

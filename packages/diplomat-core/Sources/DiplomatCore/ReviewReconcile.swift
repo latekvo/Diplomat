@@ -108,13 +108,13 @@ public enum ReviewReconcile {
     }
 
     /// The review requests whose run ended on its agent's own word: retired runs
-    /// dispatched for a review requested of me (`AutofixMesh.kindReviewReq`) whose verdict
-    /// is `reported`. A run that died, failed, was reaped or ran on a peer says nothing
-    /// about whether it meant to post, so its request stays on the retry ladder.
+    /// dispatched for a review requested of me (`AutofixWork.kindReviewReq`) whose verdict
+    /// is `reported`. A run that died, failed or was reaped says nothing about whether
+    /// it meant to post, so its request stays on the retry ladder.
     public static func concluded(_ retired: [AgentState.RunRecord],
                                  verdicts: [String: AgentState.Resolution]) -> Set<String> {
         Set(retired.compactMap { r -> String? in
-            guard r.ledgerKey.hasPrefix(AutofixMesh.kindReviewReq + ":"),
+            guard r.ledgerKey.hasPrefix(AutofixWork.kindReviewReq + ":"),
                   verdicts[r.runID]?.reported == true else { return nil }
             return r.item
         })

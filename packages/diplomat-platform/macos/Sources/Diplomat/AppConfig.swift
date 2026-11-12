@@ -8,10 +8,9 @@ import DiplomatCore
 /// may run here at once, the three knobs of the rate-limit budget those agents are
 /// started against, which agent CLI a spawn runs (with the model it is pinned to), and
 /// where that agent's GitHub token is read from.
-/// Each is consumed by whichever process picks the work up, and one of
-/// those is a **mesh node** — a separate, stdlib-only Python process with neither
-/// UserDefaults nor Qt (docs/mesh.md documents joining a mesh with "no Qt needed"), which
-/// outlives this app and can't be handed a value at spawn time.
+/// The Linux front-end keeps each under the same key, and the runner and its model are
+/// read by the shared core as well (`AgentModel`), which that front-end reaches only as
+/// a separate process.
 ///
 /// One more sits with them without needing to: how long a run may go on before the
 /// resolver calls it over, which belongs beside the cap it hands bays back to and is
@@ -23,9 +22,9 @@ import DiplomatCore
 /// another Node process: the machines the operator took out of its pool, for good or
 /// until a time.
 ///
-/// So those knobs live in the shared `~/.diplomat` tree, alongside the ban list and
-/// the mesh snapshot both front-ends already exchange there. Every reader re-reads on
-/// use, so a change lands on the next spawn instead of the next process start.
+/// So those knobs live in the shared `~/.diplomat` tree, alongside the ban list both
+/// front-ends already exchange there. Every reader re-reads on use, so a change lands
+/// on the next spawn instead of the next process start.
 enum AppConfig {
     /// The repo roots the agents work in, the first being the primary. Same key on the
     /// Linux side.
@@ -55,7 +54,7 @@ enum AppConfig {
     static let agentModelKey = "agentModel"
     /// The login-Keychain item a spawned agent's `GH_TOKEN` is read from, by service
     /// name — never the token. See `AgentSpawner.tokenExport`. Same key in
-    /// `appconfig.py`, which a mesh node on a Mac spawns by.
+    /// `appconfig.py`.
     static let agentTokenKeychainItemKey = "agentTokenKeychainItem"
     /// The terminal this app's spawns resolve to, published for the device-allocator
     /// daemon to open its repair agents in (`device-allocator/src/terminal.js`).
@@ -75,9 +74,7 @@ enum AppConfig {
     // The remote-machines keys are `MachineExclusions.excludeKey` and `.untilKey`, and
     // `MachineArmBias.key`.
 
-    /// The runner every spawn on this machine uses, resolved here rather than at each
-    /// call site because there are two, in different processes: this app's spawner and
-    /// — for work a mesh peer routes in — the node's, through the Python host.
+    /// The runner every spawn on this machine uses.
     static var agentRunner: AgentRunner { AgentRunner.from(string(agentRunnerKey)) }
 
     /// The model the selected runner is pinned to, or "" for that runner's own choice.
@@ -89,8 +86,7 @@ enum AppConfig {
         string(agentTokenKeychainItemKey).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Overridable so a self-test can point at a scratch file instead of the real one —
-    /// same escape hatch as the mesh's `SZPONTNET_DIR`.
+    /// Overridable so a self-test can point at a scratch file instead of the real one.
     static var url: URL {
         if let env = ProcessInfo.processInfo.environment["DIPLOMAT_CONFIG"], !env.isEmpty {
             return URL(fileURLWithPath: (env as NSString).expandingTildeInPath)
@@ -122,7 +118,7 @@ enum AppConfig {
     }
 
     /// Read-modify-write, atomically (Foundation writes to a temp file and renames), so a
-    /// node reading concurrently never sees a torn file. Keys the file already holds
+    /// process reading concurrently never sees a torn file. Keys the file already holds
     /// survive a normal write; a file that failed to parse (see `read`) is rewritten from
     /// defaults, so a *corrupt* file loses the other keys — each then falls back to its
     /// own default, the same degradation an absent file gets. Never throws into the UI:
@@ -199,10 +195,6 @@ enum AppConfig {
 
     /// How many automatic agents this device will run at once, clamped to the range
     /// the Settings stepper offers.
-    ///
-    /// Resolved here rather than at each caller because there are two, in different
-    /// processes: this app's dispatch gate and — for work a mesh peer routes in — the
-    /// node's, through the Python host. A cap the two disagree on is not a cap.
     static var autoTaskLimit: Int {
         AgentDispatchGate.clampAutoTaskLimit(
             int(autoTaskLimitKey, fallback: AgentDispatchGate.defaultAutoTaskLimit))
@@ -288,9 +280,7 @@ enum AppConfig {
     }
 
     /// Whether automatic work is held back when the rate-limit window is too low to
-    /// afford it. Lives here, not in UserDefaults, for the reason the task cap does: a
-    /// mesh node spends this machine's limit on work this app never sees, and the two
-    /// must not disagree about whether that limit is being watched.
+    /// afford it.
     static var autoBudgetGate: Bool { bool(autoBudgetGateKey, fallback: true) }
 
     /// How sure the gate must be that a task fits before it starts one, as a

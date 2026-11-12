@@ -34,8 +34,7 @@ enum UsageScan {
 
     /// Token fields that count toward a rate-limit window. Cache *reads* are
     /// excluded deliberately — huge and cheap, and counting them would swamp the
-    /// signal (the same three the mesh add-on's own probe sums, so a machine
-    /// running SzpontNet prices its quota the same way).
+    /// signal.
     private static let costFields = ["input_tokens", "output_tokens",
                                      "cache_creation_input_tokens"]
 

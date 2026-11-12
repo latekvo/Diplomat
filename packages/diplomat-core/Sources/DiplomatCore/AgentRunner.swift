@@ -20,9 +20,8 @@ import Foundation
 ///
 /// Credentials are the one thing this type refuses to hold. Each foreign runner has its
 /// own provider store and its own login wizard, and that is where a key belongs — not
-/// in `~/.diplomat/config.json`, which is world-readable by default and copied around
-/// by the mesh. Diplomat stores the *choice* of runner and model; the runner stores the
-/// secret.
+/// in `~/.diplomat/config.json`, which is world-readable by default. Diplomat stores
+/// the *choice* of runner and model; the runner stores the secret.
 public enum AgentRunner: String, CaseIterable, Sendable {
     case claude
     case opencode

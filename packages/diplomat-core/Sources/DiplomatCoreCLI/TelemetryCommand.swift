@@ -50,7 +50,7 @@ enum TelemetryCommand {
                     "key": t.key, "duty": t.duty, "pr": t.pr,
                     "queuedAt": opt(t.queuedAt), "startedAt": opt(t.startedAt),
                     "doneAt": opt(t.doneAt), "clearedAt": opt(t.clearedAt),
-                    "remote": t.remote, "tokens": opt(t.tokens), "runner": t.runner,
+                    "tokens": opt(t.tokens), "runner": t.runner,
                     "usd": opt(t.usd), "model": t.model,
                     "runSecs": opt(t.runSecs), "waitSecs": opt(t.waitSecs),
                 ]
@@ -83,7 +83,7 @@ enum TelemetryCommand {
             "repoTokens": r(s.repoTokens), "otherTokens": r(s.otherTokens),
             "repoSharePct": r(s.repoSharePct),
             "queuedCount": s.queuedCount, "startedCount": s.startedCount,
-            "doneCount": s.doneCount, "remoteCount": s.remoteCount,
+            "doneCount": s.doneCount,
             "unattributedCount": s.unattributedCount,
             "firstSampleAt": opt(s.firstSampleAt), "lastSampleAt": opt(s.lastSampleAt),
             "format": [

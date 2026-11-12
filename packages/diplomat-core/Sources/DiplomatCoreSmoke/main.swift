@@ -452,223 +452,6 @@ do {
     check(roundTrip.home == radonHome, "a queued config keeps its home across a restart")
 }
 
-section("mesh model + snapshot decode")
-let mesh = try CoreAssets.mesh()
-print("mesh: platforms=\(mesh.platforms.map { $0.id }) tokens=\(mesh.tokens.map { $0.id }) "
-    + "strategies=\(mesh.strategies.map { $0.id }) duties=\(mesh.duties.map { $0.id })")
-// The duty catalog + placement strategies the panel edits — assert the shape the UI
-// depends on, so a mesh.json edit that drops a field fails here (like catalog.json above).
-check(mesh.duties.map { $0.id } == ["review", "issues", "conflicts", "audit"], "mesh duty ids")
-check(mesh.tokens.map { $0.id } == ["ok", "low", "out"], "mesh token ids")
-check(mesh.tierBounds == (1, 5, 3), "mesh tier bounds")
-check(mesh.strategies.contains { $0.id == mesh.defaultStrategy }, "defaultStrategy is a real strategy")
-// Strength words + trust vocabulary the console renders (the "tier N" → words fix).
-check(mesh.tierLabel(1) == "Very strong" && mesh.tierLabel(5) == "Very light", "tier labels")
-check(mesh.trustLevel("personal") != nil && mesh.trustLevel("foreign") != nil, "trust levels")
-// Placement resolution: the audit duty carries a linux+macos spread; review/conflicts don't.
-let auditPlacement = mesh.placement(for: "audit", overrides: nil)
-check(auditPlacement.spread.map { $0.platform } == ["linux", "macos"], "audit spread platforms")
-check(auditPlacement.spread.allSatisfy { $0.count == 1 }, "audit spread counts")
-check(mesh.placement(for: "review", overrides: nil).spread.isEmpty, "review has no spread")
-check(mesh.placement(for: "review", overrides: nil).tokenAware, "review is token-aware by default")
-check(mesh.placement(for: "issues", overrides: nil).spread.isEmpty, "issues has no spread")
-// A gossiped override wins over the catalog default (mirrors config.placement_for).
-let overrideJSON = """
-{"rev":3,"updatedBy":"nodeA","duties":{"review":{"strategy":"strongest-first","tokenAware":false}}}
-""".data(using: .utf8)!
-let overrides = try JSONDecoder().decode(MeshOverrides.self, from: overrideJSON)
-check(overrides.rev == 3 && overrides.updatedBy == "nodeA", "overrides header")
-let overridden = mesh.placement(for: "review", overrides: overrides)
-check(overridden.strategy == "strongest-first" && !overridden.tokenAware, "override wins over default")
-check(mesh.placement(for: "conflicts", overrides: overrides).strategy == mesh.defaultStrategy,
-      "an un-overridden duty keeps its catalog default")
-// A gossiped override can carry a MALFORMED spread entry (one that names no platform,
-// or a non-object) — the wire layer tolerates garbage (config.Placement._parse_spread).
-// One bad spread entry must skip only THAT entry, never collapse the whole duties map
-// (which used to hide EVERY operator placement override in the topology view). Mirrors
-// the Python port: both duties survive, the bad entry is dropped, strategies are kept.
-// 'audit' carries a non-OBJECT duty value (junk) — it must drop only that duty, not
-// collapse the map; 'review'/'conflicts' are valid objects with malformed spreads.
-let malformedJSON = """
-{"rev":4,"updatedBy":"nodeB","duties":{
-  "review":{"strategy":"surplus-first","spread":[{"count":2},"garbage",{"platform":""}]},
-  "conflicts":{"strategy":"round-robin","spread":[{"platform":"android","count":"x"},{"platform":"linux"}]},
-  "audit":"not-an-object"
-}}
-""".data(using: .utf8)!
-let malformed = try JSONDecoder().decode(MeshOverrides.self, from: malformedJSON)
-check(malformed.duties.keys.sorted() == ["conflicts", "review"],
-      "a malformed spread entry (or non-object duty value) must not drop the whole map")
-// The dropped 'audit' duty falls back to its catalog default (linux+macos spread).
-check(mesh.placement(for: "audit", overrides: malformed).spread.map { $0.platform } == ["linux", "macos"],
-      "a duty with a junk override value resolves to the catalog default")
-let mReview = mesh.placement(for: "review", overrides: malformed)
-check(mReview.strategy == "surplus-first" && mReview.spread.isEmpty,
-      "review keeps its strategy; its all-malformed spread resolves to empty")
-let mConflicts = mesh.placement(for: "conflicts", overrides: malformed)
-check(mConflicts.strategy == "round-robin", "conflicts keeps its overridden strategy")
-// android: bad count "x" falls back to the schema default 1; linux: missing count → 1.
-check(mConflicts.spread.map { $0.platform } == ["android", "linux"]
-      && mConflicts.spread.allSatisfy { $0.count == 1 },
-      "malformed/absent spread counts fall back to 1, matching _parse_spread")
-// The topology snapshot the UI renders (self + peers + assignments), decoded from a
-// synthetic state.json shaped exactly like the node writes.
-let snapJSON = """
-{"pid":4242,"tcpPort":40878,"v":1,"linking":0,
- "self":{"id":"aaa","name":"here","platform":"macos","tier":2,"tokens":"ok",
-         "strengthAuto":true,"tokensAuto":true,"tokensPct":0.81,"uptimeSecs":930.0,
-         "tokensSessionPct":0.81,"tokensWeekPct":0.55},
- "peers":[{"id":"bbb","name":"lin","platform":"linux","tier":4,"tokens":"low",
-           "link":"up","addr":"192.168.1.9:40878","lastSeenSecsAgo":1.4,"sees":["aaa"],
-           "strengthAuto":false,"tokensAuto":true,"tokensPct":0.2,"uptimeSecs":187.0,
-           "tokensSessionPct":0.2,"tokensWeekPct":0.4,
-           "trust":"personal","fingerprint":"ff11","verified":true}],
- "banned":[{"fingerprint":"ee22","node":"ccc","label":"flaky-box",
-            "reason":"accepted SzpontRequest b1c2 (review) and failed to deliver: no response to readiness reminder",
-            "bannedAt":1784057240.5,"jobId":"b1c2"}],
- "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
-""".data(using: .utf8)!
-check(MeshSnapshot.decode(snapJSON) != nil, "snapshot decodes")
-let snap = MeshSnapshot.decode(snapJSON)!
-check(snap.pid == 4242 && snap.tcpPort == 40878, "snapshot header")
-// A pid the OS handed on after the node died names a process started after its last write.
-func written(_ stamp: String?) -> MeshSnapshot {
-    MeshSnapshot.decode(Data((stamp.map { #"{"pid": 1, "updatedAt": "\#($0)"}"# } ?? #"{"pid": 1}"#).utf8))!
-}
-let wrote = written("2026-11-04T16:06:48.462459+00:00")
-check(abs((wrote.writtenAt?.timeIntervalSince1970 ?? 0) - 1_793_808_408.462459) < 0.001,
-      "Python's isoformat, microseconds and all")
-check(written("2026-11-04T16:06:48+00:00").writtenAt == Date(timeIntervalSince1970: 1_793_808_408),
-      "…and without them, as it writes a whole second")
-check(!wrote.names(processStarted: wrote.writtenAt!.addingTimeInterval(1)),
-      "a process started after the snapshot was written is not the node that wrote it")
-check(wrote.names(processStarted: wrote.writtenAt!.addingTimeInterval(-600)))
-check(written(nil).names(processStarted: Date()) && written("now").names(processStarted: Date())
-        && wrote.names(processStarted: nil),
-      "with either time unknown, the pid is all there is")
-check(written("2026-11-04T16:06:48+00:00") == written("2026-11-05T00:00:00+00:00"),
-      "the write time alone is no change to the snapshot")
-check(snap.selfNode?.platform == "macos" && snap.selfNode?.tier == 2, "self node")
-// The console fields (strength auto, auto token %, real uptime, trust) decode.
-check(snap.selfNode?.strengthAuto == true && snap.selfNode?.tokensPct == 0.81, "self console fields")
-// The real weekly quota percentage (OAuth usage probe) decodes on both shapes, and
-// an older peer's 5-hour field beside it is ignored.
-check(snap.selfNode?.tokensWeekPct == 0.55, "self week quota decode")
-check(snap.peers[0].tokensWeekPct == 0.4, "peer week quota decode")
-check(snap.peers[0].strengthAuto == false && snap.peers[0].uptimeSecs == 187.0, "peer strength/uptime")
-check(snap.peers[0].trust == "personal" && snap.peers[0].verified == true, "peer trust decode")
-// The ban-list mirror (foreign accountability, szpontnet-spec/docs/13): who this node
-// marked banned and why — the panel's mark + tooltip depend on these fields.
-check(snap.banned.count == 1, "banned list decodes")
-check(snap.banned[0].fingerprint == "ee22" && snap.banned[0].node == "ccc"
-      && snap.banned[0].label == "flaky-box", "banned entry identity")
-check(snap.banned[0].reason.contains("failed to deliver") && snap.banned[0].bannedAt > 0,
-      "banned entry reason/time")
-check(snap.banned[0].jobId == "b1c2", "banned entry names the undelivered job")
-check(mesh.trustLevel("banned") != nil, "banned trust level ships in the catalog")
-check(snap.peers.count == 1 && snap.peers[0].link == "up" && snap.peers[0].sees == ["aaa"], "peer decode")
-check(snap.assignments["audit"]?.assigned == ["aaa"], "assignment decode")
-check(snap.assignments["audit"]?.shortfall.first?.platform == "linux", "shortfall decode")
-// `lastSeenSecsAgo` is intentionally excluded from peer equality (it ticks every write),
-// so two snapshots that differ only in it compare equal — the change-detecting poll relies
-// on this to not fire twice a second on an idle mesh.
-// Differs from `snap` ONLY in the ticking fields (lastSeenSecsAgo + uptimeSecs); the
-// stable fields (incl. strength/trust/token state) match, so they must compare equal.
-let snap2 = MeshSnapshot.decode("""
-{"pid":4242,"tcpPort":40878,"linking":0,
- "self":{"id":"aaa","name":"here","platform":"macos","tier":2,"tokens":"ok",
-         "strengthAuto":true,"tokensAuto":true,"tokensPct":0.79,"uptimeSecs":999.0,
-         "tokensSessionPct":0.81,"tokensWeekPct":0.55},
- "peers":[{"id":"bbb","name":"lin","platform":"linux","tier":4,"tokens":"low",
-           "link":"up","addr":"192.168.1.9:40878","lastSeenSecsAgo":9.9,"sees":["aaa"],
-           "strengthAuto":false,"tokensAuto":true,"tokensPct":0.2,"uptimeSecs":999.0,
-           "tokensSessionPct":0.2,"tokensWeekPct":0.4,
-           "trust":"personal","fingerprint":"ff11","verified":true}],
- "banned":[{"fingerprint":"ee22","node":"ccc","label":"flaky-box",
-            "reason":"accepted SzpontRequest b1c2 (review) and failed to deliver: no response to readiness reminder",
-            "bannedAt":1784057240.5,"jobId":"b1c2"}],
- "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
-""".data(using: .utf8)!)
-check(snap == snap2, "snapshot equality ignores lastSeenSecsAgo/uptime/raw-fraction drift")
-// A week-window percentage move IS a meaningful change — the quota indicator
-// must repaint when the probe reports a new integer percent.
-let snap3 = MeshSnapshot.decode("""
-{"pid":4242,"tcpPort":40878,"linking":0,
- "self":{"id":"aaa","name":"here","platform":"macos","tier":2,"tokens":"ok",
-         "strengthAuto":true,"tokensAuto":true,"tokensPct":0.81,"uptimeSecs":930.0,
-         "tokensSessionPct":0.81,"tokensWeekPct":0.48},
- "peers":[{"id":"bbb","name":"lin","platform":"linux","tier":4,"tokens":"low",
-           "link":"up","addr":"192.168.1.9:40878","lastSeenSecsAgo":1.4,"sees":["aaa"],
-           "strengthAuto":false,"tokensAuto":true,"tokensPct":0.2,"uptimeSecs":187.0,
-           "tokensSessionPct":0.2,"tokensWeekPct":0.4,
-           "trust":"personal","fingerprint":"ff11","verified":true}],
- "banned":[{"fingerprint":"ee22","node":"ccc","label":"flaky-box",
-            "reason":"accepted SzpontRequest b1c2 (review) and failed to deliver: no response to readiness reminder",
-            "bannedAt":1784057240.5,"jobId":"b1c2"}],
- "assignments":{"audit":{"assigned":["aaa"],"shortfall":[{"missing":1,"platform":"linux"}]}}}
-""".data(using: .utf8)!)
-check(snap != snap3, "a week-quota percent move is a meaningful change")
-// The discoverability banner keys on the node's OWN diagnosis: `beaconBlockReason`
-// travels beside `beaconBlocked` so the UI shows a Local-Network gate vs a genuinely
-// downed network, not a fixed "allow Python" guess. An older node predating the field
-// decodes to "" — the Local-Network case — so the banner stays backward-compatible.
-let blockedSnap = MeshSnapshot.decode("""
-{"pid":1,"tcpPort":40878,"linking":0,"peers":[],"assignments":{},
- "beaconBlocked":true,"beaconBlockReason":"network-down"}
-""".data(using: .utf8)!)!
-check(blockedSnap.beaconBlocked && blockedSnap.beaconBlockReason == "network-down",
-      "beaconBlockReason decodes beside beaconBlocked")
-let legacyBlocked = MeshSnapshot.decode("""
-{"pid":1,"tcpPort":40878,"linking":0,"peers":[],"assignments":{},"beaconBlocked":true}
-""".data(using: .utf8)!)!
-check(legacyBlocked.beaconBlocked && legacyBlocked.beaconBlockReason == "",
-      "a node without beaconBlockReason defaults to \"\" (the Local-Network case)")
-// Trust + accounting fields (device-key fingerprints, personal/foreign verdicts,
-// advertised stats, the published allowlist) — shaped exactly like the node writes
-// them since the trust/load-balancing layer landed.
-let trustJSONText = """
-{"pid":4242,"tcpPort":40878,"v":1,
- "self":{"id":"aaa","name":"here","platform":"macos","tier":2,"tokens":"ok",
-         "fingerprint":"f00d","stats":{"plan":"max-5x","usageAvg":0.8,"quotaLeft":4.2,"surplus":1.75}},
- "peers":[{"id":"bbb","name":"lin","platform":"linux","tier":4,"tokens":"low",
-           "link":"up","addr":"192.168.1.9:40878","lastSeenSecsAgo":1.4,"sees":["aaa"],
-           "verified":true,"fingerprint":"beef","trust":"foreign","surplus":1.25,
-           "stats":{"plan":"pro","usageAvg":0.25,"quotaLeft":1.5,"surplus":1.25}}],
- "trusted":[{"fingerprint":"beef","label":"linux box"}],
- "assignments":{}}
-"""
-let trustSnap = MeshSnapshot.decode(trustJSONText.data(using: .utf8)!)!
-check(trustSnap.selfNode?.fingerprint == "f00d", "self fingerprint decode")
-check(trustSnap.selfNode?.stats?.plan == "max-5x", "self stats decode")
-// surplus is the advertised burn-down ratio (from stats.surplus), NOT the absolute
-// quotaLeft − usageAvg — a small plan ahead of its reset can out-rank a big idle one.
-check(abs((trustSnap.selfNode?.surplus ?? 0) - 1.75) < 0.0001, "self surplus = advertised pace")
-check(trustSnap.peers[0].verified && trustSnap.peers[0].trust == "foreign", "peer trust decode")
-check(trustSnap.peers[0].fingerprint == "beef" && trustSnap.peers[0].surplus == 1.25, "peer key + surplus")
-check(trustSnap.trusted.first?.label == "linux box", "published allowlist decode")
-// Legacy snapshots (pre-trust, pre-console) default to unverified/personal with
-// neutral surplus and no stats.
-let legacySnap = MeshSnapshot.decode("""
-{"pid":4242,"tcpPort":40878,
- "self":{"id":"aaa","name":"here","platform":"macos","tier":2,"tokens":"ok"},
- "peers":[{"id":"bbb","name":"lin","platform":"linux","tier":4,"tokens":"low",
-           "link":"up","sees":["aaa"]}],
- "assignments":{}}
-""".data(using: .utf8)!)!
-check(!legacySnap.peers[0].verified && legacySnap.peers[0].trust == "personal"
-      && legacySnap.peers[0].surplus == MeshStats.neutralSurplus, "pre-trust peer defaults")
-check(legacySnap.selfNode?.surplus == MeshStats.neutralSurplus && legacySnap.selfNode?.stats == nil,
-      "no stats ⇒ neutral surplus (on the burn-down line, 1.0)")
-check(legacySnap.selfNode?.tokensWeekPct == nil && legacySnap.peers[0].tokensWeekPct == nil,
-      "pre-probe snapshots ⇒ nil week quota (UI falls back to ≈estimate)")
-check(legacySnap.trusted.isEmpty, "no published allowlist ⇒ empty")
-// A trust flip IS a meaningful change (unlike lastSeenSecsAgo/uptime drift) — the
-// poll must republish when a peer's verdict moves.
-let trustSnap2 = MeshSnapshot.decode(
-    trustJSONText.replacingOccurrences(of: "\"foreign\"", with: "\"personal\"").data(using: .utf8)!)!
-check(trustSnap != trustSnap2, "trust flip is a meaningful change")
-print("mesh assertions passed")
-
 section("review prompts")
 let mine = ReviewConfig(depth: "max", me: me)
 let other = ReviewConfig(depth: "max", target: .someone, username: "someuser")
@@ -766,8 +549,8 @@ for p in [cSingle.buildPrompt(), cMine.buildPrompt()] {
 print("conflict prompt assertions passed")
 
 section("agent runner")
-// The runner is chosen in ONE config file that both front-ends read, so a machine
-// can hand a mesh job to the other platform and must get the same agent out of it.
+// The runner is chosen in ONE config file that both front-ends read, and the same
+// setting must get the same agent out of either.
 // These are the exact strings `tests/test_runner.py` pins on the Python side; the
 // two are compared literally, because a difference here is two applets spawning
 // different CLIs from one setting.
@@ -1832,68 +1615,54 @@ check(AutofixDiff.compute(prior: twoRepos.fingerprints,
       "and only the repo whose PR turned conflicting fires")
 print("autofix diff assertions passed")
 
-// ---- mesh coordination (work keys + assignment gate) ----
 section("unified dispatch gate")
 // The behavior matrix of the ONE pipeline both interfaces ride. PARITY: the
 // Python twin (autofix.dispatch_decide etc.) asserts these exact semantics —
 // and any new source asymmetry must be added HERE first, or it's a bug.
 for src in [AgentDispatchGate.Source.panel, .auto] {
     check(AgentDispatchGate.decide(source: src, banned: true, agentOnPR: true,
-                                   meshStandsDown: true, atCapacity: true) == .banned,
+                                   atCapacity: true) == .banned,
           "ban outranks everything for \(src.rawValue)")
     check(AgentDispatchGate.decide(source: src, banned: false, agentOnPR: true,
-                                   meshStandsDown: true, atCapacity: true) == .inFlight,
+                                   atCapacity: true) == .inFlight,
           "a live agent on the PR blocks \(src.rawValue) — never double-spawn")
     check(AgentDispatchGate.decide(source: src, banned: false, agentOnPR: false,
-                                   meshStandsDown: false, atCapacity: false) == .proceed,
+                                   atCapacity: false) == .proceed,
           "clear board proceeds for \(src.rawValue)")
 }
 // The documented trigger asymmetries — and ONLY these:
 check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
-                               meshStandsDown: true, atCapacity: false) == .standDown,
-      "mesh gates auto origination")
-check(AgentDispatchGate.decide(source: .panel, banned: false, agentOnPR: false,
-                               meshStandsDown: true, atCapacity: false) == .proceed,
-      "a human's click already decided placement — panel is never mesh-gated")
-check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
-                               meshStandsDown: false, atCapacity: true) == .atCapacity,
+                               atCapacity: true) == .atCapacity,
       "the device's automatic-task cap gates auto dispatch")
 check(AgentDispatchGate.decide(source: .panel, banned: false, agentOnPR: false,
-                               meshStandsDown: false, atCapacity: true) == .proceed,
+                               atCapacity: true) == .proceed,
       "a click is one deliberate agent, not a queue being emptied — never capped")
 check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
-                               meshStandsDown: true, atCapacity: true) == .atCapacity,
-      "capacity outranks mesh — a saturated device takes no claim it would refuse")
-check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
-                               meshStandsDown: false, atCapacity: false,
+                               atCapacity: false,
                                unaffordable: true) == .unaffordable,
       "the device's rate-limit budget gates auto dispatch")
 check(AgentDispatchGate.decide(source: .panel, banned: false, agentOnPR: false,
-                               meshStandsDown: false, atCapacity: false,
+                               atCapacity: false,
                                unaffordable: true) == .proceed,
       "spending your own last of the limit is the operator's call — panel is never gated")
 check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
-                               meshStandsDown: false, atCapacity: true,
+                               atCapacity: true,
                                unaffordable: true) == .atCapacity,
       "capacity outranks the budget — the probe is not worth taking with no free bay")
 check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
-                               meshStandsDown: true, atCapacity: false,
-                               unaffordable: true) == .unaffordable,
-      "the budget outranks mesh, for the reason capacity does")
-check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
-                               meshStandsDown: false, atCapacity: false,
+                               atCapacity: false,
                                lowDisk: true) == .lowDisk,
       "the free-disk floor gates auto dispatch")
 check(AgentDispatchGate.decide(source: .panel, banned: false, agentOnPR: false,
-                               meshStandsDown: false, atCapacity: false,
+                               atCapacity: false,
                                lowDisk: true) == .proceed,
       "one agent on a tight disk is the operator's call — panel is never disk-gated")
 check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: false,
-                               meshStandsDown: true, atCapacity: true, unaffordable: true,
+                               atCapacity: true, unaffordable: true,
                                lowDisk: true) == .lowDisk,
-      "the disk outranks capacity, the budget and mesh — a freed bay frees no space")
+      "the disk outranks capacity and the budget — a freed bay frees no space")
 check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: true,
-                               meshStandsDown: false, atCapacity: false,
+                               atCapacity: false,
                                lowDisk: true) == .inFlight,
       "an agent already on the PR outranks the disk — nothing would start either way")
 // The auto-review allowlist: an author verdict like the ban, so it holds whoever
@@ -1901,11 +1670,11 @@ check(AgentDispatchGate.decide(source: .auto, banned: false, agentOnPR: true,
 // work on an author carrying both.
 for src in [AgentDispatchGate.Source.panel, .auto] {
     check(AgentDispatchGate.decide(source: src, banned: false, agentOnPR: true,
-                                   meshStandsDown: true, atCapacity: true,
+                                   atCapacity: true,
                                    outsideAllowlist: true) == .notAllowed,
           "an unlisted author outranks everything but the ban for \(src.rawValue)")
     check(AgentDispatchGate.decide(source: src, banned: true, agentOnPR: false,
-                                   meshStandsDown: false, atCapacity: false,
+                                   atCapacity: false,
                                    outsideAllowlist: true) == .banned,
           "the ban outranks the allowlist for \(src.rawValue)")
 }
@@ -2131,7 +1900,7 @@ check(AgentTaskQueue.freeSlots(limit: 1, running: 4) == 0,
       "more agents up than the cap allows draws no slots, not negative ones")
 
 // Queue identity: two monitors owing the same PR are two tasks, and a push must
-// not lose the operator's place for either (so: not the sha-scoped mesh key).
+// not lose the operator's place for either (so: not the sha-scoped ledger key).
 check(AgentTaskQueue.key(auditAction: "conflicts", item: "o/r#7") == "conflicts:o/r#7",
       "queue key is the monitor's verb plus the item")
 check(AgentTaskQueue.key(auditAction: "review-req", item: "o/r#7")
@@ -2280,13 +2049,10 @@ do {
     let now: TimeInterval = 1_000_000
     func rec(_ id: String, pid: Int? = 4242, tty: String = "pts/3",
              age: TimeInterval = 60,
-             placement: AgentState.Placement = .local,
-             source: String = AgentDispatchGate.Source.auto.rawValue,
-             workKey: String = "", seen: TimeInterval? = nil) -> AgentState.RunRecord {
+             source: String = AgentDispatchGate.Source.auto.rawValue) -> AgentState.RunRecord {
         AgentState.RunRecord(runID: id, dispatchedAt: now - age, prNumber: 337,
                              prURL: "https://github.com/o/r/pull/337",
-                             source: source, placement: placement,
-                             workKey: workKey, pid: pid, tty: tty, claimSeenAt: seen)
+                             source: source, pid: pid, tty: tty)
     }
     let alive = [4242: AgentState.ProcInfo(tty: "pts/3", elapsed: 60, isAgent: true)]
     let working = "● Reading…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
@@ -2300,76 +2066,66 @@ do {
     // and an unreadable tmux as evidence that the agent was gone.
     check(state(rec("a"), AgentState.Evidence(
         processes: .unavailable("ps would not decode"), sentinels: .present([]),
-        tails: .present([:]), claims: .present([]), mergedPRs: .present([]))) == .unknown,
-      "an unreadable process table leaves a local run UNKNOWN, never finished")
-    check(state(rec("b", placement: .meshPeer, workKey: "w", seen: now - 10),
-                AgentState.Evidence(
-        processes: .present([:]), sentinels: .present([]), tails: .present([:]),
-        claims: .unavailable("mesh node down"), mergedPRs: .present([]))) == .unknown,
-      "an unreadable claim book leaves a peer's run UNKNOWN, never finished")
-    // A peer's agent is a process on somebody else's box, so a local `ps` is not
-    // evidence about it at all. The Linux front-end used to retire every peer run
-    // 120s after dispatch on exactly this reasoning.
-    check(state(rec("c", pid: nil, tty: "", age: 3600, placement: .meshPeer,
-                    workKey: "w", seen: now - 10),
-                AgentState.Evidence(
-        processes: .present([:]), sentinels: .present([]), tails: .present([:]),
-        claims: .present(["w"]), mergedPRs: .present([]))) == .running,
-      "an empty local process table never retires a run held on a peer's claim")
+        tails: .present([:]), mergedPRs: .present([]))) == .unknown,
+      "an unreadable process table leaves a run UNKNOWN, never finished")
     // The pid IS the identity. A table we did read, without it, is positive evidence.
     check(state(rec("d"), AgentState.Evidence(
         processes: .present([:]), sentinels: .present([]), tails: .present([:]),
-        claims: .present([]), mergedPRs: .present([]))) == .finished,
+        mergedPRs: .present([]))) == .finished,
       "a pid missing from a table we DID read has finished")
     let live = AgentState.Evidence(processes: .present(alive), sentinels: .present([]),
                                    tails: .present(["pts/3": atPrompt]),
-                                   claims: .present([]), mergedPRs: .present([]))
+                                   mergedPRs: .present([]))
     check(state(rec("e"), live) == .awaitingInput,
       "a live agent whose screen shows the prompt is awaiting input")
     check(state(rec("f"), AgentState.Evidence(
         processes: .present(alive), sentinels: .present([]),
-        tails: .unavailable("no tmux server"), claims: .present([]),
+        tails: .unavailable("no tmux server"),
         mergedPRs: .present([]))) == .running,
       "…but an unreadable screen leaves it RUNNING — a bay costed, never a bay freed")
     check(state(rec("g"), AgentState.Evidence(
         processes: .present(alive), sentinels: .present([]),
-        tails: .present(["pts/3": working]), claims: .present([]),
+        tails: .present(["pts/3": working]),
         mergedPRs: .present([]))) == .running,
       "the interrupt hint on the live status bar means mid-turn")
-    // A placement the mesh routed back here: the NODE opened the terminal, so there is
-    // no pid file this applet can read, ever. Judged on the prompt scan instead, or it
-    // reads "unknown" for ever and its bay is never given back.
-    check(state(rec("h", pid: nil, tty: "", age: 600, placement: .meshHere),
+    // A run with no pid is judged on the prompt scan first: an agent up on its PR is
+    // positive evidence the command ran, whatever became of the pid file.
+    check(state(rec("h", pid: nil, tty: "", age: 600),
                 AgentState.Evidence(
         processes: .present([:]), sentinels: .present([]),
-        tails: .present(["pts/5": working]), claims: .present([]),
+        tails: .present(["pts/5": working]),
         mergedPRs: .present([]), liveAgents: .present(["o/r#337": "pts/5"]))) == .running,
       "a pid-less run whose PR has a live agent is running, not unknown")
-    check(state(rec("i", pid: nil, tty: "", age: 600, placement: .meshHere),
+    check(state(rec("i", pid: nil, tty: "", age: 600),
                 AgentState.Evidence(
         processes: .present([:]), sentinels: .present([]), tails: .present([:]),
-        claims: .present([]), mergedPRs: .present([]),
-        liveAgents: .present([:]))) == .finished,
-      "...and one whose PR has no agent in a scan that WORKED has finished")
-    check(state(rec("j", pid: nil, tty: "", age: 600, placement: .meshHere),
+        mergedPRs: .present([]),
+        liveAgents: .present([:]))) == .failed,
+      "...and one whose PR has no agent in a scan that WORKED never ran")
+    check(state(rec("i2", pid: nil, tty: "", age: AgentState.spawnGrace),
                 AgentState.Evidence(
         processes: .present([:]), sentinels: .present([]), tails: .present([:]),
-        claims: .present([]), mergedPRs: .present([]),
+        mergedPRs: .present([]), liveAgents: .present([:]))) == .starting,
+      "...though inside the spawn grace its pid file is only late")
+    check(state(rec("j", pid: nil, tty: "", age: 600),
+                AgentState.Evidence(
+        processes: .present([:]), sentinels: .present([]), tails: .present([:]),
+        mergedPRs: .present([]),
         liveAgents: .unavailable("ps could not be read"))) == .unknown,
       "...but a scan that failed ends nothing")
-    check(state(rec("h2", pid: nil, tty: "", age: 600, placement: .meshHere),
+    check(state(rec("h2", pid: nil, tty: "", age: 600),
                 AgentState.Evidence(
         processes: .present([:]), sentinels: .present([]),
-        tails: .present(["pts/5": working]), claims: .present([]),
-        mergedPRs: .present([]), liveAgents: .present(["o/other#337": "pts/5"]))) == .finished,
+        tails: .present(["pts/5": working]),
+        mergedPRs: .present([]), liveAgents: .present(["o/other#337": "pts/5"]))) == .failed,
       "an agent on #337 of ANOTHER repo is not this run's agent")
     check(state(rec("m"), AgentState.Evidence(
         processes: .present(alive), sentinels: .present([]),
-        tails: .present(["pts/3": working]), claims: .present([]),
+        tails: .present(["pts/3": working]),
         mergedPRs: .present(["o/other#337"]))) == .running
           && state(rec("m"), AgentState.Evidence(
         processes: .present(alive), sentinels: .present([]),
-        tails: .present(["pts/3": working]), claims: .present([]),
+        tails: .present(["pts/3": working]),
         mergedPRs: .present(["o/r#337"]))) == .merged,
       "#337 merging in another repo leaves this run alone; its own merging ends it")
     // The outermost backstop, and the only rung that ends a run on the clock. Every
@@ -2383,7 +2139,7 @@ do {
         processes: .present([4242: AgentState.ProcInfo(
             tty: "pts/3", elapsed: AgentState.runDeadline + 3600, isAgent: true)]),
         sentinels: .present([]), tails: .present(["pts/3": working]),
-        claims: .present([]), mergedPRs: .present([]), tokensLeft: .present(true))
+        mergedPRs: .present([]), tokensLeft: .present(true))
     let ancient = rec("k", age: AgentState.runDeadline + 3600)
     check(deadlined(ancient, oldAndWorking, AgentState.runDeadline) == .finished,
       "a run past the deadline is over whatever its screen still shows")
@@ -2396,14 +2152,6 @@ do {
     broke.tokensLeft = .unsupported("no limit this machine can read")
     check(deadlined(ancient, broke, AgentState.runDeadline) == .running,
       "…and with no limit readable at all, which is not the positive answer it needs")
-    check(deadlined(rec("l", pid: nil, tty: "", age: AgentState.runDeadline + 3600,
-                        placement: .meshPeer, workKey: "w", seen: now - 10),
-                    AgentState.Evidence(processes: .present([:]), sentinels: .present([]),
-                                        tails: .present([:]), claims: .present(["w"]),
-                                        mergedPRs: .present([]),
-                                        tokensLeft: .present(true)),
-                    AgentState.runDeadline) == .running,
-      "a peer's run is not ended by THIS device's deadline — its claim still holds")
     // Closing a window is the one destructive thing a tick does, and the gate is the
     // verdict rather than the clock: `pastDeadline` stays true for the rest of a long
     // run's life, so re-asking it reaps a five-hour run that stopped on its own.
@@ -2432,20 +2180,18 @@ do {
       "a run nothing is known about keeps both its bay and its dedup")
     // The projections, on one mixed tick.
     let mixed = [rec("auto"), rec("clicked", pid: 7, tty: "pts/9",
-                                  source: AgentDispatchGate.Source.panel.rawValue),
-                 rec("peer", pid: nil, tty: "", placement: .meshPeer, workKey: "w",
-                     seen: now - 10)]
+                                  source: AgentDispatchGate.Source.panel.rawValue)]
     let t = AgentState.tick(records: mixed, evidence: AgentState.Evidence(
         processes: .present(alive.merging([7: AgentState.ProcInfo(tty: "pts/9",
                                                                   elapsed: 60,
                                                                   isAgent: true)]) { a, _ in a }),
         sentinels: .present([]), tails: .present(["pts/3": working, "pts/9": working]),
-        claims: .present(["w"]), mergedPRs: .present([]), liveAgents: .present([:])),
+        mergedPRs: .present([]), liveAgents: .present([:])),
         now: now, limit: 2)
     check(t.capLoad == ["auto"],
-      "the cap counts automatic agents that run HERE — not a click, not a peer's")
+      "the cap counts automatic agents — not a click")
     check(t.freeSlots == 1, "one of two bays filled")
-    check(t.inFlight(item: "o/r#337"), "and the PR they are all on reads in-flight")
+    check(t.inFlight(item: "o/r#337"), "and the PR they are both on reads in-flight")
     check(!t.inFlight(item: "o/other#337"), "…while #337 in another repo does not")
     check(t.retirable.isEmpty, "nothing retires while every run is live")
     print("agent state assertions passed")
@@ -2456,11 +2202,10 @@ section("agent state: one number in two repos")
 // item, so neither repo's agent, merge or scan sighting is read as the other's.
 do {
     let now: TimeInterval = 2_000_000
-    func run(_ id: String, _ slug: String, pid: Int? = nil, tty: String = "",
-             placement: AgentState.Placement = .meshHere) -> AgentState.RunRecord {
+    func run(_ id: String, _ slug: String, pid: Int? = nil,
+             tty: String = "") -> AgentState.RunRecord {
         AgentState.RunRecord(runID: id, dispatchedAt: now - 600, prNumber: 5,
-                             prURL: "https://github.com/\(slug)/pull/5",
-                             placement: placement, pid: pid, tty: tty)
+                             prURL: "https://github.com/\(slug)/pull/5", pid: pid, tty: tty)
     }
     check(run("x", "O/A").item == "o/a#5", "a run's item is its URL's, lowercased")
     check(AgentState.RunRecord(runID: "y", dispatchedAt: now,
@@ -2489,11 +2234,10 @@ do {
 
     // Each run ended by its merge with its agent still up and no pid to tell agents
     // apart: released only when alone on its item, and o/b's run is not o/a's neighbour.
-    let ended = [run("a", "o/a", tty: "pts/1", placement: .local),
-                 run("b", "o/b", tty: "pts/2", placement: .local)]
+    let ended = [run("a", "o/a", tty: "pts/1"), run("b", "o/b", tty: "pts/2")]
     let mergedBoth = AgentState.Evidence(
         processes: .present([:]), sentinels: .present([]),
-        tails: .present(["pts/1": "\u{276F}", "pts/2": "\u{276F}"]), claims: .present([]),
+        tails: .present(["pts/1": "\u{276F}", "pts/2": "\u{276F}"]),
         mergedPRs: .present(["o/a#5", "o/b#5"]), liveAgents: scan)
     let verdicts = AgentState.resolve(records: ended, evidence: mergedBoth, now: now)
     let heirs = AgentState.releaseEnded(ended, states: verdicts, evidence: mergedBoth, now: now)
@@ -2502,13 +2246,13 @@ do {
           "two pid-less runs on #5 in two repos are each alone on their item: "
           + "\(heirs.map(\.0.runID))")
 
-    let t = AgentState.tick(records: [run("a", "o/a", pid: 11, tty: "pts/1", placement: .local)],
+    let t = AgentState.tick(records: [run("a", "o/a", pid: 11, tty: "pts/1")],
                             evidence: AgentState.Evidence(
                                 processes: .present([11: AgentState.ProcInfo(
                                     tty: "pts/1", elapsed: 600, isAgent: true)]),
                                 sentinels: .present([]),
                                 tails: .present(["pts/1": "esc to interrupt"]),
-                                claims: .present([]), mergedPRs: .present([]),
+                                mergedPRs: .present([]),
                                 liveAgents: .present([:])),
                             now: now, limit: 2)
     check(t.inFlight(item: "o/a#5") && !t.inFlight(item: "o/b#5"),
@@ -2639,6 +2383,20 @@ do {
     }
     check(read("{\"runId\": \"r\", \"untracked\": true}").map(\.untracked) == [true],
           "a real flag still reads as one")
+    // Keys this build does not read cost nothing: the record decodes as if they were
+    // absent, and resolves on its pid like any other.
+    let extra = read("{\"runId\": \"r\", \"dispatchedAt\": 400, \"pid\": 4242, \"tty\": \"pts/3\", "
+                     + "\"placement\": \"elsewhere\", \"node\": \"box\", \"workKey\": \"w\", "
+                     + "\"claimSeenAt\": 399}")
+    let plain = AgentState.RunRecord(runID: "r", dispatchedAt: 400, pid: 4242, tty: "pts/3")
+    check(extra == [plain], "a record carrying keys this build does not read decodes without them")
+    let up = AgentState.Evidence(
+        processes: .present([4242: AgentState.ProcInfo(tty: "pts/3", elapsed: 600, isAgent: true)]),
+        sentinels: .present([]), tails: .present(["pts/3": "esc to interrupt"]),
+        mergedPRs: .present([]))
+    let verdict = extra.map { AgentState.resolveOne($0, evidence: up, now: 1000) }
+    check(verdict.map(\.state) == [.running] && verdict.map(\.reason) == ["pid 4242 alive; working"],
+          "…and resolves on its pid like any other: \(verdict.map(\.reason))")
     let numbers = read("{\"runId\": \"r\", \"pid\": true, \"prNumber\": true, \"dispatchedAt\": true}")
     check(numbers.count == 1 && numbers[0].pid == nil && numbers[0].prNumber == nil
             && numbers[0].dispatchedAt == 0, "`true` is not the number 1")
@@ -2684,17 +2442,16 @@ do {
     }
 
     let ledger = Telemetry.fold(lines: [
-        "{\"at\": 100, \"ev\": \"started\", \"key\": \"k1\", \"remote\": 1}",
-        "{\"at\": 100, \"ev\": \"started\", \"key\": \"k2\", \"remote\": true}",
+        "{\"at\": 100, \"ev\": \"started\", \"key\": \"k1\"}",
         "{\"at\": true, \"ev\": \"queued\", \"key\": \"k3\"}",
         "{\"at\": \"100\\u0000\", \"ev\": \"queued\", \"key\": \"k4\"}",
         "\u{200B}{\"at\": 100, \"ev\": \"queued\", \"key\": \"k5\"}",
         " {\"at\": 100, \"ev\": \"queued\", \"key\": \"k6\"}\r",
         "\u{FEFF}{\"at\": 100, \"ev\": \"queued\", \"key\": \"k7\"}",
     ])
-    check(ledger.tasks.map(\.key) == ["k1", "k2", "k6"] && ledger.tasks.map(\.remote) == [false, true, false],
-          "the ledger reads `\"remote\": 1` as local, `\"at\": true` or `\"100\\0\"` as no "
-            + "timestamp, and JSON's whitespace alone around a line")
+    check(ledger.tasks.map(\.key) == ["k1", "k6"],
+          "the ledger reads `\"at\": true` or `\"100\\0\"` as no timestamp, and JSON's "
+            + "whitespace alone around a line")
     let line = Telemetry.fold(lines: ["{\"at\": 100, \"ev\": \"done\", \"key\": \"k\", \"pr\": 5, "
                                       + "\"pr\": 7, \"tokens\": 1791274860.7710276}"])
     check(line.tasks.map(\.pr) == [5] && line.tasks.map(\.tokens) == [1791274860.7710276],
@@ -2753,14 +2510,14 @@ do {
     try? FileManager.default.createDirectory(at: book, withIntermediateDirectories: true)
     let wide = """
     {"version": \(AgentRegistry.schemaVersion), "runs": [
-      {"runId": "r1", "dispatchedAt": 1, "claimSeenAt": 1e300, "pid": 1e300,
+      {"runId": "r1", "dispatchedAt": 1, "quietSince": 1e300, "pid": 1e300,
        "prNumber": 99999999999999999999},
       {"runId": "r2", "dispatchedAt": 1, "pid": 99999999999999999999, "prNumber": 1e300}]}
     """
     try? wide.write(to: AgentRegistry.runsPath(), atomically: true, encoding: .utf8)
     let runs = AgentRegistry.load()
     check(runs.map(\.runID) == ["r1", "r2"], "the records survive their unusable numbers")
-    check(runs[0].claimSeenAt == 1e300, "a finite double stays what it is")
+    check(runs[0].quietSince == 1e300, "a finite double stays what it is")
     check(runs.allSatisfy { $0.pid == nil && $0.prNumber == nil },
           "past Int64 is no pid and no PR number, whichever way it is spelled")
 
@@ -2774,51 +2531,34 @@ do {
     print("hand-edited number assertions passed")
 }
 
-section("autofix mesh coordination")
-// PARITY fixtures: diplomat-platform/linux/tests/test_autofix.py asserts these exact strings — two
-// nodes only dedupe origination when their derivations agree byte-for-byte
-// (szpontnet-spec/docs/12-work-claims.md).
-check(AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
-                          headSha: "abc123")
-      == "review:github.com/acme/app#123@abc123", "work key reference convention")
-check(AutofixMesh.workKey(kind: "review-reply", prURL: "https://github.com/a/b/pull/9",
-                          headSha: "F00")
+section("autofix work identity")
+// PARITY: the Python twin (`autofix.ledger_key`) must produce these exact strings.
+check(AutofixWork.ledgerKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
+                            headSha: "abc123")
+      == "review:github.com/acme/app#123@abc123", "ledger key reference convention")
+check(AutofixWork.ledgerKey(kind: "review-reply", prURL: "https://github.com/a/b/pull/9",
+                            headSha: "F00")
       == "review-reply:github.com/a/b#9@F00")
-check(AutofixMesh.workKey(kind: "conflicts", prURL: "https://github.com/a/b/pull/9",
-                          headSha: "F00")
+check(AutofixWork.ledgerKey(kind: "conflicts", prURL: "https://github.com/a/b/pull/9",
+                            headSha: "F00")
       == "conflicts:github.com/a/b#9@F00")
-check(AutofixMesh.workKey(kind: "review", prURL: "https://GitHub.com/Acme/App/pull/5",
-                          headSha: "AbC")
+check(AutofixWork.ledgerKey(kind: "review", prURL: "https://GitHub.com/Acme/App/pull/5",
+                            headSha: "AbC")
       == "review:github.com/Acme/App#5@AbC",
       "host lowercased; owner/repo/sha case preserved")
-// Safe degradation: no sha / not a PR URL / garbage → "" (claim gate skipped).
-check(AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
-                          headSha: "") == "")
-check(AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app/issues/5",
-                          headSha: "x") == "")
-check(AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app",
-                          headSha: "x") == "")
-check(AutofixMesh.workKey(kind: "review", prURL: "not a url", headSha: "x") == "")
-check(AutofixMesh.workKey(kind: "review", prURL: "", headSha: "x") == "")
-
-// The ledger key is the same string whenever the claim key exists, so the two
-// records of one job — the mesh's claim and the telemetry ledger's task — name it
-// identically. Where the claim degrades to "" for an unknown sha, the ledger key
-// does NOT: skipping a claim is safe, and skipping the ledger entry would drop
-// dispatched work off every figure on the Telemetry screen.
-check(AutofixMesh.ledgerKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
-                            headSha: "abc123")
-      == AutofixMesh.workKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
-                             headSha: "abc123"),
-      "ledger key must equal the claim key when the sha is known")
-check(AutofixMesh.ledgerKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
+// An unknown sha drops only the `@sha`: with no key at all, dispatched work would be
+// missing from every figure on the Telemetry screen.
+check(AutofixWork.ledgerKey(kind: "review", prURL: "https://github.com/acme/app/pull/123",
                             headSha: "") == "review:github.com/acme/app#123",
       "a missing sha must not cost the ledger its entry")
-check(AutofixMesh.ledgerKey(kind: "review", prURL: "https://github.com/acme/app/issues/5",
+check(AutofixWork.ledgerKey(kind: "review", prURL: "https://github.com/acme/app/issues/5",
                             headSha: "x") == "", "not a PR URL → nothing to name")
-check(AutofixMesh.ledgerKey(kind: "review", prURL: "not a url", headSha: "x") == "")
+check(AutofixWork.ledgerKey(kind: "review", prURL: "https://github.com/acme/app",
+                            headSha: "x") == "")
+check(AutofixWork.ledgerKey(kind: "review", prURL: "not a url", headSha: "x") == "")
+check(AutofixWork.ledgerKey(kind: "review", prURL: "", headSha: "x") == "")
 
-print("autofix mesh coordination assertions passed")
+print("autofix work identity assertions passed")
 
 // ---- telemetry ----
 section("telemetry")
@@ -2835,13 +2575,13 @@ let tLines = [
     #"{"at": 1784907200, "ev": "sample", "sessionLeft": 0.75, "weekLeft": 0.98, "repoTokens": 1600000, "otherTokens": 900000}"#,
     #"{"at": 1784932000, "ev": "sample", "sessionLeft": 1.0, "weekLeft": 0.97, "repoTokens": 1800000, "otherTokens": 1000000}"#,
     #"{"at": 1784920000, "ev": "queued", "key": "review:h/o/r#1@aa", "duty": "review", "pr": 1}"#,
-    #"{"at": 1784920600, "ev": "started", "key": "review:h/o/r#1@aa", "remote": false, "attempt": 1}"#,
+    #"{"at": 1784920600, "ev": "started", "key": "review:h/o/r#1@aa", "attempt": 1}"#,
     // A retry appends a second `started`; first-wins keeps the measured wait honest.
-    #"{"at": 1784929000, "ev": "started", "key": "review:h/o/r#1@aa", "remote": false, "attempt": 2}"#,
+    #"{"at": 1784929000, "ev": "started", "key": "review:h/o/r#1@aa", "attempt": 2}"#,
     #"{"at": 1784921800, "ev": "done", "key": "review:h/o/r#1@aa", "tokens": 500000}"#,
-    // Placed on a peer: started here, spent there.
+    // Started and still running at `now`.
     #"{"at": 1784930000, "ev": "queued", "key": "conflicts:h/o/r#2@bb", "duty": "conflicts", "pr": 2}"#,
-    #"{"at": 1784930100, "ev": "started", "key": "conflicts:h/o/r#2@bb", "remote": true, "attempt": 1}"#,
+    #"{"at": 1784930100, "ev": "started", "key": "conflicts:h/o/r#2@bb", "attempt": 1}"#,
     // Still owed at `now`.
     #"{"at": 1784996400, "ev": "queued", "key": "review:h/o/r#3@cc", "duty": "review", "pr": 3}"#,
     // Junk a partially-written or newer-platform tail can hold.
@@ -2856,8 +2596,18 @@ check(Telemetry.calibrate(ledger.samples, session: true) == 10_000_000,
       "the window must be priced from what was actually spent, reset intervals skipped")
 let summary = Telemetry.summarize(ledger, now: tNow, days: 14, steps: 56,
                                   binCount: 12, z: 1.96, bucketHours: 12)
-check(summary.startedCount == 2 && summary.remoteCount == 1)
-check(summary.perTask.count == 1, "a peer's agent was priced against our own window")
+check(summary.startedCount == 2 && summary.doneCount == 1)
+check(summary.perTask.count == 1, "a task with no tokens yet was priced")
+// A `started` line may carry a `remote` key this build does not read. The task it
+// opens is counted and priced like any other.
+let rSummary = Telemetry.summarize(
+    Telemetry.fold(lines: tLines + [
+        #"{"at": 1784930200, "ev": "started", "key": "review:h/o/r#9@rr", "remote": true, "attempt": 1}"#,
+        #"{"at": 1784930800, "ev": "done", "key": "review:h/o/r#9@rr", "tokens": 1500000}"#,
+    ]), now: tNow, days: 14, steps: 56, binCount: 12, z: 1.96, bucketHours: 12)
+check(rSummary.startedCount == 3 && rSummary.doneCount == 2 && rSummary.perTask.count == 2
+        && rSummary.perTask.mean == 10,
+      "a line carrying `\"remote\": true` is a task like any other: \(rSummary.perTask.mean)")
 check(summary.perTask.mean == 5, "500k of a 10M window is 5%")
 // The same task against the other window: 2.8M tokens bought 3% of the week, so the
 // week is worth ~93.3M and a 500k task is ~0.54% of it — a different measurement of
@@ -2897,22 +2647,21 @@ check(Telemetry.duration(90) == "1m 30s")
 check(Telemetry.duration(5400) == "1h 30m")
 check(Telemetry.percent(5) == "5.0%")
 check(Telemetry.tokens(1_800_000) == "1.8M")
-// What a bar counts, on a ledger written for the question: a run the mesh placed on
-// a peer finished all the same and is drawn here, though its cost is the peer's and
-// stays out of every per-task figure; a run still going at `now` is not drawn; and a
-// run that started before the range opened is placed by its EXIT, which is inside it.
+// What a bar counts, on a ledger written for the question: a finished run is drawn; a
+// run still going at `now` is not; and a run that started before the range opened is
+// placed by its EXIT, which is inside it.
 let fLedger = Telemetry.fold(lines: [
-    #"{"at": \#(tNow - 7200), "ev": "started", "key": "review:h/o/r#10@a", "remote": true, "attempt": 1}"#,
+    #"{"at": \#(tNow - 7200), "ev": "started", "key": "review:h/o/r#10@a", "attempt": 1}"#,
     #"{"at": \#(tNow - 3600), "ev": "done", "key": "review:h/o/r#10@a", "tokens": 1000}"#,
-    #"{"at": \#(tNow - 7200), "ev": "started", "key": "review:h/o/r#11@b", "remote": false, "attempt": 1}"#,
-    #"{"at": \#(tNow - 10 * 86_400), "ev": "started", "key": "review:h/o/r#12@c", "remote": false, "attempt": 1}"#,
+    #"{"at": \#(tNow - 7200), "ev": "started", "key": "review:h/o/r#11@b", "attempt": 1}"#,
+    #"{"at": \#(tNow - 10 * 86_400), "ev": "started", "key": "review:h/o/r#12@c", "attempt": 1}"#,
     #"{"at": \#(tNow - 5400), "ev": "done", "key": "review:h/o/r#12@c", "tokens": 1000}"#,
 ])
 let fSummary = Telemetry.summarize(fLedger, now: tNow, days: 1, steps: 8, binCount: 4,
                                    z: 1.96, bucketHours: 4)
 check(fSummary.finished.count == 6, "a day of 4-hour buckets is 6 bars")
 check(fSummary.finishedCount == 2,
-      "a peer's finished run, or one that outlived the start of the range, was dropped")
+      "a finished run, or one that outlived the start of the range, was dropped")
 check(fSummary.finished.last?.count == 2, "both exits belong in the newest bucket")
 check(fSummary.peakFinished == 2)
 // A lookback the bucket does not divide, which no shipped range is: the bars still
@@ -2945,7 +2694,7 @@ check(Telemetry.duration(1e300).hasSuffix("m"), "an absurd duration must format,
 // which `Int(Double)` traps on - the same repaint-time trap. The share is dropped;
 // the count is still what the task cost.
 let overflowed = Telemetry.fold(lines: tLines + [
-    #"{"at": 1784930000, "ev": "started", "key": "review:h/o/r#5@ee", "remote": false, "attempt": 1}"#,
+    #"{"at": 1784930000, "ev": "started", "key": "review:h/o/r#5@ee", "attempt": 1}"#,
     #"{"at": 1784931000, "ev": "done", "key": "review:h/o/r#5@ee", "tokens": 1e308}"#,
 ])
 let overflowedSummary = Telemetry.summarize(overflowed, now: tNow, days: 14, steps: 56,
@@ -3009,9 +2758,9 @@ check(blindSummary.quota.last?.sessionPct == nil, "a gap was filled in")
 // 5-hour reading has a share of it, one started after has a weekly share alone.
 let afterSession = Telemetry.fold(lines: tLines + [
     #"{"at": 1784940000, "ev": "sample", "weekLeft": 0.96, "repoTokens": 2100000, "otherTokens": 1200000}"#,
-    #"{"at": 1784932000, "ev": "started", "key": "review:h/o/r#6@ff", "remote": false, "attempt": 1}"#,
+    #"{"at": 1784932000, "ev": "started", "key": "review:h/o/r#6@ff", "attempt": 1}"#,
     #"{"at": 1784933000, "ev": "done", "key": "review:h/o/r#6@ff", "tokens": 300000}"#,
-    #"{"at": 1784941000, "ev": "started", "key": "review:h/o/r#7@gg", "remote": false, "attempt": 1}"#,
+    #"{"at": 1784941000, "ev": "started", "key": "review:h/o/r#7@gg", "attempt": 1}"#,
     #"{"at": 1784942000, "ev": "done", "key": "review:h/o/r#7@gg", "tokens": 400000}"#,
 ])
 let afterSummary = Telemetry.summarize(afterSession, now: tNow, days: 14, steps: 56,
@@ -3288,17 +3037,11 @@ do {
           "a split on my own PR is not judged")
     check(findings([review("PENDING"), review(threads: 1), review(threads: 2)])
           == [pending, "posted its findings as 2 separate reviews instead of one"], "both together")
-    // One machine checks each run: the store the runs it spawned, a node the ones it ran.
     let url7 = "https://github.com/acme/widgets/pull/7"
-    func retiring(kind: String = "review", url: String = url7,
-                  placement: AgentState.Placement = .local) -> AgentState.RunRecord {
-        AgentState.RunRecord(runID: "r", dispatchedAt: since, prNumber: 7, prURL: url, kind: kind,
-                             placement: placement)
+    func retiring(kind: String = "review", url: String = url7) -> AgentState.RunRecord {
+        AgentState.RunRecord(runID: "r", dispatchedAt: since, prNumber: 7, prURL: url, kind: kind)
     }
     check(ReviewAudit.checkedOnRetire(retiring()), "the store checks a review it spawned")
-    check(!ReviewAudit.checkedOnRetire(retiring(placement: .meshPeer))
-            && !ReviewAudit.checkedOnRetire(retiring(placement: .meshHere)),
-          "and leaves one the mesh placed to the node that ran it, even here")
     check(!ReviewAudit.checkedOnRetire(retiring(kind: "conflicts")) && !ReviewAudit.checkedOnRetire(retiring(url: "")),
           "a review run, on a PR")
     check(ReviewAudit.coordinates("https://github.com/acme/widgets/pull/7/").map { "\($0)" }
@@ -3480,18 +3223,18 @@ do {
                              prURL: "https://github.com/o/\(repo)/pull/\(pr)", kind: "review",
                              ledgerKey: "\(kind):github.com/o/r#\(pr)@abc", pid: 7000 + pr, tty: "ttys0\(pr)")
     }
-    let runs = [run("idle", kind: AutofixMesh.kindReviewReq, pr: 11),
-                run("ended", kind: AutofixMesh.kindReviewReq, pr: 12),
-                run("gone", kind: AutofixMesh.kindReviewReq, pr: 13),
-                run("reply", kind: AutofixMesh.kindReviewReply, pr: 14),
-                run("session", kind: AutofixMesh.kindReviewReq, pr: 15),
-                run("refused", kind: AutofixMesh.kindReviewReq, pr: 16)]
+    let runs = [run("idle", kind: AutofixWork.kindReviewReq, pr: 11),
+                run("ended", kind: AutofixWork.kindReviewReq, pr: 12),
+                run("gone", kind: AutofixWork.kindReviewReq, pr: 13),
+                run("reply", kind: AutofixWork.kindReviewReply, pr: 14),
+                run("session", kind: AutofixWork.kindReviewReq, pr: 15),
+                run("refused", kind: AutofixWork.kindReviewReq, pr: 16)]
     let alive = Dictionary(uniqueKeysWithValues: [15, 16].map {
         (7000 + $0, AgentState.ProcInfo(tty: "ttys0\($0)", elapsed: 600, isAgent: true))
     })
     let verdicts = AgentState.resolve(records: runs, evidence: AgentState.Evidence(
         processes: .present(alive), sentinels: .present([]), tails: .present([:]),
-        claims: .present([]), mergedPRs: .present([]),
+        mergedPRs: .present([]),
         sessions: .present(["session": AgentState.SessionState(busy: false),
                             "refused": AgentState.SessionState(busy: false, failure: "402")]),
         activity: .present(["idle": AgentState.TurnReport(verb: .idle, at: at - 5),
@@ -3510,7 +3253,7 @@ do {
     check(stamped["o/r#11"]?.concludedAt == t0 && stamped["o/r#13"]?.concludedAt == nil
             && stamped["o/r#15"] == nil && stamped["o/other#11"]?.concludedAt == nil,
           "a conclusion stamps the record it answers, in its own repo only, and invents none")
-    let otherRepo = [run("idle", kind: AutofixMesh.kindReviewReq, pr: 11, repo: "other")]
+    let otherRepo = [run("idle", kind: AutofixWork.kindReviewReq, pr: 11, repo: "other")]
     check(ReviewReconcile.concluded(otherRepo, verdicts: verdicts) == ["o/other#11"],
           "a run concludes the request of its own repo's #11")
     let late = t0.addingTimeInterval(ReviewReconcile.retryMaxBackoff + 60)
@@ -3731,22 +3474,14 @@ check(AuditCategory.of(action: "merge") == .merge)
 check(AuditCategory.of(action: "merge-failed") == .merge)
 check(AuditCategory.of(action: "ban") == .bans, "bans are their own category")
 check(AuditCategory.of(action: "unban") == .bans)
-// LAN-mesh coordination rows (peer churn, duty takeovers, dispatches) get their own chip.
-check(AuditCategory.of(action: "mesh-up") == .mesh)
-check(AuditCategory.of(action: "mesh-peer-down") == .mesh, "peer loss is a Mesh row")
-check(AuditCategory.of(action: "mesh-takeover") == .mesh, "duty takeovers are Mesh rows")
-check(AuditCategory.of(action: "mesh-dispatch") == .mesh)
-check(AuditCategory.of(action: "mesh-dispatch-failed") == .mesh)
-check(AuditCategory.of(action: "mesh-spawn") == .mesh)
-check(AuditCategory.of(action: "mesh-stop") == .mesh, "stopping a node left running is a Mesh row")
 for verb in ["comms-ping", "comms-review", "comms-fix", "comms-bump", "comms-investigate",
              "comms-error", "comms-recovered", "comms-notice", "comms-reply"] {
     check(AuditCategory.of(action: verb) == .comms, "\(verb) is a Comms row")
 }
-check(AuditCategory.displayOrder.firstIndex(of: .comms) == AuditCategory.displayOrder.firstIndex(of: .mesh)! + 1
+check(AuditCategory.displayOrder.firstIndex(of: .comms) == AuditCategory.displayOrder.firstIndex(of: .bans)! + 1
       && AuditCategory.comms.title == "Comms"
       && AuditCategory.comms.symbol == "bubble.left.and.bubble.right.fill",
-      "the Comms chip sits after Mesh")
+      "the Comms chip sits after Bans")
 // audit-categories.json is the Linux applet's twin of this enum.
 do {
     let url = try CoreAssets.assetsDir().appendingPathComponent("audit-categories.json")

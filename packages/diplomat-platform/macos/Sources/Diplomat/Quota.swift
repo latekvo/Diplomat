@@ -14,12 +14,6 @@ import Foundation
 /// the window has to be priced from what actually happened
 /// (`Telemetry.calibrate`).
 ///
-/// This is deliberately Diplomat's own probe and not a call into the mesh library's
-/// `szpontnet.usage`. The mesh is an optional add-on — the applet ships and runs with
-/// the SzpontNet packages deleted outright, and CI proves it — so a screen that
-/// reached through the mesh for its numbers would be a screen that blanks on exactly
-/// the machines least likely to have it.
-///
 /// `DIPLOMAT_QUOTA_PROBE=0` disables it (the self-tests run offline and
 /// deterministic); `DIPLOMAT_CLAUDE_DIR` moves where the credentials are read from.
 enum Quota {

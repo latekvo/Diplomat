@@ -7,8 +7,8 @@ import DiplomatCore
 /// is appended and how the file is kept from growing forever.
 ///
 /// One append-only file, one JSON object per line, opened `O_APPEND` like the
-/// activity feed so this applet, its Linux counterpart and a mesh node can all
-/// append without clobbering each other.
+/// activity feed so this applet and its Linux counterpart can both append without
+/// clobbering each other.
 enum TelemetryLog {
 
     // MARK: - Location + shared knobs
@@ -57,9 +57,9 @@ enum TelemetryLog {
         unwritten.removeFirst(max(0, unwritten.count - maxUnwritten))
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         rotateIfLarge()
-        // O_APPEND: the kernel appends atomically, so a concurrent append from a
-        // mesh node (or the Linux applet over a shared home) can't be overwritten;
-        // O_CREAT closes the create/exists race too. Same idiom as AuditLog.
+        // O_APPEND: the kernel appends atomically, so a concurrent append from the
+        // Linux applet over a shared home can't be overwritten; O_CREAT closes the
+        // create/exists race too. Same idiom as AuditLog.
         let head = Data(torn ? "\n".utf8 : "".utf8)
         var failure: Int32 = 0
         var written = -1
@@ -123,9 +123,9 @@ enum TelemetryLog {
                 "key": key, "duty": duty, "pr": pr])
     }
 
-    static func started(key: String, remote: Bool, attempt: Int) {
+    static func started(key: String, attempt: Int) {
         append(["at": Date().timeIntervalSince1970, "ev": "started",
-                "key": key, "remote": remote, "attempt": attempt])
+                "key": key, "attempt": attempt])
     }
 
     static func cleared(key: String) {

@@ -48,12 +48,6 @@ struct IssueWizardView: View {
     @State private var commentOnIssue = true
     @State private var includeFeatures = false
     @State private var status: String?
-    /// "Run on mesh" (effective only while the row is live) — checked by default,
-    /// like the Linux wizards.
-    @State private var useMesh = true
-    /// A mesh dispatch is in flight — disables SPAWN so a second click can't
-    /// double-dispatch (the Qt wizards disable the button the same way).
-    @State private var meshDispatching = false
 
     /// The Fix-issues depth levels, loaded from the shared core.
     private var depths: [PromptDepth] { IssueCatalog.depths() }
@@ -236,16 +230,9 @@ struct IssueWizardView: View {
     }
 
     private var spawnButton: some View {
-        WizardSpawnControls(duty: "issues", useMesh: $useMesh,
-                            isValid: config.isValid && !meshDispatching,
-                            tint: tint,
-                            terminalTitle: AgentSpawner.resolved(store.terminal).title,
-                            // Only a named issue is a session the mesh could place: a
-                            // sweep opens none, it queues one fix per issue for this
-                            // machine's own cap to start.
-                            routable: target == .specific
-                                && store.meshRoutable(checkout: config.checkout),
-                            action: spawn)
+        SpawnAgentButton(isValid: config.isValid, tint: tint,
+                         terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                         action: spawn)
     }
 
     /// A short label for the ongoing-processes list, e.g. "Issues · #421 · Deep · swarm the fix".
@@ -260,30 +247,17 @@ struct IssueWizardView: View {
 
     private func spawn() {
         let cfg = config
-        // One named issue is one agent, and the two branches below dispatch it. A
-        // scope is not: it becomes one queued fix per issue, so the task cap decides
+        // One named issue is one agent, dispatched below. A scope is not:
+        // it becomes one queued fix per issue, so the task cap decides
         // how many run at once rather than one agent being handed every open issue in
         // the repo at the same time.
         guard cfg.isSingleIssue else {
             queueSweep(cfg)
             return
         }
-        // Mesh path: hand the job to the local node (it picks the executor, with
-        // failover) instead of opening a terminal here — mirrors the Linux wizards.
-        if MeshSpawnRow.isLive(store), useMesh, store.meshRoutable(checkout: cfg.checkout) {
-            meshDispatching = true
-            status = "Dispatching over the mesh…"
-            AuditLog.log("panel", "issues", "\(trackingLabel) · via mesh")
-            store.meshDispatch(duty: "issues", prompt: cfg.buildPrompt(),
-                               repo: "\(cfg.targetRepo.owner)/\(cfg.targetRepo.repo)") { results, err in
-                meshDispatching = false
-                status = MeshSpawn.summarize(results, error: err)
-            }
-            return
-        }
-        // Local: the SAME pipeline the auto-monitor rides — ban check, tracking —
-        // only the trigger (this click) and its policies (foreground, no mesh gate)
-        // differ. An issue run is not PR-scoped, so there is no dedup key; what keeps
+        // The SAME pipeline the auto-monitor rides — ban check, tracking — only the
+        // trigger (this click) and its policies (foreground, none of the automatic-work
+        // gates) differ. An issue run is not PR-scoped, so there is no dedup key; what keeps
         // two agents off one issue is the assign-to-me claim, which every machine can
         // see. See `AgentDispatchGate`. Nor is there an author to ban-check: whoever
         // filed a hand-named issue is not the handle typed into the scope picker, and
@@ -292,8 +266,8 @@ struct IssueWizardView: View {
         let job = Store.AgentJob(kind: "issues", auditAction: "issues",
                                  label: trackingLabel, prompt: cfg.buildPrompt(),
                                  prURL: nil, prNumber: nil,
-                                 authorLogin: nil, duty: "issues",
-                                 workKey: "", counter: nil, directory: cfg.checkout)
+                                 authorLogin: nil,
+                                 counter: nil, directory: cfg.checkout)
         status = "Launching \(term.title)…"
         Task {
             status = statusText(for: await store.dispatchAgent(job, source: .panel),

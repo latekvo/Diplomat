@@ -25,8 +25,8 @@ public struct PRSnapshot: Equatable {
     /// Unaddressed Reviews" signal. Drives the offline-review reconcile so we don't
     /// dispatch a fix agent for a PR where the ball is with the reviewer. `threadsUnresolved` (raw count) still drives the edge-trigger.
     public let threadsIOwe: Int
-    /// Head commit sha (`headRefOid`) — the "which push" part of the mesh work key,
-    /// so two nodes observing the same commit derive the same key (szpontnet-spec/docs/12).
+    /// Head commit sha (`headRefOid`) — the "which push" part of the ledger key
+    /// (`AutofixWork.ledgerKey`).
     public let headSha: String
 
     public init(number: Int, title: String, url: String, isDraft: Bool,
@@ -104,7 +104,7 @@ public enum AutofixDiff {
 
 /// The SPAWN buttons and the auto-monitors are two TRIGGERS for the very same
 /// workflow: run one agent job. Everything from "run X (on PR #n)" onward — the
-/// ban check, in-flight dedup, mesh coordination, spawn focus, activity label,
+/// ban check, in-flight dedup, spawn focus, activity label,
 /// counters — is decided HERE, once, so the interfaces cannot drift apart.
 /// Triggers stay thin: a click, or a poll's backoff decision. (2026-07-20: the
 /// drift was not hypothetical — dedup lived only on some paths, dupes followed.)
@@ -119,8 +119,6 @@ public enum AutofixDiff {
 ///   starting one agent on a tight disk is their call (`decide`);
 /// - budget: only auto work is held to what is left of the limits it spends
 ///   against — a human spending their own last slice is their call (`decide`);
-/// - mesh: only auto origination is mesh-gated — a human clicking THIS machine's
-///   button has already decided placement (`decide`);
 /// - counters: only a monitor's FIRST dispatch counts as auto-handled work
 ///   (`bumpsCounter`);
 /// - label: rows a monitor found carry the "Auto · " prefix, retries are surfaced
@@ -147,8 +145,6 @@ public enum AgentDispatchGate {
         /// The auto-review allowlist is set and this author is outside it — the
         /// operator narrowed the review monitor to a set of logins, whoever asks.
         case notAllowed
-        /// Mesh: another live node originates this work (auto only).
-        case standDown
         /// This device already runs its cap of concurrent automatic agents
         /// (auto only). Deferred, not dropped — see `decide`.
         case atCapacity
@@ -162,7 +158,7 @@ public enum AgentDispatchGate {
 
     /// The one decision both interfaces obey, in fixed precedence: ban, then the
     /// auto-review allowlist, then in-flight, then (auto only) this device's free
-    /// disk, its concurrency cap, its spending budget, and mesh.
+    /// disk, its concurrency cap and its spending budget.
     ///
     /// The two author verdicts lead together because they are the same kind of fact —
     /// a standing statement about a person, true before this poll and after it — while
@@ -171,25 +167,21 @@ public enum AgentDispatchGate {
     /// monitor's work alone, so a sweep, a wizard press and the two reconcilers over
     /// my own PRs all pass `false`.
     ///
-    /// Capacity outranks mesh so a saturated device never *originates*: the claim
-    /// that routing takes has gossip side effects, and a node holding the claim for
-    /// work it then refuses to start is worse than not asking. It is safe to leave
-    /// the work for a later poll — every machine scans, so on a mesh a peer with
-    /// room picks the same unit up, and off a mesh the reconciler retries it here on
-    /// the next tick (the refusal writes no attempt record, so no backoff engages).
+    /// A saturated device leaves the work for a later poll, which is safe: the
+    /// reconciler retries it here on the next tick (the refusal writes no attempt
+    /// record, so no backoff engages).
     ///
-    /// The budget sits between the two for the same reason and with the same
-    /// consequence: an account with nothing left to spend cannot finish the agent it
-    /// would claim the work for, and holding the job costs nothing but the wait for a
+    /// The budget has the same consequence: an account with nothing left to spend
+    /// cannot finish the agent, and holding the job costs nothing but the wait for a
     /// window to refill or a balance to be topped up. It ranks BELOW capacity only
     /// because capacity is the measurement already in hand — a saturated device has
     /// no slot to spend a budget on, so the probe is never worth taking.
     ///
-    /// The disk leads all three: an agent on a nearly full disk cannot finish whatever
+    /// The disk leads both: an agent on a nearly full disk cannot finish whatever
     /// its bay or budget, and a freed bay frees no space, so it is the hold the feed
     /// should name.
     public static func decide(source: Source, banned: Bool, agentOnPR: Bool,
-                              meshStandsDown: Bool, atCapacity: Bool,
+                              atCapacity: Bool,
                               unaffordable: Bool = false,
                               outsideAllowlist: Bool = false,
                               lowDisk: Bool = false) -> Verdict {
@@ -199,7 +191,6 @@ public enum AgentDispatchGate {
         if source == .auto, lowDisk { return .lowDisk }
         if source == .auto, atCapacity { return .atCapacity }
         if source == .auto, unaffordable { return .unaffordable }
-        if source == .auto, meshStandsDown { return .standDown }
         return .proceed
     }
 
@@ -209,8 +200,7 @@ public enum AgentDispatchGate {
     // owed — and, before this cap existed, dispatched all of them in one pass: N
     // terminal windows, N `claude` sessions, one machine. The cap is the device's,
     // not the monitor's: it bounds how many automatic agents Diplomat has RUNNING
-    // here, so it holds across the review monitor, the conflict reconciler and work
-    // a mesh peer routes in (the node asks its host before it spawns).
+    // here, so it holds across every monitor at once.
 
     public static let defaultAutoTaskLimit = 2
     public static let minAutoTaskLimit = 1
@@ -484,35 +474,14 @@ public enum AgentDispatchGate {
     }
 }
 
-// MARK: - Mesh coordination for the auto-monitors (mirrors autofix.py's twin)
-//
-// Two machines running this monitor poll the same GitHub state as the same user, so
-// each is an independent origin of the same work (szpontnet-spec/docs/12-work-claims.md).
-// The Store gates every auto dispatch with:
-//   1. `standDown` — the duty is assigned to OTHER live nodes: their monitor
-//      originates there, ours stands down (assignment already tracks liveness);
-//   2. the ctl `claim` verb on `workKey` — origination dedup for the remaining
-//      races (no assignee, takeover flaps, spread placements).
-public enum AutofixMesh {
-    public static let kindReviewReq = "review"        // reviews requested of me → duty "review"
-    public static let kindReviewReply = "review-reply" // replies to reviews on MY PRs → duty "review"
-    public static let kindConflicts = "conflicts"     // conflict fixes on MY PRs → duty "conflicts"
+// MARK: - Work identity for the auto-monitors (mirrors autofix.py's twin)
 
-    /// The origination-dedup key for one unit of monitor work — the reference
-    /// convention from szpontnet-spec/docs/12: `<kind>:<host>/<owner>/<repo>#<n>@<sha>`.
-    /// Derived from the PR's own URL so every node observing the same PR agrees
-    /// byte-for-byte (the Python twin must produce identical strings — see the
-    /// parity tests). Returns "" — claim gate skipped, the safe pre-claims
-    /// degradation — when the URL doesn't look like a PR URL or the sha is unknown.
-    public static func workKey(kind: String, prURL: String, headSha: String) -> String {
-        guard !headSha.isEmpty, let ref = prRef(prURL) else { return "" }
-        return "\(kind):\(ref)@\(headSha)"
-    }
+public enum AutofixWork {
+    public static let kindReviewReq = "review"         // reviews requested of me
+    public static let kindReviewReply = "review-reply" // replies to reviews on MY PRs
+    public static let kindConflicts = "conflicts"      // conflict fixes on MY PRs
 
-    /// `<host>/<owner>/<repo>#<n>` for a PR URL, or nil when it isn't one. Split out
-    /// of `workKey` so the ledger key below cannot parse a URL differently from the
-    /// claim key — the two identify the same unit of work and are compared against
-    /// each other in the ledger.
+    /// `<host>/<owner>/<repo>#<n>` for a PR URL, or nil when it isn't one.
     private static func prRef(_ prURL: String) -> String? {
         guard let u = URL(string: prURL),
               let host = u.host?.lowercased(), !host.isEmpty else { return nil }
@@ -522,16 +491,15 @@ public enum AutofixMesh {
         return "\(host)/\(parts[0])/\(parts[1])#\(parts[3])"
     }
 
-    /// The telemetry ledger's identity for one unit of work.
+    /// The telemetry ledger's identity for one unit of work:
+    /// `<kind>:<host>/<owner>/<repo>#<n>@<sha>`, derived from the PR's own URL (the
+    /// Python twin must produce identical strings — see the parity tests). "" when the
+    /// URL is not a PR's.
     ///
-    /// The claim key when a head sha is known — same string, so the two records of
-    /// one job agree — and the same shape WITHOUT `@sha` when it isn't. `workKey`
-    /// deliberately returns "" there, because skipping the mesh claim is the safe
-    /// degradation for a *claim*; skipping the ledger entry is not, since the work
-    /// still gets dispatched and would then be missing from every figure on the
+    /// The same shape WITHOUT `@sha` while the head sha is unknown: the work still
+    /// gets dispatched, and with no key it would be missing from every figure on the
     /// screen. The cost of the fallback is that two pushes to one PR fold into one
-    /// ledger task while the sha is unknown, which understates the count rather
-    /// than inventing one.
+    /// ledger task, which understates the count rather than inventing one.
     public static func ledgerKey(kind: String, prURL: String, headSha: String) -> String {
         guard let ref = prRef(prURL) else { return "" }
         return headSha.isEmpty ? "\(kind):\(ref)" : "\(kind):\(ref)@\(headSha)"

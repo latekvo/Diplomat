@@ -120,8 +120,7 @@ final class Store: ObservableObject {
     /// (a typed `~/…` is expanded at use), so each field shows back exactly what was
     /// entered.
     ///
-    /// NOT in UserDefaults: a mesh node spawns agents from its own stdlib-only process
-    /// and can't read them, so it lives in the shared `~/.diplomat/config.json` (see
+    /// NOT in UserDefaults: it lives in the shared `~/.diplomat/config.json` (see
     /// `AppConfig`). Headless-guarded like the rest.
     @Published var repoRootPaths: [String] {
         didSet {
@@ -225,20 +224,6 @@ final class Store: ObservableObject {
         return roots.contains { $0.path == path }
     }
 
-    /// Whether work in `checkout` (nil: the primary root) may go over the mesh: only the
-    /// configured repo's root's, since a peer on a Diplomat from before repo routing runs
-    /// every job in its single root, a checkout of the configured repo. The primary root
-    /// need not be that one: roots can be reordered, or the configured repo's path fail to
-    /// resolve. No root of the configured repo, nothing goes, nor while the one root is a
-    /// guess (`rootsGuessed`).
-    func meshRoutable(checkout: String?) -> Bool {
-        guard !rootsGuessed else { return false }
-        let (owner, repo) = CoreAssets.repoCoordinates()
-        let configured = "\(owner)/\(repo)".lowercased()
-        guard let home = roots.first(where: { $0.slug.lowercased() == configured }) else { return false }
-        return (checkout ?? roots.first?.path) == home.path
-    }
-
     /// The label for a wizard's single item in `owner/repo`: an OTHER REPOS item spells
     /// out its whole slug.
     func itemLabel(owner: String, repo: String, number: Int) -> String {
@@ -310,8 +295,7 @@ final class Store: ObservableObject {
         }
     }
     /// Which agent CLI a spawn runs (Settings → AGENT RUNNER). In `AppConfig` rather
-    /// than UserDefaults for the same reason the repo root is: a mesh node spawns
-    /// agents from a process with no UserDefaults to ask.
+    /// than UserDefaults, like the repo roots.
     @Published var agentRunner: AgentRunner {
         didSet {
             guard writesConfig, !readingConfig else { return }
@@ -383,10 +367,6 @@ final class Store: ObservableObject {
     /// Blank ⇒ every author, which is what an applet that was never told otherwise
     /// does. Stored raw because this is a text field: parsing on the way in would
     /// rewrite the line under the cursor. `reviewAllowlist` is the parsed reader.
-    ///
-    /// Persisted here rather than in `AppConfig` because it gates ORIGINATION — the
-    /// review monitor deciding to dispatch — and a mesh node never originates: a job
-    /// it runs was already allowed by the peer that found it.
     @Published var reviewAllowlistRaw: String {
         didSet { persist(reviewAllowlistRaw, forKey: Keys.reviewAllowlistRaw) }
     }
@@ -416,14 +396,12 @@ final class Store: ObservableObject {
     /// poll that refuses it writes no attempt record, so the next tick offers it again
     /// as soon as an agent finishes.
     ///
-    /// The second setting NOT in UserDefaults, for the same reason as the repo root: a
-    /// mesh peer can route work here, and the node that spawns it is a separate
-    /// Qt-less Python process (see `AppConfig`). Headless-guarded like the rest.
+    /// NOT in UserDefaults, like the repo roots (see `AppConfig`). Headless-guarded
+    /// like the rest.
     @Published var autoTaskLimit: Int {
         didSet {
             // Normalise in memory as well as on disk. Clamping only on the way out
-            // would leave the gate comparing against a number the file — and so the
-            // mesh node behind it — does not have.
+            // would leave the gate comparing against a number the file does not have.
             let clamped = AgentDispatchGate.clampAutoTaskLimit(autoTaskLimit)
             if clamped != autoTaskLimit { autoTaskLimit = clamped }
             if autoTaskLimit > oldValue { bringPollForward(capLoad: autoTasksMeasured) }
@@ -434,11 +412,10 @@ final class Store: ObservableObject {
         }
     }
 
-    /// The spending budget's four knobs — same file, same reason as the cap above:
-    /// a mesh node spends this machine's limit on work this app never sees.
+    /// The spending budget's four knobs — same file as the cap above.
     ///
-    /// Each normalises in memory as well as on disk, so the gate here and the node
-    /// behind the file are never comparing against different numbers. Changing any of
+    /// Each normalises in memory as well as on disk, so the gate here and the file
+    /// never hold different numbers. Changing any of
     /// them drops the cached verdict, because it was computed under the old ones and
     /// would otherwise stand for another 20 seconds.
     @Published var autoBudgetGate: Bool {
@@ -453,8 +430,8 @@ final class Store: ObservableObject {
 
     /// The run deadline's switch (Settings → STALLED AGENTS). Beside the budget knobs
     /// because it lives in the same shared file, and read straight back out of
-    /// `AppConfig.runDeadline` by the tick rather than from here, so the node's file and
-    /// the resolver cannot disagree about it.
+    /// `AppConfig.runDeadline` by the tick rather than from here, so the file and the
+    /// resolver cannot disagree about it.
     @Published var runDeadlineEnabled: Bool {
         didSet {
             guard writesConfig, !readingConfig,
@@ -634,45 +611,12 @@ final class Store: ObservableObject {
     /// unified activity feed shown in the panel.
     @Published var auditEntries: [AuditEntry] = []
 
-    /// Live Diplomat Mesh topology (the local node's `state.json` snapshot; nil until a node
-    /// has run here) and the last control-edit error surfaced to the Mesh screen. Polled on
-    /// a tight cadence while the mesh is enabled, so it fires far more often than the data
-    /// refresh — `MeshSnapshot`'s equality ignores per-write liveness drift so an idle mesh
-    /// doesn't churn.
-    @Published var meshState: MeshSnapshot?
-    @Published var meshError: String?
-
-    /// Fingerprints of newly-seen mesh devices the user has already decided on (marked
-    /// Personal, or explicitly "Keep Foreign") — so the one-time "New device" prompt on a
-    /// peer card doesn't re-nag. The node stays the source of truth for actual trust; this
-    /// only suppresses the prompt. Persisted locally (this machine's UI state).
-    @Published var meshAckedDevices: Set<String> {
-        didSet { persist(Array(meshAckedDevices), forKey: Keys.meshAckedDevices) }
-    }
-
     /// Whether Settings draws each row's long-form explanation (the header's *Explain*
     /// switch). Off by default: the paragraphs answer questions a first read raises and
     /// are noise on every read after it. Persisted, so the answer to "do I want these"
     /// is given once rather than on every visit.
     @Published var settingsExplain: Bool {
         didSet { persist(settingsExplain, forKey: Keys.settingsExplain) }
-    }
-
-    /// Whether the "marked Personal — trust the other side too" reminder is suppressed
-    /// (the modal's "Don't show again"). Persisted locally; default off (shown once per
-    /// promotion until the user opts out).
-    @Published var meshTrustReminderSuppressed: Bool {
-        didSet { persist(meshTrustReminderSuppressed, forKey: Keys.meshTrustReminderSuppressed) }
-    }
-
-    /// Whether this machine joins the LAN P2P mesh. Opt-in and OFF by default — the app
-    /// never opens a node on the network unasked; enabling it in Settings auto-starts one.
-    @Published var meshEnabled: Bool {
-        didSet {
-            persist(meshEnabled, forKey: Keys.meshEnabled)
-            guard !Headless.active, meshEnabled != oldValue else { return }
-            if meshEnabled { ensureMeshRunning() } else { stopMesh() }
-        }
     }
 
     /// Self-update progress for the Settings "UPDATE" section. Nil until the first check.
@@ -859,12 +803,10 @@ final class Store: ObservableObject {
     @Published var goalFixesStarting: Set<Int> = []
 
     /// Every dispatched agent run the panel draws, in reading order: the sessions this
-    /// machine spawned, the work it handed to a mesh node, and any live agent nobody
-    /// dispatched at all.
+    /// machine spawned, and any live agent nobody dispatched at all.
     ///
     /// A projection of the last tick (`agentTick`), never a book of its own: the book is
-    /// `~/.diplomat/agents/runs.json`, which is where the list survives a restart and
-    /// where the Linux front-end and the mesh node read it from.
+    /// `~/.diplomat/agents/runs.json`, which is where the list survives a restart.
     @Published private(set) var agentRows: [AgentRow] = []
 
     /// One row of the Agent-tasks list: the record, what this tick resolved it to, and
@@ -882,8 +824,8 @@ final class Store: ObservableObject {
         var status: AgentTaskStatus { AgentTaskStatus.of(state) }
 
         /// Whether a click can reach a terminal: the handle this applet's own spawn kept,
-        /// or the agent's own process to walk out from (`TerminalFocus`). A run on a peer
-        /// has neither, and is the one row that draws and cannot be clicked.
+        /// or the agent's own process to walk out from (`TerminalFocus`). A run with
+        /// neither is the one row that draws and cannot be clicked.
         ///
         /// One place, because the two callers disagree visibly: the row stops being a
         /// button, or it stays one and does nothing when pressed.
@@ -925,8 +867,8 @@ final class Store: ObservableObject {
     /// Queued work whose dispatch is under way: it has left the queue and its spawn
     /// has not answered yet.
     ///
-    /// That span is seconds long — a `ps` scan, a mesh round-trip, an AppleScript
-    /// terminal — and for all of it the task is neither queued nor yet a session. It
+    /// That span is seconds long — a `ps` scan, an AppleScript terminal — and for
+    /// all of it the task is neither queued nor yet a session. It
     /// is held here so that it is a ROW throughout, saying what the click just did to
     /// it, rather than a gap where the operator's task used to be.
     ///
@@ -974,9 +916,6 @@ final class Store: ObservableObject {
         static let apiWatchEnabled = "apiWatchEnabled"
         static let apiWatchContinues = "apiWatchContinues"
         static let myConflictAttempts = "myConflictAttempts"
-        static let meshEnabled = "meshEnabled"
-        static let meshAckedDevices = "meshAckedDevices"
-        static let meshTrustReminderSuppressed = "meshTrustReminderSuppressed"
         static let settingsExplain = "settingsExplain"
         static let allocatorSetupDone = "allocatorSetupDone"
         static let queuedTaskOrder = "queuedTaskOrder"
@@ -1105,7 +1044,6 @@ final class Store: ObservableObject {
         if !Headless.active {
             Store.migrateLegacyDefaultsIfNeeded()
             Store.migrateTerminalChoiceIfNeeded()
-            MeshBridge.migrateLegacyStateDirIfNeeded()
         }
         let defaults = UserDefaults.standard
         usernameOverride = defaults.string(forKey: Keys.usernameOverride) ?? ""
@@ -1155,11 +1093,6 @@ final class Store: ObservableObject {
         verdictWithholdInstaller = defaults.object(forKey: Keys.verdictWithholdInstaller) as? Bool ?? true
         verdictWithholdCommunity = defaults.object(forKey: Keys.verdictWithholdCommunity) as? Bool ?? true
         apiWatchEnabled = defaults.object(forKey: Keys.apiWatchEnabled) as? Bool ?? true
-        // Mesh is opt-in and OFF by default (absent key ⇒ false): no node opens on the
-        // network until the user enables it in Settings.
-        meshEnabled = defaults.object(forKey: Keys.meshEnabled) as? Bool ?? false
-        meshAckedDevices = Set(defaults.stringArray(forKey: Keys.meshAckedDevices) ?? [])
-        meshTrustReminderSuppressed = defaults.bool(forKey: Keys.meshTrustReminderSuppressed)
         settingsExplain = defaults.bool(forKey: Keys.settingsExplain)
         commsEnabled = defaults.object(forKey: Keys.commsEnabled) as? Bool ?? false
         commsKeywordsRaw = defaults.string(forKey: Keys.commsKeywordsRaw) ?? ""
@@ -1218,7 +1151,6 @@ final class Store: ObservableObject {
             refreshComms()
             startCommsMonitor()
             startTasksMonitor()
-            startMeshPoll()
             refreshBanList()
             refreshAudit()
             publishSpawnTerminal()
@@ -1229,7 +1161,6 @@ final class Store: ObservableObject {
             // afterwards; publishes the status either way, so it stands in for the
             // plain `refreshAllocatorInstall()` this used to do here.
             Task { await ensureAllocatorInstalled() }
-            Task { await settleMeshOnLaunch() }
         }
     }
 
@@ -1690,8 +1621,7 @@ final class Store: ObservableObject {
         guard let record = AgentRegistry.createRun(
             AgentState.RunRecord(runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
                                  prNumber: prNumber, prURL: prURL ?? "", kind: kind,
-                                 label: label, source: source, placement: .local,
-                                 ledgerKey: ledgerKey),
+                                 label: label, source: source, ledgerKey: ledgerKey),
             prompt: prompt) else {
             throw AgentSpawner.SpawnError.write("could not register the run")
         }
@@ -1768,54 +1698,6 @@ final class Store: ObservableObject {
         }
     }
 
-    // MARK: mesh runs (work this device handed to the mesh)
-
-    /// Book a run the mesh placed, which this applet did not spawn itself.
-    ///
-    /// There is no pid to record: the executor opened the terminal. A placement that
-    /// landed back HERE is still a process on this box, so it spends a bay and the
-    /// untracked scan will find it; one on a peer is judged only by the executor's
-    /// origination claim, which is the sole evidence that crosses the machine boundary.
-    ///
-    /// Which runner it is under is recorded for a landing HERE and only there. The node
-    /// spawns through the same seam this applet does, so the answer is the same one and the
-    /// run is asked of the right store and priced by it. A run on a PEER is a process on
-    /// another machine: our stores hold nothing about it, and a runner written here would
-    /// point its probe at a session that is somebody else's.
-    ///
-    /// Not private: the queue self-test books a run here rather than through a real
-    /// dispatch, which would need a live mesh node and a peer willing to run it.
-    func trackMeshRun(_ job: AgentJob, node: String, attemptNumber: Int,
-                      onThisMachine: Bool = false) {
-        // The work key IS a mesh run's identity — it is what the executor's origination
-        // claim is published under, and the only evidence that ever crosses the machine
-        // boundary. A run without one could never be resolved against a claim book.
-        // (`routeViaMesh` only dispatches keyed jobs, so nothing in the app arrives here
-        // without one.)
-        guard !job.workKey.isEmpty else { return }
-        let now = Date().timeIntervalSince1970
-        // The job already runs, so an unbooked one is reported rather than undone: the
-        // untracked scan still finds an agent here, and a peer's holds its claim.
-        guard let record = AgentRegistry.createRun(
-            AgentState.RunRecord(
-                runID: AgentRegistry.newRunID(now: now), dispatchedAt: now,
-                prNumber: job.prNumber, prURL: job.prURL ?? "", kind: job.kind,
-                label: AgentDispatchGate.label(source: .auto, core: job.label,
-                                               attemptNumber: attemptNumber,
-                                               requested: job.requested),
-                source: AgentDispatchGate.Source.auto.rawValue,
-                placement: onThisMachine ? .meshHere : .meshPeer,
-                node: node, workKey: job.workKey, ledgerKey: job.ledgerKey),
-            prompt: job.prompt) else {
-            bookWritten(.failed)
-            return
-        }
-        bookWritten(.written)
-        if onThisMachine {
-            AgentRegistry.stageRunner(record.runID, AppConfig.agentRunner.rawValue)
-        }
-    }
-
     // MARK: - the one tick every agent question is a projection of
 
     /// Everything one pass of evidence produced, plus what the panel needs to click a row.
@@ -1851,15 +1733,13 @@ final class Store: ObservableObject {
     func agentTick() async -> AgentPass {
         let limit = autoTaskLimit
         let slugs = Set(roots.map { $0.slug.lowercased() })
-        let (mesh, snapshot, merged) = (meshEnabled, meshState, mergedPRs)
-        let (tokens, deadline) = (tokensLeft, AppConfig.runDeadline)
+        let (merged, tokens, deadline) = (mergedPRs, tokensLeft, AppConfig.runDeadline)
         let directory = AgentSpawner.repoPath
         return await Task.detached(priority: .userInitiated) {
             let now = Date().timeIntervalSince1970
             let records = AgentRegistry.adoptPids(AgentRegistry.load())
             let gathered = AgentProbes.gather(records: records, now: now, slugs: slugs,
                                               directory: directory,
-                                              meshEnabled: mesh, meshState: snapshot,
                                               merged: merged, tokens: tokens)
             let tick = AgentState.tick(records: records, evidence: gathered.evidence,
                                        now: now, limit: limit, deadline: deadline)
@@ -1926,9 +1806,8 @@ final class Store: ObservableObject {
         noteCommsRuns(neverRan: Dictionary(failed, uniquingKeysWith: { first, _ in first }))
     }
 
-    /// Write back the three things a tick learns about a run: the pid its shell has since
-    /// written, the tty its process turned out to be on, and when its mesh claim was last
-    /// seen.
+    /// Write back what a tick learns about a run: the pid its shell has since written,
+    /// the tty its process turned out to be on, and when its screen last changed.
     ///
     /// Merged into whatever is on disk NOW rather than replacing the book with this tick's
     /// copy of it. A spawn that registered while this tick was resolving would otherwise be
@@ -1951,8 +1830,7 @@ final class Store: ObservableObject {
                 // The fresher one wins here, unlike the pid: a synthesized run's tty
                 // follows whichever agent its PR's sighting currently names.
                 if !f.tty.isEmpty { merged.tty = f.tty }
-                if let seen = f.claimSeenAt { merged.claimSeenAt = seen }
-                // Taken wholesale, unlike the three above: this pair is the only thing a
+                // Taken wholesale, unlike the two above: this pair is the only thing a
                 // tick learns by comparing itself to the LAST one, so it is the only one
                 // worthless unless written down. Unpersisted, every tick re-reads a
                 // screen it has no memory of, the stillness clock restarts at zero, and
@@ -2133,8 +2011,7 @@ final class Store: ObservableObject {
     /// whether or not this applet opened it. Its window is reached the same two ways a
     /// clicked row's is (`activate`) — the handle a spawn recorded, else the agent's own
     /// process walked out to whatever terminal is showing it. A synthesized run has no run
-    /// directory, so it never has a handle and the walk is its only route; a run the mesh
-    /// placed back here is in the same position.
+    /// directory, so it never has a handle and the walk is its only route.
     ///
     /// An OpenCode 2.x run this reaps is interrupted too, whatever its window does
     /// (`retireFinished`).
@@ -2184,8 +2061,8 @@ final class Store: ObservableObject {
     ///
     /// The sentinel's mtime is when the agent actually exited; now() is whenever a poll got
     /// round to looking, which is up to a poll period later and would inflate every recorded
-    /// run time. A run the mesh placed leaves no sentinel here — the executor writes its own
-    /// — so that one is dated from the poll, which is the best this machine has.
+    /// run time. A run with no sentinel is dated from the poll, which is the best this
+    /// machine has.
     private static func pricingInputs(_ records: [AgentState.RunRecord]) -> [Completion] {
         let now = Date().timeIntervalSince1970
         return records.filter { !$0.ledgerKey.isEmpty }.map {
@@ -2446,10 +2323,6 @@ final class Store: ObservableObject {
         capLoad < autoTaskLimit && !drainableTasks.isEmpty
     }
 
-    /// Work keys a peer's agent already owns, so the "claimed elsewhere" note is
-    /// logged once per key rather than every poll (szpontnet-spec/docs/12).
-    private var meshSuppressedLogged: Set<String> = []
-
     /// Set when the last monitor poll cycle failed (gh/auth/network), so persistent
     /// breakage is visible in Settings instead of silently freezing stale counts.
     /// Cleared by the next fully-successful cycle.
@@ -2664,15 +2537,15 @@ final class Store: ObservableObject {
     /// Not private: the queue self-test drives it with two roots' snapshots.
     func observeOwed(mine snaps: [PRSnapshot]) {
         TelemetryLog.observeOwed(
-            kind: AutofixMesh.kindReviewReply, duty: "review",
+            kind: AutofixWork.kindReviewReply, duty: "review",
             owed: Dictionary(snaps.filter { $0.threadsIOwe > 0 }.map {
-                (AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReply,
+                (AutofixWork.ledgerKey(kind: AutofixWork.kindReviewReply,
                                        prURL: $0.url, headSha: $0.headSha), $0.number)
             }, uniquingKeysWith: { first, _ in first }))
         TelemetryLog.observeOwed(
-            kind: AutofixMesh.kindConflicts, duty: "conflicts",
+            kind: AutofixWork.kindConflicts, duty: "conflicts",
             owed: Dictionary(snaps.filter { $0.mergeable == "CONFLICTING" }.map {
-                (AutofixMesh.ledgerKey(kind: AutofixMesh.kindConflicts,
+                (AutofixWork.ledgerKey(kind: AutofixWork.kindConflicts,
                                        prURL: $0.url, headSha: $0.headSha), $0.number)
             }, uniquingKeysWith: { first, _ in first }))
     }
@@ -2726,7 +2599,7 @@ final class Store: ObservableObject {
             if case .dispatch(let attemptNumber) = decision {
                 if await dispatchConflictFix(number: s.number, url: s.url,
                                              attemptNumber: attemptNumber, source: .auto,
-                                             headSha: s.headSha).wasHandled {
+                                             headSha: s.headSha).didSpawn {
                     attempts[key] = ReviewAttempt(requestedAt: AttemptStamp.conflicting,
                                                   lastDispatchedAt: now, attempts: attemptNumber)
                 }
@@ -2871,9 +2744,9 @@ final class Store: ObservableObject {
         // reckoning but will never be dispatched, so it is left out — counting it
         // would show a review pending forever that nothing is meant to pick up.
         TelemetryLog.observeOwed(
-            kind: AutofixMesh.kindReviewReq, duty: "review",
+            kind: AutofixWork.kindReviewReq, duty: "review",
             owed: Dictionary(owed.filter { !BanList.isBanned($0.author, in: banned) }.map {
-                (AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
+                (AutofixWork.ledgerKey(kind: AutofixWork.kindReviewReq,
                                        prURL: $0.url, headSha: $0.headSha), $0.number)
             }, uniquingKeysWith: { first, _ in first }))
         var concluded: Set<String> = []
@@ -3334,8 +3207,8 @@ final class Store: ObservableObject {
         case issues(IssueConfig)
         case investigate(InvestigateConfig)
 
-        /// The queue verb this ask waits under, which is also its `AgentJob.kind`,
-        /// its mesh duty and the verb its dispatch writes to the activity feed.
+        /// The queue verb this ask waits under, which is also its `AgentJob.kind`
+        /// and the verb its dispatch writes to the activity feed.
         var action: String {
             switch self {
             case .review: return AgentTaskQueue.reviewAction
@@ -3563,7 +3436,7 @@ final class Store: ObservableObject {
 
     /// One stored ask as the queued task it stands for.
     ///
-    /// Carries no `counter`, no `workKey` and no `ledgerKey`: no monitor owns it (so no
+    /// Carries no `counter` and no `ledgerKey`: no monitor owns it (so no
     /// toggle pauses it and no auto-handled counter counts it), and the telemetry
     /// ledger measures the monitors, not the operator.
     ///
@@ -3597,7 +3470,7 @@ final class Store: ObservableObject {
                           prURL: isPR ? entry.url : nil,
                           prNumber: isPR ? entry.number : nil,
                           authorLogin: entry.author.isEmpty ? nil : entry.author,
-                          duty: action, workKey: "", counter: nil,
+                          counter: nil,
                           directory: root?.path ?? entry.config.checkout),
             attemptNumber: 1)
     }
@@ -3646,8 +3519,7 @@ final class Store: ObservableObject {
 
     /// Take an ask off the list once its dispatch has answered for it.
     ///
-    /// Started (here or on a peer that already owns the work) is the obvious one. A BAN
-    /// is the other: the agent would refuse to run for as long as the ban stands, and a
+    /// Started is the obvious one. A BAN is the other: the agent would refuse to run for as long as the ban stands, and a
     /// row nothing will ever start is a row that lies about what this machine is going
     /// to do. Every other outcome leaves the ask alone — an in-flight PR, a window with
     /// no budget left and a terminal that failed to open are all reasons to try again
@@ -3655,7 +3527,7 @@ final class Store: ObservableObject {
     private func settleRequested(_ entry: QueuedAgentTask, _ outcome: DispatchOutcome) {
         guard entry.job.requested else { return }
         switch outcome {
-        case .spawned, .standDown, .banned: forgetRequested(entry.id)
+        case .spawned, .banned: forgetRequested(entry.id)
         // `.notAllowed` is listed only because the switch is exhaustive: an ask can
         // never draw it, since the allowlist answers for the review monitor's own
         // finds and an ask is not one (`AgentJob.counter`).
@@ -3754,7 +3626,7 @@ final class Store: ObservableObject {
     /// `queuedTasks` runs before the first suspension, so the panel shows the click
     /// landing and a second click finds nothing to start; the move out of
     /// `startingTasks` runs only once the row that replaces it is already published
-    /// (`dispatchAgent` books the run — `spawnTracked` or `trackMeshRun` — and awaits
+    /// (`dispatchAgent` books the run — `spawnTracked` — and awaits
     /// `settleAgents` before it returns, and `endStarting` resumes on that continuation
     /// without suspending again). Between them the task is a row the whole way: never
     /// drawn twice, and never missing.
@@ -3766,7 +3638,7 @@ final class Store: ObservableObject {
                                           attemptNumber: entry.attemptNumber,
                                           bypassCapacity: true, forced: forced)
         endStarting(entry.id)
-        if outcome.wasHandled { recordQueuedAttempt(entry) }
+        if outcome.didSpawn { recordQueuedAttempt(entry) }
         commsSettled(entry, outcome)
         settleRequested(entry, outcome)
         return outcome
@@ -3822,33 +3694,28 @@ final class Store: ObservableObject {
     /// The queued row's "execute now": start this task immediately, past the two holds
     /// that are the machine's own judgement.
     ///
-    /// It stays AUTO work — same `Auto · ` label, same auto-handled counter, mesh
-    /// routing still applies, and once running it occupies a slot like any other
-    /// automatic agent, so the rest of the queue waits behind it. Of the seven
+    /// It stays AUTO work — same `Auto · ` label, same auto-handled counter, and once
+    /// running it occupies a slot like any other automatic agent, so the rest of the
+    /// queue waits behind it. Of the six
     /// asymmetries the gate draws between a click and a monitor tick (focus, capacity,
-    /// disk, budget, mesh, counters, label) this borrows exactly three: the cap, the
+    /// disk, budget, counters, label) this borrows exactly three: the cap, the
     /// disk floor and the spending budget, which are the three the operator is
     /// overriding. All three are this machine's judgement of what it should do next,
     /// and the operator looking at the row knows something it does not.
     ///
     /// The ROW answers the click at once — `runQueuedTask` moves it into the starting
     /// band before it suspends, so it reads as starting from the frame after the
-    /// press, through the seconds the mesh round-trip and the terminal spawn take.
-    /// The FEED line is written from the outcome instead, never ahead of it: this is
-    /// an auto job, so a mesh peer can own the work, the PR can have gained an agent
-    /// since the list was built, and the spawn can fail — announcing "started" before
-    /// asking would report a launch that never happened in all three.
+    /// press, through the seconds the terminal spawn takes.
+    /// The FEED line is written from the outcome instead, never ahead of it: the PR
+    /// can have gained an agent since the list was built, and the spawn can fail —
+    /// announcing "started" before asking would report a launch that never happened
+    /// in both.
     func executeQueuedTask(_ id: String) async {
         guard let entry = queuedTasks.first(where: { $0.id == id }) else { return }
         switch await runQueuedTask(entry, forced: true) {
         case .spawned:
             AuditLog.log("panel", "queue-run",
                          "\(entry.job.label) — started ahead of the task cap")
-        // A mesh peer's agent owns the work — which is a task now running, not a
-        // click that did nothing, and `dispatchAgent` has already put the row that
-        // says so where the queued one was. The router logs the peer's name.
-        case .standDown:
-            break
         // The rest are all logged by the step that decided them, but a feed line is
         // not an answer to a click: the row vanished and nothing opened, so say why
         // in the panel, as the per-row Resolve button does (`resolveConflicts`).
@@ -3895,99 +3762,8 @@ final class Store: ObservableObject {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier
     }
 
-    /// Where an auto job went. Both mesh outcomes name the node whose agent has the
-    /// work (empty when the mesh answered without naming one) — the panel draws a row
-    /// for it either way, so "some peer took it" can never look like "it vanished".
-    ///
-    /// `onThisMachine` says the placement came back to us: the mesh's best node was
-    /// the one that asked, which makes the run local in everything but who opened its
-    /// terminal.
-    enum MeshRoute {
-        case standDown(node: String), spawned(node: String, onThisMachine: Bool), local
-    }
-
-    /// Route an AUTO job through the mesh (szpontnet-spec/docs/12): claim-gated dispatch
-    /// to the best-surplus node. Mirrors the Linux store's `_route_via_mesh`.
-    ///
-    /// Every machine scans GitHub independently, but the mesh runs each unit of work
-    /// **once** — `MeshBridge.dispatch` claims the work key and places the run on the
-    /// best node; the EXECUTOR holds that claim for its agent's lifetime, so a
-    /// concurrent or repeat scan is suppressed and a node death frees it for
-    /// failover. No node stands down on a duty ASSIGNMENT anymore — that deferred to
-    /// a node that might not be scanning at all, silently dropping the work.
-    ///
-    /// `.spawned` (the mesh took it), `.standDown` (a peer's agent owns it), or
-    /// `.local` to fall through to a LOCAL tracked spawn — the fail-open path when
-    /// the mesh is unavailable, so a wedged node never drops the operator's work.
-    private func routeViaMesh(_ job: AgentJob) async -> MeshRoute {
-        guard meshEnabled, meshRoutable(job),
-              let snap = meshState, MeshBridge.nodeRunning(snap) else { return .local }
-        let port = snap.tcpPort ?? 0
-        let (duty, prompt, workKey) = (job.duty, job.prompt, job.workKey)
-        let repo = job.item.flatMap(PRRef.splitItemKey)?.slug ?? ""
-        let results: [[String: Any]]? = await Task.detached(priority: .userInitiated) {
-            try? MeshBridge.dispatch(duty: duty, prompt: prompt, workKey: workKey,
-                                     repo: repo, port: port)
-        }.value
-        guard let results, !results.isEmpty else { return .local }  // unreachable → fail-open
-        let statuses = results.map { ($0["status"] as? String) ?? "failed" }
-        if statuses.allSatisfy({ $0 == "suppressed" }) {
-            logMeshSuppressed(workKey, results)
-            return .standDown(node: executorName(results, status: "suppressed"))
-        }
-        if statuses.allSatisfy({ $0 == "spawned" || $0 == "suppressed" }) {
-            // Ran on the mesh (the node logs where). The name comes back with the
-            // dispatch and nowhere else: the claim book identifies the owner by node
-            // id, and a snapshot carrying it is seconds away at best.
-            //
-            // The id beside that name is what says whether the executor is us. Both
-            // sides of the comparison are already in hand — the result names its
-            // executor, the snapshot names this node — so a placement that came home
-            // can be booked as the local agent it is.
-            let me = snap.selfNode?.id
-            let here = me != nil && results.contains {
-                ($0["status"] as? String) == "spawned" && ($0["node"] as? String) == me
-            }
-            return .spawned(node: executorName(results, status: "spawned"),
-                            onThisMachine: here)
-        }
-        return .local  // declined/failed on every slot → fall through to a local spawn
-    }
-
-    /// Whether the mesh may place `job` at all: it needs a work key to claim, and must
-    /// work in the configured repo's root (`meshRoutable(checkout:)`). Not private: the
-    /// queue self-test asks it.
-    func meshRoutable(_ job: AgentJob) -> Bool {
-        !job.workKey.isEmpty && meshRoutable(checkout: job.directory)
-    }
-
-    /// The node the panel names for this dispatch: the first slot with the deciding
-    /// status that came back with a name. Empty when the mesh named none — a row that
-    /// says only "on mesh" still beats work that disappears.
-    ///
-    /// One name for what a multi-platform placement can spread over several slots. It
-    /// is the executors' shared work key that the row is really tracking, and exactly
-    /// one node holds that lease at a time, so a second name would be a second row for
-    /// one unit of work.
-    private func executorName(_ results: [[String: Any]], status: String) -> String {
-        let named = results.first {
-            ($0["status"] as? String) == status && ($0["nodeName"] as? String)?.isEmpty == false
-        }
-        return (named?["nodeName"] as? String) ?? ""
-    }
-
-    /// A peer's agent owns this work — note it once per key, not per poll.
-    private func logMeshSuppressed(_ workKey: String, _ results: [[String: Any]]) {
-        if meshSuppressedLogged.contains(workKey) { return }
-        if meshSuppressedLogged.count > 256 { meshSuppressedLogged.removeAll() }
-        meshSuppressedLogged.insert(workKey)
-        let owner = results.compactMap { $0["nodeName"] as? String }.first ?? "a peer"
-        AuditLog.log("auto", "mesh-suppressed", "Work claimed by \(owner) — running there")
-        refreshAudit()
-    }
-
     /// Auto-handled counters bump only on a monitor's FIRST dispatch (a retry is not
-    /// new work; a manual run is the user's own action). Shared by both spawn paths.
+    /// new work; a manual run is the user's own action).
     private func bumpAutoCounter(_ job: AgentJob, source: AgentDispatchGate.Source,
                                  attemptNumber: Int) {
         guard AgentDispatchGate.bumpsCounter(source: source, attemptNumber: attemptNumber)
@@ -4004,7 +3780,7 @@ final class Store: ObservableObject {
 
     /// One agent job, whoever triggers it. The trigger supplies WHAT to run (config
     /// → prompt, labels, PR identity); the pipeline owns everything that HAPPENS —
-    /// the ban check, in-flight dedup, mesh policy, spawn, tracking, counters — so
+    /// the ban check, in-flight dedup, spawn, tracking, counters — so
     /// a button click and a monitor tick cannot behave differently by accident.
     struct AgentJob: Equatable {
         var kind: String            // agent-row tint: "review" | "issues" | "conflicts" | "audit"
@@ -4014,12 +3790,7 @@ final class Store: ObservableObject {
         var prURL: String?          // nil = not PR-scoped (sweeps, audits) → no PR dedup possible
         var prNumber: Int?
         var authorLogin: String?    // whose PR we'd be reviewing — the ban dimension (nil = none)
-        var duty: String            // mesh duty, for auto-origination gating
-        var workKey: String         // mesh claim key ("" = no claim)
-        /// Telemetry ledger identity ("" = not tracked). Equal to `workKey` whenever
-        /// that exists, but carried separately because it survives an unknown head
-        /// sha — where skipping the mesh *claim* is safe and skipping the ledger
-        /// entry would drop dispatched work off every figure on the screen.
+        /// Telemetry ledger identity ("" = not tracked).
         var ledgerKey: String = ""
         var counter: AutoCounter?   // which auto-handled tally a monitor dispatch feeds
         /// The stamp the monitor that owns this job records against the PR when an
@@ -4077,30 +3848,16 @@ final class Store: ObservableObject {
         case inFlight
         case banned
         case notAllowed
-        case standDown
         case atCapacity
         case unaffordable
         case lowDisk
         case failed(String)
+        /// An agent launched: the signal to record the attempt and start the retry
+        /// backoff. `.failed` deliberately does NOT count (a transient spawn error
+        /// retries next poll), and counting a deferral would drop held work into a
+        /// 5m–3h cooldown instead of offering it again the moment an agent finishes
+        /// or the window refills.
         var didSpawn: Bool { if case .spawned = self { return true }; return false }
-        /// The work is now being handled — spawned locally OR stood down to a peer
-        /// whose agent already owns it. This is the signal to record the attempt and
-        /// start the retry backoff, mirroring the Python reference which treats
-        /// `("spawned", VERDICT_STAND_DOWN)` as handled. `.failed` deliberately does
-        /// NOT count (a transient spawn error retries next poll); nor do `.inFlight`
-        /// / `.banned` / `.notAllowed` / `.atCapacity` / `.unaffordable` / `.lowDisk`.
-        /// Using `.didSpawn` here instead would re-dispatch peer-owned work to the mesh on
-        /// every poll, the backoff never engaging — and counting either deferral as
-        /// handled would drop held work into a 5m–3h cooldown instead of offering it
-        /// again the moment an agent finishes or the window refills.
-        var wasHandled: Bool {
-            switch self {
-            case .spawned, .standDown: return true
-            case .inFlight, .banned, .notAllowed, .atCapacity, .unaffordable, .lowDisk,
-                 .failed:
-                return false
-            }
-        }
     }
 
     /// Run one agent job through the shared gate (`AgentDispatchGate` — the pure,
@@ -4110,7 +3867,7 @@ final class Store: ObservableObject {
     /// one PR (it also drives the panel row's spinner). In-flight evidence is one
     /// tick's verdict on every registered run plus every agent visible in `ps` with
     /// no record behind it, so it also catches agents whose local bookkeeping was
-    /// lost and mesh jobs that landed on this very machine.
+    /// lost.
     ///
     /// An AUTO job is additionally capped at `autoTaskLimit` concurrent agents on
     /// this device (`AgentState.capLoad`), held outright while its own monitor is
@@ -4193,8 +3950,7 @@ final class Store: ObservableObject {
             if budget.affordable { budgetLogged = false }
         }
         switch AgentDispatchGate.decide(source: source, banned: banned,
-                                        agentOnPR: agentOnPR, meshStandsDown: false,
-                                        atCapacity: atCapacity,
+                                        agentOnPR: agentOnPR, atCapacity: atCapacity,
                                         unaffordable: !budget.affordable,
                                         outsideAllowlist: outsideAllowlist,
                                         lowDisk: lowDisk) {
@@ -4236,8 +3992,6 @@ final class Store: ObservableObject {
                 refreshAudit()
             }
             return .inFlight
-        case .standDown:
-            return .standDown
         case .proceed:
             break
         }
@@ -4247,42 +4001,6 @@ final class Store: ObservableObject {
         let rowLabel = AgentDispatchGate.label(source: source, core: job.label,
                                                attemptNumber: attemptNumber,
                                                requested: job.requested)
-        // An AUTO job on a live mesh runs on the best-surplus node via claim-gated
-        // dispatch (every machine scans; the mesh runs it once and dedups via the
-        // executor's claim). A manual spawn — or a wedged/absent mesh — runs and is
-        // tracked locally instead (fail-open).
-        if source == .auto {
-            switch await routeViaMesh(job) {
-            case .standDown(let node):
-                // A peer's agent owns it (logged once by the router). The work is
-                // running, just not here — so it gets a row like any other running
-                // agent, saying whose.
-                trackMeshRun(job, node: node, attemptNumber: attemptNumber)
-                return .standDown
-            case .spawned(let node, let onThisMachine):
-                let token = onThisMachine && !AppConfig.agentTokenKeychainItem.isEmpty
-                AuditLog.log(source.rawValue, job.auditAction,
-                             rowLabel + (token ? AgentSpawner.tokenAuditNote : ""))
-                // Booked wherever the mesh put it, before the next job of this poll asks
-                // how many agents are running — left unbooked, every dispatch of a burst
-                // measured the same empty machine and the cap held back nothing at all.
-                trackMeshRun(job, node: node, attemptNumber: attemptNumber,
-                             onThisMachine: onThisMachine)
-                bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)
-                // A mesh placement on a PEER spends that peer's quota and leaves no
-                // sentinel here, so it is flagged remote — counted as work started and
-                // taken off the backlog, kept out of the per-task cost and run-time
-                // figures. One the mesh placed back here spent ours, and is priced
-                // like any other agent that ran on this machine.
-                recordTelemetryStart(job, source: source, remote: !onThisMachine,
-                                     attemptNumber: attemptNumber)
-                refreshAudit()
-                await settleAgents()
-                return .spawned(terminal: "mesh")
-            case .local:
-                break               // fall through to a local tracked spawn
-            }
-        }
         do {
             let opened = try await spawnTracked(
                 kind: job.kind, label: rowLabel, prURL: job.prURL, prNumber: job.prNumber,
@@ -4291,8 +4009,7 @@ final class Store: ObservableObject {
                 terminal: terminal, restoreFocusTo: AgentDispatchGate.stealsFocus(source) ? nil
                     : frontmostAppBundleID)
             bumpAutoCounter(job, source: source, attemptNumber: attemptNumber)
-            recordTelemetryStart(job, source: source, remote: false,
-                                 attemptNumber: attemptNumber)
+            recordTelemetryStart(job, source: source, attemptNumber: attemptNumber)
             await settleAgents()
             return .spawned(terminal: opened.rawValue)
         } catch {
@@ -4336,14 +4053,12 @@ final class Store: ObservableObject {
         let job = AgentJob(kind: "review", auditAction: "review-req",
                            label: "Review-req · \(itemLabel(key)) (@\(r.author))\(tag)",
                            prompt: cfg.buildPrompt(), prURL: r.url, prNumber: r.number,
-                           authorLogin: r.author, duty: "review",
-                           workKey: AutofixMesh.workKey(kind: AutofixMesh.kindReviewReq,
-                                                        prURL: r.url, headSha: r.headSha),
-                           ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReq,
+                           authorLogin: r.author,
+                           ledgerKey: AutofixWork.ledgerKey(kind: AutofixWork.kindReviewReq,
                                                             prURL: r.url, headSha: r.headSha),
                            counter: .reviewRequests, attemptStamp: AttemptStamp.reviewRequest(r),
                            directory: root.path)
-        return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
+        return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).didSpawn
     }
 
     var reviewRequestsHandled: Int {
@@ -4379,7 +4094,7 @@ final class Store: ObservableObject {
 
     /// Resolve the conflicts on one PR — the job builder shared by the conflicts
     /// reconciler (`.auto`) and the panel's per-row button (`.panel`). Everything
-    /// else (dedup, mesh policy, focus, label, counter) is the pipeline's.
+    /// else (dedup, focus, label, counter) is the pipeline's.
     @discardableResult
     private func dispatchConflictFix(number: Int, url: String,
                                      attemptNumber: Int = 1,
@@ -4393,10 +4108,8 @@ final class Store: ObservableObject {
         let job = AgentJob(kind: "conflicts", auditAction: "conflicts",
                            label: "Resolve · \(itemLabel(key))",
                            prompt: cfg.buildPrompt(), prURL: url, prNumber: number,
-                           authorLogin: nil, duty: "conflicts",
-                           workKey: AutofixMesh.workKey(kind: AutofixMesh.kindConflicts,
-                                                        prURL: url, headSha: headSha),
-                           ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindConflicts,
+                           authorLogin: nil,
+                           ledgerKey: AutofixWork.ledgerKey(kind: AutofixWork.kindConflicts,
                                                             prURL: url, headSha: headSha),
                            counter: .conflicts, attemptStamp: AttemptStamp.conflicting,
                            directory: root.path)
@@ -4417,14 +4130,12 @@ final class Store: ObservableObject {
         let job = AgentJob(kind: "review", auditAction: "review-reply",
                            label: "Review · \(itemLabel(key))",
                            prompt: cfg.buildPrompt(), prURL: s.url, prNumber: s.number,
-                           authorLogin: nil, duty: "review",
-                           workKey: AutofixMesh.workKey(kind: AutofixMesh.kindReviewReply,
-                                                        prURL: s.url, headSha: s.headSha),
-                           ledgerKey: AutofixMesh.ledgerKey(kind: AutofixMesh.kindReviewReply,
+                           authorLogin: nil,
+                           ledgerKey: AutofixWork.ledgerKey(kind: AutofixWork.kindReviewReply,
                                                             prURL: s.url, headSha: s.headSha),
                            counter: .myReviews, attemptStamp: AttemptStamp.unresolvedReview,
                            directory: root.path)
-        return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).wasHandled
+        return await dispatchAgent(job, source: .auto, attemptNumber: attemptNumber).didSpawn
     }
 
     /// Item key -> our attempt record for reviews received on my own PRs (unresolved
@@ -4501,11 +4212,11 @@ final class Store: ObservableObject {
             self.error = "Resolve \(label) failed to spawn — see the activity log."
         case .inFlight:
             self.error = "Resolve \(label): an agent is already on this PR."
-        case .spawned, .banned, .standDown, .atCapacity, .unaffordable, .lowDisk, .notAllowed:
-            // `.standDown`, `.atCapacity`, `.unaffordable` and `.lowDisk` are answers
-            // only a monitor gets — none of the mesh gate, the automatic-task cap, the
-            // spending budget and the disk floor applies to a click — and `.notAllowed`
-            // speaks for the review monitor's finds, never a conflict.
+        case .spawned, .banned, .atCapacity, .unaffordable, .lowDisk, .notAllowed:
+            // `.atCapacity`, `.unaffordable` and `.lowDisk` are answers only a monitor
+            // gets — none of the automatic-task cap, the spending budget and the disk
+            // floor applies to a click — and `.notAllowed` speaks for the review
+            // monitor's finds, never a conflict.
             break
         }
     }
@@ -4697,9 +4408,9 @@ final class Store: ObservableObject {
     /// recorded: the screen measures the MONITORS, and an operator's own click has no
     /// queue instant to be late against.
     private func recordTelemetryStart(_ job: AgentJob, source: AgentDispatchGate.Source,
-                                      remote: Bool, attemptNumber: Int) {
+                                      attemptNumber: Int) {
         guard source == .auto, !job.ledgerKey.isEmpty else { return }
-        TelemetryLog.started(key: job.ledgerKey, remote: remote, attempt: attemptNumber)
+        TelemetryLog.started(key: job.ledgerKey, attempt: attemptNumber)
         refreshTelemetry()
     }
 
@@ -4750,7 +4461,7 @@ final class Store: ObservableObject {
     /// walked out to whatever window is showing it (`TerminalFocus`), which is the only
     /// route to a live agent this applet did not open.
     ///
-    /// A run on a peer has neither and dismisses rather than pretending. If both fail the
+    /// A run with neither dismisses rather than pretending. If both fail the
     /// window is gone, so the tick is re-run to drop the dead row immediately rather than
     /// leaving it to linger. The AppleScript runs off the main thread so the panel
     /// never hitches.
@@ -4764,203 +4475,6 @@ final class Store: ObservableObject {
         if focused { return .focused }
         await settleAgents()
         return .dismissed
-    }
-
-    // MARK: - Diplomat Mesh (LAN P2P topology)
-
-    /// How often the mesh topology snapshot is re-read while enabled. 2s by default so the
-    /// screen feels live; the read is a cheap file decode and the poll no-ops when the mesh
-    /// is off. Env-overridable for tests.
-    static var meshPollInterval: TimeInterval {
-        let secs = ProcessInfo.processInfo.environment["DIPLOMAT_MESH_POLL_SECS"].flatMap(Double.init)
-        return max(1, secs ?? 2)
-    }
-    private var meshPollTask: Task<Void, Never>?
-
-    private func startMeshPoll() {
-        guard meshPollTask == nil else { return }
-        meshPollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await AppLog.timed("meshTick") { await self?.meshTick() }
-                let ns = UInt64(Store.meshPollInterval * 1_000_000_000)
-                try? await Task.sleep(nanoseconds: ns)
-            }
-        }
-    }
-
-    /// Re-read the local node's public topology snapshot and publish on a meaningful
-    /// change. No-ops (and costs nothing) when the mesh is disabled — and in render
-    /// mode, where it would clobber a seeded mesh fixture with the real state.json.
-    func meshTick() async {
-        guard meshEnabled, !Headless.isRender else { return }
-        let next = await Task.detached(priority: .utility) { MeshBridge.readState() }.value
-        if next != meshState { meshState = next }
-    }
-
-    /// Start a background mesh node if none is alive (the Mesh screen's "Start" button and
-    /// the Settings toggle both call this). A spawn failure lands in `meshError`.
-    func ensureMeshRunning() {
-        Task { [weak self] in
-            let err = await Task.detached(priority: .utility) { MeshBridge.ensureRunning() }.value
-            guard let self else { return }
-            if let err { self.meshError = err }
-            await self.meshTick()
-        }
-    }
-
-    /// Start a node on launch if the user has opted into the mesh; with it off, stop one
-    /// an earlier instance left running. Twin of the Linux applet's launch.
-    func settleMeshOnLaunch() async {
-        if meshEnabled { ensureMeshRunning() } else { await stopStrayMeshNode() }
-    }
-
-    /// Stop a node left running on this app's mesh state dir while the mesh is off, and
-    /// say so in the audit feed. The node outlives the app by design, so one started by
-    /// an earlier instance (a previous run, a stray debug build) otherwise runs on
-    /// unattended while the setting reads off. Twin of the Linux
-    /// `store.stop_stray_node_async`.
-    @discardableResult
-    func stopStrayMeshNode(exitWait: TimeInterval = 10) async -> MeshBridge.StrayNode {
-        let outcome = await Task.detached(priority: .utility) {
-            MeshBridge.stopStrayNode(exitWait: exitWait)
-        }.value
-        switch outcome {
-        case .none:
-            break
-        case .stopped(let pid, let port):
-            AuditLog.log("panel", "mesh-stop",
-                         "Mesh is off: stopped the node left running here (pid \(pid), :\(port))")
-        case .stopFailed(let pid, let port, let reason):
-            AuditLog.log("panel", "warn",
-                         "Mesh is off, but the node left running here (pid \(pid), :\(port)) "
-                         + "did not stop: \(reason)")
-        }
-        // The mesh may have been turned on while the node exited: the toggle saw it still
-        // alive and started none.
-        if meshEnabled { ensureMeshRunning() }
-        return outcome
-    }
-
-    /// Ask the local node to stop and drop the topology (used when the user disables the
-    /// mesh). Best-effort — an already-dead node is fine.
-    func stopMesh() {
-        let port = meshState?.tcpPort ?? 0
-        Task { [weak self] in
-            _ = await Task.detached(priority: .utility) { () -> Bool in
-                if port > 0 { try? MeshBridge.stop(port: port) }
-                return true
-            }.value
-            guard let self else { return }
-            self.meshState = nil
-            self.meshError = nil
-        }
-    }
-
-    /// Run one mesh control round-trip off the main actor, then settle the screen:
-    /// any `MeshCtlError` becomes `meshError` (the mesh screen renders it) and the
-    /// topology is re-read so the edit shows immediately.
-    ///
-    /// Every step is load-bearing, which is why the five commands below share it
-    /// rather than each spelling it out: without the `meshTick()` the screen keeps
-    /// showing pre-edit state, and without the `meshError` assignment a rejected edit
-    /// looks like it worked. Driven directly
-    /// by `MeshCommandTest`, which is why it isn't private. Twin of the Linux
-    /// `store._mesh_command`.
-    func meshCommand(_ body: @escaping (Int) throws -> Void) {
-        let port = meshState?.tcpPort ?? 0
-        Task { [weak self] in
-            let err: String? = await Task.detached(priority: .userInitiated) {
-                do { try body(port); return nil }
-                catch { return (error as? LocalizedError)?.errorDescription ?? "\(error)" }
-            }.value
-            guard let self else { return }
-            self.meshError = err
-            await self.meshTick()
-        }
-    }
-
-    /// Edit a node's attributes (self or a peer, forwarded over the mesh). Runs the control
-    /// round-trip off-main; a `MeshCtlError` lands in `meshError` for the screen.
-    func meshSetAttr(nodeID: String, attrs: [String: Any]) {
-        meshCommand { try MeshBridge.setAttr(target: nodeID, attrs: attrs, port: $0) }
-    }
-
-    /// Mark a peer's device Personal (trust) or Foreign (untrust) — add/remove its proven
-    /// fingerprint from the local allowlist. Mirrors the Linux `store.mesh_trust`/`mesh_untrust`.
-    func meshSetTrust(fingerprint: String, label: String, trusted: Bool) {
-        meshCommand { port in
-            if trusted { try MeshBridge.trust(fingerprint: fingerprint, label: label, port: port) }
-            else { try MeshBridge.untrust(fingerprint: fingerprint, port: port) }
-        }
-    }
-
-    /// Lift a ban on a peer's device — it was marked banned after accepting a
-    /// SzpontRequest and failing to deliver it (szpontnet-spec/docs/13#the-ban), or
-    /// manually. It returns to Foreign; promote via the trust toggle if it's yours.
-    /// (Mirrors the Linux store's `mesh_unban`.)
-    func meshUnban(fingerprint: String, node: String) {
-        meshCommand { try MeshBridge.unban(fingerprint: fingerprint, node: node, port: $0) }
-    }
-
-    /// Set the trust level applied to UNKNOWN (unlisted) devices — the mesh screen's
-    /// default-trust toggle. `level` is "personal" or "foreign". Runs the control
-    /// round-trip off-main; a `MeshCtlError` lands in `meshError` for the screen.
-    func meshSetDefaultTrust(level: String) {
-        meshCommand { try MeshBridge.setDefaultTrust(level: level, port: $0) }
-    }
-
-    /// Pick the mesh's preferred WAN transport (gossiped last-writer-wins, like a
-    /// placement edit). It orders the transports a WAN dial tries, so it lands on the
-    /// next dial each node makes — no live link is moved. Mirrors the Linux store's
-    /// `mesh_set_wan`.
-    func meshSetWan(transport: String) {
-        meshCommand { try MeshBridge.setWan(transport: transport, port: $0) }
-    }
-
-    /// Link to a peer's WAN id (an iroh endpoint id or an onion), reaching a machine
-    /// this one may never have met on the LAN. The address shape picks the transport;
-    /// a refusal (an id we can't dial, a transport not running here) lands in
-    /// `meshError` for the screen. Mirrors the Linux store's `mesh_connect`.
-    func meshConnect(address: String) {
-        meshCommand { try MeshBridge.connect(address: address, port: $0) }
-    }
-
-    /// Record that the user has decided on a newly-seen device (Personal or Keep Foreign),
-    /// so its one-time "New device" prompt stops showing. UI-local; does not change trust.
-    func meshAckDevice(fingerprint: String) {
-        guard !fingerprint.isEmpty else { return }
-        meshAckedDevices.insert(fingerprint)
-    }
-
-    /// Hand a duty job to the mesh — the wizards' "Run on mesh" path (mirrors the Linux
-    /// store's `mesh_dispatch`). The local node picks the executor per the dispatch
-    /// strategy and walks failover candidates; the per-slot result dicts (or a transport
-    /// error) land in `completion` on the main actor, and the activity feed re-reads so
-    /// the node's mesh-dispatch entries appear immediately. `repo` (`owner/name`) is the
-    /// repo the job works on.
-    func meshDispatch(duty: String, prompt: String, repo: String,
-                      completion: @escaping ([[String: Any]], String?) -> Void) {
-        let port = meshState?.tcpPort ?? 0
-        let repo = repo.lowercased()
-        Task { [weak self] in
-            let outcome: ([[String: Any]], String?) = await Task.detached(priority: .userInitiated) {
-                do {
-                    return (try MeshBridge.dispatch(duty: duty, prompt: prompt, repo: repo,
-                                                    port: port), nil)
-                }
-                catch { return ([], (error as? LocalizedError)?.errorDescription ?? "\(error)") }
-            }.value
-            guard let self else { return }
-            completion(outcome.0, outcome.1)
-            self.refreshAudit()
-            await self.meshTick()
-        }
-    }
-
-    /// Edit one duty's mesh-wide placement (gossiped last-writer-wins).
-    func meshSetOverrides(duty: String, placement: MeshPlacement) {
-        let obj = placement.jsonObject()
-        meshCommand { try MeshBridge.setOverrides(duty: duty, placement: obj, port: $0) }
     }
 
     // MARK: - self-update

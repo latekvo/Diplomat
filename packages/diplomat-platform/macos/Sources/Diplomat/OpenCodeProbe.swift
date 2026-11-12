@@ -278,46 +278,23 @@ enum OpenCodeProbe {
     private static let adoptedLock = NSLock()
     private static var adopted: [String: String] = [:]
 
-    /// Give runs this applet did not spawn here — mesh-placed, released, or never booked —
-    /// the 2.x session the process-table scan found, so they are asked of the service,
-    /// priced and interrupted like a spawned run (`serviceSession(of:)`). A spawned run
-    /// binds its session at spawn.
+    /// Give runs this applet did not spawn — released, or never booked — the 2.x session
+    /// the process-table scan found, so they are asked of the service, priced and
+    /// interrupted like a spawned run (`serviceSession(of:)`). A spawned run binds its
+    /// session at spawn.
     ///
     /// An untracked run has no run directory: it is given the session remembered here -
     /// the one the scan found on its item, or for a released run, which keeps its agent's
-    /// pid, the one at that pid (the PR's sighting prefers any other agent). A mesh-placed
-    /// one is bound in its run directory to the first `attached` session no run holds
-    /// whose opening prompt is exactly its staged one — `bind`'s exact match — and only
-    /// while it has no port (a 1.x run) and no session yet.
-    ///
-    /// `openingPrompt` is the sweep self-test's seam.
+    /// pid, the one at that pid (the PR's sighting prefers any other agent).
     static func adopt(_ records: [AgentState.RunRecord], sessions: [String: String],
-                      byPID: [Int: String], attached: [String],
-                      openingPrompt: (String) -> String? = {
-                          OpenCodeProbe.openingPrompt(sessionID: $0)
-                      }) {
-        var taken = Set(records.map { AgentRegistry.boundSession($0.runID) }
-            .filter { !$0.isEmpty })
-        for r in records {
-            if r.untracked {
-                let session = r.pid == nil ? r.item.flatMap { sessions[$0] }
-                    : r.pid.flatMap { byPID[$0] }
-                guard let session else { continue }
-                adoptedLock.lock()
-                adopted[r.runID] = session
-                adoptedLock.unlock()
-            } else if r.placement == .meshHere,
-                      AgentRegistry.runRunner(r.runID) == AgentRunner.opencode.rawValue,
-                      AgentRegistry.port(r.runID) == nil,
-                      AgentRegistry.boundSession(r.runID).isEmpty,
-                      let prompt = try? String(contentsOf: AgentRegistry.promptPath(r.runID),
-                                               encoding: .utf8),
-                      let session = attached.first(where: {
-                          !taken.contains($0) && openingPrompt($0) == prompt
-                      }) {
-                AgentRegistry.bindSession(r.runID, session)
-                taken.insert(session)
-            }
+                      byPID: [Int: String]) {
+        for r in records where r.untracked {
+            let session = r.pid == nil ? r.item.flatMap { sessions[$0] }
+                : r.pid.flatMap { byPID[$0] }
+            guard let session else { continue }
+            adoptedLock.lock()
+            adopted[r.runID] = session
+            adoptedLock.unlock()
         }
     }
 

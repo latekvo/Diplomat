@@ -30,8 +30,6 @@ enum Headless {
         "DIPLOMAT_SPAWN_FOCUS_TEST": false,
         "DIPLOMAT_SPAWN_SCRIPT_TEST": false,
         "DIPLOMAT_OSA_TEST": false,
-        "DIPLOMAT_MESH_CMD_TEST": false,
-        "DIPLOMAT_MESH_STRAY_TEST": false,
         "DIPLOMAT_ALLOCATOR_TEST": false,
         "DIPLOMAT_WATCHDOG": false,
         "DIPLOMAT_WATCHDOG_TEST": false,
