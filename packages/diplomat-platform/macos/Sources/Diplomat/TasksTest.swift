@@ -252,6 +252,12 @@ enum TasksTest {
         check("with no root for the goal's repo, it asks for and records nothing",
               store.requestedWork.count == asksBeforeNoRoot && view(fixture.auto)?.task.dispatched.isEmpty == true,
               "\(store.requestedWork.map(\.key)) \(view(fixture.auto)?.task.dispatched.keys.sorted() ?? [])")
+        store.me = ""
+        await store.runGoalPass()
+        store.me = me
+        check("with the GitHub login unknown, it asks for and records nothing",
+              store.requestedWork.count == asksBeforeNoRoot && view(fixture.auto)?.task.dispatched.isEmpty == true,
+              "\(store.requestedWork.map(\.key)) \(view(fixture.auto)?.task.dispatched.keys.sorted() ?? [])")
         let asksBefore = Set(store.requestedWork.map(\.key))
         store.goalFixesStarting = [1820]
         await store.runGoalPass()

@@ -11,10 +11,11 @@ func gitlabSmoke() async throws {
           "gitlab.com, any gitlab.* host and every configured host are GitLab")
     check(!GitLabHosts.contains("gl.example.org", configured: [])
           && !GitLabHosts.contains("github.com", configured: [])
+          && !GitLabHosts.contains("GitHub.com", configured: ["github.com"])
           && !GitLabHosts.contains("mygitlab.com", configured: [])
           && !GitLabHosts.contains("gitlab", configured: [])
           && !GitLabHosts.contains("gitlab..com", configured: []),
-          "an unconfigured host is GitLab only by a first DNS label of `gitlab`")
+          "an unconfigured host is GitLab only by a first DNS label of `gitlab`, and github.com never")
 
     let config = """
         # glab config
@@ -95,21 +96,45 @@ func gitlabSmoke() async throws {
 
     let configured = (owner: "o", repo: "r")
     let roots = RepoRoots.resolve(
-        paths: ["/w/gl-same", "/w/gl-renamed", "/w/gl-origin", "/w/gl-twin", "/w/gh-same"],
+        paths: ["/w/gl-same", "/w/gl-renamed", "/w/gl-up", "/w/gl-twin", "/w/gh-same"],
         remotes: ["/w/gl-same": "remote.origin.url https://gitlab.com/o/r",
                   "/w/gl-renamed": "remote.origin.url https://gitlab.com/other/r",
-                  "/w/gl-origin": "remote.gh.url https://github.com/o/r\n"
-                      + "remote.origin.url https://gitlab.example.com/g/sub/p",
+                  "/w/gl-up": "remote.mirror.url https://gitlab.example.com/g/m\n"
+                      + "remote.origin.url https://gitlab.example.com/g/fork\n"
+                      + "remote.upstream.url https://gitlab.example.com/g/sub/p",
                   "/w/gl-twin": "remote.origin.url git@gitlab.com:O/R.git",
                   "/w/gh-same": "remote.origin.url https://github.com/o/r"],
         configured: configured)
     check(roots == [PRRef.LocalRepo(owner: "o", repo: "r", path: "/w/gl-same", host: "gitlab.com"),
                     PRRef.LocalRepo(owner: "other", repo: "r", path: "/w/gl-renamed", host: "gitlab.com"),
-                    PRRef.LocalRepo(owner: "g/sub", repo: "p", path: "/w/gl-origin",
+                    PRRef.LocalRepo(owner: "g/sub", repo: "p", path: "/w/gl-up",
                                     host: "gitlab.example.com"),
                     PRRef.LocalRepo(owner: "o", repo: "r", path: "/w/gh-same")],
           "a GitLab remote is only ever itself, never the configured or a renamed GitHub repo; "
-          + "a GitLab origin outranks a GitHub sibling; roots dedupe by host and slug: \(roots)")
+          + "a GitLab upstream outranks its origin; roots dedupe by host and slug: \(roots)")
+    let besideGitHub: [String: String] = [
+        "/w/mirror": "remote.origin.url git@gitlab.com:acme/widget.git\n"
+            + "remote.github.url git@github.com:o/r.git",
+        "/w/sibling": "remote.origin.url https://gitlab.example.com/g/sub/p\n"
+            + "remote.gh.url https://github.com/x/y",
+        "/w/fork": "remote.upstream.url https://gitlab.com/g/r\n"
+            + "remote.gh.url https://github.com/someone/r"]
+    func rootOf(_ path: String) -> [PRRef.LocalRepo] {
+        RepoRoots.resolve(paths: [path], remotes: besideGitHub, configured: configured)
+    }
+    check(rootOf("/w/mirror") == [PRRef.LocalRepo(owner: "o", repo: "r", path: "/w/mirror")]
+          && rootOf("/w/sibling") == [PRRef.LocalRepo(owner: "x", repo: "y", path: "/w/sibling")]
+          && rootOf("/w/fork") == [PRRef.LocalRepo(owner: "o", repo: "r", path: "/w/fork")],
+          "a checkout with a GitHub remote resolves among its GitHub remotes alone, as with no "
+          + "GitLab one: the configured repo, a GitHub sibling, a renamed fork: "
+          + "\(["/w/mirror", "/w/sibling", "/w/fork"].map(rootOf))")
+    let sibling = PRRef.LocalRepo.entries(path: "/w/sibling", remotes: besideGitHub["/w/sibling"]!)
+    let labOnly = PRRef.LocalRepo.entries(path: "/w/lab", remotes: "remote.origin.url https://gitlab.com/g/p")
+    check(sibling.map(\.slug) == ["g/sub/p", "x/y"]
+          && PRRef.LocalRepo.settingsName(sibling)?.slug == "x/y"
+          && PRRef.LocalRepo.settingsName(labOnly)?.slug == "g/p"
+          && PRRef.LocalRepo.settingsName([]) == nil,
+          "Settings names a checkout by its GitHub remote ahead of a GitLab origin, as it resolves")
 
     section("gitlab: references, keys and links")
     let home = PRRef.LocalRepo(owner: "group/sub", repo: "proj", path: "/w/proj", host: "gitlab.example.com")
@@ -204,12 +229,13 @@ func gitlabSmoke() async throws {
         .filter { $0.hasSuffix(".input.json") }.sorted()
     let names = inputs.map { String($0.dropLast(".input.json".count)) }
     check(Set(["prs", "issues", "monitor-prs", "closed-prs", "review-requests",
-               "review-requests-nofiles", "mr"]).isSubset(of: Set(names)),
+               "review-requests-nofiles", "review-requests-window", "mr"]).isSubset(of: Set(names)),
           "a fixture for every adapter in \(fixtures.path): \(names)")
     for name in names {
         let input = try Data(contentsOf: fixtures.appendingPathComponent("\(name).input.json"))
         let expected = try Data(contentsOf: fixtures.appendingPathComponent("\(name).expected.json"))
-        let got = try canonical(try GitLab.adapt(name, input))
+        // The review-requests answers are the query's asked for reviewer `carol`.
+        let got = try canonical(try GitLab.adapt(name, input, reviewer: "carol"))
         let want = try canonical(expected)
         check(got == want, "the \(name) adapter matches its fixture\n got: \(got)\nwant: \(want)")
     }

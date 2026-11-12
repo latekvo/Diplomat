@@ -1870,6 +1870,7 @@ final class Store: ObservableObject {
     /// off the main actor.
     func agentTick() async -> AgentPass {
         let limit = autoTaskLimit
+        let roots = roots
         let slugs = Set(roots.map { $0.slug.lowercased() })
         let (mesh, snapshot, merged) = (meshEnabled, meshState, mergedPRs)
         let (tokens, deadline) = (tokensLeft, AppConfig.runDeadline)
@@ -1882,7 +1883,7 @@ final class Store: ObservableObject {
                                               meshEnabled: mesh, meshState: snapshot,
                                               merged: merged, tokens: tokens)
             let tick = AgentState.tick(records: records, evidence: gathered.evidence,
-                                       now: now, limit: limit, deadline: deadline)
+                                       roots: roots, now: now, limit: limit, deadline: deadline)
             var windows: [String: AgentWindows.Handle] = [:]
             for r in tick.records where !r.untracked {
                 windows[r.runID] = AgentWindows.handle(r.runID)

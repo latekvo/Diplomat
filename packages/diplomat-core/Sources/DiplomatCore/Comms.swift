@@ -294,18 +294,21 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     }
 
     /// `text` with its references into repositories other than `repo` (a
-    /// `CommsSettings.canonical` slug, the primary by default) taken out: GitHub links with
-    /// their Slack or markdown label, `owner/repo#N` for another repository of `repo`'s
-    /// owner or another watched one, and `name#N` for a repository a link names or another
-    /// watched one. A number there is not one of `repo`'s, even when `repo` has a PR that
-    /// happens to wear it. Any other `word#N` or `word/word#N` stays, for the classifier to
-    /// judge: `PR#12`, `fix/login#12` and `swmansion/argent#12` cannot be told from a
-    /// foreign reference here.
+    /// `CommsSettings.canonical` slug, the primary by default) taken out: GitHub links and
+    /// GitLab ones (`<host>/<namespace>/<project>/-/merge_requests|issues|work_items/N`,
+    /// any host) with their Slack or markdown label, `owner/repo#N` for another repository
+    /// of `repo`'s owner or another watched one, and `name#N` for a repository a link names
+    /// or another watched one. A number there is not one of `repo`'s, even when `repo` has a
+    /// PR that happens to wear it. Any other `word#N` or `word/word#N` stays, for the
+    /// classifier to judge: `PR#12`, `fix/login#12` and `swmansion/argent#12` cannot be
+    /// told from a foreign reference here.
     public static func ownRepoText(_ text: String, settings: CommsSettings,
                                    repo target: String = "") -> String {
         let (home, name) = settings.coordinates(of: target)
         let slug = "\(home)/\(name)".lowercased()
-        let url = #"(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues|discussions|commit)/\w+"#
+        // Two groups per form, owner and repo, so every link alternative below holds four.
+        let url = #"(?:(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues|discussions|commit)/\w+"#
+            + #"|(?:https?://)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::[0-9]+)?/((?:[\w.-]+/)*[\w.-]+)/([\w.-]+)/-/(?:merge_requests|issues|work_items)/[0-9]+)"#
         guard let links = try? NSRegularExpression(
             pattern: #"<\#(url)[^\s>|]*(?:\|[^>\n]*)?>"#
                 + #"|\[[^\[\]\n]*\]\(\#(url)[^\s)]*\)"#
@@ -320,12 +323,12 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         })
         // Backwards, so each match's range still holds in `out`.
         for m in links.matches(in: text, range: NSRange(location: 0, length: source.length)).reversed() {
-            let group = stride(from: 1, to: 9, by: 2).first { m.range(at: $0).location != NSNotFound } ?? 1
+            let group = stride(from: 1, to: 15, by: 2).first { m.range(at: $0).location != NSNotFound } ?? 1
             let owner = source.substring(with: m.range(at: group))
             let repo = source.substring(with: m.range(at: group + 1))
             let named = "\(owner)/\(repo)".lowercased()
             let sameRepo = repo.lowercased() == name.lowercased()
-            let isLink = group < 7
+            let isLink = group < 13
             let foreign = named != slug && (isLink || owner.lowercased() == home.lowercased()
                                             || settings.repos.contains(named))
             guard foreign else { continue }

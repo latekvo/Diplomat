@@ -20,6 +20,7 @@ import Foundation
 /// Input:
 /// ```
 /// { "now": 1000000.0, "limit": 2, "deadline": 14400.0,
+///   "roots": [ {"owner": "g/sub", "repo": "p", "path": "/w/p", "host": "gitlab.example.com"} ],
 ///   "records": [ {"runId": …, "dispatchedAt": …, "pid": …, …} ],
 ///   "evidence": { "processes": {"status": "present", "value": {"4242": {…}}},
 ///                 "mergedPrs": {"status": "present", "value": ["o/r#12"]},
@@ -37,7 +38,13 @@ enum AgentStateCommand {
         let deadline = (obj["deadline"] as? NSNumber)?.doubleValue
         let evidence = decodeEvidence(obj["evidence"] as? [String: Any] ?? [:])
         let records = (obj["records"] as? [[String: Any]] ?? []).map(decodeRecord)
-        let t = AgentState.tick(records: records, evidence: evidence,
+        // Absent is no roots: every synthesized run links to github.com.
+        let roots = (obj["roots"] as? [[String: Any]] ?? []).compactMap { r -> PRRef.LocalRepo? in
+            guard let owner = r["owner"] as? String, let repo = r["repo"] as? String else { return nil }
+            return PRRef.LocalRepo(owner: owner, repo: repo, path: r["path"] as? String ?? "",
+                                   host: r["host"] as? String ?? PRRef.LocalRepo.github)
+        }
+        let t = AgentState.tick(records: records, evidence: evidence, roots: roots,
                                 now: now, limit: limit, deadline: deadline)
 
         var inFlight: [String: Bool] = [:]

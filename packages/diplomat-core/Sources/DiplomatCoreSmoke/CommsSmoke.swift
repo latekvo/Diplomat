@@ -2859,6 +2859,20 @@ private func severalTargetsSmoke() throws {
     let joined = text("https://github.com/other/radon/pull/9/files,https://github.com/software-mansion/argent/pull/13")
     check(joined.hasSuffix("https://github.com/software-mansion/argent/pull/13") && !joined.contains("radon"),
           "a foreign link stops where the next reference starts: \(joined)")
+    for spelling in ["https://gitlab.example.com/g/sub/radon/-/merge_requests/123",
+                     "<https://gitlab.com/g/radon/-/issues/123|#123>",
+                     "[#123](gl.example.org:8443/g/radon/-/work_items/123)",
+                     "https://gitlab.com/g/radon/-/merge_requests/9#note_123"] {
+        check(!CommsMatch.containsWord(text("see \(spelling) ok"), "123"),
+              "another repo's GitLab \(spelling) holds no number of this one: \(text(spelling))")
+    }
+    check(text("x gitlab.com/g/radon/-/issues/1 wymaga radon#292") == "x  wymaga ",
+          "a GitLab link names a repository for name#N as a GitHub one does")
+    let lab = CommsSettings(owner: "group/sub", repo: "proj")
+    let labLink = "https://gitlab.example.com/Group/Sub/Proj/-/merge_requests/12"
+    check(CommsDecision.ownRepoText("\(labLink) and https://gitlab.example.com/group/proj/-/issues/13",
+                                    settings: lab) == "\(labLink) and ",
+          "a GitLab root's own merge request link stays, a sibling namespace's goes")
     let stray = text("https://github.com/other/radon/pull/9|x and #13 > y")
     check(CommsMatch.containsWord(stray, "13") && !stray.contains("radon"),
           "only a Slack link's own brackets hold a label: \(stray)")
