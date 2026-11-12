@@ -14,14 +14,14 @@
           "timelineItems": {
             "nodes": [
               {
-                "createdAt": "2026-11-06T09:00:00+01:00",
+                "createdAt": "2026-11-06T08:00:00Z",
                 "requestedReviewer": {
                   "__typename": "User",
                   "login": "carol"
                 }
               },
               {
-                "createdAt": "2026-11-06T10:00:00+01:00",
+                "createdAt": "2026-11-06T09:00:00Z",
                 "requestedReviewer": {
                   "__typename": "User",
                   "login": "dave"
@@ -35,7 +35,7 @@
                 "author": {
                   "login": "dave"
                 },
-                "submittedAt": "2026-11-06T11:00:00+01:00"
+                "submittedAt": "2026-11-06T10:00:00Z"
               }
             ]
           },
@@ -45,7 +45,7 @@
                 "author": {
                   "login": "carol"
                 },
-                "createdAt": "2026-11-06T12:00:00+01:00"
+                "createdAt": "2026-11-06T11:00:00Z"
               }
             ]
           }
@@ -62,7 +62,7 @@
           "timelineItems": {
             "nodes": [
               {
-                "createdAt": "2026-11-02T08:00:00+01:00",
+                "createdAt": "2026-11-02T07:00:00Z",
                 "requestedReviewer": {
                   "__typename": "User",
                   "login": "carol"

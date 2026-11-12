@@ -14,8 +14,8 @@
               "number": 9,
               "title": "From a member past the page",
               "url": "https://gitlab.example.com/group/sub/proj/-/issues/9",
-              "createdAt": "2026-11-07T09:00:00+01:00",
-              "updatedAt": "2026-11-08T09:00:00+01:00",
+              "createdAt": "2026-11-07T08:00:00Z",
+              "updatedAt": "2026-11-08T08:00:00Z",
               "authorAssociation": "MEMBER",
               "author": {
                 "login": "Dave"
@@ -39,8 +39,8 @@
               "number": 8,
               "title": "From an outsider",
               "url": "https://gitlab.example.com/group/sub/proj/-/issues/8",
-              "createdAt": "2026-11-07T09:00:00+01:00",
-              "updatedAt": "2026-11-08T09:00:00+01:00",
+              "createdAt": "2026-11-07T08:00:00Z",
+              "updatedAt": "2026-11-08T08:00:00Z",
               "authorAssociation": "NONE",
               "author": {
                 "login": "erin"
@@ -67,8 +67,8 @@
               "number": 7,
               "title": "Deleted author",
               "url": "https://gitlab.example.com/group/sub/proj/-/issues/7",
-              "createdAt": "2026-11-07T09:00:00+01:00",
-              "updatedAt": "2026-11-08T09:00:00+01:00",
+              "createdAt": "2026-11-07T08:00:00Z",
+              "updatedAt": "2026-11-08T08:00:00Z",
               "authorAssociation": "NONE",
               "author": null,
               "assignees": {

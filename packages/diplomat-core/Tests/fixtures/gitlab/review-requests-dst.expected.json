@@ -1,0 +1,83 @@
+{
+  "data": {
+    "search": {
+      "nodes": [
+        {
+          "number": 41,
+          "title": "Requested before the clocks went back",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/41",
+          "author": {
+            "login": "alice"
+          },
+          "authorAssociation": "MEMBER",
+          "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "timelineItems": {
+            "nodes": [
+              {
+                "createdAt": "2026-10-25T00:40:00Z",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              }
+            ]
+          },
+          "reviews": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "carol"
+                },
+                "submittedAt": "2026-10-25T01:10:00Z"
+              }
+            ]
+          },
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "bob"
+                },
+                "createdAt": "2026-10-25T01:20:00Z"
+              }
+            ]
+          }
+        },
+        {
+          "number": 42,
+          "title": "Requested before the window, across the fall-back",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/42",
+          "author": {
+            "login": "alice"
+          },
+          "authorAssociation": "MEMBER",
+          "headRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "timelineItems": {
+            "nodes": [
+              {
+                "createdAt": "2026-10-25T00:50:00Z",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              }
+            ]
+          },
+          "reviews": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "bob"
+                },
+                "submittedAt": "2026-10-25T01:05:00Z"
+              }
+            ]
+          },
+          "comments": {
+            "nodes": []
+          }
+        }
+      ]
+    }
+  }
+}
