@@ -26,7 +26,7 @@ flowchart TB
   TK["Goals<br/>issues → PRs → blockers"] --> Q
   YOU["You<br/>panel · wizards"] --> Q
   Q["One queue · priority bands"] --> GATE{"Budget gate + task cap"}
-  GATE --> AG["Agents in real terminals<br/>a simulator each · spread over your machines"]
+  GATE --> AG["Agents in real terminals<br/>a simulator each · heavy work offloaded to your other machines"]
   AG --> OUT["Reviews · pushes · draft PRs"]
   AG --> TEL["Telemetry<br/>cost · throughput"]
   OUT -. "new commits, threads" .-> GH
@@ -68,13 +68,6 @@ share one, and can lend them devices from a remote pool. [More](docs/devices.md)
 
 <img alt="Devices" src="docs/img/devices.png" />
 
-### Mesh - every machine you own
-
-Experimental and off by default: several machines split the work between them over the LAN or across
-networks, with no leader to lose. [More](docs/mesh.md)
-
-<img alt="Mesh" src="docs/img/mesh.png" />
-
 ## Billing
 
 Under the Claude Code runner, use usage-based Anthropic API billing only: an `ANTHROPIC_API_KEY` from
@@ -97,8 +90,8 @@ npx szpont                       # or:  pip install szpont && szpont
 macOS 13+ and Linux. It clones Diplomat into `~/.diplomat/checkout`, builds it, starts it, and
 updates it in place. You need git, a Swift toolchain (Xcode on macOS,
 [swiftly](https://swift.org/install) on Linux), python3 on Linux, and a logged-in
-[`gh`](https://cli.github.com). Optional: Node.js for the device allocator, python3 for the mesh on
-macOS, tmux for Ghostty windows or on Linux.
+[`gh`](https://cli.github.com). Optional: Node.js for the device allocator, tmux for Ghostty
+windows or on Linux.
 
 ```bash
 szpont --plan          # print what it would do, and do none of it
@@ -123,7 +116,6 @@ Everything here can be changed in Settings (⚙︎).
 | Hold automatic work when the limit runs low | **on**: 95% confidence; until a task can be priced, keeps 20% of a window (or $1 of credit once Hermes has billed a task) |
 | Give up on an automatic run after 4 h | **on** |
 | Agent runner | **Claude Code** (or OpenCode, Hermes) |
-| Mesh | **off** |
 | Comms (Slack watcher) | **off** |
 
 Agents use your full `gh` login unless you give them
@@ -164,7 +156,6 @@ CI if the prompts drift apart.
 | [`device-allocator`](packages/device-allocator/README.md) | the one-device-per-agent MCP server and its daemon |
 | [`remote-machines`](packages/remote-machines/README.md) | the MCP server that lists the machines an agent can offload work to over SSH, and their live load |
 | [`daemon-core`](packages/daemon-core/README.md) | what those two share: the socket daemon, its client, and their install into Claude Code |
-| [`szpontnet-core`](packages/szpontnet-core/README.md) / [`szpontnet-spec`](packages/szpontnet-spec/docs/README.md) | the mesh protocol: a stdlib-only reference node, the spec and a conformance suite |
 | [`szpont`](packages/szpont/README.md) / [`szpont-npm`](packages/szpont-npm/README.md) | the `szpont` launcher on PyPI and npm |
 </details>
 
@@ -172,5 +163,4 @@ CI if the prompts drift apart.
 
 [The panel](docs/panel.md) · [Actions](docs/actions.md) · [Automatic work](docs/automation.md) ·
 [Settings](docs/settings.md) · [Telemetry](docs/telemetry.md) · [Comms](docs/comms.md) ·
-[Tasks](docs/tasks.md) · [Devices](docs/devices.md) · [Mesh](docs/mesh.md) ·
-[Development](docs/development.md)
+[Tasks](docs/tasks.md) · [Devices](docs/devices.md) · [Development](docs/development.md)

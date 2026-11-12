@@ -52,8 +52,7 @@ root its PR or issue belongs to.
   issue is queued once whatever the fix makes of it - one it skips is not retried. The
   fixes wait in the issue-fix band of the queue as cancellable asks, like a sweep's.
   Switched off, it queues nothing and forgets its mark, so issues filed meanwhile are
-  left for a sweep. Banned authors are skipped. With a mesh up, every machine running
-  it queues the same issue; the assignee claim is what keeps a second fix off it.
+  left for a sweep. Banned authors are skipped.
 - **Claude API-error watcher** - Claude Code runs only; the banners it matches are
   Claude Code's, and an OpenCode or Hermes agent that errors reads as a finished
   turn instead - its runner says so, so the run is retired, its bay and its PR are
@@ -96,8 +95,8 @@ Linux; `DIPLOMAT_APIWATCH_SECS`, floor 5s).
 are level-triggered over everything GitHub currently owes, so one poll of a busy
 day would otherwise dispatch every pending unit in a single pass - a terminal
 window and an agent session per conflicted PR and per owed review, all at the
-same moment. The cap is the *machine's*, not a monitor's: it spans every monitor,
-the work a sweep queues, and any work a mesh peer routes here, and it counts
+same moment. The cap is the *machine's*, not a monitor's: it spans every monitor
+and the work a sweep queues, and it counts
 agents that are really running (`ps`, so it survives an applet restart) rather than
 a tally that can drift. The agent a wizard press opens on the spot is outside it
 and is never refused; what a press leaves in the queue instead - the reviews of a
@@ -163,10 +162,9 @@ tick whose process table could not be read at all resolves `unknown` and ends
 nothing. It fires only while a spending limit both reads and has room left - agents
 parked waiting for a window to refill age exactly like wedged ones, so the day a
 limit ran out the whole board would otherwise be given up on at once, and a machine
-with no limit it can read leaves the backstop off entirely. A peer's run is not
-touched (its claim is the machine that can see the process talking), nor is an agent
-found by the scan rather than dispatched (retiring one only has the next tick find it
-again), nor one you started by hand from the panel - that never took a bay of the
+with no limit it can read leaves the backstop off entirely. An agent found by the
+scan rather than dispatched is not touched (retiring one only has the next tick find
+it again), nor is one you started by hand from the panel - that never took a bay of the
 automatic cap, so there is nothing to hand back. Four hours because the longest runs
 measured here - a swarm review, an issue reproduced from scratch - are hours long.
 
@@ -176,20 +174,6 @@ visibly in the panel's [Agent tasks](panel.md#agent-tasks) list meanwhile, where
 reordered or started by hand. Whatever is left of the cap shows there too, as an
 empty bay per free slot. Saturation shows up as one `at-capacity` row in the
 activity feed per episode.
-
-**With a mesh up, each unit of work runs once.** Every machine scans GitHub
-independently; whoever finds a unit routes it by work key, and the node that
-takes it holds the claim for its agent's lifetime, so a concurrent or repeat scan
-elsewhere is suppressed (`mesh-suppressed` in the activity feed) and a node death
-frees the work for failover. A machine already at its cap declines what it is
-sent, and the dispatcher fails the slot over to one with room. That claim is also
-what the machine that *originated* the work watches: it keeps a
-[mesh row](panel.md#agent-tasks) on its own Agent-tasks list for as long as the claim is
-held, so work handed to a peer reads as a task in flight rather than as a task
-that disappeared. The best node is sometimes the machine that asked - a placement
-that lands back home is an agent here like any other, so it takes one of this
-machine's slots from the moment it is placed and is priced against this machine's
-quota; only its terminal was opened by the node rather than by the applet.
 
 ### Auto-approvals (default OFF)
 
@@ -236,8 +220,7 @@ It is held like the cap holds it - queued, no attempt record, offered again next
 poll - and it is checked first, ahead of the cap and the budget: a freed bay frees no
 space, so the disk is the hold you have to act on. The feed carries one `low-disk`
 line per episode naming the volume, its free space and the floor. *Execute now* and
-a wizard SPAWN go past it. A **mesh peer's job routed here** is declined
-(`mesh-low-disk`) and fails over. The [06:00 update](development.md#autostart-on-login)
+a wizard SPAWN go past it. The [06:00 update](development.md#autostart-on-login)
 skips its merge and build below the same floor, since a merge that runs out of space
 halfway leaves a half-updated checkout.
 
@@ -284,8 +267,7 @@ What is *left* comes from the live probe rather than the ledger's last sample:
 samples are 15 minutes apart, and several agents' worth of spending fits in that gap.
 
 Four knobs, in **Settings → LIMITS** under the task cap (the same titles on both
-platforms), and in `~/.diplomat/config.json` beside the task cap so the mesh node
-reads the same ones:
+platforms), and in `~/.diplomat/config.json` beside the task cap:
 
 - **Hold work when the limit runs low** (`autoBudgetGate`, on) - the master switch.
 - **Start one only when it fits** (`autoBudgetConfidence`, `95`) -
@@ -320,9 +302,6 @@ Two failure directions, both deliberate:
 
 The feed carries one `no-budget` line per episode, quoting which window is short and
 against what, and another when the next episode begins - not one per PR per poll.
-A **mesh peer's job routed here** is declined for the same reason and the slot fails
-over: the mesh ranks peers surplus-first, so the node with limit to spend is exactly
-the one that picks it up.
 
 The queue is a view of what the monitors would re-offer, not a second copy of
 their state: it is rebuilt from live GitHub evidence on every 3-minute poll, so a
@@ -335,9 +314,7 @@ kind of row that names it**, whoever queued it: waiting for a bay can take a day
 two at a time, and a review of a landed diff is one nobody will read. (A queued fix
 is numbered in the ISSUE space and no PR speaks for it, so that pass steps over it:
 the fix's own prompt re-reads the issue when its turn comes and stops if somebody has
-closed it since.) (Not on a mesh claim: the cap outranks the mesh gate, so a machine with
-anything queued is one that never asked a peer - peer-owned work leaves when the
-drain reaches it and the mesh answers.) The key order is remembered, so your
+closed it since.) The key order is remembered, so your
 arrangement survives the rebuild and a restart.
 
 The one exception is the work **you** ask for by sweeping - a review per PR, or a
@@ -356,7 +333,6 @@ forgotten, with a line in the feed saying so - a row that vanished silently woul
 read exactly like one that ran.
 
 *Execute now* keeps the task automatic in every other respect:
-same label, same auto-handled counter, same mesh routing - the cap, the free-disk
-floor and the rate-limit budget are the three holds it overrides. So a click can land the agent on a peer rather than
-here, and what the starting row becomes is a mesh row saying which; it occupies a
-slot of this machine's cap only when it actually runs on this machine.
+same label, same auto-handled counter - the cap, the free-disk
+floor and the rate-limit budget are the three holds it overrides. The agent it starts
+occupies a slot of the cap like any other automatic one.

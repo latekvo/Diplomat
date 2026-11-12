@@ -23,9 +23,7 @@ Code run reports its own turn boundaries, and the trailing sentinel
 A **whose-PRs sweep** is not one agent for all of them. It queues one review per PR
 it covers, so the task cap starts them a few at a time and each is a row you can
 reorder, run ahead of the rest, or cancel - fifty drafts are fifty reviews, not one
-session told to work through fifty. (Which is also why the mesh row is offered for a
-single PR only: a sweep opens no session to place.) The choices are baked into each
-prompt:
+session told to work through fifty. The choices are baked into each prompt:
 
 - **Target** - the same three-way selector the other wizards use: *Mine* (the
   resolved handle, see Settings), *Someone else's* (a handle field lights up), or
@@ -72,8 +70,7 @@ the fix lands; anything it cannot reproduce is reported as that, never guessed a
 A **scope** is not one agent for all of them, exactly as a whose-PRs sweep is not. It
 queues one fix per issue it covers, so the task cap starts them a few at a time and
 each is a row you can reorder, run ahead of the rest, or cancel - forty open issues
-are forty fixes, not one session told to work through forty. (Which is also why the
-mesh row is offered for one hand-named issue only: a scope opens no session to place.)
+are forty fixes, not one session told to work through forty.
 The [new-community-issue monitor](automation.md#autonomous-monitors) queues the same fix
 for each issue the community files, with the defaults below. Each queued fix carries the
 same choices you made, aimed at its own issue, and re-reads that issue when its turn comes - hours can pass first, so a fix whose issue

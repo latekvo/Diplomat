@@ -188,7 +188,7 @@ diplomat-core tasks-list [--archived] [--me LOGIN]  # every task: status, reason
 diplomat-core tasks-sync                   # one sync: {"ok":true,"events":3}, or ok:false and the error
 diplomat-core tasks-group [--if-due]       # one grouper run: {"ok":true,"created":1,"added":0};
                                            # not due yet: {"ok":true,"skipped":"not due","ranAt":…,"lastError"?}
-echo '{"op":"create","title":"Tor transport","tags":["area:mesh"],"links":["#1601"]}' \
+echo '{"op":"create","title":"iPhone Duo support","tags":["area:devices"],"links":["#1601"]}' \
   | diplomat-core tasks-edit               # prints the task as it now is
 ```
 

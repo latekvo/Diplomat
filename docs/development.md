@@ -14,16 +14,13 @@ monitor stack. See **[Architecture](#architecture)**.
 **One pipeline, two triggers.** A wizard's SPAWN button and an auto-monitor's
 poll tick are two *triggers* for the very same dispatch pipeline
 (`Store.dispatchAgent` / `store.dispatch_agent`): the ban check, in-flight
-dedup, mesh coordination, spawn, run registration, and counters live in exactly
-one place per platform.
+dedup, spawn, run registration, and counters live in exactly one place per platform.
 The only trigger asymmetries are the documented ones in `AgentDispatchGate`
 (its Python twin `autofix.dispatch_decide`): manual spawns come to the
-foreground (macOS), are never mesh-gated and never hit the
+foreground (macOS) and never hit the
 [automatic-task cap](automation.md#autonomous-monitors); monitor dispatches get the
 `Auto · … · retry N` label, and only they bump the auto-handled counters.
-Parity tests on both sides pin that matrix. A job arriving *over the mesh* is
-the one spawn that bypasses the pipeline - it lands through the mesh node's own
-runner, and the untracked-agent scan is what re-attaches it afterwards.
+Parity tests on both sides pin that matrix.
 
 **One answer about what the agents are doing.** Whether a PR is in flight, how
 many bays of the device's [task cap](automation.md#autonomous-monitors) are full, which rows
@@ -33,8 +30,8 @@ single resolved tick (`AgentState` / `agentstate.py`), not
 six derivations that can drift apart. Evidence reaches it typed - each probe
 answers *present*, *unavailable* or *unsupported* - and the ladder never reads
 "I could not look" as "it is gone": a run ends only on positive evidence (its
-sentinel, its pid missing from a process table that was actually read, or its
-mesh claim released), and anything else resolves to `unknown`, which keeps its
+sentinel, or its pid missing from a process table that was actually read), and
+anything else resolves to `unknown`, which keeps its
 slot and says so. The one rung that ends a run on a CLOCK rather than on evidence
 about that run is the [four-hour deadline](automation.md#giving-up-on-a-run) an operator can
 switch off, and it is the last rung of the ladder rather than one in the middle. A run is identified by the pid the shell that runs the
@@ -192,10 +189,7 @@ DIPLOMAT_SETTINGS_DUMP=1 ./Diplomat.app/Contents/MacOS/Diplomat  # resolved pers
 DIPLOMAT_QUEUE_TEST=1 swift run Diplomat      # self-test: the queue behind the automatic-task cap
                                                      #   (capture, dedup, arrangement, what a paused
                                                      #   monitor holds, free slots, what a task being
-                                                     #   started is while its spawn runs) and the mesh row a
-                                                     #   peer-routed task leaves behind (its lease's
-                                                     #   lifetime, and that neither liveness source
-                                                     #   touches the other's rows). Spawns nothing;
+                                                     #   started is while its spawn runs). Spawns nothing;
                                                      #   redirects its own audit writes.
 DIPLOMAT_LOWDISK_TEST=1 swift run Diplomat    # self-test: the free-disk floor against a real
                                                      #   volume (scripts/full-volume.sh) filled and drained,
@@ -211,8 +205,6 @@ DIPLOMAT_RENDER=panel    ./Diplomat.app/Contents/MacOS/Diplomat  # snapshot a sc
                                                      #   devices[-open|-procs]|conflicts[-other|-specific|-wrong]
                                                      #   devices-screen[-remote[-away]|-off] (the Devices screen)
                                                      #   audit[-issues|-prs|-all]
-                                                     #   mesh (⬡ screen over a synthetic topology); mesh-blocked
-                                                     #   (the not-discoverable banner); mesh-reminder (trust modal)
                                                      #   telemetry (the screen over a synthetic ledger, written to a
                                                      #   scratch dir); telemetry-panel (the same inside the panel)
                                                      #   comms (the Comms screen over a synthetic events.jsonl in a
@@ -249,9 +241,6 @@ DIPLOMAT_ALLOCATOR_TEST=1 ...                    # the launch-time allocator dec
                                                      #   actions against a stand-in installer in a scratch
                                                      #   dir, and its poll stopping while hidden (flashes a
                                                      #   2pt window at the screen's edge); exit code = verdict
-DIPLOMAT_MESH_STRAY_TEST=1 ...                   # a launch with the mesh off stops the node state.json names,
-                                                     #   and not a reused pid, another dir's node or identity.
-                                                     #   Scratch state dirs; exit code = verdict
 DIPLOMAT_AUTOFIX_POLL=1  ...                     # one real monitor poll: prints its dispatch decisions and
                                                      #   the exact prompts it would spawn, opens nothing
 DIPLOMAT_APIWATCH_SCAN=1 ...                     # dry-run the API-error watcher over live sessions, sends nothing
@@ -310,9 +299,9 @@ scripts/macos-vm-test.sh            # KEEP_VM=1 leaves the VM up afterwards
 ```
 
 Cadences and paths are overridable too, for tuning: `DIPLOMAT_AUTOFIX_SECS`,
-`DIPLOMAT_APIWATCH_SECS`, `DIPLOMAT_PROC_POLL_SECS` (min 2s), `DIPLOMAT_MESH_POLL_SECS`,
+`DIPLOMAT_APIWATCH_SECS`, `DIPLOMAT_PROC_POLL_SECS` (min 2s),
 `DIPLOMAT_CORE` (where the shared `assets/` live), `DIPLOMAT_DEVICE_ALLOCATOR_DIR`,
-`DIPLOMAT_NODE` / `DIPLOMAT_PYTHON` (the `node` / `python3` to use),
+`DIPLOMAT_NODE` (the `node` to use),
 `DIPLOMAT_REPO` (a single repo root for the agents - outranks Settings ▸ *Repo roots*) and
 `DIPLOMAT_CONFIG` (where that shared `config.json` lives).
 
@@ -335,20 +324,17 @@ This repository is a **monorepo of independent parts**: everything lives in
 independent rather than merely to say they are. Each package that could stand
 alone gets a job that installs *only* what that package needs, so a dependency
 creeping back in fails a build instead of going unnoticed:
-[`szpontnet-core`](../packages/szpontnet-core/README.md) is tested with no Qt, no
-`diplomat-core` and no Diplomat on the import path, and
+the [`szpont`](../packages/szpont/README.md) launcher is tested with nothing but
+pytest installed, and
 [`device-allocator`](../packages/device-allocator/README.md) and
 [`remote-machines`](../packages/remote-machines/README.md) with nothing but Node.
-Diplomat is checked from the other side - one step deletes both SzpontNet
-packages outright and renders the applet from what remains.
 
-CI ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) is eight jobs:
+CI ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) is seven jobs:
 `swift-macos` (build both Swift packages + the core smoke + headless panel and
 telemetry renders + the helper self-tests), `swift-core-linux` (proves the core builds on
 Linux, and publishes a static `diplomat-core` binary), `python-linux` (pytest
-against that binary, so the golden-prompt parity is proven across languages, then
-the library-less start), `szpontnet` (the library's own tests plus a full
-conformance run against the reference node), `szpont` (the launcher, and the built
+against that binary, so the golden-prompt parity is proven across languages),
+`szpont` (the launcher, and the built
 wheel installed into a venv that has never seen the checkout), `szpont-npm` (the
 same launcher in JavaScript, held to the Python one's plan machine shape for
 machine shape), `node-device-allocator`, and `node-remote-machines`.
@@ -373,7 +359,7 @@ packages/
 
   diplomat-core/               ← the shared triage brain: everything both front-ends agree on
     assets/                    ← the language-neutral source of truth (see its README): GraphQL queries,
-                                 tool catalog, filter constants, prompt fragments, the mesh model
+                                 tool catalog, filter constants, prompt fragments
       golden-prompts/            canonical prompt outputs, asserted byte-for-byte by BOTH platforms' tests
     Sources/
       DiplomatCore/            ← Foundation-only Swift; loads assets/. Builds on macOS AND Linux.
@@ -385,7 +371,7 @@ packages/
         Conflict.swift / Audit.swift  ConflictConfig + AuditConfig prompt builders (assets/conflicts.json, assets/audit.json)
         PRRef.swift / PRTarget.swift  single-PR reference parsing + the whose-PRs axis shared by the wizards
         Autofix.swift              PRSnapshot + the monitor's edge-trigger diff, AgentDispatchGate
-                                   (the task cap and the rate-limit budget), AutofixMesh
+                                   (the task cap and the rate-limit budget), AutofixWork
         AgentTasks.swift           the Agent-tasks list's sort order + the queue behind the task cap
         ReviewReconcile.swift      pure retry/backoff/dedup decisions for the monitors
         ReviewAudit.swift          a retired review run's review: left PENDING, or split over several
@@ -406,7 +392,6 @@ packages/
                                    `claude -p` classifier
         CommsLog.swift             ~/.diplomat/comms/events.jsonl, both applets' log, folded for the screen
         LoginShell.swift           locating a CLI through the operator's login shell, past any alias
-        Mesh.swift                 mesh model: decodes assets/mesh.json + ~/.diplomat/mesh/state.json, pure placement
         Telemetry.swift            folds the telemetry ledger + every figure on the Telemetry screen: window
                                    calibration, the distribution + its confidence interval, the quota readings,
                                    the pending series
@@ -420,12 +405,7 @@ packages/
   diplomat-runtime/            ← the platform-neutral Python half: the twin of diplomat-core plus
                                  everything below the UI that has no Swift counterpart
     diplomat_runtime/            no Qt, no AppKit - the assets loader, PR triage, the run book, token
-                                 accounting, the spawner. The Linux applet imports it; the macOS app's
-                                 mesh node runs it with nothing else of Diplomat's on its path
-      szponthost.py            ← Diplomat's answers to the six questions a mesh node asks its host:
-                                 the duty catalog, the state dir, where events go, how a job runs here,
-                                 whether an agent is already up on that work, and whether this machine
-                                 has room for another and the limit - window or balance - to afford it
+                                 accounting, the spawner. The Linux applet imports it
 
   diplomat-platform/           ← the platform wrappers: one UI each over that same core
     macos/                     ← macOS SwiftUI app - thin UI over the core
@@ -443,7 +423,7 @@ packages/
         AutofixMonitor.swift       the monitors' GitHub reads (monitor-prs / review-requests queries)
         AutofixStatus.swift        the monitor heartbeat behind the status pill
         ApiErrorWatcher.swift      iTerm/Terminal/tmux screen reader + continue-nudge sender
-        AgentProbes.swift          the outside world, typed: `ps`, screens, sentinels, claims -> Evidence
+        AgentProbes.swift          the outside world, typed: `ps`, screens, sentinels -> Evidence
         AgentWindows.swift         where each run's terminal window is, so a row click can raise it
         AgentSessionProbe.swift    asks each run's own agent what it is doing, through its runner's store
         OpenCodeProbe.swift        dials an OpenCode run's own 1.x server (free port, session list, messages) or the 2.x service
@@ -461,9 +441,6 @@ packages/
         Daemon.swift               first-run login-daemon opt-in (TTY Accept [y/N])
         Render.swift               headless ImageRenderer snapshots for UI checks
         Color+Hex.swift            Color ↔ "#RRGGBB" for persisted tint overrides
-        MeshBridge.swift           drives the local mesh node (spawn python3 -m szpontnet --daemon, NDJSON control)
-        MeshView.swift             the ⬡ Mesh screen: node graph, tier/token/trust editors, duty table
-        MeshSpawn.swift            the wizards' "⬡ Run on mesh" row + destination preview
         CommsMonitor.swift         the Slack watcher: the poll loop, applying each triage answer to the queue
         CommsView.swift            the Comms screen: pings, the jobs they queued, the watcher's status
         CommsTest.swift            self-test of what each triage answer does to the queue (DIPLOMAT_COMMS_TEST)
@@ -482,7 +459,8 @@ packages/
         AppLogTest.swift           self-test of both (DIPLOMAT_APPLOG_TEST)
         RepoPaths.swift            locate this app's own checkout (DIPLOMAT_SELF_REPO → the checkout the bundle sits in → the one it recorded → ~/dev/diplomat),
                                    the sibling packages it reaches for, and the agents' repo roots
-        AppConfig.swift            the cross-process settings file (~/.diplomat/config.json) the mesh node shares
+        AppConfig.swift            the cross-process settings file (~/.diplomat/config.json), shared with the
+                                   Linux applet and the two MCP daemons
       install/                 ← build-app + the autostart / auto-update (un)installers (launchd)
       tests/                   ← installers.sh: what those two installers write, run against stubs
     linux/                     ← Linux Qt6/PySide6 desktop app (see its README)
@@ -490,27 +468,9 @@ packages/
                                  them, its self-update and single-instance guards, and probes.py -
                                  this platform's evidence gatherer, twin of AgentProbes.swift
       install/                 ← build-core + the autostart / auto-update (un)installers (XDG + systemd)
-      meshsim/                 ← the real-socket mesh simulator the mesh scenarios run through
-
-  szpontnet-core/              ← the SzpontNet node: an independent library (see its README).
-    szpontnet/                   stdlib-only Python (runs headless on macOS too) - LAN discovery,
-                                 heartbeat links, gossip, deterministic duty assignment, dispatch with
-                                 failover; canonical v1 model in netmodel.json, `python -m szpontnet`
-      host.py                  ← the six questions a node asks whoever is running it; all six have
-                                 working defaults, so a node with no host is a valid node
-      env.py                   ← the SZPONTNET_* namespace, one accessor, one place the old names bridge
-    tests/                     ← the library on its own terms - defaults, the host seam, the namespace,
-                                 a scan that fails if a module so much as names its host, plus the
-                                 integration ones (Tor transport, the startup lock, control-edit flush)
-
-  szpontnet-spec/              ← the protocol, kept apart from any implementation of it
-    docs/                      ← the normative SzpontNet spec (15 chapters, v0.9.0, wire v: 1)
-    conformance/               ← black-box conformance tester: runs a candidate node as an opaque
-                                 subprocess, joins over real multicast + TCP, exits non-zero on any MUST failure
 
   szpont/                      ← what `szpont` means on PyPI (see its README): the `szpont` command
-    szpont_launcher.py         ← clone/build/launch Diplomat, out of the standard library alone. Named
-                                 apart from `szpont` so the conformance tester keeps the import name
+    szpont_launcher.py         ← clone/build/launch Diplomat, out of the standard library alone
 
   szpont-npm/                  ← what `szpont` means on npm (see its README): the same launcher, in
                                  JavaScript, for `npx szpont`
@@ -518,9 +478,8 @@ packages/
                                  as fact sets to plan from; parity-with-python.mjs runs every one through
                                  both and demands the same facts and the same plan
 
-.github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · szpontnet · szpont ·
-                                 szpont-npm · node-device-allocator · node-remote-machines
+.github/workflows/ci.yml       ← swift-macos · swift-core-linux · python-linux · szpont · szpont-npm ·
+                                 node-device-allocator · node-remote-machines
 .github/workflows/release-szpont.yml     ← every push to main → the next minor on PyPI + npm, from one
                                            verified commit; tag szpont-v* to release what a tree states
-.github/workflows/release-szpontnet.yml  ← tag szpontnet-v* → PyPI
 ```

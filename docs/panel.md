@@ -56,7 +56,7 @@ nudges, and bans.
 
 The activity feed is **filterable in place**: it heads a row of per-category chips
 with counts - Reviews · Replies · Conflicts · Audit · Issues · API restart · Out of
-quota · Merges · Bans · Mesh · Comms · System - and tapping one mutes that category and drops its
+quota · Merges · Bans · Comms · System - and tapping one mutes that category and drops its
 rows. The taxonomy (which raw action verb maps to which category, plus its icon and
 tint) is shared in [`assets/audit-categories.json`](../packages/diplomat-core/assets/audit-categories.json), with
 `packages/diplomat-core/Sources/DiplomatCore/AuditCategory.swift` as the Swift source of truth.
@@ -79,29 +79,21 @@ bays.
 
 - **Sessions** are every spawned agent, wizard- or monitor-launched. Click a row
   to focus its terminal window, ✕ to stop tracking it.
-- **Mesh rows** are the work this machine originated and the mesh is running
-  somewhere else, reading *running · on mesh @node*. Same row, same label, same
-  place in the list - there is just no window here to click, because the agent is
-  on that node. The row lives as long as the executor's
-  [work claim](automation.md#autonomous-monitors) does, and leaves when the remote agent
-  finishes.
 
-  (Both kinds are macOS only - a Linux spawn is a detached `Popen` with no window
-  handle to track a session by. Linux draws a local agent as a row all the same,
-  from the in-flight book and a `ps` scan: the bay it took, labelled with the work
-  it is on and how long it has been going, and the same status - *awaiting input*
-  included, read off the agent's own tmux pane - with no window to click. One the
-  mesh placed on a peer shows in the activity feed rather than on the list.)
+  (macOS only - a Linux spawn is a detached `Popen` with no window handle to track
+  a session by. Linux draws an agent as a row all the same, from the in-flight book
+  and a `ps` scan: the bay it took, labelled with the work it is on and how long it
+  has been going, and the same status - *awaiting input* included, read off the
+  agent's own tmux pane - with no window to click.)
 - **Starting** is a task between the queue and its agent: the click (or the drain)
-  has taken it, and the spawn - a `ps` scan, a mesh placement, a terminal - has not
+  has taken it, and the spawn - a `ps` scan, a terminal - has not
   answered yet. Seconds, and a row for all of them, so *execute now* never reads as
   the click deleting the task. It holds a bay from the moment it starts, and the
-  session or mesh row that replaces it takes its place in the list.
+  session that replaces it takes its place in the list.
 - **Free slots** are the rest of the cap. Each running automatic agent takes one, a
   task from a sweep included - the queue picked the moment for it, so it holds a
   bay like anything else that waited there. An agent a wizard press opened on the
-  spot takes none, and neither does work the mesh placed on another machine - that
-  spends the peer's capacity, not yours. Queued work starts here on the next poll.
+  spot takes none. Queued work starts here on the next poll.
 - **Auto-execute queue** is the switch at the top of the queue (**default on**): off,
   nothing starts by itself and every row waits for *execute now*. The monitors keep
   finding work and queueing it either way. It stays on screen while it is off even

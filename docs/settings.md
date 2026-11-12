@@ -1,7 +1,7 @@
 # Settings
 
-The header **⚙︎** button (next to ↻, the Comms button, the **⬡** mesh button, the
-Telemetry button and ⏻) swaps the panel to a settings screen:
+The header **⚙︎** button (next to ↻, the Comms button, the Telemetry button and ⏻)
+swaps the panel to a settings screen:
 
 - **GitHub username** - override the handle used by the "My …" tools, the wizards
   and the monitors. Blank = the `gh`-authenticated user (`viewer.login`), resolved
@@ -14,9 +14,9 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   by and every monitor above it are the same whichever it is, which is the point of having one setting
   rather than a second pipeline. All three are windowed, so a run can be watched and
   typed into. Like the repo roots the setting lives in the shared
-  `~/.diplomat/config.json`, so a running mesh node picks it up on its next spawn -
-  and which runner a given run *started* under is written into its run directory, so
-  switching mid-flight can't interrogate a live agent through the wrong store.
+  `~/.diplomat/config.json`, and which runner a given run *started* under is written
+  into its run directory, so switching mid-flight can't interrogate a live agent
+  through the wrong store.
   - **OpenCode 1.x and 2.x** are both supported, and are told apart by `opencode
     --version` (major 2 or later is 2.x; no answer is 1.x), asked of the `opencode`
     a spawned agent would run: the one the user's login shell, running an
@@ -47,7 +47,7 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
     entries take OAuth rather than a key, and where each one's credentials belong -
     and each writes them to the store its agent reads from anyway. **No provider
     credential is ever stored by Diplomat**, which matters because
-    `~/.diplomat/config.json` is world-readable and copied around by the mesh.
+    `~/.diplomat/config.json` is world-readable.
   - **How a run is watched.** Both foreign runners are *asked* whether their turn is
     over rather than having it read off their status bar - positive evidence, instead
     of whether someone else's `esc interrupt` hint happened to be drawn when the poll
@@ -86,10 +86,10 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
     per run: Hermes' is the machine's, OpenCode's is the checkout's and every worktree
     of it, and a busy one holds hundreds of sessions that are not this run's. A 2.x
     session Diplomat spawned needs no match: it chose the id and bound it to the run
-    before the spawn. One the mesh placed here has no id bound and no prompt in its
-    TUI's argv (`opencode --session <id>`), so its session is taken from the process
-    table and matched by the opening prompt the service holds for it - which is also
-    how the `ps` scans behind the mesh's dedup and pid-less runs see a 2.x agent. And either way the answer *ends* the run, exactly as a Claude Code hook's
+    before the spawn. The `ps` scan for agents the applet holds no pid for finds no
+    prompt in a 2.x TUI's argv (`opencode --session <id>`), so it takes the session
+    from the process table and matches it by the opening prompt the service holds for
+    it. And either way the answer *ends* the run, exactly as a Claude Code hook's
     does: it is the same fact from the same kind of source, the agent's own word
     rather than a screen read for signs of one. The exception is a 2.x agent with no
     run of its own - one the scan found on a PR, not dispatched - which only leaving
@@ -132,18 +132,14 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   waits (a bare `#N` would name the next root's issue). Every automatic job (the
   monitors, [Comms](comms.md)) runs on every root; the panel works on the one picked in
   its [header](panel.md#layout). `DIPLOMAT_REPO` outranks the list with a single root,
-  and the card says so when it's set. Like the runner and every other key a node
-  reads, the list is **not** in UserDefaults: a mesh node spawns agents from its own
-  stdlib-only process, so it lives in the shared `~/.diplomat/config.json` (key
-  `repoRoots`; an older single `repoRoot` is read as a one-root list) that both
-  front-ends and the node re-read on each spawn - change it and a *running* node picks
-  it up.
+  and the card says so when it's set. The list is **not** in UserDefaults: it lives
+  in the shared `~/.diplomat/config.json` (key `repoRoots`; an older single `repoRoot`
+  is read as a one-root list) that both front-ends re-read on each spawn.
 - **Other repos** - more local checkouts, added with **Add…**, that are never watched.
   A PR or issue link (URL or `owner/repo#N`) pasted into a wizard may name any of them
   or any repo root: the prompt targets that repo and its agent starts in that
   checkout. Each is known by its GitHub remotes (`upstream` is the one shown, then
-  `origin`), so a fork clone takes links to both. A run in one of these never goes over
-  the mesh: only the configured repo's root's work does (see [Diplomat Mesh](mesh.md)). Bare numbers and sweeps target the repo picked
+  `origin`), so a fork clone takes links to both. Bare numbers and sweeps target the repo picked
   in the panel header.
 - **Auto-queue fixes for my PRs / Auto-queue reviews that request me** - the two
   monitor toggles, with live status: PRs watched, reviews done so far, "N
@@ -162,13 +158,11 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   switched off it queues nothing, and issues filed while it is off are left for a
   [Fix-issues](actions.md#fix-issues) sweep.
 - **Run at most N automatic tasks at a time** - this machine's hard cap on
-  concurrent automatic agents (**default 2**, range 1-16), across every monitor,
-  the work a sweep queues, and any work a mesh peer routes here. The agent a
+  concurrent automatic agents (**default 2**, range 1-16), across every monitor
+  and the work a sweep queues. The agent a
   wizard press opens on the spot is never capped and doesn't count against it; work
-  over the cap is deferred to the next poll, not dropped. Like the repo roots and for
-  the same reason, it lives in the shared `~/.diplomat/config.json` rather than
-  UserDefaults - the node that runs peer-routed work is a separate stdlib-only
-  process, and a machine with two answers to "how many at once" has no cap at all.
+  over the cap is deferred to the next poll, not dropped. Like the repo roots, it
+  lives in the shared `~/.diplomat/config.json` rather than UserDefaults.
 - **Hold work when the limit runs low** - the
   [spending budget](automation.md#the-spending-budget) (**default on**), with the confidence
   it must reach that a task fits (**default 95%**, one-sided) and what to keep in
@@ -220,13 +214,6 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   which the daemon re-reads every minute. The [Devices screen](devices.md) holds the same
   controls, the device list, and the remote device pool
   ([allocator README](../packages/device-allocator/README.md#a-remote-device-pool)).
-- **Mesh (LAN P2P)** - opt into [Diplomat Mesh](mesh.md):
-  a toggle that starts/stops the local node (off by default), with live node/peer
-  status. The node outlives the app, so a launch with the toggle off stops one an
-  earlier instance left on this machine's state dir (a `mesh-stop` line in the
-  activity feed); it has to answer its control port with the pid and id
-  `state.json` names, so nothing else is touched. The mesh itself is managed from
-  the **⬡ Mesh screen**.
 - **Comms (Slack)** - the [Slack watcher](comms.md) (**default off**): the switch,
   keywords, a sender allowlist, one switch per thing it may do (queue reviews and
   fixes, bump queued work, investigate bug reports), the batch size and interval,
@@ -244,10 +231,9 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   **unattended daily at 06:00** - see [Autostart on login](development.md#autostart-on-login).
 
 All of it persists across launches: in UserDefaults (`com.ignacy.diplomat`), except
-the keys a mesh node reads too - repo roots, agent runner and model, the automatic-task
-cap, the 4h give-up switch and the spending budget's four knobs, and where the Slack
-token is read from (never the token itself) - and the allocator
-daemon's two idle limits, which live in the shared `~/.diplomat/config.json` ([`AppConfig.swift`](../packages/diplomat-platform/macos/Sources/Diplomat/AppConfig.swift)).
+repo roots, agent runner and model, the automatic-task cap, the 4h give-up switch,
+the spending budget's four knobs, where the Slack token is read from (never the
+token itself) and the allocator daemon's two idle limits, which live in the shared `~/.diplomat/config.json` ([`AppConfig.swift`](../packages/diplomat-platform/macos/Sources/Diplomat/AppConfig.swift)).
 
 ## Definitions / heuristics (where it's deliberately loose)
 
@@ -312,13 +298,13 @@ repository's secrets. Review, fix and conflict runs need only `contents` and
    (umask 077; read -rs t; printf '%s\n' "$t" > ~/.diplomat/agent-token)
    ```
 3. **Name** it in `~/.diplomat/config.json` - the name, never the token, since that
-   file is world-readable and copied around by the mesh. `"agentTokenKeychainItem":
+   file is world-readable. `"agentTokenKeychainItem":
    "diplomat-agent-gh"` on macOS (`plutil -replace agentTokenKeychainItem -string
    diplomat-agent-gh ~/.diplomat/config.json`), `"agentTokenFile":
    "~/.diplomat/agent-token"` on Linux.
 
 Every spawn on the machine then reads it - panel and automatic runs on both
-platforms, and runs a mesh node starts here - inside the spawned shell, and exports
+platforms - inside the spawned shell, and exports
 it as `GH_TOKEN`, which `gh` ranks above its own login. The agent's `git` over HTTPS
 to github.com gets it too, from `gh auth git-credential`, instead of any credential
 helper you configured (macOS git ships `osxkeychain`, which holds your broad login).

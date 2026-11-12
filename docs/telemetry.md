@@ -1,6 +1,6 @@
 # Telemetry
 
-The panel's third screen (the header button between **⬡** and **⚙︎**) answers the
+The Telemetry screen (the header button just left of **⚙︎**) answers the
 question the monitors otherwise leave open: *what is all this costing, and is it
 keeping up?* Nine figures, over a lookback you pick (**7d / 14d / 30d / 60d**,
 default 14):
@@ -32,10 +32,9 @@ default 14):
   lookback, as bars: 4-hour buckets over a week, 12 over a fortnight, a day over 30
   and two over 60, so every range draws 28-42 bars and each one covers the same span
   as its neighbours. Bucketed by when a run **ended**, so a run that spanned two bars
-  is one delivery in the bar it finished in. Work the mesh placed on a peer counts
-  here - it was delivered - even though its cost is that peer's and stays out of the
-  per-task figures above. The bars are laid backwards from *now*, so the newest is a
-  whole bucket rather than whatever fraction of one the range happens to end on.
+  is one delivery in the bar it finished in. The bars are laid backwards from *now*,
+  so the newest is a whole bucket rather than whatever fraction of one the range
+  happens to end on.
 - **Time to start** - from the monitor first seeing a unit of work to an agent
   taking it (the reconciler's backoff, an applet that was off, a busy PR).
 - **Time to finish** - from an agent starting to its exit.
@@ -51,12 +50,12 @@ last Tuesday?", "how much did we finish overnight?", "how close to the ceiling d
 get?"), so the source is an
 **append-only ledger** at
 `~/.diplomat/pr-monitor/telemetry.jsonl` - one JSON object per line, opened
-`O_APPEND` like the activity feed so this applet, its counterpart on the other OS and
-a mesh node can all append to one file. The monitors write `queued` when they first
+`O_APPEND` like the activity feed so two processes appending at once cannot clobber
+each other. The monitors write `queued` when they first
 see work owed, `cleared` if it stops being owed before anyone takes it, `started` on
 dispatch, `done` when the agent exited - its completion sentinel's own mtime, or the
-last turn of its transcript for a run the mesh placed, which leaves no sentinel this
-applet can read, but never when a poll noticed - and a `sample` every 15 minutes. A
+last turn of its transcript for a run that left no sentinel, rather than when a poll
+noticed - and a `sample` every 15 minutes. A
 run whose agent never answered (interrupted or refused before its first reply, so its
 transcript holds zero tokens) gets no `done`: it finished nothing. It rewrites itself to the 60-day retention horizon
 once it passes 4 MB.
@@ -65,10 +64,7 @@ Two gatherers fill in what GitHub doesn't know:
 
 - **Quota** (`quota.py` / `Quota.swift`) - one GET against the OAuth usage endpoint
   with the token Claude Code already holds, i.e. the same data its `/usage` screen
-  shows. Deliberately Diplomat's own probe rather than a call into the mesh library:
-  the [mesh is an optional add-on](mesh.md),
-  so a screen that reached through it for numbers would blank on exactly the
-  machines least likely to have it. `DIPLOMAT_QUOTA_PROBE=0` turns it off.
+  shows. `DIPLOMAT_QUOTA_PROBE=0` turns it off.
 - **Token attribution** (`usagescan.py` / `UsageScan.swift`) - Claude Code appends
   every turn to `~/.claude/projects/**/*.jsonl` with a `usage` block and the `cwd` it
   ran in, which is enough for both token questions. The repo-vs-everything-else split
@@ -107,9 +103,7 @@ per task rather than inventing a percentage. The week moves slowly, so it takes 
 while to measure, and until it has a price the screen leaves its series off rather
 than rescaling another figure into it. The 5-hour window is priced the same way from
 the older samples that carry it, and that price is applied only to tasks started no
-later than the last of them - a task after it has no 5-hour share. Work placed on a
-**mesh peer** spends that peer's quota, so it counts as
-started and is kept out of the cost and run-time figures.
+later than the last of them - a task after it has no 5-hour share.
 
 The arithmetic is shared: [`Telemetry.swift`](../packages/diplomat-core/Sources/DiplomatCore/Telemetry.swift)
 and `diplomat_runtime/telemetry.py` are diffed field-for-field over one ledger by
