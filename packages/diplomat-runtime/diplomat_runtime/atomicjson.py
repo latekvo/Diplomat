@@ -23,7 +23,7 @@ import os
 from pathlib import Path
 
 
-def write_atomic(path: Path, obj: object, *, indent: int = 2) -> None:
+def write_atomic(path: Path, obj: object) -> None:
     """Serialise ``obj`` to ``path`` via a tmp file + rename.
 
     Raises ``OSError`` when the file could not be written, with ``path`` untouched and
@@ -32,7 +32,7 @@ def write_atomic(path: Path, obj: object, *, indent: int = 2) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     try:
-        tmp.write_text(json.dumps(obj, indent=indent) + "\n", encoding="utf-8")
+        tmp.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, path)
     except OSError:
         tmp.unlink(missing_ok=True)

@@ -41,7 +41,8 @@ def mismatch_warning(noun: str, cfg) -> str:
 
 
 class SpawnWizard(QWidget):
-    """Base for the four wizards: owns the SPAWN button and the dispatch branch. Subclasses build their own inputs and supply the hooks below."""
+    """Base for the four wizards: owns the SPAWN button and the dispatch branch.
+    Subclasses build their own inputs and supply the hooks below."""
 
     #: ``(queued, already_queued, error)`` from a sweep's fan-out worker, which
     #: assembles a prompt per item off the UI thread. Queued to the main thread,
@@ -66,10 +67,10 @@ class SpawnWizard(QWidget):
         self._kind = kind
         self._tint = tint
         # Set while a sweep's fan-out this wizard started has yet to answer. SPAWN is
-        # disabled for it, and stays disabled
-        # across a _sync(), which re-derives the button from config validity alone
-        # and would otherwise hand it back mid-flight: every input change calls one,
-        # and so does the panel's own periodic refresh_identity().
+        # disabled for it, and stays disabled across a _sync(), which re-derives the
+        # button from config validity alone and would otherwise hand it back mid-flight:
+        # every input change calls one, and so does the panel's own periodic
+        # refresh_identity().
         self._dispatch_inflight = False
         # A link already in the single-item field may name a checkout that was just
         # listed or removed in Settings, and a bare number names the selected root.
@@ -100,7 +101,7 @@ class SpawnWizard(QWidget):
     # ---- shared construction ---------------------------------------------
 
     def _add_dispatch_controls(self, root: QVBoxLayout) -> None:
-        """Append the SPAWN button and the status line — the tail every wizard's
+        """Append the SPAWN button and the status line - the tail every wizard's
         layout ends with."""
         self.spawn_btn = widgets.spawn_button(self._spawn)
         root.addWidget(self.spawn_btn)
@@ -138,7 +139,7 @@ class SpawnWizard(QWidget):
             return
         cfg = self._config()
         label = self._label()
-        # The SAME pipeline the auto-monitor rides — dedup, ban check,
+        # The SAME pipeline the auto-monitor rides - dedup, ban check,
         # registration — only the trigger (this click) and its policies differ
         # (see autofix.dispatch_decide).
         term = review.resolved(self.store.terminal)
@@ -169,8 +170,8 @@ class SpawnWizard(QWidget):
         """Expand a scope into one queued task per item it covers.
 
         SPAWN is disabled for the round trip: the fan-out assembles a prompt per item
-        and a second press meanwhile would ask for the sweep twice. What lands is reported by :meth:`_sweep_queued`, back on
-        the GUI thread."""
+        and a second press meanwhile would ask for the sweep twice. What lands is
+        reported by :meth:`_sweep_queued`, back on the GUI thread."""
         if not self.store.has_loaded:
             self.status.setText(
                 f"{self._sweep_plural} haven't loaded yet — refresh, then sweep.")

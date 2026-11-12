@@ -180,8 +180,7 @@ def ttys_running_an_agent(now: float) -> Observation:
     on a screen can tell those two apart — a pane can be showing a banner because it
     printed one — so the process on the tty is the only thing that can.
 
-    Any runner and any task, unlike :func:`autofix.agent_ttys`, which answers for the
-    agents of one repo's PRs: the question here is whether a human's shell is about to
+    Any runner and any task: the question here is whether a human's shell is about to
     be typed into, and an agent reviewing nothing in particular is still an agent.
 
     A process with no controlling tty is left out — it owns no screen to be nudged.
@@ -231,12 +230,6 @@ def live_agents(dump: Observation, slugs: set[str],
     held: dict[str, str] = {}
     own_sessions: dict[str, str] = {}
     held_sessions: dict[str, str] = {}
-    # Parsed here against THIS dump's columns rather than through
-    # `autofix.agent_lines`, which reads the tty as the FIRST token of a
-    # `tty=,etime=,args=` dump. That was silently wrong here the moment this probe
-    # started asking for a pid column too: every
-    # agent came back keyed to a tty that was really a pid, so no screen could ever
-    # be found for one and no untracked agent ever gave its bay back.
     for line in dump.value.splitlines():
         if not runner.is_agent_line(line):
             continue

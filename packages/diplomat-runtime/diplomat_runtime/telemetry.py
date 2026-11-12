@@ -21,10 +21,10 @@ The event vocabulary, per unit of auto-work (keyed by :func:`autofix.ledger_key`
 ``started``
     an agent was dispatched for it.
 ``done``
-    the agent exited — timed from its completion sentinel, or from the last turn of
-    its transcript where it left none — carrying the tokens that transcript accounts for (see :mod:`usagescan`), and,
-    for a runner the provider bills in money, what it charged and the model it
-    charged for (see :func:`hermesstore.session_price`).
+    the agent exited - timed from its completion sentinel, or from the last turn of its
+    transcript where it left none - carrying the tokens that transcript accounts for
+    (see :mod:`usagescan`), and, for a runner the provider bills in money, what it
+    charged and the model it charged for (see :func:`hermesstore.session_price`).
 ``cleared``
     a poll no longer sees it owed and we never started it — someone replied by
     hand, or the PR closed.
@@ -295,11 +295,12 @@ def record_completion(key: str, prompt: str, started_at: float,
     running totals on. Everything else is a Claude Code run, found in ``~/.claude`` by
     the prompt it opened with.
 
-    ``exited_at`` is the completion sentinel's mtime, for a run that left one. A
-    Claude Code run is dated from its transcript's last turn instead — written seconds before the agent exits — where
-    ``noticed_at`` is the poll that found the run gone, up to a poll period later,
-    and would inflate the run time by that much. A foreign runner is priced by
-    session id rather than by transcript and leaves nothing finer than the poll.
+    ``exited_at`` is the completion sentinel's mtime, for a run that left one. A Claude
+    Code run is dated from its transcript's last turn instead - written seconds before
+    the agent exits - where ``noticed_at`` is the poll that found the run gone, up to a
+    poll period later, and would inflate the run time by that much. A foreign runner is
+    priced by session id rather than by transcript and leaves nothing finer than the
+    poll.
 
     Attribution can fail either way — the applet restarting mid-agent loses the prompt
     the match needs, and a session whose window was closed before it was matched has
@@ -910,9 +911,9 @@ def quota_series(samples: list[Sample], *, now: float,
 @dataclass(frozen=True)
 class TaskSpan:
     """One task's life, for the rate-limit chart's overlay markers. ``done`` is None
-    for a task still running. ``started_pct``/``done_pct`` are the weekly-quota level at each
-    instant, read off the same readings the purple line is drawn from so a marker
-    sits on that line — None only when no reading carries a week value."""
+    for a task still running. ``started_pct``/``done_pct`` are the weekly-quota level at
+    each instant, read off the same readings the purple line is drawn from so a marker
+    sits on that line - None only when no reading carries a week value."""
 
     started: float
     done: float | None

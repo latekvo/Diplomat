@@ -253,9 +253,9 @@ def auto_task_limit() -> int:
 
 
 def run_deadline() -> float | None:
-    """How long a run may go on before the resolver calls it over
-    whatever else it sees, or ``None`` when the operator has that backstop switched off
-    (Settings → STALLED AGENTS).
+    """How long a run may go on before the resolver calls it over whatever else it sees,
+    or ``None`` when the operator has that backstop switched off (Settings → STALLED
+    AGENTS).
 
     The knob is a switch and the duration is :data:`agentstate.RUN_DEADLINE`; resolving
     the two into one answer here is what keeps every caller — both applets' ticks and

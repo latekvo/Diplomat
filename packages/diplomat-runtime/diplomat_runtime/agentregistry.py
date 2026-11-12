@@ -32,10 +32,9 @@ not tell two runs on one PR apart and matched any unrelated session that mention
 the number.
 
 Writes are atomic (:mod:`.atomicjson`) and guarded by a process-local lock: the poll
-worker, a panel click and the free-slot sweep all reach this. Cross-process readers
-(the ``DIPLOMAT_AGENTS`` dump) only ever read, and ``os.replace`` means they never
-see a torn file. A write to the book that fails raises ``OSError``
-with the book unchanged on disk.
+worker, a panel click and the free-slot sweep all reach this. Cross-process readers (the
+``DIPLOMAT_AGENTS`` dump) only ever read, and ``os.replace`` means they never see a torn
+file. A write to the book that fails raises ``OSError`` with the book unchanged on disk.
 """
 
 from __future__ import annotations
@@ -307,11 +306,11 @@ def runners_of(records: list[RunRecord]) -> set[str]:
     """Which agent CLIs the runs the run deadline could end were started under — what
     :func:`autobudget.tokens_left` is asked in the currencies of.
 
-    Only those runs: an untracked one the rung refuses by name, and a panel click
-    holds no bay of the automatic cap, so a limit either of them draws on says nothing
-    about the rung
-    (:func:`agentstate.deadline_applies`). ``""`` for a run with no record of its own is
-    passed through rather than dropped — the reader is what decides what to make of it.
+    Only those runs: an untracked one the rung refuses by name, and a panel click holds
+    no bay of the automatic cap, so a limit either of them draws on says nothing about
+    the rung (:func:`agentstate.deadline_applies`). ``""`` for a run with no record of
+    its own is passed through rather than dropped - the reader is what decides what to
+    make of it.
     """
     return {run_runner(r.run_id) for r in records if deadline_applies(r)}
 

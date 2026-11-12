@@ -111,7 +111,7 @@ def pane_tails_for_ttys(ttys: set[str]) -> dict[str, str] | None:
 
     ANY failure collapses to ``None``, not just the ones :func:`_run` knows to expect.
     The caller is a poll worker, which cannot afford an exception: it would silently
-    die for the rest of the applet's life (the way the watcher itself once did — see
+    die for the rest of the applet's life (the way the watcher itself once did - see
     :func:`_run`).
     """
     if shutil.which("tmux") is None:
@@ -204,13 +204,13 @@ def kill_window_for_tty(tty: str) -> bool:
     run the operator started from the panel that ends the ordinary way keeps its window:
     that is a session they may still want to read or type into.
 
-    The WINDOW, not the session. A session this applet opened holds
-    that one window (:func:`review.terminal_argv`), and tmux ends a session with its
-    last window, so nothing of those is left behind; an agent the operator ran by
-    hand inside their own session loses that window, every pane in it, and nothing
-    else of theirs. Panes are matched on the tty rather than the pane id because the
-    tty is what a run records - the two sources spell it differently, so the
-    comparison is normalised the way :func:`pane_tails_for_ttys` normalises it.
+    The WINDOW, not the session. A session this applet opened holds that one window
+    (:func:`review.terminal_argv`), and tmux ends a session with its last window, so
+    nothing of those is left behind; an agent the operator ran by hand inside their own
+    session loses that window, every pane in it, and nothing else of theirs. Panes are
+    matched on the tty rather than the pane id because the tty is what a run records -
+    the two sources spell it differently, so the comparison is normalised the way
+    :func:`pane_tails_for_ttys` normalises it.
     """
     if not tty or shutil.which("tmux") is None:
         return False

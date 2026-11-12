@@ -1,9 +1,10 @@
 """Resolve-conflicts wizard — pick whose PRs to sweep, then SPAWN.
 
-The Linux analogue of ConflictWizardView.swift. Collects the same choice (mine /
-someone else's / one specific PR) and builds the prompt from the shared
-assets/conflicts.json. Dispatching it — through the same gate the auto-fix monitor
-rides — is :class:`~diplomat_app.wizardbase.SpawnWizard`'s job. Persistent widget (state survives data refreshes).
+The Linux analogue of ConflictWizardView.swift. Collects the same choice (mine / someone
+else's / one specific PR) and builds the prompt from the shared assets/conflicts.json.
+Dispatching it - through the same gate the auto-fix monitor rides - is
+:class:`~diplomat_app.wizardbase.SpawnWizard`'s job. Persistent widget (state survives
+data refreshes).
 """
 
 from __future__ import annotations

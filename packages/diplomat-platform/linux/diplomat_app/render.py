@@ -933,7 +933,8 @@ def _tasks_fixture(store: Store) -> bool:
         f"{cfg['owner']}/{cfg['repo']}#1714".lower(): gh_pr(
             pr, "Physical iPhone runner", comments=[("C1", "kacper", "old")]),
         f"{cfg['owner']}/{cfg['repo']}#1702".lower(): gh_issue(issue, "Support real iPhones"),
-        "latekvo/tor-transport#27": gh_pr(tor, "Tor onion transport", review="REVIEW_REQUIRED"),
+        "latekvo/tor-transport#27": gh_pr(tor, "Tor onion transport",
+                                          review="REVIEW_REQUIRED"),
         f"{cfg['owner']}/{cfg['repo']}#1650".lower(): gh_pr(old, "Drop the old allocator",
                                                             state="MERGED"),
     }
@@ -948,7 +949,8 @@ def _tasks_fixture(store: Store) -> bool:
                    "links": [pr, "#1702",
                              "https://swmansion.slack.com/archives/D0B54QMA6DT/p1793373966186819"]})
     made({"op": "create", "title": "Tor transport", "tags": ["area:network"],
-          "links": ["latekvo/tor-transport#27", "https://community.torproject.org/onion-services/"]})
+          "links": ["latekvo/tor-transport#27",
+                    "https://community.torproject.org/onion-services/"]})
     docs = made({"op": "create", "title": "Docs refresh", "tags": ["kind:docs"]})
     tasks.edit({"op": "note", "id": docs, "text": "waiting for the new screenshots",
                 "tags": ["waiting"]})

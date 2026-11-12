@@ -429,7 +429,7 @@ def popen_detached(target: list[str] | str, *, shell: bool = False,
 
 
 def write_prompt(prompt: str) -> str:
-    # 0600 via mkstemp: /tmp is world-readable and multi-user — don't leave the
+    # 0600 via mkstemp: /tmp is world-readable and multi-user - don't leave the
     # prompt readable to other local users (nor world-readable by umask).
     path = ""
     try:
@@ -786,11 +786,11 @@ def spawn_env() -> dict:
     """The environment the *launcher* gets: this process's, minus the variables that
     say we are already inside a tmux pane.
 
-    Whoever launched the applet may have done so from one, and
-    ``tmux new-session`` inherits ``$TMUX`` from there and refuses to nest — the
-    window would open and close again on "sessions should be nested with care".
-    Dropping them costs the child nothing: it is about to be in a pane of its own,
-    which sets both to that pane's real values.
+    Whoever launched the applet may have done so from one, and ``tmux new-session``
+    inherits ``$TMUX`` from there and refuses to nest - the window would open and close
+    again on "sessions should be nested with care". Dropping them costs the child
+    nothing: it is about to be in a pane of its own, which sets both to that pane's real
+    values.
 
     Note the launcher, not the agent. Where tmux is in play this environment reaches
     the tmux *client* and stops there: the session's command is started by the

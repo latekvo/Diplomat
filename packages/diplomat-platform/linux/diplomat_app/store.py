@@ -3,7 +3,7 @@
 A port of Store.swift. The tool catalog (titles, subtitles, colours, order) is
 loaded from the shared ``assets/catalog.json``; the row-mapping in ``items_for``
 is the same dense formatting the macOS panel renders. Settings persist via
-``QSettings`` (the Linux analogue of macOS UserDefaults) — except the handful that
+``QSettings`` (the Linux analogue of macOS UserDefaults) - except the handful that
 live in the shared ``~/.diplomat/config.json`` (see :mod:`appconfig`).
 """
 
@@ -416,12 +416,12 @@ class Store(QObject):
         # Queued work whose dispatch is under way: it has left the queue and its spawn
         # has not answered yet.
         #
-        # That span is seconds long — a `ps` scan, a terminal — and
-        # for all of it the task is neither queued nor yet an agent this panel counts.
-        # It is held here so that it stays a ROW throughout, saying what the click just
-        # did to it, rather than a gap where the operator's task used to be. In memory
-        # only, like the queue it comes from. Replaced, never mutated: the worker
-        # thread writes it while the GUI thread draws from it.
+        # That span is seconds long - a `ps` scan, a terminal - and for all of it the
+        # task is neither queued nor yet an agent this panel counts. It is held here so
+        # that it stays a ROW throughout, saying what the click just did to it, rather
+        # than a gap where the operator's task used to be. In memory only, like the
+        # queue it comes from. Replaced, never mutated: the worker thread writes it
+        # while the GUI thread draws from it.
         self.starting_tasks: list[autofix.QueuedTask] = []
         # This poll's deferrals, published as `queued_tasks` only once the whole cycle
         # has succeeded: a failed fetch means "we no longer know what is owed", which
@@ -980,10 +980,9 @@ class Store(QObject):
     def queued_task_order(self) -> list[str]:
         """The operator's drag order for the deferred-work queue, by queue key.
 
-        In QSettings, unlike the cap above it: the arrangement is this front-end's
-        view of its own list. Pruned to
-        what is still offered on every commit, so it can't grow past the work it
-        describes."""
+        In QSettings, unlike the cap above it: the arrangement is this front-end's view
+        of its own list. Pruned to what is still offered on every commit, so it can't
+        grow past the work it describes."""
         primary = self._primary().slug
         return [migrate_queue_key(str(k), primary)
                 for k in (self._settings.value("queuedTaskOrder", [], list) or [])]
@@ -2411,10 +2410,10 @@ class Store(QObject):
     def running_tasks(self) -> list[autofix.RunningAgent]:
         """Every agent run the panel draws, in reading order.
 
-        Every one — both sources, tracked or not. The two
-        front-ends used to disagree about this list (this one hid panel spawns and
-        drew untracked agents; macOS did the reverse), which meant the rows and the
-        cap were answering different questions about the same machine.
+        Every one - both sources, tracked or not. The two front-ends used to disagree
+        about this list (this one hid panel spawns and drew untracked agents; macOS did
+        the reverse), which meant the rows and the cap were answering different
+        questions about the same machine.
 
         A record carries the label, kind and start time its dispatch logged. A run
         nobody dispatched has none of those and is drawn by its PR alone, which is
@@ -2694,9 +2693,9 @@ class Store(QObject):
         and a memo that matched on the key alone would hand the second ask the first
         one's prompt. And by its label and checkout, which follow the repo roots.
 
-        Carries no ``counter`` and no ``ledger_key``: no monitor owns
-        it (so no toggle pauses it and no auto-handled counter counts it), and the
-        telemetry ledger measures the monitors, not the operator."""
+        Carries no ``counter`` and no ``ledger_key``: no monitor owns it (so no toggle
+        pauses it and no auto-handled counter counts it), and the telemetry ledger
+        measures the monitors, not the operator."""
         roots = review.repo_roots()
         label = entry.label_among(len(roots))
         checkout = self._root_of(entry.repo).path if entry.repo else None
@@ -2799,14 +2798,14 @@ class Store(QObject):
     def _settle_requested(self, entry: autofix.QueuedTask, verdict: str) -> None:
         """Take an ask off the list once its dispatch has answered for it.
 
-        Started is the obvious one. A BAN is the other: the agent would refuse to run for as long as the ban stands,
-        and a row nothing will ever start is a row that lies about what this machine is
-        going to do. Every other verdict leaves the ask alone — an in-flight PR, a
-        window with no budget left and a terminal that failed to open are all reasons
-        to try again next poll, which is exactly what staying in the list means.
-        ``not_allowed`` is not among them because an ask can never draw it: the
-        allowlist answers for the review monitor's own finds, and an ask is not one
-        (``AgentJob.counter``)."""
+        Started is the obvious one. A BAN is the other: the agent would refuse to run
+        for as long as the ban stands, and a row nothing will ever start is a row that
+        lies about what this machine is going to do. Every other verdict leaves the ask
+        alone - an in-flight PR, a window with no budget left and a terminal that failed
+        to open are all reasons to try again next poll, which is exactly what staying in
+        the list means. ``not_allowed`` is not among them because an ask can never draw
+        it: the allowlist answers for the review monitor's own finds, and an ask is not
+        one (``AgentJob.counter``)."""
         if not entry.job.requested:
             return
         if verdict not in ("spawned", autofix.VERDICT_BANNED):
@@ -3080,18 +3079,18 @@ class Store(QObject):
         """The queued row's "execute now": start this task immediately, past the
         holds that are the machine's own judgement.
 
-        It stays AUTO work — same ``Auto · `` label, same auto-handled counter, and
-        once running it occupies a slot like any other automatic agent, so the rest
-        of the queue waits behind it. Of the five asymmetries the gate draws between
-        a click and a monitor tick (capacity, disk, budget, counters, label) this
-        borrows exactly three: the cap, the
-        disk floor and the spending budget, which are the three the operator is
-        overriding. All three are judgements of what this machine should do next,
-        and the operator looking at the row knows something they do not.
+        It stays AUTO work - same ``Auto · `` label, same auto-handled counter, and once
+        running it occupies a slot like any other automatic agent, so the rest of the
+        queue waits behind it. Of the five asymmetries the gate draws between a click
+        and a monitor tick (capacity, disk, budget, counters, label) this borrows
+        exactly three: the cap, the disk floor and the spending budget, which are the
+        three the operator is overriding. All three are judgements of what this machine
+        should do next, and the operator looking at the row knows something they do not.
 
-        On a worker thread, like every other dispatch path: it assembles nothing but
-        it does spawn a terminal. The row is moved into the starting band HERE, on the GUI thread, so it answers
-        the press in the same repaint rather than a worker's round-trip later."""
+        On a worker thread, like every other dispatch path: it assembles nothing but it
+        does spawn a terminal. The row is moved into the starting band HERE, on the GUI
+        thread, so it answers the press in the same repaint rather than a worker's
+        round-trip later."""
         entry = next((e for e in self.queued_tasks if e.id == task_id), None)
         if entry is None:
             return
@@ -3106,7 +3105,7 @@ class Store(QObject):
         """One "execute now", start to finish.
 
         The feed line is written from the OUTCOME, never ahead of it: the PR can have
-        gained an agent since the list was built, and the spawn can fail — announcing
+        gained an agent since the list was built, and the spawn can fail - announcing
         "started" before asking would report a launch that never happened in both."""
         verdict = self._run_queued_task(entry, forced=True)
         label = entry.job.label
@@ -3524,7 +3523,7 @@ class Store(QObject):
         adopted has, and the run deadline is the first backstop that can end one of
         those: the stillness clock needs a pane tail to compare against, so before it
         every reapable run had a tty. Then the tty, for a session this applet did not
-        name — one spawned before names, and an agent it did not spawn.
+        name - one spawned before names, and an agent it did not spawn.
         """
         refused: set[str] = set()
         for record in t.reapable:

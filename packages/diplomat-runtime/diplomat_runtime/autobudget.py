@@ -2,7 +2,7 @@
 
 The pure arithmetic is :func:`autofix.budget_decide` and the pieces it is fed;
 this is the assembly — the telemetry ledger folded and priced, the live probe, and
-the operator's knobs — for the applet's dispatch gate (``Store.dispatch_agent``).
+the operator's knobs - for the applet's dispatch gate (``Store.dispatch_agent``).
 
 **Which currency.** What an agent spends depends on what runs it, so the runner
 picks the ceilings and the unit both sides of the comparison are in

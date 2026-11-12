@@ -1,8 +1,7 @@
 """The Telemetry screen — what the monitors cost and what they still owe.
 
-The Linux face of the ledger (:mod:`telemetry`), and one of the panel's
-screens. It reads
-``~/.diplomat/pr-monitor/telemetry.jsonl``, folds it through the shared
+The Linux face of the ledger (:mod:`telemetry`), and one of the panel's screens. It
+reads ``~/.diplomat/pr-monitor/telemetry.jsonl``, folds it through the shared
 arithmetic, and draws nine figures:
 
 * what share of the 7-day rate-limit window one auto-task consumes, on average;

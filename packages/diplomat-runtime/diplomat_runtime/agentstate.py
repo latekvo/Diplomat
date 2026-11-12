@@ -25,11 +25,11 @@ via ``diplomat-core agent-state``), so the two front-ends cannot drift again.
 The one rule the whole ladder is built to keep
 ---------------------------------------------
 **Absence of evidence never resolves to FINISHED.** A run is finished only on
-positive evidence — its runner said the turn is over, its sentinel exists, or its
+positive evidence - its runner said the turn is over, its sentinel exists, or its
 process was looked for in a table we actually read and was not there. Every other gap
-resolves to :data:`UNKNOWN`, which holds its bay and says so. Reading "I could not look" as "it
-is gone" is what produced years of already-complete verdicts on agents that were
-still working.
+resolves to :data:`UNKNOWN`, which holds its bay and says so. Reading "I could not
+look" as "it is gone" is what produced years of already-complete verdicts on agents
+that were still working.
 
 :data:`FAILED` is not a gap either, and it is the one verdict that rests on a file
 rather than on a reading of a machine: the pid file a spawn stages is written by
@@ -240,12 +240,12 @@ ENDED = frozenset({MERGED, FINISHED, FAILED})
 # MARK: - Timing constants
 
 
-#: How long after dispatch a run with no observed process still reads as STARTING.
-#: The inner shell writes its pid before the agent starts, but a terminal emulator, a
-#: tmux server and the user's rc all run first — and the process table is one `ps` pass
+#: How long after dispatch a run with no observed process still reads as STARTING. The
+#: inner shell writes its pid before the agent starts, but a terminal emulator, a tmux
+#: server and the user's rc all run first - and the process table is one `ps` pass
 #: reused for several seconds, so it can predate the pid file naming what to look for.
 #: Past this the run is judged on the evidence there is: a known pid the table does not
-#: hold has ended, and a run with no pid file at all never ran (:data:`FAILED`) — this
+#: hold has ended, and a run with no pid file at all never ran (:data:`FAILED`) - this
 #: applet staged that path itself, so nothing but the command writes it.
 #:
 #: The same window bounds ``AgentSpawner.spawn``'s own wait for the file, measured from
@@ -290,9 +290,9 @@ PID_ADOPTION_SLACK = 30.0
 #: dead one.
 QUIET_TIMEOUT = 20 * 60.0
 
-#: How long a run may go on before it is called over whatever
-#: else the evidence says — the outermost backstop, offered as a switch
-#: (:func:`appconfig.run_deadline`) rather than applied unconditionally.
+#: How long a run may go on before it is called over whatever else the evidence says -
+#: the outermost backstop, offered as a switch (:func:`appconfig.run_deadline`) rather
+#: than applied unconditionally.
 #:
 #: Beneath :data:`QUIET_TIMEOUT` sits the same argument one rung further out. The
 #: stillness clock ends a wedged run by reading its screen, so it ends nothing on a run
@@ -659,9 +659,9 @@ def observe_quiescence(records: list[RunRecord], tails: Observation,
     than an observation: absence of motion is only measurable against when there was
     last some, so somebody has to remember that. Keeping it a separate pure step means
     :func:`resolve` stays a function of its arguments alone. What is remembered is a
-    digest rather than the screen itself —
-    the book is rewritten every tick and read by other processes, so storing every
-    watched pane's contents in it would be both large and pointless.
+    digest rather than the screen itself - the book is rewritten every tick and read by
+    other processes, so storing every watched pane's contents in it would be both large
+    and pointless.
 
     A tail that could not be read updates nothing. That is what keeps a tmux server
     going down from looking like twenty minutes of stillness across every run at once:
@@ -952,7 +952,7 @@ def _resolve_without_pid(record: RunRecord, evidence: Evidence, now: float,
                          age: float, done) -> Resolution:
     """A run this applet booked but has no pid for.
 
-    Two things produce one. A spawn whose shell has not written its pid file yet —
+    Two things produce one. A spawn whose shell has not written its pid file yet -
     the ordinary first seconds of a run. And a spawn whose terminal opened a window and
     never ran the command in it, so the file is not late but absent.
 
@@ -974,7 +974,7 @@ def _resolve_without_pid(record: RunRecord, evidence: Evidence, now: float,
         return done(STARTING, f"dispatched {age:.0f}s ago, no pid yet")
     # This applet opened the terminal and named the pid path itself, and the inner
     # shell writes it before the agent (``AgentSpawner.shellCommand``). So an absent
-    # file past the grace is the run's OWN report that its command never ran — not an
+    # file past the grace is the run's OWN report that its command never ran - not an
     # inference from what the terminal looks like, which is why it survives a terminal
     # that changes how it fails.
     return done(FAILED, "its terminal never ran the command "
@@ -1134,12 +1134,12 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     What produces one is a live agent whose run the book does not hold: a session the
     operator opened by hand, a run whose row the operator dismissed, every agent when
     the book could not be read, and one whose run had no pid and ended beside another
-    record on its PR. Not another run this
-    applet ended, whose agent goes to a released record (:func:`release_ended`), nor a
-    window a backstop failed to close, whose run is kept. They are found the old way —
-    the prompt's ``PR #<n> in <owner>/<repo>`` in the process table — which is why they
-    are a *fallback* and not the identity mechanism: that scan cannot tell two runs on
-    one PR apart, so at most one record per PR is made.
+    record on its PR. Not another run this applet ended, whose agent goes to a released
+    record (:func:`release_ended`), nor a window a backstop failed to close, whose run
+    is kept. They are found the old way - the prompt's ``PR #<n> in <owner>/<repo>`` in
+    the process table - which is why they are a *fallback* and not the identity
+    mechanism: that scan cannot tell two runs on one PR apart, so at most one record per
+    PR is made.
 
     One is made once and then kept in the book like any other run, because the
     stillness backstop measures a screen against the last one seen and a record
@@ -1192,14 +1192,14 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
     nothing that made it a dispatch. A run whose window :func:`close_on_retire` closes
     is released too: its agent can outlive the tick, and the close can reach nothing.
 
-    Only where the scan would re-book once the PR's other records are gone: a run on
-    a PR the scan sees. One with no pid is held to the scan's
-    sighting, which cannot tell two agents apart, so it is released only alone on its
-    PR. Beside a record already named ``untracked:<item>`` (the run itself, if a hand edit
-    made it a dispatch), its run id carries its pid, and without one it is not released.
-    Not a run a backstop ended, whose window is being closed. And only while the
-    released record resolves to a live agent, or to one the stillness backstop ends at
-    once, so that its window is closed.
+    Only where the scan would re-book once the PR's other records are gone: a run on a
+    PR the scan sees. One with no pid is held to the scan's sighting, which cannot tell
+    two agents apart, so it is released only alone on its PR. Beside a record already
+    named ``untracked:<item>`` (the run itself, if a hand edit made it a dispatch), its
+    run id carries its pid, and without one it is not released. Not a run a backstop
+    ended, whose window is being closed. And only while the released record resolves to
+    a live agent, or to one the stillness backstop ends at once, so that its window is
+    closed.
     """
     live = evidence.live_agents.value if evidence.live_agents.ok else {}
     count: dict[str, int] = {}
@@ -1221,8 +1221,9 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
             run_id = f"{run_id}:{r.pid}"
         heir = RunRecord(run_id=run_id,
                          dispatched_at=r.dispatched_at, pr_number=r.pr_number,
-                         pr_url=r.pr_url, source=r.source, pid=r.pid, tty=r.tty, quiet_digest=r.quiet_digest,
-                         quiet_since=r.quiet_since, reap_refused_at=r.reap_refused_at,
+                         pr_url=r.pr_url, source=r.source, pid=r.pid, tty=r.tty,
+                         quiet_digest=r.quiet_digest, quiet_since=r.quiet_since,
+                         reap_refused_at=r.reap_refused_at,
                          untracked=True, released=True)
         verdict = resolve_one(heir, evidence, now, deadline)
         if verdict.state not in ENDED or verdict.wedged:
@@ -1350,7 +1351,7 @@ class Tick:
     """Everything one pass of evidence produced. What a caller reads instead of
     re-deriving any of it."""
 
-    #: The records as the pipeline left them — ttys adopted, screens fingerprinted,
+    #: The records as the pipeline left them - ttys adopted, screens fingerprinted,
     #: untracked agents synthesized, ended runs' live agents released. The caller
     #: persists these.
     records: list[RunRecord]
@@ -1378,14 +1379,13 @@ def tick(records: list[RunRecord], evidence: Evidence, now: float, limit: int,
 
     The order is the reason this is a function rather than a convention each caller
     repeats: ttys are adopted BEFORE resolving, so they count this tick rather than a
-    tick late; quiescence is observed after ttys are adopted, since
-    a run with no tty yet has no screen to compare; and untracked agents are
-    synthesized AFTER, so a live agent that already has a record is not drawn twice — and so it keeps the tty
-    the scan found it on rather than having one adopted for a pid it does not have.
-    Released records are made LAST, from the verdicts, so the caller persists each
-    before it forgets the run that ended.
-    Both front-ends and the parity CLI go through here, so neither can get the
-    sequence subtly different from the other.
+    tick late; quiescence is observed after ttys are adopted, since a run with no tty
+    yet has no screen to compare; and untracked agents are synthesized AFTER, so a live
+    agent that already has a record is not drawn twice - and so it keeps the tty the
+    scan found it on rather than having one adopted for a pid it does not have. Released
+    records are made LAST, from the verdicts, so the caller persists each before it
+    forgets the run that ended. Both front-ends and the parity CLI go through here, so
+    neither can get the sequence subtly different from the other.
     """
     records = adopt_ttys(records, evidence.processes, evidence.live_agents)
     records = observe_quiescence(records, evidence.tails, now)
