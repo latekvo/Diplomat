@@ -128,7 +128,8 @@ Everything here can be changed in Settings (⚙︎).
 
 Agents use your full `gh` login unless you give them
 [a narrower token](docs/settings.md#a-narrow-github-token-for-agents) limited to contents and pull
-requests, which is safer.
+requests, which is safer. That token is GitHub's alone: agents on a GitLab root use your full
+`glab` login.
 </details>
 
 <details>

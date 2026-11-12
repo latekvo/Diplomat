@@ -132,9 +132,10 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   is its whole namespace (`group/sub`). A GitLab root is read through `glab`, signed in
   to its host, and "me" there is glab's user on that host, not the GitHub username
   above; its agents are told to use `glab`. GitHub-only whatever the roots: Tasks
-  mirroring, the review audit, goal grouping, the username override and
-  [Comms](comms.md)' answers to questions (the documentation is read through `gh`, and
-  only github.com links survive in them). A GitLab root
+  mirroring, the review audit, goal grouping, the username override,
+  [the narrow agent token](#a-narrow-github-token-for-agents) (an agent on a GitLab root
+  runs on your full `glab` login) and [Comms](comms.md)' answers to questions (the
+  documentation is read through `gh`, and only github.com links survive in them). A GitLab root
   is never the configured repo, so its work stays off the mesh. A reading older than a
   minute is taken again when next asked, so a checkout that appears later is picked up by
   the next poll. A row warns when the path isn't absolute, has no `.git`, or has no
@@ -344,7 +345,9 @@ token that cannot be read (a missing item, one empty or blank, a missing or blan
 starts nothing rather than falling back to the broad login: the spawn fails, and the
 work stays owed. Remove the key to go back.
 
-What it does not cover: `git` over SSH still pushes with your SSH keys, and a
+What it does not cover: `git` over SSH still pushes with your SSH keys, a
 `GH_TOKEN` or `GIT_CONFIG_COUNT` your shell rc exports replaces this one, because the
-agent's shell sources your rc after Diplomat sets it. To check it took, run
-`gh auth status` inside a spawned agent's window: it names `GH_TOKEN` as the source.
+agent's shell sources your rc after Diplomat sets it, and an agent on a GitLab root runs
+`glab` on your full login and `git` on your own credentials, which no token here narrows.
+To check it took, run `gh auth status` inside a spawned agent's window: it names `GH_TOKEN`
+as the source.

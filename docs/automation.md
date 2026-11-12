@@ -45,7 +45,10 @@ root its PR or issue belongs to.
   queues a [Fix-issues](actions.md#fix-issues) fix (default depth, bugs only, a draft PR
   and a comment on the issue thanking the reporter) for each one filed from outside the org (author
   association other than `MEMBER` / `OWNER`) that nobody is assigned to and nobody on the
-  team (`MEMBER` / `OWNER` / `COLLABORATOR`) has commented on. The fix claims the issue, reproduces it, and fixes it only if it
+  team (`MEMBER` / `OWNER` / `COLLABORATOR`) has commented on. GitLab has no author
+  association: there a project member (direct, inherited from its groups, or through a
+  group shared with the project or one of its groups) reads as `MEMBER`, anyone else as an
+  outsider. The fix claims the issue, reproduces it, and fixes it only if it
   reproduces. Only issues filed after the monitor's first scan of that repo count: the mark is the
   newest `createdAt` it has seen there, kept per repo, so switching it on or adding a
   root never queues a backlog, and each
