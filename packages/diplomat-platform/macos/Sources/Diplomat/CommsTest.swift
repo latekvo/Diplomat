@@ -506,7 +506,7 @@ enum CommsTest {
                                         tails: .present([:]), claims: .present([]),
                                         mergedPRs: .present([]), liveAgents: .present([:]),
                                         sessions: .present([:]), activity: .present([:]))
-        let tick = AgentState.tick(records: [], evidence: quiet, now: Date().timeIntervalSince1970,
+        let tick = AgentState.tick(records: [], evidence: quiet, roots: [], now: Date().timeIntervalSince1970,
                                    limit: 4)
         store.publishForSelfTest(Store.AgentPass(tick: tick, windows: [:], attached: .present([])))
         let finishes = CommsLog.read().filter { $0.kind == .finished }
@@ -707,7 +707,7 @@ enum CommsTest {
               folded(askDoomed)?.label == doomedRun.record.label)
         var stale = doomedRun.record
         stale.dispatchedAt = Date().timeIntervalSince1970 - 60
-        let failedTick = AgentState.tick(records: [stale], evidence: quiet,
+        let failedTick = AgentState.tick(records: [stale], evidence: quiet, roots: [],
                                          now: Date().timeIntervalSince1970, limit: 4)
         check("…which the next tick calls FAILED",
               failedTick.rows.first?.1.state == .failed)

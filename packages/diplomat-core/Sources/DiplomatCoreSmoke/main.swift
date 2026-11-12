@@ -2455,7 +2455,7 @@ do {
                                                                   isAgent: true)]) { a, _ in a }),
         sentinels: .present([]), tails: .present(["pts/3": working, "pts/9": working]),
         claims: .present(["w"]), mergedPRs: .present([]), liveAgents: .present([:])),
-        now: now, limit: 2)
+        roots: [], now: now, limit: 2)
     check(t.capLoad == ["auto"],
       "the cap counts automatic agents that run HERE — not a click, not a peer's")
     check(t.freeSlots == 1, "one of two bays filled")
@@ -2484,18 +2484,34 @@ do {
           "…and a PR number with no URL to place it names none either")
 
     let scan: Observation<[String: String]> = .present(["o/a#5": "pts/1", "o/b#5": "pts/2"])
-    let synth = AgentState.synthesizeUntracked([], liveAgents: scan, now: now)
+    let synth = AgentState.synthesizeUntracked([], liveAgents: scan, roots: [], now: now)
     check(synth.map(\.runID) == ["untracked:o/a#5", "untracked:o/b#5"]
           && synth.map(\.prURL) == ["https://github.com/o/a/pull/5",
                                     "https://github.com/o/b/pull/5"]
           && synth.allSatisfy { $0.prNumber == 5 && $0.untracked },
           "two live agents on #5 in two repos are two untracked runs: \(synth.map(\.runID))")
     let booked = AgentState.synthesizeUntracked([run("a", "o/a", tty: "pts/1")],
-                                                liveAgents: scan, now: now)
+                                                liveAgents: scan, roots: [], now: now)
     check(booked.map(\.runID) == ["a", "untracked:o/b#5"],
           "a record on o/a#5 covers only o/a's agent: \(booked.map(\.runID))")
-    check(AgentState.synthesizeUntracked(synth, liveAgents: scan, now: now).count == 2,
+    check(AgentState.synthesizeUntracked(synth, liveAgents: scan, roots: [], now: now).count == 2,
           "and the next tick makes no third")
+
+    let lab = PRRef.LocalRepo(owner: "Group/Sub", repo: "Proj", path: "/w/proj",
+                              host: "gitlab.example.com")
+    let labScan: Observation<[String: String]> = .present(["group/sub/proj#337": "pts/4"])
+    let hub = PRRef.LocalRepo(owner: "O", repo: "A", path: "/w/a")
+    check(AgentState.synthesizeUntracked([], liveAgents: .present(["o/a#5": "pts/5"]), roots: [hub],
+                                         now: now).map(\.prURL) == ["https://github.com/o/a/pull/5"],
+          "a GitHub root's untracked run links to github.com under the scan's slug")
+    let labRun = AgentState.synthesizeUntracked([], liveAgents: labScan, roots: [lab], now: now)
+    let labAgain = AgentState.synthesizeUntracked(labRun, liveAgents: labScan, roots: [lab],
+                                                  now: now + 8)
+    check(labRun.map(\.prURL) == ["https://gitlab.example.com/Group/Sub/Proj/-/merge_requests/337"]
+          && labRun.map(\.item) == ["group/sub/proj#337"]
+          && labAgain.map(\.runID) == ["untracked:group/sub/proj#337"],
+          "an agent on a nested GitLab merge request is one untracked run, linked to the merge "
+          + "request, on the scan's item, tick after tick: \(labAgain.map(\.prURL))")
 
     let adopted = AgentState.adoptTTYs([run("a", "o/a")], processes: .present([:]),
                                        liveAgents: .present(["o/b#5": "pts/2"]))
@@ -2524,7 +2540,7 @@ do {
                                 tails: .present(["pts/1": "esc to interrupt"]),
                                 claims: .present([]), mergedPRs: .present([]),
                                 liveAgents: .present([:])),
-                            now: now, limit: 2)
+                            roots: [], now: now, limit: 2)
     check(t.inFlight(item: "o/a#5") && !t.inFlight(item: "o/b#5"),
           "an agent on o/a#5 blocks a second there and nothing on o/b#5")
 
@@ -2538,6 +2554,12 @@ do {
     check(AgentState.promptItems("PR #9 in other/repo. PR #10 in o/r. PR #11 in o/r.jsx",
                                  slugs: roots).isEmpty,
           "a repo outside the roots, or one that only starts like a root, is no sighting")
+    let nested: Set<String> = ["group/sub/proj", "group/sub", "o/r.js"]
+    check(AgentState.promptItems("Review PR #337 in group/sub/proj. Then PR #8 in Group/Sub/Proj",
+                                 slugs: nested) == ["group/sub/proj#337", "group/sub/proj#8"]
+          && AgentState.promptItems("PR #3 in o/r.js.", slugs: nested) == ["o/r.js#3"]
+          && AgentState.promptItems("PR #4 in group/sub./proj", slugs: nested).isEmpty,
+          "a nested GitLab namespace is read too, the longest slug counting, its period the sentence's")
     print("cross-repo agent state assertions passed")
 }
 

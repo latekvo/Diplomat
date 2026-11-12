@@ -1095,20 +1095,29 @@ public enum AgentState {
 
     // MARK: - Untracked agents
 
-    /// The items an agent's prompt names, in order: each `PR #<n> in <owner>/<repo>` whose
-    /// repo is one of `slugs` (lowercase). A trailing `.` no slug has is the prompt's
-    /// sentence end, not the repo name's.
+    /// The items an agent's prompt names, in order: each `PR #<n> in <slug>` whose slug is
+    /// one of `slugs` (lowercase), its owner possibly a nested GitLab namespace. Of the
+    /// path after `in`, the longest leading run of segments that is a slug counts, and the
+    /// whole path's trailing `.` no slug has is the prompt's sentence end, not the repo
+    /// name's.
     public static func promptItems(_ text: String, slugs: Set<String>) -> [String] {
-        guard let re = try? NSRegularExpression(pattern: #"PR #([0-9]+) in ([\w.-]+)/([\w.-]+)"#)
+        guard let re = try? NSRegularExpression(pattern: #"PR #([0-9]+) in ([\w.-]+(?:/[\w.-]+)+)"#)
         else { return [] }
         var out: [String] = []
         for m in re.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
             guard let n = Range(m.range(at: 1), in: text).flatMap({ Int(text[$0]) }),
-                  let o = Range(m.range(at: 2), in: text),
-                  let r = Range(m.range(at: 3), in: text) else { continue }
-            var slug = "\(text[o])/\(text[r])".lowercased()
-            while !slugs.contains(slug), slug.hasSuffix(".") { slug.removeLast() }
-            if slugs.contains(slug) { out.append("\(slug)#\(n)") }
+                  let p = Range(m.range(at: 2), in: text) else { continue }
+            let segments = text[p].lowercased().split(separator: "/")
+            for count in stride(from: segments.count, through: 2, by: -1) {
+                var slug = segments.prefix(count).joined(separator: "/")
+                while count == segments.count, !slugs.contains(slug), slug.hasSuffix(".") {
+                    slug.removeLast()
+                }
+                if slugs.contains(slug) {
+                    out.append("\(slug)#\(n)")
+                    break
+                }
+            }
         }
         return out
     }
@@ -1178,8 +1187,12 @@ public enum AgentState {
     ///
     /// They count as automatic. An agent whose trigger is unknown spending a bay defers
     /// work; the opposite error dispatches a second agent onto a PR that has one.
+    ///
+    /// A record's PR link is a merge request's when `roots` has its slug as a GitLab root,
+    /// else a github.com PR's, so the record's `item` is the scan's.
     public static func synthesizeUntracked(_ records: [RunRecord],
                                            liveAgents: Observation<[String: String]>,
+                                           roots: [PRRef.LocalRepo],
                                            now: TimeInterval) -> [RunRecord] {
         guard let live = liveAgents.value else { return records }
         let held = Set(records.map(\.tty).filter { !$0.isEmpty })
@@ -1203,8 +1216,11 @@ public enum AgentState {
         let known = Set(out.compactMap(\.item))
         for item in Set(live.keys).subtracting(known).sorted() {
             guard let (slug, pr) = PRRef.splitItemKey(item) else { continue }
+            let url = roots.first { $0.isGitLab && $0.slug.lowercased() == slug }?
+                .webURL(.pull, number: pr)
+                ?? "https://github.com/\(slug)/pull/\(pr)"
             out.append(RunRecord(runID: "untracked:\(item)", dispatchedAt: now,
-                                 prNumber: pr, prURL: "https://github.com/\(slug)/pull/\(pr)",
+                                 prNumber: pr, prURL: url,
                                  source: AgentDispatchGate.Source.auto.rawValue,
                                  placement: .local, tty: live[item] ?? "",
                                  untracked: true))
@@ -1427,14 +1443,16 @@ public enum AgentState {
     /// Released records are made LAST, from the verdicts, so the caller persists each
     /// before it forgets the run that ended. Both front-ends and the parity CLI go through
     /// here, so neither can get the sequence subtly different from the other.
+    ///
+    /// `roots` are the repo roots the scan's slugs come from (`synthesizeUntracked`).
     public static func tick(records: [RunRecord], evidence: Evidence,
-                            now: TimeInterval, limit: Int,
+                            roots: [PRRef.LocalRepo], now: TimeInterval, limit: Int,
                             deadline: TimeInterval? = nil) -> Tick {
         var recs = observeClaims(records, claims: evidence.claims, now: now)
         recs = adoptTTYs(recs, processes: evidence.processes,
                          liveAgents: evidence.liveAgents)
         recs = observeQuiescence(recs, tails: evidence.tails, now: now)
-        recs = synthesizeUntracked(recs, liveAgents: evidence.liveAgents, now: now)
+        recs = synthesizeUntracked(recs, liveAgents: evidence.liveAgents, roots: roots, now: now)
         var states = resolve(records: recs, evidence: evidence, now: now,
                              deadline: deadline)
         for (heir, verdict) in releaseEnded(recs, states: states, evidence: evidence,
