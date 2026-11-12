@@ -35,7 +35,7 @@ class WizardView(SpawnWizard):
     # Emitted (queued to the main thread) when a background author poll resolves.
     # Carries (pending_pr_text, author_login_or_empty) so the slot can ignore a
     # result superseded by newer keystrokes - mirrors the macOS `pending` guard.
-    _author_resolved = Signal(str, str)
+    _author_resolved = Signal(str, str, str)
 
     # A whose-PRs sweep queues one review per PR (SpawnWizard._queue_sweep).
     _sweep_item = "PR"
@@ -297,22 +297,25 @@ class WizardView(SpawnWizard):
             if self._author_pending != pending:
                 return
             login = review.fetch_specific_author(target, number)
-            # Emit back to the main thread; the slot re-checks the guard + computes
-            # mine-vs-theirs against the (possibly changed) viewer login there.
-            self._author_resolved.emit(pending, login or "")
+            try:
+                me = self.store.me_for(target)
+            except Exception:  # noqa: BLE001 — an unknown "me" is an undecided author
+                me = ""
+            # Emit back to the main thread; the slot re-checks the guard there.
+            self._author_resolved.emit(pending, login or "", me)
 
         self.store.start_background(work)
 
-    def _on_author_resolved(self, pending: str, login: str) -> None:
-        """Main-thread slot: fold a resolved author login into the disposition,
-        unless newer input superseded it. Mirrors the tail of macOS refreshAuthor."""
+    def _on_author_resolved(self, pending: str, login: str, me: str) -> None:
+        """Main-thread slot: fold a resolved author login, and who "me" is in its repo
+        (:meth:`Store.me_for`, "" when unknown), into the disposition, unless newer
+        input superseded it. Mirrors the tail of macOS refreshAuthor."""
         # Superseded by newer input, or the user left the specific-PR target.
         if pending != self._author_pending:
             return
         if self.target.currentData() != PRTarget.SPECIFIC:
             return
         self._author_loading = False
-        me = self.store.known_me(self._config().target_root)
         self._specific_author_login = login or None
         if login and me:
             self._specific_author = (

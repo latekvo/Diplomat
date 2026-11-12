@@ -82,7 +82,7 @@ def _wizard_on_specific(qapp, me="latekvo"):
 def test_specific_pr_resolves_to_mine(qapp):
     w = _wizard_on_specific(qapp, me="latekvo")
     # Simulate the background poll resolving the author to me.
-    w._on_author_resolved(w.specific_pr.text(), "latekvo")
+    w._on_author_resolved(w.specific_pr.text(), "latekvo", "latekvo")
 
     assert w._specific_author == SpecificAuthor.MINE
     cfg = w._config()
@@ -101,7 +101,7 @@ def test_specific_pr_resolves_to_mine(qapp):
 
 def test_specific_pr_resolves_to_someone_else(qapp):
     w = _wizard_on_specific(qapp, me="latekvo")
-    w._on_author_resolved(w.specific_pr.text(), "someoneelse")
+    w._on_author_resolved(w.specific_pr.text(), "someoneelse", "latekvo")
 
     assert w._specific_author == SpecificAuthor.THEIRS
     cfg = w._config()
@@ -119,7 +119,7 @@ def test_specific_pr_resolves_to_someone_else(qapp):
 def test_specific_pr_unresolved_offers_everything(qapp):
     w = _wizard_on_specific(qapp, me="latekvo")
     # A failed poll (login == "") leaves the disposition UNKNOWN -> all toggles.
-    w._on_author_resolved(w.specific_pr.text(), "")
+    w._on_author_resolved(w.specific_pr.text(), "", "latekvo")
 
     assert w._specific_author == SpecificAuthor.UNKNOWN
     cfg = w._config()
@@ -134,16 +134,16 @@ def test_stale_author_result_is_ignored(qapp):
     # A poll that resolves for OLD input must not clobber the current PR's state
     # (mirrors the macOS `pending` supersede guard).
     w = _wizard_on_specific(qapp, me="latekvo")
-    w._on_author_resolved(w.specific_pr.text(), "latekvo")
+    w._on_author_resolved(w.specific_pr.text(), "latekvo", "latekvo")
     assert w._specific_author == SpecificAuthor.MINE
     # A late result for a superseded PR number is dropped.
-    w._on_author_resolved("999", "someoneelse")
+    w._on_author_resolved("999", "someoneelse", "latekvo")
     assert w._specific_author == SpecificAuthor.MINE
 
 
 def test_switching_away_from_specific_resets_disposition(qapp):
     w = _wizard_on_specific(qapp, me="latekvo")
-    w._on_author_resolved(w.specific_pr.text(), "someoneelse")
+    w._on_author_resolved(w.specific_pr.text(), "someoneelse", "latekvo")
     assert w._specific_author == SpecificAuthor.THEIRS
     # Back to a whose-PRs sweep: disposition resets, hint hides, and the sweep's own
     # target-driven toggles apply (mine -> mark-ready + reply, no formal review).

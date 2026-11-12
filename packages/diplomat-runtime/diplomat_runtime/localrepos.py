@@ -101,10 +101,12 @@ def gitlab_hosts() -> frozenset[str]:
 
 
 def is_gitlab_host(host: str, hosts: frozenset[str] = GITLAB_HOSTS) -> bool:
-    """Whether ``host`` is a GitLab: one of ``hosts``, or any whose first DNS label is
-    ``gitlab``."""
+    """Whether ``host`` is a GitLab: one of ``hosts``, or any of two or more non-empty
+    DNS labels whose first is ``gitlab``."""
     host = host.lower()
-    return host != GITHUB and (host in hosts or host.split(".", 1)[0] == "gitlab")
+    labels = host.split(".")
+    return host != GITHUB and (host in hosts or len(labels) >= 2 and labels[0] == "gitlab"
+                               and all(labels))
 
 
 def parse_remote(url: str, hosts: frozenset[str] = GITLAB_HOSTS

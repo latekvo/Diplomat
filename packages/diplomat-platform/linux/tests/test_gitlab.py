@@ -305,6 +305,29 @@ def test_the_goal_pass_waits_for_the_github_login(lab_only, monkeypatch):
     assert [w.author for w in asked] == [""], "my own PR, once the login is known"
 
 
+def test_the_review_wizard_asks_who_i_am_in_a_gitlab_checkout_it_never_read(lab_only,
+                                                                           monkeypatch):
+    """A merge request of another root than the one on the panel: its author is
+    compared with glab's login on that host, read for the poll, not with nothing."""
+    from PySide6.QtWidgets import QApplication
+
+    from diplomat_app.wizardview import WizardView
+    from diplomat_runtime.prtarget import PRTarget
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(review, "repo_roots", lambda: [HUB, LAB])
+    FakeGlab(monkeypatch, viewer={"data": {"currentUser": {"username": "carol"}}},
+             mr={"data": {"project": {"mergeRequest": {"state": "opened",
+                                                       "author": {"username": "Carol"}}}}})
+    monkeypatch.setattr(lab_only, "start_background", lambda work, name=None: work())
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    w = WizardView(lab_only)
+    w.target.setCurrentIndex(w.target.findData(PRTarget.SPECIFIC))
+    w.specific_pr.setText(f"https://{HOST}/group/sub/proj/-/merge_requests/12")
+    assert lab_only.known_me(LAB) == "carol"
+    assert w._specific_author == review.SpecificAuthor.MINE
+
+
 def test_refresh_lists_a_gitlab_roots_merge_requests(lab_only, monkeypatch):
     FakeGlab(monkeypatch, viewer={"data": {"currentUser": {"username": "carol"}}},
              prs=_fixture("prs", "input"), issues=_fixture("issues", "input"))
@@ -458,6 +481,8 @@ def test_the_hosts_glab_is_configured_for_count_as_gitlab(tmp_path, monkeypatch)
     assert localrepos.is_gitlab_host("other.example.net", hosts)
     assert not localrepos.is_gitlab_host("other.example.net")
     assert localrepos.is_gitlab_host("gitlab.internal.example")
+    for bare in ("gitlab", "gitlab.", "gitlab..example.com", "gitlab.example.com."):
+        assert not localrepos.is_gitlab_host(bare), bare
     assert not localrepos.is_gitlab_host("github.com", frozenset({"github.com"}))
     assert localrepos.parse_remote("git@code.example.org:a/b/c.git", hosts) == (
         "code.example.org", "a/b", "c")

@@ -51,8 +51,8 @@ class SpecificAuthor(Enum):
 
 def fetch_specific_author(root: LocalRepo, number: int) -> str | None:
     """One ``gh pr view ... --json author`` (on GitLab, the ``gitlab-mr`` query) -> the
-    author login, or ``None`` on failure. Mirrors ``ReviewWizardView.fetchAuthor`` in
-    ReviewWizard.swift. Runs the shell-out synchronously; call it OFF the UI thread
+    author login, or ``None`` on failure. Mirrors ``API.fetchPRAuthor`` in
+    Models.swift. Runs the shell-out synchronously; call it OFF the UI thread
     (the wizard does).
     """
     from . import gh, gitlab, glab

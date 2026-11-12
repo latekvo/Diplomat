@@ -523,3 +523,8 @@ def test_minimizing_the_panel_on_settings_keeps_it(panel):
         QApplication.processEvents()
     assert panel.isMinimized()
     assert panel._screen == "settings"
+
+
+def test_the_username_override_says_a_gitlab_root_is_not_its_to_scope(view):
+    """In a GitLab root "me" is glab's user, whatever the override says."""
+    assert "GitLab repo root “me” is `glab`'s user" in view._identity_row._detail.text()

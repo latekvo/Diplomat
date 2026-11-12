@@ -5,7 +5,8 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
 
 - **GitHub username** - override the handle used by the "My …" tools, the wizards
   and the monitors. Blank = the `gh`-authenticated user (`viewer.login`), resolved
-  eagerly at launch so it's the default everywhere.
+  eagerly at launch so it's the default everywhere. On a GitLab repo root "me" is
+  `glab`'s user on that host, which the override does not change.
 - <a id="agent-runner"></a>**Agent runner** - which agent CLI a spawn runs:
   **Claude Code** (the default, and what every existing install keeps), **OpenCode**
   or **Hermes**. Only the agent command changes - the agent word and its flags, or
@@ -129,7 +130,9 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   is its whole namespace (`group/sub`). A GitLab root is read through `glab`, signed in
   to its host, and "me" there is glab's user on that host, not the GitHub username
   above; its agents are told to use `glab`. GitHub-only whatever the roots: Tasks
-  mirroring, the review audit, goal grouping and the username override. A GitLab root
+  mirroring, the review audit, goal grouping, the username override and
+  [Comms](comms.md)' answers to questions (the documentation is read through `gh`, and
+  only github.com links survive in them). A GitLab root
   is never the configured repo, so its work stays off the mesh. A reading older than a
   minute is taken again when next asked, so a checkout that appears later is picked up by
   the next poll. A row warns when the path isn't absolute, has no `.git`, or has no
@@ -265,7 +268,8 @@ daemon's two idle limits, which live in the shared `~/.diplomat/config.json` ([`
   (`MEMBER`/`OWNER` = org; anything else = external). Reliable without org-admin API access.
 - **"unaddressed"** (issues) - no comment from a `MEMBER`/`OWNER`/`COLLABORATOR` **and** no assignee.
 - **"mine"** - authored by the *effective* handle: the Settings **GitHub username**
-  override when set, otherwise the authenticated `gh` user (`viewer.login`).
+  override when set, otherwise the authenticated `gh` user (`viewer.login`); in a GitLab
+  repo root, `glab`'s user on its host.
 - **"approved"** - GitHub's aggregate `reviewDecision == APPROVED`.
 - **"unaddressed review"** - a `reviewThread` where `viewerCanResolve` (so it *can* be
   marked resolved) is true, `isResolved` is false, and the **last** comment isn't yours -
