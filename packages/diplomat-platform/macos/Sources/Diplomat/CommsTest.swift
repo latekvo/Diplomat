@@ -1653,7 +1653,8 @@ enum CommsTest {
         check("GitLab's 404 Not found is no such merge request: \(outcome(glabMisses[0][0]))",
               outcome(glabMisses[0][0]) == "no PR #90301 in g/sub/third, so nothing was queued")
         check("…its 404 Project Not Found a lookup that failed: \(outcome(glabMisses[1][0]))",
-              outcome(glabMisses[1][0]).contains("404 Project Not Found")
+              outcome(glabMisses[1][0]).hasPrefix("couldn't ask GitLab about PR third#90302 (")
+                && outcome(glabMisses[1][0]).contains("404 Project Not Found")
                 && asked("review:g/sub/third#90302") == nil)
         check("…and a merged one is not open: \(outcome(glabMisses[2][0]))",
               outcome(glabMisses[2][0]) == "PR third#90303 is merged, so nothing was queued"

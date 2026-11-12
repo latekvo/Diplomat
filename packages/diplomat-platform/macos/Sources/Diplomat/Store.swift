@@ -2109,8 +2109,7 @@ final class Store: ObservableObject {
             for run in runs {
                 var found: [String]
                 do {
-                    found = me.isEmpty ? ["could not check its review: the gh login is not known yet"]
-                        : try await ReviewAudit.audit(prURL: run.url, me: me, since: run.since)
+                    found = try await ReviewAudit.audit(prURL: run.url, me: me, since: run.since)
                 } catch {
                     found = ["could not check its review: \(error.localizedDescription)"]
                 }
@@ -2797,27 +2796,32 @@ final class Store: ObservableObject {
     /// Each root on its own mark, so one root's failed fetch holds back that root alone.
     /// A failed read keeps its root's mark and is logged (`noteRootsRead`), never failed
     /// as a poll, even in every root: nothing owed is read from it, so the other roots'
-    /// drain and commit go on (a repo gh cannot see would hold them forever).
-    private func pollCommunityIssues(_ polled: [PRRef.LocalRepo]) async {
+    /// drain and commit go on (a repo gh cannot see would hold them forever). A root whose
+    /// "me" (`me(for:)`) cannot be read is held the same way: its fixes would run as nobody.
+    ///
+    /// Not private: the queue self-test drives it.
+    func pollCommunityIssues(_ polled: [PRRef.LocalRepo]) async {
         guard communityIssuesEnabled else { return }
         var read: [PRRef.LocalRepo] = []
         var failed: [(root: PRRef.LocalRepo, error: Error)] = []
         for root in polled {
             let found: [OpenIssue]
+            let me: String
             do {
                 found = try await API.fetchOpenIssues(root)
+                me = try await self.me(for: root)
             } catch {
                 failed.append((root, error))
                 continue
             }
             read.append(root)
-            queueCommunityIssues(found, root: root)
+            queueCommunityIssues(found, root: root, me: me)
         }
         noteRootsRead("Issues", read: read, failed: failed)
     }
 
     /// Queue one fix for each issue the community filed since the last scan of
-    /// `found`, `root`'s open issues.
+    /// `found`, `root`'s open issues, each fix run as `me` (`me(for:)` of the root).
     ///
     /// Queued as an ask, the same row a Fix-issues sweep of the community leaves,
     /// because nothing on GitHub would re-offer it: the mark moves past each issue once
@@ -2825,7 +2829,7 @@ final class Store: ObservableObject {
     /// cancelled, and re-reads its issue when its turn comes.
     ///
     /// Not private: the queue self-test drives it with a fixture fetch.
-    func queueCommunityIssues(_ found: [OpenIssue], root: PRRef.LocalRepo) {
+    func queueCommunityIssues(_ found: [OpenIssue], root: PRRef.LocalRepo, me: String) {
         let slug = root.slug.lowercased()
         let scan = Filters.newCommunityIssues(found, since: communityIssuesSince[slug], now: Date())
         let banned = BanList.read()
@@ -2837,7 +2841,7 @@ final class Store: ObservableObject {
                 AuditLog.log("auto", "ban-skip", "\(who) — author is banned, not queued")
                 continue
             }
-            var cfg = IssueConfig(target: .contributors, me: knownMe(for: root))
+            var cfg = IssueConfig(target: .contributors, me: me)
             cfg.home = root
             if requestOne(RequestedWork(number: issue.number, url: issue.url,
                                         author: issue.author,
@@ -3297,7 +3301,7 @@ final class Store: ObservableObject {
                 || (entry.job.auditAction == "review-req"
                     && rootsUnread.contains("\(Store.reviewRequestsRead):\(slug)"))
         }
-        let conflicting = Set(snaps.filter { $0.mergeable == "CONFLICTING" }.compactMap(\.item))
+        let conflicting = AgentTaskQueue.conflicting(snaps, roots: roots)
         let owingReply = Set(snaps.filter { $0.threadsIOwe > 0 }.compactMap(\.item))
         // Dropped here rather than left for this cycle's commit to omit: the commit is
         // the far side of two monitor runs, and a row already known to be answered

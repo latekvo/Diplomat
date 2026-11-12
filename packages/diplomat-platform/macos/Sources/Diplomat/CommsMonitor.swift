@@ -666,7 +666,8 @@ extension Store {
             let place = RepoPaths.roots.count > 1 ? root.slug : "this repo"
             return "no \(noun) #\(n) in \(place), so nothing was queued"
         case .unasked(let why):
-            return "couldn't ask GitHub about \(noun) \(ref) (\(why)), so nothing was queued"
+            return "couldn't ask \(root.isGitLab ? "GitLab" : "GitHub") about \(noun) \(ref) (\(why)), "
+                + "so nothing was queued"
         }
     }
 
@@ -681,9 +682,9 @@ extension Store {
 
     enum CommsLookup {
         case found(CommsTarget)
-        /// GitHub says the repo has no such PR or issue.
+        /// GitHub (GitLab) says the repo has no such PR or issue.
         case missing
-        /// No answer: gh failed, timed out or printed no PR or issue.
+        /// No answer: gh (glab) failed, timed out or printed no PR or issue.
         case unasked(String)
     }
 
@@ -724,9 +725,8 @@ extension Store {
         }
         let args: [String]
         if root.isGitLab {
-            let project = root.slug.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? root.slug
             args = ["api", "--hostname", root.host,
-                    "projects/\(project)/\(kind == .pr ? "merge_requests" : "issues")/\(n)"]
+                    "projects/\(GLab.projectID(root.slug))/\(kind == .pr ? "merge_requests" : "issues")/\(n)"]
         } else {
             args = [kind == .pr ? "pr" : "issue", "view", String(n), "--repo", root.slug,
                     "--json", "number,url,author,state"]

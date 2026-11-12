@@ -32,9 +32,11 @@ extension PRRef.LocalRepo {
     /// Every GitHub or GitLab remote of the checkout at `path`, from `git config --local
     /// --get-regexp '^remote\..*\.url$'` output, each once (by host and slug). A fork clone
     /// carries both the fork and the project it forked, and a link to either belongs in
-    /// that checkout. `upstream` comes first, then `origin`, then the rest in config order
-    /// (`settingsName` picks the one Settings names the checkout by). With `only`, just the
-    /// remotes it names, ranked the same. Python twin: `localrepos.entries`.
+    /// that checkout. GitHub ones come before GitLab ones, as `RepoRoots.resolve` ranks
+    /// them, so a host-less `owner/repo#N` names the GitHub repo and Settings names the
+    /// checkout by the first. Within each, `upstream` comes first, then `origin`, then the
+    /// rest in config order. With `only`, just the remotes it names, ranked the same.
+    /// Python twin: `localrepos.entries`.
     public static func entries(path: String, remotes: String, only: [String] = [],
                                gitlabHosts: Set<String> = []) -> [PRRef.LocalRepo] {
         var named: [(remote: String, repo: PRRef.LocalRepo)] = []
@@ -47,19 +49,15 @@ extension PRRef.LocalRepo {
             named.append((remote, PRRef.LocalRepo(owner: c.owner, repo: c.repo, path: path,
                                                   host: c.host)))
         }
-        let rank = { (remote: String) in ["upstream", "origin"].firstIndex(of: remote) ?? 2 }
+        let rank = { (e: (offset: Int, element: (remote: String, repo: PRRef.LocalRepo))) in
+            (e.element.repo.isGitLab ? 1 : 0, ["upstream", "origin"].firstIndex(of: e.element.remote) ?? 2,
+             e.offset)
+        }
         var seen = Set<String>()
         return named.enumerated()
-            .sorted { (rank($0.element.remote), $0.offset) < (rank($1.element.remote), $1.offset) }
+            .sorted { rank($0) < rank($1) }
             .map(\.element.repo)
             .filter { seen.insert($0.identity).inserted }
-    }
-
-    /// Which of a checkout's `entries` Settings names it by: the first GitHub one, as
-    /// `RepoRoots.resolve` ranks a GitHub remote over a GitLab one, else the first.
-    /// Python twin: `localrepos.Checkout.slug`.
-    public static func settingsName(_ entries: [PRRef.LocalRepo]) -> PRRef.LocalRepo? {
-        entries.first { !$0.isGitLab } ?? entries.first
     }
 
     /// What tells two repos apart: host and slug, lowercased.
@@ -165,7 +163,7 @@ public enum RepoRoots {
             let renamed = own.contains { $0.repo.lowercased() == configured.repo.lowercased() }
                 ? PRRef.LocalRepo(owner: configured.owner, repo: configured.repo, path: path) : nil
             guard let pick = own.first(where: { $0.slug.lowercased() == want })
-                    ?? renamed ?? PRRef.LocalRepo.settingsName(entries),
+                    ?? renamed ?? entries.first,
                   seen.insert(pick.identity).inserted else { continue }
             out.append(pick)
         }

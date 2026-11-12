@@ -213,6 +213,20 @@ public enum AgentTaskQueue {
         }
     }
 
+    /// The `conflicting` items `stillOwed` reads off this cycle's `snaps`: each reading
+    /// CONFLICTING, and in a GitLab root of `roots` each reading UNKNOWN as well. GitLab
+    /// checks a merge status only when asked, so a merge request can read unchecked for
+    /// many cycles after a push, and that is no evidence its conflict was resolved.
+    public static func conflicting(_ snaps: [PRSnapshot], roots: [PRRef.LocalRepo]) -> Set<String> {
+        let gitlab = Set(roots.filter(\.isGitLab).map { $0.slug.lowercased() })
+        return Set(snaps.compactMap { s -> String? in
+            guard let item = s.item else { return nil }
+            let lazy = s.mergeable == "UNKNOWN"
+                && PRRef.splitItemKey(item).map { gitlab.contains($0.slug) } == true
+            return s.mergeable == "CONFLICTING" || lazy ? item : nil
+        })
+    }
+
     /// Slots of the device's automatic-task cap with nothing running in them — the
     /// empty bays the panel draws under the sessions.
     ///

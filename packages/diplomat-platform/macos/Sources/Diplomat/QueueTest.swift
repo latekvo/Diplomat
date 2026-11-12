@@ -125,10 +125,10 @@ enum QueueTest {
 
         func job(_ number: Int, action: String = "review-req", label: String? = nil,
                  author: String? = nil,
-                 counter: Store.AutoCounter? = .reviewRequests) -> Store.AgentJob {
+                 counter: Store.AutoCounter? = .reviewRequests, url: String? = nil) -> Store.AgentJob {
             Store.AgentJob(kind: "review", auditAction: action,
                            label: label ?? "Review-req · #\(number)", prompt: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/\(number)",
+                           prURL: url ?? "https://github.com/software-mansion/argent/pull/\(number)",
                            prNumber: number, authorLogin: author, duty: "review", workKey: "",
                            counter: counter,
                            attemptStamp: Store.AttemptStamp.unresolvedReview)
@@ -651,10 +651,10 @@ enum QueueTest {
                              memberResponded: false)
         }
         store.communityIssuesEnabled = true
-        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0)], root: argent)
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0)], root: argent, me: store.effectiveMe)
         check("the first community scan queues none of the backlog",
               store.requestedWork.isEmpty)
-        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)], root: argent)
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)], root: argent, me: store.effectiveMe)
         check("an outsider's issue filed after it is queued as a fix of that one issue",
               store.requestedWork.map(\.key) == [key("issues", 71)]
                   && store.requestedWork.first?.author == "outsider71"
@@ -663,14 +663,14 @@ enum QueueTest {
         check("…which re-checks its issue when its turn comes, as a swept fix does",
               store.queuedTasks.first?.job.prompt.contains("CAME OUT OF A SWEEP") == true)
         store.cancelRequestedWork(key("issues", 71))
-        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)], root: argent)
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)], root: argent, me: store.effectiveMe)
         check("…and only once, even after its ask is gone", store.requestedWork.isEmpty)
         store.communityIssuesEnabled = false
         store.communityIssuesEnabled = true
-        store.queueCommunityIssues([filed(72, minutes: 2)], root: argent)
+        store.queueCommunityIssues([filed(72, minutes: 2)], root: argent, me: store.effectiveMe)
         check("switched off and on, the next scan queues what was filed meanwhile not at all",
               store.requestedWork.isEmpty)
-        store.queueCommunityIssues([filed(72, minutes: 2), filed(73, minutes: 3)], root: argent)
+        store.queueCommunityIssues([filed(72, minutes: 2), filed(73, minutes: 3)], root: argent, me: store.effectiveMe)
         check("…and what is filed after it as before",
               store.requestedWork.map(\.key) == [key("issues", 73)])
         store.requestedWork = []
@@ -1013,14 +1013,14 @@ enum QueueTest {
         }
         store.requestedWork = []
         store.communityIssuesEnabled = true
-        store.queueCommunityIssues([filedIn(rootA, 80, minutes: 10)], root: rootA)
-        store.queueCommunityIssues([filedIn(rootB, 80, minutes: 11)], root: rootB)
+        store.queueCommunityIssues([filedIn(rootA, 80, minutes: 10)], root: rootA, me: store.effectiveMe)
+        store.queueCommunityIssues([filedIn(rootB, 80, minutes: 11)], root: rootB, me: store.effectiveMe)
         check("a root's first community scan queues none of its backlog, though filed after "
               + "another root's mark", store.requestedWork.isEmpty)
         store.queueCommunityIssues([filedIn(rootA, 80, minutes: 10), filedIn(rootA, 81, minutes: 12)],
-                                   root: rootA)
+                                   root: rootA, me: store.effectiveMe)
         store.queueCommunityIssues([filedIn(rootB, 80, minutes: 11), filedIn(rootB, 82, minutes: 13)],
-                                   root: rootB)
+                                   root: rootB, me: store.effectiveMe)
         let fixA = AgentTaskQueue.key(auditAction: "issues", item: "o1/alpha#81")
         let fixB = AgentTaskQueue.key(auditAction: "issues", item: "o2/beta#82")
         check("…and each root's later issue is queued as a fix in that root",
@@ -1030,17 +1030,17 @@ enum QueueTest {
         store.requestedWork = []
         store.queuedTasks = []
         store.pinRoots([rootA])
-        store.queueCommunityIssues([filedIn(rootA, 81, minutes: 12)], root: rootA)
+        store.queueCommunityIssues([filedIn(rootA, 81, minutes: 12)], root: rootA, me: store.effectiveMe)
         store.pinRoots([rootA, rootB])
         store.queueCommunityIssues([filedIn(rootB, 83, minutes: 14), filedIn(rootB, 84, minutes: 15),
-                                    filedIn(rootB, 85, minutes: 16)], root: rootB)
+                                    filedIn(rootB, 85, minutes: 16)], root: rootB, me: store.effectiveMe)
         check("a root removed and added back queues none of what was filed meanwhile",
               store.requestedWork.isEmpty)
         store.pinRoots([rootA], complete: false)
-        store.queueCommunityIssues([filedIn(rootA, 81, minutes: 12)], root: rootA)
+        store.queueCommunityIssues([filedIn(rootA, 81, minutes: 12)], root: rootA, me: store.effectiveMe)
         store.pinRoots([rootA, rootB])
         store.queueCommunityIssues([filedIn(rootB, 85, minutes: 16), filedIn(rootB, 86, minutes: 17)],
-                                   root: rootB)
+                                   root: rootB, me: store.effectiveMe)
         check("a root whose path failed to resolve for a poll keeps its mark: what it filed meanwhile is queued",
               store.requestedWork.map(\.key) == [AgentTaskQueue.key(auditAction: "issues", item: "o2/beta#86")])
         store.communityIssuesEnabled = false
@@ -1120,7 +1120,11 @@ enum QueueTest {
         //      fails leaves it unknown, to be asked again.
         let glabStub = feed.appendingPathComponent("glab")
         let glabCalls = feed.appendingPathComponent("glab-calls")
-        try? ("#!/bin/sh\necho x >> '\(glabCalls.path)'\nprintf '%s\\n' \"$@\" > '\(feed.path)/glab-argv'\n"
+        // A REST read that rechecks a merge status answers from glab-rest, logging its path.
+        try? ("#!/bin/sh\necho x >> '\(glabCalls.path)'\n"
+              + "case \"$*\" in *with_merge_status_recheck*) echo \"$3 $4\" >> '\(feed.path)/glab-rechecks'\n"
+              + "  cat '\(feed.path)/glab-rest'; exit \"$(cat '\(feed.path)/glab-rest-code')\" ;; esac\n"
+              + "printf '%s\\n' \"$@\" > '\(feed.path)/glab-argv'\n"
               + "cat '\(feed.path)/glab-out'\nexit 0\n")
             .write(to: glabStub, atomically: true, encoding: .utf8)
         chmod(glabStub.path, 0o755)
@@ -1170,11 +1174,43 @@ enum QueueTest {
             ((try? String(contentsOf: feed.appendingPathComponent("glab-argv"), encoding: .utf8)) ?? "")
                 .split(separator: "\n").map(String.init)
         }
+        let rechecks = feed.appendingPathComponent("glab-rechecks")
+        func glabRest(_ s: String, code: Int = 0) {
+            try? s.write(to: feed.appendingPathComponent("glab-rest"), atomically: true, encoding: .utf8)
+            try? "\(code)".write(to: feed.appendingPathComponent("glab-rest-code"), atomically: true,
+                                 encoding: .utf8)
+            try? FileManager.default.removeItem(at: rechecks)
+        }
+        func recheckCalls() -> [String] {
+            ((try? String(contentsOf: rechecks, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        }
+        let graphqlOnly = ((try? AutofixMonitor.parse(GitLab.monitorPRs(Data(fixture("monitor-prs.input.json").utf8))))
+            ?? []).map { ($0.number, $0.mergeable) }
+        let unchecked = graphqlOnly.filter { $0.1 == "UNKNOWN" }.map(\.0)
+        glabRest(#"{"iid":0,"has_conflicts":true,"detailed_merge_status":"conflict"}"#)
         glabAnswers(fixture("monitor-prs.input.json"))
         let snaps = (try? await AutofixMonitor.fetchSnapshots(root: onGitLab, me: "gl-me")) ?? []
         check("a GitLab root's open merge requests are snapshotted: \(snaps.count)",
               !snaps.isEmpty && snaps.count == searchNodes("monitor-prs.expected.json")
                 && glabArgv().contains("path=g/sub/p") && glabArgv().contains("author=gl-me"))
+        // GitLab checks a merge status only when asked, and no GraphQL read asks.
+        check("…each one GitLab has not checked read again through the REST read that rechecks "
+              + "it, whose definite answer stands: \(recheckCalls()) \(snaps.map { "\($0.number) \($0.mergeable)" })",
+              !unchecked.isEmpty
+                && recheckCalls() == unchecked.map {
+                    "gitlab.example.com projects/g%2Fsub%2Fp/merge_requests/\($0)?with_merge_status_recheck=true"
+                }
+                && snaps.map { ($0.number, $0.mergeable) }.elementsEqual(graphqlOnly.map {
+                    ($0.0, $0.1 == "UNKNOWN" ? "CONFLICTING" : $0.1)
+                }, by: { $0 == $1 }))
+        glabRest(#"{"iid":0,"has_conflicts":false,"detailed_merge_status":"checking"}"#)
+        let stillChecking = (try? await AutofixMonitor.fetchSnapshots(root: onGitLab, me: "gl-me")) ?? []
+        glabRest("", code: 1)
+        let recheckFailed = (try? await AutofixMonitor.fetchSnapshots(root: onGitLab, me: "gl-me")) ?? []
+        check("…while one still checking, or whose recheck fails, reads unknown, the root read all the same",
+              [stillChecking, recheckFailed].allSatisfy {
+                  $0.map { ($0.number, $0.mergeable) }.elementsEqual(graphqlOnly, by: { $0 == $1 })
+              } && recheckCalls().count == unchecked.count)
         glabAnswers(fixture("closed-prs.input.json"))
         let closedMRs = (try? await AutofixMonitor.fetchClosedPRs(root: onGitLab)) ?? []
         check("…its closed ones keyed by its nested slug: \(closedMRs.sorted())",
@@ -1200,6 +1236,77 @@ enum QueueTest {
               { if case .present(let s) = landed { return s == ["g/sub/p#7"] }; return false }()
                 && glabArgv().contains("gitlab.example.com")
                 && glabArgv().contains("iid=7"))
+
+        // 24a''. A conflict fix waiting on a GitLab merge request that reads unchecked
+        //        stays queued: GitLab has not looked, which says nothing of the conflict.
+        //        A GitHub PR's UNKNOWN is no conflict, so its fix leaves.
+        store.pinRoots([rootA, onGitLab])
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.prAutofixEnabled = true
+        store.autoTaskLimit = 1
+        bookAgent(1)
+        let mrURL = "https://gitlab.example.com/g/sub/p/-/merge_requests/8"
+        let alphaURL = "https://github.com/o1/alpha/pull/8"
+        _ = await offer(job(8, action: "conflicts", label: "Resolve · p#8", counter: .conflicts, url: mrURL))
+        _ = await offer(job(8, action: "conflicts", label: "Resolve · alpha#8", counter: .conflicts,
+                            url: alphaURL))
+        store.commitQueue()
+        let mrFix = AgentTaskQueue.key(auditAction: "conflicts", item: "g/sub/p#8")
+        let alphaFix = AgentTaskQueue.key(auditAction: "conflicts", item: "o1/alpha#8")
+        func unknown(_ url: String) -> PRSnapshot {
+            PRSnapshot(number: 8, title: "t", url: url, isDraft: false, mergeable: "UNKNOWN",
+                       reviewDecision: "", threadsUnresolved: 0)
+        }
+        func fixes() -> Set<String> { Set(store.queuedTasks.map(\.id)).intersection([mrFix, alphaFix]) }
+        let queuedBoth = fixes() == [mrFix, alphaFix]
+        await store.drainQueuedTasks(snaps: [unknown(mrURL), unknown(alphaURL)], closed: [],
+                                     read: [rootA, onGitLab])
+        check("a conflict fix on a GitLab merge request reading unchecked stays queued, one on a "
+              + "GitHub PR reading UNKNOWN leaves: \(store.queuedTasks.map(\.id))",
+              queuedBoth && fixes() == [mrFix])
+        emptyBook()
+        store.queuedTasks = []
+
+        // 24a'''. A community issue in a GitLab root whose glab user cannot be read is not
+        //         queued to run as nobody: the root is held, its mark kept for the next read.
+        let signedOutRoot = PRRef.LocalRepo(owner: "g", repo: "lab", path: "/w/lab",
+                                            host: "gitlab.signedout.example")
+        store.pinRoots([signedOutRoot])
+        store.requestedWork = []
+        store.communityIssuesEnabled = true
+        store.queueCommunityIssues([filedIn(signedOutRoot, 1, minutes: -60 * 24 * 60)], root: signedOutRoot,
+                                   me: "")
+        // One answer for every query: the issues read succeeds, the viewer read finds no user.
+        glabAnswers(fixture("issues.input.json"))
+        await store.pollCommunityIssues([signedOutRoot])
+        let heldAsks = store.requestedWork.map(\.key)
+        store.pinGitLabMe("lab-me", host: signedOutRoot.host)
+        await store.pollCommunityIssues([signedOutRoot])
+        let fixes = store.requestedWork.compactMap { w -> String? in
+            if case .issues(let cfg) = w.config { return "\(w.key) \(cfg.me)" }
+            return nil
+        }
+        // The feed, whose root-read lines a later section counts from the start.
+        let auditFeed = feed.appendingPathComponent("audit.jsonl")
+        let auditLines = ((try? String(contentsOf: auditFeed, encoding: .utf8)) ?? "").split(separator: "\n")
+        func isLab(_ line: Substring) -> Bool {
+            let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+            return (obj?["detail"] as? String)?.hasPrefix("Issues of g/lab ") == true
+        }
+        let labLines = auditLines.filter(isLab).map { line in
+            ((try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any])?["detail"] as? String ?? ""
+        }
+        check("a GitLab root whose glab user is unknown queues no community fix, logged as unread, "
+              + "and keeps its mark: \(heldAsks) then \(fixes)",
+              heldAsks.isEmpty && !fixes.isEmpty && fixes.allSatisfy { $0.hasSuffix(" lab-me") }
+                && labLines.first?.contains("not signed in to gitlab.signedout.example") == true)
+        try? (auditLines.filter { !isLab($0) }.joined(separator: "\n") + "\n")
+            .write(to: auditFeed, atomically: true, encoding: .utf8)
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.communityIssuesEnabled = false
+        store.pinRoots([rootA, rootB])
         unsetenv("DIPLOMAT_GLAB")
 
         // 24b. A review-request record outlives a poll its root's path failed to resolve
