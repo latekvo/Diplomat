@@ -768,7 +768,7 @@ extension Store {
     /// A dispatch the ban gate refused leaves the queue for good (`settleRequested`): its
     /// pings say so, and who is banned.
     func commsSettled(_ entry: QueuedAgentTask, _ outcome: DispatchOutcome) {
-        guard outcome.wasHandled || outcome == .banned else { return }
+        guard outcome.didSpawn || outcome == .banned else { return }
         // Owners are found in the fold, so a read in flight is waited for.
         if let reading = commsLogRead {
             Task { [weak self] in

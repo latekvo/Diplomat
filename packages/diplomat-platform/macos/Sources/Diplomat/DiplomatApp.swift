@@ -229,18 +229,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if env["DIPLOMAT_OSA_TEST"] == "1" {
             exit(OSATest.run() ? 0 : 1)
         }
-        // Mesh-control self-test: proves the one routine behind every mesh edit surfaces
-        // a refusal and re-reads the topology, on success and on failure alike. Starts
-        // and contacts no node; needs SZPONTNET_DIR on a scratch dir and
-        // DIPLOMAT_SELF_REPO on a non-checkout. Exit code = pass/fail.
-        if env["DIPLOMAT_MESH_CMD_TEST"] == "1" {
-            Task { @MainActor in exit(await MeshCommandTest.run() ? 0 : 1) }
-        }
-        // Stopping a node left running while the mesh is off, on scratch state dirs;
-        // needs python3. Exit code = pass/fail.
-        if env["DIPLOMAT_MESH_STRAY_TEST"] == "1" {
-            Task { @MainActor in exit(await MeshStrayTest.run() ? 0 : 1) }
-        }
         // Allocator-setup self-test: proves a launch reinstalls a stale allocator and
         // leaves a deliberately-uninstalled one alone, and drives the Devices screen's
         // actions through a stand-in installer in a scratch dir. Reads no ~/.claude and
@@ -943,32 +931,6 @@ enum Dump {
             if let first = scan.fresh.first {
                 print("\n----- COMMUNITY FIX prompt (#\(first.number)) -----")
                 print(IssueConfig(target: .contributors, me: me).forIssue(first.number).buildPrompt())
-            }
-
-            // Mesh coordination: every machine scans and routes each find through
-            // claim-gated DISPATCH to the best-surplus node (szpontnet-spec/docs/12) —
-            // REAL node state, REAL claim verb probe, no spawn.
-            print("\n== mesh coordination ==")
-            let meshOn = UserDefaults.standard.object(forKey: "meshEnabled") as? Bool ?? false
-            let snap = MeshBridge.readState()
-            guard meshOn, let snap, MeshBridge.nodeRunning(snap) else {
-                print("mesh off or no live node → monitors spawn locally (fail-open)")
-                return
-            }
-            print("every machine scans; each find routes via dispatch to the best node "
-                + "(no assignment stand-down)")
-            // Read-only claim-book probe: who, if anyone, currently owns a synthetic
-            // work key. The claim verb mints nothing here beyond a liveness-scoped
-            // lease that suppresses nothing real — it is only a gate diagnostic.
-            let probeKey = AutofixMesh.workKey(
-                kind: "review", prURL: "https://github.com/argent-test/gate-dump/pull/1",
-                headSha: "d0d0")
-            if let r = try? MeshBridge.claim(workKey: probeKey, port: snap.tcpPort ?? 0) {
-                print("  claim probe: \(probeKey) → "
-                    + (r.owned ? "unowned (a dispatch here would place + run it)"
-                               : "held by \(r.ownerName ?? "a peer") (a dispatch here → suppressed)"))
-            } else {
-                print("  claim probe: UNREACHABLE → routing fails open (spawn locally)")
             }
         } catch {
             print("AUTOFIX POLL ERROR: \((error as? LocalizedError)?.errorDescription ?? "\(error)")")

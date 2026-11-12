@@ -37,12 +37,6 @@ struct ConflictWizardView: View {
     @State private var username: String
     @State private var specificPR: String
     @State private var status: String?
-    /// "Run on mesh" (effective only while the row is live) — checked by default,
-    /// like the Linux wizards.
-    @State private var useMesh = true
-    /// A mesh dispatch is in flight — disables SPAWN so a second click can't
-    /// double-dispatch (the Qt wizards disable the button the same way).
-    @State private var meshDispatching = false
 
     private var config: ConflictConfig {
         var cfg = ConflictConfig(
@@ -116,12 +110,9 @@ struct ConflictWizardView: View {
     }
 
     private var spawnButton: some View {
-        WizardSpawnControls(duty: "conflicts", useMesh: $useMesh,
-                            isValid: config.isValid && !meshDispatching,
-                            tint: tint,
-                            terminalTitle: AgentSpawner.resolved(store.terminal).title,
-                            routable: store.meshRoutable(checkout: config.checkout),
-                            action: spawn)
+        SpawnAgentButton(isValid: config.isValid, tint: tint,
+                         terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                         action: spawn)
     }
 
     /// A short label for the ongoing-processes list, e.g. "Resolve · #337".
@@ -162,28 +153,15 @@ struct ConflictWizardView: View {
 
     private func spawn() {
         let cfg = config
-        // Mesh path: hand the job to the local node (it picks the executor, with
-        // failover) instead of opening a terminal here — mirrors the Linux wizards.
-        if MeshSpawnRow.isLive(store), useMesh, store.meshRoutable(checkout: cfg.checkout) {
-            meshDispatching = true
-            status = "Dispatching over the mesh…"
-            AuditLog.log("panel", "conflicts", "\(trackingLabel) · via mesh")
-            store.meshDispatch(duty: "conflicts", prompt: cfg.buildPrompt(),
-                               repo: "\(cfg.targetRepo.owner)/\(cfg.targetRepo.repo)") { results, err in
-                meshDispatching = false
-                status = MeshSpawn.summarize(results, error: err)
-            }
-            return
-        }
-        // Local: the SAME pipeline the auto-monitor rides — dedup, ban, tracking —
-        // only the trigger (this click) and its policies (foreground, no mesh gate)
-        // differ. See `AgentDispatchGate`.
+        // The SAME pipeline the auto-monitor rides — dedup, ban, tracking — only the
+        // trigger (this click) and its policies (foreground, none of the automatic-work
+        // gates) differ. See `AgentDispatchGate`.
         let term = AgentSpawner.resolved(store.terminal)
         let job = Store.AgentJob(kind: "conflicts", auditAction: "conflicts",
                                  label: trackingLabel, prompt: cfg.buildPrompt(),
                                  prURL: trackingPRURL, prNumber: specificNumber,
-                                 authorLogin: nil, duty: "conflicts",
-                                 workKey: "", counter: nil, directory: cfg.checkout)
+                                 authorLogin: nil,
+                                 counter: nil, directory: cfg.checkout)
         status = "Launching \(term.title)…"
         Task {
             status = statusText(for: await store.dispatchAgent(job, source: .panel),

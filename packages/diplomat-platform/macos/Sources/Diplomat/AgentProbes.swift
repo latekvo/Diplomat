@@ -42,9 +42,9 @@ enum AgentProbes {
 
         /// Has this probe failed for long enough to be worth saying out loud?
         ///
-        /// Only `.unavailable` counts. A machine without a mesh add-on, or with no run that
-        /// serves a session, is an ordinary machine, and warning about it every few minutes
-        /// would be noise that trains the operator to ignore the channel.
+        /// Only `.unavailable` counts. A machine with no run that serves a session is an
+        /// ordinary machine, and warning about it every few minutes would be noise that
+        /// trains the operator to ignore the channel.
         var silent: Bool { failing && consecutiveFailures >= Health.silentAfter }
 
         /// Consecutive failed ticks before a probe is called silent. The panel resolves
@@ -82,7 +82,7 @@ enum AgentProbes {
     /// load nor the row list is a fold over records alone: `AgentState.synthesizeUntracked`
     /// turns every agent this scan finds with no record of its own into an occupying
     /// `untracked:<pr>` one. So on the machine the applet is developed on, whose ordinary
-    /// state is several agents up, an assertion about which bays a placement spends is
+    /// state is several agents up, an assertion about which bays a run spends is
     /// decided by the box rather than by the fixture: an agent mid-turn, or one whose
     /// screen cannot be read, is an occupying run nothing put there — and reads as a
     /// regression in the very accounting it exists to catch. (One sitting at its prompt
@@ -261,9 +261,7 @@ enum AgentProbes {
     ///
     /// The pre-registry identity mechanism, kept for the two questions a pid cannot answer:
     /// agents this applet has no record of at all (`AgentState.synthesizeUntracked`), and
-    /// records whose agent has no pid to match — a placement the mesh routed back here,
-    /// where the NODE opened the terminal and wrote the pid file into a run directory this
-    /// applet never created.
+    /// records whose agent has no pid to match — a spawn whose pid file has not landed.
     ///
     /// It cannot tell two runs on one PR apart and it matches any session that merely
     /// mentions the number, which is why it decides nothing that a pid can decide.
@@ -523,26 +521,6 @@ enum AgentProbes {
         return answer
     }
 
-    // MARK: - The mesh
-
-    /// The work keys currently claimed anywhere on the mesh.
-    ///
-    /// `.unsupported` when no node has ever run here, `.unavailable` when one has and is
-    /// not answering — a peer's run must not be retired because the local node is down,
-    /// which is the difference the resolver reads.
-    static func meshClaims(enabled: Bool, snapshot: MeshSnapshot?) -> Observation<Set<String>> {
-        guard enabled else {
-            return .unsupported("are unavailable (the mesh is switched off)")
-        }
-        guard let snapshot else {
-            return .unsupported("are unavailable (no mesh node has run here)")
-        }
-        guard MeshBridge.nodeRunning(snapshot) else {
-            return .unavailable("are unavailable (the mesh node is not running)")
-        }
-        return .present(Set(snapshot.claims.keys))
-    }
-
     // MARK: - GitHub
 
     /// Which of these items (`PRRef.itemKey`) GitHub calls MERGED: the one terminal
@@ -606,7 +584,6 @@ enum AgentProbes {
     /// attached to, for retiring runs (`OpenCodeProbe.interrupts`).
     static func gather(records: [AgentState.RunRecord], now: TimeInterval,
                        slugs: Set<String>, directory: String,
-                       meshEnabled: Bool, meshState: MeshSnapshot?,
                        merged: Observation<Set<String>>,
                        tokens: Observation<Bool>)
         -> (evidence: AgentState.Evidence, attached: Observation<[String]>) {
@@ -615,8 +592,7 @@ enum AgentProbes {
         let scanned = scan(dump, slugs: slugs,
                            heldPIDs: Set(records.compactMap(\.pid)))
         let scan = note("agent scan", scanned.agents)
-        OpenCodeProbe.adopt(records, sessions: scanned.sessions, byPID: scanned.byPID,
-                            attached: scanned.attached.value ?? [])
+        OpenCodeProbe.adopt(records, sessions: scanned.sessions, byPID: scanned.byPID)
         // Whose screens are worth counting is decided from the process table, not from the
         // records as they arrived: a run's tty lives on its agent process, and a run
         // spawned since the last tick has not adopted one yet.
@@ -626,7 +602,6 @@ enum AgentProbes {
             sentinels: note("sentinels", AgentRegistry.sentinels(records)),
             tails: note("screens", paneTails(lookedUp, unbooked: unbookedTTYs(lookedUp, scan),
                                              now: now)),
-            claims: note("mesh claims", meshClaims(enabled: meshEnabled, snapshot: meshState)),
             mergedPRs: merged,
             liveAgents: scan,
             sessions: note("agent sessions",

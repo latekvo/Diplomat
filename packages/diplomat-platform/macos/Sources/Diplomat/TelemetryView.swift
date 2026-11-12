@@ -305,7 +305,6 @@ struct TelemetryView: View {
     private func pendingCard(_ s: Telemetry.Summary) -> some View {
         let found: String = "\(s.queuedCount) unit\(s.queuedCount == 1 ? "" : "s") of work "
             + "found in this range, \(s.startedCount) started"
-            + (s.remoteCount > 0 ? ", \(s.remoteCount) on mesh peers" : "")
             + ". Fixes stack on top of reviews, which take a free slot first, so the "
             + "top edge is everything the pool owes. Work picked up between two points "
             + "on the chart never shows as a backlog — that is the chart working, not "
@@ -332,9 +331,7 @@ struct TelemetryView: View {
         let width: String = "finished in this range, one bar per "
             + Telemetry.bucketLabel(s.bucketHours)
         let counts: String = "Counted where a run ENDED, so one that spanned two bars "
-            + "is a single delivery in the bar it finished in. Work the mesh placed on "
-            + "a peer counts here — it was delivered — though its cost is that peer's "
-            + "and stays out of the per-task figures."
+            + "is a single delivery in the bar it finished in."
         return VStack(alignment: .leading, spacing: 6) {
             cardHead("finishedWork", "\(s.finishedCount)")
             note(width)

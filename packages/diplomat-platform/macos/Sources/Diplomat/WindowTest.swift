@@ -62,7 +62,7 @@ enum WindowTest {
         check("the header buttons' tooltips are on NSViews",
               ["Refresh", "Settings", "Quit"].allSatisfy(tips.contains), "\(tips.sorted())")
         // The object whose hover timer crashed reading a torn-down view's text (#238).
-        // A menu item's `.help` (MeshView's strategy picker) installs none.
+        // A menu item's `.help` installs none.
         let manager = NSSelectorFromString("_dynamicToolTipManager")
         let panelManager = w.contentView.flatMap { $0.responds(to: manager) ? $0.perform(manager) : nil }
         check("the panel has no SwiftUI dynamic tooltip manager",

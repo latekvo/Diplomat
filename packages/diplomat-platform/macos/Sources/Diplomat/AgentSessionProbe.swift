@@ -40,8 +40,8 @@ enum AgentSessionProbe {
     ///
     /// Which session is a run's is found once and written into the run's directory: the
     /// search reads a session's opening message, while asking a bound one what it is doing
-    /// reads a single message. An OpenCode 2.x run's is never searched for: its spawn or
-    /// `OpenCodeProbe.adopt` binds it.
+    /// reads a single message. An OpenCode 2.x run's is never searched for: its spawn
+    /// binds it, and an untracked run's is the one `OpenCodeProbe.adopt` remembers.
     ///
     /// The search is by the run's working directory: `directory` (the repo root), or the
     /// checkout staged for a run on another repo (`AgentRegistry.runDirectory`). It is

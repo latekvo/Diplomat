@@ -503,7 +503,7 @@ enum AgentSpawner {
     /// replaces the broad `repo, workflow, gist` one for the agent and everything it
     /// runs. Only the Keychain item's NAME is configured, and the spawned shell reads it
     /// itself, so the secret never enters the AppleScript, the staged Ghostty launcher,
-    /// any argv `ps` shows, or the config file the mesh copies.
+    /// any argv `ps` shows, or the shared config file.
     ///
     /// `shellCommand` runs the whole spawn behind this test, so a token that cannot be
     /// read starts nothing rather than falling back to the broad login. The emptiness
@@ -757,9 +757,9 @@ enum AgentSpawner {
 
 // MARK: - Shared SPAWN AGENT button
 
-/// The tinted "SPAWN AGENT" button shared by the Review and Resolve-conflicts
-/// wizards: full-width, coloured when the config is valid and grey when not, with
-/// a help string naming the terminal it will open.
+/// The tinted "SPAWN AGENT" button every wizard ends with: full-width, coloured when
+/// the config is valid and grey when not, with a help string naming the terminal it
+/// will open.
 struct SpawnAgentButton: View {
     let isValid: Bool
     let tint: Color
@@ -835,12 +835,6 @@ struct ReviewWizardView: View {
     /// action). On by default; hidden for my own PRs (I don't thank myself).
     @State private var softApprove = true
     @State private var status: String?
-    /// "Run on mesh" (effective only while the row is live) — checked by default,
-    /// like the Linux wizards.
-    @State private var useMesh = true
-    /// A mesh dispatch is in flight — disables SPAWN so a second click can't
-    /// double-dispatch (the Qt wizards disable the button the same way).
-    @State private var meshDispatching = false
     /// For a specific PR: the polled author disposition (mine / theirs / not-yet). Drives
     /// which action toggles show. `.unknown` while we determine it (offers all, gated).
     @State private var specificAuthor: SpecificAuthor = .unknown
@@ -1077,16 +1071,9 @@ struct ReviewWizardView: View {
     }
 
     private var spawnButton: some View {
-        WizardSpawnControls(duty: "review", useMesh: $useMesh,
-                            isValid: config.isValid && !meshDispatching,
-                            tint: tint,
-                            terminalTitle: AgentSpawner.resolved(store.terminal).title,
-                            // Only a single PR is a session the mesh could place: a
-                            // sweep opens none, it queues one review per PR for this
-                            // machine's own cap to start.
-                            routable: target == .specific
-                                && store.meshRoutable(checkout: config.checkout),
-                            action: spawn)
+        SpawnAgentButton(isValid: config.isValid, tint: tint,
+                         terminalTitle: AgentSpawner.resolved(store.terminal).title,
+                         action: spawn)
     }
 
     /// A short label for the ongoing-processes list, e.g. "Review · #337 · Deep".
@@ -1148,37 +1135,24 @@ struct ReviewWizardView: View {
 
     private func spawn() {
         let cfg = config
-        // A single PR is one agent, and the two branches below dispatch it. A
-        // whose-PRs sweep is not: it becomes one queued review per PR, so the task cap
+        // A single PR is one agent, dispatched below. A whose-PRs sweep is
+        // not: it becomes one queued review per PR, so the task cap
         // decides how many run at once rather than one agent being handed every draft
         // in the repo at the same time.
         guard cfg.isSinglePR else {
             queueSweep(cfg)
             return
         }
-        // Mesh path: hand the job to the local node (it picks the executor, with
-        // failover) instead of opening a terminal here — mirrors the Linux wizards.
-        if MeshSpawnRow.isLive(store), useMesh, store.meshRoutable(checkout: cfg.checkout) {
-            meshDispatching = true
-            status = "Dispatching over the mesh…"
-            AuditLog.log("panel", "review", "\(trackingLabel) · via mesh")
-            store.meshDispatch(duty: "review", prompt: cfg.buildPrompt(),
-                               repo: "\(cfg.targetRepo.owner)/\(cfg.targetRepo.repo)") { results, err in
-                meshDispatching = false
-                status = MeshSpawn.summarize(results, error: err)
-            }
-            return
-        }
-        // Local: the SAME pipeline the auto-monitor rides — dedup, ban, tracking —
-        // only the trigger (this click) and its policies (foreground, no mesh gate)
-        // differ. See `AgentDispatchGate`.
+        // The SAME pipeline the auto-monitor rides — dedup, ban, tracking — only the
+        // trigger (this click) and its policies (foreground, none of the automatic-work
+        // gates) differ. See `AgentDispatchGate`.
         let term = AgentSpawner.resolved(store.terminal)
         let job = Store.AgentJob(kind: "review", auditAction: "review",
                                  label: trackingLabel, prompt: cfg.buildPrompt(),
                                  prURL: trackingPRURL,
                                  prNumber: store.isRootCheckout(cfg.checkout) ? cfg.prRef.number : nil,
-                                 authorLogin: reviewedAuthorLogin, duty: "review",
-                                 workKey: "", counter: nil, directory: cfg.checkout)
+                                 authorLogin: reviewedAuthorLogin,
+                                 counter: nil, directory: cfg.checkout)
         status = "Launching \(term.title)…"
         Task {
             status = statusText(for: await store.dispatchAgent(job, source: .panel),
@@ -1220,10 +1194,9 @@ struct ReviewWizardView: View {
 /// The wizard status line for one dispatch outcome — shared by all four wizards
 /// so refusals read identically everywhere.
 ///
-/// A wizard SPAWN is a `.panel` dispatch, and none of the mesh gate, the
-/// automatic-task cap, the rate-limit budget and the free-disk floor applies to a
-/// human's click, so `.standDown`, `.atCapacity`, `.unaffordable` and `.lowDisk` are
-/// answers only a monitor gets —
+/// A wizard SPAWN is a `.panel` dispatch, and none of the automatic-task cap, the
+/// rate-limit budget and the free-disk floor applies to a human's click, so
+/// `.atCapacity`, `.unaffordable` and `.lowDisk` are answers only a monitor gets —
 /// as is `.notAllowed`, which speaks for the review monitor's own finds.
 /// They are spelled out rather than folded into a `default`, so adding an outcome
 /// keeps failing this switch until someone decides what the wizard should say about it.
@@ -1233,7 +1206,6 @@ func statusText(for outcome: Store.DispatchOutcome, terminal: String) -> String 
     case .inFlight: return "An agent is already on this PR — see its session above."
     case .banned: return "Author is banned for prompt injection — un-ban to review."
     case .notAllowed: return "Author is outside the auto-review list."
-    case .standDown: return "Another mesh node originates this work."
     case .atCapacity: return "This machine is at its cap of concurrent automatic tasks."
     case .unaffordable: return "Too little rate limit left for automatic work."
     case .lowDisk: return "Too little free disk for automatic work."

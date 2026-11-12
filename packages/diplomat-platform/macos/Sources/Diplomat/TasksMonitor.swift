@@ -350,7 +350,7 @@ extension Store {
         defer { goalFixesStarting.remove(ref.number) }
         let outcome = await dispatchAgent(goalPlusJob(node, number: ref.number), source: .panel)
         switch outcome {
-        case .spawned, .standDown: break
+        case .spawned: break
         case .banned: return "@\(node.author ?? "") is banned, so no fix was started"
         case .failed(let why): return "the fix agent did not start: \(why)"
         default: return "the fix agent did not start (\(outcome))"
@@ -367,7 +367,7 @@ extension Store {
         let action = ask.config.action
         return AgentJob(kind: action, auditAction: action, label: ask.label(roots: roots.count),
                         prompt: ask.config.buildPrompt(), prURL: nil, prNumber: nil,
-                        authorLogin: node.author, duty: action, workKey: "", counter: nil,
+                        authorLogin: node.author, counter: nil,
                         directory: ask.config.checkout)
     }
 

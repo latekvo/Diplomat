@@ -480,7 +480,7 @@ enum CommsTest {
         check("a run an agent row still wears has not finished", folded(askReview)?.finishedAt == nil)
 
         let quiet = AgentState.Evidence(processes: .present([:]), sentinels: .present([]),
-                                        tails: .present([:]), claims: .present([]),
+                                        tails: .present([:]),
                                         mergedPRs: .present([]), liveAgents: .present([:]),
                                         sessions: .present([:]), activity: .present([:]))
         let tick = AgentState.tick(records: [], evidence: quiet, now: Date().timeIntervalSince1970,
@@ -507,7 +507,7 @@ enum CommsTest {
                 id: AgentTaskQueue.key(auditAction: verb, item: "o/r#\(n)"),
                 job: Store.AgentJob(kind: "review", auditAction: verb, label: label, prompt: "",
                                     prURL: "https://github.com/o/r/pull/\(n)", prNumber: n,
-                                    authorLogin: "dave", duty: "review", workKey: "",
+                                    authorLogin: "dave",
                                     counter: .reviewRequests),
                 attemptNumber: 1)
         }
@@ -1766,7 +1766,7 @@ enum CommsTest {
             id: lastKey,
             job: Store.AgentJob(kind: "review", auditAction: "review", label: "Review · #\(91000 + n)",
                                 prompt: "", prURL: nil, prNumber: nil, authorLogin: nil,
-                                duty: "review", workKey: "", counter: nil),
+                                counter: nil),
             attemptNumber: 1)
         store.commsSettled(lastEntry, .spawned(terminal: "iterm"))
         let t = DispatchTime.now().uptimeNanoseconds

@@ -5,7 +5,7 @@ import Foundation
 ///
 /// `szpont` builds and opens `<checkout>/packages/diplomat-platform/macos/Diplomat.app`
 /// with the checkout under `~/.diplomat`, and launchd starts that same bundle: the
-/// Update button, the 06:00 self-update and the mesh spawn all find the checkout by
+/// Update button and the 06:00 self-update both find the checkout by
 /// the bundle's own location. A copy kept anywhere else must not claim one by its
 /// path, and a layout without `.git` is not one.
 ///

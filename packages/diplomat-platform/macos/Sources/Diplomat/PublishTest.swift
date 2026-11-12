@@ -70,7 +70,6 @@ enum PublishTest {
             sentinels: .present([]),
             tails: .present(["ttys011": working, "ttys012": atPrompt,
                              "ttys014": working]),
-            claims: .present([]),
             mergedPRs: .present(["software-mansion/argent#14"]),
             liveAgents: .present([:]),
             sessions: .present([:]),

@@ -149,7 +149,7 @@ struct GridCard<Trailing: View>: View {
 // MARK: - Spawn-wizard chrome
 
 // The Review / Fix-issues / Resolve-conflicts / Full-E2E wizards are four renderers over one
-// layout: title, contextual rows, a mesh row + SPAWN button, a status line. Each
+// layout: title, contextual rows, a SPAWN button, a status line. Each
 // piece of that layout lives here once, so two wizards cannot disagree about it -
 // the kind of divergence that reads as a design choice and is not one. Each is a
 // concrete little View, deliberately not a generic scaffold: SwiftUI type-checks a
@@ -305,33 +305,6 @@ struct WizardBanWarning: View {
     }
 }
 
-/// The dispatch controls every wizard ends with: the mesh-routing row (which
-/// hides itself unless a local node is live) above the SPAWN button.
-struct WizardSpawnControls: View {
-    let duty: String
-    @Binding var useMesh: Bool
-    /// SPAWN is live only for a valid config, and never while a mesh dispatch is
-    /// already in flight — a second click would double-dispatch.
-    let isValid: Bool
-    let tint: Color
-    let terminalTitle: String
-    /// Whether this wizard's current inputs produce a session to place at all. A
-    /// Review-PRs sweep does not — it queues one review per PR for this machine's own
-    /// task cap to start — so the mesh row has nothing to offer and is left out. Nor
-    /// does a run in a repo listed under Settings → OTHER REPOS: a peer would start its
-    /// agent in its own repo root.
-    var routable: Bool = true
-    let action: () -> Void
-
-    var body: some View {
-        VStack(spacing: 6) {
-            if routable { MeshSpawnRow(duty: duty, useMesh: $useMesh) }
-            SpawnAgentButton(isValid: isValid, tint: tint,
-                             terminalTitle: terminalTitle, action: action)
-        }
-    }
-}
-
 // MARK: - Settings chrome
 
 // Settings is a form, and a form is the same three shapes over and over: a titled
@@ -354,7 +327,7 @@ extension EnvironmentValues {
 
 /// A small state token: an optional glyph and a word, in a tint that carries the
 /// state on its own. Used for everything Settings reports rather than sets — the
-/// monitors' live/idle, the allocator's version, the mesh's peer count.
+/// monitors' live/idle, the allocator's version.
 struct StatusPill: View {
     let text: String
     let tint: Color
@@ -589,7 +562,7 @@ func axisText(_ s: String) -> Text {
 extension View {
     /// The panel's card chrome: padded content on a soft rounded tint. Every grouped
     /// block in the panel wears it — the activity feed, the ongoing-sessions list, the
-    /// device pool, the mesh topology/nodes/duties — so the corner radius and the tint
+    /// device pool — so the corner radius and the tint
     /// live in one place instead of once per card.
     ///
     /// `fill` is the whole colour, opacity included, because the one non-default card

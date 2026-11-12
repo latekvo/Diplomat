@@ -161,34 +161,34 @@ enum SweepTest {
         //    terminal, tmux and nested shells carry the whole spawn command too (lines as
         //    a real tmux spawn left them in `ps`, on 2.0.18).
         let wrapper = "tmux -L d new-session -s d zsh -i -c 'cd /r; zsh -i -c \"x || exit; "
-            + "opencode --session ses_mesh\"; exec sh'"
+            + "opencode --session ses_first\"; exec sh'"
         let dump = Observation.present("""
           790 ??         00:41 script -q /dev/null \(wrapper)
           791 ttys030    00:41 \(wrapper)
           792 ??         00:41 \(wrapper)
-          793 ttys031    00:41 zsh -i -c x || exit; opencode --session ses_mesh
-          801 ttys031    00:40 opencode --session ses_mesh
+          793 ttys031    00:41 zsh -i -c x || exit; opencode --session ses_first
+          801 ttys031    00:40 opencode --session ses_first
           802 ttys032    00:40 /Users/u/.npm/bin/opencode --session ses_later
           803 ttys033    00:40 opencode --session ses_other
           804 ttys034    00:40 opencode Review PR #11 in o/r
         """)
         var asked: [String] = []
-        let openings = ["ses_mesh": "Review PR #9 in o/r", "ses_other": "Review PR #9 in x/y"]
+        let openings = ["ses_first": "Review PR #9 in o/r", "ses_other": "Review PR #9 in x/y"]
         let scanned = AgentProbes.scan(dump, slugs: ["o/r"]) {
             asked.append($0)
             return openings[$0]
         }
         check("a 2.x agent is found by its session's opening prompt, on its own tty",
               scanned.agents.value == ["o/r#9": "ttys031", "o/r#11": "ttys034"]
-                && scanned.sessions == ["o/r#9": "ses_mesh"])
+                && scanned.sessions == ["o/r#9": "ses_first"])
         check("…only a TUI's own line names a session: no wrapper is asked about or attached",
-              asked == ["ses_mesh", "ses_later", "ses_other"]
-                && scanned.attached.value == ["ses_mesh", "ses_later", "ses_other"])
+              asked == ["ses_first", "ses_later", "ses_other"]
+                && scanned.attached.value == ["ses_first", "ses_later", "ses_other"])
         // The row holds the first line's tty, so an idle TUI's session paired with a
         // working agent's line would free that agent's bay.
         let claudeFirst = AgentProbes.scan(.present("""
           780 ttys029    00:50 claude Review PR #9 in o/r
-          801 ttys031    00:40 opencode --session ses_mesh
+          801 ttys031    00:40 opencode --session ses_first
         """), slugs: ["o/r"]) { openings[$0] }
         check("…and a PR first seen on another agent's line is given no session",
               claudeFirst.agents.value == ["o/r#9": "ttys029"] && claudeFirst.sessions.isEmpty)
@@ -196,22 +196,22 @@ enum SweepTest {
         // session, is another agent's whenever one is up.
         let twoTUIs = Observation.present("""
           780 ttys029    00:50 claude Review PR #9 in o/r
-          801 ttys031    00:40 opencode --session ses_mesh
+          801 ttys031    00:40 opencode --session ses_first
           805 ttys035    00:30 opencode --session ses_again
         """)
         let again = openings.merging(["ses_again": "Review PR #9 in o/r"]) { own, _ in own }
         let heldOne = AgentProbes.scan(twoTUIs, slugs: ["o/r"],
                                        heldPIDs: [780, 801]) { again[$0] }
         let heldAll = AgentProbes.scan(.present("""
-          801 ttys031    00:40 opencode --session ses_mesh
+          801 ttys031    00:40 opencode --session ses_first
           805 ttys035    00:30 opencode --session ses_again
         """), slugs: ["o/r"], heldPIDs: [801, 805]) { again[$0] }
         check("…a held agent's line is its PR's sighting only when no other is up on it",
               heldOne.agents.value == ["o/r#9": "ttys035"]
                 && heldOne.sessions == ["o/r#9": "ses_again"]
                 && heldAll.agents.value == ["o/r#9": "ttys031"]
-                && heldAll.sessions == ["o/r#9": "ses_mesh"]
-                && heldOne.byPID == [801: "ses_mesh", 805: "ses_again"])
+                && heldAll.sessions == ["o/r#9": "ses_first"]
+                && heldOne.byPID == [801: "ses_first", 805: "ses_again"])
         let releasedTUI = AgentState.RunRecord(runID: "untracked:o/r#9:801",
                                                dispatchedAt: dispatched, prNumber: 9,
                                                prURL: "https://github.com/o/r/pull/9",
@@ -221,69 +221,51 @@ enum SweepTest {
                                                   prURL: "https://github.com/o/r/pull/9",
                                                   pid: 780, untracked: true, released: true)
         OpenCodeProbe.adopt([releasedTUI, releasedClaude], sessions: heldOne.sessions,
-                            byPID: heldOne.byPID, attached: []) { again[$0] }
+                            byPID: heldOne.byPID)
         check("a released run is given the session at its pid, never its PR's sighting's",
-              OpenCodeProbe.serviceSession(of: releasedTUI) == "ses_mesh"
+              OpenCodeProbe.serviceSession(of: releasedTUI) == "ses_first"
                 && OpenCodeProbe.serviceSession(of: releasedClaude) == nil)
         OpenCodeProbe.forgetAdopted([releasedTUI.runID, releasedClaude.runID])
 
-        func booked(_ pr: Int, _ placement: AgentState.Placement, port: Int? = nil,
-                    prompt: String? = nil) -> AgentState.RunRecord {
+        func booked(_ pr: Int, session: String? = nil) -> AgentState.RunRecord {
             dispatched += 1
             let record = AgentRegistry.createRun(
                 AgentState.RunRecord(runID: AgentRegistry.newRunID(now: dispatched),
                                      dispatchedAt: dispatched, prNumber: pr,
-                                     placement: placement),
-                prompt: prompt ?? "Review PR #\(pr) in o/r")!
+                                     prURL: "https://github.com/o/r/pull/\(pr)"),
+                prompt: "Review PR #\(pr) in o/r")!
             AgentRegistry.stageRunner(record.runID, AgentRunner.opencode.rawValue)
-            if let port { _ = AgentRegistry.stagePort(record.runID, port) }
+            if let session { AgentRegistry.bindSession(record.runID, session) }
             return record
         }
-        let meshHere = booked(9, .meshHere)
-        // Same PR, same prompt, booked later: the session is already held.
-        let meshTwin = booked(9, .meshHere)
-        // Same PR, another task: the scan's sighting on PR 9 is not its session.
-        let meshOther = booked(9, .meshHere, prompt: "Resolve the conflicts on PR #9 in o/r")
-        // Staged with `ses_other`'s opening, which no run holds: only the port and the
-        // placement keep these two unbound.
-        let meshOld = booked(9, .meshHere, port: 4096, prompt: "Review PR #9 in x/y")
-        let local = booked(9, .local, prompt: "Review PR #9 in x/y")
+        let unbound = booked(9)
         let untracked = AgentState.RunRecord(runID: "untracked:o/r#9", dispatchedAt: dispatched,
                                              prNumber: 9, prURL: "https://github.com/o/r/pull/9",
                                              untracked: true)
         let unseen = AgentState.RunRecord(runID: "untracked:o/r#12", dispatchedAt: dispatched,
                                           prNumber: 12, prURL: "https://github.com/o/r/pull/12",
                                           untracked: true)
-        OpenCodeProbe.adopt([meshHere, meshTwin, meshOther, meshOld, local, untracked, unseen],
-                            sessions: scanned.sessions, byPID: scanned.byPID,
-                            attached: scanned.attached.value ?? []) { openings[$0] }
-        check("a run the mesh placed here is bound to the session opened with its prompt",
-              AgentRegistry.boundSession(meshHere.runID) == "ses_mesh"
-                && OpenCodeProbe.serviceSession(of: meshHere) == "ses_mesh")
-        check("…and no other run is bound to it, whatever PR it is on",
-              AgentRegistry.boundSession(meshTwin.runID).isEmpty
-                && AgentRegistry.boundSession(meshOther.runID).isEmpty)
-        check("…nor is a 1.x one, nor one this applet spawned",
-              AgentRegistry.boundSession(meshOld.runID).isEmpty
-                && AgentRegistry.boundSession(local.runID).isEmpty)
+        OpenCodeProbe.adopt([unbound, untracked, unseen],
+                            sessions: scanned.sessions, byPID: scanned.byPID)
         check("a synthesized run is given the session in memory, and asked of the service",
-              OpenCodeProbe.serviceSession(of: untracked) == "ses_mesh"
+              OpenCodeProbe.serviceSession(of: untracked) == "ses_first"
                 && AgentSessionProbe.serves(untracked)
                 && !AgentSessionProbe.serves(unseen))
-        // `meshHere` and `untracked` share ses_mesh; `closed` has no TUI left, `merged` has.
-        let closed = booked(13, .local)
-        AgentRegistry.bindSession(closed.runID, "ses_closed")
-        let merged = booked(14, .local)
-        AgentRegistry.bindSession(merged.runID, "ses_merged")
-        let retired = [meshHere, untracked, closed, merged]
+        check("…and a booked run none: its session is the one its spawn binds",
+              OpenCodeProbe.serviceSession(of: unbound) == nil)
+        // `spawned` and `untracked` share ses_first; `closed` has no TUI left, `merged` has.
+        let spawned = booked(9, session: "ses_first")
+        let closed = booked(13, session: "ses_closed")
+        let merged = booked(14, session: "ses_merged")
+        let retired = [spawned, untracked, closed, merged]
         check("a run whose window is closed is interrupted once, a retired one only when no TUI is attached",
-              OpenCodeProbe.interrupts(closing: [meshHere], retired: retired,
-                                       attached: .present(["ses_mesh", "ses_merged"]))
-                  == ["ses_mesh", "ses_closed"])
+              OpenCodeProbe.interrupts(closing: [spawned], retired: retired,
+                                       attached: .present(["ses_first", "ses_merged"]))
+                  == ["ses_first", "ses_closed"])
         check("…and a process table that could not be read shows no TUI",
               OpenCodeProbe.interrupts(closing: [], retired: retired,
                                        attached: .unavailable("could not be read"))
-                  == ["ses_mesh", "ses_closed", "ses_merged"])
+                  == ["ses_first", "ses_closed", "ses_merged"])
 
         OpenCodeProbe.forgetAdopted([untracked.runID])
         check("…until it is retired: the next agent on its PR is not that session's",
