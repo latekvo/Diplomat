@@ -49,7 +49,7 @@ def card_host(*, fill: str = CARD_FILL, padding: int = 7,
     """A grouped block: padded content on a soft rounded card fill.
 
     Every such block on both screens — the device pool, the activity feed, the ban
-    list, the mesh topology/nodes/duties — is this same widget-with-a-column, so the
+    list — is this same widget-with-a-column, so the
     fill and the 8px radius live here. Twin of ``cardChrome`` in Components.swift.
 
     Returns the host widget and its layout: add children to the layout, the host to
@@ -67,7 +67,7 @@ def muted(size: int = 10, *, mono: bool = False, bold: bool = False) -> str:
     """The stylesheet for secondary text: dimmed to the theme's `palette(mid)`.
 
     Every screen carries captions, hints and status lines in this one style — the
-    panel, the mesh screen, Settings, the wizards — and Qt stylesheets have no
+    panel, Settings, the wizards — and Qt stylesheets have no
     variables to share it with. Building it here gives "muted" one definition and
     puts the per-label size in an argument, where a screen that disagrees about it
     is visible rather than buried in an otherwise identical string.
@@ -679,7 +679,7 @@ class RunningTaskRow(QFrame):
 
 class StartingTaskRow(QFrame):
     """A queued task whose dispatch is under way — clicked, or reached by the drain —
-    waiting on a mesh round-trip and a terminal spawn that take seconds between them.
+    waiting on a terminal spawn that takes seconds.
 
     It is the queued row minus the two handles that would now be lies (the order no
     longer decides when it runs; it is already running past the cap) and with the lit
@@ -907,10 +907,8 @@ def dispatch_status_text(verdict: str, terminal_title: str) -> str:
         return "An agent is already on this PR - see its session above."
     if verdict == autofix.VERDICT_BANNED:
         return "Author is banned for prompt injection - un-ban to review."
-    if verdict == autofix.VERDICT_STAND_DOWN:
-        return "Another mesh node originates this work."
-    # A wizard SPAWN is a panel dispatch, so none of the mesh gate, the task cap, the
-    # disk floor and the rate-limit budget applies to it, and the allowlist speaks for
+    # A wizard SPAWN is a panel dispatch, so none of the task cap, the disk floor and
+    # the rate-limit budget applies to it, and the allowlist speaks for
     # the review monitor's own finds. Spelled out anyway, and matching the Swift twin
     # word for word, because the fallback below reads every unknown verdict as a spawn failure —
     # the one answer that would send someone looking at a terminal that was never asked
@@ -929,7 +927,7 @@ def dispatch_status_text(verdict: str, terminal_title: str) -> str:
 # ---- Spawn-wizard chrome --------------------------------------------------
 #
 # The Review / Fix-issues / Resolve-conflicts / Full-E2E wizards are four renderers over one
-# layout: a title, contextual rows, a mesh row + SPAWN button, a status line. Each
+# layout: a title, contextual rows, a SPAWN button, a status line. Each
 # piece of it lives here once, including the SPAWN button's fill rule — the audit's
 # config is always valid, so that wizard is the one most likely to end up with a
 # hardcoded fill that no longer matches its neighbours. The macOS twins live in
@@ -1105,7 +1103,7 @@ class Pill(QLabel):
     """A small state token: a word in a tint, on a capsule of the same tint.
 
     Used for everything Settings *reports* rather than sets — a monitor's
-    live/idle, the allocator's version, the mesh's peer count — and, via
+    live/idle, the allocator's version — and, via
     :meth:`set_mark`, for one present/missing part of a multi-part install.
     """
 

@@ -31,7 +31,7 @@ import time
 
 from diplomat_runtime import activity, agentstate, autofix, review
 from diplomat_runtime.models import Fmt
-from . import deviceallocator, glyphs, szpont
+from . import deviceallocator, glyphs
 from .commsview import CommsView
 from .tasksview import TasksView
 from .devicesview import DevicesView
@@ -64,9 +64,6 @@ from .issuewizardview import IssueWizardView
 from .auditwizardview import AuditWizardView
 from .telemetryview import TelemetryView
 from .wizardview import WizardView
-# `.meshview` is imported in __init__ instead, behind `szpont.AVAILABLE`: it paints
-# SzpontNet's topology and so imports the library at its own top level, which up
-# here would make the add-on a hard dependency of the whole applet.
 
 _REVIEW_TINT = "#FF2D78"
 _ISSUES_TINT = "#00C7BE"
@@ -180,7 +177,7 @@ def _running_detail(agent: autofix.RunningAgent) -> str:
 
     "unknown" is the one state that needs its reason spelled out beside it. It means a
     probe could not answer, the run is holding its bay on purpose, and which probe
-    failed is the difference between "install tmux" and "your mesh node is down".
+    failed is what the operator has to go and fix.
 
     An untracked agent says so instead of ageing: its record was lost (a restart, or
     it was never this applet's to begin with), so there is no honest start time to
@@ -198,8 +195,6 @@ def _running_detail(agent: autofix.RunningAgent) -> str:
     age = Fmt.duration(time.time() - agent.started_at)
     if age != "just now":
         parts.append(f"for {age}")
-    if agent.mesh:
-        parts.append("via mesh")
     return " · ".join(parts)
 
 
@@ -260,10 +255,7 @@ class Panel(QWidget):
         self.body = QStackedWidget()
         outer.addWidget(self.body, 1)
 
-        # Screen name → page index, filled in as the pages are added, because the
-        # last one is conditional. `_set_screen` looks up here rather than in a
-        # literal map, so a build without the mesh page has no index to switch to
-        # rather than switching to whatever happens to sit at that number.
+        # Screen name → page index, filled in as the pages are added.
         self._screens: dict[str, int] = {}
 
         # Page: main. Scrolled as a whole only when the window is shorter than the
@@ -297,8 +289,7 @@ class Panel(QWidget):
         machines_scroll.setWidget(self.machines_view)
         self._screens["machines"] = self.body.addWidget(machines_scroll)
 
-        # Page: telemetry (what the monitors cost and what they still owe). Sits
-        # between Mesh and Settings, matching the header button order.
+        # Page: telemetry (what the monitors cost and what they still owe).
         self.telemetry_view = TelemetryView(store)
         self.telemetry_view.done.connect(lambda: self._set_screen("main"))
         telemetry_scroll = QScrollArea()
@@ -341,21 +332,6 @@ class Panel(QWidget):
         settings_scroll.setWidget(self.settings_view)
         self._screens["settings"] = self.body.addWidget(settings_scroll)
 
-        # Page: mesh management (topology graph, node cards, duty routing) —
-        # present only when the add-on is.
-        self.mesh_view = None
-        if szpont.AVAILABLE:
-            from .meshview import MeshView
-
-            self.mesh_view = MeshView(store)
-            self.mesh_view.done.connect(lambda: self._set_screen("main"))
-            mesh_scroll = QScrollArea()
-            mesh_scroll.setWidgetResizable(True)
-            mesh_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-            mesh_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            mesh_scroll.setWidget(self.mesh_view)
-            self._screens["mesh"] = self.body.addWidget(mesh_scroll)
-
         # Shortcuts
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self._focus_search)
         QShortcut(QKeySequence("Ctrl+R"), self, activated=self.refresh_requested.emit)
@@ -385,17 +361,6 @@ class Panel(QWidget):
         self._duration_timer.timeout.connect(self._rebuild_devices)
         self._duration_timer.timeout.connect(self._rebuild_agent_tasks)
         self._duration_timer.start(30000)
-
-        # Mesh should feel live: poll the topology snapshot on a tight 2s cadence,
-        # but only while the window is on screen AND the mesh is enabled (the tick
-        # guards both, so a hidden or minimized window or an opted-out user costs
-        # nothing). No add-on, no timer at all — there is nothing the user could
-        # switch on that would give it something to read.
-        self._mesh_timer = None
-        if szpont.AVAILABLE:
-            self._mesh_timer = QTimer(self)
-            self._mesh_timer.timeout.connect(self._mesh_tick)
-            self._mesh_timer.start(2000)
 
         self._rebuild_grid()
         self._rebuild_devices()
@@ -468,14 +433,6 @@ class Panel(QWidget):
         self.machines_btn = _icon_button(glyphs.G_MACHINES, "Machines")
         self.machines_btn.clicked.connect(self._toggle_machines)
         row.addWidget(self.machines_btn)
-
-        # No add-on, no ⬡ button: the screen behind it does not exist, and a
-        # control that opens nothing is worse than an absent one.
-        self.mesh_btn = None
-        if szpont.AVAILABLE:
-            self.mesh_btn = _icon_button(glyphs.G_MESH, "Mesh management")
-            self.mesh_btn.clicked.connect(self._toggle_mesh)
-            row.addWidget(self.mesh_btn)
 
         self.comms_btn = _icon_button(glyphs.G_COMMS, "Comms")
         self.comms_btn.clicked.connect(self._toggle_comms)
@@ -1069,8 +1026,7 @@ class Panel(QWidget):
 
     def _set_screen(self, name: str) -> None:
         """Flip the body to one of the screens: Actions ("main"), Devices, Machines,
-        Comms, Tasks, Telemetry, Settings, or — when the mesh add-on is installed — Mesh
-        management."""
+        Comms, Tasks, Telemetry or Settings."""
         self._screen = name
         self.body.setCurrentIndex(self._screens[name])
         self.devices_btn.set_state(
@@ -1084,9 +1040,6 @@ class Panel(QWidget):
             self.machines_view.opened()
         else:
             self.machines_view.closed()
-        if name == "mesh" and self.store.mesh_enabled:
-            # Fresh topology the moment the screen opens (the 2s poll follows).
-            self.store.refresh_mesh_state()
         if name == "telemetry":
             # Re-fold on open. The screen is otherwise only repainted when a
             # sample lands (every 15 min), and the monitors append between those.
@@ -1109,9 +1062,6 @@ class Panel(QWidget):
 
     def _toggle_machines(self) -> None:
         self._set_screen("main" if self._screen == "machines" else "machines")
-
-    def _toggle_mesh(self) -> None:
-        self._set_screen("main" if self._screen == "mesh" else "mesh")
 
     def _toggle_telemetry(self) -> None:
         self._set_screen("main" if self._screen == "telemetry" else "telemetry")
@@ -1290,26 +1240,14 @@ class Panel(QWidget):
     def _on_loading(self, loading: bool) -> None:
         self.spinner.setVisible(loading)
 
-    # MARK: mesh poll
-
-    def _mesh_tick(self) -> None:
-        """2s poll of the mesh topology — cheap file read, gated so it's free when
-        the window is off screen or the user hasn't opted into the mesh."""
-        if self._on_screen() and self.store.mesh_enabled:
-            self.store.refresh_mesh_state()
-
     def _on_screen(self) -> bool:
         # isVisible() stays True for a minimized window. Restoring one sends the
-        # showEvent below, which catches both ticks up.
+        # showEvent below, which catches the tick up.
         return self.isVisible() and not self.isMinimized()
 
     def showEvent(self, event) -> None:  # noqa: N802
-        # One immediate mesh refresh on show so the mesh screen isn't a
-        # poll-cycle stale when the window is shown.
-        if self.store.mesh_enabled:
-            self.store.refresh_mesh_state()
-        # Likewise the free bays: an agent that finished while the window was off
-        # screen must not leave its slot drawn as taken until the next tick.
+        # The free bays: an agent that finished while the window was off screen
+        # must not leave its slot drawn as taken until the next tick.
         self.store.refresh_auto_task_count_async()
         if self._screen == "devices":
             self.devices_view.opened()

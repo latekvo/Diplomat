@@ -6,13 +6,6 @@ walking ``/proc`` restricted to this uid, and the SIGTERM/grace/SIGKILL escalati
 are that guarantee's machinery, and the half that decides which process receives a
 signal.
 
-The mesh node keeps the same guarantee over *itself*, and — being an independent
-library that installs without Diplomat — carries its own copy of this routine
-(:mod:`szpontnet.procscan`). Two copies of a routine that picks SIGKILL targets is
-a real risk: a guard added to one and missed in the other force-kills an unrelated
-process of the same user. ``diplomat-platform/linux/tests/test_procscan.py`` runs every case
-against both, so a divergence fails rather than ships.
-
 Linux-only, by way of ``/proc``: on a host without it the scan finds nobody and
 the caller starts without reaping, which is the intended best-effort degradation.
 """

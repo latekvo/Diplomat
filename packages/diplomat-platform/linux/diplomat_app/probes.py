@@ -64,9 +64,9 @@ class ProbeHealth:
     def silent(self) -> bool:
         """Has this probe failed for long enough to be worth saying out loud?
 
-        UNSUPPORTED never counts: a machine without tmux, or without the mesh add-on,
-        is an ordinary machine and warning about it every few minutes would be noise
-        that trains the operator to ignore the channel.
+        UNSUPPORTED never counts: a machine without tmux is an ordinary machine and
+        warning about it every few minutes would be noise that trains the operator to
+        ignore the channel.
         """
         return self.status == UNAVAILABLE and self.consecutive_failures >= _SILENT_AFTER
 
@@ -203,8 +203,7 @@ def live_agents(dump: Observation, slugs: set[str],
     The pre-registry identity mechanism, kept for the two questions a pid cannot
     answer: agents this applet has no record of at all
     (:func:`agentstate.synthesize_untracked`), and records whose agent has no pid to
-    match — a placement the mesh routed back here, where the NODE opened the terminal
-    and wrote the pid file into a run directory this applet never created.
+    match yet.
 
     It cannot tell two runs on one PR apart and it matches any session that merely
     mentions the number, which is why it decides nothing that a pid can decide.
@@ -234,9 +233,8 @@ def live_agents(dump: Observation, slugs: set[str],
     held_sessions: dict[str, str] = {}
     # Parsed here against THIS dump's columns rather than through
     # `autofix.agent_lines`, which reads the tty as the FIRST token of a
-    # `tty=,etime=,args=` dump. That is still right for its own caller (the mesh
-    # node's capacity hook, which spells `ps` the portable way), and was silently
-    # wrong here the moment this probe started asking for a pid column too: every
+    # `tty=,etime=,args=` dump. That was silently wrong here the moment this probe
+    # started asking for a pid column too: every
     # agent came back keyed to a tty that was really a pid, so no screen could ever
     # be found for one and no untracked agent ever gave its bay back.
     for line in dump.value.splitlines():
@@ -275,7 +273,7 @@ def adopt(records: list[RunRecord], sessions: dict[str, str],
     its PR, so it is asked of the service and interrupted like a run this applet
     spawned (:func:`service_session`). A released run keeps its agent's pid and is
     given the session at that pid instead: the PR's sighting prefers any other agent.
-    A run the mesh placed here is bound in its run directory instead
+    A tracked run is bound in its run directory instead
     (:meth:`_OpenCodeBackend.bind`)."""
     for r in records:
         if not r.untracked:
@@ -448,9 +446,9 @@ class _OpenCodeBackend:
         checkout at a time, so two sessions a second apart in the same directory is
         the ordinary case, not the pathological one.
 
-        A run with no port and no session is a 2.x run Diplomat did not spawn itself —
-        one the mesh placed here — or a 1.x one whose port could not be had. The first
-        is found through the process table instead: every 2.x TUI's argv names its
+        A run with no port and no session is a 2.x run whose session was not bound at
+        its spawn, or a 1.x one whose port could not be had. The first is found
+        through the process table instead: every 2.x TUI's argv names its
         session, and the one whose opening prompt is this run's staged prompt is this
         run's. Bound, it is probed, priced and interrupted as one spawned here is.
         """
@@ -559,40 +557,6 @@ def _staged_prompt(run_id: str) -> str | None:
 _BACKENDS = {runner.OPENCODE: _OpenCodeBackend, runner.HERMES: _HermesBackend}
 
 
-def mesh_claims(enabled: bool = True) -> Observation:
-    """The work keys currently claimed anywhere on the mesh.
-
-    UNSUPPORTED without the add-on installed or with the mesh switched off,
-    UNAVAILABLE when the node is installed but not answering - a peer's run must not
-    be retired because the local node is down, which is the difference the resolver
-    reads. Switched off comes first: a machine that ran a node once keeps its last
-    snapshot, and a node that was stopped on purpose is not a probe gone quiet.
-    """
-    if not enabled:
-        return Observation.unsupported("are unavailable (the mesh is switched off)")
-    try:
-        from szpontnet import statefile
-    except ImportError:
-        return Observation.unsupported("are unavailable (no mesh add-on installed)")
-    try:
-        state = statefile.read_state()
-    except OSError as exc:
-        return Observation.unavailable(f"are unreadable ({type(exc).__name__})")
-    # No snapshot at all means no node has ever run here, which is an ordinary machine
-    # rather than a broken one — UNSUPPORTED, so it is never reported as a probe that
-    # has gone quiet. A machine that HAS run one and is not running it now is a real
-    # gap, because a peer's run is retired by a released claim and a node we cannot ask
-    # must not be mistaken for one that released it.
-    if not state:
-        return Observation.unsupported("are unavailable (no mesh node has run here)")
-    if not statefile.node_running(state):
-        return Observation.unavailable("are unavailable (the mesh node is not running)")
-    claims = state.get("claims")
-    if not isinstance(claims, dict):
-        return Observation.unavailable("are missing from the node's snapshot")
-    return Observation.present(set(claims))
-
-
 def merged_prs(items: set[str]) -> Observation:
     """Which of these PRs (item keys) GitHub calls MERGED — the one terminal outcome
     that outranks anything a process is doing. Each is asked of its own repo.
@@ -653,8 +617,7 @@ def tokens_left(runners: Iterable[str] = ()) -> Observation:
 
 def gather(records: list[RunRecord], now: float, *,
            merged: Observation | None = None,
-           tokens: Observation | None = None,
-           mesh_enabled: bool = True) -> Evidence:
+           tokens: Observation | None = None) -> Evidence:
     """One pass of every cheap probe.
 
     ``merged`` and ``tokens`` are passed in rather than probed here: one costs a ``gh``
@@ -693,7 +656,6 @@ def gather(records: list[RunRecord], now: float, *,
         processes=table,
         sentinels=_note("sentinels", agentregistry.sentinels(records), now),
         tails=_note("screens", pane_tails(looked_up, now), now),
-        claims=_note("mesh claims", mesh_claims(mesh_enabled), now),
         merged_prs=merged or Observation.unavailable("have not been probed yet"),
         live_agents=scan,
         sessions=_note("agent sessions",

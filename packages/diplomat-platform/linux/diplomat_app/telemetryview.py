@@ -1,7 +1,7 @@
 """The Telemetry screen — what the monitors cost and what they still owe.
 
 The Linux face of the ledger (:mod:`telemetry`), and one of the panel's
-screens: Actions · Mesh · Comms · **Telemetry** · Settings. It reads
+screens. It reads
 ``~/.diplomat/pr-monitor/telemetry.jsonl``, folds it through the shared
 arithmetic, and draws nine figures:
 
@@ -59,7 +59,7 @@ from .store import Store
 from .widgets import GlyphLabel, card_host, muted, tint_bg
 
 #: Tints, read from the shared model so a figure reads the same colour on both
-#: platforms and beside its twin in the mesh duty table.
+#: platforms.
 _METRIC = {m["id"]: m for m in core.telemetry()["metrics"]}
 
 
@@ -638,7 +638,7 @@ def _day_label(epoch: float) -> str:
 
 class TelemetryView(QWidget):
     """The Telemetry screen. Emits ``done`` when the user is finished, like the
-    Mesh and Settings screens."""
+    Settings screen."""
 
     done = Signal()
 
@@ -978,8 +978,7 @@ class TelemetryView(QWidget):
         found = QLabel(
             f"{s.queued_count} unit{'' if s.queued_count == 1 else 's'} of work found "
             f"in this range, {s.started_count} started"
-            + (f", {s.remote_count} on mesh peers" if s.remote_count else "")
-            + ". Fixes stack on top of reviews, which take a free slot first, so the "
+            ". Fixes stack on top of reviews, which take a free slot first, so the "
               "top edge is everything the pool owes. Work picked up between two "
               "points on the chart never shows as a backlog — that is the chart "
               "working, not a gap."
@@ -1001,9 +1000,7 @@ class TelemetryView(QWidget):
 
         note = QLabel(
             "Counted where a run ENDED, so one that spanned two bars is a single "
-            "delivery in the bar it finished in. Work the mesh placed on a peer "
-            "counts here — it was delivered — though its cost is that peer's and "
-            "stays out of the per-task figures."
+            "delivery in the bar it finished in."
         )
         note.setWordWrap(True)
         note.setStyleSheet(muted(9))

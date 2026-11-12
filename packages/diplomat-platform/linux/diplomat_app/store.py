@@ -3,9 +3,8 @@
 A port of Store.swift. The tool catalog (titles, subtitles, colours, order) is
 loaded from the shared ``assets/catalog.json``; the row-mapping in ``items_for``
 is the same dense formatting the macOS panel renders. Settings persist via
-``QSettings`` (the Linux analogue of macOS UserDefaults) — except the repo root,
-which lives in the shared ``~/.diplomat/config.json`` (see :mod:`appconfig`) so a
-Qt-less mesh node can read it too.
+``QSettings`` (the Linux analogue of macOS UserDefaults) — except the handful that
+live in the shared ``~/.diplomat/config.json`` (see :mod:`appconfig`).
 """
 
 from __future__ import annotations
@@ -60,7 +59,6 @@ from . import (
     issues,
     probes,
     remotemachines,
-    szpont,
 )
 
 #: The review-request monitor's verb.
@@ -140,21 +138,6 @@ def app_settings() -> QSettings:
                      "diplomat", "diplomat")
 
 
-def mesh_switch(settings: QSettings) -> bool:
-    """Opt-in: whether this machine joins the LAN P2P mesh. Off by default so
-    Diplomat never opens a UDP/TCP node on the network unasked; the app auto-starts
-    a node only once the user enables it in Settings.
-
-    A machine with no SzpontNet installed is not on the mesh whatever its preference
-    says, and this is where that becomes true rather than at each of the dozen call
-    sites: every mesh-shaped path in the applet already asks this question, so
-    answering it honestly is what makes the add-on optional. The stored preference
-    is left alone — install the library and the machine rejoins the mesh it was
-    already opted into.
-    """
-    return szpont.AVAILABLE and settings.value("meshEnabled", False, bool)
-
-
 def _count(n: int, noun: str) -> str:
     """``3 files`` / ``1 file`` — the pluralisation two row builders share."""
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
@@ -231,49 +214,6 @@ def tool_by_id(tool_id: str) -> Tool | None:
     return next((t for t in tools() if t.id == tool_id), None)
 
 
-def stop_stray_node(exit_wait: float = 10.0) -> tuple[str, int, int, str]:
-    """Stop the node ``state.json`` names, once it proves over its control port that it
-    is that node: the pid and node id it reports live must be the file's. Nothing is
-    signalled by pid, so a pid the OS has since handed to another process, or a port a
-    node on another state dir has since bound, is left alone. ``stopped`` means the pid
-    is gone, not just that the node accepted the command. Blocking; needs SzpontNet.
-
-    Returns ``(outcome, pid, port, reason)``, ``outcome`` one of ``none`` (nothing
-    here answers as that node), ``stopped`` and ``stop-failed``. Twin of
-    ``MeshBridge.stopStrayNode``."""
-    from szpontnet import ctl, protocol, statefile
-
-    none = ("none", 0, 0, "")
-    file = statefile.read_state()
-    if file is None:
-        return none
-    pid, port, me = file.get("pid"), file.get("tcpPort"), file.get("self")
-    node_id = me.get("id") if isinstance(me, dict) else None
-    if not isinstance(port, int) or port <= 0 or not node_id:
-        return none
-    try:
-        # Refused without dialling when the file's pid is dead.
-        live = ctl.request(protocol.status_request(), timeout=5.0).get("state")
-    except ctl.CtlError:
-        return none
-    if not isinstance(live, dict) or live.get("pid") != pid:
-        return none
-    live_me = live.get("self")
-    if not isinstance(live_me, dict) or live_me.get("id") != node_id:
-        return none
-    try:
-        ctl.stop()
-    except ctl.CtlError as exc:
-        return ("stop-failed", pid, port, str(exc))
-    deadline = time.monotonic() + exit_wait
-    while statefile.node_running(file):
-        if time.monotonic() >= deadline:
-            return ("stop-failed", pid, port,
-                    f"still running {int(exit_wait)}s after it was asked to stop")
-        time.sleep(0.1)
-    return ("stopped", pid, port, "")
-
-
 class _InstallerGate:
     """One Node installer's actions (install, uninstall, start, restart). One runs at
     a time, the screens offer no other meanwhile, and a ``--check`` that overlaps one
@@ -318,10 +258,6 @@ class Store(QObject):
     machines_install_changed = Signal()
     # Emitted when the activity feed (audit.jsonl) or ban list snapshot changes.
     activity_changed = Signal()
-    # Emitted when the mesh topology snapshot (state.json) meaningfully changes.
-    # Live-ish (a 2s poll drives it), so it fires far more often than `changed`;
-    # the MeshView rebuilds in place from it, so the rebuild stays cheap.
-    mesh_changed = Signal()
     # Emitted when the self-update status/progress changes.
     update_changed = Signal()
     # Emitted after each PR auto-fix monitor poll (status pill, counts, poll error).
@@ -416,13 +352,6 @@ class Store(QObject):
         # "updating" a human-readable "step", "error" the failure reason.
         self.update_state: dict | None = None
 
-        # Live mesh topology (state.json snapshot; None until a node has run here)
-        # and the last control-edit error surfaced to the MeshView as a red line.
-        self.mesh_state: dict | None = None
-        self.mesh_error: str | None = None
-        # Render-only: force mesh_enabled on without persisting to real QSettings.
-        self._mesh_enabled_override: bool | None = None
-
         # PR auto-fix monitor: live-only runtime state (the toggles/counters persist
         # via QSettings below). Mirrors AutofixStatus.swift + the monitor's poll-error
         # + unaddressed-review signals.
@@ -487,7 +416,7 @@ class Store(QObject):
         # Queued work whose dispatch is under way: it has left the queue and its spawn
         # has not answered yet.
         #
-        # That span is seconds long — a `ps` scan, a mesh round-trip, a terminal — and
+        # That span is seconds long — a `ps` scan, a terminal — and
         # for all of it the task is neither queued nor yet an agent this panel counts.
         # It is held here so that it stays a ROW throughout, saying what the click just
         # did to it, rather than a gap where the operator's task used to be. In memory
@@ -543,9 +472,6 @@ class Store(QObject):
         # while holding it - reusing that non-reentrant lock here would self-deadlock.
         self._dispatching_prs: set[str] = set()
         self._dispatching_lock = threading.Lock()
-        # Work keys a peer's agent already owns, so the "claimed elsewhere" note is
-        # logged once per key rather than every poll (szpontnet-spec/docs/12).
-        self._mesh_suppressed_logged: set[str] = set()
 
         # Claude-API-error watcher: live-only runtime state (the toggle/count persist
         # via QSettings below). Mirrors the per-tty backoff + idle-confirmation maps in
@@ -741,8 +667,7 @@ class Store(QObject):
         ``DIPLOMAT_REPO`` outranks both. Stored raw (a typed ``~/…`` is expanded at
         use) so each row shows back exactly what was entered.
 
-        Not in QSettings: a mesh node's stdlib-only process reads it too
-        (:mod:`appconfig`)."""
+        Not in QSettings: the spawner reads it Qt-free (:mod:`appconfig`)."""
         return appconfig.repo_roots()
 
     @repo_root_paths.setter
@@ -812,8 +737,7 @@ class Store(QObject):
         """The checkouts besides the repo root that a wizard accepts a pasted link to
         (Settings → OTHER REPOS), as picked.
 
-        In QSettings rather than :mod:`appconfig`: only a wizard press reads it, and a
-        run on one of them is never routed over the mesh, so no node needs it."""
+        In QSettings rather than :mod:`appconfig`: only a wizard press reads it."""
         return [str(p) for p in (self._settings.value("otherRepoPaths", [], list) or [])]
 
     @other_repo_paths.setter
@@ -860,8 +784,8 @@ class Store(QObject):
     @property
     def agent_runner(self) -> str:
         """Which agent CLI a spawn runs (Settings → AGENT RUNNER). In
-        :mod:`appconfig` rather than QSettings for the same reason the repo root is:
-        a mesh node spawns agents from a process with no Qt to ask."""
+        :mod:`appconfig` rather than QSettings, as the repo root is: :mod:`runner`
+        reads it Qt-free."""
         return runner.selected()
 
     @agent_runner.setter
@@ -902,19 +826,6 @@ class Store(QObject):
     @settings_explain.setter
     def settings_explain(self, value: bool) -> None:
         self._settings.setValue("settingsExplain", bool(value))
-
-    @property
-    def mesh_enabled(self) -> bool:
-        """:func:`mesh_switch`, which the ``DIPLOMAT_AGENTS`` dump reads Store-free.
-        ``_mesh_enabled_override`` lets the headless render force it on without
-        writing (and persisting) to the real user QSettings."""
-        if self._mesh_enabled_override is not None:
-            return szpont.AVAILABLE and self._mesh_enabled_override
-        return mesh_switch(self._settings)
-
-    @mesh_enabled.setter
-    def mesh_enabled(self, value: bool) -> None:
-        self._settings.setValue("meshEnabled", bool(value))
 
     # MARK: PR auto-fix monitor settings
 
@@ -963,9 +874,8 @@ class Store(QObject):
         would rewrite the line under the cursor. :attr:`review_allowlist` is the
         parsed reader.
 
-        In QSettings rather than :mod:`appconfig` because it gates ORIGINATION - the
-        review monitor deciding to dispatch - and a mesh node never originates: a job
-        it runs was already allowed by the peer that found it."""
+        In QSettings rather than :mod:`appconfig`: only this applet's review monitor
+        reads it."""
         return str(self._settings.value("reviewAllowlistRaw", "", str) or "")
 
     @review_allowlist_raw.setter
@@ -989,9 +899,8 @@ class Store(QObject):
         next tick offers it again as soon as an agent finishes, and it waits
         visibly in the panel's Agent-tasks list meanwhile.
 
-        The second setting NOT in QSettings, for the same reason as the repo root:
-        a mesh peer can route work here, and the node that spawns it is a separate
-        Qt-less process (see :mod:`appconfig`)."""
+        The second setting NOT in QSettings: the ``DIPLOMAT_AGENTS`` dump reads it
+        Store-free (see :mod:`appconfig`)."""
         return appconfig.auto_task_limit()
 
     @auto_task_limit.setter
@@ -1072,7 +981,7 @@ class Store(QObject):
         """The operator's drag order for the deferred-work queue, by queue key.
 
         In QSettings, unlike the cap above it: the arrangement is this front-end's
-        view of its own list, and a mesh node has no queue to read it from. Pruned to
+        view of its own list. Pruned to
         what is still offered on every commit, so it can't grow past the work it
         describes."""
         primary = self._primary().slug
@@ -2057,73 +1966,6 @@ class Store(QObject):
 
     # MARK: monitor dispatch + tracking
 
-    def _route_via_mesh(self, job: "autofix.AgentJob") -> tuple[str | None, bool, str]:
-        """Route an auto job through the mesh (szpontnet-spec/docs/12): claim-gated
-        dispatch to the best-surplus node.
-
-        Every machine scans GitHub independently, but the mesh runs each unit of
-        work **once** — ``ctl.dispatch`` claims the work key and places the run on
-        the best node; the EXECUTOR holds that claim for its agent's lifetime, so a
-        concurrent or repeat scan is suppressed and a node death frees it for
-        failover. No node stands down on a duty ASSIGNMENT anymore — that deferred
-        to a node that might not be scanning at all, silently dropping the work.
-
-        Returns ``(verdict, ran_here, node)``. The verdict is ``"spawned"`` (the mesh
-        took it), ``VERDICT_STAND_DOWN`` (a peer's agent already owns it), or ``None``
-        to fall through to a LOCAL spawn — the fail-open path when the mesh is
-        unavailable, so a wedged node never drops the operator's work.
-
-        ``ran_here`` says the placement landed on THIS machine — the best node the
-        mesh could find was the one that asked. Such a run is local in every way the
-        applet cares about (it burns this device's cap and this device's quota) and
-        differs from a local spawn only in who opened the terminal. The node ids to
-        compare are already in hand: the dispatch result names its executor, and the
-        snapshot names us.
-
-        ``node`` is that executor's name, and it is what a peer-placed run is judged
-        by afterwards: no probe on this machine can see a process on that one, so the
-        run's liveness is the executor's origination claim and nothing else."""
-        if not self.mesh_enabled or not job.work_key:
-            return None, False, ""
-        if (job.checkout or review.repo_path()) != review.mesh_checkout():
-            return None, False, ""
-
-        from szpontnet import ctl, statefile
-
-        state = statefile.read_state()
-        if not state or not statefile.node_running(state):
-            return None, False, ""
-        split = split_item_key(job.item or "")
-        try:
-            results = ctl.dispatch(job.duty, job.prompt, work_key=job.work_key,
-                                   repo=split[0] if split else "")
-        except ctl.CtlError:
-            return None, False, ""  # node unreachable → fail-open to a local spawn
-        if not results:
-            return None, False, ""
-        statuses = [r.get("status") for r in results]
-        if statuses and all(s == "suppressed" for s in statuses):
-            self._log_mesh_suppressed(job.work_key, results)
-            return autofix.VERDICT_STAND_DOWN, False, ""
-        if all(s in ("spawned", "suppressed") for s in statuses):
-            me = (state.get("self") or {}).get("id")
-            spawned = [r for r in results if r.get("status") == "spawned"]
-            here = bool(me) and any(r.get("node") == me for r in spawned)
-            node = next((r.get("nodeName") or r.get("node") or "" for r in spawned), "")
-            return "spawned", here, node  # ran on the mesh (the node logs where)
-        return None, False, ""  # declined everywhere → fall through to a local spawn
-
-    def _log_mesh_suppressed(self, work_key: str, results: list) -> None:
-        """A peer's agent owns this work — note it once per key, not per poll."""
-        if work_key in self._mesh_suppressed_logged:
-            return
-        if len(self._mesh_suppressed_logged) > 256:
-            self._mesh_suppressed_logged.clear()
-        self._mesh_suppressed_logged.add(work_key)
-        owner = next((r.get("nodeName") for r in results if r.get("nodeName")), "a peer")
-        activity.log("auto", "mesh-suppressed",
-                     f"Work claimed by {owner} — running there")
-
     # MARK: - the one dispatch pipeline (buttons and monitors are triggers, not paths)
 
     @staticmethod
@@ -2148,9 +1990,9 @@ class Store(QObject):
 
         In-flight evidence is the tracked list OR a live ``claude`` visible in
         ``ps`` - the ground-truth floor that also catches agents whose local
-        bookkeeping was lost (applet restart) and peers' agents that landed on this
-        very machine. ``_dispatching_prs`` is held for the whole call so an
-        overlapping poll and a click can't race two spawns onto one PR.
+        bookkeeping was lost (applet restart). ``_dispatching_prs`` is held for the
+        whole call so an overlapping poll and a click can't race two spawns onto one
+        PR.
 
         An AUTO job is additionally capped at ``auto_task_limit`` concurrent
         agents on this device (``_auto_tasks_running``), held outright while its own
@@ -2161,10 +2003,6 @@ class Store(QObject):
         is subject to none of them. Every one of those refusals
         queues the job (:meth:`_stage_queued`), which is what the panel's
         Agent-tasks list shows as *queued*.
-
-        The cap counts an agent by where it RUNS, not by who dispatched it: work the
-        mesh places back on this machine is booked here (:meth:`_track_agent`) and
-        spends a slot, work it places on a peer spends that peer's.
 
         ``bypass_capacity`` is for the two callers that have already answered the
         capacity question themselves: the queue drain (which counted the free slot
@@ -2246,7 +2084,7 @@ class Store(QObject):
                 if budget.affordable:
                     self._budget_logged = False
             verdict = autofix.dispatch_decide(
-                source, banned, agent_on_pr, False, at_capacity,
+                source, banned, agent_on_pr, at_capacity,
                 not budget.affordable, outside_allowlist, low_disk,
             )
             if verdict == autofix.VERDICT_LOW_DISK:
@@ -2292,60 +2130,31 @@ class Store(QObject):
             # One string, so a retry cannot read as a first attempt in one of them.
             row_label = autofix.dispatch_label(source, job.label, attempt,
                                                requested=job.requested)
-            # An AUTO job on a live mesh runs on the best-surplus node via
-            # claim-gated dispatch (every machine scans; the mesh runs it once and
-            # dedups via the executor's claim). A manual spawn — or a wedged/absent
-            # mesh — runs and is tracked locally instead (fail-open). Both converge
-            # on the shared audit/counter tail below.
-            routed, ran_here, node = (
-                self._route_via_mesh(job) if source == autofix.SOURCE_AUTO
-                else (None, False, "")
-            )
-            if routed == autofix.VERDICT_STAND_DOWN:
-                return routed  # a peer's agent owns it (logged once by the router)
-            if routed == "spawned":
-                # Booked wherever the mesh put it. A placement back on this machine is
-                # one of the agents the cap counts, and must be booked before the next
-                # job of this poll asks how many are running — left unbooked, every
-                # dispatch of a burst measured the same empty machine and the cap held
-                # back nothing at all. A placement on a peer spends that peer's budget,
-                # but it is still work this device is waiting on, so it gets a row
-                # rather than leaving a gap.
-                self._track_mesh_run(job.pr_url, job.pr_number, source,
-                                     job.ledger_key, job.prompt, node=node,
-                                     work_key=job.work_key, here=ran_here,
-                                     label=row_label, kind=job.kind)
-            else:
-                # Registered whether or not it is PR-scoped. A sweep or an audit has
-                # nothing to dedup against, but it is still an agent this applet opened
-                # a window on, and a run with no record is a row the panel cannot draw
-                # and a directory nothing ever cleans up. What it costs depends on how
-                # it was dispatched, not on having a PR: the cap counts automatic runs
-                # and pricing follows the ledger key.
-                try:
-                    self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
-                                        source, job.ledger_key,
-                                        label=row_label, kind=job.kind,
-                                        checkout=job.checkout)
-                except review.SpawnError as exc:
-                    activity.log(source, "spawn-failed",
-                                 f"{job.label} failed to spawn: {exc}")
-                    self.refresh_activity()
-                    self._note_comms_spawn_failed(row_label, str(exc))
-                    return "failed"
-            token = (routed != "spawned" or ran_here) and bool(review.token_export())
+            # Registered whether or not it is PR-scoped. A sweep or an audit has
+            # nothing to dedup against, but it is still an agent this applet opened
+            # a window on, and a run with no record is a row the panel cannot draw
+            # and a directory nothing ever cleans up. What it costs depends on how
+            # it was dispatched, not on having a PR: the cap counts automatic runs
+            # and pricing follows the ledger key.
+            try:
+                self._spawn_tracked(job.prompt, job.pr_url, job.pr_number,
+                                    source, job.ledger_key,
+                                    label=row_label, kind=job.kind,
+                                    checkout=job.checkout)
+            except review.SpawnError as exc:
+                activity.log(source, "spawn-failed",
+                             f"{job.label} failed to spawn: {exc}")
+                self.refresh_activity()
+                self._note_comms_spawn_failed(row_label, str(exc))
+                return "failed"
+            token = bool(review.token_export())
             activity.log(source, job.audit_action,
                          row_label + (review.TOKEN_AUDIT_NOTE if token else ""))
             # The telemetry ledger tracks the MONITORS, so only an auto dispatch is
             # recorded — a wizard click is the operator's own doing and has no queue
-            # instant to be late against. A mesh placement on a PEER spends that
-            # peer's quota, so it is flagged and kept out of the per-task cost
-            # figures; one the mesh placed back here spent ours and is priced like
-            # any other agent that ran on this machine.
+            # instant to be late against.
             if source == autofix.SOURCE_AUTO and job.ledger_key:
-                telemetry.record_started(job.ledger_key,
-                                         remote=routed == "spawned" and not ran_here,
-                                         attempt=attempt)
+                telemetry.record_started(job.ledger_key, attempt=attempt)
             # Retries are re-dispatches, not new work handled - count once, and
             # only for the monitor (a manual run is the user's own action).
             if autofix.dispatch_bumps_counter(source, attempt):
@@ -2384,14 +2193,12 @@ class Store(QObject):
             ).build_prompt(),
             pr_url=url,
             pr_number=number,
-            duty="conflicts",
-            work_key=autofix.work_key(autofix.WORK_CONFLICTS, url, head_sha),
             ledger_key=autofix.ledger_key(autofix.WORK_CONFLICTS, url, head_sha),
             counter="conflicts",
             attempt_stamp=autofix.STAMP_CONFLICTING,
             checkout=root.path,
         )
-        return self.dispatch_agent(job, source, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
+        return self.dispatch_agent(job, source, attempt) == "spawned"
 
     def _dispatch_my_review(self, s, attempt: int = 1) -> bool:
         root = self._root_named(s.item)
@@ -2414,14 +2221,12 @@ class Store(QObject):
             ).build_prompt(),
             pr_url=s.url,
             pr_number=s.number,
-            duty="review",
-            work_key=autofix.work_key(autofix.WORK_REVIEW_REPLY, s.url, s.head_sha),
             ledger_key=autofix.ledger_key(autofix.WORK_REVIEW_REPLY, s.url, s.head_sha),
             counter="my_reviews",
             attempt_stamp=autofix.STAMP_UNRESOLVED_REVIEW,
             checkout=root.path,
         )
-        return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
+        return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) == "spawned"
 
     def _dispatch_review_request(self, r, attempt: int = 1) -> bool:
         reasons = self.verdict_policy.withhold_reasons(r.files, r.author_association)
@@ -2445,14 +2250,12 @@ class Store(QObject):
             pr_url=r.url,
             pr_number=r.number,
             author_login=r.author,
-            duty="review",
-            work_key=autofix.work_key(autofix.WORK_REVIEW_REQ, r.url, r.head_sha),
             ledger_key=autofix.ledger_key(autofix.WORK_REVIEW_REQ, r.url, r.head_sha),
             counter="review_requests",
             attempt_stamp=r.stamp,
             checkout=root.path,
         )
-        return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) in ("spawned", autofix.VERDICT_STAND_DOWN)
+        return self.dispatch_agent(job, autofix.SOURCE_AUTO, attempt) == "spawned"
 
     def _review_request_config(self, number: int, *, verdict: bool,
                                home: LocalRepo) -> review.ReviewConfig:
@@ -2519,8 +2322,7 @@ class Store(QObject):
                 agentstate.RunRecord(
                     run_id=agentregistry.new_run_id(now), dispatched_at=now,
                     pr_number=number, pr_url=url or "", kind=kind, label=label,
-                    source=source, placement=agentstate.PLACEMENT_LOCAL,
-                    ledger_key=ledger_key),
+                    source=source, ledger_key=ledger_key),
                 prompt)
         except OSError as exc:
             raise review.SpawnError(
@@ -2551,39 +2353,6 @@ class Store(QObject):
             # as FAILED once the spawn grace runs out.
             self._write_book(lambda: agentregistry.forget({record.run_id}))
             raise
-
-    def _track_mesh_run(self, url: str | None, number: int | None, source: str,
-                        ledger_key: str, prompt: str, node: str, work_key: str,
-                        here: bool, label: str = "", kind: str = "") -> None:
-        """Book a run the mesh placed, which this applet did not spawn itself.
-
-        There is no pid to record: the executor opened the terminal. A placement that
-        landed back HERE is still a process on this box, so it spends a bay and the
-        untracked scan will find it; one on a peer is judged only by the executor's
-        origination claim, which is the sole evidence that crosses the machine
-        boundary.
-
-        Which runner it is under is recorded for a landing HERE and only there. The
-        node spawns through the same seam this applet does (:func:`runner.agent_command`
-        by way of :mod:`szponthost`), so the answer is the same one and the run is
-        asked of the right store and priced by it. A run on a PEER is a process on
-        another machine: our stores hold nothing about it, and a runner written here
-        would point its probe at a session that is somebody else's.
-        """
-        now = time.time()
-        record = agentstate.RunRecord(
-            run_id=agentregistry.new_run_id(now), dispatched_at=now,
-            pr_number=number, pr_url=url or "", kind=kind, label=label,
-            source=source,
-            placement=(agentstate.PLACEMENT_MESH_HERE if here
-                       else agentstate.PLACEMENT_MESH_PEER),
-            node=node, work_key=work_key, ledger_key=ledger_key)
-        # The job already runs, so an unbooked one is reported rather than undone: the
-        # untracked scan still finds an agent here, and a peer's holds its claim.
-        if not self._write_book(lambda: agentregistry.create_run(record, prompt)):
-            return
-        if here:
-            agentregistry.stage_runner(record.run_id)
 
     def _auto_tasks_running(self) -> int:
         """How many bays of this device's cap are held right now — the number the cap
@@ -2642,7 +2411,7 @@ class Store(QObject):
     def running_tasks(self) -> list[autofix.RunningAgent]:
         """Every agent run the panel draws, in reading order.
 
-        Every one — both sources and both placements, tracked or not. The two
+        Every one — both sources, tracked or not. The two
         front-ends used to disagree about this list (this one hid panel spawns and
         drew untracked agents; macOS did the reverse), which meant the rows and the
         cap were answering different questions about the same machine.
@@ -2661,7 +2430,6 @@ class Store(QObject):
                 kind=r.kind,
                 tracked=not r.untracked,
                 started_at=0.0 if r.untracked else r.dispatched_at,
-                mesh=r.placement != agentstate.PLACEMENT_LOCAL,
                 state=s.state,
                 reason=s.reason,
                 item=r.item,
@@ -2926,7 +2694,7 @@ class Store(QObject):
         and a memo that matched on the key alone would hand the second ask the first
         one's prompt. And by its label and checkout, which follow the repo roots.
 
-        Carries no ``counter``, no ``work_key`` and no ``ledger_key``: no monitor owns
+        Carries no ``counter`` and no ``ledger_key``: no monitor owns
         it (so no toggle pauses it and no auto-handled counter counts it), and the
         telemetry ledger measures the monitors, not the operator."""
         roots = review.repo_roots()
@@ -2953,7 +2721,6 @@ class Store(QObject):
                 pr_url=entry.url if is_pr else None,
                 pr_number=entry.number if is_pr else None,
                 author_login=entry.author or None,
-                duty=entry.action,
                 # A root's checkout is wherever that root is now, not where it was asked.
                 checkout=checkout or where,
             ),
@@ -3032,8 +2799,7 @@ class Store(QObject):
     def _settle_requested(self, entry: autofix.QueuedTask, verdict: str) -> None:
         """Take an ask off the list once its dispatch has answered for it.
 
-        Started (here or on a peer that already owns the work) is the obvious one. A
-        BAN is the other: the agent would refuse to run for as long as the ban stands,
+        Started is the obvious one. A BAN is the other: the agent would refuse to run for as long as the ban stands,
         and a row nothing will ever start is a row that lies about what this machine is
         going to do. Every other verdict leaves the ask alone — an in-flight PR, a
         window with no budget left and a terminal that failed to open are all reasons
@@ -3043,7 +2809,7 @@ class Store(QObject):
         (``AgentJob.counter``)."""
         if not entry.job.requested:
             return
-        if verdict not in ("spawned", autofix.VERDICT_STAND_DOWN, autofix.VERDICT_BANNED):
+        if verdict not in ("spawned", autofix.VERDICT_BANNED):
             return
         self._forget_requested(entry.id)
 
@@ -3285,7 +3051,7 @@ class Store(QObject):
             # past here would leave a row that never resolves, over work nothing
             # re-offers — where the same raise costs only the poll it happened in.
             self._end_starting(entry.id)
-        if verdict in ("spawned", autofix.VERDICT_STAND_DOWN):
+        if verdict == "spawned":
             self._record_queued_attempt(entry)
             self._note_comms_started(entry)
         elif verdict == autofix.VERDICT_BANNED:
@@ -3314,18 +3080,17 @@ class Store(QObject):
         """The queued row's "execute now": start this task immediately, past the
         holds that are the machine's own judgement.
 
-        It stays AUTO work — same ``Auto · `` label, same auto-handled counter, mesh
-        routing still applies, and once running it occupies a slot like any other
-        automatic agent, so the rest of the queue waits behind it. Of the six
-        asymmetries the gate draws between a click and a monitor tick (capacity,
-        disk, budget, mesh, counters, label) this borrows exactly three: the cap, the
+        It stays AUTO work — same ``Auto · `` label, same auto-handled counter, and
+        once running it occupies a slot like any other automatic agent, so the rest
+        of the queue waits behind it. Of the five asymmetries the gate draws between
+        a click and a monitor tick (capacity, disk, budget, counters, label) this
+        borrows exactly three: the cap, the
         disk floor and the spending budget, which are the three the operator is
         overriding. All three are judgements of what this machine should do next,
         and the operator looking at the row knows something they do not.
 
         On a worker thread, like every other dispatch path: it assembles nothing but
-        it does spawn a terminal, and on a live mesh it waits on a node round-trip.
-        The row is moved into the starting band HERE, on the GUI thread, so it answers
+        it does spawn a terminal. The row is moved into the starting band HERE, on the GUI thread, so it answers
         the press in the same repaint rather than a worker's round-trip later."""
         entry = next((e for e in self.queued_tasks if e.id == task_id), None)
         if entry is None:
@@ -3340,10 +3105,9 @@ class Store(QObject):
     def _execute_queued_task(self, entry: autofix.QueuedTask) -> None:
         """One "execute now", start to finish.
 
-        The feed line is written from the OUTCOME, never ahead of it: this is an auto
-        job, so a mesh peer can own the work, the PR can have gained an agent since
-        the list was built, and the spawn can fail — announcing "started" before
-        asking would report a launch that never happened in all three."""
+        The feed line is written from the OUTCOME, never ahead of it: the PR can have
+        gained an agent since the list was built, and the spawn can fail — announcing
+        "started" before asking would report a launch that never happened in both."""
         verdict = self._run_queued_task(entry, forced=True)
         label = entry.job.label
         if verdict == "spawned":
@@ -3356,8 +3120,6 @@ class Store(QObject):
             self.error = f"{label} failed to spawn — see the activity log."
         elif verdict == autofix.VERDICT_IN_FLIGHT:
             self.error = f"{label}: an agent is already on this PR."
-        elif verdict == autofix.VERDICT_STAND_DOWN:
-            self.error = f"{label}: a mesh peer's agent already owns this work."
         elif verdict == autofix.VERDICT_BANNED:
             self.error = f"{label}: {self.ban_refusal(entry.job)}."
         elif verdict == autofix.VERDICT_NOT_ALLOWED:
@@ -3404,7 +3166,7 @@ class Store(QObject):
         now = time.time()
         records = agentregistry.adopt_pids(agentregistry.load())
         evidence = probes.gather(records, now, merged=self._merged_prs,
-                                 tokens=self._tokens_left, mesh_enabled=self.mesh_enabled)
+                                 tokens=self._tokens_left)
         t = agentstate.tick(records, evidence, now, self.auto_task_limit,
                             appconfig.run_deadline())
         with self._tick_lock:
@@ -3508,9 +3270,9 @@ class Store(QObject):
         self.refresh_activity()
 
     def _persist_run_changes(self, t: agentstate.Tick) -> None:
-        """Write back the four things a tick learns about a run: the pid its shell has
-        since written, the tty its process turned out to be on, when its mesh claim was
-        last seen, and how its screen compared to the one the last tick saw.
+        """Write back the three things a tick learns about a run: the pid its shell has
+        since written, the tty its process turned out to be on, and how its screen
+        compared to the one the last tick saw.
 
         The last of those is the only one measured ACROSS ticks rather than within one,
         so it is the only one that is worthless unless written down: unpersisted, every
@@ -3543,7 +3305,6 @@ class Store(QObject):
                     # The fresher one wins here, unlike the pid: a synthesized run's
                     # tty follows whichever agent its PR's sighting currently names.
                     tty=fresh.tty or r.tty,
-                    claim_seen_at=fresh.claim_seen_at or r.claim_seen_at,
                     quiet_digest=fresh.quiet_digest,
                     quiet_since=fresh.quiet_since,
                 ))
@@ -3629,9 +3390,9 @@ class Store(QObject):
             if session_id and session_id not in attached:
                 opencodeapi.interrupt(session_id)
         # Every pricing input comes out of the run directory, so all of them must be
-        # read before `forget` deletes it. A run the mesh placed leaves no sentinel
-        # here, and `record_completion` dates that one from its transcript; now() is
-        # only ever the instant this poll looked.
+        # read before `forget` deletes it. A run that left no sentinel is dated by
+        # `record_completion` from its transcript; now() is only ever the instant
+        # this poll looked.
         now = time.time()
         failed = {r.run_id for r in gone
                   if (v := t.states.get(r.run_id)) is not None
@@ -3763,8 +3524,7 @@ class Store(QObject):
         adopted has, and the run deadline is the first backstop that can end one of
         those: the stillness clock needs a pane tail to compare against, so before it
         every reapable run had a tty. Then the tty, for a session this applet did not
-        name — one spawned before names, and one the mesh placed here, whose terminal
-        the node opened.
+        name — one spawned before names, and an agent it did not spawn.
         """
         refused: set[str] = set()
         for record in t.reapable:
@@ -5063,15 +4823,14 @@ class Store(QObject):
                     kind=autofix.QUEUE_ISSUES_ACTION, audit_action=autofix.QUEUE_ISSUES_ACTION,
                     label=(f"Issues · {self._item_label(url, number)}"
                            f" · {issues.depth_by_id(cfg.depth)['title']}"),
-                    prompt=cfg.build_prompt(), duty=autofix.QUEUE_ISSUES_ACTION,
-                    checkout=root.path,
+                    prompt=cfg.build_prompt(), checkout=root.path,
                 ), autofix.SOURCE_PANEL)
             except Exception as exc:  # noqa: BLE001 — a core that cannot build the prompt
                 verdict = str(exc)
             finally:
                 with self._tracker_queue_lock:
                     self._goal_fixes_starting.discard(number)
-            if verdict in ("spawned", autofix.VERDICT_STAND_DOWN):
+            if verdict == "spawned":
                 self.edit_tracked_task_async(
                     {"op": "dispatched", "id": task_id, "work": [node["work"]]},
                     ("card", task_id, None))
@@ -5542,251 +5301,6 @@ class Store(QObject):
         # start two updates.
         self.update_state = {"phase": "updating", "step": "starting…"}
         self.update_changed.emit()
-        self.start_background(work)
-
-    # MARK: mesh (LAN P2P topology)
-
-    def refresh_mesh_state(self) -> None:
-        """Re-read the local node's public topology snapshot (state.json) and
-        signal on a *meaningful* change. Cheap file read — driven by the panel's
-        2s poll while it's visible. Never spawns a node.
-
-        `updatedAt` is stamped every write, so comparing whole snapshots would
-        fire every poll; we compare everything *but* `updatedAt`, then also allow
-        link-freshness drift (a peer's `lastSeenSecsAgo` creeping up) to trigger a
-        rebuild so the badges stay honest.
-        """
-        # ``AVAILABLE``, not ``mesh_enabled``: this also runs on the way *out* of
-        # the mesh — the refresh right after ctl.stop() is what clears the topology
-        # off the screen, and by then the preference is already off.
-        if not szpont.AVAILABLE:
-            return
-        # Render mode pins a synthetic topology via the override — never let a
-        # poll read (or clobber it with) the real ~/.diplomat/mesh/state.json.
-        if self._mesh_enabled_override is not None:
-            return
-
-        from szpontnet import statefile
-
-        new = statefile.read_state()
-        if self._mesh_meaningfully_changed(self.mesh_state, new):
-            self.mesh_state = new
-            self.mesh_changed.emit()
-
-    @staticmethod
-    def _mesh_meaningfully_changed(old: dict | None, new: dict | None) -> bool:
-        if old is None or new is None:
-            return old is not new  # None→dict or dict→None is always meaningful
-
-        # Fields that tick/drift every write on their own — dropping them keeps an
-        # idle mesh from firing a rebuild (which tears down an open combo the user is
-        # editing) twice a second. Link state (up/stale/down), the token STATE, and
-        # the real session/week quota percentages (integer-grained, move ~1/min at
-        # most) still live in the node dicts, so genuine transitions repaint; only
-        # the continuously-moving numbers (uptime, raw quota fraction) are ignored.
-        _tick_top = ("updatedAt", "pid")
-        _tick_node = ("lastSeenSecsAgo", "uptimeSecs", "tokensPct")
-
-        def strip(snap: dict) -> dict:
-            out = {k: v for k, v in snap.items() if k not in _tick_top}
-            me = out.get("self")
-            if isinstance(me, dict):
-                out["self"] = {k: v for k, v in me.items() if k not in _tick_node}
-            peers = out.get("peers")
-            if isinstance(peers, list):
-                out["peers"] = [
-                    {k: v for k, v in p.items() if k not in _tick_node} for p in peers
-                ]
-            return out
-
-        return strip(old) != strip(new)
-
-    def ensure_mesh_running_async(self) -> None:
-        """Start a background mesh node iff the user enabled the mesh and none is
-        already alive. No-ops when disabled — which includes having no SzpontNet
-        installed — so it's safe to call blindly. Never runs in a headless
-        render/test (guarded by mesh_enabled, which those paths leave off / stub)."""
-        if not self.mesh_enabled:
-            self.refresh_mesh_state()
-            return
-
-        from szpontnet import statefile
-
-        if statefile.node_running():
-            self.refresh_mesh_state()
-            return
-
-        def work() -> None:
-            import os
-            import subprocess
-            import sys
-
-            from . import RUNTIME_DIR
-
-            # The node is a separate process and gets no say in who its host is, so
-            # hand it both halves: the path to import the shared runtime and the
-            # library from, and the module that registers Diplomat behind it. Without
-            # the second the node comes up on the library's own defaults — its own
-            # state directory, no duty catalog of ours, no activity feed. This package
-            # is deliberately NOT on that path: a node needs the runtime, and nothing a
-            # Qt applet adds on top of it.
-            env = {
-                **os.environ,
-                "SZPONTNET_HOST": "diplomat_runtime.szponthost",
-                "PYTHONPATH": os.pathsep.join(
-                    [RUNTIME_DIR, szpont.package_dir(),
-                     os.environ.get("PYTHONPATH", "")]
-                ).rstrip(os.pathsep),
-            }
-            try:
-                subprocess.Popen(  # noqa: S603 — relaunch ourselves as a node
-                    [sys.executable, "-m", "szpontnet", "--daemon"],
-                    cwd=RUNTIME_DIR,
-                    env=env,
-                    start_new_session=True,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except OSError as exc:  # noqa: BLE001
-                self.mesh_error = f"could not start mesh node: {exc}"
-            self.refresh_mesh_state()
-
-        self.start_background(work)
-
-    def stop_mesh_async(self) -> None:
-        """Ask the local node to stop (used when the user disables the mesh)."""
-        szpont.require()
-        from szpontnet import ctl
-
-        def work() -> None:
-            try:
-                ctl.stop()
-            except ctl.CtlError:
-                pass  # already down — nothing to stop
-            self.refresh_mesh_state()
-
-        self.start_background(work)
-
-    def settle_mesh_on_launch(self) -> None:
-        """Start a node on launch if the user has opted into the mesh; with it off, stop
-        one an earlier instance left running. Twin of ``settleMeshOnLaunch`` in
-        Store.swift."""
-        if self.mesh_enabled:
-            self.ensure_mesh_running_async()
-        else:
-            self.stop_stray_node_async()
-
-    def stop_stray_node_async(self, exit_wait: float = 10.0) -> threading.Thread | None:
-        """Stop a node left running on this machine's mesh state dir while the mesh is
-        off, and say so in the activity feed. The node outlives the applet by design, so
-        one started by an earlier instance otherwise runs on unattended while the setting
-        reads off. Twin of ``stopStrayMeshNode`` in Store.swift."""
-        if not szpont.AVAILABLE:
-            return None
-
-        def work() -> None:
-            outcome, pid, port, reason = stop_stray_node(exit_wait)
-            if outcome == "stopped":
-                activity.log("panel", "mesh-stop",
-                             f"Mesh is off: stopped the node left running here "
-                             f"(pid {pid}, :{port})")
-            elif outcome == "stop-failed":
-                activity.log("panel", "warn",
-                             f"Mesh is off, but the node left running here "
-                             f"(pid {pid}, :{port}) did not stop: {reason}")
-            # The mesh may have been turned on while the node exited: the toggle saw it
-            # still alive and started none.
-            self.ensure_mesh_running_async()
-
-        return self.start_background(work)
-
-    def _mesh_command(self, run, what: str) -> None:
-        """Run one mesh control round-trip on a daemon thread, then settle the view:
-        a :class:`ctl.CtlError` becomes ``mesh_error`` (the mesh screen renders it)
-        and the topology is re-read so the edit shows immediately.
-
-        Every step is load-bearing, which is why the five commands below share this
-        routine rather than each spelling it out: without the refresh the screen keeps
-        showing pre-edit state, and without the error assignment a rejected edit looks
-        like it worked. Twin of ``meshCommand`` in Store.swift.
-
-        :func:`szpont.require` up front, here and in the two commands that don't
-        share this routine: a control round-trip is only reachable from a mesh
-        control, so with the add-on gone the caller has a bug rather than a
-        disabled feature, and it should read as one — not as a bare ImportError
-        from the line below.
-        """
-        szpont.require()
-        from szpontnet import ctl
-
-        def work() -> None:
-            try:
-                run(ctl)
-                self.mesh_error = None
-            except ctl.CtlError as exc:
-                self.mesh_error = str(exc)
-            self.refresh_mesh_state()
-
-        self.start_background(work, f"mesh-{what}")
-
-    def mesh_set_attr(self, node_id: str, attrs: dict) -> None:
-        """Edit a node's attributes (self or a peer, forwarded over the mesh)."""
-        self._mesh_command(lambda ctl: ctl.set_attr(node_id, attrs), "set-attr")
-
-    def mesh_trust(self, fingerprint: str, label: str = "") -> None:
-        """Mark a peer's device Personal — add its proven fingerprint to the local
-        trusted allowlist (so its mesh requests run as if triggered here)."""
-        self._mesh_command(lambda ctl: ctl.trust_device(fingerprint, label), "trust")
-
-    def mesh_untrust(self, fingerprint: str) -> None:
-        """Mark a peer's device Foreign — remove its fingerprint from the allowlist."""
-        self._mesh_command(lambda ctl: ctl.untrust_device(fingerprint), "untrust")
-
-    def mesh_unban(self, fingerprint: str, node_id: str = "") -> None:
-        """Lift a ban on a peer's device (it was marked banned after accepting a
-        SzpontRequest and failing to deliver it — or manually). It returns to
-        Foreign; promote it via the trust toggle if it is actually yours."""
-        self._mesh_command(lambda ctl: ctl.unban_device(fingerprint, node_id), "unban")
-
-    def mesh_set_overrides(self, duty: str, placement: dict) -> None:
-        """Edit one duty's mesh-wide placement (gossiped last-writer-wins)."""
-        self._mesh_command(lambda ctl: ctl.set_overrides(duty, placement), "set-overrides")
-
-    def mesh_set_wan(self, transport: str) -> None:
-        """Pick the mesh's preferred WAN transport (gossiped last-writer-wins, like a
-        placement edit). It orders the transports a WAN dial tries, so it lands on the
-        next dial each node makes — no live link is moved."""
-        self._mesh_command(lambda ctl: ctl.set_wan(transport), "set-wan")
-
-    def mesh_connect(self, address: str) -> None:
-        """Link to a peer's WAN id (an iroh endpoint id or an onion), reaching a
-        machine this one may never have met on the LAN. The address shape picks the
-        transport; the node dials in the background, so the peer appears in the
-        topology a poll or two later."""
-        self._mesh_command(lambda ctl: ctl.connect(address), "connect")
-
-    def mesh_dispatch(self, duty: str, prompt: str, done_callback=None,
-                      repo: str = "") -> None:
-        """Route a job working on ``repo`` (``owner/name``) through the mesh;
-        `done_callback(results, error)` fires on the worker thread (callers marshal
-        back to the UI thread themselves)."""
-        szpont.require()
-        from szpontnet import ctl
-
-        def work() -> None:
-            results: list = []
-            err: str | None = None
-            try:
-                results = ctl.dispatch(duty, prompt, repo=repo)
-                self.mesh_error = None
-            except ctl.CtlError as exc:
-                err = str(exc)
-                self.mesh_error = err
-            self.refresh_mesh_state()
-            if done_callback is not None:
-                done_callback(results, err)
-
         self.start_background(work)
 
     def count(self, tool_id: str) -> int:

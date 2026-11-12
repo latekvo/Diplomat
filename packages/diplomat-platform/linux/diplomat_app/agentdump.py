@@ -27,7 +27,7 @@ def run() -> int:
     # safe beside a live applet cannot spend the applet's reading.
     tokens = (probes.tokens_left(agentregistry.runners_of(records))
               if deadline is not None else None)
-    evidence = probes.gather(records, now, tokens=tokens, mesh_enabled=_mesh_enabled())
+    evidence = probes.gather(records, now, tokens=tokens)
     t = agentstate.tick(records, evidence, now, limit, deadline)
 
     print(f"registry: {agentregistry.runs_path()}")
@@ -39,7 +39,6 @@ def run() -> int:
     for name, obs in (("processes", evidence.processes),
                       ("sentinels", evidence.sentinels),
                       ("screens", evidence.tails),
-                      ("mesh claims", evidence.claims),
                       ("merged PRs", evidence.merged_prs),
                       ("agent scan", evidence.live_agents),
                       ("agent sessions", evidence.sessions),
@@ -63,10 +62,9 @@ def run() -> int:
         print("  (none)")
     for r, s in t.rows + undrawn:
         who = r.label or (f"#{r.pr_number}" if r.pr_number else r.run_id)
-        where = "" if r.placement == agentstate.PLACEMENT_LOCAL else f" [{r.placement}]"
         hidden = "" if r.run_id in drawn else " (not drawn)"
         age = f"{(now - r.dispatched_at) / 60:.0f}m" if not r.untracked else "?"
-        print(f"  {s.state:<14} {who}{where}{hidden}")
+        print(f"  {s.state:<14} {who}{hidden}")
         print(f"  {'':<14}   because: {s.reason}")
         print(f"  {'':<14}   run {r.run_id} · pid {r.pid or '-'} · tty {r.tty or '-'} "
               f"· {r.source} · up {age}")
@@ -108,9 +106,3 @@ def _deadline() -> float | None:
     same Store-free way the cap is."""
     from diplomat_runtime import appconfig
     return appconfig.run_deadline()
-
-
-def _mesh_enabled() -> bool:
-    """The mesh switch, from the setting the Store persists, without building one."""
-    from .store import app_settings, mesh_switch
-    return mesh_switch(app_settings())

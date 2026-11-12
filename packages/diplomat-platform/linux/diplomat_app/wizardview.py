@@ -26,7 +26,7 @@ from diplomat_runtime.prtarget import PRTarget
 from diplomat_runtime.review import SpecificAuthor
 from . import glyphs, widgets
 from .store import Store
-from .wizardbase import SpawnWizard, mesh_applicable, mismatch_warning
+from .wizardbase import SpawnWizard, mismatch_warning
 
 _TINT = "#FF2D78"  # pink, matching the macOS Review card
 
@@ -155,8 +155,6 @@ class WizardView(SpawnWizard):
         )
         root.addWidget(self.final_pass)
 
-        # Mesh routing (visible only while the LAN mesh is enabled + running),
-        # then SPAWN + its status line.
         self._add_dispatch_controls(root)
 
         root.addStretch(1)
@@ -231,8 +229,6 @@ class WizardView(SpawnWizard):
         self.reply.setVisible(cfg.can_reply_to_reviews)
         self.soft_approve.setVisible(cfg.can_soft_approve)
         self.final_pass.setVisible(cfg.can_final_pass)
-
-        self.mesh_row.set_applicable(mesh_applicable(cfg, is_specific))
 
         self._restyle_spawn()
 

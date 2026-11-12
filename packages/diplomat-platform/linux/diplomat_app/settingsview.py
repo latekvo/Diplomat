@@ -42,10 +42,7 @@ from diplomat_runtime import (
 )
 from diplomat_runtime.models import Fmt
 from diplomat_runtime.prref import LocalRepo
-from . import (
-    glyphs,
-    szpont,
-)
+from . import glyphs
 from .devicesview import AllocatorControls, allocator_pill, allocator_summary
 from .store import Store, tools
 from .widgets import (
@@ -66,7 +63,7 @@ from .widgets import (
 #: Card tints, mirroring the SF Symbol tints of the macOS twin.
 _BLUE, _PURPLE, _TEAL = "#0A84FF", "#BF5AF2", "#40C8E0"
 _ORANGE, _PINK, _INDIGO = "#FF9500", "#FF375F", "#5E5CE6"
-_BROWN, _CYAN, _MINT = "#AC8E68", "#32ADE6", "#00C7BE"
+_BROWN, _CYAN = "#AC8E68", "#32ADE6"
 _GREEN, _RED, _GREY = "#34C759", "#FF3B30", "#8E8E93"
 
 
@@ -130,7 +127,6 @@ class SettingsView(QWidget):
         right.addWidget(self._apiwatch_card())
         right.addWidget(self._comms_card())
         right.addWidget(self._allocator_card())
-        right.addWidget(self._mesh_card())
         right.addWidget(self._update_card())
         right.addStretch(1)
 
@@ -140,26 +136,18 @@ class SettingsView(QWidget):
         root.addStretch(1)
 
         store.allocator_changed.connect(self._refresh_allocator_ui)
-        store.mesh_changed.connect(self._refresh_mesh_ui)
         store.update_changed.connect(self._refresh_update_ui)
         store.autofix_changed.connect(self._refresh_autofix_ui)
         store.apiwatch_changed.connect(self._refresh_apiwatch_ui)
         store.comms_changed.connect(self._refresh_comms_ui)
         self._comms_tested.connect(self._on_comms_tested)
         self._refresh_allocator_ui()
-        self._refresh_mesh_ui()
         self._refresh_update_ui()
         self._refresh_autofix_ui()
         self._refresh_apiwatch_ui()
         self._apply_explain(store.settings_explain)
         store.refresh_allocator_install_async()
         store.refresh_update_status_async()
-        if store.mesh_enabled:
-            # Only touch the mesh state file when the user actually uses the mesh;
-            # otherwise this is a needless real-HOME read on every Settings open
-            # (and in non-mesh render/test paths). The Panel's own poll keeps
-            # mesh_state fresh while a node is live.
-            store.refresh_mesh_state()
 
     def _save(self, write) -> bool:
         """Run one write to the shared config file and say whether it landed."""
@@ -525,8 +513,7 @@ class SettingsView(QWidget):
                    "the agent works in that checkout. Each checkout answers for every "
                    "GitHub remote it has, so a fork clone takes links to both its "
                    "upstream and its origin. A bare "
-                   "#number still means the selected repo root, and a run here is never "
-                   "routed over the mesh: a peer would start it in its own repo root.",
+                   "#number still means the selected repo root.",
         )))
         self.store.local_repos_changed.connect(self._refresh_other_repos_ui)
         self._refresh_other_repos_ui()
@@ -742,8 +729,7 @@ class SettingsView(QWidget):
     def _limits_card(self) -> QWidget:
         """How much automatic work this machine may run, and whether it can afford
         it. Its own card, beside the monitors rather than under them: both rows
-        bound *every* automatic agent — the monitors and anything a mesh peer
-        routes here."""
+        bound *every* automatic agent, whichever monitor started it."""
         card, body, self._limits_pill = settings_card(glyphs.G_LIMITS, "LIMITS", _ORANGE)
 
         self._auto_limit = SliderSetting(
@@ -761,8 +747,8 @@ class SettingsView(QWidget):
         self._auto_limit.changed.connect(self._on_auto_limit_changed)
         body.addWidget(self._track(SettingRow(
             "Run at most", self._auto_limit, stacked=True,
-            detail="Across every monitor, a PR sweep's reviews, and anything a mesh "
-                   "peer routes here. The agent a wizard press opens on the spot is "
+            detail="Across every monitor and a PR sweep's reviews. The agent a wizard "
+                   "press opens on the spot is "
                    "outside the cap; a review it queues instead is inside. Work over "
                    "the cap waits in "
                    "Agent tasks, in the order you put it, and starts when a bay frees "
@@ -1406,71 +1392,6 @@ class SettingsView(QWidget):
         s = self.store.allocator_install
         self._alloc_pill.set_state(*allocator_pill(s))
         self._alloc_controls.refresh(s)
-
-    # MARK: mesh (LAN P2P duty coordination)
-
-    def _mesh_card(self) -> QWidget:
-        card, body, self._mesh_pill = settings_card(glyphs.G_MESH, "MESH (LAN P2P)", _MINT)
-        self._sw_mesh = SwitchToggle(_MINT)
-        self._sw_mesh.setChecked(self.store.mesh_enabled)
-        # Dead without the add-on: the mesh is SzpontNet, and there is no node for
-        # this switch to start. Shown-but-disabled rather than hidden, so the
-        # feature is discoverable and the pill can say what is missing.
-        self._sw_mesh.setEnabled(szpont.AVAILABLE)
-        self._sw_mesh.toggled.connect(self._on_mesh_toggled)
-        self._mesh_row = self._track(SettingRow(
-            "Coordinate duties with this LAN", self._sw_mesh,
-            summary=None
-                    if szpont.AVAILABLE else
-                    # The ⬡ screen and its header button are not built without the
-                    # add-on, so pointing at them would send the reader looking for a
-                    # control that isn't there.
-                    "Coordinating duties across machines is an add-on: it needs the "
-                    f"SzpontNet library, which is not installed (looked for "
-                    f"{szpont.package_dir()}). Everything else in Diplomat runs on "
-                    "this machine alone and is unaffected.",
-            detail="Routes reviews, conflict fixes and audits to whichever machine "
-                   "fits the policy. Runs a small peer-to-peer node that discovers the "
-                   "other Diplomat machines on your LAN (UDP beacons); placement is "
-                   "surplus-first by default, token- and platform-aware. Configure the "
-                   "whole mesh from the ⬡ Mesh screen (the ⬡ button in the panel "
-                   "header). Off by default; no node opens on the network until you "
-                   "enable it here."
-                   if szpont.AVAILABLE else None,
-        ))
-        body.addWidget(self._mesh_row)
-        return card
-
-    def _on_mesh_toggled(self, on: bool) -> None:
-        self.store.mesh_enabled = on
-        if on:
-            self.store.ensure_mesh_running_async()
-        else:
-            self.store.stop_mesh_async()
-        self._refresh_mesh_ui()
-
-    def _refresh_mesh_ui(self) -> None:
-        # Before ``mesh_enabled``, which is also False here — the disabled switch
-        # needs a reason beside it, and "off" reads as a choice the user made.
-        if not szpont.AVAILABLE:
-            self._mesh_pill.set_state("add-on missing", _GREY)
-            return
-        if not self.store.mesh_enabled:
-            self._mesh_pill.set_state("off", _GREY)
-            return
-
-        from szpontnet import statefile
-
-        state = self.store.mesh_state
-        if statefile.node_running(state):
-            peers = len((state or {}).get("peers", []))
-            self._mesh_pill.set_state(
-                f"{peers} peer" + ("" if peers == 1 else "s"), _GREEN
-            )
-        else:
-            self._mesh_pill.set_state(
-                "starting…" if state is None else "node not running", _ORANGE
-            )
 
     # MARK: applet update
 

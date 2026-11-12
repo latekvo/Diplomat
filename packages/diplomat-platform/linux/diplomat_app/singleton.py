@@ -67,8 +67,7 @@ def _pidfile() -> Path:
 def _cmdline_is_applet_gui(tokens: list[str]) -> bool:
     """Whether an argv is a GUI launch of this applet: ``python -m <module>``
     where <module> is *exactly* an applet module. The exact match excludes
-    submodules (the mesh node runs as ``python -m szpontnet``, a separate long-lived
-    process that must never be terminated here)."""
+    submodules, which are not GUI launches."""
     return procscan.module_arg(tokens) in _APPLET_MODULES
 
 
