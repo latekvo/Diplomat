@@ -20,7 +20,8 @@ from pathlib import Path
 
 import pytest
 from test_autofix import _spawn_recorder, store  # noqa: F401 — fixture
-from test_comms_core import _stub_claude, slack  # noqa: F401 — fixture
+from test_comms_core import _first_tick, _Slack, _stub_claude, slack  # noqa: F401 — fixture
+from test_comms_core import _message as _slack_message
 
 from diplomat_app import bans, issues
 from diplomat_app.store import Store, app_settings
@@ -593,6 +594,36 @@ def _in(repo: str, action: str, number: int) -> dict:
 def test_the_tick_watches_every_root_primary_first(comms_store, monkeypatch):
     _two_roots(monkeypatch)
     assert comms_store.comms_settings_payload()["repos"] == [PRIMARY, "acme/Widget"]
+
+
+#: A GitLab root in a nested namespace.
+THIRD = LocalRepo("group/sub", "third", "/src/third", host="gitlab.example.com")
+
+
+@needs_core
+def test_a_merge_request_and_an_issue_of_one_number_on_a_gitlab_root_are_two_asks(
+        tmp_path, slack, comms_store, monkeypatch):  # noqa: F811 — the stub Slack
+    """The Store's settings ticked through the real binary: GitLab numbers merge requests
+    and issues apart, so a review of !12 and a fix of #12 there are two items."""
+    owner, repo = PRIMARY.split("/")
+    monkeypatch.setattr(review, "repo_roots",
+                        lambda: [LocalRepo(owner, repo, "/src/primary"), THIRD])
+    monkeypatch.setenv("DIPLOMAT_CLAUDE", str(_stub_claude(tmp_path, {
+        "action": "review", "summary": "Review !12, fix #12", "reason": "two asks",
+        "targets": [{"action": "review", "number": 12, "repo": "group/sub/third"},
+                    {"action": "fix_issue", "number": 12, "repo": "group/sub/third"}]})))
+    comms_store.comms_flush_after_secs = 0
+    settings = comms_store.comms_settings_payload()
+    assert settings["gitlabHosts"] == {"group/sub/third": "gitlab.example.com"}
+
+    secs = _first_tick(settings)
+    _Slack.messages = [_slack_message(f"{secs + 5}.000100", "UALICE",
+                                      "in third, review !12 and fix #12 please")]
+    result = comms.tick(settings)
+    assert result["error"] is None
+    assert [i["decision"]["targets"] for i in result["items"]] == [
+        [{"action": "fix_issue", "number": 12, "repo": "group/sub/third"}],
+        [{"action": "review", "number": 12, "repo": "group/sub/third"}]]
 
 
 @needs_core

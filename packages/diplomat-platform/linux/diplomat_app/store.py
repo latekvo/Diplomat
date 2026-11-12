@@ -4134,13 +4134,19 @@ class Store(QObject):
 
     def comms_settings_payload(self) -> dict:
         """The ``CommsSettings`` JSON a tick and a plan are given."""
+        roots = review.repo_roots()
+        gitlab_hosts: dict[str, str] = {}
+        for r in roots:
+            if r.is_gitlab:
+                gitlab_hosts.setdefault(r.slug, r.host)
         return {
             "keywordsRaw": self.comms_keywords_raw,
             "senderAllowlistRaw": self.comms_sender_allowlist_raw,
             "model": self.comms_model,
             "batchSize": self.comms_batch_size,
             "flushAfterSecs": self.comms_flush_after_secs,
-            "repos": [r.slug for r in review.repo_roots()],
+            "repos": [r.slug for r in roots],
+            "gitlabHosts": gitlab_hosts,
             "login": self.effective_me,
             "bannedSenders": bans.slack_ids(bans.read()),
         }
