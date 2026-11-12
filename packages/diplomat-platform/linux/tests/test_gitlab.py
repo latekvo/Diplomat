@@ -8,6 +8,7 @@ and which link names the item."""
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -41,7 +42,8 @@ def _review_requests(env: dict, lookup) -> dict:
 ADAPTERS = {
     "prs": gitlab.prs, "monitor-prs": gitlab.monitor_prs, "closed-prs": gitlab.closed_prs,
     **{name: lambda env: _review_requests(env, _unasked)
-       for name in ("review-requests", "review-requests-nofiles", "review-requests-window")},
+       for name in ("review-requests", "review-requests-nofiles", "review-requests-window",
+                    "review-requests-left-review", "review-requests-dst")},
     "issues": lambda env: gitlab.issues(env, _unasked), "mr": gitlab.mr,
 }
 #: Fixtures whose member page has more: ``{answer, members}`` in, where ``members`` is
@@ -360,9 +362,48 @@ def test_a_request_older_than_the_activity_window_is_answered_inside_it(monkeypa
 
     FakeGlab(monkeypatch, review_requests=_fixture("review-requests-window", "input"))
     answered, silent = autofixmonitor.fetch_review_requests(LAB, "carol")
-    assert answered.requested_at == "2026-11-06T09:00:00+01:00"
+    assert answered.requested_at == "2026-11-06T08:00:00Z"
     assert not answered.owe_review
-    assert silent.requested_at == "2026-11-02T08:00:00+01:00" and silent.owe_review
+    assert silent.requested_at == "2026-11-02T07:00:00Z" and silent.owe_review
+
+
+def test_a_review_left_as_comments_alone_answers_the_request(monkeypatch):
+    """GitLab's "left review comments" is my review, after my own comments have left the
+    comment window."""
+    from diplomat_app import autofixmonitor
+
+    FakeGlab(monkeypatch, review_requests=_fixture("review-requests-left-review", "input"))
+    (request,) = autofixmonitor.fetch_review_requests(LAB, "carol")
+    assert request.my_last_comment_at is None
+    assert request.my_last_review_at == "2026-11-10T09:00:00Z"
+    assert not request.owe_review
+
+
+def test_times_across_a_clock_change_compare_in_utc(monkeypatch):
+    """An approval at 02:10+01:00 follows a request at 02:40+02:00, and the window's
+    oldest note is the one at 02:50+02:00."""
+    from diplomat_app import autofixmonitor
+
+    FakeGlab(monkeypatch, review_requests=_fixture("review-requests-dst", "input"))
+    answered, unanswered = autofixmonitor.fetch_review_requests(LAB, "carol")
+    assert (answered.requested_at, answered.my_last_review_at) == ("2026-10-25T00:40:00Z",
+                                                                   "2026-10-25T01:10:00Z")
+    assert not answered.owe_review
+    assert unanswered.requested_at == "2026-10-25T00:50:00Z" and unanswered.owe_review
+
+
+def test_an_unreadable_time_fails_the_read():
+    env = _fixture("review-requests-dst", "input")
+    env["data"]["project"]["mergeRequests"]["nodes"][0]["comments"]["nodes"][0][
+        "createdAt"] = "yesterday"
+    with pytest.raises(gh.GHError, match="GitLab time yesterday is unreadable"):
+        _review_requests(env, _unasked)
+
+
+def test_the_panel_reads_a_page_of_merge_requests_as_long_as_githubs_of_pull_requests():
+    page = re.compile(r"(?:pullRequests\(states: OPEN|mergeRequests\(state: opened), first: (\d+)")
+    assert page.search(core.read_graphql("gitlab-prs"))[1] \
+        == page.search(core.read_graphql("prs"))[1]
 
 
 def test_the_closed_read_keys_merge_requests_by_the_whole_namespace(nothing_closed,

@@ -10,7 +10,10 @@ GitLab has no author association, so a project member reads as ``MEMBER`` and an
 else as ``NONE``; an author past a full member page is asked of ``lookup``, which reads
 their ids off the REST ``members/all`` (:func:`member_paths`). GitLab records a review
 request, an approval, a requested change and a ready-for-review as system ("activity")
-notes only, so those are read off note bodies.
+notes only, so those are read off note bodies; publishing a review without approving is
+the note "left review comments", GitHub's COMMENTED review. Every time is given in UTC as
+GitHub gives it (``2026-10-25T00:40:00Z``), where GitLab gives the instance's offset, so
+times compare as strings.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from __future__ import annotations
 import re
 import urllib.parse
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from .gh import GHError
 
@@ -29,7 +33,7 @@ _UNDECIDED = {"UNCHECKED", "CHECKING", "PREPARING"}
 _READY = "marked this merge request as **ready**"
 _REQUESTED = "requested review from "
 _UNREQUESTED = " and removed review request"
-_REVIEWED = ("approved this merge request", "requested changes")
+_REVIEWED = ("approved this merge request", "requested changes", "left review comments")
 _MENTION = re.compile(r"@([\w.-]+)")
 _MR_STATES = {"opened": "OPEN", "locked": "OPEN", "closed": "CLOSED", "merged": "MERGED"}
 _USER_GID = re.compile(r"gid://gitlab/User/([0-9]+)")
@@ -46,6 +50,16 @@ def _project(env: dict) -> dict:
 
 def _nodes(conn: dict | None) -> list[dict]:
     return [n for n in ((conn or {}).get("nodes") or []) if n]
+
+
+def _utc(at: str | None) -> str | None:
+    if at is None:
+        return None
+    try:
+        when = datetime.fromisoformat(at.replace("Z", "+00:00"))
+    except ValueError:
+        raise GHError(f"GitLab time {at} is unreadable") from None
+    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _login(user: dict | None) -> dict | None:
@@ -141,8 +155,8 @@ def _files(mr: dict) -> dict:
 
 def _ready_events(mr: dict) -> dict:
     ready = [n for n in _nodes(mr.get("notes")) if (n.get("body") or "").startswith(_READY)]
-    return {"nodes": [{"__typename": "ReadyForReviewEvent", "createdAt": ready[-1]["createdAt"]}]
-            if ready else []}
+    return {"nodes": [{"__typename": "ReadyForReviewEvent",
+                       "createdAt": _utc(ready[-1]["createdAt"])}] if ready else []}
 
 
 def prs(env: dict) -> dict:
@@ -153,7 +167,7 @@ def prs(env: dict) -> dict:
         "title": mr.get("title"),
         "url": mr.get("webUrl"),
         "isDraft": bool(mr.get("draft")),
-        "createdAt": mr.get("createdAt"),
+        "createdAt": _utc(mr.get("createdAt")),
         "reviewDecision": _review_decision(mr),
         "mergeable": _mergeable(mr),
         "author": _login(mr.get("author")),
@@ -196,7 +210,7 @@ def _requests(notes: list[dict]) -> list[dict]:
         if not body.startswith(_REQUESTED):
             continue
         added = body.split(_UNREQUESTED, 1)[0]
-        out += [{"createdAt": n.get("createdAt"),
+        out += [{"createdAt": _utc(n.get("createdAt")),
                  "requestedReviewer": {"__typename": "User", "login": login}}
                 for login in _MENTION.findall(added)]
     return out
@@ -208,8 +222,8 @@ def _request_of(reviewer: str, events: list[dict], mr: dict, activity: list[dict
     window's oldest note, or the merge request when the window is empty."""
     if any(e["requestedReviewer"]["login"].lower() == reviewer.lower() for e in events):
         return []
-    times = [n["createdAt"] for n in activity if n.get("createdAt")]
-    return [{"createdAt": min(times) if times else mr.get("createdAt"),
+    times = [_utc(n["createdAt"]) for n in activity if n.get("createdAt")]
+    return [{"createdAt": min(times) if times else _utc(mr.get("createdAt")),
              "requestedReviewer": {"__typename": "User", "login": reviewer}}]
 
 
@@ -232,10 +246,10 @@ def review_requests(env: dict, reviewer: str, lookup: Lookup) -> dict:
             "headRefOid": mr.get("diffHeadSha"),
             "timelineItems": {"nodes": _request_of(reviewer, events, mr, activity) + events},
             "reviews": {"nodes": [
-                {"author": _login(n.get("author")), "submittedAt": n.get("createdAt")}
+                {"author": _login(n.get("author")), "submittedAt": _utc(n.get("createdAt"))}
                 for n in activity if (n.get("body") or "").startswith(_REVIEWED)]},
             "comments": {"nodes": [
-                {"author": _login(n.get("author")), "createdAt": n.get("createdAt")}
+                {"author": _login(n.get("author")), "createdAt": _utc(n.get("createdAt"))}
                 for n in _nodes(mr.get("comments"))]},
         }
         if "diffStats" in mr:
@@ -254,8 +268,8 @@ def issues(env: dict, lookup: Lookup) -> dict:
         "number": int(i["iid"]),
         "title": i.get("title"),
         "url": i.get("webUrl"),
-        "createdAt": i.get("createdAt"),
-        "updatedAt": i.get("updatedAt"),
+        "createdAt": _utc(i.get("createdAt")),
+        "updatedAt": _utc(i.get("updatedAt")),
         "authorAssociation": _association(i.get("author"), members),
         "author": _login(i.get("author")),
         "assignees": {"nodes": [{"login": a["username"]} for a in _nodes(i.get("assignees"))]},
