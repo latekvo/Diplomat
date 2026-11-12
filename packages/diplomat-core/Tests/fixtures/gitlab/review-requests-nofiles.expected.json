@@ -37,7 +37,15 @@
           "authorAssociation": "NONE",
           "headRefOid": "8888888888888888888888888888888888888888",
           "timelineItems": {
-            "nodes": []
+            "nodes": [
+              {
+                "createdAt": "2026-11-01T08:00:00+01:00",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              }
+            ]
           },
           "reviews": {
             "nodes": []

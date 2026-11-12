@@ -22,6 +22,7 @@
             "title": "Files not asked",
             "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/22",
             "diffHeadSha": "7777777777777777777777777777777777777777",
+            "createdAt": "2026-11-05T08:00:00+01:00",
             "author": {
               "username": "Alice"
             },
@@ -45,6 +46,7 @@
             "title": "Deleted author",
             "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/19",
             "diffHeadSha": "8888888888888888888888888888888888888888",
+            "createdAt": "2026-11-01T08:00:00+01:00",
             "author": null,
             "activity": {
               "nodes": []

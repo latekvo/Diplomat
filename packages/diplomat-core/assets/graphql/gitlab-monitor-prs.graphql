@@ -6,10 +6,10 @@ query($path: ID!, $author: String!) {
       nodes {
         iid title webUrl draft diffHeadSha conflicts detailedMergeStatus approved
         reviewers { nodes { username mergeRequestInteraction { reviewState } } }
-        discussions(first: 40) {
+        discussions(first: 100) {
           nodes {
             resolvable resolved
-            notes(first: 20) { nodes { author { username } body userPermissions { resolveNote } } }
+            notes(last: 20) { nodes { author { username } body userPermissions { resolveNote } } }
           }
         }
       }

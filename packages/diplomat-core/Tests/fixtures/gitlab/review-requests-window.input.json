@@ -1,0 +1,80 @@
+{
+  "data": {
+    "project": {
+      "projectMembers": {
+        "nodes": [
+          {
+            "user": {
+              "username": "alice"
+            }
+          }
+        ]
+      },
+      "mergeRequests": {
+        "nodes": [
+          {
+            "iid": "31",
+            "title": "Requested before the window",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/31",
+            "diffHeadSha": "7777777777777777777777777777777777777777",
+            "createdAt": "2026-10-01T09:00:00+01:00",
+            "author": {
+              "username": "alice"
+            },
+            "activity": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-06T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-06T10:00:00+01:00",
+                  "body": "requested review from @dave"
+                },
+                {
+                  "author": {
+                    "username": "dave"
+                  },
+                  "createdAt": "2026-11-06T11:00:00+01:00",
+                  "body": "approved this merge request"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "carol"
+                  },
+                  "createdAt": "2026-11-06T12:00:00+01:00"
+                }
+              ]
+            }
+          },
+          {
+            "iid": "30",
+            "title": "No activity at all",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/30",
+            "diffHeadSha": "8888888888888888888888888888888888888888",
+            "createdAt": "2026-11-02T08:00:00+01:00",
+            "author": {
+              "username": "zed"
+            },
+            "activity": {
+              "nodes": []
+            },
+            "comments": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}
