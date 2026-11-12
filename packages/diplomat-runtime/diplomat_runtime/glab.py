@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import time
 
-from . import core
+from . import core, gitlab
 from .gh import GHError
 from .prref import LocalRepo
 
@@ -64,7 +64,11 @@ def graphql(query_name: str, host: str, variables: dict[str, str] | None = None,
     A query asking for ``project(fullPath: $path)`` that answers ``null`` raises: a
     project missing or hidden from this login is an unreadable root, never one with
     nothing open. Retries once on failure, like :func:`gh.graphql`."""
-    query = core.read_graphql(query_name)
+    return _ask(core.read_graphql(query_name), host, variables, typed_variables)
+
+
+def _ask(query: str, host: str, variables: dict[str, str] | None,
+         typed_variables: dict[str, str] | None) -> dict:
     args = ["api", "--hostname", host, "graphql", "-f", f"query={query}"]
     for k, v in (variables or {}).items():
         args += ["-f", f"{k}={v}"]
@@ -96,3 +100,14 @@ def project(query_name: str, root: LocalRepo, variables: dict[str, str] | None =
     """:func:`graphql` of a query about ``root``'s project, which is its ``$path``."""
     return graphql(query_name, root.host, {"path": root.slug, **(variables or {})},
                    typed_variables)
+
+
+def members(root: LocalRepo, usernames: list[str]) -> set[str]:
+    """The members of ``root``'s project among ``usernames``, lowercased: one
+    ``gitlab-member-search`` query per chunk of them (:func:`gitlab.member_searches`),
+    any failure raising as a failed read does."""
+    found: set[str] = set()
+    for query, variables in gitlab.member_searches(usernames):
+        env = _ask(query, root.host, {"path": root.slug, **variables}, None)
+        found |= gitlab.searched_members(env, variables)
+    return found

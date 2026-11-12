@@ -181,7 +181,8 @@ def fetch_review_requests(
     typed = {"withFiles": "true" if include_files else "false"}
     if root.is_gitlab:
         env = gitlab.review_requests(
-            glab.project("gitlab-review-requests", root, {"reviewer": me}, typed), me)
+            glab.project("gitlab-review-requests", root, {"reviewer": me}, typed), me,
+            lambda names: glab.members(root, names))
     else:
         q = f"repo:{root.slug} review-requested:{me} is:pr is:open"
         env = gh.graphql("review-requests", variables={"q": q}, typed_variables=typed)
