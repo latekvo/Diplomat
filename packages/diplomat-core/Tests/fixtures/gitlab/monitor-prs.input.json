@@ -29,13 +29,61 @@
                         "body": "First.",
                         "userPermissions": {
                           "resolveNote": true
-                        }
+                        },
+                        "system": false
                       },
                       {
                         "author": {
                           "username": "bob"
                         },
                         "body": "Still wrong.",
+                        "userPermissions": {
+                          "resolveNote": true
+                        },
+                        "system": false
+                      }
+                    ]
+                  }
+                },
+                {
+                  "resolvable": true,
+                  "resolved": false,
+                  "notes": {
+                    "nodes": [
+                      {
+                        "system": false,
+                        "author": {
+                          "username": "bob"
+                        },
+                        "body": "This leaks the handle.",
+                        "userPermissions": {
+                          "resolveNote": true
+                        }
+                      },
+                      {
+                        "system": true,
+                        "author": {
+                          "username": "alice"
+                        },
+                        "body": "changed this line in [version 2 of the diff](/group/sub/proj/-/merge_requests/12/diffs?diff_id=2&start_sha=1)",
+                        "userPermissions": {
+                          "resolveNote": false
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "resolvable": true,
+                  "resolved": false,
+                  "notes": {
+                    "nodes": [
+                      {
+                        "system": true,
+                        "author": {
+                          "username": "alice"
+                        },
+                        "body": "changed this line in [version 2 of the diff](/group/sub/proj/-/merge_requests/12/diffs?diff_id=2&start_sha=1)",
                         "userPermissions": {
                           "resolveNote": true
                         }
@@ -55,7 +103,8 @@
                         "body": "Out of my hands.",
                         "userPermissions": {
                           "resolveNote": false
-                        }
+                        },
+                        "system": false
                       }
                     ]
                   }
@@ -72,7 +121,8 @@
                         "body": "changed the description",
                         "userPermissions": {
                           "resolveNote": true
-                        }
+                        },
+                        "system": false
                       }
                     ]
                   }
@@ -113,7 +163,8 @@
                         "body": "Fine.",
                         "userPermissions": {
                           "resolveNote": true
-                        }
+                        },
+                        "system": false
                       }
                     ]
                   }
@@ -158,7 +209,8 @@
                         "body": "A deleted user asked.",
                         "userPermissions": {
                           "resolveNote": true
-                        }
+                        },
+                        "system": false
                       }
                     ]
                   }

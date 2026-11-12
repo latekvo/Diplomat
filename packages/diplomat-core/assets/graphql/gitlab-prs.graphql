@@ -1,5 +1,6 @@
 # A GitLab project's open merge requests for the panel: the GitLab twin of prs.graphql,
-# adapted into its shape (number = iid). System notes carry the ready-for-review time.
+# adapted into its shape (number = iid). System notes carry the ready-for-review time; in a
+# discussion they are not comments.
 query($path: ID!) {
   project(fullPath: $path) {
     mergeRequests(state: opened, first: 50, sort: CREATED_DESC) {
@@ -11,7 +12,7 @@ query($path: ID!) {
         discussions(first: 100) {
           nodes {
             resolvable resolved
-            notes(last: 20) { nodes { author { username } body userPermissions { resolveNote } } }
+            notes(last: 20) { nodes { system author { username } body userPermissions { resolveNote } } }
           }
         }
         notes(last: 30, filter: ONLY_ACTIVITY) { nodes { createdAt body } }
