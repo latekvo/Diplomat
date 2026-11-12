@@ -184,11 +184,15 @@ public struct ReviewConfig: Codable, Equatable {
     /// `targetRepo` came from, else the home's, or nil.
     public var checkout: String? { (isSinglePR ? prRef.repo?.path : nil) ?? home?.path }
 
+    /// The repo `targetRepo` names, nil for `assets/config.json`'s.
+    public var targetLocal: PRRef.LocalRepo? { (isSinglePR ? prRef.repo : nil) ?? home }
+
     /// The single-PR field parsed as a number / URL / `owner/repo#n` shorthand,
     /// checked against the home repo, then `localRepos`.
     public var prRef: PRRef {
         let (owner, repo) = PRRef.LocalRepo.coordinates(home: home)
-        return PRRef.parse(specificPR, owner: owner, repo: repo, also: localRepos ?? [])
+        return PRRef.parse(specificPR, owner: owner, repo: repo,
+                           host: PRRef.LocalRepo.host(home: home), also: localRepos ?? [])
     }
 
     public var isValid: Bool {
@@ -288,6 +292,7 @@ public struct ReviewConfig: Codable, Equatable {
             .replacingOccurrences(of: "{scope}", with: scopeText)
             .replacingOccurrences(of: "{owner}", with: owner)
             .replacingOccurrences(of: "{repo}", with: repo))
+        if let n = PRRef.LocalRepo.gitlabNote(targetLocal) { out.append(n) }
 
         // For someone else's PRs, frame the whole task as look-don't-touch up front.
         if isReviewOnly, let b = blocks["reviewOnly"] { out.append(b) }
@@ -333,6 +338,7 @@ public struct ReviewConfig: Codable, Equatable {
         }
         var out: [String] = []
         out.append(fill(scope["single"] ?? ""))
+        if let n = PRRef.LocalRepo.gitlabNote(targetLocal) { out.append(n) }
         out.append(fill(specific["mineOnly"] ?? ""))
         // First and foremost: screen + verify + fix/dismiss + respond to every reviewer
         // finding already on the PR, BEFORE the agent's own review.
@@ -370,6 +376,7 @@ public struct ReviewConfig: Codable, Equatable {
         }
         var out: [String] = []
         out.append(fill(scope["single"] ?? ""))
+        if let n = PRRef.LocalRepo.gitlabNote(targetLocal) { out.append(n) }
         out.append(fill(specific["theirsOnly"] ?? ""))
         out.append(chosen.fragment)
         if let bar = blocks["bar"] { out.append(bar) }
@@ -416,6 +423,7 @@ public struct ReviewConfig: Codable, Equatable {
 
         var out: [String] = []
         out.append(fill(scope["single"] ?? ""))
+        if let n = PRRef.LocalRepo.gitlabNote(targetLocal) { out.append(n) }
         out.append(fill(specific["determineAuthor"] ?? ""))
         // The review work itself is the same regardless of author; only the
         // disposition differs, so everything both cases share comes before the split

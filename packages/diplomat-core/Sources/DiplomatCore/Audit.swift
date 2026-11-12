@@ -45,6 +45,7 @@ public struct AuditConfig {
 
         var out: [String] = []
         if let intro = blocks["intro"] { out.append(fill(intro)) }
+        if let n = PRRef.LocalRepo.gitlabNote(home) { out.append(n) }
         if let bar = blocks["bar"] { out.append(fill(bar)) }
         // Always: classify every finding H/M/L (drives the report + the Low<20-LOC PR gate).
         if let classify = blocks["classify"] { out.append(fill(classify)) }

@@ -567,8 +567,8 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         var slugs: [String] = []
         for r in repos {
             let s = r.trimmingCharacters(in: .whitespaces).lowercased()
-            let halves = s.split(separator: "/", omittingEmptySubsequences: false)
-            if halves.count == 2, !halves[0].isEmpty, !halves[1].isEmpty, !slugs.contains(s) {
+            let segments = s.split(separator: "/", omittingEmptySubsequences: false)
+            if segments.count >= 2, !segments.contains(where: \.isEmpty), !slugs.contains(s) {
                 slugs.append(s)
             }
         }
@@ -580,10 +580,10 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     public var owner: String { coordinates(of: "").owner }
     public var repo: String { coordinates(of: "").repo }
 
-    /// A watched repository's coordinates; "" names the primary.
+    /// A watched repository's coordinates, the owner everything before the last `/` (a
+    /// GitLab namespace may nest); "" names the primary.
     public func coordinates(of slug: String) -> (owner: String, repo: String) {
-        let halves = (slug.isEmpty ? repos[0] : slug).split(separator: "/")
-        return (String(halves.first ?? ""), String(halves.last ?? ""))
+        PRRef.splitSlug(slug.isEmpty ? repos[0] : slug) ?? ("", "")
     }
 
     /// How a decision writes `slug` (any case, "" for the primary): "" for the primary,

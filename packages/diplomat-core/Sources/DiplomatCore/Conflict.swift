@@ -58,11 +58,15 @@ public struct ConflictConfig {
     /// `targetRepo` came from, else the home's, or nil.
     public var checkout: String? { (isSinglePR ? prRef.repo?.path : nil) ?? home?.path }
 
+    /// The repo `targetRepo` names, nil for `assets/config.json`'s.
+    public var targetLocal: PRRef.LocalRepo? { (isSinglePR ? prRef.repo : nil) ?? home }
+
     /// The single-PR field parsed as a number / URL / `owner/repo#n` shorthand,
     /// checked against the home repo, then `localRepos`.
     public var prRef: PRRef {
         let (owner, repo) = PRRef.LocalRepo.coordinates(home: home)
-        return PRRef.parse(specificPR, owner: owner, repo: repo, also: localRepos ?? [])
+        return PRRef.parse(specificPR, owner: owner, repo: repo,
+                           host: PRRef.LocalRepo.host(home: home), also: localRepos ?? [])
     }
 
     /// SPAWN is only meaningful once we know what to sweep: a usable PR reference in
@@ -92,6 +96,7 @@ public struct ConflictConfig {
                 .replacingOccurrences(of: "{owner}", with: owner)
                 .replacingOccurrences(of: "{repo}", with: repo))
         }
+        if let n = PRRef.LocalRepo.gitlabNote(targetLocal) { out.append(n) }
 
         // The merge block reads "Merge …" for one PR, "For each, merge …" for many.
         let lead = isSinglePR ? "Merge" : "For each, merge"

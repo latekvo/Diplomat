@@ -137,7 +137,7 @@ final class Store: ObservableObject {
     /// job runs across all of them, while the panel's right column works on one
     /// (`selectedRoot`).
     @Published private(set) var roots: [PRRef.LocalRepo]
-    /// Whether every root path had a GitHub remote when `roots` was read
+    /// Whether every root path had a GitHub or GitLab remote when `roots` was read
     /// (`RepoRoots.allResolve`). Never for the stand-in `RepoPaths.roots` answers on the
     /// main thread before the first resolution, which knows only the primary path. While
     /// it is false, a repo missing from `roots` may be one that failed to resolve.
@@ -235,7 +235,8 @@ final class Store: ObservableObject {
         guard !rootsGuessed else { return false }
         let (owner, repo) = CoreAssets.repoCoordinates()
         let configured = "\(owner)/\(repo)".lowercased()
-        guard let home = roots.first(where: { $0.slug.lowercased() == configured }) else { return false }
+        guard let home = roots.first(where: { !$0.isGitLab && $0.slug.lowercased() == configured })
+        else { return false }
         return (checkout ?? roots.first?.path) == home.path
     }
 
@@ -256,6 +257,8 @@ final class Store: ObservableObject {
     private var panelLists: [String: PanelLists] = [:]
     /// The slug `prs` and `issues` belong to.
     private(set) var listedSlug = ""
+    /// Who "me" is in the lists shown (`knownMe(for:)` of their root).
+    var listedMe: String { knownMe(for: roots.first { $0.slug.lowercased() == listedSlug }) }
 
     /// Put the selected root's lists on the panel, from its cache, and fetch them afresh.
     private func showSelectedRepo() {
@@ -289,7 +292,7 @@ final class Store: ObservableObject {
             refreshLocalRepos()
         }
     }
-    /// `localRepoPaths` read for their GitHub remotes, in list order.
+    /// `localRepoPaths` read for their GitHub and GitLab remotes, in list order.
     @Published var localRepoCheckouts: [LocalRepos.Checkout] = []
     var localRepos: [PRRef.LocalRepo] { localRepoCheckouts.flatMap(\.repos) }
     /// What a wizard parses a pasted link against: every root, then the other repos no
@@ -998,6 +1001,40 @@ final class Store: ObservableObject {
         return o.isEmpty ? me : o
     }
 
+    static let githubLoginUnknown = "GitHub login unknown — is `gh` installed and authenticated?"
+
+    /// The signed-in glab user of each GitLab host read so far, by host. Only a success is
+    /// kept, so a host that failed is asked again on the next read.
+    private var gitlabMe: [String: String] = [:]
+
+    /// Who "me" is in `root`: `effectiveMe` on GitHub, else glab's signed-in user on the
+    /// root's host, read once per host. Throws while that is unknown, which leaves the
+    /// root unreadable for the cycle like any failed read of it.
+    func me(for root: PRRef.LocalRepo) async throws -> String {
+        guard root.isGitLab else {
+            guard !effectiveMe.isEmpty else {
+                throw GHError.unanswered(Store.githubLoginUnknown)
+            }
+            return effectiveMe
+        }
+        if let known = gitlabMe[root.host] { return known }
+        let login = try await API.fetchGitLabViewer(host: root.host)
+        gitlabMe[root.host] = login
+        return login
+    }
+
+    /// `me(for:)` as last read, without asking: "" for a GitLab host not read yet.
+    func knownMe(for root: PRRef.LocalRepo?) -> String {
+        guard let root, root.isGitLab else { return effectiveMe }
+        return gitlabMe[root.host] ?? ""
+    }
+
+    /// Seed a GitLab host's user, for headless self-tests only.
+    func pinGitLabMe(_ login: String, host: String) {
+        guard Headless.active else { return }
+        gitlabMe[host.lowercased()] = login
+    }
+
     /// A tool's tint: the user's override if set & valid, else its catalog default.
     func tint(for kind: ToolKind) -> Color {
         if let hex = colorOverrides[kind.rawValue], let c = Color(hex: hex) { return c }
@@ -1553,11 +1590,16 @@ final class Store: ObservableObject {
         let root = selectedRoot
         let slug = root.slug.lowercased()
         do {
-            async let m = API.fetchViewerLogin()
-            async let p = API.fetchOpenPRs(owner: root.owner, repo: root.repo)
-            async let i = API.fetchOpenIssues(owner: root.owner, repo: root.repo)
-            let (mm, pp, ii) = try await (m, p, i)
-            me = mm
+            async let p = API.fetchOpenPRs(root)
+            async let i = API.fetchOpenIssues(root)
+            if root.isGitLab {
+                // The lists are read as glab's user's; the GitHub login is not needed for them.
+                _ = try await me(for: root)
+                await fetchMe()
+            } else {
+                me = try await API.fetchViewerLogin()
+            }
+            let (pp, ii) = try await (p, i)
             let at = Date()
             panelLists[slug] = PanelLists(prs: pp, issues: ii, at: at)
             // The operator may have switched roots while this one was fetching.
@@ -1589,7 +1631,7 @@ final class Store: ObservableObject {
     /// the scan that made it.
     func refreshMergedStatuses() async {
         mergedPRs = await AgentProbes.mergedPRs(
-            Set(AgentRegistry.load().filter { !$0.untracked }.compactMap(\.item)))
+            Set(AgentRegistry.load().filter { !$0.untracked }.compactMap(\.item)), roots: roots)
     }
 
     /// Ask whether the account still has room to spend — the precondition on the
@@ -2460,15 +2502,16 @@ final class Store: ObservableObject {
         if terminalUnpublished { publishSpawnTerminal() }
         if me.isEmpty { await fetchMe() }
         await refreshRoots()
-        if effectiveMe.isEmpty {
+        if effectiveMe.isEmpty, !roots.contains(where: \.isGitLab) {
             // The most common total-breakage mode (gh missing/unauthenticated) used to
             // bail before the failure surfacing — the toggles said "on" and nothing
-            // ever polled, silently.
-            pollErrorThisCycle = "GitHub login unknown — is `gh` installed and authenticated?"
+            // ever polled, silently. With a GitLab root the GitHub roots fail their reads
+            // alone (`me(for:)`), and the GitLab ones go on.
+            pollErrorThisCycle = Store.githubLoginUnknown
         } else if rootsGuessed {
             // Its one root would be the configured repo at the first path, which may
             // check out another.
-            pollErrorThisCycle = "no repo root in Settings resolves to a GitHub checkout"
+            pollErrorThisCycle = "no repo root in Settings resolves to a GitHub or GitLab checkout"
         } else {
             // Every root is polled, and everything below reads the roots' finds as ONE
             // list: one drain, one fingerprint diff, one ledger observation per kind (a
@@ -2555,11 +2598,9 @@ final class Store: ObservableObject {
         var failed: [(root: PRRef.LocalRepo, error: Error)] = []
         for root in polled {
             do {
-                let found = try await AutofixMonitor.fetchSnapshots(owner: root.owner,
-                                                                    repo: root.repo,
-                                                                    me: effectiveMe)
-                let gone = try await AutofixMonitor.fetchClosedPRs(owner: root.owner,
-                                                                   repo: root.repo)
+                let found = try await AutofixMonitor.fetchSnapshots(root: root,
+                                                                    me: try await me(for: root))
+                let gone = try await AutofixMonitor.fetchClosedPRs(root: root)
                 snaps += found
                 closed.formUnion(gone)
                 read.append(root)
@@ -2741,7 +2782,7 @@ final class Store: ObservableObject {
         for root in polled {
             let found: [OpenIssue]
             do {
-                found = try await API.fetchOpenIssues(owner: root.owner, repo: root.repo)
+                found = try await API.fetchOpenIssues(root)
             } catch {
                 failed.append((root, error))
                 continue
@@ -2773,7 +2814,7 @@ final class Store: ObservableObject {
                 AuditLog.log("auto", "ban-skip", "\(who) — author is banned, not queued")
                 continue
             }
-            var cfg = IssueConfig(target: .contributors, me: effectiveMe)
+            var cfg = IssueConfig(target: .contributors, me: knownMe(for: root))
             cfg.home = root
             if requestOne(RequestedWork(number: issue.number, url: issue.url,
                                         author: issue.author,
@@ -2819,7 +2860,7 @@ final class Store: ObservableObject {
                 // auto-approvals are on; they're only used to gate the verdict, which is
                 // off by default.
                 reqs += try await AutofixMonitor.fetchReviewRequests(
-                    owner: root.owner, repo: root.repo, me: effectiveMe,
+                    root: root, me: try await me(for: root),
                     includeFiles: autoApproveEnabled)
                 read.append(root)
             } catch {
@@ -4306,7 +4347,7 @@ final class Store: ObservableObject {
         }
         let key = item(url: r.url, number: r.number)
         guard let root = root(ofItem: key) else { return false }
-        var cfg = ReviewConfig(depth: "max", target: .specific, me: effectiveMe,
+        var cfg = ReviewConfig(depth: "max", target: .specific, me: knownMe(for: root),
                                markReady: false, leaveReviews: true, replyToReviews: false,
                                specificPR: String(r.number), finalPass: verdict,
                                softApprove: soft, specificAuthor: .theirs)
@@ -4366,7 +4407,7 @@ final class Store: ObservableObject {
         let key = item(url: url, number: number)
         // An item in no root is skipped: that number in the primary is another PR.
         guard let root = root(ofItem: key) else { return .failed("\(key) is in no repo root") }
-        var cfg = ConflictConfig(target: .specific, me: effectiveMe, specificPR: String(number))
+        var cfg = ConflictConfig(target: .specific, me: knownMe(for: root), specificPR: String(number))
         cfg.home = root
         let job = AgentJob(kind: "conflicts", auditAction: "conflicts",
                            label: "Resolve · \(itemLabel(key))",
@@ -4388,7 +4429,7 @@ final class Store: ObservableObject {
     private func dispatchMyReview(_ s: PRSnapshot, attemptNumber: Int = 1) async -> Bool {
         let key = item(url: s.url, number: s.number)
         guard let root = root(ofItem: key) else { return false }
-        var cfg = ReviewConfig(depth: "deep", target: .specific, me: effectiveMe,
+        var cfg = ReviewConfig(depth: "deep", target: .specific, me: knownMe(for: root),
                                markReady: false, leaveReviews: false, replyToReviews: true,
                                specificPR: String(s.number), specificAuthor: .mine)
         cfg.home = root
@@ -4457,7 +4498,15 @@ final class Store: ObservableObject {
         mergingPRs.insert(key)
         defer { mergingPRs.remove(key) }
         do {
-            _ = try await GH.run(["pr", "merge", "\(pr.number)", "--repo", repo, "--squash"])
+            if let root = root(ofItem: key), root.isGitLab {
+                // Merged now or refused, as `gh pr merge` does: glab would otherwise set
+                // the MR to merge once a running pipeline passes.
+                _ = try await GLab.run(["mr", "merge", "\(pr.number)", "--squash", "--yes",
+                                        "--auto-merge=false"]
+                                       + GLab.repoFlag(host: root.host, slug: root.slug))
+            } else {
+                _ = try await GH.run(["pr", "merge", "\(pr.number)", "--repo", repo, "--squash"])
+            }
             AuditLog.log("panel", "merge", "Merged \(label)")
             refreshAudit()
             await refresh()
@@ -4983,13 +5032,13 @@ final class Store: ObservableObject {
     // MARK: tool data (delegated to the shared core engine)
 
     func count(for kind: ToolKind) -> Int {
-        ToolData.count(for: kind, prs: prs, issues: issues, me: effectiveMe)
+        ToolData.count(for: kind, prs: prs, issues: issues, me: listedMe)
     }
     func items(for kind: ToolKind) -> [DisplayItem] {
-        ToolData.items(for: kind, prs: prs, issues: issues, me: effectiveMe)
+        ToolData.items(for: kind, prs: prs, issues: issues, me: listedMe)
     }
     func lookup(_ number: Int) -> LookupResult {
-        ToolData.lookup(number, prs: prs, issues: issues, me: effectiveMe, visible: visibleTools)
+        ToolData.lookup(number, prs: prs, issues: issues, me: listedMe, visible: visibleTools)
     }
 }
 

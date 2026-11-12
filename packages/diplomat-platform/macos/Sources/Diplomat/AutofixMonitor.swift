@@ -2,17 +2,26 @@ import Foundation
 import DiplomatCore
 
 // macOS side of the PR auto-fix monitor: fetch a snapshot of my open PRs (one GraphQL
-// call via the `gh` CLI) so the shared AutofixDiff can decide what changed. The
-// diffing lives in DiplomatCore; the spawn/track happens in Store. This file is
-// just the GitHub read. The queries themselves live in `assets/graphql/` with the other
-// shared queries (single source of truth; a future Linux monitor reuses them as-is).
+// call via the `gh` CLI, or `glab` on a GitLab root) so the shared AutofixDiff can decide
+// what changed. The diffing lives in DiplomatCore; the spawn/track happens in Store. This
+// file is just the read. The queries themselves live in `assets/graphql/` with the other
+// shared queries (single source of truth; the Linux monitor reuses them as-is). A GitLab
+// answer is put in its GitHub twin's shape (`GitLab`), so one parser reads both.
 enum AutofixMonitor {
-    /// One GraphQL search over my open, authored PRs in the target repo, with each
-    /// PR's mergeability, review verdict, and review-thread resolution — everything the
-    /// diff and the reconcilers need, in a single request (`assets/graphql/monitor-prs`).
-    static func fetchSnapshots(owner: String, repo: String, me: String) async throws -> [PRSnapshot] {
-        let q = "repo:\(owner)/\(repo) author:\(me) is:pr is:open"
-        let data = try await GH.graphql("monitor-prs", repo: nil, variables: [("q", q)])
+    /// One GraphQL search over my open, authored PRs in `root`, with each PR's
+    /// mergeability, review verdict, and review-thread resolution — everything the diff
+    /// and the reconcilers need, in a single request (`assets/graphql/monitor-prs`,
+    /// `gitlab-monitor-prs` on GitLab).
+    static func fetchSnapshots(root: PRRef.LocalRepo, me: String) async throws -> [PRSnapshot] {
+        let data: Data
+        if root.isGitLab {
+            data = try GitLab.monitorPRs(try await GLab.graphql(
+                "gitlab-monitor-prs", host: root.host,
+                variables: [("path", root.slug), ("author", me)]))
+        } else {
+            let q = "repo:\(root.owner)/\(root.repo) author:\(me) is:pr is:open"
+            data = try await GH.graphql("monitor-prs", repo: nil, variables: [("q", q)])
+        }
         return try parse(data, me: me)
     }
 
@@ -23,10 +32,16 @@ enum AutofixMonitor {
     /// the queue (a sweep asks for whoever's PRs the operator aimed it at), and a
     /// search cannot be given a list of numbers to ask about. So it asks the cheap
     /// question the other way round — who closed lately — and the caller intersects.
-    static func fetchClosedPRs(owner: String, repo: String) async throws -> Set<String> {
-        let q = "repo:\(owner)/\(repo) is:pr is:closed sort:updated-desc"
-        let query = try CoreAssets.graphql("closed-prs")
-        let data = try await GH.run(["api", "graphql", "-f", "query=\(query)", "-f", "q=\(q)"])
+    static func fetchClosedPRs(root: PRRef.LocalRepo) async throws -> Set<String> {
+        let data: Data
+        if root.isGitLab {
+            data = try GitLab.closedPRs(try await GLab.graphql(
+                "gitlab-closed-prs", host: root.host, variables: [("path", root.slug)]))
+        } else {
+            let q = "repo:\(root.owner)/\(root.repo) is:pr is:closed sort:updated-desc"
+            let query = try CoreAssets.graphql("closed-prs")
+            data = try await GH.run(["api", "graphql", "-f", "query=\(query)", "-f", "q=\(q)"])
+        }
         struct Resp: Decodable {
             let data: D
             struct D: Decodable { let search: S }
@@ -35,7 +50,7 @@ enum AutofixMonitor {
         }
         let r = try JSONDecoder().decode(Resp.self, from: data)
         return Set(r.data.search.nodes.compactMap(\.number).map {
-            PRRef.itemKey(owner: owner, repo: repo, number: $0)
+            PRRef.itemKey(owner: root.owner, repo: root.repo, number: $0)
         })
     }
 
@@ -72,16 +87,25 @@ enum AutofixMonitor {
     }
 
     /// PRs that request MY review, with request/last-review timestamps (one GraphQL
-    /// call, `assets/graphql/review-requests`). `includeFiles` pulls each PR's changed
-    /// paths for the verdict-withhold gate — a big chunk of the query's rate-limit
-    /// cost, and pointless unless auto-approvals are on (verdicts are off by default),
-    /// so the caller passes `false` then and the `@include` directive skips it.
-    static func fetchReviewRequests(owner: String, repo: String, me: String,
+    /// call, `assets/graphql/review-requests`, `gitlab-review-requests` on GitLab).
+    /// `includeFiles` pulls each PR's changed paths for the verdict-withhold gate — a big
+    /// chunk of the query's rate-limit cost, and pointless unless auto-approvals are on
+    /// (verdicts are off by default), so the caller passes `false` then and the
+    /// `@include` directive skips it.
+    static func fetchReviewRequests(root: PRRef.LocalRepo, me: String,
                                     includeFiles: Bool = false) async throws -> [ReviewRequest] {
-        let q = "repo:\(owner)/\(repo) review-requested:\(me) is:pr is:open"
-        let data = try await GH.graphql("review-requests", repo: nil,
+        let data: Data
+        if root.isGitLab {
+            data = try GitLab.reviewRequests(try await GLab.graphql(
+                "gitlab-review-requests", host: root.host,
+                variables: [("path", root.slug), ("reviewer", me)],
+                typedVariables: [("withFiles", "\(includeFiles)")]))
+        } else {
+            let q = "repo:\(root.owner)/\(root.repo) review-requested:\(me) is:pr is:open"
+            data = try await GH.graphql("review-requests", repo: nil,
                                         variables: [("q", q)],
                                         typedVariables: [("withFiles", "\(includeFiles)")])
+        }
         struct Resp: Decodable {
             let data: D
             struct D: Decodable { let search: S }

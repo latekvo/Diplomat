@@ -29,6 +29,13 @@ enum RepoPathsTest {
         let fm = FileManager.default
         let scratch = fm.temporaryDirectory.appendingPathComponent("diplomat-repopaths-\(getpid())")
         defer { try? fm.removeItem(at: scratch) }
+        // glab's config, the hosts it names GitLab besides gitlab.com and gitlab.*.
+        let glabDir = scratch.appendingPathComponent("glab")
+        try? fm.createDirectory(at: glabDir, withIntermediateDirectories: true)
+        try? "hosts:\n    gl.example.org:\n        token: x\n"
+            .write(to: glabDir.appendingPathComponent("config.yml"), atomically: true, encoding: .utf8)
+        setenv("GLAB_CONFIG_DIR", glabDir.path, 1)
+        defer { unsetenv("GLAB_CONFIG_DIR") }
         let checkout = scratch.appendingPathComponent("checkout")
         let bundle = checkout.appendingPathComponent("packages/diplomat-platform/macos/Diplomat.app")
         let copy = scratch.appendingPathComponent("Applications/Diplomat.app")
@@ -128,6 +135,13 @@ enum RepoPathsTest {
         let none = read(0, [gone, scratch.appendingPathComponent("gone2").path])
         check("…and none of several resolving leaves the one root a guess",
               !none.primary && none.guessed, "got \(none)")
+        let onGitLab = scratch.appendingPathComponent("gitlab").path
+        git("init", "-q", onGitLab)
+        git("-C", onGitLab, "remote", "add", "origin", "git@gl.example.org:g/sub/proj.git")
+        let gitlab = read(0, [onGitLab, early])
+        check("a checkout on a host glab is configured for is a GitLab root",
+              gitlab.roots == ["g/sub/proj", "o/early"] && gitlab.complete && gitlab.primary,
+              "got \(gitlab)")
         RepoPaths.invalidateRoots()
 
         print("repopaths: a root's line in Settings")
@@ -139,7 +153,7 @@ enum RepoPathsTest {
               resolvedLine == ("o/configured - primary", false), "got \(resolvedLine)")
         let guessedLine = SettingsView.rootStatus(0, bare, roots: standIn, guessed: true)
         check("…and a guessed one as unresolved, not a checkout of the configured repo",
-              guessedLine.warn && guessedLine.text.hasPrefix("No GitHub remote"), "got \(guessedLine)")
+              guessedLine.warn && guessedLine.text.hasPrefix("No GitHub or GitLab remote"), "got \(guessedLine)")
 
         print("repopaths: adding roots in Settings")
         let defaultRoot = RepoPaths.defaultAgentRepo

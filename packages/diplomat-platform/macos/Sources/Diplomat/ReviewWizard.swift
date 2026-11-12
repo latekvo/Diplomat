@@ -871,7 +871,7 @@ struct ReviewWizardView: View {
             depth: depth.id,
             target: target,
             username: username,
-            me: store.effectiveMe,
+            me: store.knownMe(for: store.selectedRoot),
             markReady: markReady,
             leaveReviews: leaveReviews,
             replyToReviews: replyToReviews,
@@ -975,7 +975,7 @@ struct ReviewWizardView: View {
     }
 
     private var targetRow: some View {
-        WizardTargetPicker(target: $target, me: store.effectiveMe)
+        WizardTargetPicker(target: $target, me: store.knownMe(for: store.selectedRoot))
     }
 
     /// One field, one slot — the github-username box and the single-PR box share a
@@ -1104,7 +1104,8 @@ struct ReviewWizardView: View {
     private var trackingPRURL: String? {
         guard let n = config.prRef.number else { return nil }
         let (owner, repo) = config.targetRepo
-        return "https://github.com/\(owner)/\(repo)/pull/\(n)"
+        return (config.targetLocal ?? PRRef.LocalRepo(owner: owner, repo: repo, path: ""))
+            .webURL(.pull, number: n)
     }
 
     /// Poll the specific PR's author (debounced) so the wizard can hide the toggles that
@@ -1117,7 +1118,7 @@ struct ReviewWizardView: View {
             specificAuthor = .unknown; specificAuthorLogin = nil; authorLoading = false; return
         }
         let (owner, repo) = config.targetRepo
-        let me = store.effectiveMe
+        let repoAsked = config.targetLocal ?? PRRef.LocalRepo(owner: owner, repo: repo, path: "")
         let pending = specificPR
         specificAuthor = .unknown        // offer all toggles while we determine
         specificAuthorLogin = nil
@@ -1125,7 +1126,8 @@ struct ReviewWizardView: View {
         Task {
             try? await Task.sleep(nanoseconds: 400_000_000)   // debounce keystrokes
             if specificPR != pending { return }               // superseded by newer input
-            let login = await Self.fetchAuthor(owner: owner, repo: repo, number: num)
+            let login = try? await API.fetchPRAuthor(number: num, root: repoAsked)
+            let me = (try? await store.me(for: repoAsked)) ?? ""
             guard specificPR == pending, target == .specific else { return }
             authorLoading = false
             specificAuthorLogin = login
@@ -1135,15 +1137,6 @@ struct ReviewWizardView: View {
                 specificAuthor = .unknown
             }
         }
-    }
-
-    /// One `gh pr view … --json author` → the author login, or nil on failure.
-    private static func fetchAuthor(owner: String, repo: String, number: Int) async -> String? {
-        guard let data = try? await GH.run(
-            ["pr", "view", String(number), "--repo", "\(owner)/\(repo)", "--json", "author"])
-        else { return nil }
-        struct R: Decodable { struct A: Decodable { let login: String }; let author: A }
-        return (try? JSONDecoder().decode(R.self, from: data))?.author.login
     }
 
     private func spawn() {

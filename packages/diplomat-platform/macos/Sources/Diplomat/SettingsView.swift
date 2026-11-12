@@ -245,9 +245,10 @@ struct SettingsView: View {
     private var repoRootsDetail: String {
         "The first is the primary: an agent whose job names no repo starts there. Every "
             + "automatic job runs across all of them, and the header picks the one the "
-            + "lists, search and wizards work on. Each is known by one GitHub repo from its "
-            + "remotes: \(repoSlug) if its upstream or origin names it or a repo of that "
-            + "name under another owner (a fork or a move), else upstream, else origin. "
+            + "lists, search and wizards work on. Each is known by one GitHub or GitLab repo from "
+            + "its remotes: \(repoSlug) if its upstream or origin names it or a GitHub repo of "
+            + "that name under another owner (a fork or a move), else upstream, else origin. "
+            + "A GitLab one is read through glab, signed in to its host. "
             + "None listed = "
             + "\(RepoPaths.defaultAgentRepo). DIPLOMAT_REPO in this app's environment "
             + "outranks the list."
@@ -333,7 +334,7 @@ struct SettingsView: View {
         }
         let path = RepoRoots.expand(trimmed)
         guard !guessed, let root = roots.first(where: { $0.path == path }) else {
-            return ("No GitHub remote, or a repo an earlier root already names - skipped", true)
+            return ("No GitHub or GitLab remote, or a repo an earlier root already names - skipped", true)
         }
         return (i == 0 ? "\(root.slug) - primary" : root.slug, false)
     }
@@ -396,7 +397,7 @@ struct SettingsView: View {
 
     private static let otherReposDetail = """
         Paste a PR or issue link to one of these and its agent starts in that \
-        checkout, never over the mesh. Each is known by its GitHub remotes, \
+        checkout, never over the mesh. Each is known by its GitHub or GitLab remotes, \
         `upstream` first.
         """
 
@@ -406,7 +407,7 @@ struct SettingsView: View {
         return HStack(spacing: 6) {
             Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text(slug ?? (checkout == nil ? "…" : "no GitHub remote here"))
+                Text(slug ?? (checkout == nil ? "…" : "no GitHub or GitLab remote here"))
                     .font(.callout)
                     .foregroundStyle(slug == nil && checkout != nil ? .orange : .primary)
                 Text(path).font(.caption2).foregroundStyle(.secondary)

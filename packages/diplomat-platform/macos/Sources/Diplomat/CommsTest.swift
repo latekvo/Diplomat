@@ -41,10 +41,17 @@ enum CommsTest {
         // The repo roots: scratch checkouts whose remotes name `o/r`, the primary every
         // target is in, and `o/second`, a second root for the checks that load both.
         unsetenv("DIPLOMAT_REPO")
-        func checkout(_ name: String, remote slug: String) -> String {
+        // A glab config naming no host: the GitLab hosts are gitlab.com and gitlab.*, never
+        // the operator's.
+        let glabConfig = scratch.appendingPathComponent("glab")
+        try? FileManager.default.createDirectory(at: glabConfig, withIntermediateDirectories: true)
+        try? "hosts:\n".write(to: glabConfig.appendingPathComponent("config.yml"), atomically: true,
+                              encoding: .utf8)
+        setenv("GLAB_CONFIG_DIR", glabConfig.path, 1)
+        func checkout(_ name: String, remote slug: String, host: String = "github.com") -> String {
             let dir = scratch.appendingPathComponent("roots/\(name)")
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            for args in [["init", "-q"], ["remote", "add", "origin", "https://github.com/\(slug).git"]] {
+            for args in [["init", "-q"], ["remote", "add", "origin", "https://\(host)/\(slug).git"]] {
                 let git = Process()
                 git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
                 git.arguments = ["-C", dir.path] + args
@@ -165,6 +172,22 @@ enum CommsTest {
         // As gh behaves: `pr view` of an issue's number fails, `issue view` answers a PR's
         // number too, and an unknown number fails in gh's words.
         Store.commsGHOverride = { args in
+            // glab's REST answers for the GitLab root g/sub/third.
+            if args.first == "api", let path = args.last,
+               let n = path.split(separator: "/").last.flatMap({ Int($0) }) {
+                ghCalls.append(args)
+                switch n {
+                case 90301: throw GHError.glabProcess(code: 1, stderr: "glab: 404 Not found (HTTP 404)")
+                case 90302: throw GHError.glabProcess(code: 1,
+                                                      stderr: "glab: 404 Project Not Found (HTTP 404)")
+                default:
+                    let kind = path.contains("/merge_requests/") ? "merge_requests" : "issues"
+                    return try JSONSerialization.data(withJSONObject: [
+                        "iid": n, "web_url": "https://gitlab.example.com/g/sub/third/-/\(kind)/\(n)",
+                        "author": ["username": "yuki"], "state": n == 90303 ? "merged" : "opened",
+                    ] as [String: Any])
+                }
+            }
             guard args.count > 2, let n = Int(args[2]) else {
                 throw GHError.process(code: 1, stderr: "unexpected arguments \(args)")
             }
@@ -1596,6 +1619,49 @@ enum CommsTest {
         await apply(gone)
         check("a PR missing from a second root names that root",
               outcome(gone[0]) == "no PR #90299 in o/second, so nothing was queued")
+
+        // A GitLab root: looked up through glab's REST API, its "me" glab's user there.
+        let thirdRoot = checkout("third", remote: "g/sub/third", host: "gitlab.example.com")
+        await useRoots([primaryRoot, secondRoot, thirdRoot])
+        await store.refreshRoots()
+        store.pinGitLabMe("yuki-me", host: "gitlab.example.com")
+        check("a GitLab root is watched by its nested slug",
+              store.commsSettings.repos == ["o/r", "o/second", "g/sub/third"])
+        ghCalls = []
+        let onGitLab = targeted([CommsAsk(.review, 90300, repo: "g/sub/third"),
+                                 CommsAsk(.fixIssue, 90304, repo: "g/sub/third")])
+        await apply(onGitLab)
+        check("…its merge request and issue are asked of glab on its host: \(ghCalls)",
+              Set(ghCalls) == [["api", "--hostname", "gitlab.example.com",
+                               "projects/g%2Fsub%2Fthird/merge_requests/90300"],
+                              ["api", "--hostname", "gitlab.example.com",
+                               "projects/g%2Fsub%2Fthird/issues/90304"]])
+        if case .review(let cfg)? = asked("review:g/sub/third#90300")?.config {
+            check("…and queued to run there as glab's user, told it is on GitLab",
+                  outcome(onGitLab[0]).hasPrefix("queued") && cfg.me == "yuki-me"
+                    && cfg.buildPrompt().contains("hosted on GitLab at gitlab.example.com")
+                    && tasked("review:g/sub/third#90300")?.job.directory == thirdRoot
+                    && tasked("review:g/sub/third#90300")?.job.prURL
+                        == "https://gitlab.example.com/g/sub/third/-/merge_requests/90300"
+                    && asked("review:g/sub/third#90300")?.author == "yuki")
+        } else {
+            check("…and queued to run there as glab's user, told it is on GitLab", false)
+        }
+        check("…the issue too", tasked("issues:g/sub/third#90304")?.job.directory == thirdRoot)
+        let glabMisses = [90301, 90302, 90303].map { targeted([CommsAsk(.review, $0, repo: "g/sub/third")]) }
+        for miss in glabMisses { await apply(miss) }
+        check("GitLab's 404 Not found is no such merge request: \(outcome(glabMisses[0][0]))",
+              outcome(glabMisses[0][0]) == "no PR #90301 in g/sub/third, so nothing was queued")
+        check("…its 404 Project Not Found a lookup that failed: \(outcome(glabMisses[1][0]))",
+              outcome(glabMisses[1][0]).contains("404 Project Not Found")
+                && asked("review:g/sub/third#90302") == nil)
+        check("…and a merged one is not open: \(outcome(glabMisses[2][0]))",
+              outcome(glabMisses[2][0]) == "PR third#90303 is merged, so nothing was queued"
+                && asked("review:g/sub/third#90303") == nil)
+        store.requestedWork.removeAll { $0.key.contains("g/sub/third") }
+        store.queuedTasks.removeAll { $0.id.contains("g/sub/third") }
+        await useRoots([primaryRoot, secondRoot])
+        await store.refreshRoots()
 
         store.requestOne(review(90210))
         store.requestOne(Store.RequestedWork(number: 90210,
