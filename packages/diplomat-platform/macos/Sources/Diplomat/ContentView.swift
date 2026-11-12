@@ -733,7 +733,6 @@ struct ContentView: View {
 
     private func lookupView(_ n: Int) -> some View {
         let r = store.lookup(n)
-        let link = r.url ?? store.selectedRoot.webURL(.issues, number: n)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("#\(n)").font(.title3.bold().monospaced())
@@ -741,9 +740,11 @@ struct ContentView: View {
                     .font(.caption.bold())
                     .foregroundStyle(r.isOnAnyList ? .green : .secondary)
                 Spacer()
-                Button { if let u = URL(string: link) { NSWorkspace.shared.open(u) } } label: {
-                    Image(systemName: "arrow.up.forward.square")
-                }.buttonStyle(.borderless).tooltip("Open #\(n) on GitHub")
+                if let open = r.openButton(on: store.selectedRoot) {
+                    Button { if let u = URL(string: open.link) { NSWorkspace.shared.open(u) } } label: {
+                        Image(systemName: "arrow.up.forward.square")
+                    }.buttonStyle(.borderless).tooltip(open.tooltip)
+                }
             }
             Text(r.presence).font(.caption).foregroundStyle(.secondary)
             VStack(spacing: 5) {
