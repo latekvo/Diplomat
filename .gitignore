@@ -8,13 +8,11 @@ DerivedData/
 Diplomat.app/
 .Diplomat.app.*/
 
-# Python (diplomat-platform/linux, szpontnet-core, szpontnet-spec)
+# Python (diplomat-platform/linux, diplomat-runtime, szpont)
 __pycache__/
 *.py[cod]
 .pytest_cache/
 *.egg-info/
-# A non-editable `pip install ./packages/szpontnet-core` leaves a copy here.
-packages/szpontnet-core/build/
 .venv/
 
 .DS_Store

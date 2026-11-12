@@ -1,21 +1,12 @@
 # diplomat-runtime - Diplomat below the UI
 
-Everything Diplomat does that is not a window: read the shared assets, decide what a
-monitor should dispatch, keep the run book, price the ledger, open a terminal on an
-agent, and answer the six questions a [SzpontNet](../szpontnet-core/README.md) node asks
-its host. No Qt, no AppKit, no PySide6 - importable from a stdlib-only daemon.
+Everything Diplomat does in Python that is not a window: read the shared assets, decide
+what a monitor should dispatch, keep the run book, price the ledger and open a terminal
+on an agent. No Qt, no AppKit, no PySide6 - the standard library only.
 
-Both front-ends run it, by different routes:
-
-- the **Linux applet** imports it directly (`diplomat_app` puts this package on
-  `sys.path`, and its screens and Store read the triage logic from here);
-- the **macOS app** links the Swift twins for its own screens, and hands *this* package
-  to the mesh node it spawns - `SZPONTNET_HOST=diplomat_runtime.szponthost`, with
-  nothing else of Diplomat's on that node's path.
-
-That second route is the reason the package exists. A node runs on both OSes, so the
-module that puts Diplomat behind one is cross-platform by definition, and neither
-front-end should have to put the other's package on a `PYTHONPATH` to spawn one.
+The **Linux applet** imports it directly (`diplomat_app` puts this package on
+`sys.path`, and its screens and Store read the triage logic from here). The macOS app
+links the Swift twins instead.
 
 ## Twins
 
@@ -34,9 +25,9 @@ diplomat_runtime/
   core.py         loads the shared assets/ (from the diplomat-core package)
   gh.py           gh CLI shell-out (GraphQL)
   models.py       domain models, Filters, Fmt, API (from assets/)
-  appconfig.py    ~/.diplomat/config.json — the settings a stdlib-only mesh node must read too
-                  (the repo root, the cap on concurrent automatic agents, and the
-                  rate-limit budget those agents are started against)
+  appconfig.py    ~/.diplomat/config.json — the settings more than one process reads
+                  (the repo roots, the cap on concurrent automatic agents, and the
+                  spending budget those agents are started against)
   configbase.py   what the four wizards' configs share
   prref.py        single-PR reference parsing (number / URL / owner-repo#337)
   prtarget.py     the whose-PRs axis shared by the wizards
@@ -50,11 +41,11 @@ diplomat_runtime/
   reviewaudit.py  a retired review run's review: left PENDING, or split over several
                   (ReviewAudit.swift's twin)
   runner.py       which agent CLI a spawn runs, and the one command that runs it
-  autofix.py      pure monitor decisions: dispatch gate, triggers, backoff, mesh,
+  autofix.py      pure monitor decisions: dispatch gate, triggers, backoff,
                   task cap, rate-limit budget, and the queue behind the cap
                   (Autofix.swift + AgentTasks.swift's twin)
   autobudget.py   ledger + probe + knobs -> may another automatic task start here?
-                  Asked by the applet's gate and by the mesh node (AutoBudget.swift's twin)
+                  (AutoBudget.swift's twin)
   agentstate.py   the one resolver: typed evidence -> a state per agent run, and the six
                   projections over it (per-PR dedup, the cap, the panel rows, retirement,
                   the windows a backstop's verdict closes, and the windows an automatic
@@ -77,7 +68,6 @@ diplomat_runtime/
   atomicjson.py   write-then-rename, for the files two processes share
   jsoninput.py    JSON as JSONSerialization reads it, for the run book and the ledger
                   (JSONInput.swift's twin)
-  szponthost.py   Diplomat's answers to the six questions a mesh node asks its host
 ```
 
 Each front-end keeps its own **probe** layer on top - the impure half that looks at the

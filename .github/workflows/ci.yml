@@ -128,11 +128,10 @@ jobs:
           done
       # The shared-helper self-tests that a runner can host. All pure logic, and none
       # of them touches the runner's real state: OSA_TEST runs bare AppleScript
-      # expressions (no `tell application`, so no Automation permission),
-      # MESH_CMD_TEST is pinned to a scratch state dir and a non-checkout so it can
-      # neither read a real mesh node nor start one, and ALLOCATOR_TEST shells only a
-      # stand-in installer it writes to a scratch dir, with its feed, config and daemon dir
-      # there too, and reads no ~/.claude. APIWATCH_TEST composes every session, tail and
+      # expressions (no `tell application`, so no Automation permission), and
+      # ALLOCATOR_TEST shells only a stand-in installer it writes to a scratch dir, with
+      # its feed, config and daemon dir there too, and reads no ~/.claude.
+      # APIWATCH_TEST composes every session, tail and
       # process it reasons over, bar a tmux server on a private socket where tmux is
       # installed (not on this runner), so it reads no terminal and types into none —
       # though it does provoke a nudge's audit line, so it redirects DIPLOMAT_AUDIT_DIR.
@@ -143,10 +142,9 @@ jobs:
       # nothing. QUEUE_TEST is the one
       # that touches state at all: reaching the cap's refusal branch means a `ps` scan, a
       # ban-list read and an `at-capacity` audit line, so it points DIPLOMAT_AUDIT_DIR at
-      # a scratch dir of its own. It returns before any spawn or fetch. MESH_STRAY_TEST
-      # starts stand-in nodes and loopback-only real nodes, all on scratch state dirs
-      # it sets itself, and stops them. WATCHDOG_TEST runs the unattended jobs over
-      # fixture steps and a scratch quit mark. RELAUNCH_TEST opens throwaway bundles it
+      # a scratch dir of its own. It returns before any spawn or fetch. WATCHDOG_TEST
+      # runs the unattended jobs over fixture steps and a scratch quit mark.
+      # RELAUNCH_TEST opens throwaway bundles it
       # lays out itself plus an idle copy of the binary, and ends every one of them; it
       # terminates nothing else. WINDOW_TEST builds the app window without ordering it in. REPOPATHS_TEST lays its checkouts out in a scratch dir.
       # LOWDISK_TEST mounts and fills a small disk image of its own and keeps its feed,
@@ -209,9 +207,6 @@ jobs:
           chmod +x "$tripwire"
           export DIPLOMAT_GH="$tripwire"
           DIPLOMAT_OSA_TEST=1 swift run Diplomat
-          SZPONTNET_DIR="$RUNNER_TEMP/mesh" DIPLOMAT_SELF_REPO=/nonexistent \
-            DIPLOMAT_MESH_CMD_TEST=1 swift run Diplomat
-          DIPLOMAT_MESH_STRAY_TEST=1 swift run Diplomat
           DIPLOMAT_ALLOCATOR_TEST=1 swift run Diplomat
           DIPLOMAT_WATCHDOG_TEST=1 swift run Diplomat
           DIPLOMAT_REPOPATHS_TEST=1 swift run Diplomat
@@ -350,64 +345,6 @@ jobs:
           cat refused.txt
           test "$code" -eq 64
           grep -F "refusing to start: DIPLOMAT_NO_SUCH_TEST=1 " refused.txt
-      # A checkout with no SzpontNet in it at all. `test_addon_optional.py` above
-      # already blocks the import, but only this deletes the packages — so it is
-      # the one that catches something reading a *file* out of the library's tree
-      # rather than importing it. Destructive to the workspace, hence last.
-      - name: The applet starts from a Diplomat-only tree
-        env:
-          QT_QPA_PLATFORM: offscreen
-          DIPLOMAT_RENDER: panel
-          DIPLOMAT_RENDER_OUT: ${{ runner.temp }}/no-szpontnet.png
-        run: |
-          rm -rf packages/szpontnet-core packages/szpontnet-spec
-          cd packages/diplomat-platform/linux && python -m diplomat_app
-          test -s "$DIPLOMAT_RENDER_OUT"
-
-  # SzpontNet, on its own terms. Deliberately installs nothing but the library and
-  # pytest: no Qt, no diplomat-core binary, no Diplomat on the import path. If the
-  # node ever grows a dependency on the application that ships it in this
-  # repository, or on anything outside the standard library, this job is where that
-  # surfaces — as an ImportError rather than as a discovery six months later.
-  szpontnet:
-    name: SzpontNet · library + conformance
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Install the library (with the trust extra) and pytest
-        run: pip install -e './packages/szpontnet-core[trust]' pytest
-      - name: Unit + host-seam tests
-        env:
-          DIPLOMAT_FULL_VOLUME_REQUIRED: '1'
-        run: pytest packages/szpontnet-core/tests -q -m 'not tor_e2e and not iroh_e2e'
-      # The onion path against a real tor daemon — here the simulated one, which
-      # needs no network and no `tor` installed but still runs every line of the
-      # transport: a spawned daemon, a torrc it parses, SOCKS5 on a socket, and whole
-      # node processes that can only reach each other over an onion. The same tests
-      # run against the live Tor network in tor-e2e.yml.
-      #
-      # The iroh transport has no simulated backend to run here: its endpoints reach
-      # a real discovery service, so `iroh_e2e` is excluded above and runs in
-      # iroh-e2e.yml instead. What this job does cover is that nothing in the library
-      # hard-requires the optional package — it installs without the `wan` extra, so
-      # an import that stopped being lazy would fail the run above outright.
-      - name: Tor transport end-to-end (simulated onion network)
-        run: pytest packages/szpontnet-core/tests/test_tor_e2e.py -q
-      # The tester's own codec and placement oracle, derived from the spec rather
-      # than from the node — if this is wrong every verdict below is meaningless.
-      - name: Conformance tester self-test
-        working-directory: packages/szpontnet-spec/conformance
-        run: python -m szpont --selftest
-      # The reference node as an opaque subprocess, over real multicast + TCP on
-      # loopback. Nothing here reads the node's source, so this is the check that
-      # the spec in docs/ is implementable from the spec alone — and the one that
-      # catches a MUST the unit tests are shaped around rather than against.
-      - name: Conformance run against the reference node
-        working-directory: packages/szpontnet-spec/conformance
-        run: python -m szpont --node-cmd "python adapters/reference.py" --no-color
 
   # `pip install szpont`: the launcher, in a job of its own so what it is allowed
   # to install is visible — pytest to run the tests, and nothing at all to run the
@@ -445,13 +382,9 @@ jobs:
           # README; this is the only place it is made from a built artifact.
           /tmp/wheel-check/bin/szpont --version
           /tmp/wheel-check/bin/python -c "
-          import importlib.metadata as md, importlib.util
+          import importlib.metadata as md
           assert md.requires('szpont') is None, md.requires('szpont')
-          # The import name belongs to the conformance tester, run as
-          # 'python -m szpont' from its own directory and shadowed by anything
-          # this distribution installed under that name.
-          assert importlib.util.find_spec('szpont') is None, 'the wheel took the import name'
-          print('wheel ok: a console script, no dependencies, no import name')
+          print('wheel ok: a console script, no dependencies')
           "
 
   # `npx szpont`: the same launcher, published to the other index. Node and Python

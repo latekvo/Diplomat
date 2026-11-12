@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Ignacy Łątka" }]
-keywords = ["diplomat", "szpont", "szpontnet", "launcher", "desktop-app", "tray"]
+keywords = ["diplomat", "szpont", "launcher", "desktop-app", "tray"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
@@ -30,8 +30,6 @@ classifiers = [
 dependencies = []
 
 [project.scripts]
-# The module is `szpont_launcher`, not `szpont`, so that the import name stays
-# free for the conformance tester.
 szpont = "szpont_launcher:main"
 
 [project.urls]

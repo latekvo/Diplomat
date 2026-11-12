@@ -4,7 +4,7 @@ The Linux port of the macOS app: a **regular desktop window** with the
 same dense panel of six `software-mansion/argent` triage tools, reverse lookup,
 the Review-PRs / Fix-issues / Resolve-conflicts / Full-E2E-test wizards, the full autonomous
 monitor stack, a Devices view of the device-allocator pool, a Machines view of the
-remote machines agents offload work to, the Mesh topology screen, and settings. It's a thin UI renderer over the shared [`assets/`](../../diplomat-core/assets)
+remote machines agents offload work to, and settings. It's a thin UI renderer over the shared [`assets/`](../../diplomat-core/assets)
 assets — and it doesn't re-implement prompt assembly at all: it shells out to the
 `diplomat-core` Swift binary, so the two front-ends are identical by construction.
 
@@ -43,9 +43,7 @@ slot**, then the **queue** that has no bay yet.
   with the label its dispatch logged and how long it has been going. A spawn here is
   a detached `Popen` in a terminal the applet does not own, so the row is a status
   and nothing more — there is no window to click. The status itself is the one macOS
-  draws, *awaiting input* included, read off the agent's own tmux pane. A job the
-  mesh placed **back on this machine** is one of these like any other; one it placed
-  on a peer shows in the activity feed instead, having taken no bay here.
+  draws, *awaiting input* included, read off the agent's own tmux pane.
 
   An agent found only by the `ps` scan — no in-flight record behind it, which is
   what an applet restart leaves — still gets a row, marked *untracked* and drawn by
@@ -56,11 +54,10 @@ slot**, then the **queue** that has no bay yet.
   has taken it, and the spawn has not answered yet. Seconds, and a row for all of
   them, so *execute now* never reads as the click deleting the task. It holds a bay
   from the moment it starts, and the running row it becomes takes its place.
-- **Free slots** are the rest of the cap. Each running automatic agent takes one —
-  including a job the mesh placed back on this machine, which is a `claude` process
-  here whoever opened its terminal, and a review from a sweep, which the queue
-  merely picked the moment for; an agent a wizard press opened on the spot takes
-  none. Queued work starts here on the next poll.
+- **Free slots** are the rest of the cap. Each running automatic agent takes one -
+  including a review from a sweep, which the queue merely picked the moment for; an
+  agent a wizard press opened on the spot takes none. Queued work starts here on the
+  next poll.
 - **Auto-execute queue** is the switch at the top of the queue (default **on**): off,
   nothing starts by itself and every row waits for *execute now*. The monitors keep
   finding work and queueing it either way. It stays on screen while it is off even
@@ -155,7 +152,6 @@ here there are no session rows to sort, so the list starts at that order's *star
   opens that session itself, which satisfies the guard and is also the only way the
   API-error watcher can see the agent. Without tmux the agent runs directly under
   `$SHELL -i`, and such an rc swallows it
-- Optional: the `cryptography` package, for mesh device keys
 
 ## Run
 
@@ -210,10 +206,9 @@ relaunch. Manage it with `./install/install-watchdog.sh` /
 ## Settings
 
 A two-pane screen matching macOS. Most persist via `QSettings`
-(`~/.config/diplomat/…`); the exceptions are the keys a stdlib-only mesh node reads
-too - the repo roots, the agent runner and model, the automatic-task cap and the
-spending budget's four knobs - and the run deadline beside the cap, which live in
-the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/diplomat_runtime/appconfig.py)):
+(`~/.config/diplomat/…`); the exceptions are the repo roots, the agent runner and
+model, the automatic-task cap, the spending budget's four knobs and the run deadline
+beside the cap, which live in the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/diplomat_runtime/appconfig.py)):
 
 - **GitHub username** — overrides the `gh`-authenticated login for the "My …" tools.
 - **Repo roots** — the local checkouts Diplomat watches and spawned agents `cd`
@@ -223,10 +218,8 @@ the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/di
   isn't absolute, has no `.git` (the spawn's `cd` is best-effort, so the agent would
   otherwise start in `$HOME` unnoticed) or has no GitHub remote. Every automatic job
   covers every root; the panel works on the one picked in its header. Not in
-  `QSettings`: it lives in the shared `~/.diplomat/config.json` (`appconfig.py`)
-  because a mesh node is a separate, stdlib-only process with no Qt — so a job that
-  lands over the mesh uses the same checkouts, and a *running* node picks up a
-  change on its next spawn.
+  `QSettings`: it lives in the shared `~/.diplomat/config.json` (`appconfig.py`),
+  which every spawn re-reads.
 - **Auto-queue fixes for my PRs / Auto-queue reviews that request me** — the two
   monitor toggles with live
   status, and under the review-requests one the **author allowlist** (*Only these
@@ -243,13 +236,11 @@ the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/di
   are left for a Fix-issues sweep.
 - **Run at most N automatic tasks at a time** — this machine's hard cap on
   concurrent automatic agents (default **2**, range 1–16), spanning every monitor
-  above, the reviews a PR sweep queues, and any work a mesh peer routes here. The
+  above and the reviews a PR sweep queues. The
   agent a wizard press opens on the spot is never capped and doesn't count against
   it; work over the cap is not dropped — it waits in the [Agent tasks](#agent-tasks)
   list, in the order you put it, and whatever is left of the cap shows there as empty
-  slots. In `~/.diplomat/config.json` for the same reason as the repo roots — the node
-  that runs peer-routed work has no Qt, and a machine with two answers to "how many
-  at once" has no cap at all.
+  slots. In `~/.diplomat/config.json`, like the repo roots.
 - **Hold work when the limit runs low** - the
   [spending budget](../../../docs/automation.md#the-spending-budget) (default **on**),
   with the confidence it must reach that a task fits (default **95%**) and what to
@@ -260,57 +251,17 @@ the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/di
   starts when a window refills or the balance is topped up; *execute now* overrides
   it, a wizard spawn that
   opens a terminal on the spot is never gated, and nothing is held at all while the
-  usage probe cannot read a window. In `~/.diplomat/config.json` for the same reason
-  as the cap above.
+  usage probe cannot read a window. In `~/.diplomat/config.json`, like the cap above.
 - **Claude API errors** — the tmux watcher toggle, plus a count of nudges sent.
 - **Tools — colour & visibility** — retint or hide any tool card. (SKILL.md PRs
   and Installer/CLI PRs ship hidden.)
 - **Spawn terminal** — which terminal SPAWN AGENT opens.
 - **Device allocator (MCP)** - install/uninstall the bundled allocator daemon +
   MCP server (drives the Node installer in `../../device-allocator/`), with status.
-- **Mesh (LAN P2P)** — start/stop the local mesh node (off by default), with live
-  node/peer status; the mesh itself is managed from the ⬡ Mesh screen.
 - **Update** — bring this checkout up to the latest GitHub commit (merging when
   you have local commits of your own), rebuild the `diplomat-core` binary, and
   relaunch the app in place with its window open (the fresh instance replaces the
   running one, newest-wins).
-
-## Diplomat Mesh (experimental)
-
-The applet can coordinate duties with the other machines on your LAN — see the
-[Mesh docs](../../../docs/mesh.md)
-for the model. Enable it in ⚙ Settings; the panel then grows a collapsible
-topology column (live nodes, link states, per-node tier/token editors, per-duty
-strategy controls). The node is [SzpontNet](../../szpontnet-core/README.md), an independent
-standard-library-only library the applet registers itself behind; it runs headless
-anywhere.
-
-It is genuinely an **add-on**. With the library absent the applet starts and does
-everything that doesn't span machines; the ⬡ button, the Mesh screen and the
-topology poll are simply not built, and ⚙ Settings shows the toggle disabled with
-"SzpontNet not installed" rather than "Off". Nothing imports the library at module
-scope, and `tests/test_addon_optional.py` proves it by blocking the import in a
-real subprocess and rendering the panel anyway.
-
-```bash
-# From this directory. `SZPONTNET_HOST` is what puts Diplomat behind the node —
-# without it the node runs SzpontNet's own defaults (canonical v1 duties, state in
-# ~/.szpontnet, no activity feed) and joins a different mesh than the applet's.
-# Absolute, because `--daemon` re-execs the node from the library's own directory:
-# a relative PYTHONPATH entry would resolve against THAT cwd, the host module would
-# not import, and the node would come up on the null host without saying so.
-export SZPONTNET_HOST=diplomat_runtime.szponthost
-export PYTHONPATH="$PWD/../../diplomat-runtime:$PWD/../../szpontnet-core"
-
-python3 -m szpontnet --daemon     # join the mesh (works on macOS too, no Qt)
-python3 -m szpontnet --status     # topology + duty assignments
-python3 -m szpontnet --set tokens=out tier=2
-python3 -m szpontnet --dispatch audit --prompt "…"
-python3 -m szpontnet --fingerprint    # this device's trust key; --trust/--untrust/--ban to manage
-```
-
-New devices are **foreign (zero-trust)** until you promote them; see the
-[trust model](../../../docs/mesh.md#trust-model).
 
 ## Headless self-tests (no display needed)
 
@@ -327,7 +278,7 @@ DIPLOMAT_UPDATE_PROBE=1 python -m diplomat_app      # import those two and exit 
 
 # Snapshot a panel state to PNG (no real display required):
 DIPLOMAT_RENDER=panel DIPLOMAT_RENDER_OUT=/tmp/p.png \
-    QT_QPA_PLATFORM=offscreen python -m diplomat_app   # panel|lookup|wizard|issues|conflicts|audit|devices|mesh
+    QT_QPA_PLATFORM=offscreen python -m diplomat_app   # panel|lookup|wizard|issues|conflicts|audit|devices
                                                        #   settings[-explain] (-explain opens every row's
                                                        #   long-form paragraph, the only state that draws them)
                                                        #   devices-screen[-remote[-away]|-off] (the Devices
@@ -346,7 +297,7 @@ Also overridable: `DIPLOMAT_REPO` (the agents' working dir — outranks Settings
 *Repo roots* with one root, whose own default is `~/dev/<repo>`), `DIPLOMAT_CONFIG` (where the
 shared `config.json` lives),
 `DIPLOMAT_CORE_BIN`, `DIPLOMAT_AUTOFIX_SECS` (floor 30s), `DIPLOMAT_APIWATCH_SECS`
-(floor 5s), `DIPLOMAT_SHELL`, `DIPLOMAT_PYTHON`, `DIPLOMAT_NPM`.
+(floor 5s), `DIPLOMAT_SHELL`, `DIPLOMAT_NPM`.
 
 ## Tests
 
@@ -362,7 +313,7 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
   shared `assets/golden-prompts/` files (generated by the Swift smoke test), so the
   bridge can only drift from Swift by failing CI. Needs `DIPLOMAT_CORE_BIN`.
 - `tests/test_autofix.py` - the monitors' pure decisions: the dispatch gate,
-  edge/level triggers, backoff, mesh routing, the device's automatic-task cap, the
+  edge/level triggers, backoff, the device's automatic-task cap, the
   rate-limit budget's arithmetic, and the queue behind that cap (what a refusal defers, what a switched-off monitor
   holds, the drain order, "execute now", and what a task being started is while its
   spawn runs). Pinned against the Swift twin.
@@ -388,41 +339,24 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
 - `tests/test_review_author.py` - the wizard's author poll and the toggles it hides.
 - `tests/test_selfupdate.py` - fetch/merge/rebuild/relaunch, incl. the divergence case.
 - `tests/test_migrate.py` - the one-time `~/.argent` → `~/.diplomat` state move.
-- `tests/test_mesh_logic.py` - the mesh's pure brain: assignment strategies,
-  platform spread + shortfall, token failover, permutation invariance (the
-  leaderless-agreement property), protocol codec, LWW overrides
-  (dependency-free runnable, like `test_logic.py`).
-- `tests/test_mesh_node.py` - real node subprocesses on loopback: discovery,
-  cross-node assignment agreement, dispatch, remote edits, death takeover,
-  restart re-linking.
-- `tests/test_mesh_e2e_applet.py` - the applet driving a real node end to end.
-- `tests/test_addon_optional.py` - Diplomat with SzpontNet taken away: a real
-  subprocess with the import blocked, rendering the panel anyway.
 - `tests/test_allocator_update.py` - when a launch installs the device allocator,
   when it refreshes a stale one, and when it must leave an uninstall alone.
 - `tests/conftest.py` - redirects `QSettings`, the shared `~/.diplomat/config.json`,
   the activity feed and `~/.claude` to per-test temp dirs (and switches the quota
   probe off), so tests never read your transcripts, spend your token on a live
-  request, or scribble on your config; also clears `DIPLOMAT_MESH_*` so a pre-rename variable in your
-  shell can't answer for a `SZPONTNET_*` one the tests mean to leave unset.
-
-Tests that need no part of Diplomat live with the library, in
-[`szpontnet-core/tests/`](../../szpontnet-core/tests) - the Tor transport, the one-node-per-state-dir
-lock, the control-edit state flush, the host seam and the env namespace. They run in
-CI with no Qt and no Diplomat on the path, which is what makes "SzpontNet is
-independent" checkable rather than merely asserted.
+  request, or scribble on your config.
 
 ## Layout
 
 ```
 diplomat_app/
-  __init__.py     puts ../../diplomat-runtime on sys.path and installs the mesh host —
-                  done here because the modules below import the runtime at their own
-                  top level, and this package runs from a checkout, not an install
+  __init__.py     puts ../../diplomat-runtime on sys.path - done here because the
+                  modules below import the runtime at their own top level, and this
+                  package runs from a checkout, not an install
   store.py        state, QSettings, tool catalog, row mapping, lookup
   conflicts.py    ConflictConfig
   audit.py        AuditConfig - the Full E2E test
-  probes.py       the only thing that LOOKS: ps, tmux panes, mesh claims, gh merge state,
+  probes.py       the only thing that LOOKS: ps, tmux panes, gh merge state,
                   each answering present / unavailable / unsupported so a failure to look
                   is never mistaken for an answer. Tracks its own health
   agentdump.py    DIPLOMAT_AGENTS=1 — every record, every probe's raw answer, every verdict
@@ -433,9 +367,6 @@ diplomat_app/
   migrate.py      one-time ~/.argent → ~/.diplomat state move
   glyphs.py       monochrome tool glyphs, size-normalised and tinted
   deviceallocator.py  bridge to the allocator daemon's state.json + Node installer
-  szpont.py       the one gate on "is the SzpontNet add-on here?"
-  meshspawn.py    the wizards' "⬡ Run on mesh" row
-  meshview.py     the ⬡ Mesh topology screen
   telemetryview.py  the Telemetry screen: the bell curves, the rate-limit windows, the backlog series, the token split
   widgets.py      cards, chips, rows
   panel.py        the main window (header, search, grid, results, agent tasks, devices)
@@ -451,15 +382,13 @@ diplomat_app/
   __main__.py     entry point: headless modes or the GUI
 diplomat        the launcher (what the autostart .desktop execs)
 install/        build-core.sh + the autostart / auto-update (un)installers
-meshsim/        the real-socket mesh simulator the mesh scenarios run through
 tests/          the offline, headless pytest suite — this applet's, and the shared
                 runtime's and diplomat-core's parity tests along with it
 ```
 
 Everything below the UI - the assets loader, PR triage, the run book, token accounting,
-the spawner, the mesh host - is [`diplomat-runtime`](../../diplomat-runtime/README.md).
-The macOS app renders the Swift twins of it and hands the package itself to the mesh
-node it spawns.
+the spawner - is [`diplomat-runtime`](../../diplomat-runtime/README.md).
+The macOS app renders the Swift twins of it.
 
 `argent-utils` is a deprecated launcher shim kept only so pre-rename installs keep
 working; it forwards to `./diplomat`.

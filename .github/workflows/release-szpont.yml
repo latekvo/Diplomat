@@ -142,10 +142,9 @@ jobs:
           /tmp/verify/bin/pip install dist/*.whl
           test "$(/tmp/verify/bin/szpont --version)" = "szpont $VERSION"
           /tmp/verify/bin/python -c "
-          import importlib.metadata as md, importlib.util
+          import importlib.metadata as md
           assert md.requires('szpont') is None, md.requires('szpont')
-          assert importlib.util.find_spec('szpont') is None, 'the wheel took the import name'
-          print('wheel ok: a console script, no dependencies, no import name')
+          print('wheel ok: a console script, no dependencies')
           "
           HOME="$RUNNER_TEMP/nowhere" /tmp/verify/bin/szpont --plan | python -c "
           import json, sys

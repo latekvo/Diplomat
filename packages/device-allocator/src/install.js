@@ -38,7 +38,7 @@ const CLAUDE_MD = path.join(HOME, '.claude', 'CLAUDE.md');
 // Pre-rename identifiers (was `argent-device-allocator`, state under `~/.argent`).
 // A re-run of --install on an already-deployed machine migrates it: see
 // migrateLegacy(). `~/.argent` is SHARED with the separate Argent device-control
-// tool (its tool-server.json lives there), so only the three subdirs WE own are
+// tool (its tool-server.json lives there), so only the two subdirs WE own are
 // moved — never the parent.
 const LEGACY = {
   mcpKey: 'argent-device-allocator',
@@ -47,7 +47,7 @@ const LEGACY = {
   claudeMdBegin: '<!-- argent-device-allocator (managed — installed by Diplomat; remove via the installer) -->',
   claudeMdEnd: '<!-- end argent-device-allocator -->',
   base: path.join(HOME, '.argent'),
-  subdirs: ['device-allocator', 'pr-monitor', 'mesh'],
+  subdirs: ['device-allocator', 'pr-monitor'],
 };
 const NEW_BASE = path.join(HOME, '.diplomat');
 
@@ -161,9 +161,7 @@ function migrateLegacy() {
     const pid = control.discoveredDaemonPid(disc);
     if (pid) { try { process.kill(pid, 'SIGTERM'); } catch {} }
   } catch {}
-  // 2. Move the state we own (mesh identity + the daemon's two dirs) to ~/.diplomat.
-  //    mesh is also migrated at applet startup; both use mergeMoveDir so whichever
-  //    runs first wins and the other is a no-op.
+  // 2. Move the state we own (the daemon's two dirs) to ~/.diplomat.
   for (const sub of LEGACY.subdirs) {
     try { mergeMoveDir(path.join(LEGACY.base, sub), path.join(NEW_BASE, sub)); } catch {}
   }

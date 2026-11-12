@@ -45,21 +45,9 @@ may have work in it. `DIPLOMAT_REPO_URL` clones from a fork.
 dependencies. `packages/szpont-npm/test/parity-with-python.mjs` runs both against
 every machine in `test/scenarios.mjs` and fails if their plans differ.
 
-Diplomat's machines find each other over
-**[SzpontNet](https://github.com/latekvo/Diplomat/tree/main/packages/szpontnet-core)**,
-published separately as `szpontnet`. This package doesn't install it.
-
 ## Tests
 
 ```bash
 pip install pytest
 pytest packages/szpont/tests -q
 ```
-
-## The name
-
-`szpont` is also the import name of the SzpontNet
-[conformance tester](https://github.com/latekvo/Diplomat/tree/main/packages/szpontnet-spec/conformance),
-run as `python -m szpont` from its own directory. They don't collide: this package
-installs a `szpont` console script and a `szpont_launcher` module, and never the
-`szpont` import name. CI checks that the built wheel keeps it that way.

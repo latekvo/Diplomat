@@ -19,10 +19,6 @@ two agree by construction on :func:`plan`, a pure function from what was probed 
 what will be run, and ``parity-with-python.mjs`` compares what they probe off one
 machine and what they plan from one set of facts, key for key.
 
-``szpont_launcher`` rather than ``szpont``: the import name is left free for the
-conformance tester, which is run as ``python -m szpont`` from its own directory
-and would be shadowed by anything this distribution put on the import path.
-
 The standard library only, on both sides: this is what runs before Diplomat's own
 dependencies exist, on whatever interpreter ``pip`` happened to be on.
 """
@@ -46,7 +42,7 @@ SUPPORTED = ("darwin", "linux")
 MIN_PYTHON = (3, 10)
 
 # The venv and the managed checkout live under the state directory Diplomat
-# already owns (agent records, mesh state, the allocator's socket), so uninstalling
+# already owns (agent records, the allocator's socket), so uninstalling
 # is one `rm -rf ~/.diplomat` rather than a hunt.
 STATE_DIR = ".diplomat"
 
