@@ -308,8 +308,11 @@ extension Store {
     /// (`requestOne`, so the cap, the ban list and the queue switch apply), then recorded
     /// as `dispatched`, also when already asked for; a fix of an issue an agent is on is
     /// recorded without asking. `findings` needs nothing here: `isPaused` lets the my-PR
-    /// review reconcile run for `goalFindingItems`. An item in no repo root is skipped.
+    /// review reconcile run for `goalFindingItems`. An item in no repo root is skipped,
+    /// and the whole pass while the GitHub login is unknown: a review ask would take my
+    /// own PR for someone else's.
     func runGoalPass() async {
+        guard !effectiveMe.isEmpty else { return }
         let overlay = goalOverlay
         for view in taskViews where !view.work.isEmpty {
             var started: [String] = []
