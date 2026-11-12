@@ -11,19 +11,17 @@ import Foundation
 /// shows is derived here, on read. Nothing in the file is a summary; a bug in this
 /// arithmetic is fixed by editing this file, not by re-gathering weeks of data.
 ///
-/// The event vocabulary, per unit of auto-work (keyed by the mesh work key, which
-/// is already the identity two machines agree on — see `AutofixMesh.workKey`):
+/// The event vocabulary, per unit of auto-work (keyed by `AutofixWork.ledgerKey`):
 ///
 /// - `queued`  — a poll saw this work owed for the first time.
-/// - `started` — an agent was dispatched for it (`remote` when the mesh placed it
-///               on a peer, in which case the tokens are that machine's, not ours).
+/// - `started` — an agent was dispatched for it.
 /// - `done`    — the agent exited, carrying the tokens its own transcript accounts
 ///               for and, for a runner the provider bills in money, what it charged
 ///               and the model it charged for. Timed from its completion sentinel, or
 ///               from that transcript's last turn where the run left no sentinel the
 ///               applet can read.
 /// - `cleared` — a poll no longer sees it owed and we never started it (someone
-///               replied by hand, the PR closed, a peer took it).
+///               replied by hand, the PR closed).
 ///
 /// plus one `sample` per poll carrying the account's remaining quota fractions and
 /// this machine's cumulative Claude token counters, split monitored-repo vs
@@ -48,7 +46,7 @@ public enum Telemetry {
     /// One unit of auto-work, folded from every event carrying its key.
     public struct Task: Equatable {
         public let key: String
-        /// The mesh duty the work belongs to: `review` or `conflicts`.
+        /// The kind of work: `review` or `conflicts`.
         public var duty: String
         public var pr: Int
         /// First time a poll saw it owed. Nil for work dispatched by a trigger that
@@ -57,9 +55,6 @@ public enum Telemetry {
         public var startedAt: Double?
         public var doneAt: Double?
         public var clearedAt: Double?
-        /// The mesh placed it on a peer: it consumed that machine's quota, so it
-        /// counts toward the owed/started tallies but never toward the token spread.
-        public var remote: Bool
         /// Tokens the agent's own transcript accounts for (input + output + cache
         /// creation, matching `usage._tokenCost`). Nil when the transcript couldn't
         /// be tied back to the run.
@@ -165,8 +160,7 @@ public enum Telemetry {
             let fresh = byKey[key] == nil
             var task = byKey[key] ?? Task(key: key, duty: "", pr: 0, queuedAt: nil,
                                           startedAt: nil, doneAt: nil, clearedAt: nil,
-                                          remote: false, tokens: nil, runner: "",
-                                          usd: nil, model: "")
+                                          tokens: nil, runner: "", usd: nil, model: "")
             if let duty = obj["duty"] as? String, !duty.isEmpty { task.duty = duty }
             if let pr = number(obj["pr"]), pr > 0 { task.pr = clampedInt(pr) }
             let known: Bool
@@ -176,10 +170,7 @@ public enum Telemetry {
                 if task.queuedAt == nil { task.queuedAt = at }
             case "started":
                 known = true
-                if task.startedAt == nil {
-                    task.startedAt = at
-                    task.remote = JSONInput.flag(obj["remote"])
-                }
+                if task.startedAt == nil { task.startedAt = at }
             case "done":
                 known = true
                 let agentRunner = obj["runner"] as? String ?? ""
@@ -228,9 +219,10 @@ public enum Telemetry {
             if fresh { order.append(key) }
             byKey[key] = task
         }
-        // Samples arrive in append order, which is chronological — but two processes
-        // (the applet and a mesh node) append to one file, so a slow write can land
-        // out of order. Every consumer below walks consecutive pairs, so sort once.
+        // Samples arrive in append order, which is chronological — but each is stamped
+        // by its writer's wall clock, and two applets sharing a home append to one
+        // file, so one can land out of order. Every consumer below walks consecutive
+        // pairs, so sort once.
         samples.sort { $0.at < $1.at }
         return Ledger(tasks: order.compactMap { byKey[$0] }, samples: samples)
     }
@@ -428,9 +420,7 @@ public enum Telemetry {
     /// How many tasks finished in each equal bucket of the lookback, oldest first.
     ///
     /// Bucketed by when a task ENDED, not when it started or was queued: a run that
-    /// spanned two buckets is one delivery, and it happened at its exit. Work the mesh
-    /// placed on a peer is counted like any other — it was delivered — even though its
-    /// cost belongs to that peer and is kept out of every per-task figure.
+    /// spanned two buckets is one delivery, and it happened at its exit.
     ///
     /// The buckets are laid backwards from `now` rather than forwards from the start
     /// of the range, so the newest bar covers a whole bucket like every other one.
@@ -496,8 +486,7 @@ public enum Telemetry {
     // MARK: - Task lifespans, drawn over the quota chart
 
     /// One task's life, for the rate-limit chart's overlay markers. `done` is nil for
-    /// a task still running, or one the mesh placed on a peer that this node never saw
-    /// finish. `startedPct`/`donePct` are the weekly-quota level at each instant, read
+    /// a task still running. `startedPct`/`donePct` are the weekly-quota level at each instant, read
     /// off the same readings the purple line is drawn from so a marker sits on that
     /// line — nil only when no reading carries a week value.
     public struct TaskSpan: Equatable {
@@ -633,7 +622,6 @@ public enum Telemetry {
         public let queuedCount: Int
         public let startedCount: Int
         public let doneCount: Int
-        public let remoteCount: Int
         /// Finished tasks whose transcript could not be tied back to the run, so
         /// they carry no tokens and sit out the spread.
         public let unattributedCount: Int
@@ -680,11 +668,10 @@ public enum Telemetry {
             guard let s = t.startedAt else { return false }
             return s >= start && s <= now
         }
-        let local = inRange.filter { !$0.remote }
-        let runs = local.compactMap(\.runSecs)
+        let runs = inRange.compactMap(\.runSecs)
         let waits = inRange.compactMap(\.waitSecs)
 
-        let priced = local.filter { ($0.tokens ?? 0) > 0 }
+        let priced = inRange.filter { ($0.tokens ?? 0) > 0 }
         // Two lists, because the two figures ask different questions: what a task cost
         // is a token count whoever billed it, while a share of a window is the
         // account's and only its own tasks may be measured against it.
@@ -709,7 +696,7 @@ public enum Telemetry {
         // conservative direction of the two. Ties go to the first seen, as they do in
         // the Python twin. Another runner's bills price nothing: it is logged into its
         // own provider, or into none.
-        let billed = local.filter {
+        let billed = inRange.filter {
             ($0.usd ?? 0) > 0 && (usdRunner.isEmpty || $0.runner == usdRunner)
         }
         var latest: Task?
@@ -766,9 +753,8 @@ public enum Telemetry {
                 return q >= start && q <= now
             }.count,
             startedCount: inRange.count,
-            doneCount: local.filter { $0.doneAt != nil }.count,
-            remoteCount: inRange.filter(\.remote).count,
-            unattributedCount: local.filter { $0.doneAt != nil && ($0.tokens ?? 0) <= 0 }.count,
+            doneCount: inRange.filter { $0.doneAt != nil }.count,
+            unattributedCount: inRange.filter { $0.doneAt != nil && ($0.tokens ?? 0) <= 0 }.count,
             firstSampleAt: ledger.samples.first?.at,
             lastSampleAt: ledger.samples.last?.at)
     }

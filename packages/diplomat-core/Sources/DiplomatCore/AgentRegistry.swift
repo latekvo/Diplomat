@@ -314,9 +314,9 @@ public enum AgentRegistry {
     /// Which agent CLIs the runs the run deadline could end were started under — what
     /// `AutoBudget.tokensLeft` is asked in the currencies of.
     ///
-    /// Only those runs: an untracked one the rung refuses by name, a peer's spends the
-    /// peer's account, and a panel click holds no bay of the automatic cap, so a limit
-    /// any of them draws on says nothing about the rung (`AgentState.deadlineApplies`).
+    /// Only those runs: an untracked one the rung refuses by name, and a panel click
+    /// holds no bay of the automatic cap, so a limit either of them draws on says
+    /// nothing about the rung (`AgentState.deadlineApplies`).
     /// `""` for a run with no record of its own is passed through rather than dropped —
     /// the reader is what decides what to make of it.
     public static func runners(of records: [AgentState.RunRecord]) -> Set<String> {
@@ -350,9 +350,8 @@ public enum AgentRegistry {
     /// Kept on disk rather than in memory so the search survives the applet restart this
     /// whole module exists for — and because the search is the expensive half: matching a
     /// session to a run reads its opening message, while asking a bound one what it is
-    /// doing reads a single message. An OpenCode 2.x run needs no search: a local spawn
-    /// binds the id it minted before the agent starts, and a mesh-placed one binds the
-    /// session its TUI's command line names.
+    /// doing reads a single message. An OpenCode 2.x run needs no search: its spawn
+    /// binds the id it minted before the agent starts.
     ///
     /// Every runner spells an id its own way — `ses_00d61ec0…` under OpenCode,
     /// `20260812_002140_b0e4d4` under Hermes — so what is checked is the shape any id has
@@ -419,8 +418,8 @@ public enum AgentRegistry {
         else { return false }
         try? FileManager.default.createDirectory(at: agentsDir(),
                                                  withIntermediateDirectories: true)
-        // Atomically, so a concurrent reader — the other front-end, or the mesh node
-        // asking whether this machine has room — never sees a torn file.
+        // Atomically, so neither a crash mid-write nor a reader in another process
+        // (the debug dump) ever meets a torn file.
         return (try? data.write(to: runsPath(), options: .atomic)) != nil
     }
 
@@ -429,11 +428,9 @@ public enum AgentRegistry {
             "runId": r.runID, "dispatchedAt": r.dispatchedAt,
             "prNumber": r.prNumber.map { $0 as Any } ?? NSNull(),
             "prUrl": r.prURL, "kind": r.kind, "label": r.label, "source": r.source,
-            "placement": r.placement.rawValue, "node": r.node, "workKey": r.workKey,
             "ledgerKey": r.ledgerKey,
             "pid": r.pid.map { $0 as Any } ?? NSNull(),
             "tty": r.tty,
-            "claimSeenAt": r.claimSeenAt.map { $0 as Any } ?? NSNull(),
             "quietDigest": r.quietDigest,
             "quietSince": r.quietSince.map { $0 as Any } ?? NSNull(),
             "reapRefusedAt": r.reapRefusedAt.map { $0 as Any } ?? NSNull(),
@@ -452,14 +449,9 @@ public enum AgentRegistry {
             kind: d["kind"] as? String ?? "",
             label: d["label"] as? String ?? "",
             source: d["source"] as? String ?? AgentDispatchGate.Source.auto.rawValue,
-            placement: AgentState.Placement(rawValue: d["placement"] as? String ?? "local")
-                ?? .local,
-            node: d["node"] as? String ?? "",
-            workKey: d["workKey"] as? String ?? "",
             ledgerKey: d["ledgerKey"] as? String ?? "",
             pid: integer(d["pid"]),
             tty: d["tty"] as? String ?? "",
-            claimSeenAt: number(d["claimSeenAt"]),
             quietDigest: d["quietDigest"] as? String ?? "",
             quietSince: number(d["quietSince"]),
             reapRefusedAt: number(d["reapRefusedAt"]),

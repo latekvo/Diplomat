@@ -24,11 +24,10 @@ import Foundation
 //
 // THE ONE RULE THE WHOLE LADDER IS BUILT TO KEEP: absence of evidence never resolves to
 // `.finished`. A run is finished only on positive evidence — its runner said the turn
-// is over, its sentinel exists, its process was looked for in a table we actually read
-// and was not there, or its mesh claim was seen and has since been released. Every
-// other gap resolves to `.unknown`, which holds its bay and says so. Reading "I could
-// not look" as "it is gone" is what produced already-complete verdicts on agents that
-// were still working.
+// is over, its sentinel exists, or its process was looked for in a table we actually
+// read and was not there. Every other gap resolves to `.unknown`, which holds its bay
+// and says so. Reading "I could not look" as "it is gone" is what produced
+// already-complete verdicts on agents that were still working.
 //
 // The one deliberate exception is `runDeadline`, which ends a run on its age rather than
 // on evidence about it — the outermost backstop, for the runs every other rung is
@@ -45,7 +44,7 @@ import Foundation
 public enum Observation<T> {
     case present(T)
     /// A probe that should have answered could not — the terminal refused automation,
-    /// the process table would not decode, the mesh node is down.
+    /// the process table would not decode.
     case unavailable(String)
     /// This platform has no such probe at all. Never a defect, and never a reason to
     /// warn about a probe having gone silent.
@@ -136,11 +135,9 @@ public enum AgentState {
     /// terminal emulator, a tmux server and the user's rc all run first — and the
     /// process table is one `ps` pass reused for several seconds, so it can predate the
     /// pid file naming what to look for. Past this the run is judged on the evidence
-    /// there is: a known pid the table does not hold has ended, and a LOCAL run with no
-    /// pid file at all never ran (`.failed`) — this applet staged that path itself, so
-    /// nothing but the command writes it. A mesh-here run is the one the file cannot
-    /// answer for, its pid having been written into a run directory this applet never
-    /// created; that one falls back to the prompt scan.
+    /// there is: a known pid the table does not hold has ended, and a run with no pid
+    /// file at all never ran (`.failed`) — this applet staged that path itself, so
+    /// nothing but the command writes it.
     ///
     /// The same window bounds `AgentSpawner.spawn`'s own wait for the file, measured
     /// from the same dispatch instant, so the spawn and the tick can never disagree
@@ -209,28 +206,6 @@ public enum AgentState {
     /// retire the whole board on the day a limit ran out.
     public static let runDeadline: TimeInterval = 4 * 60 * 60
 
-    /// How long a mesh origination claim may go unseen before the peer's run reads as
-    /// over.
-    ///
-    /// Absence is only evidence once it has had time to be evidence. The claim travels
-    /// the executor's link BEFORE the dispatch ack, but reaches a front-end through a
-    /// file the node rewrites every couple of seconds, read by a poll of its own — and a
-    /// node restart empties the book until its peers re-assert. This window outlasts all
-    /// three, and is short enough that a finished run leaves the list while the operator
-    /// is still looking at it.
-    public static let claimSettle: TimeInterval = 45
-
-    // MARK: - Placements and sources
-
-    public enum Placement: String {
-        /// This applet opened the terminal.
-        case local
-        /// The mesh placed the run back on this machine.
-        case meshHere = "mesh-here"
-        /// The run is a process on somebody else's box.
-        case meshPeer = "mesh-peer"
-    }
-
     // MARK: - Inputs
 
     /// One live process, as the process-table probe reports it.
@@ -287,18 +262,12 @@ public enum AgentState {
         public var kind: String
         public var label: String
         public var source: String
-        public var placement: Placement
-        public var node: String
-        public var workKey: String
         public var ledgerKey: String
         /// The agent's pid, written by the inner shell before the agent starts (see
         /// `AgentSpawner.shellCommand` for what "the agent's" rests on, and where it is
         /// instead the shell wrapping it). `nil` until the registry has read the file.
         public var pid: Int?
         public var tty: String
-        /// When this device last saw the executor's claim for `workKey`, for a
-        /// mesh-peer run. `nil` when it has never been seen.
-        public var claimSeenAt: TimeInterval?
         /// A digest of this run's screen when it last CHANGED, with the time it
         /// changed. The memory behind `quietTimeout` — absence of motion is only
         /// measurable against when there was last some. Empty/`nil` until its screen
@@ -322,9 +291,7 @@ public enum AgentState {
         public init(runID: String, dispatchedAt: TimeInterval, prNumber: Int? = nil,
                     prURL: String = "", kind: String = "", label: String = "",
                     source: String = AgentDispatchGate.Source.auto.rawValue,
-                    placement: Placement = .local, node: String = "",
-                    workKey: String = "", ledgerKey: String = "", pid: Int? = nil,
-                    tty: String = "", claimSeenAt: TimeInterval? = nil,
+                    ledgerKey: String = "", pid: Int? = nil, tty: String = "",
                     quietDigest: String = "", quietSince: TimeInterval? = nil,
                     reapRefusedAt: TimeInterval? = nil,
                     untracked: Bool = false, released: Bool = false) {
@@ -335,23 +302,15 @@ public enum AgentState {
             self.kind = kind
             self.label = label
             self.source = source
-            self.placement = placement
-            self.node = node
-            self.workKey = workKey
             self.ledgerKey = ledgerKey
             self.pid = pid
             self.tty = tty
-            self.claimSeenAt = claimSeenAt
             self.quietDigest = quietDigest
             self.quietSince = quietSince
             self.reapRefusedAt = reapRefusedAt
             self.untracked = untracked
             self.released = released
         }
-
-        /// Does this run's agent execute on THIS machine? What the device's cap counts
-        /// — the cap bounds what this box runs, not what it dispatched.
-        public var runsHere: Bool { placement != .meshPeer }
 
         /// This run's `PRRef.itemKey`; nil for a run about no PR.
         public var item: String? { prNumber == nil ? nil : PRRef.itemKey(url: prURL) }
@@ -366,15 +325,11 @@ public enum AgentState {
         public var sentinels: Observation<Set<String>>
         /// tty → that session's visible buffer.
         public var tails: Observation<[String: String]>
-        /// Work keys currently claimed somewhere on the mesh.
-        public var claims: Observation<Set<String>>
         /// The items (`PRRef.itemKey`) of the PRs GitHub reports as MERGED.
         public var mergedPRs: Observation<Set<String>>
         /// Item → the tty of an agent found by its prompt text in the process table
-        /// (`promptItems`). The pre-registry identity mechanism, and still the only
-        /// evidence about a run whose terminal this applet did not open: a mesh
-        /// placement that landed back here, whose pid file belongs to the node that
-        /// spawned it.
+        /// (`promptItems`). The only evidence about an agent this applet holds no pid
+        /// for: one nothing here dispatched, or a run whose pid file has not been read.
         public var liveAgents: Observation<[String: String]>
         /// run id → what that run's own agent session says about it. Only a runner
         /// that serves one appears here, so a run's absence is ordinary and reads as
@@ -400,7 +355,6 @@ public enum AgentState {
         public init(processes: Observation<[Int: ProcInfo]> = .unavailable("not probed"),
                     sentinels: Observation<Set<String>> = .unavailable("not probed"),
                     tails: Observation<[String: String]> = .unavailable("not probed"),
-                    claims: Observation<Set<String>> = .unavailable("not probed"),
                     mergedPRs: Observation<Set<String>> = .unavailable("not probed"),
                     liveAgents: Observation<[String: String]> = .unavailable("not probed"),
                     sessions: Observation<[String: SessionState]> = .unavailable("not probed"),
@@ -409,7 +363,6 @@ public enum AgentState {
             self.processes = processes
             self.sentinels = sentinels
             self.tails = tails
-            self.claims = claims
             self.mergedPRs = mergedPRs
             self.liveAgents = liveAgents
             self.sessions = sessions
@@ -453,22 +406,6 @@ public enum AgentState {
         /// that may be somebody else's by then, and one that reported its turn over is
         /// `closeOnRetire`'s, which retires it whether or not its window closes.
         public var expired: Bool = false
-        /// Whether nothing on this machine had anything to LOOK FOR — set by the one
-        /// rung that answers `.unknown` about the record rather than about a probe.
-        ///
-        /// The deadline overrules a `.running` and exactly one `.unknown`, and the two
-        /// `.unknown`s are not separable by state. "The process table could not be
-        /// read" is an evidence outage, and ending a run on a clock during one retires
-        /// it for being old on the single pass that saw nothing. A run with neither a
-        /// pid nor a PR number is not an outage at all — every probe answered, and none
-        /// of them was given anything to look for — and that answer is the same on every
-        /// future tick, so without this the record holds its bay for the life of the
-        /// applet.
-        ///
-        /// It is also what keeps such a run out of `reapable`: a window is closed on the
-        /// strength of having SEEN the agent sitting in it, and this is the one ending
-        /// where nothing ever did.
-        public var unfindable: Bool = false
         /// Whether the deadline took this run's bay without ending it: an untracked run
         /// still `.running` a deadline after the scan first saw it (`lapsedFor`). Ending
         /// it would free nothing, since the next scan re-books the same agent, and a
@@ -476,35 +413,11 @@ public enum AgentState {
         public var lapsed: Bool = false
         /// Whether the agent's own runner said its turn was over and went well: a CLI's
         /// `idle` turn report, or a session that went idle without failing. Every other
-        /// ending (an exit, a gone pid, a released claim, a backstop) is inferred, and
-        /// says nothing about whether the agent finished what it set out to do.
+        /// ending (an exit, a gone pid, a backstop) is inferred, and says nothing about
+        /// whether the agent finished what it set out to do.
         public var reported: Bool = false
 
         public var occupying: Bool { AgentState.occupying.contains(state) && !lapsed }
-    }
-
-    // MARK: - Claim sightings
-
-    /// Refresh each mesh-peer run's claim sighting, returning updated records.
-    ///
-    /// Split out of `resolve` because it is the one input that is a memory rather than
-    /// an observation: absence only becomes evidence relative to when the claim was
-    /// last present, so somebody has to remember that. Keeping it a separate pure step
-    /// means `resolve` stays a function of its arguments alone.
-    ///
-    /// An unavailable claim book updates nothing — a node we could not read must not
-    /// age out a peer's run.
-    public static func observeClaims(_ records: [RunRecord],
-                                     claims: Observation<Set<String>>,
-                                     now: TimeInterval) -> [RunRecord] {
-        guard let live = claims.value else { return records }
-        return records.map { r in
-            guard r.placement == .meshPeer, !r.workKey.isEmpty,
-                  live.contains(r.workKey) else { return r }
-            var out = r
-            out.claimSeenAt = now
-            return out
-        }
     }
 
     // MARK: - Turn reports
@@ -593,9 +506,10 @@ public enum AgentState {
     /// Refresh each run's record of when its screen last CHANGED, returning updated
     /// records.
     ///
-    /// Beside `observeClaims` and for the same reason: absence is only measurable
-    /// against a memory of presence, and `resolve` stays a function of its arguments
-    /// alone. What is remembered is a digest rather than the screen itself — the book is
+    /// Split out of `resolve` because it is the one input that is a memory rather than
+    /// an observation: absence is only measurable against a memory of presence, and
+    /// this way `resolve` stays a function of its arguments alone. What is remembered is
+    /// a digest rather than the screen itself — the book is
     /// rewritten every tick and read by other processes, so storing every watched pane's
     /// contents in it would be both large and pointless.
     ///
@@ -695,11 +609,9 @@ public enum AgentState {
     ///    every rung below this one sees a live process either way. A runner that keeps
     ///    a session instead of running hooks says the same thing further down, once its
     ///    pid is known alive;
-    /// 4. a mesh-peer run is judged by the executor's claim, because no probe on this
-    ///    machine can see a process on another one;
-    /// 5. a local run is judged by its pid, and its screen only classifies a pid that is
+    /// 4. the run is judged by its pid, and its screen only classifies a pid that is
     ///    already known to be alive;
-    /// 6. the deadline, when the operator has one, and LAST: what it overrules is a
+    /// 5. the deadline, when the operator has one, and LAST: what it overrules is a
     ///    `.running` — the answer that means "this bay is spoken for and nothing here
     ///    can say when it will come back". Every other answer the ladder reaches is a
     ///    better one than a clock, and each of them is a reason this rung must not fire:
@@ -707,9 +619,8 @@ public enum AgentState {
     ///    its prompt that gave its bay back and still holds a task worth reading, and
     ///    `.unknown` is almost always the tick where the evidence could not be read at
     ///    all — ending a run on that would retire it for being old on the one pass that
-    ///    saw nothing. Its one exception is the `.unknown` that is about the record
-    ///    rather than a probe (`Resolution.unfindable`), which no later pass can improve
-    ///    on. An untracked run is not ended here but lapsed (`Resolution.lapsed`).
+    ///    saw nothing. An untracked run is not ended here but lapsed
+    ///    (`Resolution.lapsed`).
     ///
     /// The first rung skips an untracked run: a landed PR does not make its agent leave,
     /// so the next scan would only re-book it.
@@ -731,10 +642,8 @@ public enum AgentState {
             out.reported = report.verb == .idle
             return out
         }
-        let out = record.placement == .meshPeer
-            ? resolvePeer(record, evidence: evidence, now: now, done: done)
-            : resolveLocal(record, evidence: evidence, now: now, done: done)
-        guard out.state == .running || out.unfindable else { return out }
+        let out = resolveByPid(record, evidence: evidence, now: now, done: done)
+        guard out.state == .running else { return out }
         let cutoff = ApiErrorMatch.humanInterval(deadline ?? 0)
         if let seen = lapsedFor(record, now: now, deadline: deadline) {
             var kept = out
@@ -754,7 +663,6 @@ public enum AgentState {
                          + "\(ApiErrorMatch.humanInterval(expired)), "
                          + "past the \(cutoff) deadline")
         ended.expired = true
-        ended.unfindable = out.unfindable
         return ended
     }
 
@@ -767,8 +675,7 @@ public enum AgentState {
     /// nothing about the rung. Two spellings of the same set would drift, and the drift
     /// would be silent — a reading about the wrong accounts still reads true or false.
     public static func deadlineApplies(_ record: RunRecord) -> Bool {
-        record.runsHere && !record.untracked
-            && record.source == AgentDispatchGate.Source.auto.rawValue
+        !record.untracked && record.source == AgentDispatchGate.Source.auto.rawValue
     }
 
     /// How long this run has been going, once that is long enough to call it over — nil
@@ -780,13 +687,11 @@ public enum AgentState {
     /// the age the reason line quotes, so the verdict and the number the operator reads
     /// cannot come apart.
     ///
-    /// Six things hold it back, each a case where the clock is measuring something
+    /// Five things hold it back, each a case where the clock is measuring something
     /// other than a bay that will not come back:
     ///
     /// * **no deadline** — the operator switched the backstop off;
     /// * **no token reading, or none left** — see `runDeadline`;
-    /// * **a run on somebody else's machine** — the reading above is THIS account's, and
-    ///   the peer's own claim already ends that run;
     /// * **a run the operator started by hand** — `capLoad` counts only `.auto`, so a
     ///   panel click holds no bay of the automatic cap and there is nothing here to hand
     ///   back. All that ending one would buy is the loss of a working agent the operator
@@ -802,9 +707,8 @@ public enum AgentState {
     /// Every run this reaches is one `capLoad` is counting — a bay is what there is to
     /// hand back — but not the reverse, and the gap is deliberate on both sides. An
     /// untracked run is exempt above. So is a run on a tick whose evidence could not be
-    /// read, which the caller keeps out by asking this about a `.running` verdict or an
-    /// unfindable one and no other: a bay held by a run nobody could look at this pass
-    /// is a bay kept.
+    /// read, which the caller keeps out by asking this about a `.running` verdict and
+    /// no other: a bay held by a run nobody could look at this pass is a bay kept.
     public static func pastDeadline(_ record: RunRecord, tokens: Observation<Bool>,
                                     now: TimeInterval,
                                     deadline: TimeInterval?) -> TimeInterval? {
@@ -829,39 +733,7 @@ public enum AgentState {
         return age >= cutoff ? age : nil
     }
 
-    /// A run on somebody else's machine, judged by the origination lease.
-    ///
-    /// The executor claims the work key when it spawns the agent and releases it when
-    /// the agent exits (szpontnet-spec/docs/12), and the claim is republished in every
-    /// snapshot the local node writes. So a claimed key is a running agent — and this
-    /// is the only evidence there is, because `ps` on this box structurally cannot see
-    /// a process on that one. Judging a peer's run by a local process table, as the
-    /// Linux front-end used to, retires every peer run the moment its grace expires.
-    private static func resolvePeer(_ record: RunRecord, evidence: Evidence,
-                                    now: TimeInterval,
-                                    done: (RunState, String) -> Resolution) -> Resolution {
-        guard let live = evidence.claims.value else {
-            let why = evidence.claims.reason.isEmpty ? "unavailable" : evidence.claims.reason
-            return done(.unknown, "mesh claims \(why)")
-        }
-        if !record.workKey.isEmpty, live.contains(record.workKey) {
-            return done(.running, "claim held on \(record.node.isEmpty ? "a peer" : record.node)")
-        }
-        // Absence is only evidence once it has had time to be evidence. A run whose
-        // claim has never been seen counts from its dispatch, which covers both the lag
-        // before the first snapshot carries the key and the executor that deduped our
-        // dispatch against an agent of its own and so never took a lease at all.
-        let since = now - (record.claimSeenAt ?? record.dispatchedAt)
-        if since < claimSettle {
-            if record.claimSeenAt == nil {
-                return done(.starting, "dispatched \(secs(since)) ago, claim not seen yet")
-            }
-            return done(.running, "claim last seen \(secs(since)) ago")
-        }
-        return done(.finished, "claim released \(secs(since)) ago")
-    }
-
-    /// A run whose agent is a process on this machine.
+    /// A run judged by its agent's process.
     ///
     /// The pid is the identity — written by the inner shell, and naming the agent itself
     /// or the shell that wraps it, per `AgentSpawner.shellCommand`. Every rung below
@@ -870,7 +742,7 @@ public enum AgentState {
     /// `PR #<n> in <owner>/<repo>` out of a prompt in `ps` output, which could not tell
     /// two runs on one PR apart and matched any unrelated session that mentioned the
     /// number.
-    private static func resolveLocal(_ record: RunRecord, evidence: Evidence,
+    private static func resolveByPid(_ record: RunRecord, evidence: Evidence,
                                      now: TimeInterval,
                                      done: (RunState, String) -> Resolution) -> Resolution {
         guard let table = evidence.processes.value else {
@@ -921,30 +793,13 @@ public enum AgentState {
 
     /// A run this applet booked but has no pid for.
     ///
-    /// Three things produce one. A spawn whose shell has not written its pid file yet —
-    /// the ordinary first seconds of a run. A spawn whose terminal opened a window and
-    /// never ran the command in it, so the file is not late but absent. And a placement
-    /// the mesh routed back to this machine, where the NODE opened the terminal, so the
-    /// pid file it wrote belongs to a run directory this applet never created and never
-    /// will.
+    /// Two things produce one. A spawn whose shell has not written its pid file yet —
+    /// the ordinary first seconds of a run. And a spawn whose terminal opened a window
+    /// and never ran the command in it, so the file is not late but absent.
     ///
-    /// Which of the three is asked of `placement`, and that is the whole of it: for a
-    /// LOCAL run this applet staged the pid path, so past the grace the missing file is
-    /// `.failed` — a run reporting for itself, not an inference from what its window
-    /// looks like. Only a mesh-here run reaches the scan below.
-    ///
-    /// That fallback matters because a mesh-here run has no pid ever, and "unknown
-    /// until a pid appears" would hold its bay and refuse its PR a fresh agent for the
-    /// rest of the applet's life — the exact wedge this module exists to remove,
-    /// arriving by a different road. Seen in production the first time the monitors
-    /// ran: two conflict fixes the mesh placed back here, both reading "unknown", both
-    /// bays held, nothing able to retire either.
-    ///
-    /// So for that one the evidence is the pre-registry kind: the agent's own prompt in
-    /// the process table. It cannot tell two runs on one PR apart, which is exactly why it
-    /// is the fallback and not the identity — but "an agent for this PR is up" and "no
-    /// agent for this PR is up" are both positive answers, and the second is what
-    /// finally ends the run.
+    /// The agent's own prompt in the process table is asked first. It cannot tell two
+    /// runs on one PR apart, which is exactly why it is a fallback and not the identity —
+    /// but "an agent for this PR is up" is positive evidence that the command ran.
     private static func resolveWithoutPid(_ record: RunRecord, evidence: Evidence,
                                           now: TimeInterval, age: TimeInterval,
                                           done: (RunState, String) -> Resolution) -> Resolution {
@@ -960,25 +815,13 @@ public enum AgentState {
         if age <= spawnGrace {
             return done(.starting, "dispatched \(secs(age)) ago, no pid yet")
         }
-        if record.placement == .local {
-            // This applet opened the terminal and named the pid path itself, and the
-            // inner shell writes it before the agent (`AgentSpawner.shellCommand`). So
-            // an absent file past the grace is the run's OWN report that its command
-            // never ran — not an inference from what the terminal looks like, which is
-            // why it survives a terminal that changes how it fails.
-            return done(.failed, "its terminal never ran the command "
-                                 + "(no pid file \(secs(age)) after dispatch)")
-        }
-        guard record.item != nil, let pr = record.prNumber else {
-            // Nothing to look for: a mesh-here run has no pid file to be missing, and
-            // with no item either it cannot be found by the scan, so its absence is not
-            // evidence of anything. The one rung that stamps `unfindable`; see
-            // `Resolution.unfindable`.
-            var nowhere = done(.unknown, "no pid recorded \(secs(age)) after dispatch")
-            nowhere.unfindable = true
-            return nowhere
-        }
-        return done(.finished, "no agent for PR #\(pr) in the process table")
+        // This applet opened the terminal and named the pid path itself, and the inner
+        // shell writes it before the agent (`AgentSpawner.shellCommand`). So an absent
+        // file past the grace is the run's OWN report that its command never ran — not
+        // an inference from what the terminal looks like, which is why it survives a
+        // terminal that changes how it fails.
+        return done(.failed, "its terminal never ran the command "
+                             + "(no pid file \(secs(age)) after dispatch)")
     }
 
     /// A run synthesized from a sighting in the process table.
@@ -1122,9 +965,8 @@ public enum AgentState {
     /// that finished hours ago.
     ///
     /// Two sources, because two kinds of run reach their agent differently. A run with a
-    /// pid takes the tty off that process, which is exact. A run WITHOUT one — a placement
-    /// the mesh routed back here, where the node opened the terminal — has only the prompt
-    /// scan, which is looser but is the same evidence that says it is alive at all.
+    /// pid takes the tty off that process, which is exact. A run WITHOUT one has only the
+    /// prompt scan, which is looser but is the same evidence that says it is alive at all.
     ///
     /// A tty is adopted once and then left alone: it is a property of the process, and a
     /// process does not change ttys. The scan names one tty per item, so one another
@@ -1160,9 +1002,8 @@ public enum AgentState {
     /// agent would read as running and hold a bay until its window closed, which is the
     /// state the cap exists to prevent.
     ///
-    /// What produces one is a live agent whose run the book does not hold: one a peer's
-    /// node started on this box, a session the operator opened by hand, a run whose row
-    /// the operator dismissed, every agent when the book could not be read, and one whose
+    /// What produces one is a live agent whose run the book does not hold: a session the
+    /// operator opened by hand, a run whose row the operator dismissed, every agent when the book could not be read, and one whose
     /// run had no pid and ended beside another record on its PR. Not another run this
     /// applet ended, whose agent goes to a released record (`releaseEnded`), nor a window
     /// a backstop failed to close, whose run is kept. They are found the old way — the
@@ -1206,8 +1047,7 @@ public enum AgentState {
             out.append(RunRecord(runID: "untracked:\(item)", dispatchedAt: now,
                                  prNumber: pr, prURL: "https://github.com/\(slug)/pull/\(pr)",
                                  source: AgentDispatchGate.Source.auto.rawValue,
-                                 placement: .local, tty: live[item] ?? "",
-                                 untracked: true))
+                                 tty: live[item] ?? "", untracked: true))
         }
         return out
     }
@@ -1224,7 +1064,7 @@ public enum AgentState {
     /// released too: its agent can outlive the tick, and the close can reach nothing.
     ///
     /// Only where the scan would re-book once the PR's other records are gone: a run on
-    /// this machine, on a PR the scan sees. One with no pid is held to the scan's
+    /// a PR the scan sees. One with no pid is held to the scan's
     /// sighting, which cannot tell two agents apart, so it is released only alone on its
     /// PR. Beside a record already named `untracked:<item>` (the run itself, if a hand
     /// edit made it a dispatch), its run ID carries its pid, and without one it is not
@@ -1241,7 +1081,7 @@ public enum AgentState {
         var out: [(RunRecord, Resolution)] = []
         for r in records {
             guard let v = states[r.runID], ended.contains(v.state), !v.wedged, !v.expired,
-                  r.runsHere, let item = r.item, live[item] != nil,
+                  let item = r.item, live[item] != nil,
                   r.pid != nil || count[item] == 1 else { continue }
             var runID = "untracked:\(item)"
             if taken.contains(runID) {
@@ -1250,7 +1090,7 @@ public enum AgentState {
             }
             let heir = RunRecord(runID: runID, dispatchedAt: r.dispatchedAt,
                                  prNumber: r.prNumber, prURL: r.prURL, source: r.source,
-                                 placement: r.placement, pid: r.pid, tty: r.tty,
+                                 pid: r.pid, tty: r.tty,
                                  quietDigest: r.quietDigest, quietSince: r.quietSince,
                                  reapRefusedAt: r.reapRefusedAt,
                                  untracked: true, released: true)
@@ -1282,13 +1122,12 @@ public enum AgentState {
 
     /// The run ids holding a bay of this device's automatic-task cap.
     ///
-    /// Counted by where a run EXECUTES and who triggered it: a peer's agent spends the
-    /// peer's budget, and a panel click is the operator's own act and spends none of the
-    /// automatic one. A released agent spends none: its task ended.
+    /// Counted by who triggered a run: a panel click is the operator's own act and
+    /// spends none of the automatic budget. A released agent spends none: its task ended.
     public static func capLoad(records: [RunRecord],
                                states: [String: Resolution]) -> Set<String> {
         Set(records.filter { r in
-            guard r.runsHere, r.source == AgentDispatchGate.Source.auto.rawValue,
+            guard r.source == AgentDispatchGate.Source.auto.rawValue,
                   !r.released, let s = states[r.runID] else { return false }
             return s.occupying
         }.map(\.runID))
@@ -1349,24 +1188,18 @@ public enum AgentState {
     /// are absent from here: a run that reported its turn over is `closeOnRetire`'s,
     /// and one that exited or merged left nothing this verdict can vouch for.
     ///
-    /// The deadline's own exception is the run nothing could find
-    /// (`Resolution.unfindable`): a clock ended that one too, but no probe ever saw its
-    /// agent, so there is no window here for the verdict to vouch for. What is left is
-    /// exactly the runs this tick SAW alive: the stillness rung only classifies a
-    /// process already known to be up, and the other verdict the deadline overrules is a
-    /// `.running`.
-    ///
-    /// `runsHere` is not re-checked: both stamps already imply it — the stillness rung
-    /// only runs inside `resolveLocal`, and `pastDeadline` refuses a peer.
+    /// What is left is exactly the runs this tick SAW alive: the stillness rung only
+    /// classifies a process already known to be up, and the verdict the deadline
+    /// overrules is a `.running`.
     public static func reapable(records: [RunRecord],
                                 states: [String: Resolution]) -> [RunRecord] {
         records.filter { r in
             guard let s = states[r.runID] else { return false }
-            return s.wedged || (s.expired && !s.unfindable)
+            return s.wedged || s.expired
         }
     }
 
-    /// The automatic runs on this machine whose own runner reported the turn over
+    /// The automatic runs whose own runner reported the turn over
     /// (`Resolution.reported`): their window is closed as they retire, their work being
     /// on GitHub or in a report. A panel run is the operator's session, and an untracked
     /// agent's `auto` is the cap's assumption, not a dispatch.
@@ -1376,8 +1209,7 @@ public enum AgentState {
     public static func closeOnRetire(records: [RunRecord],
                                      states: [String: Resolution]) -> [RunRecord] {
         records.filter { r in
-            guard r.runsHere, !r.untracked,
-                  r.source == AgentDispatchGate.Source.auto.rawValue,
+            guard !r.untracked, r.source == AgentDispatchGate.Source.auto.rawValue,
                   let s = states[r.runID] else { return false }
             return s.reported
         }
@@ -1394,9 +1226,9 @@ public enum AgentState {
     /// Everything one pass of evidence produced. What a caller reads instead of
     /// re-deriving any of it.
     public struct Tick {
-        /// The records as the pipeline left them — claim sightings refreshed,
-        /// untracked agents synthesized, ended runs' live agents released. The caller
-        /// persists these.
+        /// The records as the pipeline left them — ttys adopted, stillness clocks
+        /// advanced, untracked agents synthesized, ended runs' live agents released. The
+        /// caller persists these.
         public var records: [RunRecord]
         public var states: [String: Resolution]
         public var rows: [(RunRecord, Resolution)]
@@ -1420,7 +1252,7 @@ public enum AgentState {
     /// Fold one pass of evidence into every answer, in the one order that is correct.
     ///
     /// The order is the reason this is a function rather than a convention each caller
-    /// repeats: claims are observed and ttys adopted BEFORE resolving, so both count this
+    /// repeats: ttys are adopted and screens observed BEFORE resolving, so both count this
     /// tick rather than a tick late; and untracked agents are synthesized AFTER, so a live
     /// agent that already has a record is not drawn twice — and so it keeps the tty the
     /// scan found it on rather than having one adopted for a pid it does not have.
@@ -1430,9 +1262,8 @@ public enum AgentState {
     public static func tick(records: [RunRecord], evidence: Evidence,
                             now: TimeInterval, limit: Int,
                             deadline: TimeInterval? = nil) -> Tick {
-        var recs = observeClaims(records, claims: evidence.claims, now: now)
-        recs = adoptTTYs(recs, processes: evidence.processes,
-                         liveAgents: evidence.liveAgents)
+        var recs = adoptTTYs(records, processes: evidence.processes,
+                             liveAgents: evidence.liveAgents)
         recs = observeQuiescence(recs, tails: evidence.tails, now: now)
         recs = synthesizeUntracked(recs, liveAgents: evidence.liveAgents, now: now)
         var states = resolve(records: recs, evidence: evidence, now: now,

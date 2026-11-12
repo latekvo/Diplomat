@@ -27,8 +27,6 @@ public enum AuditCategory: String, CaseIterable, Sendable {
     case merge
     /// Prompt-injection bans / un-bans.
     case bans
-    /// LAN mesh coordination: peers appearing/vanishing, duty takeovers, dispatches.
-    case mesh
     /// The Slack watcher: pings, triage outcomes, poll health.
     case comms
     /// Everything else: device kills/repairs, allocator install, poll + spawn health.
@@ -46,7 +44,6 @@ public enum AuditCategory: String, CaseIterable, Sendable {
         case .quota:      return "Out of quota"
         case .merge:      return "Merges"
         case .bans:       return "Bans"
-        case .mesh:       return "Mesh"
         case .comms:      return "Comms"
         case .system:     return "System"
         }
@@ -64,7 +61,6 @@ public enum AuditCategory: String, CaseIterable, Sendable {
         case .quota:      return "hourglass"
         case .merge:      return "checkmark.seal.fill"
         case .bans:       return "hand.raised.fill"
-        case .mesh:       return "point.3.connected.trianglepath.dotted"
         case .comms:      return "bubble.left.and.bubble.right.fill"
         case .system:     return "gearshape.fill"
         }
@@ -95,9 +91,6 @@ public enum AuditCategory: String, CaseIterable, Sendable {
             return .merge
         case "ban", "unban", "comms-ban":
             return .bans
-        case "mesh-up", "mesh-peer-up", "mesh-peer-down", "mesh-takeover",
-             "mesh-dispatch", "mesh-dispatch-failed", "mesh-spawn", "mesh-stop":
-            return .mesh
         case "comms-ping", "comms-review", "comms-fix", "comms-bump", "comms-investigate",
              "comms-error", "comms-recovered", "comms-notice", "comms-reply":
             return .comms

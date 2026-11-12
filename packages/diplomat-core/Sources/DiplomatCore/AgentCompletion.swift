@@ -41,17 +41,10 @@ public enum AgentCompletion {
     public static let pending = #""background_tasks":\[{"#
 
     /// The `--settings` payload, as the bytes that go in the file.
-    ///
-    /// `donePath` is the mesh's reader of this same report: a szpontnet executor holds
-    /// its claim on a work key until the agent's exit-code sentinel appears, and that
-    /// fires on EXIT — which on its own would hold the key for as long as the
-    /// finished agent's window stays open. Writing it on the terminal verbs releases
-    /// the key when the turn ends.
-    public static func settingsJSON(activityPath: String,
-                                    donePath: String? = nil) -> String? {
+    public static func settingsJSON(activityPath: String) -> String? {
         var hooks: [String: Any] = [:]
         for (event, verb) in events {
-            let cmd = append(verb, activityPath, donePath, guarded.contains(event))
+            let cmd = append(verb, activityPath, guarded.contains(event))
             hooks[event] = [["hooks": [["type": "command", "command": cmd]]]]
         }
         guard let data = try? JSONSerialization.data(withJSONObject: ["hooks": hooks])
@@ -60,16 +53,15 @@ public enum AgentCompletion {
     }
 
     private static func append(_ verb: AgentState.TurnReport.Verb,
-                               _ activityPath: String, _ donePath: String?,
-                               _ isGuarded: Bool) -> String {
+                               _ activityPath: String, _ isGuarded: Bool) -> String {
         // Append is the whole concurrency story: each line is a single small O_APPEND
         // write, so two hooks firing together interleave as whole lines rather than
         // tearing one, and a reader never sees a half-written state.
         var cmd = ""
         var word = verb.rawValue
         if isGuarded {
-            // The payload is read from stdin once, and the verb it chooses is reused
-            // below so the line and the sentinel can never disagree about it.
+            // The payload is read from stdin, and the verb it chooses is what the line
+            // below records.
             cmd += "v=\(verb.rawValue); tr -d ' \\t\\n' | grep -q \(shq(pending))"
             cmd += " && v=\(AgentState.TurnReport.Verb.busy.rawValue); "
             word = "\"$v\""
@@ -82,16 +74,6 @@ public enum AgentCompletion {
         // is in effect.
         cmd += "printf '%s %s\\n' \(word) \"$(date +%s)\""
         cmd += " 2>/dev/null >> \(shq(activityPath)) || :"
-        if let done = donePath, verb != .busy {
-            // `>` not `>>`: the sentinel is read by existence and dated by mtime, and a
-            // second turn's line would only move that date later.
-            let sentinel = "printf 0 2>/dev/null > \(shq(done)) || :"
-            // `case` rather than `[ ]` so the miss is a no-op that still exits 0: a
-            // hook that exits non-zero is reported to the agent as a failing hook.
-            cmd += isGuarded
-                ? "; case \"$v\" in \(verb.rawValue)) \(sentinel) ;; esac"
-                : "; \(sentinel)"
-        }
         return cmd
     }
 
