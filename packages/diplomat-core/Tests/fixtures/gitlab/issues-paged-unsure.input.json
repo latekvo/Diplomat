@@ -1,0 +1,67 @@
+{
+  "answer": {
+    "data": {
+      "project": {
+        "projectMembers": {
+          "pageInfo": {
+            "hasNextPage": true
+          },
+          "nodes": [
+            {
+              "user": {
+                "username": "alice"
+              }
+            }
+          ]
+        },
+        "issues": {
+          "nodes": [
+            {
+              "iid": "6",
+              "title": "From a common name",
+              "webUrl": "https://gitlab.example.com/group/sub/proj/-/issues/6",
+              "createdAt": "2026-11-07T09:00:00+01:00",
+              "updatedAt": "2026-11-08T09:00:00+01:00",
+              "userNotesCount": 0,
+              "author": {
+                "username": "sam"
+              },
+              "assignees": {
+                "nodes": []
+              },
+              "labels": {
+                "nodes": []
+              },
+              "notes": {
+                "nodes": []
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "search": {
+    "data": {
+      "project": {
+        "u0": {
+          "pageInfo": {
+            "hasNextPage": true
+          },
+          "nodes": [
+            {
+              "user": {
+                "username": "samantha"
+              }
+            },
+            {
+              "user": {
+                "username": "sammy"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

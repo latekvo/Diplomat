@@ -1,0 +1,138 @@
+{
+  "answer": {
+    "data": {
+      "project": {
+        "projectMembers": {
+          "pageInfo": {
+            "hasNextPage": true
+          },
+          "nodes": [
+            {
+              "user": {
+                "username": "alice"
+              }
+            }
+          ]
+        },
+        "issues": {
+          "nodes": [
+            {
+              "iid": "9",
+              "title": "From a member past the page",
+              "webUrl": "https://gitlab.example.com/group/sub/proj/-/issues/9",
+              "createdAt": "2026-11-07T09:00:00+01:00",
+              "updatedAt": "2026-11-08T09:00:00+01:00",
+              "userNotesCount": 1,
+              "author": {
+                "username": "Dave"
+              },
+              "assignees": {
+                "nodes": []
+              },
+              "labels": {
+                "nodes": []
+              },
+              "notes": {
+                "nodes": [
+                  {
+                    "author": {
+                      "username": "erin"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "iid": "8",
+              "title": "From an outsider",
+              "webUrl": "https://gitlab.example.com/group/sub/proj/-/issues/8",
+              "createdAt": "2026-11-07T09:00:00+01:00",
+              "updatedAt": "2026-11-08T09:00:00+01:00",
+              "userNotesCount": 2,
+              "author": {
+                "username": "erin"
+              },
+              "assignees": {
+                "nodes": []
+              },
+              "labels": {
+                "nodes": []
+              },
+              "notes": {
+                "nodes": [
+                  {
+                    "author": {
+                      "username": "dave"
+                    }
+                  },
+                  {
+                    "author": {
+                      "username": "alice"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "iid": "7",
+              "title": "Deleted author",
+              "webUrl": "https://gitlab.example.com/group/sub/proj/-/issues/7",
+              "createdAt": "2026-11-07T09:00:00+01:00",
+              "updatedAt": "2026-11-08T09:00:00+01:00",
+              "userNotesCount": 1,
+              "author": null,
+              "assignees": {
+                "nodes": []
+              },
+              "labels": {
+                "nodes": []
+              },
+              "notes": {
+                "nodes": [
+                  {
+                    "author": null
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "search": {
+    "data": {
+      "project": {
+        "u0": {
+          "pageInfo": {
+            "hasNextPage": false
+          },
+          "nodes": [
+            {
+              "user": {
+                "username": "Dave"
+              }
+            },
+            {
+              "user": {
+                "username": "davey"
+              }
+            }
+          ]
+        },
+        "u1": {
+          "pageInfo": {
+            "hasNextPage": false
+          },
+          "nodes": [
+            {
+              "user": {
+                "username": "erinson"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

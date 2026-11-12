@@ -2,6 +2,9 @@
   "data": {
     "project": {
       "projectMembers": {
+        "pageInfo": {
+          "hasNextPage": false
+        },
         "nodes": [
           {
             "user": {

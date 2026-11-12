@@ -1,0 +1,97 @@
+{
+  "asked": [
+    [
+      "dave",
+      "erin"
+    ]
+  ],
+  "result": {
+    "data": {
+      "search": {
+        "nodes": [
+          {
+            "number": 3,
+            "title": "MR 3",
+            "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/3",
+            "author": {
+              "login": "Dave"
+            },
+            "authorAssociation": "MEMBER",
+            "headRefOid": "3333333333333333333333333333333333333333",
+            "timelineItems": {
+              "nodes": [
+                {
+                  "createdAt": "2026-11-06T09:00:00+01:00",
+                  "requestedReviewer": {
+                    "__typename": "User",
+                    "login": "carol"
+                  }
+                }
+              ]
+            },
+            "reviews": {
+              "nodes": []
+            },
+            "comments": {
+              "nodes": []
+            }
+          },
+          {
+            "number": 2,
+            "title": "MR 2",
+            "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/2",
+            "author": {
+              "login": "erin"
+            },
+            "authorAssociation": "NONE",
+            "headRefOid": "2222222222222222222222222222222222222222",
+            "timelineItems": {
+              "nodes": [
+                {
+                  "createdAt": "2026-11-06T09:00:00+01:00",
+                  "requestedReviewer": {
+                    "__typename": "User",
+                    "login": "carol"
+                  }
+                }
+              ]
+            },
+            "reviews": {
+              "nodes": []
+            },
+            "comments": {
+              "nodes": []
+            }
+          },
+          {
+            "number": 1,
+            "title": "MR 1",
+            "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/1",
+            "author": {
+              "login": "Bob"
+            },
+            "authorAssociation": "MEMBER",
+            "headRefOid": "1111111111111111111111111111111111111111",
+            "timelineItems": {
+              "nodes": [
+                {
+                  "createdAt": "2026-11-06T09:00:00+01:00",
+                  "requestedReviewer": {
+                    "__typename": "User",
+                    "login": "carol"
+                  }
+                }
+              ]
+            },
+            "reviews": {
+              "nodes": []
+            },
+            "comments": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

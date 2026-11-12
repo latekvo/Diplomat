@@ -1,0 +1,125 @@
+{
+  "answer": {
+    "data": {
+      "project": {
+        "projectMembers": {
+          "pageInfo": {
+            "hasNextPage": true
+          },
+          "nodes": [
+            {
+              "user": {
+                "username": "alice"
+              }
+            },
+            {
+              "user": {
+                "username": "bob"
+              }
+            }
+          ]
+        },
+        "mergeRequests": {
+          "nodes": [
+            {
+              "iid": "3",
+              "title": "MR 3",
+              "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/3",
+              "diffHeadSha": "3333333333333333333333333333333333333333",
+              "createdAt": "2026-11-05T08:00:00+01:00",
+              "author": {
+                "username": "Dave"
+              },
+              "activity": {
+                "nodes": [
+                  {
+                    "author": {
+                      "username": "Dave"
+                    },
+                    "createdAt": "2026-11-06T09:00:00+01:00",
+                    "body": "requested review from @carol"
+                  }
+                ]
+              },
+              "comments": {
+                "nodes": []
+              }
+            },
+            {
+              "iid": "2",
+              "title": "MR 2",
+              "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/2",
+              "diffHeadSha": "2222222222222222222222222222222222222222",
+              "createdAt": "2026-11-05T08:00:00+01:00",
+              "author": {
+                "username": "erin"
+              },
+              "activity": {
+                "nodes": [
+                  {
+                    "author": {
+                      "username": "erin"
+                    },
+                    "createdAt": "2026-11-06T09:00:00+01:00",
+                    "body": "requested review from @carol"
+                  }
+                ]
+              },
+              "comments": {
+                "nodes": []
+              }
+            },
+            {
+              "iid": "1",
+              "title": "MR 1",
+              "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/1",
+              "diffHeadSha": "1111111111111111111111111111111111111111",
+              "createdAt": "2026-11-05T08:00:00+01:00",
+              "author": {
+                "username": "Bob"
+              },
+              "activity": {
+                "nodes": [
+                  {
+                    "author": {
+                      "username": "Bob"
+                    },
+                    "createdAt": "2026-11-06T09:00:00+01:00",
+                    "body": "requested review from @carol"
+                  }
+                ]
+              },
+              "comments": {
+                "nodes": []
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "search": {
+    "data": {
+      "project": {
+        "u0": {
+          "pageInfo": {
+            "hasNextPage": false
+          },
+          "nodes": [
+            {
+              "user": {
+                "username": "dave"
+              }
+            }
+          ]
+        },
+        "u1": {
+          "pageInfo": {
+            "hasNextPage": false
+          },
+          "nodes": []
+        }
+      }
+    }
+  }
+}
