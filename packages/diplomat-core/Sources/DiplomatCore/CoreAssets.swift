@@ -202,10 +202,21 @@ public enum CoreAssets {
         }
         public struct Classifier: Decodable {
             /// The instructions' repository wording: `one` for a single watched
-            /// repository, `many` for several, each value filled into `instructions`.
+            /// repository, `many` for several, each value filled into `instructions`;
+            /// `gitlab`'s replace some of them once a watched repository is on GitLab.
             public struct Repos: Decodable {
+                /// `one`'s replacements for a GitLab project, `many`'s for several
+                /// repositories one of which is; `hosted` names where each of several is
+                /// (`hostedGitHub`, `hostedGitLab`).
+                public struct GitLab: Decodable {
+                    public let one: [String: String]
+                    public let many: [String: String]
+                    public let hostedGitHub: String
+                    public let hostedGitLab: String
+                }
                 public let one: [String: String]
                 public let many: [String: String]
+                public let gitlab: GitLab
             }
             public let instructions: String
             public let input: String

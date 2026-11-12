@@ -774,6 +774,7 @@ func commsSmoke() throws {
     knowledgeSmoke()
     answererSmoke()
     try multiRepoSmoke()
+    try gitlabRootSmoke()
 }
 
 private func bannedSenderSmoke() {
@@ -3265,6 +3266,95 @@ private func answererSmoke() {
     check(!CommsAnswerer.parse(Data(#"[{"type":"result","is_error":true,"result":"boom"}]"#.utf8)).answers
           && !CommsAnswerer.parse(Data("not json".utf8)).answers,
           "an error or no answer declines")
+}
+
+private func gitlabRootSmoke() throws {
+    let lab = "group/sub/proj", primary = "software-mansion/argent"
+    let one = CommsSettings(repos: [lab], login: "testuser", gitlabHosts: ["Group/Sub/Proj": "GitLab.Example.com"])
+    let mixed = CommsSettings(repos: [primary, lab], login: "testuser",
+                              gitlabHosts: [lab: "gitlab.example.com", "other/gone": "gitlab.com"])
+    let github = CommsSettings(repos: [primary, lab], login: "testuser")
+
+    section("comms: a GitLab root's settings")
+    let decoded = try JSONDecoder().decode(CommsSettings.self, from: Data(
+        #"{"repos":["Group/Sub/Proj"],"gitlabHosts":{"group/sub/proj":"gitlab.example.com"}}"#.utf8))
+    let roundTrip = try JSONDecoder().decode(CommsSettings.self, from: try JSONEncoder().encode(mixed))
+    let githubJSON = String(decoding: try JSONEncoder().encode(github), as: UTF8.self)
+    check(one.gitlabHost("") == "gitlab.example.com" && one.gitlabHost("GROUP/sub/proj") == "gitlab.example.com"
+          && mixed.gitlabHost("") == nil && mixed.gitlabHost(lab) == "gitlab.example.com"
+          && mixed.gitlabHosts == [lab: "gitlab.example.com"] && github.gitlabHost(lab) == nil
+          && decoded.gitlabHost("") == "gitlab.example.com"
+          && roundTrip == mixed && !githubJSON.contains("gitlabHosts"),
+          "a watched repository's GitLab host is read, any case, and one not watched is dropped")
+
+    section("comms: a GitLab root's classifier prompt")
+    let labPrompt = CommsClassifier.prompt(settings: one)
+    for s in ["who maintains the GitLab project group/sub/proj on gitlab.example.com",
+              "!123 or MR 123 (a merge request, GitLab's pull request; #123 there is an issue)",
+              "https://gitlab.example.com/group/sub/proj/-/merge_requests/123, /-/issues/123 or "
+                  + "/-/work_items/123 link",
+              "nor does a reference like other-project#123 or other-project!123"] {
+        check(labPrompt.contains(s), "a GitLab root's classifier prompt says: \(s)")
+    }
+    check(!labPrompt.contains("github") && !labPrompt.contains("GitHub") && !labPrompt.contains("{"),
+          "…and nothing of GitHub, every placeholder filled")
+    let mixedPrompt = CommsClassifier.prompt(settings: mixed)
+    for s in ["the repositories software-mansion/argent and group/sub/proj, of which software-mansion/argent "
+                  + "is the primary one; software-mansion/argent is on GitHub and group/sub/proj is a "
+                  + "GitLab project on gitlab.example.com",
+              "in a GitLab project, !123, MR 123 or namespace/project!123 names a merge request"] {
+        check(mixedPrompt.contains(s), "a prompt watching a GitLab root among others says: \(s)")
+    }
+    check(!mixedPrompt.contains("{") && CommsClassifier.prompt(settings: github) != mixedPrompt
+          && !CommsClassifier.prompt(settings: github).contains("GitLab"),
+          "…every placeholder filled; GitHub roots alone keep the GitHub wording")
+
+    section("comms: a GitLab root's references")
+    let labOnly = CommsSettings(repos: [lab], gitlabHosts: [lab: "gitlab.example.com"])
+    check(CommsDecision.ownRepoText("see group/sub/other#5 and group/sub/proj#6", settings: labOnly)
+              == "see  and group/sub/proj#6"
+          && CommsDecision.ownRepoText("see group/sub/other!5 and !6", settings: labOnly) == "see  and !6",
+          "a sibling project of a nested namespace, as #N or !N, holds no number of this one")
+    let ghOnly = CommsSettings(owner: "software-mansion", repo: "argent")
+    for kept in ["software-mansion/radon!5", "a/b/c#5", "software-mansion/argent!5"] {
+        check(CommsDecision.ownRepoText(kept, settings: ghOnly) == kept,
+              "on GitHub \(kept) is no reference it strips")
+    }
+
+    section("comms: a GitLab root's merge request and issue of one number")
+    let both = [CommsAsk(.review, 12), CommsAsk(.fixIssue, 12)]
+    check(CommsDecision(action: .review, targets: both, summary: "s", reason: "r", settings: labOnly).targets == both
+          && CommsDecision(action: .review, targets: both, summary: "s", reason: "r", settings: ghOnly).targets
+              == [both[0]]
+          && CommsDecision(action: .review, targets: both + [CommsAsk(.review, 12)], summary: "s", reason: "r",
+                           settings: labOnly).targets == both,
+          "review !12 and fix #12 are two items on GitLab, one on GitHub; a repeat of either is one")
+    let ask = CommsMessage(id: "D0LAB0001:1793064601.000001", channelID: "D0LAB0001", channelName: "U1",
+                           isDM: true, userID: "U1", userName: "t", teamID: "T",
+                           text: "please review !12 and fix #12, and #5", ts: "1793064601.000001",
+                           permalink: "p", reasons: [.dm])
+    let checked = CommsDecision(action: .fixIssue, targets: [CommsAsk(.fixIssue, 5)] + both, summary: "s",
+                                reason: "r", settings: labOnly).checked(against: ask, settings: labOnly)
+    check(checked.targets == [CommsAsk(.fixIssue, 5)] + both,
+          "…through the check against the message: \(checked.targets)")
+    let rows = CommsTickResult.Item.targets(ask, checked, maxTargets: 20).map(\.message.id)
+    check(Set(rows).count == 3 && rows.contains(ask.id + "#12#fix_issue"),
+          "…each its own row: \(rows)")
+
+    let dir = scratchDir("gitlab-classifier")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let stub = dir.appendingPathComponent("claude")
+    try """
+    #!/bin/sh
+    cat > /dev/null
+    printf '%s' '{"decisions":[{"message":1,"action":"review","targets":[{"action":"review","number":12},\
+    {"action":"fix_issue","number":12}],"summary":"s","reason":"r","language":"en","evidence":""}]}'
+    """.write(to: stub, atomically: true, encoding: .utf8)
+    chmod(stub.path, 0o755)
+    let fromLab = CommsClassifier.run(CommsBatch(messages: [ask]), settings: labOnly, binary: stub.path)
+    let fromHub = CommsClassifier.run(CommsBatch(messages: [ask]), settings: ghOnly, binary: stub.path)
+    check(fromLab.first?.targets == both && fromHub.first?.targets == [both[0]],
+          "…as the classifier answers them: \(fromLab.map(\.targets)) \(fromHub.map(\.targets))")
 }
 
 private func multiRepoSmoke() throws {

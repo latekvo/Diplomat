@@ -69,6 +69,19 @@
         "links": "an owner/repo#123 reference or a github.com/<owner>/<repo>/pull/123 or /issues/123 link into one of these repositories",
         "foreign": "Each target also names its repo, one of {list} exactly as written here: a link or an owner/repo#123 reference names its own, and a bare number is {owner}/{repo}'s unless the message, or the earlier message it refers to, clearly names another of these repositories by name (\"{example}#123\", \"#123 in {example}\"). A link into any other repository names no number of these, nor does a reference like other-repo#123: leave those out.",
         "repoField": "repo: for investigate or question, which of {list} the message is about: {owner}/{repo} unless it clearly names another; {owner}/{repo} for every other action.\n\n"
+      },
+      "gitlab": {
+        "one": {
+          "maintains": "the GitLab project {owner}/{repo} on {host}",
+          "links": "!123 or MR 123 (a merge request, GitLab's pull request; #123 there is an issue), or a https://{host}/{owner}/{repo}/-/merge_requests/123, /-/issues/123 or /-/work_items/123 link",
+          "foreign": "A link into any project other than {owner}/{repo} names no number of this one, nor does a reference like other-project#123 or other-project!123: leave those out."
+        },
+        "many": {
+          "maintains": "the repositories {list}, of which {owner}/{repo} is the primary one; {hosted}",
+          "links": "an owner/repo#123 reference or a github.com/<owner>/<repo>/pull/123 or /issues/123 link into one of these repositories; in a GitLab project, !123, MR 123 or namespace/project!123 names a merge request (GitLab's pull request) and #123 an issue, and its links are https://<host>/<namespace>/<project>/-/merge_requests/123, /-/issues/123 or /-/work_items/123"
+        },
+        "hostedGitHub": "{slug} is on GitHub",
+        "hostedGitLab": "{slug} is a GitLab project on {host}"
       }
     },
     "schema": {
