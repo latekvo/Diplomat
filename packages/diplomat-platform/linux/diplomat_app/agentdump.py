@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 
-from diplomat_runtime import agentregistry, agentstate, apiwatch
+from diplomat_runtime import agentregistry, agentstate, apiwatch, review
 from . import probes
 
 
@@ -28,7 +28,7 @@ def run() -> int:
     tokens = (probes.tokens_left(agentregistry.runners_of(records))
               if deadline is not None else None)
     evidence = probes.gather(records, now, tokens=tokens, mesh_enabled=_mesh_enabled())
-    t = agentstate.tick(records, evidence, now, limit, deadline)
+    t = agentstate.tick(records, evidence, now, limit, deadline, tuple(review.repo_roots()))
 
     print(f"registry: {agentregistry.runs_path()}")
     cutoff = ("off" if deadline is None

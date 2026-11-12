@@ -679,8 +679,9 @@ def gather(records: list[RunRecord], now: float, *,
     # read as working for a whole tick longer than it was.
     scan_sessions: dict[str, str] = {}
     by_pid: dict[int, str] = {}
+    roots = tuple(review.repo_roots())
     scan = _note("agent scan",
-                 live_agents(dump, {r.slug.lower() for r in review.repo_roots()},
+                 live_agents(dump, {r.slug.lower() for r in roots},
                              scan_sessions,
                              held_pids={r.pid for r in records if r.pid is not None},
                              by_pid=by_pid),
@@ -692,7 +693,7 @@ def gather(records: list[RunRecord], now: float, *,
     # captured. It has no run directory, so no sentinel and no session to ask either:
     # its screen is the whole of the evidence about it, and left out it reads as
     # working until its window closes.
-    looked_up = agentstate.synthesize_untracked(looked_up, scan, now)
+    looked_up = agentstate.synthesize_untracked(looked_up, scan, now, roots)
     return Evidence(
         activity=_note("turn reports", agentregistry.activity(records), now),
         processes=table,

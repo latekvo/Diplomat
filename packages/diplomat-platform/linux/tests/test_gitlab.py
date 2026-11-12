@@ -49,6 +49,19 @@ def test_every_fixture_has_an_adapter():
     assert names == set(ADAPTERS)
 
 
+def test_the_queries_ask_what_their_adapters_read():
+    """System-note discussions fill the discussions page, a thread's adapted comment is
+    its LAST note, a request older than the activity window falls back on the MR's
+    creation, and no adapter of ``prs`` reads members."""
+    for name in ("prs", "monitor-prs"):
+        text = core.read_graphql(f"gitlab-{name}")
+        assert "discussions(first: 100)" in text and "notes(last: 20)" in text, name
+    assert "projectMembers" not in core.read_graphql("gitlab-prs")
+    requests = core.read_graphql("gitlab-review-requests")
+    assert "notes(last: 100, filter: ONLY_ACTIVITY)" in requests
+    assert "diffHeadSha createdAt" in requests
+
+
 # ---- glab ---------------------------------------------------------------------
 
 
@@ -371,6 +384,38 @@ def test_a_listed_gitlab_checkout_carries_its_host_into_the_prompt():
                        {"owner": "group/sub", "repo": "proj", "path": "/src/proj",
                         "host": HOST}],
         "home": {"owner": "group/sub", "repo": "proj", "path": "/src/proj", "host": HOST}}
+
+
+def test_a_live_agent_on_a_nested_namespace_is_seen_by_its_prompt():
+    text = "claude Review PR #337 in group/sub/proj. Use the `gh` CLI to fetch it."
+    assert list(autofix.prompt_items(text, {"Group/Sub/Proj"})) == ["group/sub/proj#337"]
+    assert list(autofix.prompt_items(text, {"group/sub", "group/sub/proj"})) == [
+        "group/sub/proj#337"], "the longest slug the path starts with"
+    assert list(autofix.prompt_items(text, {"group/sub"})) == ["group/sub#337"]
+    assert list(autofix.prompt_items(text, {"sub/proj"})) == []
+
+
+def test_an_untracked_agent_on_a_merge_request_is_booked_once_under_its_link():
+    """Its record's link is read back into the scan's item key, or the next tick would
+    find the agent unbooked again and add a second record."""
+    from diplomat_runtime import agentstate as A
+
+    live = A.Observation.present({"group/sub/proj#337": "pts/7"})
+    evidence = A.Evidence(processes=A.Observation.present({}),
+                          sentinels=A.Observation.present(set()),
+                          tails=A.Observation.present({}),
+                          claims=A.Observation.present(set()),
+                          merged_prs=A.Observation.present(set()), live_agents=live,
+                          activity=A.Observation.present({}),
+                          sessions=A.Observation.present({}))
+    first = A.tick([], evidence, 1000.0, 4, roots=(HUB, LAB))
+    second = A.tick(first.records, evidence, 1008.0, 4, roots=(HUB, LAB))
+    (run,) = second.records
+    assert run.pr_url == f"https://{HOST}/group/sub/proj/-/merge_requests/337"
+    assert run.item == "group/sub/proj#337"
+    (hub,) = A.synthesize_untracked([], A.Observation.present({"o/r#5": ""}), 0.0,
+                                    (HUB, LAB))
+    assert hub.pr_url == "https://github.com/o/r/pull/5"
 
 
 def test_a_nested_namespace_is_labelled_by_its_last_segment():

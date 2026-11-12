@@ -1234,23 +1234,30 @@ class RunningAgent:
         return self.state == "awaiting_input"
 
 
-_LIVE_AGENT_RE = re.compile(r"PR #([0-9]+) in ([\w.-]+)/([\w.-]+)")
+_LIVE_AGENT_RE = re.compile(r"PR #([0-9]+) in ([\w.-]+(?:/[\w.-]+)+)")
 
 
 def prompt_items(text: str, slugs: set[str]):
     """Yield the item key of every ``PR #<n> in <owner>/<repo>`` in a prompt whose repo
-    is one of ``slugs``. Every single-PR prompt the applet dispatches opens that way.
+    is one of ``slugs``, the owner a GitLab namespace of any depth. Every single-PR
+    prompt the applet dispatches opens that way.
 
+    The longest leading run of the path's segments that is in ``slugs`` is the repo.
     The prompt goes on ``. Use the `gh` CLI``, and ``.`` is a repo-name character, so
-    a name read with a trailing dot is taken without it when only that is in ``slugs``.
+    the whole path read with a trailing dot is taken without it when only that is in
+    ``slugs``.
     """
     wanted = {s.lower() for s in slugs}
     for m in _LIVE_AGENT_RE.finditer(text):
-        owner, repo = m.group(2).lower(), m.group(3).lower()
-        if f"{owner}/{repo}" not in wanted:
-            repo = repo.rstrip(".")
-        if f"{owner}/{repo}" in wanted:
-            yield item_key(owner, repo, int(m.group(1)))
+        segments = m.group(2).lower().split("/")
+        for end in range(len(segments), 1, -1):
+            slug = "/".join(segments[:end])
+            if end == len(segments) and slug not in wanted:
+                slug = slug.rstrip(".")
+            if slug in wanted:
+                owner, _, repo = slug.rpartition("/")
+                yield item_key(owner, repo, int(m.group(1)))
+                break
 
 
 def live_pr_items(ps_output: str, slugs: set[str]) -> set[str]:

@@ -3425,7 +3425,7 @@ class Store(QObject):
         evidence = probes.gather(records, now, merged=self._merged_prs,
                                  tokens=self._tokens_left, mesh_enabled=self.mesh_enabled)
         t = agentstate.tick(records, evidence, now, self.auto_task_limit,
-                            appconfig.run_deadline())
+                            appconfig.run_deadline(), tuple(review.repo_roots()))
         with self._tick_lock:
             self._tick = t
         return t

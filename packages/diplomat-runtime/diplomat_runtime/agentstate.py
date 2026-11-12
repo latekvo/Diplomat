@@ -59,7 +59,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from . import apiwatch, completion
-from .prref import item_key_from_url, split_item_key
+from .prref import LocalRepo, item_key_from_url, split_item_key
 
 # MARK: - Observations: evidence, or a named reason there is none
 
@@ -1267,7 +1267,7 @@ def adopt_ttys(records: list[RunRecord], processes: Observation,
 
 
 def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
-                         now: float) -> list[RunRecord]:
+                         now: float, roots: tuple[LocalRepo, ...] = ()) -> list[RunRecord]:
     """Records for live agents nobody dispatched, so they are deduped against and
     drawn rather than merely subtracted from a slot count.
 
@@ -1294,6 +1294,9 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
 
     They count as automatic. An agent whose trigger is unknown spending a bay defers
     work; the opposite error dispatches a second agent onto a PR that has one.
+
+    Its link is its repo's: a merge request's when ``roots`` names its slug as a GitLab
+    root, else a github.com PR's.
     """
     if not live_agents.ok:
         return records
@@ -1311,14 +1314,17 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
             r = replace(r, tty=tty, quiet_digest="", quiet_since=None)
         out.append(r)
     known = {r.item for r in out if r.item is not None}
+    gitlab = {r.slug.lower(): r for r in roots if r.is_gitlab}
     for item in sorted(set(live) - known):
         split = split_item_key(item)
         if split is None:
             continue
         slug, number = split
+        lab = gitlab.get(slug)
         out.append(RunRecord(run_id=f"untracked:{item}", dispatched_at=now,
                              pr_number=number,
-                             pr_url=f"https://github.com/{slug}/pull/{number}",
+                             pr_url=lab.link("pull", number) if lab
+                             else f"https://github.com/{slug}/pull/{number}",
                              source=SOURCE_AUTO, placement=PLACEMENT_LOCAL,
                              tty=live[item], untracked=True))
     return out
@@ -1526,7 +1532,7 @@ class Tick:
 
 
 def tick(records: list[RunRecord], evidence: Evidence, now: float, limit: int,
-         deadline: float | None = None) -> Tick:
+         deadline: float | None = None, roots: tuple[LocalRepo, ...] = ()) -> Tick:
     """Fold one pass of evidence into every answer, in the one order that is correct.
 
     The order is the reason this is a function rather than a convention each caller
@@ -1538,12 +1544,13 @@ def tick(records: list[RunRecord], evidence: Evidence, now: float, limit: int,
     Released records are made LAST, from the verdicts, so the caller persists each
     before it forgets the run that ended.
     Both front-ends and the parity CLI go through here, so neither can get the
-    sequence subtly different from the other.
+    sequence subtly different from the other. ``roots`` are the repo roots, which link
+    an untracked agent's record.
     """
     records = observe_claims(records, evidence.claims, now)
     records = adopt_ttys(records, evidence.processes, evidence.live_agents)
     records = observe_quiescence(records, evidence.tails, now)
-    records = synthesize_untracked(records, evidence.live_agents, now)
+    records = synthesize_untracked(records, evidence.live_agents, now, roots)
     states = resolve(records, evidence, now, deadline)
     for heir, verdict in release_ended(records, states, evidence, now, deadline):
         records = records + [heir]
