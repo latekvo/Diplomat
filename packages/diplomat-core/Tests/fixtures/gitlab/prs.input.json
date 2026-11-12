@@ -1,20 +1,6 @@
 {
   "data": {
     "project": {
-      "projectMembers": {
-        "nodes": [
-          {
-            "user": {
-              "username": "alice"
-            }
-          },
-          {
-            "user": {
-              "username": "bob"
-            }
-          }
-        ]
-      },
       "mergeRequests": {
         "nodes": [
           {

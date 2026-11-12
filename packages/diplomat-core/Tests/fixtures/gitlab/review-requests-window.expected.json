@@ -1,0 +1,83 @@
+{
+  "data": {
+    "search": {
+      "nodes": [
+        {
+          "number": 31,
+          "title": "Requested before the window",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/31",
+          "author": {
+            "login": "alice"
+          },
+          "authorAssociation": "MEMBER",
+          "headRefOid": "7777777777777777777777777777777777777777",
+          "timelineItems": {
+            "nodes": [
+              {
+                "createdAt": "2026-11-06T09:00:00+01:00",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              },
+              {
+                "createdAt": "2026-11-06T10:00:00+01:00",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "dave"
+                }
+              }
+            ]
+          },
+          "reviews": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "dave"
+                },
+                "submittedAt": "2026-11-06T11:00:00+01:00"
+              }
+            ]
+          },
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "carol"
+                },
+                "createdAt": "2026-11-06T12:00:00+01:00"
+              }
+            ]
+          }
+        },
+        {
+          "number": 30,
+          "title": "No activity at all",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/30",
+          "author": {
+            "login": "zed"
+          },
+          "authorAssociation": "NONE",
+          "headRefOid": "8888888888888888888888888888888888888888",
+          "timelineItems": {
+            "nodes": [
+              {
+                "createdAt": "2026-11-02T08:00:00+01:00",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              }
+            ]
+          },
+          "reviews": {
+            "nodes": []
+          },
+          "comments": {
+            "nodes": []
+          }
+        }
+      ]
+    }
+  }
+}
