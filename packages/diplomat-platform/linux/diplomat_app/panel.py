@@ -1218,7 +1218,10 @@ class Panel(QWidget):
 
     def _rebuild_lookup(self, n: int) -> None:
         r = self.store.lookup(n)
-        link = r.url or self.store.selected_repo.link("issues", n)
+        repo = self.store.selected_repo
+        # GitLab numbers merge requests and issues apart, so a number on no list has
+        # no link there.
+        link = r.url or (None if repo.is_gitlab else repo.link("issues", n))
 
         container = QWidget()
         col = QVBoxLayout(container)
@@ -1239,9 +1242,11 @@ class Panel(QWidget):
         )
         top.addWidget(status)
         top.addStretch(1)
-        open_btn = _icon_button("↗", f"Open #{n} on GitHub")
-        open_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(link)))
-        top.addWidget(open_btn)
+        if link:
+            open_btn = _icon_button(
+                "↗", f"Open #{n} on {'GitLab' if repo.is_gitlab else 'GitHub'}")
+            open_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(link)))
+            top.addWidget(open_btn)
         col.addLayout(top)
 
         presence = QLabel(r.presence)

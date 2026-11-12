@@ -565,6 +565,42 @@ def test_refresh_lists_a_gitlab_roots_merge_requests(lab_only, monkeypatch):
     assert lab_only.known_me(LAB) == "carol"
 
 
+def test_the_lookups_open_button_names_the_forge_and_never_guesses_a_gitlab_link(
+        lab_only, monkeypatch):
+    from diplomat_app import panel as panel_mod
+    from diplomat_app.store import Store
+    from PySide6.QtWidgets import QApplication, QToolButton
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
+    opened: list[str] = []
+    monkeypatch.setattr(panel_mod.QDesktopServices, "openUrl",
+                        lambda url: opened.append(url.toString()))
+    FakeGlab(monkeypatch, viewer={"data": {"currentUser": {"username": "carol"}}},
+             prs=_fixture("prs", "input"), issues=_fixture("issues", "input"))
+    lab_only.refresh()
+    panel = panel_mod.Panel(lab_only)
+
+    def buttons(n: int) -> list[QToolButton]:
+        panel._rebuild_lookup(n)
+        return [b for b in panel.lookup_scroll.widget().findChildren(QToolButton)
+                if b.text() == "↗"]
+
+    (mr,) = buttons(12)
+    assert mr.toolTip() == "Open #12 on GitLab"
+    mr.click()
+    assert opened == [f"https://{HOST}/group/sub/proj/-/merge_requests/12"]
+    assert buttons(999) == [], "a number on no list is a merge request or an issue"
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [HUB])
+    (issue,) = buttons(999)
+    assert issue.toolTip() == "Open #999 on GitHub"
+    issue.click()
+    assert opened[-1] == "https://github.com/o/r/issues/999"
+    panel.deleteLater()
+
+
 def test_a_lookup_off_the_lists_asks_gitlabs_rest_api(lab_only, monkeypatch):
     asked: list[list[str]] = []
     answer: dict = {"iid": 40, "web_url": f"https://{HOST}/group/sub/proj/-/issues/40",
