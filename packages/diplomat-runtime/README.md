@@ -25,7 +25,7 @@ diplomat_runtime/
   core.py         loads the shared assets/ (from the diplomat-core package)
   gh.py           gh CLI shell-out (GraphQL)
   models.py       domain models, Filters, Fmt, API (from assets/)
-  appconfig.py    ~/.diplomat/config.json — the settings more than one process reads
+  appconfig.py    ~/.diplomat/config.json - the settings more than one process reads
                   (the repo roots, the cap on concurrent automatic agents, and the
                   spending budget those agents are started against)
   configbase.py   what the four wizards' configs share

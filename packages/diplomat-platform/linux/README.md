@@ -338,7 +338,6 @@ python tests/test_logic.py        # the logic tests, dependency-free (no pytest)
   its pixels) the rate-limit axis spanning the lookback rather than the readings.
 - `tests/test_review_author.py` - the wizard's author poll and the toggles it hides.
 - `tests/test_selfupdate.py` - fetch/merge/rebuild/relaunch, incl. the divergence case.
-- `tests/test_migrate.py` - the one-time `~/.argent` → `~/.diplomat` state move.
 - `tests/test_allocator_update.py` - when a launch installs the device allocator,
   when it refreshes a stale one, and when it must leave an uninstall alone.
 - `tests/conftest.py` - redirects `QSettings`, the shared `~/.diplomat/config.json`,
@@ -364,7 +363,7 @@ diplomat_app/
   autofixmonitor.py  the monitors' GitHub reads (monitor-prs / review-requests)
   bans.py         the allocator daemon's prompt-injection ban list
   selfupdate.py   fetch/merge, rebuild diplomat-core, relaunch (button + 6AM timer)
-  migrate.py      one-time ~/.argent → ~/.diplomat state move
+  migrate.py      brings an installed login entry up to what install-autostart.sh writes
   glyphs.py       monochrome tool glyphs, size-normalised and tinted
   deviceallocator.py  bridge to the allocator daemon's state.json + Node installer
   telemetryview.py  the Telemetry screen: the bell curves, the rate-limit windows, the backlog series, the token split
