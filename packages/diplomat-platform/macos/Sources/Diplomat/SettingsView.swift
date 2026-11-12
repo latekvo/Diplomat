@@ -119,7 +119,9 @@ struct SettingsView: View {
 
     private static let identityDetail = """
         Blank = whoever `gh` is authenticated as. Scopes the “My …” tools and the \
-        Review wizard: which PRs count as mine, and whose reviews the monitors owe.
+        Review wizard: which PRs count as mine, and whose reviews the monitors owe. \
+        In a GitLab repo root “me” is `glab`'s user on its host, which this does not \
+        change.
         """
 
     private var identityField: some View {
@@ -397,13 +399,13 @@ struct SettingsView: View {
 
     private static let otherReposDetail = """
         Paste a PR or issue link to one of these and its agent starts in that \
-        checkout, never over the mesh. Each is known by its GitHub or GitLab remotes, \
-        `upstream` first.
+        checkout, never over the mesh. Each is known by its GitHub or GitLab remotes \
+        and named by the first, a GitHub one before GitLab and `upstream` first.
         """
 
     private func otherRepoRow(_ path: String, checkout: LocalRepos.Checkout?,
                               remove: @escaping () -> Void) -> some View {
-        let slug = checkout?.repos.first?.slug
+        let slug = checkout.flatMap { PRRef.LocalRepo.settingsName($0.repos) }?.slug
         return HStack(spacing: 6) {
             Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 1) {

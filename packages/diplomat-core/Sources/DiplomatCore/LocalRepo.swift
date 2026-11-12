@@ -32,8 +32,8 @@ extension PRRef.LocalRepo {
     /// Every GitHub or GitLab remote of the checkout at `path`, from `git config --local
     /// --get-regexp '^remote\..*\.url$'` output, each once (by host and slug). A fork clone
     /// carries both the fork and the project it forked, and a link to either belongs in
-    /// that checkout. `upstream` comes first, then `origin`, then the rest in config order:
-    /// the first entry is the one Settings names the checkout by. With `only`, just the
+    /// that checkout. `upstream` comes first, then `origin`, then the rest in config order
+    /// (`settingsName` picks the one Settings names the checkout by). With `only`, just the
     /// remotes it names, ranked the same. Python twin: `localrepos.entries`.
     public static func entries(path: String, remotes: String, only: [String] = [],
                                gitlabHosts: Set<String> = []) -> [PRRef.LocalRepo] {
@@ -53,6 +53,13 @@ extension PRRef.LocalRepo {
             .sorted { (rank($0.element.remote), $0.offset) < (rank($1.element.remote), $1.offset) }
             .map(\.element.repo)
             .filter { seen.insert($0.identity).inserted }
+    }
+
+    /// Which of a checkout's `entries` Settings names it by: the first GitHub one, as
+    /// `RepoRoots.resolve` ranks a GitHub remote over a GitLab one, else the first.
+    /// Python twin: `localrepos.Checkout.slug`.
+    public static func settingsName(_ entries: [PRRef.LocalRepo]) -> PRRef.LocalRepo? {
+        entries.first { !$0.isGitLab } ?? entries.first
     }
 
     /// What tells two repos apart: host and slug, lowercased.
@@ -81,10 +88,12 @@ extension PRRef.LocalRepo {
 
 /// Which hosts a git remote is read as GitLab on: gitlab.com, every host glab is configured
 /// for (passed in as `configured`, from `GLab.configuredHosts`), and any host whose first
-/// DNS label is `gitlab` (`gitlab.example.com`). Python twin: `localrepos.gitlab_hosts`.
+/// DNS label is `gitlab` (`gitlab.example.com`); never github.com, whatever glab lists.
+/// Python twin: `localrepos.gitlab_hosts`.
 public enum GitLabHosts {
     public static func contains(_ host: String, configured: Set<String>) -> Bool {
         let h = host.lowercased()
+        if h == PRRef.LocalRepo.github { return false }
         if h == "gitlab.com" || configured.contains(where: { $0.lowercased() == h }) { return true }
         let labels = h.split(separator: ".", omittingEmptySubsequences: false)
         return labels.count >= 2 && labels[0] == "gitlab" && !labels.contains(where: \.isEmpty)
@@ -125,15 +134,17 @@ public enum RepoRoots {
     /// Each of `paths` (a leading `~` expanded) as the repo it is a checkout of, in order.
     ///
     /// `remotes` maps an expanded path to its `git config --local --get-regexp
-    /// '^remote\..*\.url$'` output; a path missing from it is no checkout. A path names
-    /// the configured repo (a github.com one) when its `upstream` or `origin` (any remote,
-    /// with neither) is that repo, or a GitHub repo of that name under another owner (a
-    /// fork's `origin`, or a URL from before the repo moved), and otherwise its first
-    /// remote (`LocalRepo.entries` order). A GitLab remote is only ever itself. Another
-    /// remote naming the configured repo is a sibling fetched from, not what the checkout
-    /// is. A path with no GitHub or GitLab remote is skipped, and a repo two paths name
-    /// keeps the first. When nothing resolves, the first path stands for the configured
-    /// repo (`guessed` tells when that is a guess among several).
+    /// '^remote\..*\.url$'` output; a path missing from it is no checkout. A path with a
+    /// GitHub remote resolves among its GitHub remotes alone: it names the configured repo
+    /// (a github.com one) when its GitHub `upstream` or `origin` (any GitHub remote, with
+    /// neither) is that repo, or a repo of that name under another owner (a fork's
+    /// `origin`, or a URL from before the repo moved), and otherwise its first GitHub
+    /// remote (`LocalRepo.entries` order). Another remote naming the configured repo is a
+    /// sibling fetched from, not what the checkout is. Only a path with no GitHub remote
+    /// names a GitLab repo: its first GitLab remote, `upstream` then `origin` first. A path
+    /// with neither is skipped, and a repo two paths name keeps the first. When nothing
+    /// resolves, the first path stands for the configured repo (`guessed` tells when that
+    /// is a guess among several).
     public static func resolve(paths: [String], remotes: [String: String],
                                configured: (owner: String, repo: String),
                                gitlabHosts: Set<String> = []) -> [PRRef.LocalRepo] {
@@ -148,11 +159,13 @@ public enum RepoRoots {
             let ownRemotes = PRRef.LocalRepo.entries(path: path, remotes: config,
                                                      only: ["upstream", "origin"],
                                                      gitlabHosts: gitlabHosts)
-            let own = (ownRemotes.isEmpty ? entries : ownRemotes).filter { !$0.isGitLab }
+            let hub = entries.filter { !$0.isGitLab }
+            let github = ownRemotes.filter { !$0.isGitLab }
+            let own = github.isEmpty ? hub : github
             let renamed = own.contains { $0.repo.lowercased() == configured.repo.lowercased() }
                 ? PRRef.LocalRepo(owner: configured.owner, repo: configured.repo, path: path) : nil
             guard let pick = own.first(where: { $0.slug.lowercased() == want })
-                    ?? renamed ?? entries.first,
+                    ?? renamed ?? PRRef.LocalRepo.settingsName(entries),
                   seen.insert(pick.identity).inserted else { continue }
             out.append(pick)
         }
