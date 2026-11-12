@@ -418,8 +418,7 @@ public enum AgentRegistry {
         else { return false }
         try? FileManager.default.createDirectory(at: agentsDir(),
                                                  withIntermediateDirectories: true)
-        // Atomically, so neither a crash mid-write nor a reader in another process
-        // (the debug dump) ever meets a torn file.
+        // Atomically, so a crash mid-write never leaves a torn file.
         return (try? data.write(to: runsPath(), options: .atomic)) != nil
     }
 

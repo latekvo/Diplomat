@@ -768,7 +768,7 @@ private struct QuotaChart: View {
             // one where it finished, joined by a thin dashed green→red tie. Each dot
             // sits at its instant's weekly-quota level (startedPct/donePct), so it
             // rides the line; a nil pct — no week reading to place it against — drops
-            // to a lane near the floor. A nil `done` (still running, or on a peer) is a
+            // to a lane near the floor. A nil `done` (still running) is a
             // lone start dot. Hard-coded green/red, like the half-way rule above: a
             // marker's colour is its meaning, not a metric's tint.
             let started = Color(red: 0.20, green: 0.78, blue: 0.35)

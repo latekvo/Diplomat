@@ -426,8 +426,8 @@ enum AgentProbes {
     ///
     /// A terminal reports the tty it opened; `ps` reports the one the agent ended up on.
     /// For a run this applet spawned they are the same, because the spawn captures the
-    /// window's tty as it opens it. For a run it did not — one a peer's node started, one
-    /// the operator opened by hand — the only tty known is the agent's own, read out of
+    /// window's tty as it opens it. For a run it did not — one the operator opened by
+    /// hand — the only tty known is the agent's own, read out of
     /// the process table, and on a box whose shells wrap themselves in tmux that tty
     /// belongs to no window at all. Its screen is then unreadable for as long as the
     /// session lives, which resolves to RUNNING, and RUNNING holds a bay of the

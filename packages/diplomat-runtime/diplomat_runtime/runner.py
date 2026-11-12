@@ -32,10 +32,6 @@ a secret-handling story per provider. Diplomat stores the *choice* of runner and
 model; the runner stores the secret.
 
 Stdlib-only, like :mod:`appconfig` and :mod:`autofix`.
-
-:mod:`appconfig` is imported per-call, not at module scope: ``appconfig`` imports
-:mod:`autofix`, which imports this module for :func:`is_agent_line`. Hoisting that
-import closes the cycle.
 """
 
 from __future__ import annotations

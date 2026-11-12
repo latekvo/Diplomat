@@ -506,8 +506,8 @@ enum Render {
             TelemetryLog.append(["at": queued, "ev": "queued", "key": key,
                                  "duty": duty, "pr": 300 + i])
             TelemetryLog.append(["at": queued + wait, "ev": "started", "key": key,
-                                 "remote": i % 11 == 0, "attempt": 1])
-            if i % 11 == 0 { continue }   // ran on a peer: no local sentinel, no cost
+                                 "attempt": 1])
+            if i % 11 == 0 { continue }   // never finished: a start with no end
             // Right-skewed, as real agent runs are: most around 2% of a window, a few
             // several times that.
             TelemetryLog.append(["at": queued + wait + run, "ev": "done", "key": key,

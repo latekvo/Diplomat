@@ -125,8 +125,8 @@ def test_a_record_with_unusable_fields_reads_the_same_on_both_sides():
     atomicjson.write_atomic(R.runs_path(), {"version": R.SCHEMA_VERSION, "runs": [
         {"runId": "r1", "dispatchedAt": None, "pid": "x", "prNumber": "7",
          "quietSince": True, "reapRefusedAt": "soon"},
-        {"runId": "r2", "tty": 5, "label": None, "source": False, "kind": {},
-         "quietDigest": 0},
+        {"runId": "r2", "tty": 5, "ledgerKey": ["x"], "label": None, "source": False,
+         "kind": {}, "quietDigest": 0},
         {"runId": 7, "tty": "pts/7"}]})
     ours = [r.to_json() for r in R.load()]
     assert ours == _swift({"mode": "read"})

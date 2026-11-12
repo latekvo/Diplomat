@@ -773,8 +773,8 @@ struct SettingsView: View {
         while a spending limit both reads and has room left: agents parked waiting for a \
         window to refill age exactly like stuck ones, and a machine with no limit it can \
         read leaves the backstop off. A run already back at its prompt has given its bay \
-        back and is left alone, and so are a peer's run, an agent you started by hand, and \
-        one the scan found rather than this applet dispatching it.
+        back and is left alone, and so are an agent you started by hand and one the scan \
+        found rather than this applet dispatching it.
         """
 
     /// Every other card's pill answers "is this doing anything" before a row is read.

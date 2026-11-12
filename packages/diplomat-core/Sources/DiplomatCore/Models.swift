@@ -295,10 +295,10 @@ public enum Fmt {
     }
 }
 
-/// Non-trapping Double→Int for a value decoded from an untrusted snapshot — a peer's
-/// gossiped `state.json`, or a corrupt / hand-edited local state file. Swift's `Int(Double)`
-/// TRAPS (fatalError) once the magnitude exceeds Int's range, so a poisoned or absurd
-/// *finite* value (e.g. a peer's `1e300`) would crash the app the moment it renders. This
+/// Non-trapping Double→Int for a value decoded from a file or a daemon's snapshot,
+/// either of which may be corrupt or hand-edited. Swift's `Int(Double)`
+/// TRAPS (fatalError) once the magnitude exceeds Int's range, so an absurd
+/// *finite* value (e.g. `1e300`) would crash the app the moment it renders. This
 /// clamps instead. For in-range values it truncates toward zero exactly like `Int(Double)`,
 /// so normal display output is unchanged; only the out-of-range / non-finite case differs.
 public func clampedInt(_ x: Double) -> Int {

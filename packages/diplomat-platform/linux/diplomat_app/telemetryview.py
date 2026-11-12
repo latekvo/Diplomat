@@ -569,7 +569,7 @@ class QuotaChart(QWidget):
         # where it finished, joined by a thin dashed green→red tie. Each dot sits at
         # its instant's weekly-quota level (started_pct/done_pct), so it rides the
         # line; a None pct — no week reading to place it against — drops to a lane near
-        # the floor. A None `done` (still running, or on a peer) is a lone start dot.
+        # the floor. A None `done` (still running) is a lone start dot.
         # Hard-coded green/red, like the half-way rule above: a marker's colour is its
         # meaning, not a metric's tint.
         started_color = QColor(51, 199, 89)
