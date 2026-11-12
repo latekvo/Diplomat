@@ -25,11 +25,12 @@ FIXTURES = Path(__file__).resolve().parents[3] / "diplomat-core/Tests/fixtures/g
 HOST = "gitlab.example.com"
 LAB = LocalRepo("group/sub", "proj", "/src/proj", HOST)
 HUB = LocalRepo("o", "r", "/src/r")
+#: The review-requests fixtures are answers to the query asked for reviewer ``carol``.
 ADAPTERS = {
     "prs": gitlab.prs, "monitor-prs": gitlab.monitor_prs, "closed-prs": gitlab.closed_prs,
-    "review-requests": gitlab.review_requests,
-    "review-requests-nofiles": gitlab.review_requests, "issues": gitlab.issues,
-    "mr": gitlab.mr,
+    **{name: lambda env: gitlab.review_requests(env, "carol")
+       for name in ("review-requests", "review-requests-nofiles", "review-requests-window")},
+    "issues": gitlab.issues, "mr": gitlab.mr,
 }
 QUERIES = ("viewer", "prs", "monitor-prs", "closed-prs", "review-requests", "issues", "mr")
 
@@ -150,6 +151,16 @@ def test_the_monitor_reads_ask_for_me_by_username(monkeypatch):
                                 "withFiles": "false"}
     assert [s.number for s in snaps][:2] == [12, 8] and snaps[0].mergeable == "CONFLICTING"
     assert [r.number for r in reqs] == [22, 19]
+
+
+def test_a_request_older_than_the_activity_window_is_answered_inside_it(monkeypatch):
+    from diplomat_app import autofixmonitor
+
+    FakeGlab(monkeypatch, review_requests=_fixture("review-requests-window", "input"))
+    answered, silent = autofixmonitor.fetch_review_requests(LAB, "carol")
+    assert answered.requested_at == "2026-11-06T09:00:00+01:00"
+    assert not answered.owe_review
+    assert silent.requested_at == "2026-11-02T08:00:00+01:00" and silent.owe_review
 
 
 def test_the_closed_read_keys_merge_requests_by_the_whole_namespace(nothing_closed,

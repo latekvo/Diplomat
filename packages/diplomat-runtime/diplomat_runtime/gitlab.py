@@ -153,14 +153,26 @@ def _requests(notes: list[dict]) -> list[dict]:
     return out
 
 
-def review_requests(env: dict) -> dict:
-    """``gitlab-review-requests`` as ``review-requests``; ``files`` only when the query
-    asked for ``diffStats``."""
+def _request_of(reviewer: str, events: list[dict], mr: dict, activity: list[dict]) -> list[dict]:
+    """``reviewer``'s request when no note in the window names them: the query only
+    answers merge requests that request their review, so it is at least as old as the
+    window's oldest note, or the merge request when the window is empty."""
+    if any(e["requestedReviewer"]["login"].lower() == reviewer.lower() for e in events):
+        return []
+    times = [n["createdAt"] for n in activity if n.get("createdAt")]
+    return [{"createdAt": min(times) if times else mr.get("createdAt"),
+             "requestedReviewer": {"__typename": "User", "login": reviewer}}]
+
+
+def review_requests(env: dict, reviewer: str) -> dict:
+    """``gitlab-review-requests`` asked for ``reviewer`` as ``review-requests``;
+    ``files`` only when the query asked for ``diffStats``."""
     project = _project(env)
     members = _members(project)
     nodes = []
     for mr in _nodes(project.get("mergeRequests")):
         activity = _nodes(mr.get("activity"))
+        events = _requests(activity)
         node = {
             "number": int(mr["iid"]),
             "title": mr.get("title"),
@@ -168,7 +180,7 @@ def review_requests(env: dict) -> dict:
             "author": _login(mr.get("author")),
             "authorAssociation": _association(mr.get("author"), members),
             "headRefOid": mr.get("diffHeadSha"),
-            "timelineItems": {"nodes": _requests(activity)},
+            "timelineItems": {"nodes": _request_of(reviewer, events, mr, activity) + events},
             "reviews": {"nodes": [
                 {"author": _login(n.get("author")), "submittedAt": n.get("createdAt")}
                 for n in activity if (n.get("body") or "").startswith(_REVIEWED)]},
