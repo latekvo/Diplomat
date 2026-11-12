@@ -158,6 +158,7 @@ public enum TaskSync {
         let comms = CommsLog.fold(CommsLog.read(in: commsDir))
         let watched = CoreAssets.repoCoordinates()
         let banned = CommsBan.bannedNow()
+        let retrying = Set(CommsState.load(in: commsDir).retries.flatMap(\.messages).map(\.id))
 
         PrivateFiles.prepare(dir)
         let lock = TaskStore.lockURL(in: dir)
@@ -169,7 +170,7 @@ public enum TaskSync {
             var mirror = gh.mirror
             let slack = self.slack(tasks: gh.tasks, comms: comms, watermark: mirror.commsWatermark,
                                    handled: mirror.commsHandled, now: now, watched: watched, banned: banned,
-                                   holdSecs: assets.commsHoldSecs, excerptChars: assets.excerptChars)
+                                   retrying: retrying, holdSecs: assets.commsHoldSecs, excerptChars: assets.excerptChars)
             mirror.commsWatermark = slack.watermark
             mirror.commsHandled = slack.handled
             let events = gh.events + slack.events
@@ -426,12 +427,13 @@ public enum TaskSync {
     /// `triage:<action>`. A ping by one of `banned` (Slack user ids, upper case), or one
     /// Comms skipped as banned or triaged as an injection, is skipped. Pings are taken a
     /// logged second at a time, oldest first; a second holding a matching ping Comms has
-    /// not triaged yet waits, up to `holdSecs`, and so does every later one. The answer's
+    /// not triaged yet waits, up to `holdSecs`, and so does every later one. A ping in
+    /// `retrying` (ids whose triage call failed) is not waited for. The answer's
     /// `watermark` and `handled` are where the next sync starts. With no `watermark` (the
     /// first sync), nothing is told and the watermark is `now`.
     public static func slack(tasks: [TrackedTask], comms: [CommsItem], watermark: Date?, handled: [String] = [],
                              now: Date, watched: (owner: String, repo: String), banned: Set<String> = [],
-                             holdSecs: Int, excerptChars: Int)
+                             retrying: Set<String> = [], holdSecs: Int, excerptChars: Int)
         -> (events: [TaskEvent], watermark: Date, handled: [String]) {
         guard let watermark else { return ([], now, []) }
         let live = tasks.filter { $0.archivedAt == nil }
@@ -443,7 +445,8 @@ public enum TaskSync {
         var events: [TaskEvent] = []
         for at in Set(pings.map(\.at)).sorted() {
             let second = pings.filter { $0.at == at }.map { ($0, subjects(of: $0.message, in: live, watched)) }
-            if second.contains(where: { !$0.1.isEmpty && $0.0.decision == nil })
+            if second.contains(where: { !$0.1.isEmpty && $0.0.decision == nil
+                                            && !retrying.contains($0.0.message.id) })
                 && now.timeIntervalSince(at) < Double(holdSecs) { break }
             if at != mark { taken = [] }
             mark = at

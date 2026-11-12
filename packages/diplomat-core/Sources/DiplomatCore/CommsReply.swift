@@ -171,8 +171,15 @@ public enum CommsReplier {
               let to = destination(for: r.message) else { return CommsReplyResult() }
         // The raw lines, not the fold: rotation can cut a ping whose reply survives.
         let id = r.message.messageID
-        guard !CommsLog.read(in: dir).contains(where: { $0.kind == .reply && $0.id == id })
+        let log = CommsLog.read(in: dir)
+        guard !log.contains(where: { $0.kind == .reply && $0.id == id })
         else { return CommsReplyResult() }
+        let pinged = log.first { $0.kind == .ping && $0.id == id }?.at ?? now
+        guard now.timeIntervalSince(pinged) <= Double(assets.replies.maxAgeSecs) else {
+            let outcome = "skipped: the message was triaged too long after its ping"
+            CommsLog.append(CommsEvent(kind: .reply, id: id, outcome: outcome), in: dir)
+            return CommsReplyResult(outcome: outcome)
+        }
         let me = CommsState.load(in: dir).me
         let name = me?.name ?? me.map { $0.handle } ?? ""
         let who = name.isEmpty ? words.operator : name
@@ -183,14 +190,12 @@ public enum CommsReplier {
         } else if answers {
             var settings = r.settings
             settings.bannedSenders += CommsBan.bannedNow()
-            let asked = CommsTS.number(r.message.ts) ?? 0
             let repo = r.settings.canonical(r.decision.repo) ?? ""
             let (owner, name) = r.settings.coordinates(of: repo)
             let question = CommsAnswerer.Question(
                 message: r.message,
                 context: CommsWatch.context(for: [r.message], in: dir, settings: settings,
-                                            assets: assets)
-                    .filter { (CommsTS.number($0.ts) ?? 0) < asked },
+                                            assets: assets),
                 documentation: CommsKnowledge.load(owner: owner, repo: name, dir: dir, now: now))
             let a = (answer ?? {
                 CommsAnswerer.run($0, settings: r.settings, repo: repo, name: who)

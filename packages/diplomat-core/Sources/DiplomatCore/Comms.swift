@@ -508,8 +508,14 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     }
 
     private static func decode(_ data: Data) -> CommsDecision {
-        (try? JSONDecoder().decode(CommsDecision.self, from: data))
-            ?? .none("the classifier's answer was not a JSON object")
+        guard let d = try? JSONDecoder().decode(CommsDecision.self, from: data) else {
+            return .none("the classifier's answer was not a JSON object")
+        }
+        // The marker is `CommsClassifier`'s alone: a reason the model wrote cannot claim it.
+        guard d.reason.hasPrefix(CommsClassifier.failurePrefix) else { return d }
+        return CommsDecision(action: d.action, targets: d.targets, summary: d.summary,
+                             reason: "triage: " + d.reason, evidence: d.evidence,
+                             language: d.language, repo: d.repo)
     }
 
     /// A model answering in prose sometimes wraps it in a Markdown code fence.
