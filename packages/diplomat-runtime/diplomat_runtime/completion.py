@@ -42,8 +42,7 @@ spawned agent keeps whatever hooks its user configured.
 
 This module owns the *format* — the verbs, the file, the settings that write it — so
 the writer (:mod:`review`) and the reader (:mod:`agentregistry`) cannot spell it
-differently. Pure and stdlib-only: a mesh node builds the same spawn from a process
-with no Qt and no front-end.
+differently. Pure and stdlib-only.
 """
 
 from __future__ import annotations
@@ -89,7 +88,7 @@ GUARDED = frozenset({"Stop"})
 PENDING = r'"background_tasks":\[{'
 
 
-def hook_settings(activity_path: str, done_path: str | None = None) -> dict:
+def hook_settings(activity_path: str) -> dict:
     """The ``--settings`` payload that makes a run report its own turn boundaries.
 
     Append is the whole concurrency story: each line is a single small ``O_APPEND``
@@ -99,29 +98,17 @@ def hook_settings(activity_path: str, done_path: str | None = None) -> dict:
     The timestamp is the hook's own ``date``, not the poll's clock — it is when the
     turn actually ended, which is what the ledger prices a run by. A poll can be a
     period late, which would make every run look that much longer.
-
-    ``done_path`` is the mesh's reader of this same report. A szpontnet executor holds
-    its claim on a work key until the agent's exit-code sentinel appears
-    (``node._watch_agent``), and that sentinel fires on EXIT — which on its own
-    would hold the key for however long the finished agent's window stays open, up to
-    the backstop. Writing it on the terminal verbs releases the key when the turn
-    ends. It is done HERE, in the settings, rather than in szpontnet: the node is a
-    standalone library that must not import this one, and it already watches the file.
     """
     return {"hooks": {event: [{"hooks": [{"type": "command",
                                           "command": _append(verb, activity_path,
-                                                             done_path,
                                                              event in GUARDED)}]}]
                       for event, verb in EVENTS.items()}}
 
 
-def _append(verb: str, activity_path: str, done_path: str | None = None,
-            guarded: bool = False) -> str:
+def _append(verb: str, activity_path: str, guarded: bool = False) -> str:
     cmd = ""
     word = verb
     if guarded:
-        # The payload is read from stdin once, and the verb it chooses is reused
-        # below so the line and the sentinel can never disagree about it.
         cmd += (f"v={verb}; tr -d ' \\t\\n' | grep -q {shlex.quote(PENDING)}"
                 f" && v={BUSY}; ")
         word = '"$v"'
@@ -132,20 +119,12 @@ def _append(verb: str, activity_path: str, done_path: str | None = None,
     # PRECEDES the redirect — the open fails before a trailing one is in effect.
     cmd += (f"printf '%s %s\\n' {word} \"$(date +%s)\""
             f" 2>/dev/null >> {shlex.quote(activity_path)} || :")
-    if done_path and verb in (IDLE, ENDED):
-        # `>` not `>>`: the sentinel is read by existence and dated by mtime, and a
-        # second turn's line would only move that date later.
-        sentinel = f"printf 0 2>/dev/null > {shlex.quote(done_path)} || :"
-        # `case` rather than `[ ]` so the miss is a no-op that still exits 0: a hook
-        # that exits non-zero is reported to the agent as a failing hook.
-        cmd += (f'; case "$v" in {verb}) {sentinel} ;; esac' if guarded
-                else f"; {sentinel}")
     return cmd
 
 
-def settings_json(activity_path: str, done_path: str | None = None) -> str:
+def settings_json(activity_path: str) -> str:
     """:func:`hook_settings` as the file's bytes."""
-    return json.dumps(hook_settings(activity_path, done_path))
+    return json.dumps(hook_settings(activity_path))
 
 
 def parse(text: str | None) -> tuple[str, float] | None:

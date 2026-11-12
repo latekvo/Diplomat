@@ -5,12 +5,10 @@ store (``QSettings`` here, ``UserDefaults`` on macOS). A few can't: the repo roo
 every spawn ``cd``s into, the cap on how many automatic agents may run here at
 once, the four knobs of the spending budget those agents are started against,
 which agent CLI a spawn runs (with the model it is pinned to), and where that
-agent's GitHub token is read from. Each is
-consumed by whichever process picks the work up, and one of those is a **mesh
-node** — a separate process that is stdlib-only by design (docs/mesh.md
-advertises joining a mesh with "no Qt needed") and that outlives the applet, so it
-can neither read a Qt/UserDefaults store nor be handed the value in its
-environment at spawn time.
+agent's GitHub token is read from. They are what the spawner, the budget gate and
+the runner in this package read, and this package imports no Qt, so it has no
+``QSettings`` to ask; the runner and its model are read by the ``diplomat-core``
+binary as well, which is a separate process.
 
 One more sits with them without needing to: how long a run may go on before the
 resolver calls it over, which belongs beside the cap it hands bays back to and is
@@ -22,11 +20,10 @@ agent holds, and the module its remote device pool is lent through. The
 remote-machines daemon, also Node, reads the machines the operator took out of its
 pool, for good or until a time.
 
-So those knobs live in the shared ``~/.diplomat`` tree, the way the ban list,
-the activity feed and the mesh snapshot already cross process *and* front-end
-boundaries. Readers re-read on use, so a change reaches a running node on its next
-spawn. ``DIPLOMAT_CONFIG`` relocates the file (tests, self-checks) exactly as
-``SZPONTNET_DIR`` relocates the mesh state.
+So those knobs live in the shared ``~/.diplomat`` tree, the way the ban list and
+the activity feed already cross process *and* front-end boundaries. Readers re-read
+on use, so a change lands on the next spawn. ``DIPLOMAT_CONFIG`` relocates the file
+(tests, self-checks).
 """
 
 from __future__ import annotations
@@ -35,9 +32,7 @@ import math
 import os
 from pathlib import Path
 
-# Both stdlib-only, so the node keeps its Qt-free import graph: the gate's own
-# default + range for the task cap, and the mesh's shared atomic writer rather than
-# a seventh copy of tmp-file+rename (see the dedup that introduced it).
+# The gate's own default + range for the task cap, and the shared atomic writer.
 from . import autofix
 from .atomicjson import read_object, write_atomic
 
@@ -132,7 +127,7 @@ def get_int(key: str, default: int) -> int:
 
 
 def set_value(key: str, value: str) -> None:
-    """Read-modify-write one key (empty value removes it), atomically, so a node
+    """Read-modify-write one key (empty value removes it), atomically, so a process
     reading concurrently never sees a torn file. Keys the file already holds survive a
     normal write; a file that failed to parse (see :func:`read`) is rewritten from
     defaults, so a *corrupt* file loses the other keys — each then falls back to its
@@ -250,16 +245,15 @@ def auto_task_limit() -> int:
     the Settings stepper offers.
 
     Resolved here rather than at each caller because there are two, in different
-    processes: the applet's own dispatch gate and — for work a mesh peer routes in
-    — the node's, through ``szponthost.DiplomatHost.at_job_capacity``. A cap the
-    two disagree on is not a cap."""
+    processes: the applet's own dispatch gate and the ``DIPLOMAT_AGENTS`` dump. A cap
+    the two disagree on is not a cap."""
     return autofix.clamp_auto_task_limit(
         get_int(AUTO_TASK_LIMIT, autofix.DEFAULT_AUTO_TASK_LIMIT)
     )
 
 
 def run_deadline() -> float | None:
-    """How long a run this device executes may go on before the resolver calls it over
+    """How long a run may go on before the resolver calls it over
     whatever else it sees, or ``None`` when the operator has that backstop switched off
     (Settings → STALLED AGENTS).
 
@@ -275,10 +269,8 @@ def run_deadline() -> float | None:
 def auto_budget_gate() -> bool:
     """Whether automatic work is held back when there is too little left to afford
     it — of the rate-limit window, or of the money an account billed in money has
-    (Settings → PR AUTO-FIX). Lives here, not in a front-end's own store, for the
-    reason the task cap does: a mesh node spends this machine's limit on work the
-    applet never sees, and the two must not disagree about whether that limit is
-    being watched."""
+    (Settings → PR AUTO-FIX). Lives here, not in a front-end's own store, because
+    its reader is :mod:`autobudget`, which has no front-end store to ask."""
     return get_bool(AUTO_BUDGET_GATE, True)
 
 

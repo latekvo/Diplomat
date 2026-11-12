@@ -25,15 +25,14 @@ via ``diplomat-core agent-state``), so the two front-ends cannot drift again.
 The one rule the whole ladder is built to keep
 ---------------------------------------------
 **Absence of evidence never resolves to FINISHED.** A run is finished only on
-positive evidence — its runner said the turn is over, its sentinel exists, its
-process was looked for in a table we actually read and was not there, or its mesh
-claim was seen and has since been released. Every other gap resolves to
-:data:`UNKNOWN`, which holds its bay and says so. Reading "I could not look" as "it
+positive evidence — its runner said the turn is over, its sentinel exists, or its
+process was looked for in a table we actually read and was not there. Every other gap
+resolves to :data:`UNKNOWN`, which holds its bay and says so. Reading "I could not look" as "it
 is gone" is what produced years of already-complete verdicts on agents that were
 still working.
 
 :data:`FAILED` is not a gap either, and it is the one verdict that rests on a file
-rather than on a reading of a machine: the pid file a local spawn stages is written by
+rather than on a reading of a machine: the pid file a spawn stages is written by
 the run's own first command, so its absence past :data:`SPAWN_GRACE` says the command
 never ran. It is separate from FINISHED because the two are opposite answers to "what
 did this run do", and only the caller can tell them apart — work whose agent ran and
@@ -246,10 +245,8 @@ ENDED = frozenset({MERGED, FINISHED, FAILED})
 #: tmux server and the user's rc all run first — and the process table is one `ps` pass
 #: reused for several seconds, so it can predate the pid file naming what to look for.
 #: Past this the run is judged on the evidence there is: a known pid the table does not
-#: hold has ended, and a LOCAL run with no pid file at all never ran (:data:`FAILED`) —
-#: this applet staged that path itself, so nothing but the command writes it. A
-#: mesh-here run is the one the file cannot answer for, its pid having been written into
-#: a run directory this applet never created; that one falls back to the prompt scan.
+#: hold has ended, and a run with no pid file at all never ran (:data:`FAILED`) — this
+#: applet staged that path itself, so nothing but the command writes it.
 #:
 #: The same window bounds ``AgentSpawner.spawn``'s own wait for the file, measured from
 #: the same dispatch instant, so the spawn and the tick can never disagree about which
@@ -293,7 +290,7 @@ PID_ADOPTION_SLACK = 30.0
 #: dead one.
 QUIET_TIMEOUT = 20 * 60.0
 
-#: How long a run this device executes may go on before it is called over whatever
+#: How long a run may go on before it is called over whatever
 #: else the evidence says — the outermost backstop, offered as a switch
 #: (:func:`appconfig.run_deadline`) rather than applied unconditionally.
 #:
@@ -316,24 +313,9 @@ QUIET_TIMEOUT = 20 * 60.0
 #: whole board on the day a limit ran out.
 RUN_DEADLINE = 4 * 60 * 60.0
 
-#: How long a mesh origination claim may go unseen before the peer's run reads as
-#: over.
-#:
-#: Absence is only evidence once it has had time to be evidence. The claim travels the
-#: executor's link BEFORE the dispatch ack, but reaches a front-end through a file the
-#: node rewrites every couple of seconds, read by a poll of its own — and a node restart
-#: empties the book until its peers re-assert. This window outlasts all three, and is
-#: short enough that a finished run leaves the list while the operator is still looking
-#: at it.
-CLAIM_SETTLE = 45.0
 
+# MARK: - Sources
 
-# MARK: - Placements
-
-
-PLACEMENT_LOCAL = "local"  # this applet opened the terminal
-PLACEMENT_MESH_HERE = "mesh-here"  # the mesh placed the run back on this machine
-PLACEMENT_MESH_PEER = "mesh-peer"  # the run is a process on somebody else's box
 
 SOURCE_PANEL = "panel"
 SOURCE_AUTO = "auto"
@@ -414,18 +396,12 @@ class RunRecord:
     kind: str = ""
     label: str = ""
     source: str = SOURCE_AUTO
-    placement: str = PLACEMENT_LOCAL
-    node: str = ""
-    work_key: str = ""
     ledger_key: str = ""
     #: The agent's pid, written by the inner shell before the agent starts (see
     #: ``review.shell_command`` for what "the agent's" rests on, and where it is
     #: instead the shell wrapping it). ``None`` until the registry has read the file.
     pid: int | None = None
     tty: str = ""
-    #: When this device last saw the executor's claim for :attr:`work_key`, for a
-    #: mesh-peer run. ``None`` when it has never been seen.
-    claim_seen_at: float | None = None
     #: A digest of this run's screen when it last CHANGED, with the time it changed.
     #: The memory behind :data:`QUIET_TIMEOUT` — absence of motion is only measurable
     #: against when there was last some. ``""``/``None`` until its screen is first read.
@@ -452,21 +428,13 @@ class RunRecord:
         the repo."""
         return item_key_from_url(self.pr_url) if self.pr_number is not None else None
 
-    @property
-    def runs_here(self) -> bool:
-        """Does this run's agent execute on THIS machine? What the device's cap
-        counts — the cap bounds what this box runs, not what it dispatched."""
-        return self.placement != PLACEMENT_MESH_PEER
-
     def to_json(self) -> dict:
         return {
             "runId": self.run_id, "dispatchedAt": self.dispatched_at,
             "prNumber": self.pr_number, "prUrl": self.pr_url, "kind": self.kind,
-            "label": self.label, "source": self.source, "placement": self.placement,
-            "node": self.node, "workKey": self.work_key,
+            "label": self.label, "source": self.source,
             "ledgerKey": self.ledger_key, "pid": self.pid, "tty": self.tty,
-            "claimSeenAt": self.claim_seen_at, "quietDigest": self.quiet_digest,
-            "quietSince": self.quiet_since,
+            "quietDigest": self.quiet_digest, "quietSince": self.quiet_since,
             "reapRefusedAt": self.reap_refused_at, "untracked": self.untracked,
             "released": self.released,
         }
@@ -476,7 +444,6 @@ class RunRecord:
         """Every field type-checked the way the Swift twin's casts check it, so a
         hand-edited book reads as the same runs on both front-ends: a value of the
         wrong JSON type is the field's default, never a coercion of it."""
-        placement = obj.get("placement")
         return RunRecord(
             run_id=_text(obj.get("runId")),
             dispatched_at=_number(obj.get("dispatchedAt")) or 0.0,
@@ -485,15 +452,9 @@ class RunRecord:
             kind=_text(obj.get("kind")),
             label=_text(obj.get("label")),
             source=_text(obj.get("source"), SOURCE_AUTO),
-            placement=placement if placement in (
-                PLACEMENT_LOCAL, PLACEMENT_MESH_HERE, PLACEMENT_MESH_PEER)
-            else PLACEMENT_LOCAL,
-            node=_text(obj.get("node")),
-            work_key=_text(obj.get("workKey")),
             ledger_key=_text(obj.get("ledgerKey")),
             pid=_integer(obj.get("pid")),
             tty=_text(obj.get("tty")),
-            claim_seen_at=_number(obj.get("claimSeenAt")),
             quiet_digest=_text(obj.get("quietDigest")),
             quiet_since=_number(obj.get("quietSince")),
             reap_refused_at=_number(obj.get("reapRefusedAt")),
@@ -521,16 +482,12 @@ class Evidence:
     #: tty → that session's visible buffer.
     tails: Observation = field(
         default_factory=lambda: Observation.unavailable("not probed"))
-    #: Work keys currently claimed somewhere on the mesh.
-    claims: Observation = field(
-        default_factory=lambda: Observation.unavailable("not probed"))
     #: Item keys of the PRs GitHub reports as MERGED.
     merged_prs: Observation = field(
         default_factory=lambda: Observation.unavailable("not probed"))
     #: Item key → the tty of an agent found by its prompt text in the process table.
-    #: The pre-registry identity mechanism, and still the only evidence about a run
-    #: whose terminal this applet did not open — a mesh placement that landed back
-    #: here, whose pid file belongs to the node that spawned it.
+    #: The only evidence about an agent this applet holds no pid for: one nothing
+    #: dispatched, and a booked run whose pid file has not been read.
     live_agents: Observation = field(
         default_factory=lambda: Observation.unavailable("not probed"))
     #: run id → ``(verb, when)`` the run's own CLI last reported for itself, via the
@@ -557,7 +514,6 @@ class Evidence:
                 "processes": self.processes.to_json(),
                 "sentinels": self.sentinels.to_json(),
                 "tails": self.tails.to_json(),
-                "claims": self.claims.to_json(),
                 "mergedPrs": self.merged_prs.to_json(),
                 "liveAgents": self.live_agents.to_json(),
                 "sessions": self.sessions.to_json(),
@@ -576,7 +532,6 @@ class Evidence:
             sentinels=Observation.from_json(obj.get("sentinels"),
                                             lambda v: set(v or [])),
             tails=Observation.from_json(obj.get("tails"), lambda v: dict(v or {})),
-            claims=Observation.from_json(obj.get("claims"), lambda v: set(v or [])),
             merged_prs=Observation.from_json(obj.get("mergedPrs"),
                                              lambda v: {str(k) for k in (v or [])}),
             live_agents=Observation.from_json(
@@ -634,21 +589,6 @@ class Resolution:
     #: tty that may be somebody else's by then, and one that reported its turn over is
     #: :func:`close_on_retire`'s, which retires it whether or not its window closes.
     expired: bool = False
-    #: Whether nothing on this machine had anything to LOOK FOR — set by the one rung
-    #: that answers UNKNOWN about the record rather than about a probe.
-    #:
-    #: The deadline overrules a RUNNING and exactly one UNKNOWN, and the two UNKNOWNs
-    #: are not separable by state. "The process table could not be read" is an evidence
-    #: outage, and ending a run on a clock during one retires it for being old on the
-    #: single pass that saw nothing. A run with neither a pid nor a PR number is not an
-    #: outage at all — every probe answered, and none of them was given anything to
-    #: look for — and that answer is the same on every future tick, so without this the
-    #: record holds its bay for the life of the applet.
-    #:
-    #: It is also what keeps such a run out of :func:`reapable`: a window is closed on
-    #: the strength of having SEEN the agent sitting in it, and this is the one ending
-    #: where nothing ever did.
-    unfindable: bool = False
     #: Whether the deadline took this run's bay without ending it: an untracked run
     #: still RUNNING a deadline after the scan first saw it (:func:`lapsed_for`). Ending
     #: it would free nothing, since the next scan re-books the same agent, and a screen
@@ -656,8 +596,8 @@ class Resolution:
     lapsed: bool = False
     #: Whether the agent's own runner said its turn was over and went well: a CLI's
     #: ``idle`` turn report, or a session that went idle without failing. Every other
-    #: ending (an exit, a gone pid, a released claim, a backstop) is inferred, and says
-    #: nothing about whether the agent finished what it set out to do.
+    #: ending (an exit, a gone pid, a backstop) is inferred, and says nothing about
+    #: whether the agent finished what it set out to do.
     reported: bool = False
 
     @property
@@ -667,34 +607,10 @@ class Resolution:
     def to_json(self) -> dict:
         return {"runId": self.run_id, "state": self.state, "reason": self.reason,
                 "wedged": self.wedged, "expired": self.expired,
-                "unfindable": self.unfindable, "lapsed": self.lapsed}
+                "lapsed": self.lapsed}
 
 
-# MARK: - Claim sightings (pure, but stateful across ticks)
-
-
-def observe_claims(records: list[RunRecord], claims: Observation,
-                   now: float) -> list[RunRecord]:
-    """Refresh each mesh-peer run's claim sighting, returning updated records.
-
-    Split out of :func:`resolve` because it is the one input that is a memory rather
-    than an observation: absence only becomes evidence relative to when the claim was
-    last present, so somebody has to remember that. Keeping it a separate pure step
-    means :func:`resolve` stays a function of its arguments alone.
-
-    An unavailable claim book updates nothing — a node we could not read must not
-    age out a peer's run.
-    """
-    if not claims.ok:
-        return records
-    live = claims.value
-    out = []
-    for r in records:
-        if r.placement == PLACEMENT_MESH_PEER and r.work_key and r.work_key in live:
-            out.append(replace(r, claim_seen_at=now))
-        else:
-            out.append(r)
-    return out
+# MARK: - Screen stillness (pure, but stateful across ticks)
 
 
 #: FNV-1a 64-bit, as :func:`pane_digest` computes it.
@@ -739,9 +655,11 @@ def observe_quiescence(records: list[RunRecord], tails: Observation,
     """Refresh each run's record of when its screen last CHANGED, returning updated
     records.
 
-    Beside :func:`observe_claims` and for the same reason: absence is only measurable
-    against a memory of presence, and :func:`resolve` stays a function of its
-    arguments alone. What is remembered is a digest rather than the screen itself —
+    Split out of :func:`resolve` because it is the one input that is a memory rather
+    than an observation: absence of motion is only measurable against when there was
+    last some, so somebody has to remember that. Keeping it a separate pure step means
+    :func:`resolve` stays a function of its arguments alone. What is remembered is a
+    digest rather than the screen itself —
     the book is rewritten every tick and read by other processes, so storing every
     watched pane's contents in it would be both large and pointless.
 
@@ -851,21 +769,17 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
        every rung below this one sees a live process either way. A runner that keeps a
        session instead of running hooks says the same thing further down, once its pid
        is known alive;
-    4. a mesh-peer run is judged by the executor's claim, because no probe on this
-       machine can see a process on another one;
-    5. a local run is judged by its pid, and its screen only classifies a pid that is
+    4. the run is judged by its pid, and its screen only classifies a pid that is
        already known to be alive;
-    6. the deadline, when the operator has one, and LAST: what it overrules is a RUNNING
+    5. the deadline, when the operator has one, and LAST: what it overrules is a RUNNING
        — the answer that means "this bay is spoken for and nothing here can say when it
        will come back". Every other answer the ladder reaches is a better one than a
        clock, and each of them is a reason this rung must not fire: ENDED already named
        how the run stopped, AWAITING_INPUT is a session at its prompt that gave its bay
        back and still holds a task worth reading, and UNKNOWN is almost always the tick
        where the evidence could not be read at all — ending a run on that would retire
-       it for being old on the one pass that saw nothing. Its one exception is the
-       UNKNOWN that is about the record rather than a probe
-       (:attr:`Resolution.unfindable`), which no later pass can improve on. An
-       untracked run is not ended here but lapsed (:attr:`Resolution.lapsed`).
+       it for being old on the one pass that saw nothing. An untracked run is not ended
+       here but lapsed (:attr:`Resolution.lapsed`).
 
     The first rung skips an untracked run: a landed PR does not make its agent leave,
     so the next scan would only re-book it.
@@ -886,11 +800,8 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
         return replace(done(FINISHED, _REPORTED_REASON[reported[0]]),
                        reported=reported[0] == completion.IDLE)
 
-    if record.placement == PLACEMENT_MESH_PEER:
-        out = _resolve_peer(record, evidence, now, done)
-    else:
-        out = _resolve_local(record, evidence, now, done)
-    if out.state != RUNNING and not out.unfindable:
+    out = _resolve_local(record, evidence, now, done)
+    if out.state != RUNNING:
         return out
     seen = lapsed_for(record, now, deadline)
     if seen is not None:
@@ -908,7 +819,7 @@ def resolve_one(record: RunRecord, evidence: Evidence, now: float,
     return replace(done(FINISHED,
                         f"{out.reason}; has run for {apiwatch.human_interval(expired)}"
                         f", past the {apiwatch.human_interval(deadline)} deadline"),
-                   expired=True, unfindable=out.unfindable)
+                   expired=True)
 
 
 def deadline_applies(record: RunRecord) -> bool:
@@ -922,8 +833,7 @@ def deadline_applies(record: RunRecord) -> bool:
     and the drift would be silent — a reading about the wrong accounts still reads True
     or False.
     """
-    return (record.runs_here and not record.untracked
-            and record.source == SOURCE_AUTO)
+    return not record.untracked and record.source == SOURCE_AUTO
 
 
 def past_deadline(record: RunRecord, tokens: Observation, now: float,
@@ -937,13 +847,11 @@ def past_deadline(record: RunRecord, tokens: Observation, now: float,
     returned is the age the reason line quotes, so the verdict and the number the
     operator reads cannot come apart.
 
-    Six things hold it back, each a case where the clock is measuring something other
+    Five things hold it back, each a case where the clock is measuring something other
     than a bay that will not come back:
 
     * **no deadline** — the operator switched the backstop off;
     * **no token reading, or none left** — see :data:`RUN_DEADLINE`;
-    * **a run on somebody else's machine** — the reading above is THIS account's, and
-      the peer's own claim already ends that run;
     * **a run the operator started by hand** — :func:`cap_load` counts only
       ``SOURCE_AUTO``, so a panel click holds no bay of the automatic cap and there is
       nothing here to hand back. All that ending one would buy is the loss of a working
@@ -959,9 +867,8 @@ def past_deadline(record: RunRecord, tokens: Observation, now: float,
     Every run this reaches is one :func:`cap_load` is counting — a bay is what there is
     to hand back — but not the reverse, and the gap is deliberate on both sides. An
     untracked run is exempt above. So is a run on a tick whose evidence could not be
-    read, which the caller keeps out by asking this about a RUNNING verdict or an
-    unfindable one and no other: a bay held by a run nobody could look at this pass is a
-    bay kept.
+    read, which the caller keeps out by asking this about a RUNNING verdict and no
+    other: a bay held by a run nobody could look at this pass is a bay kept.
     """
     if deadline is None or not deadline_applies(record):
         return None
@@ -987,35 +894,6 @@ def lapsed_for(record: RunRecord, now: float, deadline: float | None) -> float |
         return None
     age = now - record.dispatched_at
     return age if age >= deadline else None
-
-
-def _resolve_peer(record: RunRecord, evidence: Evidence, now: float,
-                  done) -> Resolution:
-    """A run on somebody else's machine, judged by the origination lease.
-
-    The executor claims the work key when it spawns the agent and releases it when
-    the agent exits (szpontnet-spec/docs/12), and the claim is republished in every
-    snapshot the local node writes. So a claimed key is a running agent — and this is
-    the only evidence there is, because ``ps`` on this box structurally cannot see a
-    process on that one. Judging a peer's run by a local process table, as the Linux
-    front-end used to, retires every peer run the moment its grace expires.
-    """
-    if not evidence.claims.ok:
-        return done(UNKNOWN, f"mesh claims {evidence.claims.reason or 'unavailable'}")
-    if record.work_key and record.work_key in evidence.claims.value:
-        node = record.node or "a peer"
-        return done(RUNNING, f"claim held on {node}")
-    # Absence is only evidence once it has had time to be evidence. A run whose claim
-    # has never been seen counts from its dispatch, which covers both the lag before
-    # the first snapshot carries the key and the executor that deduped our dispatch
-    # against an agent of its own and so never took a lease at all.
-    since = now - (record.claim_seen_at
-                   if record.claim_seen_at is not None else record.dispatched_at)
-    if since < CLAIM_SETTLE:
-        if record.claim_seen_at is None:
-            return done(STARTING, f"dispatched {since:.0f}s ago, claim not seen yet")
-        return done(RUNNING, f"claim last seen {since:.0f}s ago")
-    return done(FINISHED, f"claim released {since:.0f}s ago")
 
 
 def _resolve_local(record: RunRecord, evidence: Evidence, now: float,
@@ -1074,30 +952,17 @@ def _resolve_without_pid(record: RunRecord, evidence: Evidence, now: float,
                          age: float, done) -> Resolution:
     """A run this applet booked but has no pid for.
 
-    Three things produce one. A spawn whose shell has not written its pid file yet —
-    the ordinary first seconds of a run. A spawn whose terminal opened a window and
-    never ran the command in it, so the file is not late but absent. And a placement
-    the mesh routed back to this machine, where the NODE opened the terminal, so the
-    pid file it wrote belongs to a run directory this applet never created and never
-    will.
+    Two things produce one. A spawn whose shell has not written its pid file yet —
+    the ordinary first seconds of a run. And a spawn whose terminal opened a window and
+    never ran the command in it, so the file is not late but absent.
 
-    Which of the three is asked of ``placement``, and that is the whole of it: for a
-    LOCAL run this applet staged the pid path, so past the grace the missing file is
+    This applet staged the pid path itself, so past the grace the missing file is
     :data:`FAILED` — a run reporting for itself, not an inference from what its window
-    looks like. Only a mesh-here run reaches the scan below.
+    looks like.
 
-    That fallback matters because a mesh-here run has no pid ever, and "unknown until
-    a pid appears" would hold its bay and refuse its PR a fresh agent for the rest of
-    the applet's life — the exact wedge this module exists to remove, arriving by a
-    different road. Seen in production the first time the monitors ran: two conflict
-    fixes the mesh placed back here, both reading "unknown", both bays held, nothing
-    able to retire either.
-
-    So for that one the evidence is the pre-registry kind: the agent's own prompt in
-    the process table. It cannot tell two runs on one PR apart, which is exactly why it
-    is the fallback and not the identity — but "an agent for this PR is up" and "no
-    agent for this PR is up" are both positive answers, and the second is what finally
-    ends the run.
+    The prompt scan is asked first, because it can overrule the file: an agent up on
+    this run's PR is positive evidence the command ran, whatever became of its pid, and
+    a scan that could not be read leaves the question open rather than answering it.
     """
     if not evidence.live_agents.ok:
         return done(UNKNOWN,
@@ -1107,22 +972,13 @@ def _resolve_without_pid(record: RunRecord, evidence: Evidence, now: float,
                                   f"an agent is up on PR #{record.pr_number}")
     if age <= SPAWN_GRACE:
         return done(STARTING, f"dispatched {age:.0f}s ago, no pid yet")
-    if record.placement == PLACEMENT_LOCAL:
-        # This applet opened the terminal and named the pid path itself, and the inner
-        # shell writes it before the agent (``AgentSpawner.shellCommand``). So an
-        # absent file past the grace is the run's OWN report that its command never
-        # ran — not an inference from what the terminal looks like, which is why it
-        # survives a terminal that changes how it fails.
-        return done(FAILED, "its terminal never ran the command "
-                            f"(no pid file {age:.0f}s after dispatch)")
-    if record.item is None:
-        # Nothing to look for: a mesh-here run has no pid file to be missing, and with
-        # no PR either it cannot be found by the scan, so its absence is not evidence
-        # of anything. The one rung that stamps `unfindable`; see
-        # :attr:`Resolution.unfindable`.
-        return replace(done(UNKNOWN, f"no pid recorded {age:.0f}s after dispatch"),
-                       unfindable=True)
-    return done(FINISHED, f"no agent for PR #{record.pr_number} in the process table")
+    # This applet opened the terminal and named the pid path itself, and the inner
+    # shell writes it before the agent (``AgentSpawner.shellCommand``). So an absent
+    # file past the grace is the run's OWN report that its command never ran — not an
+    # inference from what the terminal looks like, which is why it survives a terminal
+    # that changes how it fails.
+    return done(FAILED, "its terminal never ran the command "
+                        f"(no pid file {age:.0f}s after dispatch)")
 
 
 def _resolve_untracked(record: RunRecord, evidence: Evidence, now: float,
@@ -1242,9 +1098,8 @@ def adopt_ttys(records: list[RunRecord], processes: Observation,
     that finished hours ago.
 
     Two sources, because two kinds of run reach their agent differently. A run with a
-    pid takes the tty off that process, which is exact. A run WITHOUT one — a placement
-    the mesh routed back here, where the node opened the terminal — has only the prompt
-    scan, which is looser but is the same evidence that says it is alive at all.
+    pid takes the tty off that process, which is exact. A run WITHOUT one has only the
+    prompt scan, which is looser but is the same evidence that says it is alive at all.
 
     A tty is adopted once and then left alone: it is a property of the process, and a
     process does not change ttys. The scan names one tty per PR, so one another record
@@ -1276,10 +1131,10 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     untracked agent would read as running and hold a bay until its window closed,
     which is the state the cap exists to prevent.
 
-    What produces one is a live agent whose run the book does not hold: one a peer's
-    node started on this box, a session the operator opened by hand, a run whose row
-    the operator dismissed, every agent when the book could not be read, and one whose
-    run had no pid and ended beside another record on its PR. Not another run this
+    What produces one is a live agent whose run the book does not hold: a session the
+    operator opened by hand, a run whose row the operator dismissed, every agent when
+    the book could not be read, and one whose run had no pid and ended beside another
+    record on its PR. Not another run this
     applet ended, whose agent goes to a released record (:func:`release_ended`), nor a
     window a backstop failed to close, whose run is kept. They are found the old way —
     the prompt's ``PR #<n> in <owner>/<repo>`` in the process table — which is why they
@@ -1319,8 +1174,7 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
         out.append(RunRecord(run_id=f"untracked:{item}", dispatched_at=now,
                              pr_number=number,
                              pr_url=f"https://github.com/{slug}/pull/{number}",
-                             source=SOURCE_AUTO, placement=PLACEMENT_LOCAL,
-                             tty=live[item], untracked=True))
+                             source=SOURCE_AUTO, tty=live[item], untracked=True))
     return out
 
 
@@ -1339,7 +1193,7 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
     is released too: its agent can outlive the tick, and the close can reach nothing.
 
     Only where the scan would re-book once the PR's other records are gone: a run on
-    this machine, on a PR the scan sees. One with no pid is held to the scan's
+    a PR the scan sees. One with no pid is held to the scan's
     sighting, which cannot tell two agents apart, so it is released only alone on its
     PR. Beside a record already named ``untracked:<item>`` (the run itself, if a hand edit
     made it a dispatch), its run id carries its pid, and without one it is not released.
@@ -1357,7 +1211,7 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
     for r in records:
         v = states.get(r.run_id)
         if (v is None or v.state not in ENDED or v.wedged or v.expired
-                or not r.runs_here or r.item not in live
+                or r.item not in live
                 or (r.pid is None and count[r.item] != 1)):
             continue
         run_id = f"untracked:{r.item}"
@@ -1367,8 +1221,7 @@ def release_ended(records: list[RunRecord], states: dict[str, Resolution],
             run_id = f"{run_id}:{r.pid}"
         heir = RunRecord(run_id=run_id,
                          dispatched_at=r.dispatched_at, pr_number=r.pr_number,
-                         pr_url=r.pr_url, source=r.source, placement=r.placement,
-                         pid=r.pid, tty=r.tty, quiet_digest=r.quiet_digest,
+                         pr_url=r.pr_url, source=r.source, pid=r.pid, tty=r.tty, quiet_digest=r.quiet_digest,
                          quiet_since=r.quiet_since, reap_refused_at=r.reap_refused_at,
                          untracked=True, released=True)
         verdict = resolve_one(heir, evidence, now, deadline)
@@ -1397,12 +1250,11 @@ def in_flight(records: list[RunRecord], states: dict[str, Resolution],
 def cap_load(records: list[RunRecord], states: dict[str, Resolution]) -> set[str]:
     """The run ids holding a bay of this device's automatic-task cap.
 
-    Counted by where a run EXECUTES and who triggered it: a peer's agent spends the
-    peer's budget, and a panel click is the operator's own act and spends none of the
-    automatic one. A released agent spends none: its task ended.
+    Counted by who triggered a run: a panel click is the operator's own act and spends
+    none of the automatic cap. A released agent spends none: its task ended.
     """
     return {r.run_id for r in records
-            if r.runs_here and r.source == SOURCE_AUTO and not r.released
+            if r.source == SOURCE_AUTO and not r.released
             and r.run_id in states and states[r.run_id].occupying}
 
 
@@ -1459,24 +1311,18 @@ def reapable(records: list[RunRecord],
     turn over is :func:`close_on_retire`'s, and one that exited or merged left nothing
     this verdict can vouch for.
 
-    The deadline's own exception is the run nothing could find
-    (:attr:`Resolution.unfindable`): a clock ended that one too, but no probe ever saw
-    its agent, so there is no window here for the verdict to vouch for. What is left is
-    exactly the runs this tick SAW alive: the stillness rung only classifies a process
-    already known to be up, and the other verdict the deadline overrules is a RUNNING.
-
-    ``runs_here`` is not re-checked: both stamps already imply it — the stillness rung
-    only runs inside :func:`_resolve_local`, and :func:`past_deadline` refuses a peer.
+    What is left is exactly the runs this tick SAW alive: the stillness rung only
+    classifies a process already known to be up, and the verdict the deadline overrules
+    is a RUNNING.
     """
     return [r for r in records
             if r.run_id in states
-            and (states[r.run_id].wedged
-                 or (states[r.run_id].expired and not states[r.run_id].unfindable))]
+            and (states[r.run_id].wedged or states[r.run_id].expired)]
 
 
 def close_on_retire(records: list[RunRecord],
                     states: dict[str, Resolution]) -> list[RunRecord]:
-    """The automatic runs on this machine whose own runner reported the turn over
+    """The automatic runs whose own runner reported the turn over
     (:attr:`Resolution.reported`): their window is closed as they retire, their work
     being on GitHub or in a report. A panel run is the operator's session, and an
     untracked agent's ``auto`` is the cap's assumption, not a dispatch.
@@ -1486,7 +1332,7 @@ def close_on_retire(records: list[RunRecord],
     backstop's.
     """
     return [r for r in records
-            if r.runs_here and not r.untracked and r.source == SOURCE_AUTO
+            if not r.untracked and r.source == SOURCE_AUTO
             and r.run_id in states and states[r.run_id].reported]
 
 
@@ -1504,8 +1350,9 @@ class Tick:
     """Everything one pass of evidence produced. What a caller reads instead of
     re-deriving any of it."""
 
-    #: The records as the pipeline left them — claim sightings refreshed, untracked
-    #: agents synthesized, ended runs' live agents released. The caller persists these.
+    #: The records as the pipeline left them — ttys adopted, screens fingerprinted,
+    #: untracked agents synthesized, ended runs' live agents released. The caller
+    #: persists these.
     records: list[RunRecord]
     states: dict[str, Resolution]
     rows: list[tuple[RunRecord, Resolution]]
@@ -1530,8 +1377,8 @@ def tick(records: list[RunRecord], evidence: Evidence, now: float, limit: int,
     """Fold one pass of evidence into every answer, in the one order that is correct.
 
     The order is the reason this is a function rather than a convention each caller
-    repeats: claims are observed and ttys adopted BEFORE resolving, so both count this
-    tick rather than a tick late; quiescence is observed after ttys are adopted, since
+    repeats: ttys are adopted BEFORE resolving, so they count this tick rather than a
+    tick late; quiescence is observed after ttys are adopted, since
     a run with no tty yet has no screen to compare; and untracked agents are
     synthesized AFTER, so a live agent that already has a record is not drawn twice — and so it keeps the tty
     the scan found it on rather than having one adopted for a pid it does not have.
@@ -1540,7 +1387,6 @@ def tick(records: list[RunRecord], evidence: Evidence, now: float, limit: int,
     Both front-ends and the parity CLI go through here, so neither can get the
     sequence subtly different from the other.
     """
-    records = observe_claims(records, evidence.claims, now)
     records = adopt_ttys(records, evidence.processes, evidence.live_agents)
     records = observe_quiescence(records, evidence.tails, now)
     records = synthesize_untracked(records, evidence.live_agents, now)

@@ -27,12 +27,11 @@ answer, so :mod:`agentstate` never learns which runner it is looking at.
 
 Credentials are the one thing this module refuses to hold. Each runner has its own
 provider store and its own login wizard, and that is where a key belongs — not in
-``~/.diplomat/config.json``, which is world-readable by default, is copied around
-by the mesh, and would then need a secret-handling story per provider. Diplomat
-stores the *choice* of runner and model; the runner stores the secret.
+``~/.diplomat/config.json``, which is world-readable by default and would then need
+a secret-handling story per provider. Diplomat stores the *choice* of runner and
+model; the runner stores the secret.
 
-Stdlib-only, like :mod:`appconfig` and :mod:`autofix`, because a mesh node spawns
-agents from its own Qt-free process and has to reach the same answer.
+Stdlib-only, like :mod:`appconfig` and :mod:`autofix`.
 
 :mod:`appconfig` is imported per-call, not at module scope: ``appconfig`` imports
 :mod:`autofix`, which imports this module for :func:`is_agent_line`. Hoisting that
@@ -91,9 +90,8 @@ def selected() -> str:
     """The configured runner, falling back to Claude Code.
 
     Read from the shared :mod:`appconfig` file rather than this front-end's
-    QSettings for the same reason the repo root is: a mesh node spawns agents from
-    a process that has no Store and no Qt to ask. Re-read per call, so changing the
-    setting reaches a running node on its next spawn.
+    QSettings: the ``diplomat-core`` binary resolves the same choice from that file.
+    Re-read per call, so changing the setting reaches the next spawn.
 
     An unrecognised value degrades to Claude Code rather than failing the spawn —
     a hand-edited or newer config must not leave the applet unable to dispatch.

@@ -31,8 +31,7 @@ class PRSnapshot:
     review_decision: str  # "" / "CHANGES_REQUESTED" / "APPROVED" / …
     threads_unresolved: int
     threads_i_owe: int
-    # Head commit sha (headRefOid) — the "which push" part of the mesh work key,
-    # so two nodes observing the same commit derive the same key (szpontnet-spec/docs/12).
+    # Head commit sha (headRefOid) — the "which push" part of :func:`ledger_key`.
     head_sha: str = ""
 
     @property
@@ -168,8 +167,8 @@ def decide(
 def concluded(retired, verdicts: dict) -> set[str]:
     """The review requests, by item key, whose run ended on its agent's own word:
     retired runs dispatched for a review requested of me (:data:`WORK_REVIEW_REQ`) whose
-    verdict is ``reported``. A run that died, failed, was reaped or ran on a peer says
-    nothing about whether it meant to post, so its request stays on the retry ladder.
+    verdict is ``reported``. A run that died, failed or was reaped says nothing about
+    whether it meant to post, so its request stays on the retry ladder.
     Twin of ``ReviewReconcile.concluded``."""
     return {r.item for r in retired
             if r.ledger_key.startswith(WORK_REVIEW_REQ + ":")
@@ -212,7 +211,7 @@ class ReviewRequest:
     files: list[str]
     requested_at: str | None  # latest "review requested from me" (ISO8601)
     my_last_review_at: str | None  # my latest review submission (ISO8601)
-    head_sha: str = ""  # head commit sha — the mesh work key's "@sha" part
+    head_sha: str = ""  # head commit sha — the "@sha" part of :func:`ledger_key`
     my_last_comment_at: str | None = None  # my latest top-level comment (ISO8601)
 
     @property
@@ -328,16 +327,7 @@ def author_allowed(login: str, allowed: list[str]) -> bool:
     return any(a.lower() == low for a in allowed)
 
 
-# MARK: - Mesh coordination for the auto-monitors (mirrors AutofixMesh in Autofix.swift)
-#
-# Two machines running this monitor poll the same GitHub state as the same user, so
-# each is an independent origin of the same work (szpontnet-spec/docs/12-work-claims.md).
-# Every machine scans; the Store routes each auto find through claim-gated DISPATCH
-# (`Store._route_via_mesh`): the mesh runs it once, on the best-surplus node, and
-# the EXECUTOR holds the work-key claim for its agent's lifetime — so a concurrent
-# or repeat scan is suppressed, a crash frees it for a retry, and a node death frees
-# it for failover. There is deliberately NO duty-assignment stand-down: it deferred
-# to a node that might not be scanning, silently dropping the operator's work.
+# MARK: - The monitors' kinds of work (mirrors AutofixWork in Autofix.swift)
 
 WORK_REVIEW_REQ = "review"  # reviews requested of me → duty "review"
 WORK_REVIEW_REPLY = "review-reply"  # replies to reviews on MY PRs → duty "review"
@@ -345,10 +335,7 @@ WORK_CONFLICTS = "conflicts"  # conflict fixes on MY PRs → duty "conflicts"
 
 
 def _pr_ref(pr_url: str) -> str | None:
-    """``<host>/<owner>/<repo>#<n>`` for a PR URL, or None when it isn't one. Split
-    out of :func:`work_key` so :func:`ledger_key` cannot parse a URL differently
-    from the claim key — the two identify the same unit of work and are compared
-    against each other in the telemetry ledger."""
+    """``<host>/<owner>/<repo>#<n>`` for a PR URL, or None when it isn't one."""
     from urllib.parse import urlparse
 
     try:
@@ -362,31 +349,15 @@ def _pr_ref(pr_url: str) -> str | None:
     return f"{host}/{parts[0]}/{parts[1]}#{parts[3]}"
 
 
-def work_key(kind: str, pr_url: str, head_sha: str) -> str:
-    """The origination-dedup key for one unit of monitor work — the reference
-    convention from szpontnet-spec/docs/12: ``<kind>:<host>/<owner>/<repo>#<n>@<sha>``.
-
-    Derived from the PR's own URL so every node observing the same PR agrees
-    byte-for-byte (the Swift twin must produce identical strings — see the parity
-    tests). Returns ``""`` — claim gate skipped, the safe pre-claims degradation —
-    when the URL doesn't look like a PR URL or the head sha is unknown."""
-    if not head_sha:
-        return ""
-    ref = _pr_ref(pr_url)
-    return f"{kind}:{ref}@{head_sha}" if ref else ""
-
-
 def ledger_key(kind: str, pr_url: str, head_sha: str) -> str:
-    """The telemetry ledger's identity for one unit of work.
+    """The telemetry ledger's identity for one unit of monitor work:
+    ``<kind>:<host>/<owner>/<repo>#<n>@<sha>``, and the same shape WITHOUT ``@sha``
+    while the head sha is unknown. ``""`` when the URL is not a PR's.
 
-    The claim key when a head sha is known — the same string, so the two records
-    of one job agree — and the same shape WITHOUT ``@sha`` when it isn't.
-    :func:`work_key` deliberately returns ``""`` there, because skipping the mesh
-    claim is the safe degradation for a *claim*; skipping the ledger entry is not,
-    since the work still gets dispatched and would then be missing from every
-    figure on the Telemetry screen. The cost of the fallback is that two pushes to
-    one PR fold into one ledger task while the sha is unknown, which understates
-    the count rather than inventing one.
+    The sha-less fallback exists because the work still gets dispatched, and without
+    an entry it would be missing from every figure on the Telemetry screen. Its cost
+    is that two pushes to one PR fold into one ledger task while the sha is unknown,
+    which understates the count rather than inventing one.
     """
     ref = _pr_ref(pr_url)
     if ref is None:
@@ -394,47 +365,11 @@ def ledger_key(kind: str, pr_url: str, head_sha: str) -> str:
     return f"{kind}:{ref}@{head_sha}" if head_sha else f"{kind}:{ref}"
 
 
-def parse_work_key(key: str) -> tuple[str, str, str, int] | None:
-    """Inverse of :func:`work_key`: split ``<kind>:<host>/<owner>/<repo>#<n>@<sha>``
-    into ``(kind, owner, repo, pr_number)``. Returns None when ``key`` isn't a PR
-    work key (empty, or any shape :func:`work_key` never emits).
-
-    The executor's ps ground-truth floor uses this to learn which PR a dispatched
-    unit of work is for, then asks :func:`live_pr_items` whether an agent for it
-    is already alive on the host — so it dedups on the PR (like the ps-scan), never
-    on the exact key, and a fresh push (new ``@sha``) can't sneak a second agent
-    onto a PR already under review."""
-    if not key or ":" not in key:
-        return None
-    kind, rest = key.split(":", 1)
-    # <host>/<owner>/<repo>#<n>@<sha> — owner/repo/host never contain '#' or '@',
-    # and a sha is hex, so peeling from the right is unambiguous.
-    if "#" not in rest or "@" not in rest:
-        return None
-    left, _sha = rest.rsplit("@", 1)
-    path, num = left.rsplit("#", 1)
-    if not num.isdigit():
-        return None
-    segs = [p for p in path.split("/") if p]
-    if len(segs) != 3:  # host / owner / repo
-        return None
-    _host, owner, repo = segs
-    try:
-        # str.isdigit() is True for Unicode superscripts (¹²³) and for decimal runs
-        # longer than CPython's 4300-digit int() limit — neither of which int() will
-        # parse. work_key never emits those, so a raise here would break every caller's
-        # fail-open contract (the executor's _pr_agent_running dedup floor tears the
-        # dispatching peer's link on a hostile work_key); treat them as a non-PR key.
-        return kind, owner, repo, int(num)
-    except ValueError:
-        return None
-
-
 # MARK: - Unified dispatch gate (one workflow, two triggers)
 #
 # The SPAWN buttons and the auto-monitors are two TRIGGERS for the very same
 # workflow: run one agent job. Everything from "run X (on PR #n)" onward - the
-# ban check, in-flight dedup, mesh coordination, spawn focus, activity label,
+# ban check, in-flight dedup, spawn focus, activity label,
 # counters - is decided HERE, once, so the interfaces cannot drift apart.
 # Triggers stay thin: a click, or a poll's backoff decision. (2026-07-20: the
 # drift was not hypothetical - dedup lived only on some paths, dupes followed.)
@@ -449,8 +384,6 @@ def parse_work_key(key: str) -> tuple[str, str, str, int] | None:
 #   human starting one agent on a tight disk is their call (dispatch_decide);
 # - budget: only auto work is held to what is left of the limits it spends
 #   against - a human spending their own last slice is their call (dispatch_decide);
-# - mesh: only auto origination is mesh-gated - a human clicking THIS machine's
-#   button has already decided placement (dispatch_decide);
 # - counters: only a monitor's FIRST dispatch counts as auto-handled work
 #   (dispatch_bumps_counter);
 # - label: rows a monitor found carry the "Auto · " prefix, retries are surfaced
@@ -465,7 +398,6 @@ SOURCE_AUTO = "auto"
 VERDICT_PROCEED = "proceed"
 VERDICT_IN_FLIGHT = "in_flight"  # an agent already works this PR - whoever asks
 VERDICT_BANNED = "banned"  # prompt-injection ban on the author - whoever asks
-VERDICT_STAND_DOWN = "stand_down"  # mesh: another node originates (auto only)
 VERDICT_AT_CAPACITY = "at_capacity"  # this device already runs its cap (auto only)
 VERDICT_UNAFFORDABLE = "unaffordable"  # not enough rate limit left (auto only)
 VERDICT_NOT_ALLOWED = "not_allowed"  # author outside the auto-review allowlist
@@ -476,7 +408,6 @@ def dispatch_decide(
     source: str,
     banned: bool,
     agent_on_pr: bool,
-    mesh_stands_down: bool,
     at_capacity: bool,
     unaffordable: bool = False,
     outside_allowlist: bool = False,
@@ -484,7 +415,7 @@ def dispatch_decide(
 ) -> str:
     """The one decision both interfaces obey, in fixed precedence: ban, then the
     auto-review allowlist, then in-flight, then (auto only) this device's free
-    disk, its concurrency cap, its rate-limit budget, and mesh.
+    disk, its concurrency cap and its rate-limit budget.
 
     The two author verdicts lead together because they are the same kind of fact -
     a standing statement about a person, true before this poll and after it - while
@@ -493,21 +424,16 @@ def dispatch_decide(
     work alone, so a sweep, a wizard press and the two reconcilers over my own PRs
     all pass ``False``.
 
-    Capacity outranks mesh so a saturated device never *originates*: the claim
-    that routing takes has gossip side effects, and a node holding the claim for
-    work it then refuses to start is worse than not asking. It is safe to leave
-    the work for a later poll — every machine scans, so on a mesh a peer with room
-    picks the same unit up, and off a mesh the reconciler retries it here on the
-    next tick (the refusal writes no attempt record, so no backoff engages).
+    A saturated device leaves the work for a later poll: the reconciler retries it
+    on the next tick (the refusal writes no attempt record, so no backoff engages).
 
-    The budget sits between the two for the same reason and with the same
-    consequence: an account with nothing left to spend cannot finish the agent it
-    would claim the work for, and holding the job costs nothing but the wait for a
-    window to refill or a balance to be topped up. It ranks BELOW capacity only
-    because capacity is the measurement already in hand — a saturated device has no
-    slot to spend a budget on, so the probe is never worth taking.
+    The budget holds a job the same way: an account with nothing left to spend
+    cannot finish the agent it would start, and holding the job costs nothing but
+    the wait for a window to refill or a balance to be topped up. It ranks BELOW
+    capacity only because capacity is the measurement already in hand — a saturated
+    device has no slot to spend a budget on, so the probe is never worth taking.
 
-    The disk leads all three. An agent started on a nearly full disk cannot finish
+    The disk leads both. An agent started on a nearly full disk cannot finish
     and pushes the machine toward ENOSPC, wherever its bay or its budget stands; a
     freed bay does not free space, so it is the hold the operator has to act on and
     the one the feed should name while several hold; and one ``statvfs`` is the
@@ -524,8 +450,6 @@ def dispatch_decide(
         return VERDICT_AT_CAPACITY
     if source == SOURCE_AUTO and unaffordable:
         return VERDICT_UNAFFORDABLE
-    if source == SOURCE_AUTO and mesh_stands_down:
-        return VERDICT_STAND_DOWN
     return VERDICT_PROCEED
 
 
@@ -535,9 +459,7 @@ def dispatch_decide(
 # owed — and, before this cap existed, dispatched all of them in one pass: N
 # terminal windows, N `claude` sessions, one machine. The cap is the device's,
 # not the monitor's: it bounds how many automatic agents Diplomat has RUNNING
-# here, so it holds across the review monitor, the conflict reconciler and work a
-# mesh peer routes in (szponthost.DiplomatHost.at_job_capacity, which is what
-# the node asks before it spawns).
+# here, so it holds across the review monitor and the conflict reconciler alike.
 
 DEFAULT_AUTO_TASK_LIMIT = 2
 MIN_AUTO_TASK_LIMIT = 1
@@ -836,9 +758,9 @@ def dispatch_bumps_counter(source: str, attempt: int) -> bool:
 
 def queue_key(audit_action: str, item: str) -> str:
     """A queued task's identity, stable across polls and applet restarts: the
-    monitor's verb plus the item key (:func:`prref.item_key`) it is about. Not the mesh
-    work key — that one is scoped to a head sha, so a push during the wait would read
-    as a different task and lose the operator's place for it.
+    monitor's verb plus the item key (:func:`prref.item_key`) it is about. Not the
+    ledger key (:func:`ledger_key`) — that one is scoped to a head sha, so a push during
+    the wait would read as a different task and lose the operator's place for it.
 
     The verb is part of the key because a PR can owe two different monitors at once
     (a conflict *and* an unaddressed review); they are two tasks, and the one that
@@ -966,10 +888,7 @@ def queue_order(offered: list[str], saved: list[str]) -> list[str]:
 
     Keys that are no longer offered fall out — the work was taken by an agent,
     resolved, or its author banned — because a queue that outlived its evidence
-    would hand "execute now" a task GitHub no longer owes. (Not a mesh claim: the
-    cap outranks the mesh gate, so a device with anything queued is by definition
-    one that never asked a peer. Peer-owned work leaves the queue when the drain
-    reaches it and the mesh answers.)
+    would hand "execute now" a task GitHub no longer owes.
 
     Requested reviews, then requested issue fixes, then investigations, then conflict
     fixes fall to the back whatever order they were found in (:func:`queue_band`). The
@@ -1023,8 +942,8 @@ def queue_reorder(order: list[str], moving: str, onto: str) -> list[str]:
 class AgentJob:
     """One agent job, whoever triggers it. The trigger supplies WHAT to run
     (config -> prompt, labels, PR identity); the store's ``dispatch_agent`` owns
-    everything that HAPPENS - ban check, in-flight dedup, mesh policy, spawn,
-    registration, counters. Twin of Store.AgentJob on macOS."""
+    everything that HAPPENS - ban check, in-flight dedup, spawn, registration,
+    counters. Twin of Store.AgentJob on macOS."""
 
     kind: str  # activity tint: "review" | "issues" | "conflicts" | "audit"
     audit_action: str  # activity-feed verb
@@ -1035,10 +954,7 @@ class AgentJob:
     # listed checkout; with ``pr_url`` it makes :attr:`item`, the dedup key.
     pr_number: int | None = None
     author_login: str | None = None  # whose PR we'd review - the ban dimension
-    duty: str = ""  # mesh duty, for auto-origination gating
-    work_key: str = ""  # mesh claim key ("" = no claim)
-    # Telemetry ledger identity - the claim key, or its sha-less shape when the
-    # head sha is unknown (see ledger_key). Set for auto jobs only: the screen
+    # Telemetry ledger identity (see ledger_key). Set for auto jobs only: the screen
     # measures the MONITORS, and a wizard click is the operator's own doing.
     ledger_key: str = ""
     counter: str | None = None  # "review_requests" | "my_reviews" | "conflicts"
@@ -1052,8 +968,7 @@ class AgentJob:
     attempt_stamp: str = ""
     # The checkout the agent works in: a repo root's, or another one listed in Settings.
     # None is whichever root is primary at spawn time, so a monitor job, which can wait
-    # in the queue past a change of primary, names its root's path. The mesh takes only
-    # work in the configured repo's root (``Store._route_via_mesh``).
+    # in the queue past a change of primary, names its root's path.
     checkout: str | None = None
 
     @property
@@ -1116,8 +1031,8 @@ class RequestedWork:
     @property
     def action(self) -> str:
         """The queue verb this ask waits under, which is also its
-        :class:`AgentJob` kind, its mesh duty and the verb its dispatch writes to the
-        activity feed."""
+        :class:`AgentJob` kind and the verb its dispatch writes to the activity
+        feed."""
         return self.config.get("kind") or QUEUE_REVIEW_ACTION
 
     @property
@@ -1210,7 +1125,6 @@ class RunningAgent:
     kind: str
     tracked: bool
     started_at: float = 0.0  # epoch seconds; 0 when untracked (nothing to date it by)
-    mesh: bool = False  # the mesh placed this job somewhere other than a local spawn
     # What the run resolved to this tick (`agentstate.RunState`) and the one fact that
     # decided it. The reason is on the row because the states this list can now show
     # include "unknown", and a row that says only "unknown" invites exactly the
@@ -1330,7 +1244,7 @@ def _unscoped_auto(records) -> list:
     from . import agentstate
 
     return [r for r in records
-            if r.runs_here and r.source == agentstate.SOURCE_AUTO and not r.released
+            if r.source == agentstate.SOURCE_AUTO and not r.released
             and r.item is None]
 
 

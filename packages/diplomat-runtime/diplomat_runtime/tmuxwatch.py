@@ -110,10 +110,9 @@ def pane_tails_for_ttys(ttys: set[str]) -> dict[str, str] | None:
     distinction into an Observation and the resolver acts on it.
 
     ANY failure collapses to ``None``, not just the ones :func:`_run` knows to expect.
-    The callers are a poll worker and the mesh node's capacity hook, and neither can
-    afford an exception: one would silently die for the rest of the applet's life (the
-    way the watcher itself once did — see :func:`_run`), the other would fail a peer's
-    job over a screen it could not read.
+    The caller is a poll worker, which cannot afford an exception: it would silently
+    die for the rest of the applet's life (the way the watcher itself once did — see
+    :func:`_run`).
     """
     if shutil.which("tmux") is None:
         return None
@@ -192,8 +191,8 @@ def kill_window_for_tty(tty: str) -> bool:
     killed.
 
     The fallback route to a run's window, for the runs :func:`kill_session` cannot
-    name: one spawned before sessions were named, and one the mesh placed here, whose
-    terminal the node opened.
+    name: one spawned before sessions were named, and an agent this applet did not
+    spawn.
 
     The window is closed for a run a BACKSTOP ended (:func:`agentstate.reapable`), and
     for an automatic run its own runner reported done
@@ -205,7 +204,7 @@ def kill_window_for_tty(tty: str) -> bool:
     run the operator started from the panel that ends the ordinary way keeps its window:
     that is a session they may still want to read or type into.
 
-    The WINDOW, not the session. A session this applet or a mesh node opened holds
+    The WINDOW, not the session. A session this applet opened holds
     that one window (:func:`review.terminal_argv`), and tmux ends a session with its
     last window, so nothing of those is left behind; an agent the operator ran by
     hand inside their own session loses that window, every pane in it, and nothing

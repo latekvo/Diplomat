@@ -44,9 +44,7 @@ from pathlib import Path
 from .atomicjson import read_object, write_atomic
 
 #: Token fields that count toward a rate-limit window. Cache *reads* are excluded
-#: deliberately — they are huge and cheap, and counting them would swamp the signal
-#: (the same three fields ``szpontnet.usage._token_cost`` sums, so a machine running
-#: the mesh add-on prices its quota the same way this does).
+#: deliberately — they are huge and cheap, and counting them would swamp the signal.
 _COST_FIELDS = ("input_tokens", "output_tokens", "cache_creation_input_tokens")
 
 

@@ -11,14 +11,6 @@ a *share of the limit* rather than an unanchored token count: Anthropic publishe
 a utilization percentage and never a token budget, and the budget is dynamic, so
 the window has to be priced from what actually happened (:func:`telemetry.calibrate`).
 
-This is deliberately Diplomat's own probe and not a call into
-``szpontnet.usage``. The mesh is an optional add-on — the applet ships and runs
-with the SzpontNet packages deleted outright, and CI proves it — so a screen that
-imported the library for its numbers would be a screen that blanks on exactly the
-machines least likely to have it. The two probes are twins by construction (same
-endpoint, same beta header, same reading of ``utilization``); this one is smaller
-because the mesh needs a routing signal and the panel only needs a reading.
-
 ``DIPLOMAT_QUOTA_PROBE=0`` disables it (the tests run offline and deterministic);
 ``DIPLOMAT_CLAUDE_DIR`` moves where the credentials are read from.
 """
