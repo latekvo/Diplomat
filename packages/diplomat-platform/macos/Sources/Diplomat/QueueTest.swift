@@ -1265,6 +1265,17 @@ enum QueueTest {
         check("a conflict fix on a GitLab merge request reading unchecked stays queued, one on a "
               + "GitHub PR reading UNKNOWN leaves: \(store.queuedTasks.map(\.id))",
               queuedBoth && fixes() == [mrFix])
+        // The cycle's commit keeps what the cycle offered.
+        let otherMR = "https://gitlab.example.com/g/sub/p/-/merge_requests/9"
+        let otherFix = AgentTaskQueue.key(auditAction: "conflicts", item: "g/sub/p#9")
+        let cycle = [unknown(mrURL), unknown(alphaURL),
+                     PRSnapshot(number: 9, title: "t", url: otherMR, isDraft: false, mergeable: "UNKNOWN",
+                                reviewDecision: "", threadsUnresolved: 0)]
+        await store.reconcileMyConflicts(snaps: cycle, now: Date())
+        store.commitQueue()
+        check("…and through the cycle's commit, while an unchecked merge request with no fix queued "
+              + "gets none: \(store.queuedTasks.map(\.id))",
+              fixes() == [mrFix] && !store.queuedTasks.contains { $0.id == otherFix })
         emptyBook()
         store.queuedTasks = []
 
