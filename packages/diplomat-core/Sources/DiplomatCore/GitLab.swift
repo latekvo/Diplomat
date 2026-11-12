@@ -1,25 +1,39 @@
 import Foundation
 
 /// The answers of the `assets/graphql/gitlab-*` queries, each turned into the JSON its
-/// GitHub twin query answers with, so one parser reads both. Pure; Python twin:
-/// `diplomat_runtime/gitlab.py`, held to the same output by the shared fixtures in
-/// `Tests/fixtures/gitlab/`.
+/// GitHub twin query answers with, so one parser reads both. No call to glab but through
+/// the `Search` an adapter is handed; Python twin: `diplomat_runtime/gitlab.py`, held to
+/// the same output by the shared fixtures in `Tests/fixtures/gitlab/`.
 ///
 /// GitLab has no author association, so a project member reads as `MEMBER` and anyone
-/// else as `NONE`; a merge request is numbered by its iid; a resolvable discussion is a
-/// review thread; and GitLab records a review request, an approval, a requested change
-/// and a ready-for-review as system notes, which stand in for GitHub's timeline events.
+/// else as `NONE`; an author past a full member page is asked of the `Search`, which
+/// looks usernames up with `gitlab-member-search`. A merge request is numbered by its iid;
+/// a resolvable discussion is a review thread; and GitLab records a review request, an
+/// approval, a requested change and a ready-for-review as system notes, which stand in for
+/// GitHub's timeline events.
 public enum GitLab {
     typealias JSON = [String: Any]
 
-    /// The adapters by fixture name: `prs`, `issues`, `monitor-prs`, `closed-prs`,
-    /// `review-requests` (any name starting so, each an answer asked for `reviewer`) and
-    /// `mr`.
-    public static func adapt(_ name: String, _ data: Data, reviewer: String) throws -> Data {
-        if name.hasPrefix("review-requests") { return try reviewRequests(data, reviewer: reviewer) }
+    /// Lowercased usernames -> the project members among them.
+    public typealias Search = ([String]) async throws -> Set<String>
+
+    /// The placeholder `gitlab-member-search` repeats a line for, and how many usernames
+    /// one query of it looks up: each search costs 22 of the 200 complexity GitLab allows
+    /// a query read without a token.
+    static let searchSlot = "uN"
+    static let searchChunk = 9
+
+    /// The adapters by fixture name: `prs`, `issues` (any name starting so),
+    /// `monitor-prs`, `closed-prs`, `review-requests` (any name starting so, each an
+    /// answer asked for `reviewer`) and `mr`.
+    public static func adapt(_ name: String, _ data: Data, reviewer: String,
+                             search: Search) async throws -> Data {
+        if name.hasPrefix("review-requests") {
+            return try await reviewRequests(data, reviewer: reviewer, search: search)
+        }
+        if name.hasPrefix("issues") { return try await issues(data, search: search) }
         switch name {
         case "prs": return try prs(data)
-        case "issues": return try issues(data)
         case "monitor-prs": return try monitorPRs(data)
         case "closed-prs": return try closedPRs(data)
         case "mr": return try mergeRequest(data)
@@ -44,9 +58,11 @@ public enum GitLab {
     }
 
     /// `gitlab-issues` as `issues.graphql`: `{data: {repository: {issues: {nodes}}}}`.
-    public static func issues(_ data: Data) throws -> Data {
+    public static func issues(_ data: Data, search: Search) async throws -> Data {
         let project = try self.project(data)
-        let members = self.members(project)
+        let members = try await self.members(project, list(project["issues"]).flatMap { i in
+            [i["author"]] + list(i["notes"]).map { $0["author"] }
+        }, search: search)
         let nodes = list(project["issues"]).map { i -> JSON in
             var n = common(i)
             n["createdAt"] = i["createdAt"] ?? NSNull()
@@ -89,9 +105,11 @@ public enum GitLab {
     /// `gitlab-review-requests` asked for `reviewer`, as `review-requests.graphql`:
     /// `{data: {search: {nodes}}}`, with `files` only when the answer carries `diffStats`
     /// (`$withFiles`).
-    public static func reviewRequests(_ data: Data, reviewer: String) throws -> Data {
+    public static func reviewRequests(_ data: Data, reviewer: String,
+                                      search: Search) async throws -> Data {
         let project = try self.project(data)
-        let members = self.members(project)
+        let members = try await self.members(project, list(project["mergeRequests"]).map { $0["author"] },
+                                             search: search)
         let nodes = list(project["mergeRequests"]).map { mr -> JSON in
             var n = common(mr)
             n["authorAssociation"] = association(username(mr["author"]), members)
@@ -195,8 +213,55 @@ public enum GitLab {
         username(author).map { ["login": $0] as Any } ?? NSNull()
     }
 
-    private static func members(_ project: JSON) -> Set<String> {
-        Set(list(project["projectMembers"]).compactMap { username($0["user"])?.lowercased() })
+    /// The lowercased usernames of the project's members: its member page, and when that
+    /// page is full, what `search` answers for each of `users` the page does not hold.
+    private static func members(_ project: JSON, _ users: [Any?], search: Search) async throws -> Set<String> {
+        let page = project["projectMembers"] as? JSON ?? [:]
+        var members = Set(list(page).compactMap { username($0["user"])?.lowercased() })
+        if (page["pageInfo"] as? JSON)?["hasNextPage"] as? Bool == true {
+            let unlisted = Set(users.compactMap { username($0)?.lowercased() }).subtracting(members)
+            members.formUnion(try await search(unlisted.sorted()))
+        }
+        return members
+    }
+
+    /// The `gitlab-member-search` queries looking `usernames` up, at most `searchChunk` to
+    /// a query, each with its variables: the i-th username of its query in `u<i>`. The
+    /// query's `$path` is the caller's.
+    public static func memberSearches(_ usernames: [String]) throws
+        -> [(query: String, variables: [(String, String)])] {
+        let template = try CoreAssets.graphql("gitlab-member-search")
+            .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        return stride(from: 0, to: usernames.count, by: searchChunk).map { start in
+            let chunk = Array(usernames[start..<min(start + searchChunk, usernames.count)])
+            let lines = template.flatMap { line in
+                line.contains(searchSlot)
+                    ? chunk.indices.map { line.replacingOccurrences(of: searchSlot, with: "u\($0)") }
+                    : [line]
+            }
+            return (lines.joined(separator: "\n"), chunk.enumerated().map { ("u\($0.offset)", $0.element) })
+        }
+    }
+
+    /// The members among the usernames a `gitlab-member-search` query asked for in
+    /// `variables`, lowercased: a username is one when its search answers it exactly
+    /// (GitLab usernames are case-insensitive). A search whose page is full without it
+    /// cannot tell, so it throws rather than read the user as no member.
+    public static func searchedMembers(_ data: Data, variables: [(String, String)]) throws -> Set<String> {
+        let project = try self.project(data)
+        var found = Set<String>()
+        for (alias, name) in variables {
+            guard let conn = project[alias] as? JSON else {
+                throw GHError.unanswered("GitLab member search answered nothing for \(name)")
+            }
+            if list(conn).contains(where: { username($0["user"])?.lowercased() == name.lowercased() }) {
+                found.insert(name.lowercased())
+            } else if (conn["pageInfo"] as? JSON)?["hasNextPage"] as? Bool == true {
+                throw GHError.unanswered("cannot tell whether \(name) is a GitLab project member: "
+                                         + "a full page of members matches the search for it")
+            }
+        }
+        return found
     }
 
     private static func association(_ user: String?, _ members: Set<String>) -> String {

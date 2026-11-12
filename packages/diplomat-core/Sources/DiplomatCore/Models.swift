@@ -398,8 +398,10 @@ public enum API {
     /// `root`'s open issues.
     public static func fetchOpenIssues(_ root: PRRef.LocalRepo) async throws -> [OpenIssue] {
         try openIssues(root.isGitLab
-            ? try GitLab.issues(try await GLab.graphql("gitlab-issues", host: root.host,
-                                                       variables: [("path", root.slug)]))
+            ? try await GitLab.issues(try await GLab.graphql("gitlab-issues", host: root.host,
+                                                             variables: [("path", root.slug)]),
+                                      search: { try await GLab.members(host: root.host, slug: root.slug,
+                                                                       usernames: $0) })
             : try await GH.graphql("issues", repo: (root.owner, root.repo)))
     }
 

@@ -98,7 +98,8 @@ enum AutofixMonitor {
     }
 
     /// PRs that request MY review, with request/last-review timestamps (one GraphQL
-    /// call, `assets/graphql/review-requests`, `gitlab-review-requests` on GitLab).
+    /// call, `assets/graphql/review-requests`, `gitlab-review-requests` on GitLab, which
+    /// past a full member page also looks authors up, `GLab.members`).
     /// `includeFiles` pulls each PR's changed paths for the verdict-withhold gate — a big
     /// chunk of the query's rate-limit cost, and pointless unless auto-approvals are on
     /// (verdicts are off by default), so the caller passes `false` then and the
@@ -107,10 +108,11 @@ enum AutofixMonitor {
                                     includeFiles: Bool = false) async throws -> [ReviewRequest] {
         let data: Data
         if root.isGitLab {
-            data = try GitLab.reviewRequests(try await GLab.graphql(
+            data = try await GitLab.reviewRequests(try await GLab.graphql(
                 "gitlab-review-requests", host: root.host,
                 variables: [("path", root.slug), ("reviewer", me)],
-                typedVariables: [("withFiles", "\(includeFiles)")]), reviewer: me)
+                typedVariables: [("withFiles", "\(includeFiles)")]), reviewer: me,
+                search: { try await GLab.members(host: root.host, slug: root.slug, usernames: $0) })
         } else {
             let q = "repo:\(root.owner)/\(root.repo) review-requested:\(me) is:pr is:open"
             data = try await GH.graphql("review-requests", repo: nil,

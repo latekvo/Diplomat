@@ -169,6 +169,11 @@ func gitlabSmoke() async throws {
           && PRRef.parse("group/sub/proj#7", owner: "o", repo: "r", also: [home]).repo == home
           && PRRef.parse("group/sub/proj!7", owner: "group/sub", repo: "proj", kind: .issues).number == nil,
           "the nested shorthand, `!` for a merge request only")
+    check(PRRef.parse("!7", owner: "group/sub", repo: "proj", host: "gitlab.example.com").number == 7
+          && PRRef.parse("!7", owner: "group/sub", repo: "proj", host: "gitlab.example.com",
+                         kind: .issues).number == nil
+          && PRRef.parse("!7", owner: "o", repo: "r").number == nil,
+          "a bare !7 is a merge request of a GitLab home, never an issue or a GitHub PR")
     let issue = PRRef.parse("https://gitlab.example.com/group/sub/proj/-/work_items/4", owner: "group/sub",
                             repo: "proj", host: "gitlab.example.com", kind: .issues)
     check(issue.number == 4 && !issue.repoMismatch
@@ -244,13 +249,50 @@ func gitlabSmoke() async throws {
         .filter { $0.hasSuffix(".input.json") }.sorted()
     let names = inputs.map { String($0.dropLast(".input.json".count)) }
     check(Set(["prs", "issues", "monitor-prs", "closed-prs", "review-requests",
-               "review-requests-nofiles", "review-requests-window", "mr"]).isSubset(of: Set(names)),
+               "review-requests-nofiles", "review-requests-window", "mr", "member-search",
+               "issues-paged", "issues-paged-unsure", "review-requests-paged"]).isSubset(of: Set(names)),
           "a fixture for every adapter in \(fixtures.path): \(names)")
     for name in names {
         let input = try Data(contentsOf: fixtures.appendingPathComponent("\(name).input.json"))
         let expected = try Data(contentsOf: fixtures.appendingPathComponent("\(name).expected.json"))
-        // The review-requests answers are the query's asked for reviewer `carol`.
-        let got = try canonical(try GitLab.adapt(name, input, reviewer: "carol"))
+        let inputObject = try JSONSerialization.jsonObject(with: input) as? [String: Any]
+        let got: String
+        if name == "member-search" {
+            // {usernames} -> each chunk's query text and variables.
+            got = try canonical(try JSONSerialization.data(withJSONObject: try GitLab.memberSearches(
+                inputObject?["usernames"] as? [String] ?? []).map { search -> [String: Any] in
+                    ["query": search.query,
+                     "variables": Dictionary(uniqueKeysWithValues: search.variables)]
+                }))
+        } else if let answer = inputObject?["answer"], let searchAnswer = inputObject?["search"] {
+            // {answer, search}: every member search is answered from `search`; what the
+            // adapter asked for, then its answer or its error.
+            let searchData = try JSONSerialization.data(withJSONObject: searchAnswer)
+            var asked: [[String]] = []
+            var outcome: [String: Any] = [:]
+            do {
+                let adapted = try await GitLab.adapt(name, try JSONSerialization.data(withJSONObject: answer),
+                                                     reviewer: "carol", search: { names in
+                    asked.append(names)
+                    return try GitLab.memberSearches(names).reduce(into: Set<String>()) {
+                        $0.formUnion(try GitLab.searchedMembers(searchData, variables: $1.variables))
+                    }
+                })
+                outcome["result"] = try JSONSerialization.jsonObject(with: adapted)
+            } catch {
+                outcome["error"] = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            }
+            outcome["asked"] = asked
+            got = try canonical(try JSONSerialization.data(withJSONObject: outcome))
+        } else {
+            // The review-requests answers are the query's asked for reviewer `carol`.
+            var searched = false
+            got = try canonical(try await GitLab.adapt(name, input, reviewer: "carol", search: { _ in
+                searched = true
+                return []
+            }))
+            check(!searched, "the \(name) answer's member page is whole, so no member is searched for")
+        }
         let want = try canonical(expected)
         check(got == want, "the \(name) adapter matches its fixture\n got: \(got)\nwant: \(want)")
     }
@@ -332,6 +374,7 @@ func gitlabSmoke() async throws {
     try """
         #!/bin/sh
         printf '%s\\n' "$@" > '\(stubDir.path)/argv'
+        echo call >> '\(stubDir.path)/calls'
         cat '\(stubDir.path)/out'
         cat '\(stubDir.path)/err' >&2
         exit "$(cat '\(stubDir.path)/code')"
@@ -350,6 +393,13 @@ func gitlabSmoke() async throws {
         do { try await body(); return "returned" }
         catch { return (error as? LocalizedError)?.errorDescription ?? "\(error)" }
     }
+    let loginShell = stubDir.appendingPathComponent("loginshell")
+    try "#!/bin/sh\necho 'welcome!'\necho '\(stub.path)'\n".write(to: loginShell, atomically: true, encoding: .utf8)
+    chmod(loginShell.path, 0o755)
+    let bareEnv = ["PATH": "/nonexistent", "SHELL": loginShell.path]
+    check(GLab.locate(env: bareEnv, candidates: []) == stub.path,
+          "a glab outside the candidates and a bare PATH is the one the login shell names")
+
     setenv("DIPLOMAT_GLAB", stub.path, 1)
     defer { unsetenv("DIPLOMAT_GLAB") }
 
@@ -373,6 +423,40 @@ func gitlabSmoke() async throws {
     let missing = await failure { _ = try await API.fetchOpenIssues(home) }
     check(missing == "GitLab project group/sub/proj not found on gitlab.example.com",
           "a project the answer does not hold is an unreadable root, not an empty one: \(missing)")
+
+    // One answer serves both calls: the issues read, and the member search it makes past a
+    // full member page.
+    func calls() -> Int {
+        let n = ((try? String(contentsOf: stubDir.appendingPathComponent("calls"), encoding: .utf8)) ?? "")
+            .split(separator: "\n").count
+        try? fm.removeItem(at: stubDir.appendingPathComponent("calls"))
+        return n
+    }
+    func pagedIssues(full: Bool, search: String) -> String {
+        #"{"data":{"project":{"projectMembers":{"pageInfo":{"hasNextPage":\#(full)},"#
+            + #""nodes":[{"user":{"username":"alice"}}]},"issues":{"nodes":["#
+            + #"{"iid":"9","title":"t","webUrl":"https://gitlab.example.com/group/sub/proj/-/issues/9","#
+            + #""createdAt":"2026-11-07T09:00:00+01:00","updatedAt":"2026-11-08T09:00:00+01:00","#
+            + #""author":{"username":"Dave"},"userNotesCount":0,"notes":{"nodes":[]}}]}\#(search)}}}"#
+    }
+    let daveFound = #","u0":{"pageInfo":{"hasNextPage":false},"nodes":[{"user":{"username":"dave"}}]}"#
+    _ = calls()
+    try answer(pagedIssues(full: false, search: ""))
+    let whole = try await API.fetchOpenIssues(home)
+    let wholeCalls = calls()
+    try answer(pagedIssues(full: true, search: daveFound))
+    let searched = try await API.fetchOpenIssues(home)
+    let searchArgs = argv()
+    check(whole.map(\.authorAssociation) == ["NONE"] && wholeCalls == 1
+          && searched.map(\.authorAssociation) == ["MEMBER"] && calls() == 2
+          && searchArgs.contains("u0=dave") && searchArgs.contains("path=group/sub/proj")
+          && searchArgs.contains { $0.hasPrefix("    u0: projectMembers(search: $u0,") },
+          "an author past a full member page is looked up in one more glab call, none for a whole page: "
+          + "\(whole.map(\.authorAssociation)) \(wholeCalls) \(searched.map(\.authorAssociation))")
+    try answer(pagedIssues(full: true, search: ""))
+    let unsearched = await failure { _ = try await API.fetchOpenIssues(home) }
+    check(unsearched == "GitLab member search answered nothing for dave",
+          "a member search that fails fails the read: \(unsearched)")
     try answer(#"{"errors":[{"message":"boom"}],"data":null}"#, code: 1)
     let errs = await failure { _ = try await API.fetchOpenPRs(home) }
     check(errs == "GraphQL: boom", "an errors array is the error: \(errs)")
