@@ -600,7 +600,7 @@ def merged_prs(items: set[str], roots: Iterable[LocalRepo] = ()) -> Observation:
     of ``roots`` it is in, so a GitLab root's merge request is asked of its GitLab, and
     any other repo of GitHub.
 
-    One ``gh`` call per PR, so this belongs on the slow refresh, not the 8-second
+    One ``gh`` or ``glab`` call per PR, so this belongs on the slow refresh, not the 8-second
     tick. The reading is always PRESENT: a PR whose probe fails is simply absent from
     the answer, so a partial answer is still positive evidence about the PRs it
     covers, and an empty ask is a real "none of them".

@@ -524,7 +524,7 @@ class Evidence:
     #: Work keys currently claimed somewhere on the mesh.
     claims: Observation = field(
         default_factory=lambda: Observation.unavailable("not probed"))
-    #: Item keys of the PRs GitHub reports as MERGED.
+    #: Item keys of the PRs GitHub or GitLab reports as MERGED.
     merged_prs: Observation = field(
         default_factory=lambda: Observation.unavailable("not probed"))
     #: Item key → the tty of an agent found by its prompt text in the process table.

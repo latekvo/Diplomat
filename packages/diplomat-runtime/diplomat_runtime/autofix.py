@@ -2,7 +2,7 @@
 ReviewReconcile.swift and the VerdictPolicy / AuthorAllowlist in Review.swift.
 
 Kept deterministic and side-effect-free so it's testable in isolation: the
-GitHub reads live in :mod:`autofixmonitor`, and the spawn/track/persistence in
+GitHub and GitLab reads live in :mod:`autofixmonitor`, and the spawn/track/persistence in
 the Store. This module only decides *what* should happen given snapshots and
 prior state.
 """

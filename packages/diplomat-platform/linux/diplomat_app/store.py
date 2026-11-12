@@ -1522,7 +1522,7 @@ class Store(QObject):
     # requesting my review, edge-triggers on new conflicts / review threads, and
     # spawns the same conflict-fix / review agents the panel wizards do — deduped by
     # an in-flight sentinel and rate-limited by ReviewReconcile backoff. The pure
-    # decision logic lives in autofix.py; the GitHub reads in autofixmonitor.py.
+    # decision logic lives in autofix.py; the GitHub and GitLab reads in autofixmonitor.py.
 
     def run_autofix_poll_async(self) -> None:
         """Kick one monitor poll on a worker thread (guarded against overlap). Safe to
