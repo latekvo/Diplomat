@@ -1,6 +1,7 @@
 # Merge requests that request MY review: the GitLab twin of review-requests.graphql.
-# GitLab records a review request, an approval and a requested change only as system
-# notes, so the activity notes carry those times, and comments are the rest. A request
+# GitLab records a review request, an approval, a requested change and a review published
+# without either ("left review comments") only as system notes, so the activity notes
+# carry those times, and comments are the rest. A request
 # older than the activity window reads as made at the window's oldest note (at the MR's
 # creation when the window is empty), so a response of mine inside the window answers it.
 # An author past a full member page is looked up by id in the REST

@@ -14,21 +14,21 @@
           "timelineItems": {
             "nodes": [
               {
-                "createdAt": "2026-11-05T09:00:00+01:00",
+                "createdAt": "2026-11-05T08:00:00Z",
                 "requestedReviewer": {
                   "__typename": "User",
                   "login": "carol"
                 }
               },
               {
-                "createdAt": "2026-11-05T09:00:00+01:00",
+                "createdAt": "2026-11-05T08:00:00Z",
                 "requestedReviewer": {
                   "__typename": "User",
                   "login": "dave"
                 }
               },
               {
-                "createdAt": "2026-11-05T11:00:00+01:00",
+                "createdAt": "2026-11-05T10:00:00Z",
                 "requestedReviewer": {
                   "__typename": "User",
                   "login": "erin"
@@ -42,13 +42,13 @@
                 "author": {
                   "login": "dave"
                 },
-                "submittedAt": "2026-11-05T12:00:00+01:00"
+                "submittedAt": "2026-11-05T11:00:00Z"
               },
               {
                 "author": {
                   "login": "carol"
                 },
-                "submittedAt": "2026-11-05T13:00:00+01:00"
+                "submittedAt": "2026-11-05T12:00:00Z"
               }
             ]
           },
@@ -58,11 +58,11 @@
                 "author": {
                   "login": "carol"
                 },
-                "createdAt": "2026-11-05T15:00:00+01:00"
+                "createdAt": "2026-11-05T14:00:00Z"
               },
               {
                 "author": null,
-                "createdAt": "2026-11-05T16:00:00+01:00"
+                "createdAt": "2026-11-05T15:00:00Z"
               }
             ]
           },
@@ -89,7 +89,7 @@
           "timelineItems": {
             "nodes": [
               {
-                "createdAt": "2026-11-04T09:00:00+01:00",
+                "createdAt": "2026-11-04T08:00:00Z",
                 "requestedReviewer": {
                   "__typename": "User",
                   "login": "carol"

@@ -1,0 +1,98 @@
+{
+  "data": {
+    "project": {
+      "projectMembers": {
+        "pageInfo": {
+          "hasNextPage": false
+        },
+        "nodes": [
+          {
+            "user": {
+              "username": "alice"
+            }
+          },
+          {
+            "user": {
+              "username": "bob"
+            }
+          }
+        ]
+      },
+      "mergeRequests": {
+        "nodes": [
+          {
+            "iid": "41",
+            "title": "Requested before the clocks went back",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/41",
+            "diffHeadSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "createdAt": "2026-10-24T23:50:00Z",
+            "author": {
+              "id": "gid://gitlab/User/11",
+              "username": "alice"
+            },
+            "activity": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-10-25T02:40:00+02:00",
+                  "body": "requested review from @carol"
+                },
+                {
+                  "author": {
+                    "username": "carol"
+                  },
+                  "createdAt": "2026-10-25T02:10:00+01:00",
+                  "body": "approved this merge request"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "bob"
+                  },
+                  "createdAt": "2026-10-25T01:20:00Z"
+                }
+              ]
+            }
+          },
+          {
+            "iid": "42",
+            "title": "Requested before the window, across the fall-back",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/42",
+            "diffHeadSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "createdAt": "2026-10-20T09:00:00+02:00",
+            "author": {
+              "id": "gid://gitlab/User/11",
+              "username": "alice"
+            },
+            "activity": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-10-25T02:50:00+02:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "bob"
+                  },
+                  "createdAt": "2026-10-25T02:05:00+01:00",
+                  "body": "approved this merge request"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

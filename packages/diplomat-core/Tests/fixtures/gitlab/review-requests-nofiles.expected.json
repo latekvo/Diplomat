@@ -14,7 +14,7 @@
           "timelineItems": {
             "nodes": [
               {
-                "createdAt": "2026-11-06T09:00:00+01:00",
+                "createdAt": "2026-11-06T08:00:00Z",
                 "requestedReviewer": {
                   "__typename": "User",
                   "login": "carol"
@@ -39,7 +39,7 @@
           "timelineItems": {
             "nodes": [
               {
-                "createdAt": "2026-11-01T08:00:00+01:00",
+                "createdAt": "2026-11-01T07:00:00Z",
                 "requestedReviewer": {
                   "__typename": "User",
                   "login": "carol"
@@ -56,7 +56,7 @@
                 "author": {
                   "login": "carol"
                 },
-                "createdAt": "2026-11-03T09:00:00+01:00"
+                "createdAt": "2026-11-03T08:00:00Z"
               }
             ]
           }

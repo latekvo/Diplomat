@@ -8,7 +8,7 @@
             "title": "Conflicted, changes requested over an approval",
             "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/12",
             "isDraft": false,
-            "createdAt": "2026-11-01T09:00:00+01:00",
+            "createdAt": "2026-11-01T08:00:00Z",
             "reviewDecision": "CHANGES_REQUESTED",
             "mergeable": "CONFLICTING",
             "author": {
@@ -28,7 +28,7 @@
               "nodes": [
                 {
                   "__typename": "ReadyForReviewEvent",
-                  "createdAt": "2026-11-04T10:00:00+01:00"
+                  "createdAt": "2026-11-04T09:00:00Z"
                 }
               ]
             },
@@ -80,7 +80,7 @@
             "title": "Checking, approved, deleted author",
             "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/11",
             "isDraft": true,
-            "createdAt": "2026-10-30T09:00:00+01:00",
+            "createdAt": "2026-10-30T08:00:00Z",
             "reviewDecision": "APPROVED",
             "mergeable": "UNKNOWN",
             "author": null,
@@ -123,7 +123,7 @@
             "title": "Status not computed, review requested",
             "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/10",
             "isDraft": false,
-            "createdAt": "2026-10-29T09:00:00+01:00",
+            "createdAt": "2026-10-29T08:00:00Z",
             "reviewDecision": "REVIEW_REQUIRED",
             "mergeable": "UNKNOWN",
             "author": {
@@ -148,7 +148,7 @@
             "title": "Mergeable, no reviewers",
             "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/9",
             "isDraft": false,
-            "createdAt": "2026-10-28T09:00:00+01:00",
+            "createdAt": "2026-10-28T08:00:00Z",
             "reviewDecision": null,
             "mergeable": "MERGEABLE",
             "author": {
