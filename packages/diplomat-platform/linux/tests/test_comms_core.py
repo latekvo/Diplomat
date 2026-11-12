@@ -621,8 +621,8 @@ def test_the_dry_run_through_the_entry_point_consumes_no_ping(tmp_path, slack):
                PATH="/usr/bin:/bin", QT_QPA_PLATFORM="offscreen", DIPLOMAT_COMMS_POLL="1",
                DIPLOMAT_CLAUDE=str(_stub_claude(tmp_path)),
                DIPLOMAT_CORE=str(core.assets_dir()),
-               PYTHONPATH=os.pathsep.join([str(linux), str(linux.parents[1] / "diplomat-runtime"),
-                                           str(linux.parents[1] / "szpontnet-core")]))
+               PYTHONPATH=os.pathsep.join([str(linux),
+                                           str(linux.parents[1] / "diplomat-runtime")]))
     for _ in range(2):
         run = subprocess.run([sys.executable, "-m", "diplomat_app"], cwd=str(linux), env=env,
                              capture_output=True, text=True, timeout=120)

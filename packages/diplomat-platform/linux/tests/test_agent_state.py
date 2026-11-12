@@ -9,14 +9,10 @@ Every case here is also a parity case: ``tests/test_agent_state_parity.py`` feed
 same table through ``diplomat-core agent-state`` and diffs, so the Swift twin cannot
 answer any of them differently.
 
-The cases are grouped by the claim they defend. The two that matter most, and that
-this whole module exists for:
-
-- ``*_unavailable_*`` — a probe that could not answer never yields FINISHED. Reading
-  "I could not look" as "it is gone" is what produced already-complete verdicts on
-  agents that were still working.
-- ``peer_*`` — a run on another machine is judged by the mesh claim, never by a local
-  process table that structurally cannot see it.
+The cases are grouped by the claim they defend. The one that matters most, and that
+this whole module exists for: a probe that could not answer never yields FINISHED.
+Reading "I could not look" as "it is gone" is what produced already-complete verdicts
+on agents that were still working.
 """
 
 from __future__ import annotations
@@ -51,12 +47,12 @@ def item(n: int) -> str:
 
 
 def rec(**kw) -> A.RunRecord:
-    """A local, auto-triggered run dispatched 60s ago on PR #337, pid 4242, tty
+    """An auto-triggered run dispatched 60s ago on PR #337, pid 4242, tty
     pts/3 — overridden per case. A PR number given without a link gets the fixture
     repo's link to it."""
     base = dict(run_id="r1", dispatched_at=T0 - 60, pr_number=337,
                 kind="review", label="Auto · Review · #337", source=A.SOURCE_AUTO,
-                placement=A.PLACEMENT_LOCAL, pid=4242, tty="pts/3")
+                pid=4242, tty="pts/3")
     base.update(kw)
     if "pr_url" not in kw:
         n = base["pr_number"]
@@ -82,7 +78,7 @@ def proc(elapsed: float = 60.0, tty: str = "pts/3", is_agent: bool = True):
     return A.ProcInfo(tty=tty, elapsed=elapsed, is_agent=is_agent)
 
 
-def ev(*, processes=None, sentinels=None, tails=None, claims=None,
+def ev(*, processes=None, sentinels=None, tails=None,
        merged=None, live_agents=None, sessions=None, activity=None,
        tokens=None) -> A.Evidence:
     """An evidence bundle where anything not named is PRESENT-and-empty.
@@ -115,7 +111,6 @@ def ev(*, processes=None, sentinels=None, tails=None, claims=None,
         processes=obs(processes, {}),
         sentinels=obs(sentinels, set()),
         tails=obs(tails, {}),
-        claims=obs(claims, set()),
         merged_prs=obs(merged, set()),
         live_agents=obs(live_agents, {}),
         sessions=obs(sessions, {}),
@@ -147,7 +142,7 @@ CASES = [
      rec(), ev(processes={4242: proc()}, sentinels={"someone-else"}),
      A.RUNNING, "pid 4242 alive"),
 
-    # --- a local run, judged by its pid -------------------------------------
+    # --- a run, judged by its pid -------------------------------------------
     ("a live pid whose screen shows the interrupt hint is working",
      rec(), ev(processes={4242: proc()}, tails={"pts/3": WORKING}),
      A.RUNNING, "working"),
@@ -189,8 +184,7 @@ CASES = [
                activity=A.Observation.unavailable("could not be read")),
      A.RUNNING, "working"),
     # The same report from runs whose window is not this applet's to close at retirement
-    # (`close_on_retire`): the operator's own session, an agent nobody dispatched, and
-    # one executing on a peer. The last one a mesh placed here is.
+    # (`close_on_retire`): the operator's own session and an agent nobody dispatched.
     ("a run the operator started reporting the turn over is over too",
      rec(source=A.SOURCE_PANEL),
      ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
@@ -200,16 +194,6 @@ CASES = [
      rec(run_id="untracked:o/r#337", untracked=True, label="", kind=""),
      ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
         activity={"untracked:o/r#337": ("idle", T0 - 5)}),
-     A.FINISHED, "its CLI reported the turn over"),
-    ("a peer's run whose CLI reported the turn over is over",
-     rec(placement=A.PLACEMENT_MESH_PEER, node="brick", work_key="review:337:sha",
-         pid=None, tty="", claim_seen_at=T0 - 1),
-     ev(claims={"review:337:sha"}, activity={"r1": ("idle", T0 - 5)}),
-     A.FINISHED, "its CLI reported the turn over"),
-    ("a mesh run placed here reporting the turn over is over",
-     rec(placement=A.PLACEMENT_MESH_HERE, work_key="review:337:sha"),
-     ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT},
-        activity={"r1": ("idle", T0 - 5)}),
      A.FINISHED, "its CLI reported the turn over"),
 
     # --- the quiescence backstop, for the runs no report reaches ------------
@@ -300,69 +284,49 @@ CASES = [
     ("a just-dispatched run whose pid the table has not caught up with is starting",
      rec(dispatched_at=T0 - 3), ev(processes={9999: proc()}),
      A.STARTING, "pid 4242 not in the process table yet"),
-    # --- a run whose agent this applet did not open ------------------------
-    # The mesh routes a job and the NODE opens the terminal, so the pid file it
-    # writes belongs to a run directory this applet never created. Judged on the
-    # prompt scan instead, or such a run reads "unknown" for ever, holds its bay
-    # for ever, and can never be retired — seen in production, twice, the first
-    # time the monitors ran.
+    # --- a run with no pid to match ----------------------------------------
     # tty as `adopt_ttys` leaves it: for a pid-less run that is whatever tty the
     # prompt scan found its agent on, which is what makes its screen readable at all.
-    ("a pid-less run whose PR has a live agent is running",
-     rec(placement=A.PLACEMENT_MESH_HERE, pid=None, tty="pts/5",
-         dispatched_at=T0 - 600),
-     ev(live_agents={337: "pts/5"}, tails={"pts/5": WORKING}),
-     A.RUNNING, "an agent is up on PR #337; working"),
     ("a pid-less run whose agent is at its prompt gives its bay back too",
-     rec(placement=A.PLACEMENT_MESH_HERE, pid=None, tty="pts/5",
-         dispatched_at=T0 - 600),
+     rec(pid=None, tty="pts/5", dispatched_at=T0 - 600),
      ev(live_agents={337: "pts/5"}, tails={"pts/5": AT_PROMPT}),
      A.AWAITING_INPUT, "an agent is up on PR #337; at the prompt"),
-    ("a pid-less mesh-here run whose PR has no agent in a scan that WORKED has finished",
-     rec(placement=A.PLACEMENT_MESH_HERE, pid=None, dispatched_at=T0 - 600),
-     ev(live_agents={}),
-     A.FINISHED, "no agent for PR #337 in the process table"),
     ("a pid-less run is not ended by a scan that failed",
      rec(pid=None, dispatched_at=T0 - 600),
      ev(live_agents=A.Observation.unavailable("ps could not be read")),
      A.UNKNOWN, "ps could not be read"),
-    ("a pid-less mesh-here run with no PR either cannot be looked for at all",
-     rec(placement=A.PLACEMENT_MESH_HERE, pid=None, pr_number=None,
-         dispatched_at=T0 - 600),
-     ev(live_agents={}),
-     A.UNKNOWN, "no pid recorded"),
 
     # --- a spawn whose terminal never ran the command -----------------------
     #
     # The pid file is staged by THIS applet and written by the run's own first command,
-    # so for a local run its absence past the grace is not a gap in the evidence — it is
-    # the evidence. Read as FINISHED (which is what "no agent for this PR" would say),
-    # a terminal that opens an empty window retires the run as a completed one and the
-    # work goes back to sleep on a retry backoff nothing ever spent. Seen in production:
-    # a Ghostty that would not initialise a surface while the display slept took 108
-    # dispatches over one weekend and started none of them.
-    ("a local run whose pid file never appeared never ran",
+    # so its absence past the grace is not a gap in the evidence - it is the evidence.
+    # Read as FINISHED (which is what "no agent for this PR" would say), a terminal that
+    # opens an empty window retires the run as a completed one and the work goes back to
+    # sleep on a retry backoff nothing ever spent. Seen in production: a Ghostty that
+    # would not initialise a surface while the display slept took 108 dispatches over
+    # one weekend and started none of them.
+    ("a run whose pid file never appeared never ran",
      rec(pid=None, dispatched_at=T0 - 600), ev(live_agents={}),
      A.FAILED, "its terminal never ran the command (no pid file 600s after dispatch)"),
     # Same verdict with nothing to scan for: the file answers on its own, so a Fix-issues
     # ask holds its bay for the grace rather than until the 4h deadline.
-    ("a local run with no PR is judged by its pid file all the same",
+    ("a run with no PR is judged by its pid file all the same",
      rec(pid=None, pr_number=None, dispatched_at=T0 - 600), ev(live_agents={}),
      A.FAILED, "its terminal never ran the command (no pid file 600s after dispatch)"),
     # The rescue above this rung still wins: a run whose agent IS up must never be
     # called failed, or the poll that hears it dispatches a second agent beside it.
-    ("a local run with no pid file but a live agent on its PR is running",
+    ("a run with no pid file but a live agent on its PR is running",
      rec(pid=None, dispatched_at=T0 - 600, tty="pts/5"),
      ev(live_agents={337: "pts/5"}, tails={"pts/5": WORKING}),
      A.RUNNING, "an agent is up on PR #337; working"),
     # Inside the grace it is STARTING, not failed — the pid file lands ~0.5s after
     # dispatch here, and this window is what the spawn's own wait is measured against.
-    ("a local run with no pid file is not failed inside the spawn grace",
+    ("a run with no pid file is not failed inside the spawn grace",
      rec(pid=None, dispatched_at=T0 - 5), ev(live_agents={}),
      A.STARTING, "dispatched 5s ago, no pid yet"),
 
     # --- missing evidence never means finished ------------------------------
-    ("an unreadable process table leaves a local run unknown",
+    ("an unreadable process table leaves a run unknown",
      rec(), ev(processes=A.Observation.unavailable("ps output would not decode")),
      A.UNKNOWN, "ps output would not decode"),
     ("an unreadable screen leaves a live agent running, not idle",
@@ -383,54 +347,6 @@ CASES = [
      rec(), ev(processes={4242: proc()},
                sentinels=A.Observation.unavailable("run dir unreadable")),
      A.RUNNING, "pid 4242 alive"),
-
-    # --- a mesh-peer run, judged by the claim -------------------------------
-    ("a held claim means a peer's agent is running",
-     rec(placement=A.PLACEMENT_MESH_PEER, work_key="review:337:abc", node="brick",
-         pid=None, tty=""),
-     ev(claims={"review:337:abc"}),
-     A.RUNNING, "claim held on brick"),
-    ("an empty local process table never retires a peer's run",
-     rec(placement=A.PLACEMENT_MESH_PEER, work_key="review:337:abc", node="brick",
-         dispatched_at=T0 - 3600, claim_seen_at=T0 - 10, pid=None, tty=""),
-     ev(processes={}, claims={"review:337:abc"}),
-     A.RUNNING, "claim held on brick"),
-    ("an unreadable claim book leaves a peer's run unknown, NOT finished",
-     rec(placement=A.PLACEMENT_MESH_PEER, work_key="review:337:abc",
-         claim_seen_at=T0 - 10, pid=None, tty=""),
-     ev(claims=A.Observation.unavailable("mesh node not running")),
-     A.UNKNOWN, "mesh node not running"),
-    ("a peer run whose claim has not appeared yet is starting",
-     rec(placement=A.PLACEMENT_MESH_PEER, work_key="review:337:abc",
-         dispatched_at=T0 - 10, pid=None, tty=""),
-     ev(claims=set()),
-     A.STARTING, "claim not seen yet"),
-    ("a peer run whose claim never appeared is finished once it has had time",
-     rec(placement=A.PLACEMENT_MESH_PEER, work_key="review:337:abc",
-         dispatched_at=T0 - 50, pid=None, tty=""),
-     ev(claims=set()),
-     A.FINISHED, "claim released 50s ago"),
-    ("a claim seen recently keeps a peer run alive through one missed snapshot",
-     rec(placement=A.PLACEMENT_MESH_PEER, work_key="review:337:abc",
-         dispatched_at=T0 - 3600, claim_seen_at=T0 - 20, pid=None, tty=""),
-     ev(claims=set()),
-     A.RUNNING, "claim last seen 20s ago"),
-    ("a claim released past the settle window ends a peer run",
-     rec(placement=A.PLACEMENT_MESH_PEER, work_key="review:337:abc",
-         dispatched_at=T0 - 3600, claim_seen_at=T0 - 50, pid=None, tty=""),
-     ev(claims=set()),
-     A.FINISHED, "claim released 50s ago"),
-    ("an hour-long peer run is not ended by its own age",
-     rec(placement=A.PLACEMENT_MESH_PEER, work_key="review:337:abc", node="brick",
-         dispatched_at=T0 - 7200, claim_seen_at=T0 - 1, pid=None, tty=""),
-     ev(claims={"review:337:abc"}),
-     A.RUNNING, "claim held on brick"),
-
-    # --- a mesh placement that landed back here is a local run --------------
-    ("a mesh run placed back here is judged by its pid, not by the claim",
-     rec(placement=A.PLACEMENT_MESH_HERE, work_key="review:337:abc"),
-     ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT}, claims=set()),
-     A.AWAITING_INPUT, "at the prompt"),
 
     # --- untracked agents ---------------------------------------------------
     #
@@ -572,8 +488,8 @@ CASES = [
      ev(processes={4242: proc()}, tails={"pts/3": TMUX_WRAPPED}),
      A.FINISHED, "its screen has not changed in 20m"),
 
-    # --- an hour-long local run ---------------------------------------------
-    ("an hour-long local run is not ended by its own age",
+    # --- an hour-long run ---------------------------------------------------
+    ("an hour-long run is not ended by its own age",
      rec(dispatched_at=T0 - 7200), ev(processes={4242: proc(elapsed=7200)},
                                       tails={"pts/3": WORKING}),
      A.RUNNING, "working"),
@@ -610,13 +526,6 @@ CASES = [
      ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING},
         tokens=A.Observation.unsupported("no limit this machine can read")),
      A.RUNNING, "working"),
-    # The reading is THIS account's, and a peer's agent spends the peer's. That run is
-    # ended by its claim being released, by the machine that can see the process.
-    ("a peer's run is not ended by this device's deadline",
-     rec(placement=A.PLACEMENT_MESH_PEER, node="brick", work_key="review:337:abc",
-         pid=None, tty="", dispatched_at=T0 - PAST_DEADLINE),
-     ev(claims={"review:337:abc"}),
-     A.RUNNING, "claim held on brick"),
     # The deadline is the LAST rung, so every answer the ladder actually reached
     # outranks it. Each of these is a run old enough to fire it.
     #
@@ -660,15 +569,6 @@ CASES = [
      ev(processes={4242: proc(elapsed=PAST_DEADLINE)}, tails={"pts/3": WORKING},
         sentinels={"r1"}),
      A.FINISHED, "completion sentinel present"),
-    # The one UNKNOWN it does end. The scan WORKED and came back empty, and a run with
-    # neither a pid nor a PR number gave it nothing to look for either way — so this
-    # verdict is the same on every future tick and the bay never comes back on its own.
-    ("a run nothing could ever find is ended by the deadline",
-     rec(placement=A.PLACEMENT_MESH_HERE, pid=None, pr_number=None,
-         dispatched_at=T0 - PAST_DEADLINE),
-     ev(live_agents={}),
-     A.FINISHED, "no pid recorded 18000s after dispatch; has run for 5h, "
-                 "past the 4h deadline"),
 
     # --- a backstop that could not close the window -------------------------
     # A backstop ends a run by CLOSING its terminal, so a kill that reached nothing left
@@ -762,29 +662,10 @@ def test_only_the_run_deadline_marks_a_run_expired():
     assert any(v.state == A.FINISHED and not v.expired for v in verdicts)
 
 
-def test_only_the_run_with_nothing_to_look_for_is_marked_unfindable():
-    """``unfindable`` is what lets a clock end one UNKNOWN and not the others, so like
-    ``wedged`` and ``expired`` it has to name ONE rung.
-
-    The set it must not widen to is UNKNOWN. Every other UNKNOWN here is a probe that
-    failed, and ending one of those retires a run for being old on the single pass that
-    could not see it — the failure the deadline was put below the evidence rungs to
-    avoid."""
-    for name, record, evidence, _state, _reason in CASES:
-        got = A.resolve_one(record, evidence, T0, A.RUN_DEADLINE)
-        by_rung = "no pid recorded" in got.reason
-        assert got.unfindable is by_rung, f"{name}: {got.reason!r}"
-    # …and the table really does contain both sides of that distinction: a run nothing
-    # had anything to look for, and an UNKNOWN that is a probe reporting it could not.
-    verdicts = [A.resolve_one(r, e, T0, A.RUN_DEADLINE) for _n, r, e, _s, _rr in CASES]
-    assert any(v.unfindable for v in verdicts)
-    assert any(v.state == A.UNKNOWN and not v.unfindable for v in verdicts)
-
-
 def test_a_bay_held_by_a_run_nothing_can_find_comes_back():
-    """What the stamp buys. A Fix-issues ask is dispatched with no PR number, and if its
-    shell dies before writing the pid file the record has neither of the two things any
-    probe here looks for — so it resolves UNKNOWN, which OCCUPYING counts, forever.
+    """A Fix-issues ask is dispatched with no PR number, and if its shell dies before
+    writing the pid file the record has neither of the two things any probe here looks
+    for. The missing pid file ends it, so the bay comes back.
 
     The window is left alone. No probe ever saw an agent for this run — it has no tty
     for anything to walk out of, and whatever terminal the spawn opened is most likely
@@ -798,15 +679,16 @@ def test_a_bay_held_by_a_run_nothing_can_find_comes_back():
 
 
 def test_the_deadline_still_spares_the_run_nobody_could_look_at():
-    """The distinction, on the tick where it costs something. Same record, same age,
-    same deadline as the case above — and the only difference is that the scan FAILED
-    rather than came back empty. That one is an evidence outage, and the next pass may
-    well find the agent."""
+    """Same record and age as the case above, but the scan FAILED rather than came back
+    empty. That is an evidence outage - the next pass may well find the agent - so
+    neither the missing pid file nor the deadline ends it."""
     record = rec(pid=None, pr_number=None, dispatched_at=T0 - PAST_DEADLINE)
     blind = ev(live_agents=A.Observation.unavailable("ps could not be read"))
     got = A.resolve_one(record, blind, T0, A.RUN_DEADLINE)
     assert got.state == A.UNKNOWN, got.reason
-    assert not got.expired and not got.unfindable
+    assert not got.expired
+
+
 def test_a_window_that_would_not_close_leaves_its_run_counted():
     """What the cooling is for, in the terms the rest of the applet reads.
 
@@ -896,7 +778,6 @@ def test_a_reaped_window_always_belongs_to_a_retired_run():
 #: machine whose own runner reported its turn over and gone well.
 CLOSED_ON_RETIRE = {
     "its CLI reporting the turn over ends a run whose process is still alive",
-    "a mesh run placed here reporting the turn over is over",
     "a session that finished its turn ends the run though the hint is stale",
     "a session answer needs no screen at all",
     "its CLI reporting the turn over ends a run nobody can look at",
@@ -904,10 +785,10 @@ CLOSED_ON_RETIRE = {
 
 
 def test_only_an_automatic_run_its_runner_reported_done_closes_its_window():
-    """Asked of the whole tick, as the stores ask it. Every other run that reported
-    its turn over keeps its window: the panel's, the untracked agent's and the peer's
-    cases above are each one guard of :func:`A.close_on_retire`, and a session that
-    ENDED, a sentinel, a merge and a gone pid are not the agent saying it is done."""
+    """Asked of the whole tick, as the stores ask it. Every other run that reported its
+    turn over keeps its window: the panel's and the untracked agent's cases above are
+    each one guard of :func:`A.close_on_retire`, and a session that ENDED, a sentinel, a
+    merge and a gone pid are not the agent saying it is done."""
     closed = set()
     for name, record, evidence, _state, _reason in CASES:
         t = A.tick([record], evidence, T0, 2, A.RUN_DEADLINE)
@@ -946,29 +827,27 @@ FROZEN_AT = 1790587500.0
 #: runs.json as frozen, with each record's run id and link in the item-keyed form
 #: the scan books them under.
 FROZEN_RUNS = [
-    {"claimSeenAt": None, "dispatchedAt": 1789135135.893142, "kind": "", "label": "",
-     "ledgerKey": "", "node": "", "pid": None, "placement": "local", "prNumber": 844,
+    {"dispatchedAt": 1789135135.893142, "kind": "", "label": "",
+     "ledgerKey": "", "pid": None, "prNumber": 844,
      "prUrl": "https://github.com/o/r/pull/844", "quietDigest": "", "quietSince": None,
-     "reapRefusedAt": None, "runId": "untracked:o/r#844", "source": "auto", "tty": "ttys021", "untracked": True,
-     "workKey": ""},
-    {"claimSeenAt": None, "dispatchedAt": 1789157191.1891789, "kind": "", "label": "",
-     "ledgerKey": "", "node": "", "pid": None, "placement": "local", "prNumber": 1065,
+     "reapRefusedAt": None, "runId": "untracked:o/r#844", "source": "auto", "tty": "ttys021", "untracked": True},
+    {"dispatchedAt": 1789157191.1891789, "kind": "", "label": "",
+     "ledgerKey": "", "pid": None, "prNumber": 1065,
      "prUrl": "https://github.com/o/r/pull/1065", "quietDigest": "", "quietSince": None,
-     "reapRefusedAt": None, "runId": "untracked:o/r#1065", "source": "auto", "tty": "ttys019", "untracked": True,
-     "workKey": ""},
+     "reapRefusedAt": None, "runId": "untracked:o/r#1065", "source": "auto", "tty": "ttys019", "untracked": True},
 ]
 
 
 def _run_844() -> A.RunRecord:
     return A.RunRecord(run_id=RUN_844, dispatched_at=1788961177.0, pr_number=844,
                        pr_url="https://github.com/o/r/pull/844", kind="review", label="Auto · Review · #844",
-                       source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL,
+                       source=A.SOURCE_AUTO,
                        ledger_key="review:844", pid=958, tty="ttys021")
 
 
 def _mac(now: float, *, tails=BLIND, activity=None) -> A.Evidence:
     return ev(processes={958: proc(elapsed=now - AGENT_958_START, tty="ttys021")},
-              tails=tails, claims=A.Observation.unsupported(),
+              tails=tails,
               live_agents={844: "ttys021"}, activity=activity or {})
 
 
@@ -1137,18 +1016,6 @@ def test_nothing_is_released_where_the_scan_would_rebook_nothing():
         assert [r.run_id for r in t.records] == ["r1"], record.pr_number
 
 
-def test_nothing_is_released_for_a_peers_run():
-    """A peer's agent is not on this machine, whatever this machine's scan sees on the
-    same PR, and that local session is booked the ordinary way. Seconds after dispatch,
-    where a record judged by a claim still reads as starting."""
-    peer = rec(placement=A.PLACEMENT_MESH_PEER, node="brick", work_key="w", pid=None,
-               tty="", dispatched_at=T0 - 10, claim_seen_at=T0 - 1)
-    t = A.tick([peer], ev(claims={"w"}, merged={337}, tails={"pts/3": WORKING},
-                          live_agents={337: "pts/3"}), T0, 1)
-    assert t.states["r1"].state == A.MERGED
-    assert [r.run_id for r in t.records] == ["r1"]
-
-
 def test_runs_that_end_beside_another_on_their_pr_are_released_too():
     """The scan re-books each agent once the PR's other records are gone."""
     idle = (completion.IDLE, T0 - 5)
@@ -1183,12 +1050,11 @@ def test_a_second_run_on_a_released_agents_pr_is_released_beside_it():
     assert t.in_flight(item(337)) is False
 
 
-def test_a_mesh_placed_run_on_a_released_agents_pr_does_not_take_its_tty():
+def test_a_pid_less_run_on_a_released_agents_pr_does_not_take_its_tty():
     """The scan names the released agent's tty for the PR while it lives. Adopted, the
     new run is judged by that idle screen: wedged twenty minutes in while it works, and
     its window closed by a tty that is not its own."""
-    placed = rec(run_id="r2", pid=None, tty="", dispatched_at=T0,
-                 placement=A.PLACEMENT_MESH_HERE)
+    placed = rec(run_id="r2", pid=None, tty="", dispatched_at=T0)
     busy = {"r2": (completion.BUSY, T0 + 3)}
     t = A.tick([released(), placed],
                ev(processes={4242: proc()}, tails={"pts/3": AT_PROMPT, "pts/4": WORKING},
@@ -1227,7 +1093,7 @@ def test_the_frozen_untracked_records_give_their_bays_back():
     book = [A.RunRecord.from_json(r) for r in FROZEN_RUNS]
     t = A.tick(book, ev(processes={958: proc(elapsed=FROZEN_AT - AGENT_958_START,
                                              tty="ttys021")},
-                        tails=BLIND, claims=A.Observation.unsupported(),
+                        tails=BLIND,
                         live_agents={844: "ttys021", 1065: "ttys019"}),
                FROZEN_AT, 1, A.RUN_DEADLINE)
     assert t.cap_load == set()
@@ -1286,14 +1152,6 @@ def test_a_run_exactly_on_the_deadline_is_over():
     assert A.past_deadline(record, HAS_TOKENS, T0, A.RUN_DEADLINE) == A.RUN_DEADLINE
     assert A.past_deadline(rec(dispatched_at=T0 - A.RUN_DEADLINE + 1),
                            HAS_TOKENS, T0, A.RUN_DEADLINE) is None
-
-
-def test_a_mesh_placement_back_on_this_box_is_this_devices_run():
-    """`runs_here`, not `placement == local`: the mesh routing a job back here leaves
-    an agent on THIS machine, spending THIS account, holding one of THIS device's
-    bays — so the deadline reaches it exactly as it reaches a local spawn."""
-    here = rec(placement=A.PLACEMENT_MESH_HERE, dispatched_at=T0 - PAST_DEADLINE)
-    assert A.past_deadline(here, HAS_TOKENS, T0, A.RUN_DEADLINE) == PAST_DEADLINE
 
 
 def test_the_deadline_retires_the_record_it_ends():
@@ -1361,28 +1219,6 @@ def test_a_screen_that_could_not_be_read_advances_nothing():
     r = rec(quiet_digest="d", quiet_since=T0 - 10)
     out = A.observe_quiescence([r], A.Observation.unavailable("tmux is down"), T0)
     assert out[0].quiet_since == T0 - 10
-
-
-# MARK: - Claim sightings
-
-
-def test_a_seen_claim_refreshes_only_peer_runs():
-    peer = rec(run_id="p", placement=A.PLACEMENT_MESH_PEER, work_key="w",
-               claim_seen_at=None)
-    here = rec(run_id="h", placement=A.PLACEMENT_MESH_HERE, work_key="w")
-    out = {r.run_id: r for r in
-           A.observe_claims([peer, here], A.Observation.present({"w"}), T0)}
-    assert out["p"].claim_seen_at == T0
-    assert out["h"].claim_seen_at is None
-
-
-def test_an_unreadable_claim_book_ages_nothing_out():
-    """The sighting is what absence is measured against, so a node we could not read
-    must not advance — nor freeze — the clock by writing a bogus one."""
-    peer = rec(run_id="p", placement=A.PLACEMENT_MESH_PEER, work_key="w",
-               claim_seen_at=T0 - 10)
-    out = A.observe_claims([peer], A.Observation.unavailable("node down"), T0)
-    assert out[0].claim_seen_at == T0 - 10
 
 
 # MARK: - Untracked synthesis
@@ -1470,6 +1306,9 @@ def _resolved(records, evidence, now=T0):
     return records, A.resolve(records, evidence, now)
 
 
+NO_PS = A.Observation.unavailable("ps failed")
+
+
 @pytest.mark.parametrize("state_case,blocks", [
     ("a live agent blocks a second dispatch", True),
     ("an agent at its prompt blocks a second dispatch", True),
@@ -1496,17 +1335,13 @@ def test_in_flight_is_scoped_to_the_pr_asked_about():
     assert A.in_flight(records, states, item(999)) is False
 
 
-def test_the_cap_counts_automatic_agents_that_run_here():
+def test_the_cap_counts_automatic_agents_only():
     records = [
-        rec(run_id="auto-here", pid=1),
+        rec(run_id="auto", pid=1),
         rec(run_id="clicked", pid=2, source=A.SOURCE_PANEL),
-        rec(run_id="on-a-peer", placement=A.PLACEMENT_MESH_PEER, work_key="w",
-            node="brick", pid=None, tty=""),
-        rec(run_id="mesh-here", placement=A.PLACEMENT_MESH_HERE, pid=3),
     ]
-    _r, states = _resolved(records, ev(processes={1: proc(), 2: proc(), 3: proc()},
-                                       claims={"w"}))
-    assert A.cap_load(records, states) == {"auto-here", "mesh-here"}
+    _r, states = _resolved(records, ev(processes={1: proc(), 2: proc()}))
+    assert A.cap_load(records, states) == {"auto"}
 
 
 def test_an_agent_at_its_prompt_gives_its_bay_back():
@@ -1528,29 +1363,25 @@ def test_rows_draw_every_run_and_read_finished_first():
     records = [
         rec(run_id="running", pid=1, dispatched_at=T0 - 10),
         rec(run_id="clicked", pid=2, source=A.SOURCE_PANEL, dispatched_at=T0 - 20),
-        rec(run_id="over", placement=A.PLACEMENT_MESH_HERE, pid=None,
-            dispatched_at=T0 - 600, pr_number=None),
+        rec(run_id="unseen", pid=9, dispatched_at=T0 - 600),
         rec(run_id="never-ran", pid=None, dispatched_at=T0 - 600, pr_number=None),
         rec(run_id="landed", pid=3, pr_number=500, dispatched_at=T0 - 30),
     ]
     _r, states = _resolved(records, ev(processes={1: proc(), 2: proc(), 3: proc()},
                                        merged={500}))
+    states.update(A.resolve([records[2]], ev(processes=NO_PS), T0))
     assert [r.run_id for r, _s in A.rows(records, states)] == [
         "landed",     # merged
         "never-ran",  # failed — an ending, so it reads with the outcomes
         "clicked",    # running, oldest
         "running",    # running
-        "over",       # unknown, last
+        "unseen",     # unknown, last
     ]
 
 
 def test_only_positive_evidence_retires_a_record():
     records = [
-        # Mesh-here: the node wrote its pid somewhere this applet cannot read, and with
-        # no PR the scan has nothing to look for either — the one shape that is genuinely
-        # unknown rather than absent.
-        rec(run_id="gone", placement=A.PLACEMENT_MESH_HERE, pid=None, pr_number=None,
-            dispatched_at=T0 - 600),                                  # unknown
+        rec(run_id="unseen", pid=9),                                  # unknown
         rec(run_id="exited", pid=7),                                  # finished
         rec(run_id="landed", pid=1, pr_number=500),                   # merged
         rec(run_id="never-ran", pid=None, pr_number=None,
@@ -1558,6 +1389,9 @@ def test_only_positive_evidence_retires_a_record():
         rec(run_id="alive", pid=1),                                   # running
     ]
     _r, states = _resolved(records, ev(processes={1: proc()}, merged={500}))
+    # A table nobody could read says nothing about the pid it was asked for.
+    states.update(A.resolve([records[0]], ev(processes=NO_PS), T0))
+    assert states["unseen"].state == A.UNKNOWN
     # "never-ran" is here because a spawn that started nothing is positive evidence too:
     # holding its bay open would refuse the work a fresh agent for the applet's life.
     assert sorted(r.run_id for r in A.retirable(records, states)) == \
@@ -1594,7 +1428,7 @@ def test_free_slots_never_goes_negative(limit, occupied, want):
 
 
 def test_records_and_evidence_survive_a_json_round_trip():
-    r = rec(claim_seen_at=T0 - 5, work_key="w", node="brick")
+    r = rec(quiet_digest="d", quiet_since=T0 - 5, reap_refused_at=T0 - 1)
     assert A.RunRecord.from_json(r.to_json()) == r
     assert A.RunRecord.from_json(released().to_json()).released
     e = ev(processes={4242: proc()}, tails={"pts/3": WORKING}, merged={1, 2})
@@ -1603,6 +1437,20 @@ def test_records_and_evidence_survive_a_json_round_trip():
     assert back.tails.value == e.tails.value
     assert back.merged_prs.value == e.merged_prs.value
     assert back.tokens_left.value == e.tokens_left.value
+
+
+def test_a_record_naming_another_machine_reads_as_any_other_run():
+    """A book on disk may carry keys this build has no field for. They are ignored, and
+    the run is judged by its pid like every run."""
+    stored = {**rec().to_json(), "placement": "mesh-peer", "node": "brick",
+              "workKey": "review:github.com/o/r#337@abc", "claimSeenAt": T0 - 1}
+    record = A.RunRecord.from_json(stored)
+    assert record == rec()
+    alive = A.resolve_one(record, ev(processes={4242: proc()}, tails={"pts/3": WORKING}),
+                          T0, A.RUN_DEADLINE)
+    assert (alive.state, alive.reason) == (A.RUNNING, "pid 4242 alive; working")
+    gone = A.resolve_one(record, ev(processes={}), T0, A.RUN_DEADLINE)
+    assert gone.state == A.FINISHED
 
 
 def test_a_token_reading_that_is_not_a_bool_is_refused_rather_than_coerced():
@@ -1664,9 +1512,9 @@ def test_no_tty_is_adopted_from_a_table_that_could_not_be_read():
 
 
 def test_a_pid_less_run_adopts_the_tty_the_prompt_scan_found_it_on():
-    """The mesh-placed case: no pid to look up, so the scan that says it is alive is
-    also the only thing that says where its screen is. Without this it has no screen,
-    and no screen means it reads as working until its window closes."""
+    """No pid to look up, so the scan that says it is alive is also the only thing that
+    says where its screen is. Without this it has no screen, and no screen means it
+    reads as working until its window closes."""
     out = A.adopt_ttys([rec(tty="", pid=None)],
                        A.Observation.present({4242: proc(tty="pts/9")}),
                        A.Observation.present({item(337): "pts/5"}))

@@ -58,8 +58,8 @@ def test_a_mode_this_build_does_not_run_is_refused(env, refused):
         # Shaped like a mode, but not Diplomat's.
         {"PYTEST_CURRENT_TEST": "tests/test_x.py::test_y (call)"},
         # Settings, not modes.
-        {"DIPLOMAT_AGENTS_DIR": "/x", "DIPLOMAT_MESH_E2E": "1", "DIPLOMAT_CORE_BIN": "/x",
-         "DIPLOMAT_QUOTA_PROBE": "0", "DIPLOMAT_MESH_POLL_SECS": "5"},
+        {"DIPLOMAT_AGENTS_DIR": "/x", "DIPLOMAT_CORE_BIN": "/x",
+         "DIPLOMAT_QUOTA_PROBE": "0"},
     ],
 )
 def test_a_run_this_build_can_do_is_not_refused(env):
@@ -74,7 +74,6 @@ def _names_read_by_the_apps() -> set[str]:
         "diplomat-platform/linux/diplomat_app",
         "diplomat-core/Sources",
         "diplomat-runtime/diplomat_runtime",
-        "szpontnet-core/szpontnet",
     ]
     names: set[str] = set()
     for root in roots:
@@ -115,7 +114,6 @@ def entry(monkeypatch):
 
     from diplomat_app import agentdump, app, migrate, render, selftest, selfupdate
 
-    monkeypatch.setattr(migrate, "migrate_legacy_state_dir", tripwire("migrate"))
     monkeypatch.setattr(migrate, "migrate_autostart_entry", tripwire("autostart"))
     monkeypatch.setattr(app, "run_app", tripwire("tray"))
     monkeypatch.setattr(selfupdate, "run_scheduled", tripwire("self-update"))
@@ -145,4 +143,4 @@ def test_the_entry_point_still_runs_a_known_mode(entry, monkeypatch):
 def test_the_entry_point_still_starts_the_tray(entry):
     main, ran = entry
     assert main() == 0
-    assert ran == ["migrate", "autostart", "tray"]
+    assert ran == ["autostart", "tray"]

@@ -4,10 +4,10 @@ On 2026-10-26 a Mac's data volume filled to 130 MB free while Diplomat kept
 dispatching automatic agents into it, and the kernel panicked. These tests put
 the agents' repo root and the self-updater's checkout on a real volume
 (``scripts/full-volume.sh``: a tmpfs here, an APFS image on macOS), fill it to
-ENOSPC or set the floor above what it holds, and drive the real dispatch gate, the
-real mesh host and the real ``selfupdate.run_scheduled`` against it. The spawner,
-the build and the tray launch are the only stand-ins, except in the tests of which
-volume counts, where the free-space reading is.
+ENOSPC or set the floor above what it holds, and drive the real dispatch gate and
+the real ``selfupdate.run_scheduled`` against it. The spawner, the build and the
+tray launch are the only stand-ins, except in the tests of which volume counts,
+where the free-space reading is.
 
 The volume needs root or passwordless sudo on Linux; without it these skip, unless
 ``DIPLOMAT_FULL_VOLUME_REQUIRED=1`` (CI), when the mount fails them instead.
@@ -50,7 +50,7 @@ def _job(number: int):
     return autofix.AgentJob(
         kind="review", audit_action="review", label=f"Review · #{number}",
         prompt="PROMPT", pr_url=f"https://github.com/o/r/pull/{number}",
-        pr_number=number, counter="review_requests", duty="review",
+        pr_number=number, counter="review_requests",
     )
 
 
@@ -133,42 +133,6 @@ def test_auto_work_holds_when_only_the_tool_caches_are_out_of_room(
     assert store.dispatch_agent(_job(1), autofix.SOURCE_AUTO) == _LOW_DISK
     assert calls == []
     (line,) = _lines("low-disk")
-    assert tools in line.detail, line.detail
-
-
-# MARK: - Work a mesh peer routes here
-
-
-def test_a_mesh_peers_job_is_declined_on_a_full_disk(monkeypatch, volume):
-    from diplomat_runtime.szponthost import DiplomatHost
-
-    # An empty machine, so the cap has room and only the disk can decline.
-    monkeypatch.setattr("diplomat_runtime.szponthost._ps_dump", lambda: "")
-    monkeypatch.setattr("diplomat_runtime.tmuxwatch.pane_tails_for_ttys", lambda ttys: {})
-    repo = volume.path / "repo"
-    repo.mkdir()
-    monkeypatch.setenv("DIPLOMAT_REPO", str(repo))
-    _floor_between_full_and_drained(monkeypatch, volume)
-
-    volume.fill()
-    assert DiplomatHost().at_job_capacity([]) is True
-    lines = _lines("mesh-low-disk")
-    assert len(lines) == 1
-    assert "Declined a peer's job" in lines[0].detail and str(repo) in lines[0].detail
-
-    volume.drain()
-    assert DiplomatHost().at_job_capacity([]) is False
-
-
-def test_a_mesh_peers_job_is_declined_when_only_the_tool_caches_are_out_of_room(
-        monkeypatch, tmp_path):
-    from diplomat_runtime.szponthost import DiplomatHost
-
-    monkeypatch.setattr("diplomat_runtime.szponthost._ps_dump", lambda: "")
-    monkeypatch.setattr("diplomat_runtime.tmuxwatch.pane_tails_for_ttys", lambda ttys: {})
-    tools = _diplomat_dir_low(monkeypatch, tmp_path)
-    assert DiplomatHost().at_job_capacity([]) is True
-    (line,) = _lines("mesh-low-disk")
     assert tools in line.detail, line.detail
 
 

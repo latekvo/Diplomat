@@ -14,9 +14,9 @@ difference that survives that is a difference in the arithmetic, not in how the 
 languages format a double.
 
 The fixture is a hand-written ledger rather than a generated one, so each line is
-there for a reason — a retry, a reset gap between two quota samples, a task that ran
-on a peer, a bad line, a task that was cleared before anyone started it. Every one
-of them is a case where the two implementations could plausibly disagree.
+there for a reason - a retry, a reset gap between two quota samples, a task that
+never finished, a bad line, a task that was cleared before anyone started it. Every
+one of them is a case where the two implementations could plausibly disagree.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 10 * DAY, "ev": "queued", "key": "review:h/o/r#1@aa",
          "duty": "review", "pr": 1},
         {"at": NOW - 10 * DAY + 900, "ev": "started", "key": "review:h/o/r#1@aa",
-         "remote": False, "attempt": 1},
+         "attempt": 1},
         {"at": NOW - 10 * DAY + 3000, "ev": "done", "key": "review:h/o/r#1@aa",
          "tokens": 120_000.0},
     ]
@@ -112,20 +112,20 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 9 * DAY, "ev": "queued", "key": "review:h/o/r#2@bb",
          "duty": "review", "pr": 2},
         {"at": NOW - 9 * DAY + 600, "ev": "started", "key": "review:h/o/r#2@bb",
-         "remote": False, "attempt": 1},
+         "attempt": 1},
         {"at": NOW - 9 * DAY + 5000, "ev": "done", "key": "review:h/o/r#2@bb"},
         {"at": NOW - 9 * DAY + 9000, "ev": "started", "key": "review:h/o/r#2@bb",
-         "remote": False, "attempt": 2},
+         "attempt": 2},
         {"at": NOW - 9 * DAY + 12000, "ev": "done", "key": "review:h/o/r#2@bb",
          "tokens": 260_000.0},
     ]
-    # Ran on a mesh peer: started but never finished here, and its cost belongs to
-    # the peer's quota — so it counts as work started and nothing else.
+    # Started and never seen to finish (the applet quit under it): work started, an
+    # open span, and nothing else.
     events += [
         {"at": NOW - 8 * DAY, "ev": "queued", "key": "conflicts:h/o/r#3@cc",
          "duty": "conflicts", "pr": 3},
         {"at": NOW - 8 * DAY + 120, "ev": "started", "key": "conflicts:h/o/r#3@cc",
-         "remote": True, "attempt": 1},
+         "attempt": 1},
     ]
     # Finished with NO token attribution (the applet restarted mid-agent) — the
     # unattributed count, and a run time that still measures.
@@ -133,7 +133,7 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 7 * DAY, "ev": "queued", "key": "conflicts:h/o/r#4@dd",
          "duty": "conflicts", "pr": 4},
         {"at": NOW - 7 * DAY + 300, "ev": "started", "key": "conflicts:h/o/r#4@dd",
-         "remote": False, "attempt": 1},
+         "attempt": 1},
         {"at": NOW - 7 * DAY + 1500, "ev": "done", "key": "conflicts:h/o/r#4@dd"},
     ]
     # Finished under a foreign runner: billed by whichever provider OpenCode is logged
@@ -145,7 +145,7 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 5.5 * DAY, "ev": "queued", "key": "review:h/o/r#26@kk",
          "duty": "review", "pr": 26},
         {"at": NOW - 5.5 * DAY + 200, "ev": "started", "key": "review:h/o/r#26@kk",
-         "remote": False, "attempt": 1},
+         "attempt": 1},
         {"at": NOW - 5.5 * DAY + 2600, "ev": "done", "key": "review:h/o/r#26@kk",
          "tokens": 9_000_000.0, "runner": "opencode"},
     ]
@@ -156,7 +156,7 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 5.4 * DAY, "ev": "queued", "key": "review:h/o/r#27@ll",
          "duty": "review", "pr": 27},
         {"at": NOW - 5.4 * DAY + 200, "ev": "started", "key": "review:h/o/r#27@ll",
-         "remote": False, "attempt": 1},
+         "attempt": 1},
         {"at": NOW - 5.4 * DAY + 2600, "ev": "done", "key": "review:h/o/r#27@ll",
          "tokens": 175_000.0, "runner": "claude"},
     ]
@@ -168,11 +168,11 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 5.3 * DAY, "ev": "queued", "key": "review:h/o/r#28@mm",
          "duty": "review", "pr": 28},
         {"at": NOW - 5.3 * DAY + 200, "ev": "started", "key": "review:h/o/r#28@mm",
-         "remote": False, "attempt": 1},
+         "attempt": 1},
         {"at": NOW - 5.3 * DAY + 2600, "ev": "done", "key": "review:h/o/r#28@mm",
          "runner": "claude"},
         {"at": NOW - 5.3 * DAY + 5000, "ev": "started", "key": "review:h/o/r#28@mm",
-         "remote": False, "attempt": 2},
+         "attempt": 2},
         {"at": NOW - 5.3 * DAY + 8000, "ev": "done", "key": "review:h/o/r#28@mm",
          "tokens": 8_000_000.0, "runner": "opencode"},
     ]
@@ -187,7 +187,7 @@ def _ledger_lines() -> list[str]:
         key = f"review:h/o/r#3{i}@n{i}"
         events += [
             {"at": at, "ev": "queued", "key": key, "duty": "review", "pr": 30 + i},
-            {"at": at + 100, "ev": "started", "key": key, "remote": False,
+            {"at": at + 100, "ev": "started", "key": key,
              "attempt": 1},
             {"at": at + 1500, "ev": "done", "key": key, "tokens": 95_000.0,
              "runner": "hermes", "usd": usd,
@@ -198,7 +198,7 @@ def _ledger_lines() -> list[str]:
         key = f"review:h/o/r#4{i}@p{i}"
         events += [
             {"at": at, "ev": "queued", "key": key, "duty": "review", "pr": 40 + i},
-            {"at": at + 100, "ev": "started", "key": key, "remote": False,
+            {"at": at + 100, "ev": "started", "key": key,
              "attempt": 1},
             {"at": at + 1500, "ev": "done", "key": key, "tokens": 900_000.0,
              "runner": "hermes", "usd": usd, "model": "anthropic/claude-opus-5"},
@@ -212,25 +212,13 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 4.4 * DAY, "ev": "queued", "key": "review:h/o/r#48@qq",
          "duty": "review", "pr": 48},
         {"at": NOW - 4.4 * DAY + 100, "ev": "started", "key": "review:h/o/r#48@qq",
-         "remote": False, "attempt": 1},
+         "attempt": 1},
         {"at": NOW - 4.4 * DAY + 1500, "ev": "done", "key": "review:h/o/r#48@qq",
          "tokens": 880_000.0, "runner": "hermes"},
         {"at": NOW - 4.4 * DAY + 3000, "ev": "started", "key": "review:h/o/r#48@qq",
-         "remote": False, "attempt": 2},
+         "attempt": 2},
         {"at": NOW - 4.4 * DAY + 4500, "ev": "done", "key": "review:h/o/r#48@qq",
          "usd": 4.95, "model": "anthropic/claude-opus-5"},
-    ]
-    # Billed, but the mesh placed it on a peer: that machine's money, not ours, so it
-    # is out of the distribution for the reason a remote task is out of the token one.
-    # Its price is absurd, so a side that counts it says so loudly.
-    events += [
-        {"at": NOW - 4.3 * DAY, "ev": "queued", "key": "review:h/o/r#49@rr",
-         "duty": "review", "pr": 49},
-        {"at": NOW - 4.3 * DAY + 100, "ev": "started", "key": "review:h/o/r#49@rr",
-         "remote": True, "attempt": 1},
-        {"at": NOW - 4.3 * DAY + 1500, "ev": "done", "key": "review:h/o/r#49@rr",
-         "tokens": 700_000.0, "runner": "hermes", "usd": 90.0,
-         "model": "anthropic/claude-opus-5"},
     ]
     # Owed, then cleared before anyone took it (the reviewer resolved it themselves):
     # pending for a while, then not, and never a run.
@@ -251,18 +239,18 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 40 * DAY, "ev": "queued", "key": "review:h/o/r#8@hh",
          "duty": "review", "pr": 8},
         {"at": NOW - 40 * DAY + 60, "ev": "started", "key": "review:h/o/r#8@hh",
-         "remote": False, "attempt": 1},
+         "attempt": 1},
         {"at": NOW - 40 * DAY + 900, "ev": "done", "key": "review:h/o/r#8@hh",
          "tokens": 90_000.0},
     ]
-    # Enough finished, costed local tasks that the histogram has something to bin
-    # and the confidence interval is not degenerate.
+    # Enough finished, costed tasks that the histogram has something to bin and the
+    # confidence interval is not degenerate.
     for i in range(9, 25):
         key = f"review:h/o/r#{i}@{i:02x}"
         base = NOW - (13 - i * 0.4) * DAY
         events += [
             {"at": base, "ev": "queued", "key": key, "duty": "review", "pr": i},
-            {"at": base + 60 * i, "ev": "started", "key": key, "remote": False,
+            {"at": base + 60 * i, "ev": "started", "key": key,
              "attempt": 1},
             {"at": base + 60 * i + 400 + 37 * i, "ev": "done", "key": key,
              "tokens": 60_000.0 + 23_000.0 * (i % 7)},
@@ -275,7 +263,7 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 3 * DAY, "ev": "queued", "key": "review:h/o/r#95@ww",
          "duty": "review", "pr": 95},
         {"at": NOW - 3 * DAY + 100, "ev": "started", "key": "review:h/o/r#95@ww",
-         "remote": False, "attempt": 1},
+         "attempt": 1},
         {"at": NOW - 3 * DAY + 1500, "ev": "done", "key": "review:h/o/r#95@ww",
          "tokens": 1e308, "runner": "claude"},
     ]
@@ -285,7 +273,7 @@ def _ledger_lines() -> list[str]:
         {"at": NOW - 1.4 * DAY, "ev": "queued", "key": "review:h/o/r#94@vv",
          "duty": "review", "pr": 94},
         {"at": NOW - 1.4 * DAY + 100, "ev": "started", "key": "review:h/o/r#94@vv",
-         "remote": False, "attempt": 1},
+         "attempt": 1},
         {"at": NOW - 1.4 * DAY + 1500, "ev": "done", "key": "review:h/o/r#94@vv",
          "tokens": 150_000.0, "runner": "claude"},
     ]
@@ -317,7 +305,7 @@ def _ledger_lines() -> list[str]:
         lines += [
             json.dumps({"at": when, "ev": "queued", "key": key, "duty": "review",
                         "pr": pr}),
-            json.dumps({"at": when + 60, "ev": "started", "key": key, "remote": False,
+            json.dumps({"at": when + 60, "ev": "started", "key": key,
                         "attempt": 1}),
             json.dumps({"at": when + 900, "ev": "done", "key": key, "tokens": tokens,
                         "runner": "claude"}),
@@ -392,10 +380,6 @@ def test_the_fixture_exercises_every_figure(both):
     )
     assert any(v > 0 for v in p["perTaskWeek"]["curve"]), "flat fitted normal"
     assert p["avgRunSecs"] > 0 and p["avgWaitSecs"] > 0
-    assert p["remoteCount"] == 2, (
-        "a mesh-placed task is missing — one unfinished, and one that finished and "
-        "was charged, so both currencies have a peer's spend to exclude"
-    )
     assert p["unattributedCount"] == 1, "the uncosted completion is missing"
     assert {"", "claude", "opencode", "hermes"} <= {t["runner"] for t in p["tasks"]}, (
         "the fixture has no foreign-runner completion beside the Anthropic ones, so "
@@ -422,16 +406,14 @@ def test_the_fixture_exercises_every_figure(both):
         "are still measurements, drawn where they were taken"
     )
     # The task-lifespan markers the rate-limit chart overlays. The fixture must carry
-    # both a finished span (a green→red dashed line) and an unfinished one — the mesh-
-    # placed task started here and never seen to finish, a lone start dot — or a side
-    # that dropped either kind would still match.
+    # both a finished span (a green→red dashed line) and an unfinished one, a lone
+    # start dot, or a side that dropped either kind would still match.
     assert p["taskSpans"], "no task-lifespan markers — the overlay has nothing to draw"
     assert any(sp["done"] is not None for sp in p["taskSpans"]), (
         "no finished span — the start→finish dashed line goes untested"
     )
     assert any(sp["done"] is None for sp in p["taskSpans"]), (
-        "no unfinished span — the mesh-placed task that started here and never "
-        "finished is missing, so a lone start dot goes untested"
+        "no unfinished span - a lone start dot goes untested"
     )
     assert all(sp["started"] >= NOW - DAYS * DAY for sp in p["taskSpans"]), (
         "a marker began before the range, which would hang its start dot off the "
@@ -465,11 +447,6 @@ def test_the_fixture_exercises_every_figure(both):
         "every completion landed in one bar, so a side that bucketed them all "
         "together would pass"
     )
-    assert p["finishedCount"] > p["doneCount"], (
-        "the bars and the local completion count came out the same, so the fixture "
-        "cannot tell an implementation that dropped a peer's delivered work from one "
-        "that kept it"
-    )
     assert p["format"]["bucket"] == "12h"
     assert p["repoTokens"] > 0 and p["otherTokens"] > 0, "the token split is one-sided"
     assert p["repoTokens"] == 6_000_000 and p["otherTokens"] == 2_400_000, (
@@ -489,12 +466,12 @@ def test_a_foreign_runners_task_is_priced_but_never_charged_to_the_window(both):
     one ledger. One is a plain OpenCode run; the other took its price from a retry, so
     it only reads as foreign if the runner was carried across with the price."""
     _swift, p = both
-    local_priced = [t for t in p["tasks"]
-                    if t["tokens"] and not t["remote"] and t["startedAt"] is not None
-                    and t["startedAt"] >= NOW - DAYS * DAY]
-    foreign = [t for t in local_priced if t["runner"] in ("opencode", "hermes")]
+    ranged = [t for t in p["tasks"]
+              if t["tokens"] and t["startedAt"] is not None
+              and t["startedAt"] >= NOW - DAYS * DAY]
+    foreign = [t for t in ranged if t["runner"] in ("opencode", "hermes")]
     # #95's share overflowed: priced like any other, out of the distribution.
-    counted = [t for t in local_priced
+    counted = [t for t in ranged
                if t not in foreign and t["key"] != "review:h/o/r#95@ww"]
     assert sorted(t["tokens"] for t in foreign
                   if t["runner"] == "opencode") == [8_000_000, 9_000_000]
@@ -508,22 +485,21 @@ def test_a_foreign_runners_task_is_priced_but_never_charged_to_the_window(both):
         "the weekly window counted a task billed to another provider"
     )
     # It is still the same work, and the tokens-per-task figure is where it belongs.
-    priced = [t["tokens"] for t in local_priced]
+    priced = [t["tokens"] for t in ranged]
     assert p["perTaskTokensMean"] == pytest.approx(sum(priced) / len(priced), abs=1e-6)
 
 
-def test_the_money_distribution_is_one_models_local_runs(both):
-    """The dollar figure the budget gate prices the next task from. Three filters have
+def test_the_money_distribution_is_one_models_runs(both):
+    """The dollar figure the budget gate prices the next task from. Two filters have
     to agree across both implementations, and each one changes the answer: only tasks
-    that were CHARGED, only ones that ran HERE, and only the model that ran most
-    recently — rates differ by two orders of magnitude, so a mean across models
-    describes no task that ever ran."""
+    that were CHARGED, and only the model that ran most recently - rates differ by two
+    orders of magnitude, so a mean across models describes no task that ever ran."""
     _swift, p = both
     assert p["perTaskUsdModel"] == "anthropic/claude-opus-5", (
         "the most recently RUN model is what the next task is priced at"
     )
     billed = [t for t in p["tasks"]
-              if t["usd"] and not t["remote"] and t["startedAt"] is not None
+              if t["usd"] and t["startedAt"] is not None
               and t["startedAt"] >= NOW - DAYS * DAY
               and t["model"] == p["perTaskUsdModel"]]
     assert p["perTaskUsd"]["count"] == len(billed) == 5, (
@@ -532,7 +508,7 @@ def test_the_money_distribution_is_one_models_local_runs(both):
     assert p["perTaskUsd"]["mean"] == pytest.approx(
         sum(t["usd"] for t in billed) / len(billed), abs=1e-6)
     # The cheap model's runs are in the same range and would drag the mean to a
-    # third of this; the remote one would double it.
+    # third of this.
     assert 4.5 < p["perTaskUsd"]["mean"] < 5.3
     assert p["format"]["usdMean"].startswith("$4."), p["format"]["usdMean"]
 
@@ -544,7 +520,7 @@ def test_the_money_distribution_is_the_named_runners_alone():
     OpenCode run is gone."""
     lines = _ledger_lines() + [
         json.dumps({"at": NOW - DAY, "ev": "started", "key": "review:h/o/r#81@oc",
-                    "remote": False, "attempt": 1}),
+                    "attempt": 1}),
         json.dumps({"at": NOW - DAY + 600, "ev": "done", "key": "review:h/o/r#81@oc",
                     "tokens": 1000.0, "runner": "opencode", "usd": 0.02,
                     "model": "openai/gpt-6"}),
@@ -599,7 +575,7 @@ def test_a_mean_past_ints_range_rounds_the_same_on_both_sides():
     of 1e13 tokens is a mean in that range."""
     key = "review:h/o/r#1@aa"
     lines = [
-        json.dumps({"at": NOW - DAY, "ev": "started", "key": key, "remote": False,
+        json.dumps({"at": NOW - DAY, "ev": "started", "key": key,
                     "attempt": 1}),
         json.dumps({"at": NOW - DAY + 600, "ev": "done", "key": key, "tokens": 1e13}),
     ]
@@ -616,12 +592,12 @@ def test_a_deviation_past_a_doubles_range_is_inf_on_both_sides():
     beside a $5 run of the same model, is a deviation in that range."""
     lines = _ledger_lines() + [
         json.dumps({"at": NOW - 2 * DAY, "ev": "started", "key": "review:h/o/r#93@uu",
-                    "remote": False, "attempt": 1}),
+                    "attempt": 1}),
         json.dumps({"at": NOW - 2 * DAY + 600, "ev": "done",
                     "key": "review:h/o/r#93@uu",
                     "tokens": 1e300, "runner": "claude"}),
         json.dumps({"at": NOW - 2 * DAY, "ev": "started", "key": "review:h/o/r#94@vv",
-                    "remote": False, "attempt": 1}),
+                    "attempt": 1}),
         json.dumps({"at": NOW - 2 * DAY + 600, "ev": "done",
                     "key": "review:h/o/r#94@vv",
                     "tokens": 1000.0, "runner": "hermes", "usd": 1e200,
@@ -634,25 +610,20 @@ def test_a_deviation_past_a_doubles_range_is_inf_on_both_sides():
     assert _python(lines) == swift
 
 
-def test_a_hand_edited_flag_or_number_folds_the_same_on_both_sides():
-    """A value of the wrong JSON type, both ways round. `"remote": 1` is the one that
-    matters: `JSONSerialization` hands a JSON number to `as? Bool` as an `NSNumber`,
-    which reads as `true`, so a fold on it alone takes a local task for a peer's and
-    leaves it out of every figure Python counts it in."""
-    key, peer = "review:h/o/r#61@aa", "review:h/o/r#62@bb"
+def test_a_flag_where_a_number_belongs_folds_the_same_on_both_sides():
+    """`JSONSerialization` hands a JSON boolean to `as? NSNumber` as 1, so a fold on it
+    alone prices a run at one token and files it under PR #1."""
+    key = "review:h/o/r#61@aa"
     lines = [json.dumps(e) for e in [
-        {"at": NOW - 7200, "ev": "started", "key": key, "remote": 1, "attempt": 1},
+        {"at": NOW - 7200, "ev": "started", "key": key, "attempt": 1},
         {"at": NOW - 7000, "ev": "done", "key": key, "tokens": True, "pr": True},
-        {"at": NOW - 7200, "ev": "started", "key": peer, "remote": True, "attempt": 1},
         {"at": True, "ev": "queued", "key": "review:h/o/r#63@cc"},
     ]]
     swift, python = _swift(lines), _python(lines)
     assert python == swift
     tasks = {t["key"]: t for t in python["tasks"]}
-    assert tasks[key]["remote"] is False
     assert tasks[key]["tokens"] is None and tasks[key]["pr"] == 0
-    assert tasks[peer]["remote"] is True, "a real flag must still read as one"
-    assert set(tasks) == {key, peer}, "`\"at\": true` is no timestamp"
+    assert set(tasks) == {key}, "`\"at\": true` is no timestamp"
 
 
 def test_a_line_one_parser_refuses_is_skipped_by_both():
@@ -699,7 +670,7 @@ def test_a_number_past_ints_range_folds_without_trapping():
     key = "review:h/o/r#85@aa"
     lines = [
         '{"at": -9223372036854775809, "ev": "queued", "key": "%s", "pr": 1e20}' % key,
-        json.dumps({"at": NOW - 600, "ev": "started", "key": key, "remote": False,
+        json.dumps({"at": NOW - 600, "ev": "started", "key": key,
                     "attempt": 1}),
         json.dumps({"at": NOW - 60, "ev": "done", "key": key, "tokens": 10}),
     ]
@@ -711,11 +682,11 @@ def test_a_number_past_ints_range_folds_without_trapping():
 
 
 def test_a_duplicated_key_keeps_its_first_value_on_both_sides():
-    lines = ['{"at": %d, "ev": "started", "key": "review:h/o/r#76@ff", '
-             '"remote": true, "remote": 1}' % NOW]
+    lines = ['{"at": %d, "ev": "queued", "key": "review:h/o/r#76@ff", '
+             '"pr": 76, "pr": 1}' % NOW]
     swift, python = _swift(lines), _python(lines)
     assert python == swift
-    assert [t["remote"] for t in python["tasks"]] == [True]
+    assert [t["pr"] for t in python["tasks"]] == [76]
 
 
 def test_a_repeated_key_and_a_17_digit_double_fold_the_same_on_both_sides():

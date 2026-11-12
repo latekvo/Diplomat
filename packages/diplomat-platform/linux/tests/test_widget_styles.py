@@ -1,10 +1,9 @@
 """`widgets.muted` - the one definition of the panel's secondary-text style.
 
-Roughly forty labels across the panel, the mesh screen, Settings and the wizards
-take their stylesheet from this builder, and two of them append further
-declarations to what it returns. Neither property is visible in a snapshot on
-macOS (Qt resolves the generic `monospace` family to the default face there), so
-they are pinned here instead.
+Roughly forty labels across the panel, Settings and the wizards take their stylesheet
+from this builder, and two of them append further declarations to what it returns.
+Neither property is visible in a snapshot on macOS (Qt resolves the generic `monospace`
+family to the default face there), so they are pinned here instead.
 """
 
 from __future__ import annotations
@@ -37,7 +36,7 @@ def test_the_size_is_honoured(size):
 
 
 def test_mono_selects_the_monospace_family():
-    """Used for anything column-aligned (node ids, counts, timings). Without it the
+    """Used for anything column-aligned (counts, timings). Without it the
     columns wobble on Linux, where the generic family does resolve to a real face."""
     assert _declarations(muted(9, mono=True)) == {
         "color": "palette(mid)", "font-family": "monospace", "font-size": "9px"}

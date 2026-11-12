@@ -22,7 +22,7 @@ import subprocess
 
 import pytest
 
-from diplomat_runtime import apiwatch, appconfig, autofix, review, runner
+from diplomat_runtime import apiwatch, appconfig, review, runner
 from diplomat_app import probes
 from diplomat_runtime.agentstate import RunRecord
 
@@ -121,8 +121,7 @@ def test_a_configured_model_is_passed_and_an_unset_one_is_not(opencode):
 
 def test_the_hermes_runner_opens_a_window_the_operator_can_watch(hermes):
     """Spelled out rather than built from parts, and spelled out identically in
-    ``DiplomatCoreSmoke``: one config file picks the runner for both front-ends, and a
-    machine can hand a mesh job to the other platform.
+    ``DiplomatCoreSmoke``: one config file picks the runner for both front-ends.
 
     ``--tui`` is what makes this a windowed agent rather than a headless one — the
     operator can watch it and type into it, exactly as with the other two. ``--yolo``
@@ -188,9 +187,9 @@ def test_an_opencode_spawn_carries_its_own_permission_grant(opencode):
     the task cap until a human notices.
 
     Spelled out rather than built from the constants, and spelled out identically in
-    ``DiplomatCoreSmoke``: one config file picks the runner for both front-ends, and a
-    machine can hand a mesh job to the other platform. Two sides that agree on the
-    idea and differ by a byte here are two applets granting different permissions."""
+    ``DiplomatCoreSmoke``: one config file picks the runner for both front-ends. Two
+    sides that agree on the idea and differ by a byte here are two applets granting
+    different permissions."""
     assert runner.agent_command("/tmp/p.txt") == (
         'OPENCODE_PERMISSION=\'{"edit":"allow","bash":"allow","webfetch":"allow",'
         '"external_directory":"allow","doom_loop":"allow"}\' '
@@ -283,15 +282,6 @@ def test_every_runner_is_visible_to_the_scans_that_count_agents(line, seen):
     assert runner.is_agent_line(line) is seen
 
 
-def test_an_opencode_agent_is_counted_by_the_nodes_capacity_hook():
-    """``agent_lines`` is the mesh node's answer to "is this box full?", and the node
-    is a separate stdlib-only process — a runner it cannot see is a machine that keeps
-    accepting routed work it has no room for."""
-    ps = "pts/3    07:22 opencode --prompt Review PR #41 in software-mansion/argent\n"
-    assert list(autofix.agent_lines(ps, {"software-mansion/argent"})) == [
-        autofix.AgentLine(tty="pts/3", item="software-mansion/argent#41", elapsed=442.0)]
-
-
 def test_an_opencode_pane_mid_turn_reads_as_busy():
     """OpenCode writes "esc interrupt" where Claude Code writes "esc to interrupt" —
     neither contains the other. Matching only Claude's spelling reads every working
@@ -339,35 +329,3 @@ def test_the_marker_count_rises_for_an_opencode_screen(monkeypatch):
                        tty="pts/1")
     probes.pane_tails([record], now=1000.0)
     assert probes.marker_stats() == (1, 1)
-
-
-# MARK: - A run the mesh placed
-
-
-def _mesh_run(here: bool) -> str:
-    """Book a mesh placement the way a dispatch does, and return its run id."""
-    from diplomat_runtime import agentregistry
-    from diplomat_app.store import Store
-
-    Store._track_mesh_run(Store(), "https://github.com/o/r/pull/7", 7, "mesh",
-                          "review:h/o/r#7@aa", "the prompt", "node-a",
-                          "review:h/o/r#7@aa", here)
-    return agentregistry.load()[0].run_id
-
-
-def test_a_mesh_run_that_landed_here_records_which_runner_it_is_under(opencode):
-    """The node spawns through the same seam a local dispatch does, so a placement it
-    ran on THIS box is an ordinary local agent — it holds a bay and the untracked scan
-    finds it. With no runner on its row the probes ask no store about it and it is
-    priced from ``~/.claude``, which holds no transcript of an OpenCode run at all."""
-    from diplomat_runtime import agentregistry
-
-    assert agentregistry.run_runner(_mesh_run(here=True)) == runner.OPENCODE
-
-
-def test_a_mesh_run_on_a_peer_records_no_runner_at_all(opencode):
-    """Its process is on another machine and our stores hold nothing about it. A
-    runner written down here would point the probe at somebody else's session."""
-    from diplomat_runtime import agentregistry
-
-    assert agentregistry.run_runner(_mesh_run(here=False)) == ""

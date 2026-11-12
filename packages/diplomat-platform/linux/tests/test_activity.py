@@ -31,15 +31,6 @@ def test_category_of_matches_swift_taxonomy() -> None:
         "merge-failed": "merge",
         "ban": "bans",
         "unban": "bans",
-        # LAN-mesh coordination rows get their own chip
-        "mesh-up": "mesh",
-        "mesh-peer-up": "mesh",
-        "mesh-peer-down": "mesh",
-        "mesh-takeover": "mesh",
-        "mesh-dispatch": "mesh",
-        "mesh-dispatch-failed": "mesh",
-        "mesh-spawn": "mesh",
-        "mesh-stop": "mesh",
         "comms-ping": "comms",
         "comms-review": "comms",
         "comms-fix": "comms",
@@ -62,12 +53,12 @@ def test_category_of_matches_swift_taxonomy() -> None:
         assert activity.category_of(action) == expected, action
 
 
-def test_taxonomy_has_twelve_categories_in_order() -> None:
+def test_taxonomy_has_eleven_categories_in_order() -> None:
     cats = activity.categories()
     ids = [c.id for c in cats]
     assert ids == [
         "review", "reply", "conflicts", "audit", "issues", "apiRestart",
-        "quota", "merge", "bans", "mesh", "comms", "system",
+        "quota", "merge", "bans", "comms", "system",
     ]
     comms = next(c for c in cats if c.id == "comms")
     assert (comms.title, comms.glyph, comms.color_hex) == ("Comms", "✉", "#007AFF")

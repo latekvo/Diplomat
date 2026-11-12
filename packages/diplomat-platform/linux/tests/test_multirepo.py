@@ -34,10 +34,9 @@ NOW = datetime.now(timezone.utc)
 
 @pytest.fixture
 def roots(monkeypatch):
-    """The two roots, the primary standing for the configured repo on the mesh."""
+    """The two roots."""
     monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, SECOND])
     monkeypatch.setattr(review, "roots_complete", lambda: True)
-    monkeypatch.setattr(review, "mesh_checkout", lambda: PRIMARY.path)
 
 
 @pytest.fixture
@@ -117,7 +116,7 @@ def test_two_roots_one_pr_number_dispatch_each_in_its_own_checkout(quiet, monkey
         ("Resolve · r#5", 5, "/src/r"), ("Resolve · other#5", 5, "/src/other")]
     # The primary's checkout is where every spawn starts anyway.
     assert [kw.get("checkout") for kw in spawned] == [None, "/src/other"]
-    assert len({j.work_key for j in jobs}) == 2
+    assert len({j.ledger_key for j in jobs}) == 2
 
 
 def test_the_owed_ledger_keeps_every_roots_pending_work(quiet, monkeypatch):
@@ -431,64 +430,6 @@ def test_an_ask_whose_root_failed_to_resolve_is_kept_and_not_run(quiet, monkeypa
     assert [e for e in activity.read() if e.action == "queue-drop"] == []
 
 
-def test_the_mesh_takes_only_the_configured_repos_work(store, roots, monkeypatch):  # noqa: F811
-    """A peer on a Diplomat from before repo routing runs every job in its single root,
-    a checkout of the configured repo, so another root's work stays here, whichever
-    root is primary. What does go names its repo."""
-    from szpontnet import ctl
-    from test_autofix import _mesh_store, _spawned
-
-    calls = _mesh_store(monkeypatch, store, dispatch=_spawned())
-    inner, repos = ctl.dispatch, []
-    monkeypatch.setattr(ctl, "dispatch",
-                        lambda *a, repo="", **k: repos.append(repo) or inner(*a, **k))
-
-    def job(repo, checkout):
-        return autofix.AgentJob(kind="review", audit_action="review", label="L", prompt="P",
-                                pr_url=f"https://github.com/O/{repo}/pull/3", pr_number=3,
-                                duty="review", work_key=f"review:github.com/O/{repo}#3@s",
-                                checkout=checkout)
-
-    assert store._route_via_mesh(job("other", "/src/gone")) == (None, False, "")
-    assert store._route_via_mesh(job("other", "/src/other")) == (None, False, "")
-    assert calls == []
-    assert store._route_via_mesh(job("r", None))[0] == "spawned"
-    assert store._route_via_mesh(job("r", "/src/r"))[0] == "spawned"
-    assert calls == [("review", "review:github.com/O/r#3@s")] * 2
-    assert repos == ["o/r"] * 2
-
-    monkeypatch.setattr(review, "mesh_checkout", lambda: SECOND.path)
-    assert store._route_via_mesh(job("r", None)) == (None, False, "")
-    assert store._route_via_mesh(job("other", "/src/other"))[0] == "spawned"
-    monkeypatch.setattr(review, "mesh_checkout", lambda: None)
-    assert store._route_via_mesh(job("r", "/src/r")) == (None, False, "")
-    assert len(calls) == 3
-
-
-def test_the_mesh_checkout_is_the_configured_repos_root(monkeypatch):
-    from diplomat_runtime import core
-
-    cfg = core.config()
-    configured = LocalRepo(cfg["owner"].upper(), cfg["repo"], "/src/conf")
-    monkeypatch.setattr(review, "repo_roots", lambda: [SECOND, configured])
-    assert review.mesh_checkout() == "/src/conf"
-    monkeypatch.setattr(review, "repo_roots", lambda: [PRIMARY, SECOND])
-    assert review.mesh_checkout() is None
-
-
-def test_a_wizards_mesh_dispatch_carries_its_repo(store, monkeypatch):  # noqa: F811
-    from szpontnet import ctl
-
-    sent: list = []
-    monkeypatch.setattr("diplomat_app.szpont.require", lambda: None)
-    monkeypatch.setattr(store, "start_background", lambda work, name=None: work())
-    monkeypatch.setattr(store, "refresh_mesh_state", lambda: None)
-    monkeypatch.setattr(ctl, "dispatch",
-                        lambda duty, prompt, repo="": sent.append((duty, repo)) or [])
-    store.mesh_dispatch("review", "P", repo="o/other")
-    assert sent == [("review", "o/other")]
-
-
 def test_the_closed_pr_read_covers_every_root(quiet, monkeypatch):
     asked = _by_repo(monkeypatch, "fetch_closed_prs", {})
 
@@ -501,7 +442,7 @@ def test_a_comms_bump_moves_the_named_roots_item(quiet):
     def task(key):
         return autofix.QueuedTask(id=key, job=autofix.AgentJob(
             kind="review", audit_action="review", label=key, prompt="P", pr_url=None,
-            pr_number=None, duty="review"), attempt=1)
+            pr_number=None), attempt=1)
 
     quiet.queued_tasks = [task(k) for k in ("review:o/r#9", "review:o/r#5", "review:o/other#5")]
 
@@ -517,13 +458,12 @@ def test_a_prompt_names_an_item_whatever_the_slugs_case():
     assert list(autofix.prompt_items(text, {"O/Other"})) == ["o/other#5"]
 
 
-def test_a_run_with_a_pr_number_but_no_pr_link_holds_an_unscoped_bay():
+def test_a_run_with_a_pr_number_but_no_pr_link_names_no_item():
     from diplomat_runtime import agentstate
 
     run = agentstate.RunRecord(run_id="r1", dispatched_at=0.0, pr_number=5, pr_url="",
                                tty="ttys003")
     assert run.item is None
-    assert autofix.unscoped_auto_ttys([run], "ttys003 01:00 claude do it\n") == {"ttys003"}
 
 
 def test_the_tick_scans_for_live_agents_on_every_root(roots, monkeypatch):
@@ -534,7 +474,7 @@ def test_the_tick_scans_for_live_agents_on_every_root(roots, monkeypatch):
         "  42 ttys003 60 claude Review PR #5 in o/other. Use the `gh` CLI\n"
         "  43 ttys004 60 claude Review PR #6 in o/r. Use the `gh` CLI\n"))
 
-    scan = probes.gather([], 0.0, mesh_enabled=False).live_agents
+    scan = probes.gather([], 0.0).live_agents
 
     assert scan.value == {"o/other#5": "ttys003", "o/r#6": "ttys004"}
 
@@ -687,9 +627,6 @@ def wizard_store(app, roots):
 
 @pytest.fixture
 def dispatched(wizard_store, monkeypatch):
-    from diplomat_app.meshspawn import MeshSpawnRow
-
-    monkeypatch.setattr(MeshSpawnRow, "use_mesh", lambda self: False)
     jobs: list[autofix.AgentJob] = []
     monkeypatch.setattr(wizard_store, "dispatch_agent",
                         lambda job, source, attempt=1: jobs.append(job) or "spawned")
@@ -709,7 +646,6 @@ def test_a_bare_number_means_the_selected_root(wizard_store, dispatched):
     wizard_store.select_repo("o/other")
     w = _review_wizard(wizard_store, "5")
     assert w._config().home == SECOND
-    assert not w.mesh_row._applicable, "a peer would start it in its primary root"
     w._spawn()
     [job] = dispatched
     assert (job.pr_number, job.checkout) == (5, "/src/other")
@@ -728,18 +664,11 @@ def test_a_conflict_run_names_the_selected_root(wizard_store, dispatched):
     assert job.label == "Resolve conflicts · other#5"
 
 
-def test_a_wizard_follows_the_picker(wizard_store, monkeypatch):
+def test_a_wizard_follows_the_picker(wizard_store):
     w = _review_wizard(wizard_store, "5")
-    assert w._config().home == PRIMARY and w.mesh_row._applicable
+    assert w._config().home == PRIMARY
     wizard_store.select_repo("o/other")
-    assert w._config().home == SECOND and not w.mesh_row._applicable
-
-    # The mesh row follows the configured repo's root, not the primary.
-    monkeypatch.setattr(review, "mesh_checkout", lambda: SECOND.path)
-    w._sync()
-    assert w.mesh_row._applicable
-    wizard_store.select_repo("o/r")
-    assert not w.mesh_row._applicable
+    assert w._config().home == SECOND
 
 
 def test_a_link_to_another_root_is_deduped_by_its_number(wizard_store, dispatched):
@@ -975,17 +904,12 @@ def test_the_first_root_is_the_primary_only_while_its_path_resolves():
     assert not localrepos.guessed(["/src/r"], {})
 
 
-def test_no_root_resolving_takes_nothing_onto_the_mesh(remotes):
-    from diplomat_runtime import core
-
-    cfg = core.config()
-    remotes["/src/r"] = f"remote.origin.url https://github.com/{cfg['owner']}/{cfg['repo']}\n"
-    assert review.mesh_checkout() == "/src/r" and not review.roots_guessed()
+def test_no_root_resolving_leaves_one_guessed_root(remotes):
+    assert len(review.repo_roots()) == 2 and not review.roots_guessed()
     remotes.clear()
     _reread()
     assert [r.path for r in review.repo_roots()] == ["/src/r"]
     assert review.roots_guessed() and not review.primary_resolved()
-    assert review.mesh_checkout() is None
 
 
 def test_the_monitors_stand_down_when_no_root_resolves(quiet, monkeypatch):

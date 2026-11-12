@@ -304,8 +304,7 @@ def test_poll_dispatch_does_not_self_deadlock_on_the_overlap_lock():
 
     s = Store()
     s.me = "latekvo"
-    # Keep dispatch offline and deterministic: no mesh, no real terminal spawn.
-    s._route_via_mesh = lambda job: (None, False, "")
+    # Keep dispatch offline and deterministic: no real terminal spawn.
     s._spawn_tracked = (
         lambda prompt, url, number, source, ledger_key="", label="", kind="",
         checkout=None: True
@@ -320,8 +319,6 @@ def test_poll_dispatch_does_not_self_deadlock_on_the_overlap_lock():
         prompt="resolve",
         pr_url="u/421",
         pr_number=421,
-        duty="conflicts",
-        work_key="",
         counter="conflicts",
     )
 
@@ -565,9 +562,9 @@ def test_a_runs_unanswered_finding_on_my_pr_is_owed():
 def test_repo_path_resolution(tmp_path):
     """Settings → REPO ROOTS drives the `cd` in every spawned session.
 
-    It lives in the shared appconfig file rather than QSettings so a mesh node — its
-    own stdlib-only process, no Qt, no Store — resolves the same value on its next
-    spawn. DIPLOMAT_REPO still outranks it; ~/dev/<repo> is the fallback.
+    It lives in the shared appconfig file rather than QSettings, which the runtime
+    package that spawns has no Qt to ask. DIPLOMAT_REPO still outranks it;
+    ~/dev/<repo> is the fallback.
     """
     import shlex
 
@@ -583,8 +580,8 @@ def test_repo_path_resolution(tmp_path):
         )
         assert review.repo_path() == review.default_repo_path()
 
-        # The Settings pick wins over the default and lands in the shared file — the
-        # exact bytes a node (which has no Store to ask) reads back.
+        # The Settings pick wins over the default and lands in the shared file - the
+        # exact bytes the spawner (which has no Store to ask) reads back.
         store = Store()
         picked = str(tmp_path / "clone")
         store.repo_root_paths = [picked]
@@ -652,16 +649,16 @@ def test_repo_roots_fall_back_to_the_single_root_older_builds_wrote(monkeypatch)
     assert appconfig.read() == {"autoTaskLimit": 3}
 
 
-# A meta-path finder that makes `import PySide6[...]` fail, so a subprocess simulates
-# the stdlib-only mesh node — the deployment whose broken repo-root read this whole
-# design exists to fix. Kept as source the child execs, not imported here.
+# A meta-path finder that makes `import PySide6[...]` fail, so a subprocess runs the
+# runtime with no Qt to fall back on. Kept as source the child execs, not imported
+# here.
 _QT_LESS_CHILD = """
 import sys
 
 class _NoQt:
     def find_spec(self, name, path=None, target=None):
         if name == "PySide6" or name.startswith("PySide6."):
-            raise ImportError("PySide6 blocked (simulating a Qt-less mesh node)")
+            raise ImportError("PySide6 blocked")
         return None
 
 sys.meta_path.insert(0, _NoQt())
@@ -676,16 +673,15 @@ print(review.repo_path())
 """
 
 
-def test_qt_less_node_reads_the_shared_config(tmp_path):
-    """A mesh node is a separate, stdlib-only process — the exact case the first design
-    got wrong (it read Qt settings, which failed silently with no PySide6). Prove a
-    process that CANNOT import PySide6 still resolves the repo root the applet wrote,
-    by reading it back out of the shared file rather than any Qt store."""
+def test_the_runtime_without_qt_reads_the_shared_config(tmp_path):
+    """The runtime imports no Qt, and a repo root read from Qt settings fails silently
+    there. Prove a process that CANNOT import PySide6 still resolves the repo root the
+    applet wrote, by reading it back out of the shared file rather than any Qt store."""
     import subprocess
     import sys
 
     cfg = tmp_path / "config.json"
-    picked = str(tmp_path / "node-clone")
+    picked = str(tmp_path / "clone")
     # Write it the way the applet's Store setter does, from THIS (Qt-capable) process.
     prior = os.environ.get("DIPLOMAT_CONFIG")
     os.environ["DIPLOMAT_CONFIG"] = str(cfg)
@@ -695,9 +691,8 @@ def test_qt_less_node_reads_the_shared_config(tmp_path):
         appconfig.set_value(appconfig.REPO_ROOT, picked)
         assert cfg.exists(), "the applet-side write must land on disk"
 
-        # The runtime package alone, which is all a node gets: the applet's own package
-        # is not on that path, so an answer that needed it would fail here rather than
-        # on the Mac, where nothing else would ever put it there.
+        # The runtime package alone: the applet's own package is not on that path, so
+        # an answer that needed it fails here.
         packages = os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.dirname(os.path.abspath(__file__)))))
         runtime_dir = os.path.join(packages, "diplomat-runtime")

@@ -1,18 +1,15 @@
 """Behavioural tests for the four Qt spawn wizards.
 
-The four wizards share their chrome and their mesh-or-local dispatch branch, so
-what is worth pinning is what each one actually *does* with the inputs it collects
-- that is where they genuinely differ, and it is what the sharing underneath must
-not flatten:
+The four wizards share their chrome and their dispatch, so what is worth pinning is what
+each one actually *does* with the inputs it collects - that is where they genuinely
+differ, and it is what the sharing underneath must not flatten:
 
 * which contextual fields show for which target, and the repo-mismatch warning
   (asserted via ``isHidden()``: ``isVisible()`` is false for every child while the
   wizard itself was never ``show()``n, so it cannot tell the two states apart);
 * whether SPAWN is enabled, and that its fill tracks validity;
-* the local dispatch path — that the click builds the right
+* the dispatch path - that the click builds the right
   :class:`autofix.AgentJob` and hands it to the shared gate, not a bare spawn;
-* the mesh dispatch path — that it routes through the row instead, disables the
-  button, and logs the dispatch;
 * the Fix-issues wizard's six scopes, and which of them narrow to unassigned issues;
 * the third path the two wizards with a scope share, where a sweep queues one task
   per PR / per issue instead of dispatching anything (what the queue then does with
@@ -20,7 +17,7 @@ not flatten:
 * the status line each outcome produces.
 
 Every test drives the real widget under the offscreen Qt platform; the store's
-``dispatch_agent`` and the mesh row are stubbed, so nothing launches an agent.
+``dispatch_agent`` is stubbed, so nothing launches an agent.
 """
 
 from __future__ import annotations
@@ -70,26 +67,6 @@ def dispatched(monkeypatch, store):
 
 
 @pytest.fixture
-def local_only(monkeypatch):
-    """Force the local path: pretend the mesh row is never live."""
-    from diplomat_app.meshspawn import MeshSpawnRow
-
-    monkeypatch.setattr(MeshSpawnRow, "use_mesh", lambda self: False)
-
-
-@pytest.fixture
-def mesh_live(monkeypatch):
-    """Force the mesh path and capture what would be dispatched over it."""
-    from diplomat_app.meshspawn import MeshSpawnRow
-
-    sent: list[tuple[str, str]] = []
-    monkeypatch.setattr(MeshSpawnRow, "use_mesh", lambda self: True)
-    monkeypatch.setattr(MeshSpawnRow, "dispatch",
-                        lambda self, prompt, repo: sent.append((prompt, repo)))
-    return sent
-
-
-@pytest.fixture
 def swept(monkeypatch, store):
     """Capture the sweeps handed to the fan-out worker, and hand back its callback.
 
@@ -105,7 +82,7 @@ def swept(monkeypatch, store):
 def _review_wizard(store):
     """The Review wizard on the one path the shared dispatch chrome covers: a single
     PR. A whose-PRs sweep opens no session — it queues one review per PR — so it has
-    no dispatch, no mesh routing and no launch status of its own."""
+    no dispatch and no launch status of its own."""
     w = WizardView(store)
     w.target.setCurrentIndex(w.target.findData(PRTarget.SPECIFIC))
     w.specific_pr.setText("455")
@@ -215,7 +192,7 @@ def test_review_hides_toggles_that_do_not_apply_to_someone_elses_pr(store):
 # ---- Review wizard: dispatch ----------------------------------------------
 
 
-def test_review_local_spawn_goes_through_the_shared_gate(store, dispatched, local_only):
+def test_review_spawn_goes_through_the_shared_gate(store, dispatched):
     w = WizardView(store)
     w.target.setCurrentIndex(w.target.findData(PRTarget.SPECIFIC))
     w.specific_pr.setText("455")
@@ -224,14 +201,14 @@ def test_review_local_spawn_goes_through_the_shared_gate(store, dispatched, loca
     assert len(dispatched) == 1
     job, source = dispatched[0]
     assert isinstance(job, autofix.AgentJob)
-    assert (job.kind, job.duty, job.audit_action) == ("review", "review", "review")
+    assert (job.kind, job.audit_action) == ("review", "review")
     assert job.pr_number == 455
     assert job.pr_url.endswith("/pull/455")
     assert source == autofix.SOURCE_PANEL
     assert job.prompt
 
 
-def test_review_passes_the_polled_author_for_the_ban_check(store, dispatched, local_only):
+def test_review_passes_the_polled_author_for_the_ban_check(store, dispatched):
     """A specific PR is the only thing this wizard dispatches, so its ban dimension is
     the debounced poll's answer — and only while that says the PR is someone else's.
     My own PR has none: a login here would check the ban list against myself."""
@@ -244,18 +221,6 @@ def test_review_passes_the_polled_author_for_the_ban_check(store, dispatched, lo
     w._specific_author = SpecificAuthor.MINE
     w._spawn()
     assert dispatched[-1][0].author_login is None
-
-
-def test_review_mesh_spawn_routes_over_the_mesh_and_disables_the_button(
-    store, dispatched, mesh_live
-):
-    w = _review_wizard(store)
-    w._spawn()
-
-    assert len(mesh_live) == 1  # the prompt went to the mesh row
-    assert dispatched == []  # ...and NOT to the local pipeline
-    assert not w.spawn_btn.isEnabled()
-    assert "mesh" in w.status.text().lower()
 
 
 # ---- Resolve-conflicts wizard ---------------------------------------------
@@ -278,14 +243,14 @@ def test_conflicts_warns_on_a_foreign_repo_url(store):
     assert not w.pr_warning.isHidden()
 
 
-def test_conflicts_local_spawn_dispatches_a_conflicts_job(store, dispatched, local_only):
+def test_conflicts_spawn_dispatches_a_conflicts_job(store, dispatched):
     w = ConflictWizardView(store)
     w.target.setCurrentIndex(w.target.findData(PRTarget.SPECIFIC))
     w.specific_pr.setText("455")
     w._spawn()
 
     job, source = dispatched[0]
-    assert (job.kind, job.duty, job.audit_action) == ("conflicts", "conflicts", "conflicts")
+    assert (job.kind, job.audit_action) == ("conflicts", "conflicts")
     assert job.pr_number == 455
     assert source == autofix.SOURCE_PANEL
 
@@ -323,19 +288,19 @@ def test_audit_config_mirrors_its_two_toggles(store):
     assert cfg.fix_issues is False
 
 
-def test_audit_local_spawn_dispatches_an_unscoped_audit_job(store, dispatched, local_only):
+def test_audit_spawn_dispatches_an_unscoped_audit_job(store, dispatched):
     w = AuditWizardView(store)
     w._spawn()
 
     job, source = dispatched[0]
-    assert (job.kind, job.duty, job.audit_action) == ("audit", "audit", "audit")
+    assert (job.kind, job.audit_action) == ("audit", "audit")
     # An audit isn't PR-scoped, so it must claim no dedup key.
     assert job.pr_number is None
     assert job.pr_url is None
     assert source == autofix.SOURCE_PANEL
 
 
-def test_audit_label_names_the_escalations_that_are_on(store, dispatched, local_only):
+def test_audit_label_names_the_escalations_that_are_on(store, dispatched):
     """The ongoing-sessions row has to say what this run is allowed to change."""
     w = AuditWizardView(store)
     w.fix_issues.setChecked(True)
@@ -344,15 +309,6 @@ def test_audit_label_names_the_escalations_that_are_on(store, dispatched, local_
 
     job, _ = dispatched[0]
     assert "issues" in job.label and "open PRs" in job.label
-
-
-def test_audit_mesh_spawn_routes_over_the_mesh(store, dispatched, mesh_live):
-    w = AuditWizardView(store)
-    w._spawn()
-
-    assert len(mesh_live) == 1
-    assert dispatched == []
-    assert not w.spawn_btn.isEnabled()
 
 
 # ---- Fix-issues wizard ----------------------------------------------------
@@ -433,7 +389,7 @@ def test_issues_config_mirrors_the_widgets(store):
             cfg.comment_on_issue, cfg.include_features) == (False, False, False, False, True)
 
 
-def test_issues_local_spawn_dispatches_an_unscoped_issues_job(store, dispatched, local_only):
+def test_issues_spawn_dispatches_an_unscoped_issues_job(store, dispatched):
     """Not PR-scoped: the pipeline's dedup key is a PR URL, so handing it an issue
     number would collide with the PR that shares it. The GitHub assignee claim is
     what keeps two agents off one issue.
@@ -445,14 +401,14 @@ def test_issues_local_spawn_dispatches_an_unscoped_issues_job(store, dispatched,
     w._spawn()
 
     job, source = dispatched[0]
-    assert (job.kind, job.duty, job.audit_action) == ("issues", "issues", "issues")
+    assert (job.kind, job.audit_action) == ("issues", "issues")
     assert job.pr_number is None
     assert job.pr_url is None
     assert job.author_login is None
     assert source == autofix.SOURCE_PANEL
 
 
-def test_issues_label_names_the_issue_and_the_depth(store, dispatched, local_only):
+def test_issues_label_names_the_issue_and_the_depth(store, dispatched):
     """The ongoing-sessions row has to say which issue this run is working — one
     issue, because one issue is all a dispatch from here ever covers."""
     w = _issue_wizard(store)
@@ -464,15 +420,6 @@ def test_issues_label_names_the_issue_and_the_depth(store, dispatched, local_onl
     assert issues.depth_by_id("max")["title"] in job.label
 
 
-def test_issues_mesh_spawn_routes_over_the_mesh(store, dispatched, mesh_live):
-    w = _issue_wizard(store)
-    w._spawn()
-
-    assert len(mesh_live) == 1
-    assert dispatched == []
-    assert not w.spawn_btn.isEnabled()
-
-
 # ---- a scope queues instead of dispatching (Review + Fix-issues) ----------
 #
 # Both wizards with a scope answer SPAWN the same way, and must: one agent handed a
@@ -481,7 +428,7 @@ def test_issues_mesh_spawn_routes_over_the_mesh(store, dispatched, mesh_live):
 
 
 @pytest.mark.parametrize("build, unit, units, plural", SWEEPERS)
-def test_a_sweep_queues_instead_of_spawning(store, dispatched, swept, local_only,
+def test_a_sweep_queues_instead_of_spawning(store, dispatched, swept,
                                             build, unit, units, plural):
     """The whole point of the sweep: it queues one task per item instead of handing
     one agent every item at once, and the queue starts them a bay at a time."""
@@ -495,7 +442,7 @@ def test_a_sweep_queues_instead_of_spawning(store, dispatched, swept, local_only
 
 
 @pytest.mark.parametrize("build, unit, units, plural", SWEEPERS)
-def test_a_sweep_holds_spawn_until_the_fan_out_answers(store, swept, local_only,
+def test_a_sweep_holds_spawn_until_the_fan_out_answers(store, swept,
                                                        build, unit, units, plural):
     """The fan-out assembles a prompt per item, which takes long enough to press
     again; a second press would ask for the whole sweep twice."""
@@ -509,7 +456,7 @@ def test_a_sweep_holds_spawn_until_the_fan_out_answers(store, swept, local_only,
 
 
 @pytest.mark.parametrize("build, unit, units, plural", SWEEPERS)
-def test_a_sync_mid_fan_out_does_not_hand_spawn_back(store, swept, local_only,
+def test_a_sync_mid_fan_out_does_not_hand_spawn_back(store, swept,
                                                      build, unit, units, plural):
     """The hold has to survive a ``_sync``, which re-derives SPAWN from validity
     alone and knows nothing of a dispatch in flight.
@@ -533,7 +480,7 @@ def test_a_sync_mid_fan_out_does_not_hand_spawn_back(store, swept, local_only,
 
 
 @pytest.mark.parametrize("build, unit, units, plural", SWEEPERS)
-def test_a_sweep_says_when_it_queued_nothing(store, swept, local_only,
+def test_a_sweep_says_when_it_queued_nothing(store, swept,
                                              build, unit, units, plural):
     """A sweep whose scope matches no open item must say so: the queue looking exactly
     as it did before the press is otherwise indistinguishable from a dead button."""
@@ -545,7 +492,7 @@ def test_a_sweep_says_when_it_queued_nothing(store, swept, local_only,
 
 
 @pytest.mark.parametrize("build, unit, units, plural", SWEEPERS)
-def test_a_sweep_reports_a_fan_out_failure(store, swept, local_only,
+def test_a_sweep_reports_a_fan_out_failure(store, swept,
                                            build, unit, units, plural):
     """A missing or wedged core binary fails while assembling the prompts — a
     refusal, not a launch, and the wizard has to say which."""
@@ -558,7 +505,7 @@ def test_a_sweep_reports_a_fan_out_failure(store, swept, local_only,
 
 
 @pytest.mark.parametrize("build, unit, units, plural", SWEEPERS)
-def test_a_sweep_waits_for_the_list_it_expands(store, swept, local_only,
+def test_a_sweep_waits_for_the_list_it_expands(store, swept,
                                                build, unit, units, plural):
     """The sweep expands what the panel last fetched. Before the first fetch that list
     is empty, and queueing nothing from it would read as "there are none"."""
@@ -568,22 +515,6 @@ def test_a_sweep_waits_for_the_list_it_expands(store, swept, local_only,
 
     assert swept == []
     assert "refresh" in w.status.text().lower()
-
-
-@pytest.mark.parametrize("single, sweep", [
-    pytest.param(_review_wizard, _review_sweep, id="review"),
-    pytest.param(_issue_wizard, _issue_sweep, id="issues"),
-])
-def test_a_sweep_offers_no_mesh_routing(store, single, sweep):
-    """Nothing to route: a sweep opens no session here or anywhere. The row is left
-    for the single-item spawn that does."""
-    # Applicability, not `use_mesh`, is what the target decides: `use_mesh` is false
-    # for want of a live node either way here, so it cannot tell the two apart.
-    assert single(store).mesh_row._applicable
-
-    w = sweep(store)
-    assert not w.mesh_row._applicable
-    assert not w.mesh_row.use_mesh()
 
 
 # ---- shared chrome behaves the same in all four ---------------------------
@@ -605,8 +536,8 @@ def test_every_wizard_starts_with_an_empty_status_line(store, build):
     pytest.param(lambda s: AuditWizardView(s), id="audit"),
     pytest.param(_issue_wizard, id="issues"),
 ])
-def test_every_wizard_reports_a_local_dispatch_in_its_status_line(
-    store, dispatched, local_only, build
+def test_every_wizard_reports_a_dispatch_in_its_status_line(
+    store, dispatched, build
 ):
     from diplomat_app import widgets
 
@@ -614,90 +545,6 @@ def test_every_wizard_reports_a_local_dispatch_in_its_status_line(
     w._spawn()
     term = review.resolved(store.terminal)
     assert w.status.text() == widgets.dispatch_status_text("spawned", term.title)
-
-
-@pytest.mark.parametrize("build", [
-    pytest.param(_review_wizard, id="review"),
-    pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
-    pytest.param(lambda s: AuditWizardView(s), id="audit"),
-    pytest.param(_issue_wizard, id="issues"),
-])
-def test_every_wizard_re_enables_spawn_when_a_mesh_dispatch_returns(
-    store, mesh_live, build
-):
-    """A finished mesh dispatch must hand the button back — otherwise the wizard
-    is dead until the panel is rebuilt."""
-    w = build(store)
-    w._spawn()
-    assert not w.spawn_btn.isEnabled()
-
-    w._mesh_done([], "")
-    assert w.spawn_btn.isEnabled()
-
-
-@pytest.mark.parametrize("build", [
-    pytest.param(_review_wizard, id="review"),
-    pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
-    pytest.param(lambda s: AuditWizardView(s), id="audit"),
-    pytest.param(_issue_wizard, id="issues"),
-])
-def test_every_wizards_mesh_dispatch_names_the_repo_it_targets(
-    store, mesh_live, monkeypatch, build
-):
-    """Without it a peer starts the job in its own primary root, which may check out
-    another repo."""
-    from diplomat_runtime.prref import LocalRepo
-
-    monkeypatch.setattr(review, "repo_roots", lambda: [LocalRepo("O", "R", "/src/r")])
-    build(store)._spawn()
-    assert [repo for _, repo in mesh_live] == ["o/r"]
-
-
-def test_the_mesh_row_hands_the_store_its_repo(store, monkeypatch):
-    from diplomat_app.meshspawn import MeshSpawnRow
-
-    sent: list = []
-    monkeypatch.setattr(store, "mesh_dispatch",
-                        lambda duty, prompt, done, repo="": sent.append((duty, repo)))
-    MeshSpawnRow(store, "review").dispatch("P", "o/r")
-    assert sent == [("review", "o/r")]
-
-
-@pytest.mark.parametrize("build", [
-    pytest.param(_review_wizard, id="review"),
-    pytest.param(lambda s: ConflictWizardView(s), id="conflicts"),
-    pytest.param(lambda s: AuditWizardView(s), id="audit"),
-    pytest.param(_issue_wizard, id="issues"),
-])
-def test_every_wizard_holds_spawn_across_a_sync_mid_mesh_dispatch(
-    store, mesh_live, build
-):
-    """The same hold as the sweep's, on the branch it was written for: a ``_sync``
-    while the mesh round trip is still out must not arm the button, or the dispatch
-    goes out twice."""
-    w = build(store)
-    w._spawn()
-
-    w.refresh_identity()
-    assert not w.spawn_btn.isEnabled()
-
-    w._mesh_done([], "")
-    assert w.spawn_btn.isEnabled()
-
-
-def test_mesh_completion_leaves_spawn_disabled_while_input_is_invalid(
-    store, mesh_live
-):
-    """The button comes back to what the *current* config warrants, not to a flat
-    "enabled": if the user emptied the PR field while the dispatch was in flight,
-    re-enabling would offer a click that can only fail."""
-    w = _review_wizard(store)
-    w._spawn()
-    assert not w.spawn_btn.isEnabled()
-
-    w.specific_pr.setText("")  # input went invalid mid-dispatch
-    w._mesh_done([], "")
-    assert not w.spawn_btn.isEnabled()
 
 
 @pytest.mark.parametrize("build", [
@@ -758,7 +605,7 @@ LISTED = [
 
 @pytest.mark.parametrize("cls, text, label", LISTED)
 def test_a_link_to_a_listed_repo_spawns_in_its_checkout(
-        store, dispatched, local_only, radon_listed, cls, text, label):
+        store, dispatched, radon_listed, cls, text, label):
     w = _single(store, cls, text)
     assert w.spawn_btn.isEnabled()
     w._spawn()
@@ -772,18 +619,9 @@ def test_a_link_to_a_listed_repo_spawns_in_its_checkout(
     assert job.pr_url == (None if cls is IssueWizardView else RADON_PR)
 
 
-@pytest.mark.parametrize("cls, text, label", LISTED)
-def test_a_link_to_a_listed_repo_is_never_offered_to_the_mesh(store, radon_listed,
-                                                              cls, text, label):
-    w = _single(store, cls, text)
-    assert not w.mesh_row._applicable
-    assert not w.mesh_row.use_mesh()
-
-
-def test_the_configured_repo_still_spawns_in_the_repo_root(store, dispatched, local_only,
+def test_the_configured_repo_still_spawns_in_the_repo_root(store, dispatched,
                                                           radon_listed):
     w = _single(store, WizardView, "455")
-    assert w.mesh_row._applicable
     w._spawn()
     job, _ = dispatched[0]
     assert job.checkout is None and job.pr_number == 455

@@ -90,7 +90,7 @@ def _seed(*, samples: bool = True, tasks: int = 8, priced: bool = True,
         telemetry.append({"at": at, "ev": "queued", "key": key,
                           "duty": "review", "pr": i})
         telemetry.append({"at": at + 120, "ev": "started", "key": key,
-                          "remote": False, "attempt": 1})
+                          "attempt": 1})
         telemetry.append({"at": at + 900, "ev": "done", "key": key,
                           "tokens": 40_000.0 + 3_000.0 * i})
     telemetry._reset_cache()
@@ -360,7 +360,7 @@ def test_the_lookback_changes_what_is_counted(store):
         telemetry.append({"at": at, "ev": "queued", "key": key,
                           "duty": "review", "pr": i})
         telemetry.append({"at": at + 60, "ev": "started", "key": key,
-                          "remote": False, "attempt": 1})
+                          "attempt": 1})
         telemetry.append({"at": at + 660, "ev": "done", "key": key,
                           "tokens": 50_000.0})
     telemetry._reset_cache()
@@ -662,31 +662,6 @@ def test_the_card_names_the_slice_of_time_a_bar_counts(store):
     assert any("one bar per 12h" in t for t in _labels(view))
     view._set_days(60)
     assert any("one bar per 48h" in t for t in _labels(view))
-
-
-def test_work_running_on_a_peer_is_not_charged_to_this_machine(store):
-    """A mesh placement spends the peer's quota; counting it here would make this
-    machine's cost per task depend on how busy the fleet is."""
-    now = time.time()
-    _seed(tasks=0)   # quota readings, so the window has a price to charge against
-    for i, remote in ((1, False), (2, True)):
-        key = f"review:h/o/r#{i}@cc{i}"
-        telemetry.append({"at": now - 7200, "ev": "queued", "key": key,
-                          "duty": "review", "pr": i})
-        telemetry.append({"at": now - 7100, "ev": "started", "key": key,
-                          "remote": remote, "attempt": 1})
-        telemetry.append({"at": now - 6000, "ev": "done", "key": key,
-                          "tokens": 50_000.0})
-    telemetry._reset_cache()
-
-    summary = telemetry.summarize(telemetry.load(), now=now, days=14.0, steps=56,
-                                  bin_count=12, z=1.96, bucket_hours=12)
-    assert summary.started_count == 2 and summary.remote_count == 1
-    assert summary.per_task.count == 1, "a peer's agent was priced against our window"
-    assert summary.run_samples == 1
-
-    view = _view(store)
-    assert any("1 on mesh peers" in t for t in _labels(view))
 
 
 # MARK: - The quota chart's gaps

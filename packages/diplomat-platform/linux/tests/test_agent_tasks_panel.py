@@ -58,8 +58,8 @@ def _live(monkeypatch, *records, idle=False, elapsed=60.0):
 
 @pytest.fixture
 def panel(app, monkeypatch):
-    # Opening the panel otherwise shells the allocator installer, starts a mesh node
-    # and scans `ps`; none of that belongs in a test about the rows it draws.
+    # Opening the panel otherwise shells the allocator installer and scans `ps`;
+    # neither belongs in a test about the rows it draws.
     monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
     monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
     fake_probes(monkeypatch)
@@ -193,19 +193,6 @@ def test_a_running_row_says_how_long_it_has_been_going(panel, monkeypatch):
     panel._rebuild_agent_tasks()
 
     assert "running · for 1h 35m" in _row_text(_rows(panel, RunningTaskRow)[0])
-
-
-def test_a_run_the_mesh_placed_here_says_where_it_came_from(panel, monkeypatch):
-    """It spends this machine's bay like any other agent, but nothing on this screen
-    dispatched it — without the note, an agent appears in a bay the operator watched
-    the mesh route away."""
-    from diplomat_runtime import agentstate as A
-    _live(monkeypatch, register_run(512, pid=5121, tty="pts/1", label="Auto · #512",
-                                    kind="review",
-                                    placement=A.PLACEMENT_MESH_HERE))
-    panel._rebuild_agent_tasks()
-
-    assert "via mesh" in _row_text(_rows(panel, RunningTaskRow)[0])
 
 
 def test_a_manual_spawn_gets_a_row_but_takes_no_bay(panel, monkeypatch):

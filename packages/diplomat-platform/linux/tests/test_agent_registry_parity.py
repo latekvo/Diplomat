@@ -1,8 +1,8 @@
 """The run book's on-disk format, written by one language and read by the other.
 
-``~/.diplomat/agents/runs.json`` is read and written by BOTH front-ends, and read by
-the mesh node deciding whether this machine has room. That makes its field names a
-cross-language contract rather than an implementation detail of either side.
+``~/.diplomat/agents/runs.json`` is read and written by BOTH front-ends. That makes
+its field names a cross-language contract rather than an implementation detail of
+either side.
 
 A drift here fails silently in the worst possible way: nothing errors, the other side
 simply reads a run with no label, no source and no ledger key — which is exactly what
@@ -36,32 +36,30 @@ def _records() -> list[A.RunRecord]:
         A.RunRecord(run_id="1786000000-aaaaaaaa", dispatched_at=1786000000.5,
                     pr_number=337, pr_url="https://github.com/o/r/pull/337",
                     kind="review", label="Auto · Review-req · #337 (@octocat)",
-                    source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL,
+                    source=A.SOURCE_AUTO,
                     ledger_key="review:github.com/o/r#337@beef", pid=4242,
                     tty="pts/3", quiet_digest="9f86d081884c7d65",
                     quiet_since=1786000020.5, reap_refused_at=1786000040.25),
         A.RunRecord(run_id="1786000001-bbbbbbbb", dispatched_at=1786000001.25,
                     pr_number=508, pr_url="https://github.com/o/r/pull/508",
                     kind="conflicts", label="Resolve · #508",
-                    source=A.SOURCE_PANEL, placement=A.PLACEMENT_MESH_PEER,
-                    node="brick", work_key="conflicts:github.com/o/r#508@cafe",
-                    ledger_key="conflicts:github.com/o/r#508@cafe",
-                    claim_seen_at=1786000030.75),
+                    source=A.SOURCE_PANEL,
+                    ledger_key="conflicts:github.com/o/r#508@cafe"),
         A.RunRecord(run_id="1786000002-cccccccc", dispatched_at=1786000002.0,
                     pr_number=None, kind="", label="", source=A.SOURCE_AUTO,
-                    placement=A.PLACEMENT_MESH_HERE, pid=None, tty=""),
+                    pid=None, tty=""),
         # A run nobody dispatched. Both applets keep one in the book — the stillness
         # backstop measures a screen against the last one seen, and a record re-derived
         # every tick remembers none — so a field only one side wrote here would restart
         # that clock on every hand-over, and would still survive both round-trips below
         # (each reads its own omission back as the default).
         A.RunRecord(run_id="untracked:404", dispatched_at=1786000003.0, pr_number=404,
-                    source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL, tty="pts/8",
+                    source=A.SOURCE_AUTO, tty="pts/8",
                     untracked=True),
         # The agent an ended run left at its prompt. A side that dropped `released` would
         # read it back as an untracked run holding a bay and its PR.
         A.RunRecord(run_id="untracked:405", dispatched_at=1786000004.0, pr_number=405,
-                    source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL, pid=4343,
+                    source=A.SOURCE_AUTO, pid=4343,
                     tty="pts/9", untracked=True, released=True),
     ]
 
@@ -126,20 +124,18 @@ def test_a_record_with_unusable_fields_reads_the_same_on_both_sides():
     from diplomat_runtime import atomicjson
     atomicjson.write_atomic(R.runs_path(), {"version": R.SCHEMA_VERSION, "runs": [
         {"runId": "r1", "dispatchedAt": None, "pid": "x", "prNumber": "7",
-         "claimSeenAt": [], "quietSince": True, "reapRefusedAt": "soon"},
-        {"runId": "r2", "tty": 5, "workKey": ["x"], "label": None, "placement": 1,
-         "source": False, "kind": {}, "quietDigest": 0},
-        {"runId": "r3", "placement": "elsewhere"},
+         "quietSince": True, "reapRefusedAt": "soon"},
+        {"runId": "r2", "tty": 5, "label": None, "source": False, "kind": {},
+         "quietDigest": 0},
         {"runId": 7, "tty": "pts/7"}]})
     ours = [r.to_json() for r in R.load()]
     assert ours == _swift({"mode": "read"})
-    assert [r["runId"] for r in ours] == ["r1", "r2", "r3"]
+    assert [r["runId"] for r in ours] == ["r1", "r2"]
     assert ours[0]["dispatchedAt"] == 0 and ours[0]["pid"] is None
     assert ours[0]["prNumber"] is None and ours[0]["quietSince"] is None
-    assert (ours[1]["tty"], ours[1]["workKey"], ours[1]["label"], ours[1]["kind"],
-            ours[1]["quietDigest"]) == ("", "", "", "", "")
-    assert (ours[1]["placement"], ours[1]["source"]) == ("local", "auto")
-    assert ours[2]["placement"] == "local"
+    assert (ours[1]["tty"], ours[1]["label"], ours[1]["kind"],
+            ours[1]["quietDigest"]) == ("", "", "", "")
+    assert ours[1]["source"] == "auto"
 
 
 #: Integers no field may hold. The parsers diverge on the first two before either
@@ -157,11 +153,11 @@ def test_a_number_the_two_parsers_disagree_on_is_unusable_on_both(wide):
     R.runs_path().parent.mkdir(parents=True, exist_ok=True)
     R.runs_path().write_text(
         f'{{"version": {R.SCHEMA_VERSION}, "runs": [{{"runId": "r1", '
-        f'"claimSeenAt": 1e300, "pid": {wide}, "prNumber": {wide}}}]}}')
+        f'"quietSince": 1e300, "pid": {wide}, "prNumber": {wide}}}]}}')
     ours = [r.to_json() for r in R.load()]
     assert ours == _swift({"mode": "read"})
     assert ours[0]["pid"] is None and ours[0]["prNumber"] is None
-    assert ours[0]["claimSeenAt"] == 1e300
+    assert ours[0]["quietSince"] == 1e300
 
 
 @pytest.mark.parametrize("wide", WIDE)
@@ -169,13 +165,13 @@ def test_the_write_mode_holds_the_same_bound_as_the_book(wide):
     """``mode: write`` decodes its payload by a hand of its own, and nothing the Linux
     applet hands it carries a number it did not normalize first - so the bound above
     is pinned here on a payload built raw."""
-    raw = json.loads(f'{{"runId": "r1", "claimSeenAt": 1e300, "quietSince": 1e300, '
+    raw = json.loads(f'{{"runId": "r1", "reapRefusedAt": 1e300, "quietSince": 1e300, '
                      f'"pid": {wide}, "prNumber": {wide}}}')
     _swift({"mode": "write", "runs": [raw]})
     ours = [r.to_json() for r in R.load()]
     assert ours == [A.RunRecord.from_json(raw).to_json()]
     assert ours[0]["pid"] is None and ours[0]["prNumber"] is None
-    assert ours[0]["claimSeenAt"] == ours[0]["quietSince"] == 1e300
+    assert ours[0]["reapRefusedAt"] == ours[0]["quietSince"] == 1e300
 
 
 def test_an_infinity_reaches_no_record_on_either_side():
@@ -205,10 +201,10 @@ def test_a_schema_the_other_side_does_not_know_is_ignored_by_both():
 # MARK: - The hooks both sides stage
 
 
-def _swift_hooks(activity: str, done: str | None) -> dict:
+def _swift_hooks(activity: str) -> dict:
     proc = subprocess.run([CORE_BIN, "agent-registry"],
-                          input=json.dumps({"mode": "hooks", "activityPath": activity,
-                                            "donePath": done}).encode("utf-8"),
+                          input=json.dumps({"mode": "hooks",
+                                            "activityPath": activity}).encode("utf-8"),
                           capture_output=True, timeout=60, check=False,
                           env={**os.environ})
     assert proc.returncode == 0, \
@@ -216,8 +212,7 @@ def _swift_hooks(activity: str, done: str | None) -> dict:
     return json.loads(proc.stdout)["settings"]
 
 
-@pytest.mark.parametrize("done", [None, "/home/a b/.diplomat/agents/r/done"])
-def test_both_sides_stage_the_same_hook_commands(done):
+def test_both_sides_stage_the_same_hook_commands():
     """The settings are shell commands that WRITE the activity file, and both sides
     READ it — a run this applet spawned is resolved by the other one after a hand-over.
     One byte of drift is a run whose turns are reported differently depending on which
@@ -227,7 +222,7 @@ def test_both_sides_stage_the_same_hook_commands(done):
     string values and so are compared byte for byte, quoting and all.
     """
     activity = "/home/a b/.diplomat/agents/r/activity"
-    assert _swift_hooks(activity, done) == completion.hook_settings(activity, done)
+    assert _swift_hooks(activity) == completion.hook_settings(activity)
 
 
 # MARK: - A hand-edited book
@@ -254,14 +249,11 @@ _HAND_EDITED = [
     ("prNumber", 337.9, 337),
     ("pid", True, None),
     ("pid", 4242.5, 4242),
-    ("claimSeenAt", False, None),
     ("quietSince", "1786000020", None),
     ("reapRefusedAt", True, None),
     ("label", 7, ""),
     ("tty", True, ""),
     ("source", 1, A.SOURCE_AUTO),
-    ("placement", "moon", A.PLACEMENT_LOCAL),
-    ("placement", True, A.PLACEMENT_LOCAL),
 ]
 
 
@@ -316,7 +308,7 @@ _HAND_EDITED_TEXT = [
     ("NaN", b'{"version": 1, "runs": [{"runId": "r", "dispatchedAt": NaN}]}', []),
     ("1e400", b'{"version": 1, "runs": [{"runId": "r", "dispatchedAt": 1e400}]}', []),
     ("a 400-digit integer",
-     b'{"version": 1, "runs": [{"runId": "r", "claimSeenAt": 1%s}]}' % (b"0" * 400), []),
+     b'{"version": 1, "runs": [{"runId": "r", "quietSince": 1%s}]}' % (b"0" * 400), []),
     ("a lone surrogate",
      b'{"version": 1, "runs": [{"runId": "r", "label": "\\ud800"}]}', []),
     ("UTF-16", '{"version": 1, "runs": [{"runId": "r"}]}'.encode("utf-16"), []),

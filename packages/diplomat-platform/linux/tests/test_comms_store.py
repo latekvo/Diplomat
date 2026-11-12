@@ -998,17 +998,6 @@ def test_a_start_waits_out_a_settle_already_under_way(comms_store, monkeypatch):
 
 
 @needs_core
-def test_work_a_peer_already_runs_has_started_too(comms_store, monkeypatch):
-    m, d = _ask(1, "review", 12)
-    _tick(comms_store, monkeypatch, (m, d))
-    monkeypatch.setattr(comms_store, "dispatch_agent",
-                        lambda *a, **k: autofix.VERDICT_STAND_DOWN)
-    entry = next(t for t in comms_store.queued_tasks if t.id == qkey("review", 12))
-    assert comms_store._run_queued_task(entry, forced=True) == autofix.VERDICT_STAND_DOWN
-    assert _kinds_by_id() == {m["id"]: ["action", "started"]}
-
-
-@needs_core
 def test_every_asker_is_owned_before_the_feed_is_read_back(comms_store, monkeypatch):
     """Until the log is read back, this applet knows its fresh asks only from making
     them, and a log the core cannot fold leaves it that way."""

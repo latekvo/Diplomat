@@ -108,13 +108,13 @@ def _payload(*pending: str) -> str:
             '"session_crons":[]}')
 
 
-def _fire(event: str, activity, done=None, payload: str = "") -> int:
+def _fire(event: str, activity, payload: str = "") -> int:
     """Run one hook's command the way the CLI would, payload on stdin.
 
     Returned rather than asserted so the exit status is a fact each test can make its
     own claim about; a hook that exits non-zero is reported to the agent as failing.
     """
-    cmd = completion.hook_settings(str(activity), done and str(done))
+    cmd = completion.hook_settings(str(activity))
     snippet = cmd["hooks"][event][0]["hooks"][0]["command"]
     return subprocess.run(["/bin/sh", "-c", snippet], input=payload,
                           text=True).returncode
@@ -149,14 +149,14 @@ def test_the_hooks_of_a_retired_run_do_not_fail_in_the_session_they_outlive(tmp_
     typing, or the API-error watcher's nudge) then ends in a hook the CLI reports to
     the operator as failing, for the life of the session."""
     gone = tmp_path / "1787678987-65629fdf"
-    activity, done = gone / "activity", gone / "done"
+    activity = gone / "activity"
     gone.mkdir()
-    _fire("Stop", activity, done, payload=_payload())
+    _fire("Stop", activity, payload=_payload())
     shutil.rmtree(gone)
 
-    assert _fire("UserPromptSubmit", activity, done) == 0
-    assert _fire("Stop", activity, done, payload=_payload()) == 0
-    assert _fire("SessionEnd", activity, done) == 0
+    assert _fire("UserPromptSubmit", activity) == 0
+    assert _fire("Stop", activity, payload=_payload()) == 0
+    assert _fire("SessionEnd", activity) == 0
     assert not gone.exists(), \
         "a report nothing reads must not rebuild the directory the applet dropped"
 
@@ -208,17 +208,6 @@ def test_a_turn_with_nothing_outstanding_is_over(tmp_path):
     assert completion.parse(activity.read_text())[0] == completion.IDLE
 
 
-def test_the_mesh_key_is_held_until_the_subagents_are_done(tmp_path):
-    """The sentinel releases a szpontnet work key. Writing it on a turn that only
-    dispatched subagents would let a peer re-run work still in flight."""
-    activity, done = tmp_path / "activity", tmp_path / "done"
-    _fire("Stop", activity, done, payload=_payload("subagent"))
-    assert not done.exists()
-
-    _fire("Stop", activity, done, payload=_payload())
-    assert done.read_text() == "0"
-
-
 @pytest.mark.parametrize("payload", [
     "",                                        # stdin closed, or a hook run with none
     '{"hook_event_name":"Stop"}',              # a CLI that carries no such field
@@ -253,30 +242,6 @@ def test_a_decoy_in_the_transcript_cannot_forge_pending_work(tmp_path):
     _fire("Stop", activity,
           payload=f'{{"last_assistant_message":{decoy},"background_tasks":[]}}')
     assert completion.parse(activity.read_text())[0] == completion.IDLE
-
-
-# MARK: - The mesh's reader of the same report
-
-
-def test_the_mesh_sentinel_is_written_by_the_terminal_verbs_only(tmp_path):
-    """A szpontnet executor holds its claim until the exit sentinel exists, so writing
-    it on a turn STARTING would free the work key the instant the agent began."""
-    activity, done = tmp_path / "activity", tmp_path / "done"
-
-    _fire("UserPromptSubmit", activity, done)
-    assert not done.exists(), "a turn starting must not look like a finished job"
-
-    _fire("Stop", activity, done)
-    assert done.read_text() == "0"
-
-
-def test_a_local_run_is_pointed_at_no_sentinel(tmp_path):
-    """Only the mesh reads one. A local run is judged by the activity file, which
-    survives a second turn — the sentinel is a latch and would retire a nudged run
-    mid-work."""
-    settings = completion.hook_settings(str(tmp_path / "activity"))
-    for spec in settings["hooks"].values():
-        assert "printf 0 >" not in spec[0]["hooks"][0]["command"]
 
 
 # MARK: - Reaching a real spawn

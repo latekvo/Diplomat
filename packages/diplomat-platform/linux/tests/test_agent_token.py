@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from diplomat_runtime import appconfig, comms, review, runner, szponthost
+from diplomat_runtime import appconfig, comms, review, runner
 
 DUMMY = "github_pat_DUMMY0123456789abcdefNOTREAL"
 
@@ -41,10 +41,9 @@ def token_file(tmp_path):
 
 _token_export = review.token_export
 _check_token = review.check_token
-#: The real spawners, taken before conftest's ``no_host_agent_spawn`` swaps them out;
-#: every test that calls one stubs ``popen_detached`` itself.
+#: The real spawner, taken before conftest's ``no_host_agent_spawn`` swaps it out;
+#: every test that calls it stubs ``popen_detached`` itself.
 _real_spawn = review.spawn
-_real_spawn_macos = szponthost._spawn_macos
 
 #: The git half of the gate, spelled out: the macOS twin pins the same string.
 _GIT = ("GIT_CONFIG_COUNT=2 "
@@ -77,7 +76,7 @@ def _spawn(tmp_path, monkeypatch, shell, agent="printenv GH_TOKEN > out", pid=Tr
            platform="linux"):
     """The real spawn string, with a stand-in agent and the terminal's trailing
     interactive shell cut off (it would sit at a prompt forever). ``pid=False`` is the
-    form a mesh node spawns, with the agent in the terminal's own shell."""
+    form with no pid file, with the agent in the terminal's own shell."""
     monkeypatch.setattr(review, "repo_path", lambda: str(tmp_path))
     monkeypatch.setattr(review, "user_shell", lambda: shell)
     monkeypatch.setattr(runner, "agent_command", lambda *a, **k: agent)
@@ -146,8 +145,7 @@ def test_linux_reads_the_configured_file():
 
 
 def test_macos_reads_the_configured_keychain_item():
-    """A mesh node on a Mac spawns through this side, beside an app that spawns
-    through ``AgentSpawner.tokenExport``; ``DIPLOMAT_SPAWN_SCRIPT_TEST`` pins that one."""
+    """Twin of ``AgentSpawner.tokenExport``, which ``DIPLOMAT_SPAWN_SCRIPT_TEST`` pins."""
     appconfig.set_value(appconfig.AGENT_TOKEN_KEYCHAIN_ITEM, "diplomat-agent-gh")
     assert review.token_export("darwin") == (
         "GH_TOKEN=$(security find-generic-password -s diplomat-agent-gh -w "
@@ -197,7 +195,7 @@ def test_the_secret_is_in_no_argv_the_terminal_is_given(tmp_path, monkeypatch,
 # MARK: - The command, run
 
 
-@pytest.mark.parametrize("pid", [True, False], ids=["local", "mesh"])
+@pytest.mark.parametrize("pid", [True, False], ids=["pid", "no-pid"])
 @pytest.mark.parametrize("shell", _SHELLS)
 def test_the_agent_gets_the_token(shell, pid, tmp_path, monkeypatch, token_file):
     _, cmd = _spawn(tmp_path, monkeypatch, shell, agent=_AGENT, pid=pid)
@@ -210,7 +208,7 @@ def test_the_agent_gets_the_token(shell, pid, tmp_path, monkeypatch, token_file)
     assert (tmp_path / "done").read_text() == "0"
 
 
-@pytest.mark.parametrize("pid", [True, False], ids=["local", "mesh"])
+@pytest.mark.parametrize("pid", [True, False], ids=["pid", "no-pid"])
 @pytest.mark.parametrize("shell", _SHELLS)
 def test_the_agent_never_holds_the_slack_token(shell, pid, tmp_path, monkeypatch,
                                                token_file):
@@ -225,7 +223,7 @@ def test_the_agent_never_holds_the_slack_token(shell, pid, tmp_path, monkeypatch
     assert (tmp_path / "slack").read_text() == ""
 
 
-@pytest.mark.parametrize("variant", ["local", "opencode-session", "mesh"])
+@pytest.mark.parametrize("variant", ["pid", "opencode-session", "no-pid"])
 @pytest.mark.parametrize("shell", [sh for sh in ("/bin/zsh", "/bin/bash")
                                    if os.access(sh, os.X_OK)])
 def test_an_rc_exported_slack_token_never_reaches_the_agent(shell, variant, tmp_path,
@@ -241,7 +239,7 @@ def test_an_rc_exported_slack_token_never_reaches_the_agent(shell, variant, tmp_
     monkeypatch.setattr(runner, "agent_command",
                         lambda *a, **k: f"printenv {comms.TOKEN_ENV}; : > ran")
     cmd = review.shell_command(
-        "/tmp/p.txt", pid_path=str(tmp_path / "pid") if variant == "local" else None,
+        "/tmp/p.txt", pid_path=str(tmp_path / "pid") if variant == "pid" else None,
         opencode_session="ses_x" if variant == "opencode-session" else None)
     head, sep, _ = cmd.rpartition('; exec "$SHELL" -i')
     assert sep, cmd
@@ -260,15 +258,15 @@ def test_the_launcher_never_hands_on_the_slack_token(monkeypatch):
 
 
 @pytest.mark.parametrize("source", ["file", "keychain"])
-@pytest.mark.parametrize("pid", [True, False], ids=["local", "mesh"])
+@pytest.mark.parametrize("pid", [True, False], ids=["pid", "no-pid"])
 @pytest.mark.parametrize("contents", [None, "", "\n", " \t\r\n", "\0\0\n"],
                          ids=["missing", "empty", "blank", "whitespace", "nul"])
 @pytest.mark.parametrize("shell", _SHELLS)
 def test_an_unreadable_token_starts_nothing(shell, contents, pid, source, tmp_path,
                                             monkeypatch, token_file):
     """Not a fallback to the broad login: nothing runs. No pid file, so the tick
-    resolves a local run FAILED past its grace, and no exit sentinel, which reads as a
-    run that finished - to the resolver, and to a mesh node holding the work's claim."""
+    resolves the run FAILED past its grace, and no exit sentinel, which would read as a
+    run that finished."""
     platform = _hold(source, contents, tmp_path, token_file)
     _, cmd = _spawn(tmp_path, monkeypatch, shell, pid=pid, platform=platform)
     done = subprocess.run([shell, "-c", cmd], cwd=tmp_path, env=_clean_env(tmp_path),
@@ -326,9 +324,8 @@ def test_the_secret_is_absent_from_the_process_table(tmp_path, monkeypatch, toke
                          ids=["missing", "empty", "blank", "whitespace", "nul"])
 def test_an_unreadable_token_file_fails_the_spawn_before_a_window(contents, token_file,
                                                                   monkeypatch):
-    """Before the terminal, so the caller hears the spawn failed: the local tracker
-    logs ``spawn-failed``, and a mesh executor declines instead of holding the
-    work's claim on an agent that never ran."""
+    """Before the terminal, so the caller hears the spawn failed and logs
+    ``spawn-failed``."""
     if contents is None:
         token_file.unlink()
     else:
@@ -352,8 +349,8 @@ def test_a_readable_token_file_spawns(token_file, monkeypatch):
 @pytest.mark.parametrize("kind", ["fifo", "device"])
 def test_a_token_file_that_is_not_a_regular_file_is_refused_unread(kind, tmp_path,
                                                                    monkeypatch):
-    """The check runs on the GUI thread and on the mesh node's loop, where a FIFO with
-    no writer would block the read and /dev/zero never end it."""
+    """The check runs on the GUI thread, where a FIFO with no writer would block the
+    read and /dev/zero never end it."""
     path = tmp_path / "agent-token" if kind == "fifo" else Path("/dev/zero")
     if kind == "fifo":
         os.mkfifo(path)
@@ -381,47 +378,23 @@ def test_a_relative_token_file_fails_the_spawn(tmp_path, monkeypatch, token_file
         _check_token("linux")
 
 
-def test_a_refused_mesh_job_stages_no_prompt(tmp_path, monkeypatch):
-    """The Linux mesh spawner stages an OpenCode prompt before it spawns; a token that
-    cannot be read must be refused before that, as on macOS, or every refusal leaves
-    the prompt behind in the temp dir."""
-    from szpontnet import host as szpont_host
-
-    staging = tmp_path / "tmp"
-    staging.mkdir()
-    monkeypatch.setattr(review.tempfile, "tempdir", str(staging))
-    monkeypatch.setattr(szponthost.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(review, "check_token", lambda: _check_token("linux"))
-    monkeypatch.setattr(review, "popen_detached",
-                        lambda *a, **k: pytest.fail("a refused job reached a terminal"))
-    appconfig.set_value(appconfig.AGENT_RUNNER, runner.OPENCODE)
-    appconfig.set_value(appconfig.AGENT_TOKEN_FILE, str(tmp_path / "absent-token"))
-    with pytest.raises(szpont_host.NoRunner, match="no agent token"):
-        szponthost.DiplomatHost().run_job("p", None)
-    assert [p.name for p in staging.iterdir()
-            if p.name.startswith("diplomat-review-")] == []
-
-
 def test_no_configured_token_is_never_checked():
     _check_token("linux")
     _check_token("darwin")
 
 
-def test_a_missing_keychain_item_fails_the_mesh_spawn(monkeypatch):
-    """The real ``security``, asked for an item nobody has: the mesh's macOS spawner
-    raises ``NoRunner`` - the executor answers "failed" and takes no claim - and never
-    reaches ``osascript``."""
+def test_a_missing_keychain_item_fails_the_spawn(monkeypatch):
+    """The real ``security``, asked for an item nobody has: the spawn is refused before
+    a terminal opens."""
     if not shutil.which("security"):
         pytest.skip("no macOS security(1)")
-    from szpontnet import host as szpont_host
-
     appconfig.set_value(appconfig.AGENT_TOKEN_KEYCHAIN_ITEM,
                         f"diplomat-selftest-{uuid.uuid4()}")
     monkeypatch.setattr(review, "check_token", lambda: _check_token("darwin"))
     launched = []
     monkeypatch.setattr(review, "popen_detached", lambda *a, **k: launched.append(a))
-    with pytest.raises(szpont_host.NoRunner, match="Keychain item"):
-        _real_spawn_macos("p", "/tmp/d")
+    with pytest.raises(review.SpawnError, match="Keychain item"):
+        _real_spawn("p", None, done_path="/tmp/d")
     assert launched == []
 
 
@@ -435,8 +408,6 @@ def test_a_keychain_item_spawns_only_on_a_secret(secret, spawns, tmp_path, monke
     add-generic-password -w``'s prompt stores - is refused like a missing one: the
     gate would start nothing in a window already reported as started. A stand-in
     ``security`` first on PATH, answering as the real one does."""
-    from szpontnet import host as szpont_host
-
     stubs = tmp_path / "bin"
     stubs.mkdir()
     (stubs / "security").write_text(f"#!/bin/sh\nprintf '%s\\n' '{secret}'\n")
@@ -447,8 +418,8 @@ def test_a_keychain_item_spawns_only_on_a_secret(secret, spawns, tmp_path, monke
     launched = []
     monkeypatch.setattr(review, "popen_detached", lambda *a, **k: launched.append(a))
     if spawns:
-        _real_spawn_macos("p", "/tmp/d")
+        _real_spawn("p", None, done_path="/tmp/d")
     else:
-        with pytest.raises(szpont_host.NoRunner, match="'diplomat-agent-gh'"):
-            _real_spawn_macos("p", "/tmp/d")
+        with pytest.raises(review.SpawnError, match="'diplomat-agent-gh'"):
+            _real_spawn("p", None, done_path="/tmp/d")
     assert len(launched) == spawns

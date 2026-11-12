@@ -334,10 +334,9 @@ def test_pane_tails_for_ttys_captures_only_the_ttys_asked_for(monkeypatch):
 
 
 def test_pane_tails_for_ttys_never_raises_into_its_callers(monkeypatch):
-    """Its callers are the autofix poll worker and the mesh node's capacity hook.
-    An exception would kill the poll for the applet's remaining life (the way a
-    strict decode once killed the watcher) or fail a peer's job over an unreadable
-    screen. Every failure has to read as ``None`` — "could not look" — instead."""
+    """Its caller is the autofix poll worker. An exception would kill the poll for
+    the applet's remaining life (the way a strict decode once killed the watcher).
+    Every failure has to read as ``None`` - "could not look" - instead."""
     monkeypatch.setattr(tmuxwatch.shutil, "which", lambda _: "/usr/bin/tmux")
 
     def boom(argv):
@@ -669,8 +668,8 @@ def test_a_session_that_is_not_there_is_not_a_kill():
 
 @pytest.mark.usefixtures("real_kills")
 def test_a_run_with_no_name_is_never_killed_by_one(monkeypatch):
-    """A mesh-placed run has no session of ours; an empty name must reach no tmux at
-    all rather than becoming a target that matches whatever tmux feels like."""
+    """An empty name must reach no tmux at all rather than becoming a target that
+    matches whatever tmux feels like."""
     monkeypatch.setattr(tmuxwatch, "_run",
                         lambda argv: pytest.fail(f"tmux was run: {argv}"))
     assert tmuxwatch.kill_session("") is False
@@ -706,8 +705,8 @@ def test_a_client_outside_tmux_under_a_c_locale_still_reads_its_panes(monkeypatc
 @pytest.mark.usefixtures("real_kills")
 def test_the_tty_route_kills_the_panes_window_and_no_session(monkeypatch):
     """An agent the operator ran by hand sits in a window of THEIR session; reaping
-    it must take that window and nothing else of theirs. A session this applet or a
-    mesh node opened has one window, and ends with it."""
+    it must take that window and nothing else of theirs. A session this applet
+    opened has one window, and ends with it."""
     calls: list[list[str]] = []
 
     panes = {"/dev/pts/3": "@4", "/dev/pts/9": "@7"}

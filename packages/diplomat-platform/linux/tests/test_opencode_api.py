@@ -514,9 +514,8 @@ def opencode(monkeypatch, tmp_path):
 
 def test_the_port_reaches_the_agents_command(opencode):
     """Spelled out here and identically in ``DiplomatCoreSmoke``: one config file
-    picks the runner for both front-ends, and a machine can hand a mesh job to the
-    other platform. Two sides that agree on the idea and differ by a byte spawn two
-    different servers."""
+    picks the runner for both front-ends. Two sides that agree on the idea and differ
+    by a byte spawn two different servers."""
     assert runner.agent_command("/tmp/p.txt", port=47910) == (
         'OPENCODE_PERMISSION=\'{"edit":"allow","bash":"allow","webfetch":"allow",'
         '"external_directory":"allow","doom_loop":"allow"}\' '

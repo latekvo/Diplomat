@@ -106,35 +106,30 @@ def test_closing_the_window_hides_it_and_it_opens_again(panel, qapp):
 
 def test_a_minimized_window_polls_nothing_and_catches_up_when_restored(panel, qapp,
                                                                       monkeypatch):
-    """The 8 s `ps` scan and the 2 s mesh read run only while the window is on screen,
-    and a minimized window is still ``isVisible()``."""
+    """The 8 s `ps` scan runs only while the window is on screen, and a minimized
+    window is still ``isVisible()``."""
     calls: list[str] = []
-    monkeypatch.setattr(Store, "mesh_enabled", property(lambda self: True))
-    monkeypatch.setattr(panel.store, "refresh_mesh_state", lambda: calls.append("mesh"))
     monkeypatch.setattr(panel.store, "refresh_auto_task_count_async",
                         lambda: calls.append("ps"))
     panel.show()
     _settle(qapp)
     calls.clear()
     panel._tasks_tick()
-    panel._mesh_tick()
-    assert calls == ["ps", "mesh"]
+    assert calls == ["ps"]
 
     calls.clear()
     panel.setWindowState(Qt.WindowState.WindowMinimized)
     _settle(qapp)
     assert panel.isVisible() and panel.isMinimized()
     panel._tasks_tick()
-    panel._mesh_tick()
     assert calls == []
 
     panel.setWindowState(Qt.WindowState.WindowNoState)
     _settle(qapp)
-    assert calls == ["mesh", "ps"]
+    assert calls == ["ps"]
     calls.clear()
     panel._tasks_tick()
-    panel._mesh_tick()
-    assert calls == ["ps", "mesh"]
+    assert calls == ["ps"]
 
 
 def test_file_quit_asks_to_quit(panel):

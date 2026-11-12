@@ -37,7 +37,7 @@ def ledger(tmp_path, monkeypatch):
 
 def test_events_round_trip_through_the_file(ledger):
     telemetry.record_queued("review:h/o/r#1@aa", "review", 1)
-    telemetry.record_started("review:h/o/r#1@aa", remote=False, attempt=1)
+    telemetry.record_started("review:h/o/r#1@aa", attempt=1)
     telemetry.record_done("review:h/o/r#1@aa", at=1_785_000_000.0, tokens=1234.0)
 
     folded = telemetry.load()
@@ -92,8 +92,8 @@ def test_the_fold_is_recomputed_when_the_file_changes(ledger):
 
 
 def test_a_concurrent_appender_cannot_lose_a_line(ledger):
-    """Two writers, interleaved. ``O_APPEND`` is what makes this safe — the applet
-    and a mesh node on one home directory both append to this file."""
+    """Two writers, interleaved. ``O_APPEND`` is what makes this safe - two processes
+    on one home directory can both append to this file."""
     for i in range(50):
         telemetry.append({"at": 1.0 + i, "ev": "queued", "key": f"review:k#{i}",
                           "duty": "review", "pr": i})
@@ -382,7 +382,7 @@ def test_an_opencode_run_is_priced_from_its_whole_session(tmp_path, monkeypatch)
     one thing for one runner and another for the other.
 
     The same numbers are asserted in ``DiplomatCoreSmoke``: both front-ends price runs
-    into one ledger, and a machine can hand a mesh job to the other platform."""
+    into one ledger."""
     _stub_opencode(tmp_path, monkeypatch,
                    "#!/bin/sh\ncat <<'JSON'\n" + json.dumps(EXPORTED) + "\nJSON\n")
     assert usagescan.opencode_task_tokens("ses_ours") == 3 + 84 + 40 + 7 + 8 + 106
@@ -607,9 +607,7 @@ def test_only_appended_bytes_are_counted_on_the_next_scan(scanner):
 
 
 def test_cache_reads_are_left_out_of_the_cost(scanner):
-    """They are huge and nearly free, and counting them would swamp the signal — the
-    same three fields the mesh add-on's probe sums, so a machine running SzpontNet
-    prices its quota the same way."""
+    """They are huge and nearly free, and counting them would swamp the signal."""
     repo, projects = scanner
     usagescan.totals()
     _transcript(projects / "s" / "a.jsonl", [_turn(str(repo), 100)])
@@ -779,12 +777,10 @@ def test_retiring_a_run_prices_it_from_the_transcript_its_prompt_names(ledger, s
     assert task.done_at == exited_at, "the exit time came from the poll, not the agent"
 
 
-def test_a_run_the_mesh_placed_is_dated_from_its_transcript(ledger, scanner):
-    """A mesh executor points its agent at a completion sentinel of its own under the
-    mesh directory and unlinks it the moment it fires, so the run directory never
-    gets one and ``finished_at`` has nothing to read. Left at the poll instant, every
-    such run's measured duration stretches to wherever that poll happened to land —
-    and on a machine running the mesh, every run is one of these."""
+def test_a_run_with_no_exit_sentinel_is_dated_from_its_transcript(ledger, scanner):
+    """A run that went back to its prompt rather than exiting wrote no sentinel, so
+    ``finished_at`` has nothing to read. Left at the poll instant, its measured
+    duration stretches to wherever that poll happened to land."""
     from diplomat_runtime import agentregistry, agentstate
     from diplomat_app.store import Store
 
@@ -792,15 +788,14 @@ def test_a_run_the_mesh_placed_is_dated_from_its_transcript(ledger, scanner):
     prompt = "resolve the conflicts on PR #9 please"
     dispatched_at = time.time() - 3600
     exited_at = dispatched_at + 300
-    transcript = projects / "s" / "meshed.jsonl"
+    transcript = projects / "s" / "idle.jsonl"
     _session(transcript, prompt, str(repo), [700])
     os.utime(transcript, (exited_at, exited_at))
 
     record = agentstate.RunRecord(run_id="m1", dispatched_at=dispatched_at,
                                   pr_number=9, kind="conflicts",
-                                  placement=agentstate.PLACEMENT_MESH_HERE,
                                   ledger_key="conflicts:o/r#9@aa")
-    agentregistry.create_run(record, prompt)  # and no sentinel: the mesh kept its own
+    agentregistry.create_run(record, prompt)  # and no sentinel
 
     telemetry.record_started(record.ledger_key)
     Store()._retire_finished(agentstate.Tick(records=[], states={}, rows=[],
@@ -862,10 +857,10 @@ def test_a_range_with_no_readings_in_it_counts_nothing():
 _FIN_NOW = 1_785_000_000.0
 
 
-def _task(key: str, *, done_at: float | None, started_at: float | None = None,
-          remote: bool = False) -> telemetry.Task:
+def _task(key: str, *, done_at: float | None,
+          started_at: float | None = None) -> telemetry.Task:
     return telemetry.Task(key=key, duty="review", started_at=started_at,
-                          done_at=done_at, remote=remote)
+                          done_at=done_at)
 
 
 def _finished(tasks: list, *, days: float = 1.0,
@@ -948,19 +943,25 @@ def test_a_run_is_placed_by_its_exit_not_by_its_start():
     assert [p.count for p in s.finished] == [0, 0, 0, 0, 0, 1]
 
 
+def test_a_line_logged_with_a_remote_flag_reads_as_any_other_run(ledger):
+    """A ledger on disk may carry a key this build has no field for. It is ignored: the
+    run is started, done and priced like every run."""
+    key = "review:h/o/r#1@aa"
+    for event in ({"at": _FIN_NOW - 7200, "ev": "started", "key": key, "remote": True,
+                   "attempt": 1},
+                  {"at": _FIN_NOW - 3600, "ev": "done", "key": key, "tokens": 500.0}):
+        telemetry.append(event)
+
+    (task,) = telemetry.load().tasks
+    assert (task.started_at, task.done_at, task.tokens) == (
+        _FIN_NOW - 7200, _FIN_NOW - 3600, 500.0)
+    s = _finished(telemetry.load().tasks)
+    assert s.done_count == 1 and s.finished_count == 1
+
+
 def test_a_run_still_going_is_not_a_bar():
     s = _finished([_task("a", started_at=_FIN_NOW - 3600, done_at=None)])
     assert s.finished_count == 0 and s.peak_finished == 0
-
-
-def test_a_run_the_mesh_placed_on_a_peer_still_counts_as_delivered():
-    """The cost figures drop a peer's run — the tokens came out of that machine's
-    window, not ours. The bars are what the pool DELIVERED, and it delivered that
-    one, so the two counts differ on purpose."""
-    s = _finished([_task("a", started_at=_FIN_NOW - 7200, done_at=_FIN_NOW - 3600,
-                         remote=True)])
-    assert s.finished_count == 1
-    assert s.done_count == 0, "a peer's run leaked into the local completion count"
 
 
 def test_work_that_finished_before_the_range_opened_is_left_out():
@@ -1015,7 +1016,7 @@ def _both_windows(*, week_moves: bool = True, session_moves: bool = True,
         key = f"review:h/o/r#{i}@sha{i}"
         lines += [
             json.dumps({"at": _WINDOWS_NOW - 6300, "ev": "started", "key": key,
-                        "remote": False, "attempt": 1}),
+                        "attempt": 1}),
             json.dumps({"at": _WINDOWS_NOW - 3000, "ev": "done", "key": key,
                         "tokens": tok}),
         ]
@@ -1027,7 +1028,7 @@ def _both_windows(*, week_moves: bool = True, session_moves: bool = True,
         key = f"review:h/o/r#{100 + i}@late{i}"
         lines += [
             json.dumps({"at": _WINDOWS_NOW - 3600, "ev": "started", "key": key,
-                        "remote": False, "attempt": 1}),
+                        "attempt": 1}),
             json.dumps({"at": _WINDOWS_NOW - 3000, "ev": "done", "key": key,
                         "tokens": tok}),
         ]
