@@ -4157,6 +4157,19 @@ do {
     check(pauseEdits.count == 1
           && (pauseEdits[0](cfgIn)[MachineExclusions.untilKey] as? [String: String])?["b"]
              == "2026-11-09T13:00:00.000Z", "a pause writes only the pause map")
+    // The ARM bias reads as the daemon's `settings()` + `byRank` do: default 70, clamped to 0-100.
+    check(MachineArmBias.key == "remoteMachineArmBias", "the ARM bias key is the daemon's")
+    let biasCases: [(Double, Int)] = [
+        (70, 70), (0, 0), (100, 100), (35, 35), (-20, 0), (250, 100), (1e300, 100),
+        (72.4, 72), (72.5, 73), (.nan, 70), (.infinity, 70), (-.infinity, 70),
+    ]
+    for (v, want) in biasCases {
+        check(MachineArmBias.percent(v) == want, "percent(\(v)) = \(MachineArmBias.percent(v)), want \(want)")
+    }
+    check(MachineArmBias.defaultPercent == 70 && MachineArmBias.range == 0...100 && MachineArmBias.step == 5,
+          "the ARM bias default, range and step match the Linux slider")
+    check(MachineArmBias.badge(70) == "ARM 70 : 30 x86" && MachineArmBias.badge(0) == "ARM 0 : 100 x86",
+          "ARM bias badge, got \(MachineArmBias.badge(70))")
     check(MachinesScan.body == ["full": true], "a scan asks for discovery and every probe, with no ownerPid")
     check(MachinesScan.auditText(failure: nil) == "Rescanned the remote machines"
           && MachinesScan.auditText(failure: "HTTP 500")

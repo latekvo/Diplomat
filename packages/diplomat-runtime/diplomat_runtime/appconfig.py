@@ -86,11 +86,16 @@ REMOTE_MACHINE_EXCLUDE = "remoteMachineExclude"
 #: ``{name: ISO-8601 instant}``: machines the remote-machines daemon still reads but
 #: offers no agent until then.
 REMOTE_MACHINE_EXCLUDE_UNTIL = "remoteMachineExcludeUntil"
+#: ARM's share, in percent, of the remote-machines daemon's ranking weight: an ARM
+#: machine's spare cores count this much, any other's the rest. Only reorders machines.
+REMOTE_MACHINE_ARM_BIAS = "remoteMachineArmBias"
 
 DEFAULT_DEVICE_IDLE_FREE_MINUTES = 5
 MAX_DEVICE_IDLE_FREE_MINUTES = 60
 DEFAULT_DEVICE_IDLE_LEASED_MINUTES = 30
 MAX_DEVICE_IDLE_LEASED_MINUTES = 240
+DEFAULT_REMOTE_MACHINE_ARM_BIAS = 70
+MAX_REMOTE_MACHINE_ARM_BIAS = 100
 
 
 def path() -> Path:
@@ -329,3 +334,16 @@ def device_idle_leased_minutes() -> int:
     return _device_idle_minutes(DEVICE_IDLE_LEASED_MINUTES,
                                 DEFAULT_DEVICE_IDLE_LEASED_MINUTES,
                                 MAX_DEVICE_IDLE_LEASED_MINUTES)
+
+
+def clamp_remote_machine_arm_bias(value: float) -> int:
+    """The bias held to 0-100, as the daemon clamps it, in the whole percent the
+    slider shows."""
+    return round(max(0.0, min(MAX_REMOTE_MACHINE_ARM_BIAS, value)))
+
+
+def remote_machine_arm_bias() -> int:
+    """:data:`REMOTE_MACHINE_ARM_BIAS` as the daemon reads it: anything but a finite
+    number is the default."""
+    return clamp_remote_machine_arm_bias(
+        get_float(REMOTE_MACHINE_ARM_BIAS, DEFAULT_REMOTE_MACHINE_ARM_BIAS))

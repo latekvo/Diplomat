@@ -72,7 +72,8 @@ enum AppConfig {
     /// device pool (`~` allowed); absent = no remote pool. Re-read by the daemon on
     /// every request.
     static let deviceRemoteProviderKey = "deviceRemoteProvider"
-    // The remote-machines keys are `MachineExclusions.excludeKey` and `.untilKey`.
+    // The remote-machines keys are `MachineExclusions.excludeKey` and `.untilKey`, and
+    // `MachineArmBias.key`.
 
     /// The runner every spawn on this machine uses, resolved here rather than at each
     /// call site because there are two, in different processes: this app's spawner and
@@ -230,6 +231,13 @@ enum AppConfig {
     static var deviceIdleLeasedMinutes: Int {
         clampIdleMinutes(int(deviceIdleLeasedMinutesKey, fallback: deviceIdleLeasedDefault),
                          deviceIdleLeasedRange, fallback: deviceIdleLeasedDefault)
+    }
+
+    /// The remote-machines daemon's ARM bias, as it ranks by it. Read as a `double`
+    /// because the daemon takes any finite number, a fractional or huge one included.
+    static var remoteMachineArmBias: Int {
+        MachineArmBias.percent(double(MachineArmBias.key,
+                                      fallback: Double(MachineArmBias.defaultPercent)))
     }
 
     /// One boolean key, or `fallback` when it's absent or isn't one. A number is NOT

@@ -530,6 +530,27 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The remote-machines daemon's ARM bias (`MachineArmBias`), which the Machines
+    /// screen sets; in the shared file for the reason the idle limits are.
+    @Published var remoteMachineArmBias: Int {
+        didSet {
+            let clamped = MachineArmBias.percent(Double(remoteMachineArmBias))
+            if clamped != remoteMachineArmBias { remoteMachineArmBias = clamped }
+            guard writesConfig, !readingConfig else { return }
+            machineArmBiasSaveFailed = !AppConfig.setInt(MachineArmBias.key, clamped)
+            if machineArmBiasSaveFailed { reloadMachineArmBias() }
+        }
+    }
+    @Published private(set) var machineArmBiasSaveFailed = false
+
+    /// Re-read the ARM bias from config.json, which is also edited by hand.
+    func reloadMachineArmBias() {
+        readBack {
+            let bias = AppConfig.remoteMachineArmBias
+            if bias != remoteMachineArmBias { remoteMachineArmBias = bias }
+        }
+    }
+
     /// Whether settings are written to config.json. Off in a headless run, which
     /// persists nothing; a self-test on a scratch file turns it on.
     var writesConfig = !Headless.active
@@ -1150,6 +1171,7 @@ final class Store: ObservableObject {
         autoBudgetReserveUsd = AppConfig.autoBudgetReserveUsd
         deviceIdleFreeMinutes = AppConfig.deviceIdleFreeMinutes
         deviceIdleLeasedMinutes = AppConfig.deviceIdleLeasedMinutes
+        remoteMachineArmBias = AppConfig.remoteMachineArmBias
         deviceRemoteProvider = AppConfig.string(AppConfig.deviceRemoteProviderKey)
         // Default ON (absent key ⇒ true): the pill only lights up on a live heartbeat,
         // so defaulting on can't falsely claim "active" when no monitor is running.

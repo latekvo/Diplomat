@@ -1037,6 +1037,17 @@ class Store(QObject):
             ),
         )
 
+    @property
+    def remote_machine_arm_bias(self) -> int:
+        """:func:`appconfig.remote_machine_arm_bias`, in the shared config because the
+        remote-machines daemon is what reads it."""
+        return appconfig.remote_machine_arm_bias()
+
+    @remote_machine_arm_bias.setter
+    def remote_machine_arm_bias(self, value: int) -> None:
+        appconfig.set_int(appconfig.REMOTE_MACHINE_ARM_BIAS,
+                          appconfig.clamp_remote_machine_arm_bias(int(value)))
+
     def reload_device_config(self) -> None:
         """Have the views of config.json's device keys, which are also edited by hand,
         re-read them; the properties read the file on every access. Twin of
