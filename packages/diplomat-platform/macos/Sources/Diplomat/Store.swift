@@ -1050,6 +1050,17 @@ final class Store: ObservableObject {
         return gitlabMe[root.host] ?? ""
     }
 
+    /// `cfg` as a wizard runs it: homed on the selected root, its single-item link free to
+    /// name any root or listed checkout, and "me" that of the root the run targets, which
+    /// such a link moves off the selected one.
+    func wizardRun<C: WizardRunConfig>(_ cfg: C) -> C {
+        var cfg = cfg
+        cfg.home = selectedRoot
+        cfg.localRepos = wizardRepos
+        cfg.me = knownMe(for: cfg.targetLocal)
+        return cfg
+    }
+
     /// Seed a GitLab host's user, for headless self-tests only.
     func pinGitLabMe(_ login: String, host: String) {
         guard Headless.active else { return }
@@ -5096,3 +5107,15 @@ enum AppUpdateState: Equatable {
         }
     }
 }
+
+/// A wizard's run config, as `Store.wizardRun` fills it in.
+protocol WizardRunConfig {
+    var me: String { get set }
+    var home: PRRef.LocalRepo? { get set }
+    var localRepos: [PRRef.LocalRepo]? { get set }
+    var targetLocal: PRRef.LocalRepo? { get }
+}
+
+extension ReviewConfig: WizardRunConfig {}
+extension IssueConfig: WizardRunConfig {}
+extension ConflictConfig: WizardRunConfig {}

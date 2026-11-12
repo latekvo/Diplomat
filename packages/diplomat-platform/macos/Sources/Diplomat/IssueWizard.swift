@@ -74,20 +74,16 @@ struct IssueWizardView: View {
     }
 
     private var config: IssueConfig {
-        var cfg = IssueConfig(
+        store.wizardRun(IssueConfig(
             depth: depth.id,
             target: target,
             username: username,
-            me: store.knownMe(for: store.selectedRoot),
             specificIssue: specificIssue,
             unassignedOnly: unassignedOnly,
             assignToMe: assignToMe,
             openPRs: openPRs,
             commentOnIssue: commentOnIssue,
-            includeFeatures: includeFeatures)
-        cfg.home = store.selectedRoot
-        cfg.localRepos = store.wizardRepos
-        return cfg
+            includeFeatures: includeFeatures))
     }
 
     var body: some View {
