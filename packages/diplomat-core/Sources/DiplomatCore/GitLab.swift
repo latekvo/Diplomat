@@ -13,15 +13,15 @@ public enum GitLab {
     typealias JSON = [String: Any]
 
     /// The adapters by fixture name: `prs`, `issues`, `monitor-prs`, `closed-prs`,
-    /// `review-requests` (with or without `diffStats`, so `review-requests-nofiles` too)
-    /// and `mr`.
-    public static func adapt(_ name: String, _ data: Data) throws -> Data {
+    /// `review-requests` (any name starting so, each an answer asked for `reviewer`) and
+    /// `mr`.
+    public static func adapt(_ name: String, _ data: Data, reviewer: String) throws -> Data {
+        if name.hasPrefix("review-requests") { return try reviewRequests(data, reviewer: reviewer) }
         switch name {
         case "prs": return try prs(data)
         case "issues": return try issues(data)
         case "monitor-prs": return try monitorPRs(data)
         case "closed-prs": return try closedPRs(data)
-        case "review-requests", "review-requests-nofiles": return try reviewRequests(data)
         case "mr": return try mergeRequest(data)
         default: throw GHError.unanswered("no GitLab adapter named \(name)")
         }
@@ -86,9 +86,10 @@ public enum GitLab {
         return try encode(["data": ["search": ["nodes": nodes]]])
     }
 
-    /// `gitlab-review-requests` as `review-requests.graphql`: `{data: {search: {nodes}}}`,
-    /// with `files` only when the answer carries `diffStats` (`$withFiles`).
-    public static func reviewRequests(_ data: Data) throws -> Data {
+    /// `gitlab-review-requests` asked for `reviewer`, as `review-requests.graphql`:
+    /// `{data: {search: {nodes}}}`, with `files` only when the answer carries `diffStats`
+    /// (`$withFiles`).
+    public static func reviewRequests(_ data: Data, reviewer: String) throws -> Data {
         let project = try self.project(data)
         let members = self.members(project)
         let nodes = list(project["mergeRequests"]).map { mr -> JSON in
@@ -97,7 +98,8 @@ public enum GitLab {
             n["headRefOid"] = mr["diffHeadSha"] ?? NSNull()
             if mr["diffStats"] != nil { n["files"] = ["nodes": paths(mr)] }
             let activity = list(mr["activity"])
-            n["timelineItems"] = ["nodes": activity.flatMap(reviewRequested)]
+            let events = activity.flatMap(reviewRequested)
+            n["timelineItems"] = ["nodes": request(of: reviewer, events, mr, activity) + events]
             n["reviews"] = ["nodes": activity.filter {
                 let body = $0["body"] as? String ?? ""
                 return body.hasPrefix("approved this merge request") || body.hasPrefix("requested changes")
@@ -237,6 +239,21 @@ public enum GitLab {
             ($0["createdAt"] as? String ?? "") < ($1["createdAt"] as? String ?? "")
         }) else { return [] }
         return [["__typename": "ReadyForReviewEvent", "createdAt": latest["createdAt"] ?? NSNull()]]
+    }
+
+    /// `reviewer`'s request when no note in the window names them: the query answers only
+    /// merge requests that request their review, so it is at least as old as the window's
+    /// oldest note, or the merge request when the window is empty.
+    private static func request(of reviewer: String, _ events: [JSON], _ mr: JSON,
+                                _ activity: [JSON]) -> [JSON] {
+        let named = events.contains {
+            (($0["requestedReviewer"] as? JSON)?["login"] as? String)?.lowercased()
+                == reviewer.lowercased()
+        }
+        guard !named else { return [] }
+        let oldest = activity.compactMap { $0["createdAt"] as? String }.filter { !$0.isEmpty }.min()
+        return [["createdAt": oldest ?? mr["createdAt"] ?? NSNull(),
+                 "requestedReviewer": ["__typename": "User", "login": reviewer]] as JSON]
     }
 
     /// One review-requested event per user a "requested review from" note names, the

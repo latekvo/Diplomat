@@ -229,12 +229,13 @@ func gitlabSmoke() async throws {
         .filter { $0.hasSuffix(".input.json") }.sorted()
     let names = inputs.map { String($0.dropLast(".input.json".count)) }
     check(Set(["prs", "issues", "monitor-prs", "closed-prs", "review-requests",
-               "review-requests-nofiles", "mr"]).isSubset(of: Set(names)),
+               "review-requests-nofiles", "review-requests-window", "mr"]).isSubset(of: Set(names)),
           "a fixture for every adapter in \(fixtures.path): \(names)")
     for name in names {
         let input = try Data(contentsOf: fixtures.appendingPathComponent("\(name).input.json"))
         let expected = try Data(contentsOf: fixtures.appendingPathComponent("\(name).expected.json"))
-        let got = try canonical(try GitLab.adapt(name, input))
+        // The review-requests answers are the query's asked for reviewer `carol`.
+        let got = try canonical(try GitLab.adapt(name, input, reviewer: "carol"))
         let want = try canonical(expected)
         check(got == want, "the \(name) adapter matches its fixture\n got: \(got)\nwant: \(want)")
     }

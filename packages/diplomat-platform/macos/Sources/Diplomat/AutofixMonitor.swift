@@ -99,7 +99,7 @@ enum AutofixMonitor {
             data = try GitLab.reviewRequests(try await GLab.graphql(
                 "gitlab-review-requests", host: root.host,
                 variables: [("path", root.slug), ("reviewer", me)],
-                typedVariables: [("withFiles", "\(includeFiles)")]))
+                typedVariables: [("withFiles", "\(includeFiles)")]), reviewer: me)
         } else {
             let q = "repo:\(root.owner)/\(root.repo) review-requested:\(me) is:pr is:open"
             data = try await GH.graphql("review-requests", repo: nil,
