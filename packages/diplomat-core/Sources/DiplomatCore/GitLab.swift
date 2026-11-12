@@ -9,8 +9,10 @@ import Foundation
 /// else as `NONE`; an author past a full member page is asked of the `Lookup`, which reads
 /// their ids off the REST `members/all` (`memberPaths`). A merge request is numbered by
 /// its iid; a resolvable discussion is a review thread; and GitLab records a review
-/// request, an approval, a requested change and a ready-for-review as system notes, which
-/// stand in for GitHub's timeline events.
+/// request, a submitted review and a ready-for-review as system notes, which stand in for
+/// GitHub's timeline events and reviews. Every time is given in UTC as GitHub gives it
+/// (`2026-10-25T00:40:00Z`), where GitLab gives the instance's offset, so times compare as
+/// strings.
 public enum GitLab {
     typealias JSON = [String: Any]
 
@@ -43,14 +45,14 @@ public enum GitLab {
 
     /// `gitlab-prs` as `prs.graphql`: `{data: {repository: {pullRequests: {nodes}}}}`.
     public static func prs(_ data: Data) throws -> Data {
-        let nodes = list(try project(data)["mergeRequests"]).map { mr -> JSON in
+        let nodes = try list(try project(data)["mergeRequests"]).map { mr -> JSON in
             var n = common(mr)
             n["isDraft"] = mr["draft"] as? Bool ?? false
-            n["createdAt"] = mr["createdAt"] ?? NSNull()
+            n["createdAt"] = try utc(mr["createdAt"])
             n["mergeable"] = mergeable(mr)
             n["reviewDecision"] = reviewDecision(mr)
             n["files"] = ["nodes": paths(mr)]
-            n["timelineItems"] = ["nodes": readyEvent(mr)]
+            n["timelineItems"] = ["nodes": try readyEvent(mr)]
             n["reviewThreads"] = ["nodes": threads(mr)]
             return n
         }
@@ -63,10 +65,10 @@ public enum GitLab {
         let members = try await self.members(project, list(project["issues"]).flatMap { i in
             [i["author"]] + list(i["notes"]).map { $0["author"] }
         }, lookup: lookup)
-        let nodes = list(project["issues"]).map { i -> JSON in
+        let nodes = try list(project["issues"]).map { i -> JSON in
             var n = common(i)
-            n["createdAt"] = i["createdAt"] ?? NSNull()
-            n["updatedAt"] = i["updatedAt"] ?? NSNull()
+            n["createdAt"] = try utc(i["createdAt"])
+            n["updatedAt"] = try utc(i["updatedAt"])
             n["authorAssociation"] = association(username(i["author"]), members)
             n["assignees"] = ["nodes": list(i["assignees"]).map { ["login": $0["username"] ?? NSNull()] }]
             n["labels"] = ["nodes": list(i["labels"]).map { ["name": $0["title"] ?? NSNull()] }]
@@ -110,25 +112,29 @@ public enum GitLab {
         let project = try self.project(data)
         let members = try await self.members(project, list(project["mergeRequests"]).map { $0["author"] },
                                              lookup: lookup)
-        let nodes = list(project["mergeRequests"]).map { mr -> JSON in
+        let nodes = try list(project["mergeRequests"]).map { mr -> JSON in
             var n = common(mr)
             n["authorAssociation"] = association(username(mr["author"]), members)
             n["headRefOid"] = mr["diffHeadSha"] ?? NSNull()
             if mr["diffStats"] != nil { n["files"] = ["nodes": paths(mr)] }
             let activity = list(mr["activity"])
-            let events = activity.flatMap(reviewRequested)
-            n["timelineItems"] = ["nodes": request(of: reviewer, events, mr, activity) + events]
-            n["reviews"] = ["nodes": activity.filter {
+            let events = try activity.flatMap(reviewRequested)
+            n["timelineItems"] = ["nodes": try request(of: reviewer, events, mr, activity) + events]
+            n["reviews"] = ["nodes": try activity.filter {
                 let body = $0["body"] as? String ?? ""
-                return body.hasPrefix("approved this merge request") || body.hasPrefix("requested changes")
-            }.map { ["author": login($0["author"]), "submittedAt": $0["createdAt"] ?? NSNull()] }]
-            n["comments"] = ["nodes": list(mr["comments"]).map {
-                ["author": login($0["author"]), "createdAt": $0["createdAt"] ?? NSNull()]
+                return reviewed.contains { body.hasPrefix($0) }
+            }.map { ["author": login($0["author"]), "submittedAt": try utc($0["createdAt"])] }]
+            n["comments"] = ["nodes": try list(mr["comments"]).map {
+                ["author": login($0["author"]), "createdAt": try utc($0["createdAt"])]
             }]
             return n
         }
         return try encode(["data": ["search": ["nodes": nodes]]])
     }
+
+    /// The activity-note openings of a submitted review: an approval, a requested change,
+    /// and a review published without either (GitHub's `COMMENTED`).
+    private static let reviewed = ["approved this merge request", "requested changes", "left review comments"]
 
     /// `gitlab-mr` as `gh pr view --json state,author`: `{state, author: {login}}`.
     public static func mergeRequest(_ data: Data) throws -> Data {
@@ -202,6 +208,19 @@ public enum GitLab {
     private static func common(_ node: JSON) -> JSON {
         ["number": number(node), "title": node["title"] ?? NSNull(),
          "url": node["webUrl"] ?? NSNull(), "author": login(node["author"])]
+    }
+
+    /// A GitLab time in UTC, null for none.
+    private static func utc(_ at: Any?) throws -> Any {
+        guard let at = at as? String else { return NSNull() }
+        return try utc(at)
+    }
+
+    private static func utc(_ at: String) throws -> String {
+        guard let date = CommsLog.parseISO(at) else {
+            throw GHError.unanswered("GitLab time \(at) is unreadable")
+        }
+        return CommsLog.isoString(date)
     }
 
     private static func username(_ author: Any?) -> String? {
@@ -306,43 +325,43 @@ public enum GitLab {
     }
 
     /// The latest "marked ready" activity note as GitHub's ready-for-review event.
-    private static func readyEvent(_ mr: JSON) -> [JSON] {
-        let ready = list(mr["notes"]).filter {
+    private static func readyEvent(_ mr: JSON) throws -> [JSON] {
+        let ready = try list(mr["notes"]).filter {
             ($0["body"] as? String ?? "").hasPrefix("marked this merge request as **ready**")
-        }
-        guard let latest = ready.max(by: {
-            ($0["createdAt"] as? String ?? "") < ($1["createdAt"] as? String ?? "")
-        }) else { return [] }
-        return [["__typename": "ReadyForReviewEvent", "createdAt": latest["createdAt"] ?? NSNull()]]
+        }.map { try utc($0["createdAt"]) }
+        guard let latest = ready.max(by: { ($0 as? String ?? "") < ($1 as? String ?? "") }) else { return [] }
+        return [["__typename": "ReadyForReviewEvent", "createdAt": latest]]
     }
 
     /// `reviewer`'s request when no note in the window names them: the query answers only
     /// merge requests that request their review, so it is at least as old as the window's
     /// oldest note, or the merge request when the window is empty.
     private static func request(of reviewer: String, _ events: [JSON], _ mr: JSON,
-                                _ activity: [JSON]) -> [JSON] {
+                                _ activity: [JSON]) throws -> [JSON] {
         let named = events.contains {
             (($0["requestedReviewer"] as? JSON)?["login"] as? String)?.lowercased()
                 == reviewer.lowercased()
         }
         guard !named else { return [] }
-        let oldest = activity.compactMap { $0["createdAt"] as? String }.filter { !$0.isEmpty }.min()
-        return [["createdAt": oldest ?? mr["createdAt"] ?? NSNull(),
+        let oldest = try activity.compactMap { $0["createdAt"] as? String }.filter { !$0.isEmpty }
+            .map { try utc($0) }.min()
+        return [["createdAt": try oldest ?? utc(mr["createdAt"]),
                  "requestedReviewer": ["__typename": "User", "login": reviewer]] as JSON]
     }
 
     /// One review-requested event per user a "requested review from" note names, the
     /// removals the same note carries left out.
-    private static func reviewRequested(_ note: JSON) -> [JSON] {
+    private static func reviewRequested(_ note: JSON) throws -> [JSON] {
         let body = note["body"] as? String ?? ""
         let prefix = "requested review from "
         guard body.hasPrefix(prefix) else { return [] }
         var text = body
         if let cut = text.range(of: " and removed review request") { text = String(text[..<cut.lowerBound]) }
         guard let re = try? NSRegularExpression(pattern: #"@([\w.-]+)"#) else { return [] }
+        let at = try utc(note["createdAt"])
         return re.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { m in
             Range(m.range(at: 1), in: text).map {
-                ["createdAt": note["createdAt"] ?? NSNull(),
+                ["createdAt": at,
                  "requestedReviewer": ["__typename": "User", "login": String(text[$0])]] as JSON
             }
         }

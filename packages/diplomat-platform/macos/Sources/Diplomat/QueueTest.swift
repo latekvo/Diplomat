@@ -1240,7 +1240,7 @@ enum QueueTest {
               + "there answers it, and from the merge request with no notes: "
               + "\(windowed.map { "\($0.number) \($0.requestedAt ?? "nil") \($0.oweReview)" })",
               windowed.map(\.number) == [31, 30]
-                && windowed.map(\.requestedAt) == ["2026-11-06T09:00:00+01:00", "2026-11-02T08:00:00+01:00"]
+                && windowed.map(\.requestedAt) == ["2026-11-06T08:00:00Z", "2026-11-02T07:00:00Z"]
                 && windowed.map(\.oweReview) == [false, true])
         glabAnswers(#"{"data":{"project":{"mergeRequest":{"state":"merged","author":null}}}}"#)
         let landed = await AgentProbes.mergedPRs(["g/sub/p#7"], roots: [rootA, onGitLab])

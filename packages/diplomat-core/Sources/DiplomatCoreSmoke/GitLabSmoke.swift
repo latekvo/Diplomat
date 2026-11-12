@@ -296,6 +296,21 @@ func gitlabSmoke() async throws {
     }
     print("adapter fixtures matched: \(names.count)")
 
+    func readyAnswer(_ times: [String]) throws -> Data {
+        let notes = times.map { ["body": "marked this merge request as **ready**", "createdAt": $0] }
+        return try JSONSerialization.data(withJSONObject: ["data": ["project": ["mergeRequests": ["nodes": [
+            ["iid": "5", "notes": ["nodes": notes]]]]]]])
+    }
+    let readied = String(decoding: try GitLab.prs(try readyAnswer(["2026-10-25T02:40:00+02:00",
+                                                                   "2026-10-25T02:10:00+01:00"])),
+                         as: UTF8.self)
+    check(readied.contains(#"{"__typename":"ReadyForReviewEvent","createdAt":"2026-10-25T01:10:00Z"}"#),
+          "the latest ready note is the latest in UTC, across a clock change: \(readied)")
+    var badTime = ""
+    do { _ = try GitLab.prs(try readyAnswer(["yesterday"])) }
+    catch { badTime = (error as? LocalizedError)?.errorDescription ?? "\(error)" }
+    check(badTime == "GitLab time yesterday is unreadable", "an unreadable time is an error: \(badTime)")
+
     var refused = ""
     do { _ = try GitLab.mergeRequest(Data(#"{"data":{"project":{"mergeRequest":null}}}"#.utf8)) }
     catch { refused = (error as? LocalizedError)?.errorDescription ?? "\(error)" }
