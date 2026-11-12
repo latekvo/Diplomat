@@ -122,9 +122,11 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   [`assets/config.json`](../packages/diplomat-core/assets/config.json) targets, which
   **Add…** on a blank list keeps as the first root. Each
   root is known by one GitHub or GitLab repo, read from its remotes: the
-  `assets/config.json` repo if its `upstream` or `origin` (any remote, with neither)
-  names it or a GitHub repo of the same name under another owner (a fork's `origin`, an
-  old owner's URL), else `upstream`, else `origin`. A remote is GitLab on gitlab.com, on
+  `assets/config.json` repo if its GitHub `upstream` or `origin` (any GitHub remote, with
+  neither) names it or a GitHub repo of the same name under another owner (a fork's
+  `origin`, an old owner's URL), else its first GitHub remote (`upstream`, then `origin`,
+  then the rest). Only a checkout with no GitHub remote is a GitLab root, by the same
+  order. A remote is GitLab on gitlab.com, on
   any host whose first label is `gitlab` (`gitlab.example.com`), and on every host
   `glab` is configured for (the `hosts:` of its `config.yml`); a GitLab project's owner
   is its whole namespace (`group/sub`). A GitLab root is read through `glab`, signed in
@@ -151,8 +153,9 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
 - **Other repos** - more local checkouts, added with **Add…**, that are never watched.
   A PR or issue link (URL or `owner/repo#N`) pasted into a wizard may name any of them
   or any repo root: the prompt targets that repo and its agent starts in that
-  checkout. Each is known by its GitHub and GitLab remotes (`upstream` is the one shown, then
-  `origin`), so a fork clone takes links to both. A run in one of these never goes over
+  checkout. Each is known by its GitHub and GitLab remotes (the one shown is its first GitHub
+  remote, `upstream` then `origin`, else its first GitLab one), so a fork clone takes
+  links to both. A run in one of these never goes over
   the mesh: only the configured repo's root's work does (see [Diplomat Mesh](mesh.md)). Bare numbers and sweeps target the repo picked
   in the panel header.
 - **Auto-queue fixes for my PRs / Auto-queue reviews that request me** - the two
