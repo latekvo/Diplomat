@@ -264,7 +264,7 @@ extension Store {
         guard !primaryResolved else { return nil }
         let first = RepoPaths.rootPaths.first ?? ""
         return CommsTickResult(me: nil, items: [], error: "waiting for the first repo root, \(first), "
-                                   + "to resolve to a GitHub checkout")
+                                   + "to resolve to a GitHub or GitLab checkout")
     }
 
     /// Signs in the way a tick does, refreshing a dead login through Claude Code.

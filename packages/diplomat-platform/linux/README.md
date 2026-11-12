@@ -221,7 +221,7 @@ the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/di
   plus **Add…**. None = `~/dev/<repo>` for the repo `assets/config.json` targets;
   `DIPLOMAT_REPO` outranks the list with a single root. A row warns when its path
   isn't absolute, has no `.git` (the spawn's `cd` is best-effort, so the agent would
-  otherwise start in `$HOME` unnoticed) or has no GitHub remote. Every automatic job
+  otherwise start in `$HOME` unnoticed) or has no GitHub or GitLab remote. Every automatic job
   covers every root; the panel works on the one picked in its header. Not in
   `QSettings`: it lives in the shared `~/.diplomat/config.json` (`appconfig.py`)
   because a mesh node is a separate, stdlib-only process with no Qt — so a job that

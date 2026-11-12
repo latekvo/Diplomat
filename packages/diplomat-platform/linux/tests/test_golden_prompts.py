@@ -22,6 +22,7 @@ from diplomat_app.audit import AuditConfig  # noqa: E402
 from diplomat_app.conflicts import ConflictConfig  # noqa: E402
 from diplomat_app.issues import IssueConfig  # noqa: E402
 from diplomat_runtime.issuetarget import IssueTarget  # noqa: E402
+from diplomat_runtime.prref import LocalRepo  # noqa: E402
 from diplomat_runtime.prtarget import PRTarget  # noqa: E402
 from diplomat_runtime.review import ReviewConfig  # noqa: E402
 
@@ -40,6 +41,8 @@ class _CorePayload(dict):
 # The gh-authenticated viewer the goldens were generated with (see main.swift).
 ME = "testuser"
 
+GITLAB_HOME = LocalRepo("group/sub", "proj", "/w/proj", host="gitlab.example.com")
+
 # Mirrors main.swift's goldenModes list — same constructors, same arguments.
 # (AuditConfig dropped its dead `me` field on BOTH platforms.)
 GOLDEN_MODES: dict[str, object] = {
@@ -49,6 +52,9 @@ GOLDEN_MODES: dict[str, object] = {
     ),
     "review-single-unknown": lambda: ReviewConfig(
         depth="max", target=PRTarget.SPECIFIC, me=ME, specific_pr="337"
+    ),
+    "review-single-gitlab": lambda: ReviewConfig(
+        depth="max", target=PRTarget.SPECIFIC, me=ME, specific_pr="337", home=GITLAB_HOME
     ),
     "conflicts-mine": lambda: ConflictConfig(me=ME),
     "conflicts-user": lambda: ConflictConfig(
@@ -67,6 +73,9 @@ GOLDEN_MODES: dict[str, object] = {
     "issues-swept": lambda: IssueConfig(me=ME).for_issue(421),
     "issues-single": lambda: IssueConfig(
         target=IssueTarget.SPECIFIC, me=ME, specific_issue="421"
+    ),
+    "issues-single-gitlab": lambda: IssueConfig(
+        target=IssueTarget.SPECIFIC, me=ME, specific_issue="421", home=GITLAB_HOME
     ),
     "issues-hands-off": lambda: IssueConfig(
         me=ME, unassigned_only=False, assign_to_me=False, open_prs=False,

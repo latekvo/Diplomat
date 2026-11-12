@@ -1016,7 +1016,7 @@ def test_comms_waits_while_the_first_root_is_unresolved(store, remotes,  # noqa:
 
     assert ticks == [] and plan["items"] == []
     assert plan["error"] == ("waiting for the first repo root, /src/r, to resolve to a "
-                             "GitHub checkout")
+                             "GitHub or GitLab checkout")
     remotes["/src/r"] = first
     _reread()
     assert store._comms_poll_once()["error"] is None

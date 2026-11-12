@@ -4204,7 +4204,7 @@ class Store(QObject):
             return {"at": at, "me": None, "pings": [], "items": [],
                     "error": f"waiting for the first repo root, "
                              f"{review.repo_root_paths()[0]}, to resolve to a GitHub "
-                             f"checkout", "locked": comms.session_locked()}
+                             f"or GitLab checkout", "locked": comms.session_locked()}
         settings = self.comms_settings_payload()
         result = comms.tick(settings)
         toggles = self.comms_toggles()

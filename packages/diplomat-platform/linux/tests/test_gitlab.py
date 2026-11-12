@@ -275,6 +275,13 @@ def test_a_gitlab_link_names_its_host_and_the_shorthand_names_none():
     assert parse_pr_ref(issue, "group/sub", "proj", "issues", host=HOST).number == 5
 
 
+def test_a_work_items_link_is_an_issue():
+    item = f"https://{HOST}/group/sub/proj/-/work_items/7?foo=1"
+    assert parse_pr_ref(item, "group/sub", "proj", "issues", host=HOST).number == 7
+    assert not parse_pr_ref(item, "group/sub", "proj", host=HOST).is_valid, "not a PR field's"
+    assert item_key_from_url(item) == "group/sub/proj#7"
+
+
 def test_a_roots_links_are_its_hosts():
     assert LAB.link("pull", 5) == f"https://{HOST}/group/sub/proj/-/merge_requests/5"
     assert LAB.link("issues", 5) == f"https://{HOST}/group/sub/proj/-/issues/5"

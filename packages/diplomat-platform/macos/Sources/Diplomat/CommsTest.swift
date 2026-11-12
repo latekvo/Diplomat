@@ -1754,7 +1754,7 @@ enum CommsTest {
         let heldTick = store.commsHeldTick()
         check("while the first root path does not resolve, a tick is held: no pings, no items",
               heldTick == CommsTickResult(me: nil, items: [], error: "waiting for the first repo root, "
-                                          + "\(missingFirst), to resolve to a GitHub checkout"))
+                                          + "\(missingFirst), to resolve to a GitHub or GitLab checkout"))
         if let heldTick { await store.applyComms(heldTick) }
         check("…and says why as the Comms error", heldTick != nil && store.commsError == heldTick?.error)
         check("…replaying no ping an earlier apply left undone",

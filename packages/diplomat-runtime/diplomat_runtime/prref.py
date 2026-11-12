@@ -32,14 +32,15 @@ _URL = {
     )
     for kind in ("pull", "issues")
 }
-# HOST/NAMESPACE.../PROJECT/-/<segment>/N — GitLab's spelling, on any host.
+# HOST/NAMESPACE.../PROJECT/-/<segment>/N — GitLab's spelling, on any host. GitLab
+# serves an issue at work_items as well as issues.
 _GITLAB_URL = {
     kind: re.compile(
         rf"(?:https?://)?([A-Za-z0-9.-]+)(?::[0-9]+)?/([\w.-]+(?:/[\w.-]+)*)/([\w.-]+)"
         rf"/-/{segment}/([0-9]+)",
         re.IGNORECASE,
     )
-    for kind, segment in (("pull", "merge_requests"), ("issues", "issues"))
+    for kind, segment in (("pull", "merge_requests"), ("issues", "(?:issues|work_items)"))
 }
 # OWNER/REPO#N shorthand (whole string). OWNER may be a nested namespace, and a merge
 # request may be written OWNER/REPO!N.
