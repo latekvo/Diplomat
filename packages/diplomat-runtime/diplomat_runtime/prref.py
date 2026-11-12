@@ -1,6 +1,7 @@
 """Parse a PR or issue reference from a wizard's single-item text field.
 
-Mirrors ``PRRef.swift`` verbatim: accepts a bare number (``337`` / ``#337``), a
+Mirrors ``PRRef.swift`` verbatim: accepts a bare number (``337`` / ``#337``, and
+``!337`` for a merge request of a GitLab home repo), a
 full GitHub URL (``https://github.com/owner/repo/pull/337`` with any trailing
 path/query), a GitLab one (``https://<host>/group/sub/proj/-/merge_requests/337``), or
 the ``owner/repo#337`` shorthand, whose owner may be a nested GitLab namespace (and
@@ -48,7 +49,7 @@ _SHORTHAND = {
     "pull": re.compile(r"^([\w.-]+(?:/[\w.-]+)*)/([\w.-]+)[#!]([0-9]+)$"),
     "issues": re.compile(r"^([\w.-]+(?:/[\w.-]+)*)/([\w.-]+)#([0-9]+)$"),
 }
-# A bare PR number (after any leading '#' is stripped).
+# A bare PR number (after any leading '#', or a GitLab merge request's '!', is stripped).
 _BARE_NUMBER = re.compile(r"^[0-9]+$")
 _ITEM_KEY = re.compile(r"([\w.-]+(?:/[\w.-]+)+)#([0-9]+)")
 _DIGITS = re.compile(r"[0-9]+")
@@ -201,7 +202,8 @@ def parse_pr_ref(raw: str, owner: str, repo: str, kind: str = "pull",
         local = next((x for x in also if names(x.host, x.owner, x.repo)), None)
         return PRRef(n, local is None, local)
 
-    bare = s[1:] if s.startswith("#") else s
+    merge_request = kind == "pull" and host.lower() != GITHUB
+    bare = s[1:] if s[0] == "#" or (s[0] == "!" and merge_request) else s
     if _BARE_NUMBER.match(bare):
         n = _int64(bare)
         if n is not None and n > 0:

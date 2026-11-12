@@ -565,6 +565,13 @@ def test_a_gitlab_link_names_its_host_and_the_shorthand_names_none():
     assert parse_pr_ref(issue, "group/sub", "proj", "issues", host=HOST).number == 5
 
 
+def test_a_bare_bang_number_is_a_merge_request_of_a_gitlab_home_only():
+    assert parse_pr_ref(" !5 ", "group/sub", "proj", host=HOST) == prref.PRRef(5, False)
+    assert parse_pr_ref("!5", "o", "r").number is None, "GitHub has no ! spelling"
+    assert parse_pr_ref("!5", "group/sub", "proj", "issues", host=HOST).number is None
+    assert parse_pr_ref("!0", "group/sub", "proj", host=HOST).number is None
+
+
 def test_a_work_items_link_is_an_issue():
     item = f"https://{HOST}/group/sub/proj/-/work_items/7?foo=1"
     assert parse_pr_ref(item, "group/sub", "proj", "issues", host=HOST).number == 7
