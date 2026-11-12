@@ -1,5 +1,6 @@
 # The PR auto-fix monitor's snapshot of my open merge requests: the GitLab twin of
-# monitor-prs.graphql. A resolvable discussion is a review thread.
+# monitor-prs.graphql. A resolvable discussion is a review thread; its system notes (a push's
+# "changed this line") are not comments.
 query($path: ID!, $author: String!) {
   project(fullPath: $path) {
     mergeRequests(state: opened, authorUsername: $author, first: 30, sort: UPDATED_DESC) {
@@ -9,7 +10,7 @@ query($path: ID!, $author: String!) {
         discussions(first: 100) {
           nodes {
             resolvable resolved
-            notes(last: 20) { nodes { author { username } body userPermissions { resolveNote } } }
+            notes(last: 20) { nodes { system author { username } body userPermissions { resolveNote } } }
           }
         }
       }

@@ -37,6 +37,29 @@
                       "author": {
                         "login": "bob"
                       },
+                      "body": "This leaks the handle."
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "viewerCanResolve": true,
+                "comments": {
+                  "totalCount": 0,
+                  "nodes": []
+                }
+              },
+              {
+                "isResolved": false,
+                "viewerCanResolve": false,
+                "comments": {
+                  "totalCount": 1,
+                  "nodes": [
+                    {
+                      "author": {
+                        "login": "bob"
+                      },
                       "body": "Out of my hands."
                     }
                   ]
