@@ -5,8 +5,8 @@ The arithmetic is covered against the Swift twin in ``test_autofix.py`` (and the
 smoke's "the device's rate-limit budget" section). What is covered here is
 everything around it: that the assembler prices the same tasks the Telemetry
 screen prices, that a probe which cannot answer never holds work back, and that
-the verdict actually reaches the four places automatic work can start from — the
-monitors, the queue drain, "execute now", and a mesh peer routing a job in.
+the verdict actually reaches the three places automatic work can start from - the
+monitors, the queue drain and "execute now".
 """
 
 from __future__ import annotations
@@ -54,11 +54,11 @@ def _price_the_week(at: float) -> None:
 
 
 def _finished_tasks(at: float, tokens: list[float]) -> None:
-    """Auto-tasks that ran HERE and finished, each priced by its own transcript —
-    the population the per-task distribution is built from."""
+    """Auto-tasks that ran and finished, each priced by its own transcript - the
+    population the per-task distribution is built from."""
     for i, tok in enumerate(tokens):
         key = f"review:h/o/r#{i}@sha{i}"
-        telemetry.append({"at": at, "ev": "started", "key": key, "remote": False,
+        telemetry.append({"at": at, "ev": "started", "key": key,
                           "attempt": 1})
         telemetry.append({"at": at + 60, "ev": "done", "key": key, "tokens": tok})
 
@@ -334,7 +334,7 @@ def _hermes(monkeypatch) -> None:
 
 def _billed_tasks(at: float, prices: list[float], model: str = _MODEL,
                   tag: str = "a") -> None:
-    """Auto-tasks that ran HERE, finished, and were charged for — the population the
+    """Auto-tasks that ran, finished, and were charged for - the population the
     dollar distribution is built from.
 
     ``tag`` distinguishes one batch's ledger keys from another's. Keys are the
@@ -342,7 +342,7 @@ def _billed_tasks(at: float, prices: list[float], model: str = _MODEL,
     the second silently discarded — which reads as the filter under test working."""
     for i, usd in enumerate(prices):
         key = f"review:h/o/r#{i}@usd-{tag}{i}"
-        telemetry.append({"at": at, "ev": "started", "key": key, "remote": False,
+        telemetry.append({"at": at, "ev": "started", "key": key,
                           "attempt": 1})
         telemetry.append({"at": at + 60, "ev": "done", "key": key, "tokens": 90_000.0,
                           "runner": "hermes", "usd": usd, "model": model})
@@ -569,7 +569,6 @@ def _job(number=9, counter="review_requests", action="review"):
         pr_url=f"https://github.com/o/r/pull/{number}",
         pr_number=number,
         counter=counter,
-        duty="review",
     )
 
 
@@ -697,35 +696,9 @@ def test_the_feed_gets_one_line_per_episode_and_another_when_it_clears(
     assert len([e for e in activity.read() if e.action == "no-budget"]) == 2
 
 
-def test_a_mesh_peers_job_is_declined_so_the_slot_fails_over(monkeypatch, broke):
-    """The other half of the same rule. Work a peer routes here spends THIS
-    machine's limit, and the applet never sees it — so the node's host asks too,
-    and a decline sends the mesh looking for a node with surplus."""
-    from diplomat_runtime.szponthost import DiplomatHost
-
-    assert DiplomatHost().at_job_capacity([]) is True
-    lines = [e for e in activity.read() if e.action == "mesh-no-budget"]
-    assert len(lines) == 1
-    assert "Declined a peer's job" in lines[0].detail
-
-
-def test_a_mesh_peers_job_is_taken_when_the_window_has_room(monkeypatch):
-    """The decline above must be the budget talking, not the host failing closed on
-    every call."""
-    from diplomat_runtime.szponthost import DiplomatHost
-
-    _ledger_with_priced_tasks(monkeypatch, _SPREAD)
-    _probe(monkeypatch, week=0.9)
-    monkeypatch.setattr("diplomat_runtime.szponthost._ps_dump", lambda: "")
-    monkeypatch.setattr("diplomat_runtime.tmuxwatch.pane_tails_for_ttys", lambda ttys: {})
-
-    assert DiplomatHost().at_job_capacity([]) is False
-
-
-def test_the_knobs_reach_a_node_through_the_shared_config_file():
+def test_the_knobs_live_in_the_shared_config_file():
     """All three live in ~/.diplomat/config.json rather than a front-end's own
-    store, because the mesh node that spends this machine's limit on peer-routed
-    work is a separate Qt-less process reading the same file."""
+    store: the gate that reads them is in the runtime package, which imports no Qt."""
     assert appconfig.auto_budget_gate() is True
     assert appconfig.auto_budget_confidence() == 95
     assert appconfig.auto_budget_floor_pct() == 20.0

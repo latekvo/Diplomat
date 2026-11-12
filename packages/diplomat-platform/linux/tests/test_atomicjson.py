@@ -1,25 +1,19 @@
-"""The atomic-JSON reader and writer, held to one contract across two copies.
+"""The atomic-JSON reader and writer under the applet's small state files.
 
-Small state files on both sides of the library boundary go through this pair: the
-node's identity, peer + onion caches, trust store, ban list, usage stats and public
-snapshot (:mod:`szpontnet.atomicjson`), and the applet's shared
-``~/.diplomat/config.json`` (:mod:`diplomat_runtime.atomicjson`, its own copy, because
-resolving the repo the agents work in must not depend on the mesh add-on being
-installed).
+``~/.diplomat/config.json``, the run book, the usage cache and the ban list all go
+through :mod:`diplomat_runtime.atomicjson`.
 
 The write tests pin the behaviours every call site relies on: the write is atomic
-(no lingering ``.tmp``, target replaced whole), one that fails raises with the target
-untouched and the ``.tmp`` gone (each caller decides what an unsaved file means, and
-none can report a save that did not happen), and ``indent`` controls the on-disk
-shape (the snapshot and peer cache use ``indent=1``, the rest ``indent=2``), so each
-file keeps its exact format.
+(no lingering ``.tmp``, target replaced whole), and one that fails raises with the
+target untouched and the ``.tmp`` gone (each caller decides what an unsaved file
+means, and none can report a save that did not happen).
 
-The read tests pin the contract that makes a corrupt state file survivable — every
-way a file can fail to hold a JSON object collapses to ``None``. That is the point
-worth running against both copies: ``(OSError, json.JSONDecodeError)`` looks
-exhaustive and is not — it misses the ``UnicodeDecodeError`` that ``read_text``
-raises on a non-UTF-8 file, and a reader that catches only those two propagates a
-corrupt cache out of a loader and takes a startup path down with it.
+The read tests pin the contract that makes a corrupt state file survivable - every
+way a file can fail to hold a JSON object collapses to ``None``.
+``(OSError, json.JSONDecodeError)`` looks exhaustive and is not - it misses the
+``UnicodeDecodeError`` that ``read_text`` raises on a non-UTF-8 file, and a reader
+that catches only those two propagates a corrupt cache out of a loader and takes a
+startup path down with it.
 """
 
 from __future__ import annotations
@@ -34,73 +28,42 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), *[".."] * 4, "scripts
 import pytest  # noqa: E402
 from full_volume import full_volume  # noqa: E402,F401  (a fixture)
 
-from diplomat_runtime import atomicjson as diplomat_atomicjson  # noqa: E402
-from szpontnet import atomicjson as szpontnet_atomicjson  # noqa: E402
+from diplomat_runtime.atomicjson import read_object, write_atomic  # noqa: E402
 
 
-@pytest.fixture(params=[diplomat_atomicjson, szpontnet_atomicjson],
-                ids=["diplomat", "szpontnet"])
-def aj(request):
-    return request.param
-
-
-@pytest.fixture
-def write_atomic(aj):
-    return aj.write_atomic
-
-
-@pytest.fixture
-def read_object(aj):
-    return aj.read_object
-
-
-def test_the_two_copies_are_not_the_same_module():
-    """Anti-vacuity for the parametrisation: if one ever re-exported the other,
-    every case here would assert one implementation twice while the second rotted."""
-    assert diplomat_atomicjson is not szpontnet_atomicjson
-    assert diplomat_atomicjson.read_object is not szpontnet_atomicjson.read_object
-
-
-def test_writes_and_reads_back(tmp_path, write_atomic, read_object):
+def test_writes_and_reads_back(tmp_path):
     p = tmp_path / "state.json"
     write_atomic(p, {"a": 1, "b": ["x", "y"]})
     assert json.loads(p.read_text()) == {"a": 1, "b": ["x", "y"]}
 
 
-def test_default_indent_is_2_with_trailing_newline(tmp_path, write_atomic, read_object):
+def test_the_file_is_indented_by_2_with_a_trailing_newline(tmp_path):
     p = tmp_path / "s.json"
     write_atomic(p, {"k": 1})
     assert p.read_text() == '{\n  "k": 1\n}\n'
 
 
-def test_indent_1_matches_prior_snapshot_format(tmp_path, write_atomic, read_object):
-    p = tmp_path / "s.json"
-    write_atomic(p, {"k": 1}, indent=1)
-    assert p.read_text() == '{\n "k": 1\n}\n'
-
-
-def test_creates_parent_directories(tmp_path, write_atomic, read_object):
+def test_creates_parent_directories(tmp_path):
     p = tmp_path / "nested" / "deep" / "s.json"
     write_atomic(p, {"ok": True})
     assert json.loads(p.read_text()) == {"ok": True}
 
 
-def test_leaves_no_tmp_file_behind(tmp_path, write_atomic, read_object):
+def test_leaves_no_tmp_file_behind(tmp_path):
     p = tmp_path / "s.json"
     write_atomic(p, {"ok": True})
     assert p.exists()
     assert not any(f.name.endswith(".tmp") for f in tmp_path.iterdir())
 
 
-def test_replaces_existing_file_atomically(tmp_path, write_atomic, read_object):
+def test_replaces_existing_file_atomically(tmp_path):
     p = tmp_path / "s.json"
     p.write_text("stale")
     write_atomic(p, {"fresh": 1})
     assert json.loads(p.read_text()) == {"fresh": 1}
 
 
-def test_an_unwritable_target_raises_and_leaves_no_tmp(tmp_path, write_atomic,
-                                                       read_object):
+def test_an_unwritable_target_raises_and_leaves_no_tmp(tmp_path):
     # A directory where the file should be: the rename fails after the tmp is written.
     p = tmp_path / "s.json"
     p.mkdir()
@@ -110,8 +73,7 @@ def test_an_unwritable_target_raises_and_leaves_no_tmp(tmp_path, write_atomic,
     assert list(tmp_path.glob("*.tmp")) == []
 
 
-def test_a_full_disk_raises_and_keeps_the_old_file(full_volume, write_atomic,
-                                                   read_object):
+def test_a_full_disk_raises_and_keeps_the_old_file(full_volume):
     """More than the volume holds: the tmp is created and the write into it fails
     part way, which is where a full disk leaves a half-written ``.tmp`` behind."""
     p = full_volume.path / "s.json"
@@ -125,30 +87,30 @@ def test_a_full_disk_raises_and_keeps_the_old_file(full_volume, write_atomic,
 # ---- read_object: every failure collapses to None ------------------------
 
 
-def test_read_object_round_trips_a_written_file(tmp_path, write_atomic, read_object):
+def test_read_object_round_trips_a_written_file(tmp_path):
     p = tmp_path / "s.json"
     write_atomic(p, {"a": 1, "b": ["x"]})
     assert read_object(p) == {"a": 1, "b": ["x"]}
 
 
-def test_read_object_returns_none_for_a_missing_file(tmp_path, write_atomic, read_object):
+def test_read_object_returns_none_for_a_missing_file(tmp_path):
     assert read_object(tmp_path / "never-written.json") is None
 
 
 def test_read_object_returns_none_for_an_unreadable_path(
-        tmp_path, write_atomic, read_object):
+        tmp_path):
     p = tmp_path / "s.json"
     p.mkdir()  # a directory where the file should be: read_text raises OSError
     assert read_object(p) is None
 
 
-def test_read_object_returns_none_for_malformed_json(tmp_path, write_atomic, read_object):
+def test_read_object_returns_none_for_malformed_json(tmp_path):
     p = tmp_path / "s.json"
     p.write_text('{"truncated": ')
     assert read_object(p) is None
 
 
-def test_read_object_returns_none_for_non_utf8_bytes(tmp_path, write_atomic, read_object):
+def test_read_object_returns_none_for_non_utf8_bytes(tmp_path):
     """``read_text(encoding="utf-8")`` raises ``UnicodeDecodeError`` (a
     ``ValueError``, *not* a ``json.JSONDecodeError``) on a corrupt file, so a reader
     that catches only ``JSONDecodeError`` propagates it out of a loader and takes a
@@ -159,7 +121,7 @@ def test_read_object_returns_none_for_non_utf8_bytes(tmp_path, write_atomic, rea
 
 
 def test_read_object_returns_none_for_valid_json_that_is_not_an_object(
-        tmp_path, write_atomic, read_object):
+        tmp_path):
     """A bare scalar/array decodes fine but has no ``.get`` / ``.items``, so handing
     one back would crash the caller a line later - a hand-edited file is enough."""
     for body in ("[1, 2, 3]", '"a string"', "42", "null", "true"):
@@ -169,7 +131,7 @@ def test_read_object_returns_none_for_valid_json_that_is_not_an_object(
 
 
 def test_read_object_keeps_an_empty_object_distinct_from_absent(
-        tmp_path, write_atomic, read_object):
+        tmp_path):
     """``{}`` is a real object, not a failure — callers that want them merged
     write ``read_object(p) or {}``, and ``statefile`` relies on the distinction."""
     p = tmp_path / "s.json"

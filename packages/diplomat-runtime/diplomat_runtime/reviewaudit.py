@@ -5,9 +5,7 @@ submit it (``assets/review.json`` → ``reviewLifecycle``). Two ways of not doin
 look like success from here: a review left PENDING is visible to nobody but me, and
 findings posted one at a time each become a review of their own. When a review run
 retires, the store reads my reviews on its PR (``assets/graphql/my-reviews``) and
-logs what :func:`findings` names; when one the mesh placed finishes, the node that ran
-it does (``szponthost.DiplomatHost.job_finished``). Mirrors ``ReviewAudit`` in
-ReviewAudit.swift.
+logs what :func:`findings` names. Mirrors ``ReviewAudit`` in ReviewAudit.swift.
 """
 
 from __future__ import annotations
@@ -32,14 +30,9 @@ def pr_coordinates(pr_url: str) -> tuple[str, str, int] | None:
 
 def checked_on_retire(record) -> bool:
     """Whether the store checks this run's review when it retires: a review run on a
-    PR that it spawned itself. Exactly one machine checks each run, and for a run the
-    mesh placed that is the node that ran it, whose gh login left the review: the
-    dispatcher's cannot see a PENDING one, and the applet beside the node knows the
-    agent only as untracked."""
-    from .agentstate import PLACEMENT_LOCAL
-
-    return record.kind == "review" and bool(record.pr_url) \
-        and record.placement == PLACEMENT_LOCAL
+    PR. An untracked agent carries no kind, so only a run this applet dispatched
+    qualifies."""
+    return record.kind == "review" and bool(record.pr_url)
 
 
 def _at(iso: str | None) -> float | None:

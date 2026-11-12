@@ -40,8 +40,6 @@ G_RUNNING = "●"   # an agent up and running in the bay it took
 # the empty ◌ it handed back.
 G_AWAITING = "◔"
 G_GRIP = "≡"     # the drag grip that orders the queue
-G_MESH = "⬡"     # mesh screen header / "run on mesh" toggle (matches the mesh
-                 # activity category's linuxGlyph)
 G_TELEMETRY = "◫" # telemetry screen header (the per-figure glyphs live in
                   # assets/telemetry.json, like the tool and category ones)
 G_COMMS = "✉"    # Comms screen header button (matches the comms activity

@@ -132,13 +132,12 @@ def test_each_queued_review_is_scoped_to_its_own_pr(swept_store):
 
 def test_a_queued_review_belongs_to_no_monitor(swept_store):
     """No counter, so no auto-handled figure counts it and neither toggle pauses it;
-    no ledger key, because the Telemetry screen measures the monitors; no work key, so
-    it is never claimed as mesh origination."""
+    no ledger key, because the Telemetry screen measures the monitors."""
     swept_store.request_review_sweep(_sweep(swept_store))
     job = swept_store.queued_tasks[0].job
 
-    assert (job.counter, job.ledger_key, job.work_key) == (None, "", "")
-    assert (job.kind, job.duty, job.audit_action) == ("review", "review", "review")
+    assert (job.counter, job.ledger_key) == (None, "")
+    assert (job.kind, job.audit_action) == ("review", "review")
     assert not swept_store.is_paused(job.counter)
     assert job.requested
 
@@ -300,8 +299,8 @@ def test_a_queued_fix_is_not_pr_scoped(swept_store):
     job = swept_store.queued_tasks[0].job
 
     assert (job.pr_number, job.pr_url) == (None, None)
-    assert (job.kind, job.duty, job.audit_action) == ("issues", "issues", "issues")
-    assert (job.counter, job.ledger_key, job.work_key) == (None, "", "")
+    assert (job.kind, job.audit_action) == ("issues", "issues")
+    assert (job.counter, job.ledger_key) == (None, "")
     assert job.requested
 
 

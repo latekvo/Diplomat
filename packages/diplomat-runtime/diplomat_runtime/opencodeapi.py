@@ -72,11 +72,10 @@ request carries the service's password, and every failure — a 404 for a sessio
 service does not know among them — reads as unreachable, as a 1.x port that will not
 answer does.
 
-A 2.x run the mesh placed here has no id bound at spawn. Its TUI's argv is
-``opencode --session <id>`` (:func:`session_arg`), so its session is found from the
-process table and matched by the prompt it was opened on (:func:`opening_prompt`),
-the one exact key, as a 1.x run's is. An agent no run was booked for at all takes the
-session of the TUI it was seen by.
+A 2.x run with no id bound is found from the process table: its TUI's argv is
+``opencode --session <id>`` (:func:`session_arg`), and its session is matched by the
+prompt it was opened on (:func:`opening_prompt`), the one exact key, as a 1.x run's is.
+An agent no run was booked for at all takes the session of the TUI it was seen by.
 
 The service outlives the window: a 2.x run's turn goes on after its TUI is gone, so
 whatever closes a run's window calls :func:`interrupt`, and so does retiring a run —
@@ -411,9 +410,8 @@ def scan_text(argv: str) -> str:
     TUI the prompt its session was opened on.
 
     Every other agent carries its prompt in its argv. A 2.x TUI carries only
-    ``--session <id>``, so without this a 2.x agent the applet holds no pid for (one
-    the mesh placed here, one it has no record of) reads as no agent at all, and is
-    retired mid-turn.
+    ``--session <id>``, so without this a 2.x agent the applet holds no pid for reads
+    as no agent at all, and is retired mid-turn.
     """
     session_id = session_arg(argv)
     if session_id is None:

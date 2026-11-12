@@ -1,10 +1,6 @@
-"""Atomic JSON reads and writes for the applet's own state files.
-
-Today that means the shared ``~/.diplomat/config.json`` (:mod:`.appconfig`), which
-resolves the repo the agents work in — so it has to work on a machine with no mesh
-add-on installed, which is why this is Diplomat's own copy rather than a borrow
-from :mod:`szpontnet.atomicjson`. The two are pinned against each other by
-behaviour in ``diplomat-platform/linux/tests/test_atomicjson.py``.
+"""Atomic JSON reads and writes for the applet's own state files: the shared
+``~/.diplomat/config.json`` (:mod:`.appconfig`), the run book
+(:mod:`.agentregistry`), the usage cache (:mod:`.usagescan`) and the ban list.
 
 Writing: serialise to JSON, write a sibling ``*.json.tmp``, then ``os.replace`` it
 over the target so a concurrent reader never sees a torn file. A failed write (a
@@ -27,7 +23,7 @@ import os
 from pathlib import Path
 
 
-def write_atomic(path: Path, obj: object, *, indent: int = 2) -> None:
+def write_atomic(path: Path, obj: object) -> None:
     """Serialise ``obj`` to ``path`` via a tmp file + rename.
 
     Raises ``OSError`` when the file could not be written, with ``path`` untouched and
@@ -36,7 +32,7 @@ def write_atomic(path: Path, obj: object, *, indent: int = 2) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     try:
-        tmp.write_text(json.dumps(obj, indent=indent) + "\n", encoding="utf-8")
+        tmp.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, path)
     except OSError:
         tmp.unlink(missing_ok=True)

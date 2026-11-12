@@ -83,12 +83,9 @@ def main() -> int:
         out = env.get("DIPLOMAT_RENDER_OUT", f"/tmp/diplomat-{what}.png")
         return render_run(what, out)
 
-    # No headless mode requested → launch the GUI. Migrate the pre-rename mesh
-    # identity (~/.argent/mesh → ~/.diplomat/mesh) before the node comes up, so a
-    # rename never regenerates this node's keypair and breaks fleet-wide trust.
-    from .migrate import migrate_autostart_entry, migrate_legacy_state_dir
+    # No headless mode requested → launch the GUI.
+    from .migrate import migrate_autostart_entry
 
-    migrate_legacy_state_dir()
     migrate_autostart_entry()
 
     from .app import run_app

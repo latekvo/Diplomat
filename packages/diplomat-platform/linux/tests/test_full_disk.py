@@ -277,18 +277,9 @@ def test_a_failed_spawn_the_disk_cannot_unbook_is_still_a_failed_dispatch(
     job = autofix.AgentJob(
         kind="review", audit_action="review", label="Review · #7", prompt="PROMPT",
         pr_url="https://github.com/o/r/pull/7", pr_number=7,
-        counter="review_requests", duty="review")
+        counter="review_requests")
     assert store.dispatch_agent(job, autofix.SOURCE_PANEL) == "failed"
     assert [r.pr_number for r in agentregistry.load()] == [7]
-    assert len(_feed("Can't write the agent run book")) == 1
-
-
-def test_a_mesh_run_the_disk_cannot_book_is_reported(on_volume, store):
-    """The mesh already started this one, so there is nothing to undo: the poll that
-    tracks it must go on, and say once that the book is not taking writes."""
-    on_volume.fill()
-    store._track_mesh_run("https://github.com/o/r/pull/7", 7, "auto", KEY, "P",
-                          node="peer", work_key=KEY, here=False)
     assert len(_feed("Can't write the agent run book")) == 1
 
 
@@ -334,17 +325,6 @@ def test_a_quit_on_a_full_disk_still_keeps_the_app_closed(on_volume, tmp_path,
 
     selfupdate.clear_operator_quit()
     assert not selfupdate.operator_quit()
-
-
-def test_hooks_the_disk_cannot_hold_are_not_left_behind(on_volume):
-    """A mesh job's hook settings, staged beside its sentinel. A tmpfs creates the file
-    and then refuses its bytes, and an empty settings file left there is one the next
-    job at that path would be handed."""
-    from diplomat_runtime import szponthost
-
-    on_volume.fill()
-    assert szponthost._stage_hooks(str(on_volume.path / "job.done")) is None
-    assert list(on_volume.path.glob("job.*")) == []
 
 
 def test_a_line_the_disk_cut_short_is_closed_before_the_next(tmp_path, monkeypatch):

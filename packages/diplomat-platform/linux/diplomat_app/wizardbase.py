@@ -5,9 +5,6 @@ but from the SPAWN click onwards they are one routine, which lives here once:
 
 * a Review-PRs or Fix-issues SCOPE opens no session at all — it queues one task
   per PR / per issue for the task cap to start (:meth:`_queue_sweep`);
-* otherwise, if the mesh row is live and ticked, hand the prompt to the local node
-  and let it place the job — disabling SPAWN so a second click can't
-  double-dispatch;
 * otherwise run the job through :meth:`Store.dispatch_agent`, the same gate the
   PR auto-fix monitor rides (dedup by PR, ban check, registration) — only the
   trigger and its policies differ;
@@ -30,7 +27,6 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from diplomat_runtime import review
 from . import widgets
-from .meshspawn import MeshSpawnRow
 from .store import Store
 
 
@@ -44,16 +40,9 @@ def mismatch_warning(noun: str, cfg) -> str:
     return f"That {noun} isn't in {home}{listed}."
 
 
-def mesh_applicable(cfg, opens_session: bool) -> bool:
-    """Whether the mesh row may route this spawn: only one that opens a session (a
-    Review or Fix-issues scope opens none, it queues one per item for this machine's
-    own cap), and only one in the configured repo's root (:func:`review.mesh_checkout`)."""
-    return opens_session and (cfg.checkout or review.repo_path()) == review.mesh_checkout()
-
-
 class SpawnWizard(QWidget):
-    """Base for the four wizards: owns the mesh row, the SPAWN button and the
-    dispatch branch. Subclasses build their own inputs and supply the hooks below."""
+    """Base for the four wizards: owns the SPAWN button and the dispatch branch.
+    Subclasses build their own inputs and supply the hooks below."""
 
     #: ``(queued, already_queued, error)`` from a sweep's fan-out worker, which
     #: assembles a prompt per item off the UI thread. Queued to the main thread,
@@ -73,16 +62,15 @@ class SpawnWizard(QWidget):
         super().__init__()
         self._swept.connect(self._sweep_queued)
         self.store = store
-        # The duty id, the AgentJob kind and the activity-feed action verb are one
-        # and the same string for every wizard ("review" / "issues" / "conflicts" /
-        # "audit").
+        # The AgentJob kind and the activity-feed action verb are one and the same
+        # string for every wizard ("review" / "issues" / "conflicts" / "audit").
         self._kind = kind
         self._tint = tint
-        # Set while a dispatch this wizard started has yet to answer — a mesh round
-        # trip, or a sweep's fan-out. SPAWN is disabled for it, and stays disabled
-        # across a _sync(), which re-derives the button from config validity alone
-        # and would otherwise hand it back mid-flight: every input change calls one,
-        # and so does the panel's own periodic refresh_identity().
+        # Set while a sweep's fan-out this wizard started has yet to answer. SPAWN is
+        # disabled for it, and stays disabled across a _sync(), which re-derives the
+        # button from config validity alone and would otherwise hand it back mid-flight:
+        # every input change calls one, and so does the panel's own periodic
+        # refresh_identity().
         self._dispatch_inflight = False
         # A link already in the single-item field may name a checkout that was just
         # listed or removed in Settings, and a bare number names the selected root.
@@ -106,19 +94,15 @@ class SpawnWizard(QWidget):
 
     def _sync(self) -> None:
         """Re-derive the wizard's widget state from its config. The base calls it
-        after a mesh dispatch settles; wizards with validity-dependent fields
+        after a sweep's fan-out settles; wizards with validity-dependent fields
         override it, and the default keeps SPAWN's fill in step."""
         self._restyle_spawn()
 
     # ---- shared construction ---------------------------------------------
 
     def _add_dispatch_controls(self, root: QVBoxLayout) -> None:
-        """Append the mesh row, the SPAWN button and the status line — the tail
-        every wizard's layout ends with."""
-        self.mesh_row = MeshSpawnRow(self.store, self._kind)
-        self.mesh_row.dispatched.connect(self._mesh_done)
-        root.addWidget(self.mesh_row)
-
+        """Append the SPAWN button and the status line - the tail every wizard's
+        layout ends with."""
         self.spawn_btn = widgets.spawn_button(self._spawn)
         root.addWidget(self.spawn_btn)
 
@@ -148,23 +132,14 @@ class SpawnWizard(QWidget):
         return False
 
     def _spawn(self) -> None:
-        from diplomat_runtime import activity, autofix
+        from diplomat_runtime import autofix
 
         if self._sweeps():
             self._queue_sweep()
             return
         cfg = self._config()
         label = self._label()
-        if self.mesh_row.use_mesh():
-            # Mesh: the local node picks the executor (strategy, platform spread,
-            # token failover) and runs it there. Nothing is spawned on this machine.
-            self._dispatch_inflight = True
-            self._restyle_spawn()
-            self.status.setText("Dispatching over the mesh…")
-            activity.log("panel", self._kind, f"{label} · via mesh")
-            self.mesh_row.dispatch(cfg.build_prompt(), "/".join(cfg.target_repo).lower())
-            return
-        # Local: the SAME pipeline the auto-monitor rides — dedup, ban check,
+        # The SAME pipeline the auto-monitor rides - dedup, ban check,
         # registration — only the trigger (this click) and its policies differ
         # (see autofix.dispatch_decide).
         term = review.resolved(self.store.terminal)
@@ -177,7 +152,6 @@ class SpawnWizard(QWidget):
                 pr_url=cfg.single_pr_url,
                 pr_number=self._pr_number(cfg),
                 author_login=self._author_login(),
-                duty=self._kind,
                 checkout=None if cfg.checkout == review.repo_path() else cfg.checkout,
             ),
             autofix.SOURCE_PANEL,
@@ -195,10 +169,9 @@ class SpawnWizard(QWidget):
     def _queue_sweep(self) -> None:
         """Expand a scope into one queued task per item it covers.
 
-        SPAWN is disabled for the round trip, as the mesh branch does with its own —
-        the fan-out assembles a prompt per item and a second press meanwhile would ask
-        for the sweep twice. What lands is reported by :meth:`_sweep_queued`, back on
-        the GUI thread."""
+        SPAWN is disabled for the round trip: the fan-out assembles a prompt per item
+        and a second press meanwhile would ask for the sweep twice. What lands is
+        reported by :meth:`_sweep_queued`, back on the GUI thread."""
         if not self.store.has_loaded:
             self.status.setText(
                 f"{self._sweep_plural} haven't loaded yet — refresh, then sweep.")
@@ -225,15 +198,4 @@ class SpawnWizard(QWidget):
             self.status.setText(f"All {already} are queued already.")
         else:
             self.status.setText(f"No open {self._sweep_plural} in that scope.")
-        self._sync()
-
-    def _mesh_done(self, results: list, err: str) -> None:
-        """A mesh dispatch settled: hand SPAWN back and report where it landed.
-
-        The button comes back through ``_sync`` rather than a bare re-enable, so it
-        returns to whatever the *current* config warrants — a wizard whose input
-        went invalid while the dispatch was in flight stays disabled."""
-        self._dispatch_inflight = False
-        self.status.setText(MeshSpawnRow.summarize(results, err))
-        self.store.refresh_activity()
         self._sync()

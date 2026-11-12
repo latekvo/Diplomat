@@ -305,9 +305,9 @@ def repo_root_paths() -> list[str]:
     """The repo roots as entered, primary first: the ``DIPLOMAT_REPO`` env override
     (one root), else the roots picked in Settings, else :func:`default_repo_path`.
 
-    Read from the shared :mod:`appconfig` file rather than this front-end's QSettings:
-    a mesh node spawns agents from its own stdlib-only process, which has no Store and
-    no Qt to ask. Re-read per call, so changing the setting reaches a running node."""
+    Read from the shared :mod:`appconfig` file rather than this front-end's QSettings,
+    which this package has no Qt to ask. Re-read per call, so changing the setting
+    reaches the next spawn."""
     env = os.environ.get("DIPLOMAT_REPO")
     if env:
         return [env]
@@ -368,18 +368,6 @@ def repo_roots() -> list[LocalRepo]:
     return list(_resolved_roots()[0])
 
 
-def mesh_checkout() -> str | None:
-    """The checkout of the root that checks out the configured repo, or ``None`` when no
-    root does or none resolved (:func:`roots_guessed`). Only work there may go over the
-    mesh, and a job naming no repo (a peer predating repo routing means this one) runs
-    there."""
-    if roots_guessed():
-        return None
-    cfg = core.config()
-    slug = f"{cfg['owner']}/{cfg['repo']}".lower()
-    return next((r.path for r in repo_roots() if r.slug.lower() == slug), None)
-
-
 def roots_complete() -> bool:
     """Whether every root path had a GitHub remote when :func:`repo_roots` last read
     them (:func:`localrepos.all_resolve`). Until they all do, a repo missing from the
@@ -419,7 +407,7 @@ def popen_detached(target: list[str] | str, *, shell: bool = False,
 
     * **its own session** (``start_new_session``) — the agent outlives the applet
       that spawned it. Without it the child shares the process group and dies with
-      the app (or with the mesh node), killing a running review mid-flight;
+      the app, killing a running review mid-flight;
     * **no inherited stdio** — the applet's stdin/stdout may be a closed pipe, a
       tty it no longer owns, or the journal. A child writing into it blocks on a
       full pipe or scribbles over the parent's own output.
@@ -441,9 +429,8 @@ def popen_detached(target: list[str] | str, *, shell: bool = False,
 
 
 def write_prompt(prompt: str) -> str:
-    # 0600 via mkstemp: /tmp is world-readable and multi-user, and a mesh
-    # dispatch stages the prompt here too — don't leave it readable to other
-    # local users (nor world-readable by umask).
+    # 0600 via mkstemp: /tmp is world-readable and multi-user - don't leave the
+    # prompt readable to other local users (nor world-readable by umask).
     path = ""
     try:
         fd, path = tempfile.mkstemp(prefix="diplomat-review-", suffix=".txt")
@@ -471,10 +458,10 @@ def stage_opencode_session(prompt_file: str, checkout: str | None = None) -> str
     OpenCode 2.x — every other spawn stages nothing here.
 
     Staged beside the prompt, at its mode: the prompt is copied into one of them
-    verbatim, and a mesh dispatch stages its prompt in ``/tmp`` (:func:`write_prompt`).
+    verbatim, and a prompt may itself be staged in ``/tmp`` (:func:`write_prompt`).
 
     A caller with a run directory binds the id there before spawning
-    (:func:`agentregistry.bind_session`); the mesh node has none, and runs it unbound.
+    (:func:`agentregistry.bind_session`).
 
     ``checkout`` is the directory the session works in when it is not
     :func:`repo_path`; see :func:`shell_command`.
@@ -663,8 +650,7 @@ def token_export(platform: str = sys.platform) -> str:
     ``pull-requests`` replaces the broad ``repo, workflow, gist`` one for the agent
     and everything it runs. Only the token's NAME is configured - a Keychain item on
     macOS, a file on Linux - and the spawned shell reads it itself, so the secret never
-    enters argv, the AppleScript, a staged launcher or the config file the mesh copies
-    around.
+    enters argv, the AppleScript, a staged launcher or the config file.
 
     :func:`shell_command` runs the whole spawn behind this test, so a token that
     cannot be read starts nothing rather than falling back to the broad login: no pid
@@ -696,9 +682,8 @@ def check_token(platform: str = sys.platform) -> None:
     """Raise :class:`SpawnError` when an agent token is configured but cannot be read.
 
     The gate in :func:`token_export` starts nothing then, but only after the spawn has
-    been reported as started: a mesh executor would hold the work's claim for its
-    whole backstop on an agent that never ran. Reads the secret the way the gate does,
-    since an item can exist with an empty one."""
+    been reported as started. Reads the secret the way the gate does, since an item can
+    exist with an empty one."""
     item, path = _token_source(platform)
     if item:
         try:
@@ -716,7 +701,7 @@ def check_token(platform: str = sys.platform) -> None:
             raise SpawnError(f"agentTokenFile is not an absolute path: {path}")
         try:
             # A regular file only: a FIFO with no writer would block the read, and
-            # /dev/zero never end it - on the GUI thread or the node's loop.
+            # /dev/zero never end it - on the GUI thread.
             ok = stat.S_ISREG(os.stat(path).st_mode)
             if ok:
                 with open(path, "rb") as f:
@@ -801,11 +786,11 @@ def spawn_env() -> dict:
     """The environment the *launcher* gets: this process's, minus the variables that
     say we are already inside a tmux pane.
 
-    Whoever launched the applet (or the mesh node) may have done so from one, and
-    ``tmux new-session`` inherits ``$TMUX`` from there and refuses to nest — the
-    window would open and close again on "sessions should be nested with care".
-    Dropping them costs the child nothing: it is about to be in a pane of its own,
-    which sets both to that pane's real values.
+    Whoever launched the applet may have done so from one, and ``tmux new-session``
+    inherits ``$TMUX`` from there and refuses to nest - the window would open and close
+    again on "sessions should be nested with care". Dropping them costs the child
+    nothing: it is about to be in a pane of its own, which sets both to that pane's real
+    values.
 
     Note the launcher, not the agent. Where tmux is in play this environment reaches
     the tmux *client* and stops there: the session's command is started by the

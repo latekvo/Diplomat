@@ -96,16 +96,6 @@ def issues() -> dict:
 
 
 @functools.lru_cache(maxsize=1)
-def mesh() -> dict:
-    """The shared mesh model (protocol constants, duty catalog, strategies).
-
-    See assets/mesh.json; consumed by the LAN P2P mesh node
-    (:mod:`szpontnet`) and the topology panel.
-    """
-    return _read_json("mesh.json")
-
-
-@functools.lru_cache(maxsize=1)
 def telemetry() -> dict:
     """The Telemetry screen's model — lookback ranges, chart resolutions, the
     confidence level, and the copy for each figure.

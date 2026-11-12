@@ -428,7 +428,6 @@ def test_the_applet_reads_the_tasks_and_starts_their_tick_and_first_sync(tstore,
     reads: list = []
     monkeypatch.setattr(Store, "fetch_me", lambda self: None)
     monkeypatch.setattr(Store, "ensure_allocator_installed_async", lambda self: None)
-    monkeypatch.setattr(Store, "settle_mesh_on_launch", lambda self: None)
     monkeypatch.setattr(Store, "refresh_tracked_tasks_async", lambda self: reads.append(1))
     ticks: list = []
     monkeypatch.setattr(Store, "run_tracker_sync_async", lambda self: ticks.append("sync"))

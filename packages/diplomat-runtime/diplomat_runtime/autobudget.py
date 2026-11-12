@@ -2,17 +2,7 @@
 
 The pure arithmetic is :func:`autofix.budget_decide` and the pieces it is fed;
 this is the assembly — the telemetry ledger folded and priced, the live probe, and
-the operator's knobs — in one place because it has two callers in two processes,
-exactly as :func:`appconfig.auto_task_limit` does:
-
-- the applet's dispatch gate (``Store.dispatch_agent``), for work the monitors
-  originate here;
-- the **mesh node**'s host (``szponthost.DiplomatHost.can_afford_job``), for work a
-  peer routes in — which the applet never sees, and which is paid for out of this
-  machine's account just the same.
-
-A budget the two disagreed on would be no budget at all, so neither of them
-assembles these inputs itself.
+the operator's knobs - for the applet's dispatch gate (``Store.dispatch_agent``).
 
 **Which currency.** What an agent spends depends on what runs it, so the runner
 picks the ceilings and the unit both sides of the comparison are in
@@ -22,8 +12,8 @@ provider it is logged into. Neither reading substitutes for the other — a Herm
 task held against a Claude window is gated on a limit it never touches, and a
 machine not logged into Claude Code at all would have no gate whatsoever.
 
-Stdlib-only, like everything the node imports: the ledger is JSON, the probes are
-``urllib``, and the knobs are the shared config file.
+Stdlib-only: the ledger is JSON, the probes are ``urllib``, and the knobs are the
+shared config file.
 """
 
 from __future__ import annotations
@@ -262,9 +252,7 @@ def shortfall(budget: autofix.Budget) -> str:
     much, and whether the figure it was held to was measured or is the standing
     floor.
 
-    A clause rather than a sentence, because what is being deferred differs by
-    caller — the applet's own monitors, or a peer's job the node just declined —
-    while the arithmetic behind it is the one thing both must quote identically."""
+    A clause rather than a sentence: the caller names what is being deferred."""
     from . import telemetry
 
     ceiling = _CEILINGS.get(budget.window, "limit")

@@ -87,13 +87,12 @@ def test_an_unusable_book_degrades_to_empty_rather_than_raising(body):
     assert R.load() == []
 
 
-@pytest.mark.parametrize("key", ["dispatchedAt", "claimSeenAt", "quietSince",
-                                 "reapRefusedAt"])
+@pytest.mark.parametrize("key", ["dispatchedAt", "quietSince", "reapRefusedAt"])
 def test_an_integer_past_float_range_decodes_as_no_number(key):
     """`float()` of one raises rather than overflowing to infinity."""
     record = A.RunRecord.from_json({"runId": "r", key: 10 ** 400})
-    assert (record.dispatched_at, record.claim_seen_at, record.quiet_since,
-            record.reap_refused_at) == (0.0, None, None, None)
+    assert (record.dispatched_at, record.quiet_since,
+            record.reap_refused_at) == (0.0, None, None)
 
 
 @pytest.mark.parametrize("body", [
@@ -114,11 +113,11 @@ def test_a_record_with_unusable_fields_costs_those_fields_not_the_book():
     R.runs_path().parent.mkdir(parents=True, exist_ok=True)
     R.runs_path().write_text(json.dumps({"version": R.SCHEMA_VERSION, "runs": [
         {"runId": "r1", "dispatchedAt": None, "pid": "x", "prNumber": "7",
-         "claimSeenAt": [], "quietSince": True},
+         "reapRefusedAt": [], "quietSince": True},
         rec(run_id="r2").to_json()]}))
     got = R.load()
     assert [r.run_id for r in got] == ["r1", "r2"]
-    assert (got[0].dispatched_at, got[0].pid, got[0].pr_number, got[0].claim_seen_at,
+    assert (got[0].dispatched_at, got[0].pid, got[0].pr_number, got[0].reap_refused_at,
             got[0].quiet_since) == (0.0, None, None, None, None)
     assert got[1] == rec(run_id="r2")
 
@@ -447,14 +446,6 @@ def test_gather_captures_the_screen_of_an_agent_with_no_record(monkeypatch):
     assert t.cap_load == set() and t.free_slots == 2
 
 
-def test_a_missing_mesh_addon_is_unsupported_and_a_dead_node_is_unavailable(monkeypatch):
-    """A peer's run is retired by a released claim, so "the local node is down" must
-    never look like "the claim was released"."""
-    import sys
-    monkeypatch.setitem(sys.modules, "szpontnet", None)
-    assert probes.mesh_claims().status == A.UNSUPPORTED
-
-
 def test_a_ps_dump_is_reused_across_one_tick(monkeypatch):
     """A tick asks for the table, the ttys and the legacy scan; all three are
     projections of one dump, and this runs on an 8-second poll."""
@@ -483,7 +474,6 @@ def test_gather_never_leaves_a_probe_undeclared():
     assert evidence.processes.status in (A.PRESENT, A.UNAVAILABLE)
     assert evidence.sentinels.ok
     assert evidence.tails.status in (A.PRESENT, A.UNAVAILABLE, A.UNSUPPORTED)
-    assert evidence.claims.status in (A.PRESENT, A.UNAVAILABLE, A.UNSUPPORTED)
     # UNSUPPORTED here: the run this staged is a Claude Code one, which serves no
     # session — the probe has to say that rather than leave the field at its default.
     assert evidence.sessions.status == A.UNSUPPORTED
@@ -520,7 +510,6 @@ def test_a_real_agent_is_tracked_from_spawn_to_exit(tmp_path):
         evidence = A.Evidence(processes=A.Observation.present(table),
                               sentinels=R.sentinels(records),
                               tails=A.Observation.unavailable("not probed"),
-                              claims=A.Observation.unsupported("no mesh"),
                               merged_prs=A.Observation.present(set()),
                               live_agents=A.Observation.present({}))
         t = A.tick(records, evidence, now, 2)
@@ -536,7 +525,6 @@ def test_a_real_agent_is_tracked_from_spawn_to_exit(tmp_path):
     evidence = A.Evidence(processes=A.Observation.present({}),
                           sentinels=R.sentinels(R.load()),
                           tails=A.Observation.unavailable("not probed"),
-                          claims=A.Observation.unsupported("no mesh"),
                           merged_prs=A.Observation.present(set()),
                           live_agents=A.Observation.present({}))
     t = A.tick(R.adopt_pids(R.load()), evidence, now + A.SPAWN_GRACE + 1, 2)
@@ -569,11 +557,11 @@ def test_a_probe_that_answers_again_stops_being_silent():
 
 
 def test_an_unsupported_probe_is_never_called_silent():
-    """A machine without tmux, or without the mesh add-on, is an ordinary machine.
-    Warning about it every few minutes trains the operator to ignore the channel."""
+    """A machine without tmux is an ordinary machine. Warning about it every few
+    minutes trains the operator to ignore the channel."""
     for _ in range(probes._SILENT_AFTER * 3):
-        probes._note("mesh claims", A.Observation.unsupported("no add-on"), T0)
-    (h,) = [h for h in probes.health() if h.name == "mesh claims"]
+        probes._note("screens", A.Observation.unsupported("no tmux"), T0)
+    (h,) = [h for h in probes.health() if h.name == "screens"]
     assert not h.silent
 
 
@@ -604,32 +592,6 @@ def test_a_probes_standing_survives_the_answer_passing_through():
     assert probes._note("processes", obs, T0) is obs
 
 
-def test_a_machine_that_never_ran_a_mesh_node_is_unsupported_not_broken(monkeypatch):
-    """Otherwise every machine without a mesh gets told its mesh is down, every minute,
-    forever — and a channel that cries wolf is a channel the operator stops reading."""
-    import sys
-    import types
-
-    fake = types.ModuleType("szpontnet.statefile")
-    fake.read_state = lambda: None
-    fake.node_running = lambda s: False
-    pkg = types.ModuleType("szpontnet")
-    pkg.statefile = fake
-    monkeypatch.setitem(sys.modules, "szpontnet", pkg)
-    monkeypatch.setitem(sys.modules, "szpontnet.statefile", fake)
-    assert probes.mesh_claims().status == A.UNSUPPORTED
-
-    # One that HAS run and is now down is a real gap: a peer's run ends on a released
-    # claim, so a node we cannot ask must not read as one that released it.
-    fake.read_state = lambda: {"self": {"id": "me"}}
-    assert probes.mesh_claims().status == A.UNAVAILABLE
-
-    # Unless the mesh was switched off: the snapshot outlives the node that wrote it,
-    # and a node stopped on purpose is not a probe gone quiet (the macOS twin's
-    # meshClaims(enabled:) answers the same).
-    assert probes.mesh_claims(enabled=False).status == A.UNSUPPORTED
-
-
 def test_the_agent_scan_reads_the_tty_column_of_this_dump(monkeypatch):
     """A column-order regression with no symptom of its own.
 
@@ -651,14 +613,13 @@ def test_the_agent_scan_reads_the_tty_column_of_this_dump(monkeypatch):
 
 
 def test_a_pidless_run_beside_a_held_agent_reads_its_own_screen(monkeypatch):
-    """Two agents on one PR: a released one the book holds by pid, and a mesh-placed
+    """Two agents on one PR: a released one the book holds by pid, and a second
     run's, which has no pid and only the scan to find its tty by. Named the released
     one, the run never adopts a tty, reads as working and holds its bay after its turn
     is over."""
     monkeypatch.setattr(probes.shutil, "which", lambda _: "/usr/bin/tmux")
     monkeypatch.setattr(probes.tmuxwatch, "pane_tails_for_ttys",
                         lambda ttys: {t: "❯" for t in ttys})
-    monkeypatch.setattr(probes, "mesh_claims", lambda enabled=True: A.Observation.present(set()))
     monkeypatch.setattr(probes, "_ps_dump", lambda now: A.Observation.present(
         "  100 pts/1  900 claude Review PR #844 in software-mansion/argent\n"
         "  200 pts/2  600 claude Review PR #844 in software-mansion/argent\n"
@@ -667,7 +628,7 @@ def test_a_pidless_run_beside_a_held_agent_reads_its_own_screen(monkeypatch):
     url = f"https://github.com/{ARGENT}/pull/"
     released = rec(f"untracked:{ARGENT}#844:100", dispatched_at=T0 - 300, pr_number=844,
                    pr_url=url + "844", pid=100, tty="pts/1", untracked=True)
-    placed = rec("a2", pr_number=844, pr_url=url + "844", placement=A.PLACEMENT_MESH_HERE)
+    placed = rec("a2", pr_number=844, pr_url=url + "844")
     book = [released, placed, rec("a3", pr_number=845, pr_url=url + "845", pid=300)]
 
     evidence = probes.gather(book, now)

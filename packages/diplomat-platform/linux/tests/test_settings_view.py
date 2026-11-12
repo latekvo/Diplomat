@@ -106,9 +106,8 @@ def test_the_budget_floor_reads_as_a_percentage_to_one_place(view):
 
 def test_the_budget_reserve_reads_as_money_and_persists(view):
     """The other currency's knob, in the spelling the feed quotes it back in. It
-    writes to the SHARED config file rather than QSettings, because the mesh node
-    that spends this account on peer-routed work is a separate process reading the
-    same reserve."""
+    writes to the SHARED config file rather than QSettings, which the budget gate in
+    the runtime package has no Qt to read."""
     from diplomat_runtime import appconfig
 
     # Driven through the slider itself rather than `set_value`, which is the store
@@ -434,7 +433,7 @@ def test_a_healthy_screen_draws_no_line_under_any_row(make_view, monkeypatch, tm
     """The line under a row is for live state: a problem, a test result, an update in
     progress. With none of those, every row is its title and its control, and what a
     setting does waits behind Explain."""
-    from diplomat_app import deviceallocator, settingsview, szpont
+    from diplomat_app import deviceallocator, settingsview
     from diplomat_runtime import comms, review
 
     (tmp_path / ".git").mkdir()
@@ -444,7 +443,6 @@ def test_a_healthy_screen_draws_no_line_under_any_row(make_view, monkeypatch, tm
     monkeypatch.setattr(settingsview.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(deviceallocator, "package_available", lambda: True)
     monkeypatch.setattr(deviceallocator, "resolve_node", lambda: "/usr/bin/node")
-    monkeypatch.setattr(szpont, "AVAILABLE", True)
     view = make_view(update_state={"phase": "idle", "commit": "abc1234", "branch": "main",
                                    "upstream": "origin/main", "ahead": 0, "behind": 0})
     assert [(r._control.accessibleName(), r.summary()) for r in view._rows

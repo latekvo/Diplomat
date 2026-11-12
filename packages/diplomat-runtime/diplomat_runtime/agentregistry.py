@@ -32,10 +32,9 @@ not tell two runs on one PR apart and matched any unrelated session that mention
 the number.
 
 Writes are atomic (:mod:`.atomicjson`) and guarded by a process-local lock: the poll
-worker, a panel click and the free-slot sweep all reach this. Cross-process readers
-(the mesh node asking whether this box has room) only ever read, and ``os.replace``
-means they never see a torn file. A write to the book that fails raises ``OSError``
-with the book unchanged on disk.
+worker, a panel click and the free-slot sweep all reach this. Cross-process readers (the
+``DIPLOMAT_AGENTS`` dump) only ever read, and ``os.replace`` means they never see a torn
+file. A write to the book that fails raises ``OSError`` with the book unchanged on disk.
 """
 
 from __future__ import annotations
@@ -307,11 +306,11 @@ def runners_of(records: list[RunRecord]) -> set[str]:
     """Which agent CLIs the runs the run deadline could end were started under — what
     :func:`autobudget.tokens_left` is asked in the currencies of.
 
-    Only those runs: an untracked one the rung refuses by name, a peer's spends the
-    peer's account, and a panel click holds no bay of the automatic cap, so a limit any
-    of them draws on says nothing about the rung
-    (:func:`agentstate.deadline_applies`). ``""`` for a run with no record of its own is
-    passed through rather than dropped — the reader is what decides what to make of it.
+    Only those runs: an untracked one the rung refuses by name, and a panel click holds
+    no bay of the automatic cap, so a limit either of them draws on says nothing about
+    the rung (:func:`agentstate.deadline_applies`). ``""`` for a run with no record of
+    its own is passed through rather than dropped - the reader is what decides what to
+    make of it.
     """
     return {run_runner(r.run_id) for r in records if deadline_applies(r)}
 
@@ -363,8 +362,8 @@ def bound_session(run_id: str) -> str:
     this whole module exists for — and because the search is the expensive half:
     matching a session to a run reads its opening message, while asking a bound one
     what it is doing reads a single message. An OpenCode 2.x run Diplomat spawns never
-    searches: its id is written here before the spawn. One the mesh placed here is
-    matched by opening prompt against the 2.x TUIs in the process table
+    searches: its id is written here before the spawn. One with no id here is matched
+    by opening prompt against the 2.x TUIs in the process table
     (:func:`probes._OpenCodeBackend.bind`).
 
     Every runner spells an id its own way — ``ses_00d61ec0…`` under OpenCode,
@@ -476,10 +475,9 @@ def finished_at(run_id: str) -> float | None:
     Not "when a poll got round to noticing", which is up to a poll period later and
     would inflate every recorded run time by a random few minutes.
 
-    None for a run the mesh placed: the executor points the agent at a sentinel of
-    its own under the mesh directory and unlinks it the moment it fires, so nothing
-    is ever written here. :func:`telemetry.record_completion` dates those from the
-    agent's transcript rather than from the poll.
+    None for a run with no sentinel: one that went back to its prompt rather than
+    exiting. :func:`telemetry.record_completion` dates those from the agent's
+    transcript rather than from the poll.
     """
     try:
         return done_path(run_id).stat().st_mtime

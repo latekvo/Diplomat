@@ -31,8 +31,7 @@ class PRSnapshot:
     review_decision: str  # "" / "CHANGES_REQUESTED" / "APPROVED" / …
     threads_unresolved: int
     threads_i_owe: int
-    # Head commit sha (headRefOid) — the "which push" part of the mesh work key,
-    # so two nodes observing the same commit derive the same key (szpontnet-spec/docs/12).
+    # Head commit sha (headRefOid) - the "which push" part of :func:`ledger_key`.
     head_sha: str = ""
 
     @property
@@ -168,9 +167,9 @@ def decide(
 def concluded(retired, verdicts: dict) -> set[str]:
     """The review requests, by item key, whose run ended on its agent's own word:
     retired runs dispatched for a review requested of me (:data:`WORK_REVIEW_REQ`) whose
-    verdict is ``reported``. A run that died, failed, was reaped or ran on a peer says
-    nothing about whether it meant to post, so its request stays on the retry ladder.
-    Twin of ``ReviewReconcile.concluded``."""
+    verdict is ``reported``. A run that died, failed or was reaped says nothing about
+    whether it meant to post, so its request stays on the retry ladder. Twin of
+    ``ReviewReconcile.concluded``."""
     return {r.item for r in retired
             if r.ledger_key.startswith(WORK_REVIEW_REQ + ":")
             and r.item is not None
@@ -212,7 +211,7 @@ class ReviewRequest:
     files: list[str]
     requested_at: str | None  # latest "review requested from me" (ISO8601)
     my_last_review_at: str | None  # my latest review submission (ISO8601)
-    head_sha: str = ""  # head commit sha — the mesh work key's "@sha" part
+    head_sha: str = ""  # head commit sha - the "@sha" part of :func:`ledger_key`
     my_last_comment_at: str | None = None  # my latest top-level comment (ISO8601)
 
     @property
@@ -328,16 +327,7 @@ def author_allowed(login: str, allowed: list[str]) -> bool:
     return any(a.lower() == low for a in allowed)
 
 
-# MARK: - Mesh coordination for the auto-monitors (mirrors AutofixMesh in Autofix.swift)
-#
-# Two machines running this monitor poll the same GitHub state as the same user, so
-# each is an independent origin of the same work (szpontnet-spec/docs/12-work-claims.md).
-# Every machine scans; the Store routes each auto find through claim-gated DISPATCH
-# (`Store._route_via_mesh`): the mesh runs it once, on the best-surplus node, and
-# the EXECUTOR holds the work-key claim for its agent's lifetime — so a concurrent
-# or repeat scan is suppressed, a crash frees it for a retry, and a node death frees
-# it for failover. There is deliberately NO duty-assignment stand-down: it deferred
-# to a node that might not be scanning, silently dropping the operator's work.
+# MARK: - The monitors' kinds of work (mirrors AutofixWork in Autofix.swift)
 
 WORK_REVIEW_REQ = "review"  # reviews requested of me → duty "review"
 WORK_REVIEW_REPLY = "review-reply"  # replies to reviews on MY PRs → duty "review"
@@ -345,10 +335,7 @@ WORK_CONFLICTS = "conflicts"  # conflict fixes on MY PRs → duty "conflicts"
 
 
 def _pr_ref(pr_url: str) -> str | None:
-    """``<host>/<owner>/<repo>#<n>`` for a PR URL, or None when it isn't one. Split
-    out of :func:`work_key` so :func:`ledger_key` cannot parse a URL differently
-    from the claim key — the two identify the same unit of work and are compared
-    against each other in the telemetry ledger."""
+    """``<host>/<owner>/<repo>#<n>`` for a PR URL, or None when it isn't one."""
     from urllib.parse import urlparse
 
     try:
@@ -362,31 +349,15 @@ def _pr_ref(pr_url: str) -> str | None:
     return f"{host}/{parts[0]}/{parts[1]}#{parts[3]}"
 
 
-def work_key(kind: str, pr_url: str, head_sha: str) -> str:
-    """The origination-dedup key for one unit of monitor work — the reference
-    convention from szpontnet-spec/docs/12: ``<kind>:<host>/<owner>/<repo>#<n>@<sha>``.
-
-    Derived from the PR's own URL so every node observing the same PR agrees
-    byte-for-byte (the Swift twin must produce identical strings — see the parity
-    tests). Returns ``""`` — claim gate skipped, the safe pre-claims degradation —
-    when the URL doesn't look like a PR URL or the head sha is unknown."""
-    if not head_sha:
-        return ""
-    ref = _pr_ref(pr_url)
-    return f"{kind}:{ref}@{head_sha}" if ref else ""
-
-
 def ledger_key(kind: str, pr_url: str, head_sha: str) -> str:
-    """The telemetry ledger's identity for one unit of work.
+    """The telemetry ledger's identity for one unit of monitor work:
+    ``<kind>:<host>/<owner>/<repo>#<n>@<sha>``, and the same shape WITHOUT ``@sha``
+    while the head sha is unknown. ``""`` when the URL is not a PR's.
 
-    The claim key when a head sha is known — the same string, so the two records
-    of one job agree — and the same shape WITHOUT ``@sha`` when it isn't.
-    :func:`work_key` deliberately returns ``""`` there, because skipping the mesh
-    claim is the safe degradation for a *claim*; skipping the ledger entry is not,
-    since the work still gets dispatched and would then be missing from every
-    figure on the Telemetry screen. The cost of the fallback is that two pushes to
-    one PR fold into one ledger task while the sha is unknown, which understates
-    the count rather than inventing one.
+    The sha-less fallback exists because the work still gets dispatched, and without
+    an entry it would be missing from every figure on the Telemetry screen. Its cost
+    is that two pushes to one PR fold into one ledger task while the sha is unknown,
+    which understates the count rather than inventing one.
     """
     ref = _pr_ref(pr_url)
     if ref is None:
@@ -394,50 +365,14 @@ def ledger_key(kind: str, pr_url: str, head_sha: str) -> str:
     return f"{kind}:{ref}@{head_sha}" if head_sha else f"{kind}:{ref}"
 
 
-def parse_work_key(key: str) -> tuple[str, str, str, int] | None:
-    """Inverse of :func:`work_key`: split ``<kind>:<host>/<owner>/<repo>#<n>@<sha>``
-    into ``(kind, owner, repo, pr_number)``. Returns None when ``key`` isn't a PR
-    work key (empty, or any shape :func:`work_key` never emits).
-
-    The executor's ps ground-truth floor uses this to learn which PR a dispatched
-    unit of work is for, then asks :func:`live_pr_items` whether an agent for it
-    is already alive on the host — so it dedups on the PR (like the ps-scan), never
-    on the exact key, and a fresh push (new ``@sha``) can't sneak a second agent
-    onto a PR already under review."""
-    if not key or ":" not in key:
-        return None
-    kind, rest = key.split(":", 1)
-    # <host>/<owner>/<repo>#<n>@<sha> — owner/repo/host never contain '#' or '@',
-    # and a sha is hex, so peeling from the right is unambiguous.
-    if "#" not in rest or "@" not in rest:
-        return None
-    left, _sha = rest.rsplit("@", 1)
-    path, num = left.rsplit("#", 1)
-    if not num.isdigit():
-        return None
-    segs = [p for p in path.split("/") if p]
-    if len(segs) != 3:  # host / owner / repo
-        return None
-    _host, owner, repo = segs
-    try:
-        # str.isdigit() is True for Unicode superscripts (¹²³) and for decimal runs
-        # longer than CPython's 4300-digit int() limit — neither of which int() will
-        # parse. work_key never emits those, so a raise here would break every caller's
-        # fail-open contract (the executor's _pr_agent_running dedup floor tears the
-        # dispatching peer's link on a hostile work_key); treat them as a non-PR key.
-        return kind, owner, repo, int(num)
-    except ValueError:
-        return None
-
-
 # MARK: - Unified dispatch gate (one workflow, two triggers)
 #
-# The SPAWN buttons and the auto-monitors are two TRIGGERS for the very same
-# workflow: run one agent job. Everything from "run X (on PR #n)" onward - the
-# ban check, in-flight dedup, mesh coordination, spawn focus, activity label,
-# counters - is decided HERE, once, so the interfaces cannot drift apart.
-# Triggers stay thin: a click, or a poll's backoff decision. (2026-07-20: the
-# drift was not hypothetical - dedup lived only on some paths, dupes followed.)
+# The SPAWN buttons and the auto-monitors are two TRIGGERS for the very same workflow:
+# run one agent job. Everything from "run X (on PR #n)" onward - the ban check,
+# in-flight dedup, spawn focus, activity label, counters - is decided HERE, once, so the
+# interfaces cannot drift apart. Triggers stay thin: a click, or a poll's backoff
+# decision. (2026-07-20: the drift was not hypothetical - dedup lived only on some
+# paths, dupes followed.)
 #
 # The intended trigger asymmetries, in full (anything else is a bug):
 # - focus: a panel spawn brings the terminal forward, an auto spawn must not
@@ -449,8 +384,6 @@ def parse_work_key(key: str) -> tuple[str, str, str, int] | None:
 #   human starting one agent on a tight disk is their call (dispatch_decide);
 # - budget: only auto work is held to what is left of the limits it spends
 #   against - a human spending their own last slice is their call (dispatch_decide);
-# - mesh: only auto origination is mesh-gated - a human clicking THIS machine's
-#   button has already decided placement (dispatch_decide);
 # - counters: only a monitor's FIRST dispatch counts as auto-handled work
 #   (dispatch_bumps_counter);
 # - label: rows a monitor found carry the "Auto · " prefix, retries are surfaced
@@ -465,7 +398,6 @@ SOURCE_AUTO = "auto"
 VERDICT_PROCEED = "proceed"
 VERDICT_IN_FLIGHT = "in_flight"  # an agent already works this PR - whoever asks
 VERDICT_BANNED = "banned"  # prompt-injection ban on the author - whoever asks
-VERDICT_STAND_DOWN = "stand_down"  # mesh: another node originates (auto only)
 VERDICT_AT_CAPACITY = "at_capacity"  # this device already runs its cap (auto only)
 VERDICT_UNAFFORDABLE = "unaffordable"  # not enough rate limit left (auto only)
 VERDICT_NOT_ALLOWED = "not_allowed"  # author outside the auto-review allowlist
@@ -476,7 +408,6 @@ def dispatch_decide(
     source: str,
     banned: bool,
     agent_on_pr: bool,
-    mesh_stands_down: bool,
     at_capacity: bool,
     unaffordable: bool = False,
     outside_allowlist: bool = False,
@@ -484,7 +415,7 @@ def dispatch_decide(
 ) -> str:
     """The one decision both interfaces obey, in fixed precedence: ban, then the
     auto-review allowlist, then in-flight, then (auto only) this device's free
-    disk, its concurrency cap, its rate-limit budget, and mesh.
+    disk, its concurrency cap and its rate-limit budget.
 
     The two author verdicts lead together because they are the same kind of fact -
     a standing statement about a person, true before this poll and after it - while
@@ -493,21 +424,16 @@ def dispatch_decide(
     work alone, so a sweep, a wizard press and the two reconcilers over my own PRs
     all pass ``False``.
 
-    Capacity outranks mesh so a saturated device never *originates*: the claim
-    that routing takes has gossip side effects, and a node holding the claim for
-    work it then refuses to start is worse than not asking. It is safe to leave
-    the work for a later poll — every machine scans, so on a mesh a peer with room
-    picks the same unit up, and off a mesh the reconciler retries it here on the
-    next tick (the refusal writes no attempt record, so no backoff engages).
+    A saturated device leaves the work for a later poll: the reconciler retries it
+    on the next tick (the refusal writes no attempt record, so no backoff engages).
 
-    The budget sits between the two for the same reason and with the same
-    consequence: an account with nothing left to spend cannot finish the agent it
-    would claim the work for, and holding the job costs nothing but the wait for a
-    window to refill or a balance to be topped up. It ranks BELOW capacity only
-    because capacity is the measurement already in hand — a saturated device has no
-    slot to spend a budget on, so the probe is never worth taking.
+    The budget holds a job the same way: an account with nothing left to spend
+    cannot finish the agent it would start, and holding the job costs nothing but
+    the wait for a window to refill or a balance to be topped up. It ranks BELOW
+    capacity only because capacity is the measurement already in hand - a saturated
+    device has no slot to spend a budget on, so the probe is never worth taking.
 
-    The disk leads all three. An agent started on a nearly full disk cannot finish
+    The disk leads both. An agent started on a nearly full disk cannot finish
     and pushes the machine toward ENOSPC, wherever its bay or its budget stands; a
     freed bay does not free space, so it is the hold the operator has to act on and
     the one the feed should name while several hold; and one ``statvfs`` is the
@@ -524,8 +450,6 @@ def dispatch_decide(
         return VERDICT_AT_CAPACITY
     if source == SOURCE_AUTO and unaffordable:
         return VERDICT_UNAFFORDABLE
-    if source == SOURCE_AUTO and mesh_stands_down:
-        return VERDICT_STAND_DOWN
     return VERDICT_PROCEED
 
 
@@ -535,9 +459,7 @@ def dispatch_decide(
 # owed — and, before this cap existed, dispatched all of them in one pass: N
 # terminal windows, N `claude` sessions, one machine. The cap is the device's,
 # not the monitor's: it bounds how many automatic agents Diplomat has RUNNING
-# here, so it holds across the review monitor, the conflict reconciler and work a
-# mesh peer routes in (szponthost.DiplomatHost.at_job_capacity, which is what
-# the node asks before it spawns).
+# here, so it holds across the review monitor and the conflict reconciler alike.
 
 DEFAULT_AUTO_TASK_LIMIT = 2
 MIN_AUTO_TASK_LIMIT = 1
@@ -549,60 +471,6 @@ def clamp_auto_task_limit(value: int) -> int:
     silently stop all automatic work while both monitor toggles still read "on",
     so the floor is 1 — pausing is what those toggles are for."""
     return max(MIN_AUTO_TASK_LIMIT, min(MAX_AUTO_TASK_LIMIT, value))
-
-
-def running_auto_prs(
-    live_prs: set[str], auto_prs: set[str], manual_prs: set[str],
-    idle_prs: set[str] | None = None,
-) -> set[str]:
-    """Which PRs (item keys) have an automatic agent *working* on this device (one
-    agent per PR is what the in-flight dedup guarantees, so a PR *is* an agent here).
-
-    Four inputs, because no single one of them is both complete and attributable:
-
-    - ``live_prs`` — PRs with a live ``claude`` visible in ``ps``. The ground truth,
-      and the only evidence that survives an applet restart, but it cannot say who
-      started an agent;
-    - ``manual_prs`` — PRs whose live agent this applet tracked as a *panel* spawn.
-      Subtracted, because a click is the operator's own act and never spends the
-      automatic budget;
-    - ``auto_prs`` — PRs with a tracked auto agent. Added, because a just-spawned
-      agent takes a moment to appear in ``ps`` and would otherwise be counted zero
-      times by the very poll that started it.
-
-    - ``idle_prs`` — PRs whose agent has finished its turn and is sitting at its
-      prompt (:func:`apiwatch.looks_busy`). Subtracted LAST, from the union, because
-      an idle agent is idle however it was found: a tracked ``auto_prs`` entry that
-      went quiet has to leave too, or re-adding it here would hold the very slot the
-      subtraction is for.
-
-    An agent nobody tracked therefore counts as automatic. That is the safe way to
-    be wrong: the cost is deferring auto work behind an untracked agent for as long
-    as it runs, where the opposite error is the burst this cap exists to stop.
-
-    Idleness is subtracted rather than merely labelled because an agent is spawned
-    into an INTERACTIVE session, which does not exit when its work is done — it waits
-    at the prompt for a human who may not come for hours. The cap exists to bound
-    concurrent LOAD, and a session waiting on input is spending none; left counted, a
-    finished agent holds its slot until someone closes the window, and a machine whose
-    every bay is held that way defers automatic work indefinitely while doing nothing.
-
-    Only positive evidence of idleness qualifies (a pane that was read and showed no
-    interrupt hint): an agent with no readable pane counts as working, so the failure
-    direction stays the deferral, never the burst.
-
-    The set, not just its size, because the panel draws a row per running agent and
-    a row needs to say *which* PR it is on (``Store.running_tasks``)."""
-    return ((live_prs - manual_prs) | auto_prs) - (idle_prs or set())
-
-
-def running_auto_tasks(
-    live_prs: set[str], auto_prs: set[str], manual_prs: set[str],
-    idle_prs: set[str] | None = None,
-) -> int:
-    """How many automatic agents are working on this device — the number the cap is
-    compared against, and the size of :func:`running_auto_prs`."""
-    return len(running_auto_prs(live_prs, auto_prs, manual_prs, idle_prs))
 
 
 # MARK: - The device's spending budget
@@ -836,9 +704,9 @@ def dispatch_bumps_counter(source: str, attempt: int) -> bool:
 
 def queue_key(audit_action: str, item: str) -> str:
     """A queued task's identity, stable across polls and applet restarts: the
-    monitor's verb plus the item key (:func:`prref.item_key`) it is about. Not the mesh
-    work key — that one is scoped to a head sha, so a push during the wait would read
-    as a different task and lose the operator's place for it.
+    monitor's verb plus the item key (:func:`prref.item_key`) it is about. Not the
+    ledger key (:func:`ledger_key`) - that one is scoped to a head sha, so a push during
+    the wait would read as a different task and lose the operator's place for it.
 
     The verb is part of the key because a PR can owe two different monitors at once
     (a conflict *and* an unaddressed review); they are two tasks, and the one that
@@ -966,10 +834,7 @@ def queue_order(offered: list[str], saved: list[str]) -> list[str]:
 
     Keys that are no longer offered fall out — the work was taken by an agent,
     resolved, or its author banned — because a queue that outlived its evidence
-    would hand "execute now" a task GitHub no longer owes. (Not a mesh claim: the
-    cap outranks the mesh gate, so a device with anything queued is by definition
-    one that never asked a peer. Peer-owned work leaves the queue when the drain
-    reaches it and the mesh answers.)
+    would hand "execute now" a task GitHub no longer owes.
 
     Requested reviews, then requested issue fixes, then investigations, then conflict
     fixes fall to the back whatever order they were found in (:func:`queue_band`). The
@@ -1023,8 +888,8 @@ def queue_reorder(order: list[str], moving: str, onto: str) -> list[str]:
 class AgentJob:
     """One agent job, whoever triggers it. The trigger supplies WHAT to run
     (config -> prompt, labels, PR identity); the store's ``dispatch_agent`` owns
-    everything that HAPPENS - ban check, in-flight dedup, mesh policy, spawn,
-    registration, counters. Twin of Store.AgentJob on macOS."""
+    everything that HAPPENS - ban check, in-flight dedup, spawn, registration,
+    counters. Twin of Store.AgentJob on macOS."""
 
     kind: str  # activity tint: "review" | "issues" | "conflicts" | "audit"
     audit_action: str  # activity-feed verb
@@ -1035,10 +900,7 @@ class AgentJob:
     # listed checkout; with ``pr_url`` it makes :attr:`item`, the dedup key.
     pr_number: int | None = None
     author_login: str | None = None  # whose PR we'd review - the ban dimension
-    duty: str = ""  # mesh duty, for auto-origination gating
-    work_key: str = ""  # mesh claim key ("" = no claim)
-    # Telemetry ledger identity - the claim key, or its sha-less shape when the
-    # head sha is unknown (see ledger_key). Set for auto jobs only: the screen
+    # Telemetry ledger identity (see ledger_key). Set for auto jobs only: the screen
     # measures the MONITORS, and a wizard click is the operator's own doing.
     ledger_key: str = ""
     counter: str | None = None  # "review_requests" | "my_reviews" | "conflicts"
@@ -1052,8 +914,7 @@ class AgentJob:
     attempt_stamp: str = ""
     # The checkout the agent works in: a repo root's, or another one listed in Settings.
     # None is whichever root is primary at spawn time, so a monitor job, which can wait
-    # in the queue past a change of primary, names its root's path. The mesh takes only
-    # work in the configured repo's root (``Store._route_via_mesh``).
+    # in the queue past a change of primary, names its root's path.
     checkout: str | None = None
 
     @property
@@ -1116,8 +977,8 @@ class RequestedWork:
     @property
     def action(self) -> str:
         """The queue verb this ask waits under, which is also its
-        :class:`AgentJob` kind, its mesh duty and the verb its dispatch writes to the
-        activity feed."""
+        :class:`AgentJob` kind and the verb its dispatch writes to the activity
+        feed."""
         return self.config.get("kind") or QUEUE_REVIEW_ACTION
 
     @property
@@ -1210,7 +1071,6 @@ class RunningAgent:
     kind: str
     tracked: bool
     started_at: float = 0.0  # epoch seconds; 0 when untracked (nothing to date it by)
-    mesh: bool = False  # the mesh placed this job somewhere other than a local spawn
     # What the run resolved to this tick (`agentstate.RunState`) and the one fact that
     # decided it. The reason is on the row because the states this list can now show
     # include "unknown", and a row that says only "unknown" invites exactly the
@@ -1246,179 +1106,3 @@ def prompt_items(text: str, slugs: set[str]):
             repo = repo.rstrip(".")
         if f"{owner}/{repo}" in wanted:
             yield item_key(owner, repo, int(m.group(1)))
-
-
-def live_pr_items(ps_output: str, slugs: set[str]) -> set[str]:
-    """Item keys of ``claude`` agents alive in a ``ps`` args dump, on a PR of one of
-    the repos in ``slugs`` — the tracking-independent half of the monitor's in-flight
-    dedup (twin of AgentProbes.liveAgents on macOS).
-
-    Every single-PR prompt the applet dispatches names its PR (:func:`prompt_items`)
-    and ``claude`` receives the whole prompt as one argv, so a live agent is visible
-    in ``ps`` no matter what happened to the in-memory ``_autofix_inflight`` list (an
-    applet restart wipes it while the agents run on). Only lines containing ``claude``
-    count: the spawning shell's argv holds the unexpanded ``$(cat …)``, never the
-    prompt text."""
-    return {a.item for a in agent_lines(ps_output, slugs)}
-
-
-def agent_ttys(ps_output: str, slugs: set[str]) -> set[str]:
-    """The ttys the live agents of :func:`live_pr_items` are running on, spelled as
-    ``ps`` spells them (``pts/13``, no ``/dev/``).
-
-    Which panes are worth capturing, and nothing more: reading every tmux pane to
-    find two agents would put a ``capture-pane`` per pane on the panel's 8-second
-    tick, where this puts one per agent. A process with no controlling tty appears
-    as ``?``, matches no pane, and is simply never asked about."""
-    return {a.tty for a in agent_lines(ps_output, slugs)}
-
-
-def idle_pr_items(
-    ps_output: str, pane_tails: dict[str, str], slugs: set[str]
-) -> set[str]:
-    """Of the agents alive in ``ps``, the item keys whose session has finished its
-    turn and is waiting at its prompt.
-
-    ``ps_output`` must be a ``tty=,etime=,args=`` dump (``live_pr_items`` reads the
-    same lines — the regex finds the prompt wherever on the line it sits — so one scan
-    answers all three). ``pane_tails`` maps a tty to that pane's visible buffer,
-    spelled as ``ps`` spells a tty (:func:`tmuxwatch.pane_tails_for_ttys`).
-
-    The tty is the join: an agent runs inside a tmux pane (``review.agent_argv``), so
-    the pane on the same tty as the ``claude`` process IS that agent's screen, and
-    :func:`apiwatch.looks_busy` reads the CLI's own status bar off it.
-
-    An agent whose tty has no pane is absent from the result, never idle in it —
-    a session outside tmux, a capture that failed, a pane that closed between the two
-    reads. Each is missing evidence, and this answer only ever REMOVES an agent from
-    the cap's count, so silence has to mean "still working".
-
-    An agent too young to have drawn its first status bar is absent for the same
-    reason, and it is the one whose absence matters most. A booting agent's screen is
-    the screen of one that has FINISHED — the interrupt hint on neither — so read as
-    idle it hands back the very bay the dispatch that started it just took, and the
-    next dispatch lands on top of it. That is :data:`agentstate.FIRST_TURN_GRACE`, the
-    same window and the same reasoning the resolver holds its own screen rung against;
-    here the age comes from the process rather than from a record, so it covers an
-    agent this machine has no book entry for at all. An age that could not be parsed
-    counts as too young, because a bay is freed on positive evidence or not at all.
-    """
-    return {a.item for a in agent_lines(ps_output, slugs)
-            if _at_prompt(a.elapsed, pane_tails.get(a.tty))}
-
-
-def _at_prompt(elapsed: float | None, tail: str | None) -> bool:
-    """Has an agent this old, showing this screen, finished its turn? Positive
-    evidence only (:func:`idle_pr_items`)."""
-    from . import agentstate, apiwatch
-
-    if elapsed is None or elapsed <= agentstate.FIRST_TURN_GRACE:
-        return False
-    return tail is not None and not apiwatch.looks_busy(tail)
-
-
-def unscoped_auto_ttys(records, ps_output: str) -> set[str]:
-    """The ttys of the automatic runs in this machine's run book that name no PR (an
-    issue fix, a sweep, an audit, a PR in another checkout) and whose agent is alive on
-    that tty in a ``ps`` dump. The prompt scan behind :func:`live_pr_items` cannot see
-    these, yet each holds a bay of the cap (:func:`agentstate.cap_load`)."""
-    alive = {tty for tty, _elapsed, _argv in _agent_processes(ps_output)}
-    return {r.tty for r in _unscoped_auto(records) if r.tty in alive}
-
-
-def _unscoped_auto(records) -> list:
-    from . import agentstate
-
-    return [r for r in records
-            if r.runs_here and r.source == agentstate.SOURCE_AUTO and not r.released
-            and r.item is None]
-
-
-def running_unscoped_auto_runs(records, ps_output: str, pane_tails: dict[str, str],
-                               now: float) -> int:
-    """How many automatic runs that name no PR hold a bay here: each tty of
-    :func:`unscoped_auto_ttys` whose agent is not back at its prompt, plus every such run
-    dispatched too recently for anything to have observed its tty
-    (:data:`agentstate.SPAWN_GRACE`) - the bay a run takes is its own from the moment it
-    is booked, as the applet counts it."""
-    from . import agentstate
-
-    ages = {tty: elapsed for tty, elapsed, _argv in _agent_processes(ps_output)}
-    busy = {tty for tty in unscoped_auto_ttys(records, ps_output)
-            if not _at_prompt(ages.get(tty), pane_tails.get(tty))}
-    starting = sum(1 for r in _unscoped_auto(records)
-                   if not r.tty and now - r.dispatched_at <= agentstate.SPAWN_GRACE)
-    return len(busy) + starting
-
-
-#: ``ps`` ``etime``: ``[[DD-]HH:]MM:SS``. The portable spelling — BSD/macOS ``ps``
-#: has no ``etimes`` keyword, and prints an unknown one to stderr while silently
-#: dropping the column, so a dump asking for it would come back one field short.
-_ETIME_RE = re.compile(r"^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$")
-
-
-def elapsed_seconds(token: str) -> float | None:
-    """``ps`` ``etime`` as seconds, or ``None`` when ``token`` is not one.
-
-    ``None`` rather than a guess: the same position holds an argv word on the bare
-    ``args=`` dump :func:`agent_lines` still accepts, and every caller reads an
-    unknown age as "cannot judge this agent yet".
-    """
-    m = _ETIME_RE.match(token)
-    if m is None:
-        return None
-    days, hours, minutes, seconds = (int(g or 0) for g in m.groups())
-    return float(((days * 24 + hours) * 60 + minutes) * 60 + seconds)
-
-
-@dataclass(frozen=True)
-class AgentLine:
-    """One live agent, as a ``ps`` dump shows it."""
-
-    tty: str
-    #: The PR its prompt names, as an item key.
-    item: str
-    #: Seconds since the process started, or ``None`` if the dump carried no
-    #: readable ``etime`` (a bare ``args=`` dump, or a spelling of ``ps`` that
-    #: dropped the column).
-    elapsed: float | None
-
-
-def agent_lines(ps_output: str, slugs: set[str]):
-    """Yield an :class:`AgentLine` for every live agent in a ``ps`` dump whose prompt
-    names a PR of a repo in ``slugs`` (:func:`prompt_items`) — the one parse the
-    answers above are each a projection of, so they can never come to disagree about
-    what counts as an agent.
-
-    The tty is whatever leads the line, normalised free of ``/dev/`` (``ps`` omits it,
-    tmux does not), and the elapsed time is the token after it. On a bare ``args=``
-    dump — which the argv scan predates both columns by and must keep working on —
-    those are the start of the command instead, so the tty matches no pane and the age
-    reads as unknown: neither can manufacture evidence, only fail to find it.
-
-    An OpenCode 2.x TUI's argv holds ``--session <id>`` rather than its prompt, so the
-    prompt is read from the service for it (:func:`opencodeapi.scan_text`).
-    """
-    from . import opencodeapi
-
-    for tty, elapsed, argv in _agent_processes(ps_output):
-        for item in prompt_items(opencodeapi.scan_text(argv), slugs):
-            yield AgentLine(tty=tty, item=item, elapsed=elapsed)
-
-
-def _agent_processes(ps_output: str):
-    """``(tty, elapsed, argv)`` for every agent process in a ``ps`` dump, whatever its
-    prompt names (:func:`agent_lines`)."""
-    from . import runner
-
-    for line in ps_output.splitlines():
-        if not runner.is_agent_line(line):
-            continue
-        # split(), not partition(" "): ``ps`` right-aligns the etime column, so the
-        # columns are separated by runs of spaces rather than by single ones.
-        fields = line.strip().split(maxsplit=2)
-        if not fields:
-            continue
-        elapsed = elapsed_seconds(fields[1]) if len(fields) > 1 else None
-        argv = fields[2] if elapsed is not None and len(fields) > 2 else line.strip()
-        yield fields[0].removeprefix("/dev/"), elapsed, argv

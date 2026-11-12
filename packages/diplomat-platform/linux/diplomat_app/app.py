@@ -177,10 +177,6 @@ class DiplomatApp:
         self.store.ensure_allocator_installed_async()
         self.store.publish_spawn_terminal()
 
-        # Join the LAN mesh if the user opted in, so duty coordination is live the
-        # moment the window opens; with it off, stop a node left running.
-        self.store.settle_mesh_on_launch()
-
         # Optional prefill (also used for manual UI checks).
         prefill = os.environ.get("DIPLOMAT_PREFILL")
         if prefill:

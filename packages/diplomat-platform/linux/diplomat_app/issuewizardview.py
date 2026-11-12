@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from . import glyphs, issues, widgets
 from .issues import Target
 from .store import Store
-from .wizardbase import SpawnWizard, mesh_applicable, mismatch_warning
+from .wizardbase import SpawnWizard, mismatch_warning
 
 _TINT = "#00C7BE"  # mint, matching the macOS Fix-issues card
 
@@ -137,8 +137,6 @@ class IssueWizardView(SpawnWizard):
         )
         root.addWidget(self.include_features)
 
-        # Mesh routing (visible only while the LAN mesh is enabled + running),
-        # then SPAWN + its status line.
         self._add_dispatch_controls(root)
 
         root.addStretch(1)
@@ -191,8 +189,6 @@ class IssueWizardView(SpawnWizard):
             self.issue_warning.setVisible(False)
 
         self.unassigned_only.setVisible(cfg.can_filter_unassigned)
-
-        self.mesh_row.set_applicable(mesh_applicable(cfg, is_specific))
 
         self._restyle_spawn()
 

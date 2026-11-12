@@ -33,12 +33,10 @@ def item(n: int) -> str:
 
 @pytest.fixture(autouse=True)
 def _fixture_root(monkeypatch):
-    """The fixture repo as the one root, standing for the configured repo: a monitor
-    dispatches only work in a root, and the mesh takes only the configured repo's."""
+    """The fixture repo as the one root: a monitor dispatches only work in a root."""
     from diplomat_runtime import review
 
     monkeypatch.setattr(review, "repo_roots", lambda: [ROOT])
-    monkeypatch.setattr(review, "mesh_checkout", lambda: ROOT.path)
 
 
 # MARK: - compute_diff (edge trigger)
@@ -402,7 +400,7 @@ def store(monkeypatch):
         lambda cfg: f"PROMPT:{cfg.get('kind')}:"
                     f"{cfg.get('specificPR') or cfg.get('specificIssue')}",
     )
-    # The probes would read this MACHINE's real processes, tmux panes and mesh —
+    # The probes would read this MACHINE's real processes and tmux panes -
     # neutralize them so a test exercises the registry and the resolver rather than
     # the developer's box. The default is an empty machine that WAS successfully
     # looked at; a scan-specific test overrides with `fake_probes(...)`.
@@ -414,7 +412,7 @@ def store(monkeypatch):
     assert st.wait_for_background() == []
 
 
-def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
+def fake_probes(monkeypatch, *, processes=None, merged=None,
                 live_prs=None, idle_prs=(), tails=None, activity=None,
                 tokens=False):
     """Replace the whole evidence layer with a literal.
@@ -459,7 +457,7 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
     # what this stub answers with is the test's, not the store's.
     tokens_obs = A.Observation.present(bool(tokens))
 
-    def gather(records, now, merged=None, tokens=None, mesh_enabled=True):
+    def gather(records, now, merged=None, tokens=None):
         return A.Evidence(
             processes=obs(processes, {}),
             # Real, because they read the run directories the test itself created.
@@ -467,7 +465,6 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
             activity=(obs(activity, {}) if activity is not None
                       else agentregistry.activity(records)),
             tails=obs(screens, {}),
-            claims=obs(claims, set()),
             merged_prs=obs(merged, set()),
             live_agents=obs(live, {}),
             tokens_left=tokens_obs,
@@ -478,7 +475,7 @@ def fake_probes(monkeypatch, *, processes=None, claims=None, merged=None,
 
 def register_run(number, *, source=autofix.SOURCE_AUTO, pid=None, tty="",
                  dispatched_at=None, label="", kind="review", ledger_key="",
-                 placement=None, node="", work_key="", prompt="P"):
+                 prompt="P"):
     """Put one run in the registry, as a dispatch would. Returns the record."""
     import time as _time
 
@@ -490,8 +487,7 @@ def register_run(number, *, source=autofix.SOURCE_AUTO, pid=None, tty="",
         A.RunRecord(run_id=agentregistry.new_run_id(now), dispatched_at=now,
                     pr_number=number, pr_url=f"https://github.com/o/r/pull/{number}",
                     kind=kind, label=label, source=source,
-                    placement=placement or A.PLACEMENT_LOCAL, node=node,
-                    work_key=work_key, ledger_key=ledger_key, pid=pid, tty=tty),
+                    ledger_key=ledger_key, pid=pid, tty=tty),
         prompt)
 
 
@@ -737,59 +733,31 @@ def test_build_prompt_failure_surfaces_as_poll_error_not_a_dead_worker(store, mo
     assert store.autofix_poll_error is None
 
 
-# MARK: - Mesh coordination (work keys + assignment gate + monitor gating)
+# MARK: - The telemetry ledger key
 #
-# The work-key / stand-down fixtures are PARITY fixtures: the Swift twin
-# (AutofixMesh, asserted in DiplomatCoreSmoke) must produce byte-identical
-# strings for the same inputs — the whole point of the key is that two nodes
-# observing the same work agree on it (szpontnet-spec/docs/12).
+# PARITY fixtures: the Swift twin (AutofixWork.ledgerKey, asserted in
+# DiplomatCoreSmoke) must produce byte-identical strings for the same inputs.
 
 
-def test_work_key_reference_convention():
+def test_ledger_key_reference_convention():
     assert (
-        autofix.work_key("review", "https://github.com/acme/app/pull/123", "abc123")
+        autofix.ledger_key("review", "https://github.com/acme/app/pull/123", "abc123")
         == "review:github.com/acme/app#123@abc123"
     )
     assert (
-        autofix.work_key("review-reply", "https://github.com/a/b/pull/9", "F00")
+        autofix.ledger_key("review-reply", "https://github.com/a/b/pull/9", "F00")
         == "review-reply:github.com/a/b#9@F00"
-    )
-    assert (
-        autofix.work_key("conflicts", "https://github.com/a/b/pull/9", "F00")
-        == "conflicts:github.com/a/b#9@F00"
     )
     # Host is case-normalized; owner/repo/sha case is preserved.
     assert (
-        autofix.work_key("review", "https://GitHub.com/Acme/App/pull/5", "AbC")
-        == "review:github.com/Acme/App#5@AbC"
+        autofix.ledger_key("conflicts", "https://GitHub.com/Acme/App/pull/5", "AbC")
+        == "conflicts:github.com/Acme/App#5@AbC"
     )
 
 
-def test_work_key_safe_degradation():
-    # No sha / not a PR URL / garbage → "" (claim gate skipped, pre-claims behavior).
-    assert autofix.work_key("review", "https://github.com/acme/app/pull/123", "") == ""
-    assert autofix.work_key("review", "https://github.com/acme/app/issues/5", "x") == ""
-    assert autofix.work_key("review", "https://github.com/acme/app", "x") == ""
-    assert autofix.work_key("review", "not a url", "x") == ""
-    assert autofix.work_key("review", "", "x") == ""
-
-
-def test_ledger_key_is_the_claim_key_whenever_there_is_one():
-    """The mesh's claim and the telemetry ledger's task must name one job
-    identically, or the ledger cannot tell that the work a peer claimed is the work
-    this machine queued."""
-    for kind, url, sha in (
-        ("review", "https://github.com/acme/app/pull/123", "abc123"),
-        ("review-reply", "https://github.com/a/b/pull/9", "F00"),
-        ("conflicts", "https://GitHub.com/Acme/App/pull/5", "AbC"),
-    ):
-        assert autofix.ledger_key(kind, url, sha) == autofix.work_key(kind, url, sha)
-
-
 def test_ledger_key_survives_an_unknown_head_sha():
-    """Where the claim key degrades to "" the ledger key must not: skipping a claim
-    is safe, and skipping the ledger entry would drop dispatched work off every
-    figure on the Telemetry screen."""
+    """A PR whose head sha is not known yet still gets a key: without one, dispatched
+    work would drop off every figure on the Telemetry screen."""
     assert (
         autofix.ledger_key("review", "https://github.com/acme/app/pull/123", "")
         == "review:github.com/acme/app#123"
@@ -801,172 +769,22 @@ def test_ledger_key_survives_an_unknown_head_sha():
     assert autofix.ledger_key("review", "", "x") == ""
 
 
-def test_parse_work_key_round_trips_the_builder():
-    # The executor's ps floor parses back exactly what work_key emits: kind,
-    # owner, repo, pr — the sha is intentionally dropped (dedup is per-PR, so a
-    # fresh push can't dodge an agent already reviewing the PR).
-    for kind, url, sha, want in [
-        ("review", "https://github.com/acme/app/pull/123", "abc123",
-         ("review", "acme", "app", 123)),
-        ("conflicts", "https://github.com/a/b/pull/9", "F00", ("conflicts", "a", "b", 9)),
-        ("review-reply", "https://GitHub.com/Acme/App/pull/5", "AbC",
-         ("review-reply", "Acme", "App", 5)),
-    ]:
-        key = autofix.work_key(kind, url, sha)
-        assert autofix.parse_work_key(key) == want
-
-
-def test_parse_work_key_rejects_non_pr_keys():
-    # Anything work_key never emits parses to None → the ps floor is skipped and
-    # the spawn proceeds (no false suppression on a malformed / empty key).
-    for bad in ["", "review", "review:github.com/acme/app", "audit",
-                "review:github.com/acme/app#nope@sha", "review:acme/app#1@s",
-                # str.isdigit() is True but int() raises: a Unicode superscript, and a
-                # decimal run past CPython's 4300-digit int() limit. Both must parse to
-                # None, not raise — an escaped ValueError breaks the executor's fail-open
-                # ps floor (_pr_agent_running) and tears the dispatching peer's link.
-                "review:github.com/acme/app#²@sha",
-                "review:github.com/acme/app#" + "1" * 4301 + "@sha"]:
-        assert autofix.parse_work_key(bad) is None
-
-
-# MARK: - Store routing (the monitor routes auto work through the mesh)
-
-
-def _mesh_store(monkeypatch, store, dispatch=None):
-    """Enable the mesh for `store` against a fake node snapshot. `dispatch` is the
-    fake ``ctl.dispatch`` outcome — a list of slot-result dicts, an Exception to
-    raise, or None to fail the test if the mesh is consulted at all. Returns the
-    recorded ``(duty, work_key)`` dispatch calls."""
-    from szpontnet import ctl, statefile
-
-    store._mesh_enabled_override = True
-    state = {"pid": 1, "tcpPort": 1, "self": {"id": "me-node", "name": "mac"},
-             "peers": [{"id": "peer-node", "name": "softoobox"}]}
-    monkeypatch.setattr(statefile, "read_state", lambda: state)
-    monkeypatch.setattr(statefile, "node_running", lambda s=None: True)
-    calls: list[tuple[str, str]] = []
-
-    def fake_dispatch(duty, prompt, target=None, api_key="", work_key="", repo="",
-                      timeout=60.0):
-        calls.append((duty, work_key))
-        if dispatch is None:
-            raise AssertionError("the mesh must not be consulted for this source")
-        if isinstance(dispatch, Exception):
-            raise dispatch
-        return dispatch
-
-    monkeypatch.setattr(ctl, "dispatch", fake_dispatch)
-    return calls
-
-
-def _spawned(node="mac"):
-    return [{"slot": "any", "node": "n", "nodeName": node, "status": "spawned", "reason": ""}]
-
-
-def _spawned_here():
-    """The placement the mesh made back onto the machine that asked — the executor
-    id in the result is the one ``_mesh_store``'s snapshot calls ourselves."""
-    return [{"slot": "any", "node": "me-node", "nodeName": "mac", "status": "spawned",
-             "reason": ""}]
-
-
-def _suppressed(node="softoobox"):
-    return [{"slot": "claim", "node": "p", "nodeName": node, "status": "suppressed",
-             "reason": f"work already claimed by {node}"}]
-
-
-def _mesh_req(number=7, sha="abc123"):
-    return ReviewRequest(
-        number=number, title="t", url=f"https://github.com/o/r/pull/{number}",
-        author="bob", author_association="MEMBER", files=[],
-        requested_at="2026-01-02", my_last_review_at=None, head_sha=sha,
-    )
-
-
-def _poll_one_review(store, monkeypatch):
-    monkeypatch.setattr(
-        "diplomat_app.autofixmonitor.fetch_review_requests", lambda *a, **k: [_mesh_req()]
-    )
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    store._poll_review_requests([ROOT])
-
-
-def test_review_request_runs_on_the_mesh(store, monkeypatch):
-    """An owed review is routed through the mesh (best-surplus placement), not
-    spawned locally, and its attempt is recorded so retries back off."""
-    calls = _mesh_store(monkeypatch, store, dispatch=_spawned("mac"))
-    local = _spawn_recorder(monkeypatch)
-    _poll_one_review(store, monkeypatch)
-    assert local == []                                     # ran on the mesh, not here
-    assert calls == [("review", "review:github.com/o/r#7@abc123")]
-    assert list(store._load_attempts("reviewReqAttempts")) == [item(7)]
-
-
-def test_review_request_originates_without_assignment_standdown(store, monkeypatch):
-    """The regression guard for the bug this branch fixes: there is NO duty-
-    assignment stand-down anymore. Every machine scans and routes its finds through
-    the mesh — a review request is never silently dropped because some other node
-    happened to be 'assigned' the duty (the mesh places the run on the best node)."""
-    calls = _mesh_store(monkeypatch, store, dispatch=_spawned("softoobox"))
-    local = _spawn_recorder(monkeypatch)
-    _poll_one_review(store, monkeypatch)
-    assert calls == [("review", "review:github.com/o/r#7@abc123")]  # consulted, not stood down
-    assert local == []
-    assert list(store._load_attempts("reviewReqAttempts")) == [item(7)]
-
-
-def test_review_request_suppressed_when_a_peer_owns_it(store, monkeypatch):
-    _mesh_store(monkeypatch, store, dispatch=_suppressed())
-    local = _spawn_recorder(monkeypatch)
-    _poll_one_review(store, monkeypatch)
-    assert local == []                                     # a peer's agent owns the work
-    # Recorded so we back off rather than re-poll the node every tick (still watching).
-    assert list(store._load_attempts("reviewReqAttempts")) == [item(7)]
-
-
-def test_review_request_falls_back_to_local_when_mesh_unreachable(store, monkeypatch):
-    from szpontnet import ctl
-
-    _mesh_store(monkeypatch, store, dispatch=ctl.CtlError("node down"))
-    local = _spawn_recorder(monkeypatch)
-    _poll_one_review(store, monkeypatch)
-    assert len(local) == 1                                 # fail-open: never leave a PR unhandled
-
-
-def test_my_review_and_conflicts_route_their_own_duties_and_keys(store, monkeypatch):
-    calls = _mesh_store(monkeypatch, store, dispatch=_spawned("mac"))
+def test_my_review_and_conflicts_book_their_own_ledger_keys(store, monkeypatch):
+    """Each monitor names its work in the ledger by its own kind and the PR's head."""
     _spawn_recorder(monkeypatch)
+    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     snap = PRSnapshot(
         number=3, title="t", url="https://github.com/o/r/pull/3", is_draft=False,
         mergeable="CONFLICTING", review_decision="", threads_unresolved=1,
         threads_i_owe=1, head_sha="beef",
     )
     # Two PRs, not one: a second agent on a PR that already has one is refused by the
-    # in-flight dedup (which now sees the peer's run too), and that rule is asserted
-    # elsewhere. What is under test here is that each monitor routes its OWN duty and
-    # derives its OWN work key.
-    other = PRSnapshot(
-        number=4, title="t", url="https://github.com/o/r/pull/4", is_draft=False,
-        mergeable="CONFLICTING", review_decision="", threads_unresolved=1,
-        threads_i_owe=1, head_sha="cafe",
-    )
+    # in-flight dedup.
     assert store._dispatch_my_review(snap, 1) is True
-    assert store._dispatch_conflict_fix(4, other.url, 1, "auto",
-                                        head_sha=other.head_sha) is True
-    assert calls == [
-        ("review", "review-reply:github.com/o/r#3@beef"),
-        ("conflicts", "conflicts:github.com/o/r#4@cafe"),
-    ]
-
-
-def test_panel_spawn_never_routes_to_the_mesh(store, monkeypatch):
-    """A manual (panel) spawn is the operator's own action: it runs and is tracked
-    locally, never routed through the mesh — whatever the mesh would decide."""
-    _mesh_store(monkeypatch, store, dispatch=None)  # fails if the mesh is consulted
-    local = _spawn_recorder(monkeypatch)
-    assert store._dispatch_conflict_fix(4, "https://github.com/o/r/pull/4", 1, "panel") is True
-    assert len(local) == 1
+    assert store._dispatch_conflict_fix(4, "https://github.com/o/r/pull/4", 1, "auto",
+                                        head_sha="cafe") is True
+    assert {t.key for t in telemetry.load().tasks} == {
+        "review-reply:github.com/o/r#3@beef", "conflicts:github.com/o/r#4@cafe"}
 
 
 def test_the_audit_says_which_runs_got_the_agent_token(store, monkeypatch):
@@ -1003,188 +821,10 @@ def test_a_spawn_that_fails_says_why_in_the_audit(store, monkeypatch):
     assert agentregistry.load() == []
 
 
-@pytest.mark.parametrize("here", [True, False], ids=["here", "peer"])
-def test_a_mesh_run_is_marked_only_when_this_machine_runs_it(store, monkeypatch, here):
-    """A placement back here is spawned by this machine's mesh node, on this
-    machine's config and so on the token; a peer's spawn is on the peer's."""
-    from diplomat_runtime import activity
-
-    _mesh_store(monkeypatch, store, dispatch=_spawned_here() if here else _spawned())
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    _spawn_recorder(monkeypatch)
-    monkeypatch.setattr(review, "token_export", lambda: "GH_TOKEN=$(cat -- /t)")
-    assert store.dispatch_agent(_job(number=1, mesh=True), autofix.SOURCE_AUTO) == "spawned"
-
-    lines = [e.detail for e in activity.read() if e.action == "review"]
-    assert lines == ["Review · #1" + (" · agent GH token" if here else "")]
-
-
-# MARK: - a mesh placement that lands back here is an agent on THIS machine
-
-
-def test_a_mesh_run_placed_here_spends_a_slot(store, monkeypatch):
-    """The mesh's best node can be the machine that asked, and that run is on this
-    device's cap like any other — the applet only ever put the terminal on someone
-    else's screen, not the load.
-
-    Left unbooked, each dispatch of a poll measured the same idle machine: the cap
-    compared 0 against 2 every time and held nothing back at all."""
-    _mesh_store(monkeypatch, store, dispatch=_spawned_here())
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    local = _spawn_recorder(monkeypatch)
-    store.auto_task_limit = 1
-
-    assert store.dispatch_agent(_job(number=1, mesh=True), autofix.SOURCE_AUTO) == "spawned"
-    assert local == []                       # the node opened it, not us
-    assert store.auto_tasks_shown == 1 and store.free_auto_slots == 0
-    assert (
-        store.dispatch_agent(_job(number=2, mesh=True), autofix.SOURCE_AUTO)
-        == autofix.VERDICT_AT_CAPACITY
-    )
-
-
-def test_a_mesh_run_placed_on_a_peer_leaves_the_slot_free(store, monkeypatch):
-    """The other half of the same rule: a peer's machine runs it, so a slot HERE is
-    still free. Counting every mesh placement would idle a device for work it isn't
-    doing — which is the whole point of routing it away."""
-    _mesh_store(monkeypatch, store, dispatch=_spawned())  # executor id ≠ ours
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    store.auto_task_limit = 1
-
-    assert store.dispatch_agent(_job(number=1, mesh=True), autofix.SOURCE_AUTO) == "spawned"
-    assert store.auto_tasks_shown == 0 and store.free_auto_slots == 1
-    assert store.dispatch_agent(_job(number=2, mesh=True), autofix.SOURCE_AUTO) == "spawned"
-
-
-def test_a_burst_of_owed_reviews_stops_at_the_cap_on_the_mesh(store, monkeypatch):
-    """The failure as it was seen: six owed reviews in one poll, the mesh placing
-    every one of them back on this machine, five terminals opening behind a cap of
-    two. The cap is measured before the mesh is consulted, so the work that has no
-    slot never even takes a claim — it waits in the panel's queue."""
-    calls = _mesh_store(monkeypatch, store, dispatch=_spawned_here())
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    _spawn_recorder(monkeypatch)
-    monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_snapshots", lambda *a, **k: [])
-    monkeypatch.setattr(
-        "diplomat_app.autofixmonitor.fetch_review_requests",
-        lambda *a, **k: [_mesh_req(number=n, sha=f"s{n}") for n in range(1, 7)],
-    )
-
-    store._autofix_poll_once()
-
-    assert len(calls) == store.auto_task_limit == 2   # two placed, four never offered
-    assert len(store.queued_tasks) == 4
-    assert store.free_auto_slots == 0
-
-
-def test_a_mesh_run_is_judged_by_where_it_actually_runs(store, monkeypatch):
-    """A placement that came back to this machine is a process here like any other, so
-    its pid decides. A placement on a PEER is not: no probe on this box can see a
-    process on that one, and judging it by a local process table — which this applet
-    used to do, 120s after dispatch — retires every peer run the moment its grace
-    expires, while the agent is still working."""
-    from diplomat_runtime import agentregistry
-    from diplomat_runtime import agentstate as A
-
-    _mesh_store(monkeypatch, store, dispatch=_spawned_here())
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    _spawn_recorder(monkeypatch)
-
-    assert store.dispatch_agent(_job(number=1, mesh=True), autofix.SOURCE_AUTO) == "spawned"
-    (booked,) = agentregistry.load()
-    assert booked.placement == A.PLACEMENT_MESH_HERE
-    assert store._auto_tasks_running() == 1  # inside the spawn grace, nothing to see yet
-
-    # It landed here, so it is judged by its pid — and an empty process table we DID
-    # read is positive evidence that it is over.
-    agentregistry.save([A.RunRecord(**{**booked.__dict__, "pid": 4242,
-                                       "dispatched_at": time.time() - 300})])
-    fake_probes(monkeypatch, processes={4242: A.ProcInfo(tty="pts/1", elapsed=300.0,
-                                                         is_agent=True)})
-    assert store._auto_tasks_running() == 1
-    fake_probes(monkeypatch, processes={})
-    assert store._auto_tasks_running() == 0
-    # Retiring it is the settle pass's job, not a read's — the panel asks for the cap
-    # on every repaint, and a read with consequences retires records off a screenshot.
-    store.refresh_auto_task_count()
-    assert agentregistry.load() == []
-    # ...and what it cost is booked, like any other agent that ran on this machine.
-    assert telemetry.load().tasks[0].done_at is not None
-
-
-def test_a_peer_run_is_never_retired_by_this_machines_process_table(store, monkeypatch):
-    """The bug the placement split exists for. `ps` here says nothing whatever about a
-    process there, so only the executor's origination claim can end the run."""
-    from diplomat_runtime import agentstate as A
-
-    register_run(1, placement=A.PLACEMENT_MESH_PEER, node="brick",
-                 work_key="review:o/r#1:sha", dispatched_at=time.time() - 3600)
-
-    # An empty local process table, and the claim still held: still running.
-    fake_probes(monkeypatch, processes={}, claims={"review:o/r#1:sha"})
-    assert store._auto_tasks_running() == 0, "a peer's agent spends the peer's budget"
-    (row,) = store.running_tasks
-    assert row.state == "running" and "brick" in row.reason
-    assert store._in_flight("https://github.com/o/r/pull/1")
-
-    # The node we ask is down: unknown, and still not retired.
-    fake_probes(monkeypatch, processes={},
-                claims=A.Observation.unavailable("the mesh node is not running"))
-    (row,) = store.running_tasks
-    assert row.state == "unknown"
-    assert store._in_flight("https://github.com/o/r/pull/1")
-
-    # The claim is released. Absence is measured from the last sighting — which the
-    # assertions above just refreshed — so it is over once the settle window passes.
-    from diplomat_runtime import agentregistry
-    (held,) = agentregistry.load()
-    agentregistry.save([A.RunRecord(**{**held.__dict__,
-                                       "claim_seen_at": time.time() - 120})])
-    fake_probes(monkeypatch, processes={}, claims=set())
-    assert store.running_tasks == []
-    assert not store._in_flight("https://github.com/o/r/pull/1")
-
-
-def test_where_the_mesh_placed_a_run_is_what_prices_it(store, monkeypatch):
-    """The ledger keeps mesh work out of this machine's cost figures because a peer's
-    quota paid for it. That reasoning is about WHERE it ran, not about the mesh: a
-    placement that came back here spent ours."""
-    _mesh_store(monkeypatch, store, dispatch=_spawned_here())
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    _spawn_recorder(monkeypatch)
-    assert store.dispatch_agent(_job(number=1, mesh=True), autofix.SOURCE_AUTO) == "spawned"
-
-    _mesh_store(monkeypatch, store, dispatch=_spawned())  # this one lands on a peer
-    assert store.dispatch_agent(_job(number=2, mesh=True), autofix.SOURCE_AUTO) == "spawned"
-
-    priced = {t.key: t.remote for t in telemetry.load().tasks}
-    assert priced == {"review:github.com/o/r#1@sha": False,
-                      "review:github.com/o/r#2@sha": True}
-
-
 # MARK: - live-agent ps fallback (tracking-independent in-flight)
 
 
 ARGENT = "software-mansion/argent"
-
-
-def test_live_pr_items_parses_agents_only():
-    dump = "\n".join(
-        [
-            # The spawning shell holds the unexpanded $(cat …), never the prompt.
-            "/bin/zsh -i -c cd '/x'; claude \"$(cat '/tmp/p.txt')\"; printf %s $? > '/tmp/d'",
-            "claude Review PR #436 in software-mansion/argent. Use the `gh` CLI to fetch it.",
-            "claude Take PR #369 in software-mansion/argent. Use the `gh` CLI to"
-            " fetch it and check out its branch.",
-            "claude Review PR #99 in other-org/other-repo. Use the `gh` CLI to fetch it.",
-            "grep PR #123 in software-mansion/argent",
-            "claude --dangerously-skip-permissions",
-        ]
-    )
-    assert autofix.live_pr_items(dump, {ARGENT}) == {f"{ARGENT}#436", f"{ARGENT}#369"}
-    assert autofix.live_pr_items(dump, {ARGENT, "other-org/other-repo"}) == {
-        f"{ARGENT}#436", f"{ARGENT}#369", "other-org/other-repo#99"}
-    assert autofix.live_pr_items("", {ARGENT}) == set()
 
 
 def test_in_flight_falls_back_to_live_ps_agents(store, monkeypatch):
@@ -1247,94 +887,36 @@ def test_dispatch_gate_matrix_parity():
     """The behavior matrix of the ONE pipeline both interfaces ride - PARITY with
     the Swift smoke's AgentDispatchGate assertions: any new source asymmetry must
     be added there AND here first, or it's a bug."""
-    for src in (autofix.SOURCE_PANEL, autofix.SOURCE_AUTO):
-        assert (
-            autofix.dispatch_decide(src, True, True, True, True)
-            == autofix.VERDICT_BANNED
-        )
-        assert (
-            autofix.dispatch_decide(src, False, True, True, True)
-            == autofix.VERDICT_IN_FLIGHT
-        )
-        assert (
-            autofix.dispatch_decide(src, False, False, False, False)
-            == autofix.VERDICT_PROCEED
-        )
+    decide, AUTO, PANEL = autofix.dispatch_decide, autofix.SOURCE_AUTO, autofix.SOURCE_PANEL
+    for src in (PANEL, AUTO):
+        assert decide(src, True, True, True) == autofix.VERDICT_BANNED
+        assert decide(src, False, True, True) == autofix.VERDICT_IN_FLIGHT
+        assert decide(src, False, False, False) == autofix.VERDICT_PROCEED
     # The documented trigger asymmetries - and ONLY these:
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, True, False)
-        == autofix.VERDICT_STAND_DOWN
-    )
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_PANEL, False, False, True, False)
-        == autofix.VERDICT_PROCEED
-    )  # a human's click already decided placement
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, False, True)
-        == autofix.VERDICT_AT_CAPACITY
-    )
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_PANEL, False, False, False, True)
-        == autofix.VERDICT_PROCEED
-    )  # a human's click is one deliberate agent, not a queue being emptied
-    # Capacity outranks mesh: a saturated device must not take the claim for work
-    # it is about to refuse to start.
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, True, True)
-        == autofix.VERDICT_AT_CAPACITY
-    )
-    # The rate-limit budget: auto only, below capacity, above mesh.
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, False, False, True)
-        == autofix.VERDICT_UNAFFORDABLE
-    )
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_PANEL, False, False, False, False, True)
-        == autofix.VERDICT_PROCEED
-    )  # spending your own last of the limit is the operator's call
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, False, True, True)
-        == autofix.VERDICT_AT_CAPACITY
-    )  # no free bay to spend a budget on — the probe is not worth taking
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, True, False, True)
-        == autofix.VERDICT_UNAFFORDABLE
-    )
-    # The free-disk floor: auto only, ahead of capacity, the budget and mesh - a
-    # freed bay frees no space - and behind an agent already on the PR.
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, False, False,
-                                low_disk=True)
-        == autofix.VERDICT_LOW_DISK
-    )
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_PANEL, False, False, False, False,
-                                low_disk=True)
-        == autofix.VERDICT_PROCEED
-    )  # one agent on a tight disk is the operator's call
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, False, True, True, True,
-                                low_disk=True)
-        == autofix.VERDICT_LOW_DISK
-    )
-    assert (
-        autofix.dispatch_decide(autofix.SOURCE_AUTO, False, True, False, False,
-                                low_disk=True)
-        == autofix.VERDICT_IN_FLIGHT
-    )
+    assert decide(AUTO, False, False, True) == autofix.VERDICT_AT_CAPACITY
+    # a human's click is one deliberate agent, not a queue being emptied
+    assert decide(PANEL, False, False, True) == autofix.VERDICT_PROCEED
+    # The rate-limit budget: auto only, below capacity.
+    assert decide(AUTO, False, False, False, True) == autofix.VERDICT_UNAFFORDABLE
+    # spending your own last of the limit is the operator's call
+    assert decide(PANEL, False, False, False, True) == autofix.VERDICT_PROCEED
+    # no free bay to spend a budget on - the probe is not worth taking
+    assert decide(AUTO, False, False, True, True) == autofix.VERDICT_AT_CAPACITY
+    # The free-disk floor: auto only, ahead of capacity and the budget - a freed bay
+    # frees no space - and behind an agent already on the PR.
+    assert decide(AUTO, False, False, False, low_disk=True) == autofix.VERDICT_LOW_DISK
+    # one agent on a tight disk is the operator's call
+    assert decide(PANEL, False, False, False, low_disk=True) == autofix.VERDICT_PROCEED
+    assert decide(AUTO, False, False, True, True, low_disk=True) == autofix.VERDICT_LOW_DISK
+    assert decide(AUTO, False, True, False, low_disk=True) == autofix.VERDICT_IN_FLIGHT
     # The auto-review allowlist: not a trigger asymmetry - a click is refused for an
     # unlisted author exactly as a poll is - and second only to the ban, so that every
     # other reason to hold reads as "would have run, but". Both are pinned for both
     # sources in the Swift smoke.
-    for src in (autofix.SOURCE_PANEL, autofix.SOURCE_AUTO):
-        assert (
-            autofix.dispatch_decide(src, False, True, True, True, True, True)
-            == autofix.VERDICT_NOT_ALLOWED
-        )
-        assert (
-            autofix.dispatch_decide(src, True, False, False, False, False, True)
-            == autofix.VERDICT_BANNED
-        )  # the ban wins where both apply
+    for src in (PANEL, AUTO):
+        assert decide(src, False, True, True, True, True) == autofix.VERDICT_NOT_ALLOWED
+        # the ban wins where both apply
+        assert decide(src, True, False, False, False, True) == autofix.VERDICT_BANNED
     assert (
         autofix.dispatch_label(autofix.SOURCE_AUTO, "Review · #7", 2)
         == "Auto · Review · #7 · retry 2"
@@ -1352,11 +934,9 @@ def test_dispatch_gate_matrix_parity():
     assert not autofix.dispatch_bumps_counter(autofix.SOURCE_PANEL, 1)
 
 
-def _job(number=9, author=None, counter=None, stamp="", mesh=False, action="review"):
-    """One dispatchable job. ``mesh`` gives it the work + ledger keys a job needs to
-    be routed through the mesh at all (both are minted from the PR's head sha).
-    ``action`` is the activity-feed verb, which is also what the queue keys and bands
-    a task by."""
+def _job(number=9, author=None, counter=None, stamp="", action="review"):
+    """One dispatchable job. ``action`` is the activity-feed verb, which is also what
+    the queue keys and bands a task by."""
     return autofix.AgentJob(
         kind="review",
         audit_action=action,
@@ -1365,9 +945,6 @@ def _job(number=9, author=None, counter=None, stamp="", mesh=False, action="revi
         pr_url=f"https://github.com/o/r/pull/{number}",
         pr_number=number,
         author_login=author,
-        duty="review",
-        work_key=f"review:github.com/o/r#{number}@sha" if mesh else "",
-        ledger_key=f"review:github.com/o/r#{number}@sha" if mesh else "",
         counter=counter,
         attempt_stamp=stamp,
     )
@@ -1457,27 +1034,6 @@ def test_a_ban_outranks_the_allowlist(store, monkeypatch):
     ) == autofix.VERDICT_BANNED
 
 
-def test_mesh_routes_only_auto_source(store, monkeypatch):
-    """An AUTO job routes through the mesh (a peer may already own it → stand down);
-    a PANEL (manual) spawn is the operator's own action and always runs locally,
-    never routed — the human already decided placement."""
-    dispatch = _mesh_store(monkeypatch, store, dispatch=_suppressed())
-    calls = _spawn_recorder(monkeypatch)
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    job = autofix.AgentJob(
-        kind="review", audit_action="review", label="Review · #11", prompt="P",
-        pr_url="https://github.com/o/r/pull/11", pr_number=11, duty="review",
-        work_key="review:github.com/o/r#11@sha",
-    )
-    assert store.dispatch_agent(job, autofix.SOURCE_AUTO) == autofix.VERDICT_STAND_DOWN
-    assert calls == []                                     # a peer owns it → nothing local
-    assert dispatch == [("review", "review:github.com/o/r#11@sha")]
-    # The click runs locally regardless, and never consults the mesh.
-    assert store.dispatch_agent(job, autofix.SOURCE_PANEL) == "spawned"
-    assert len(calls) == 1
-    assert dispatch == [("review", "review:github.com/o/r#11@sha")]  # no second consult
-
-
 def test_autofix_poll_does_not_deadlock_on_dispatch(store, monkeypatch):
     """run_autofix_poll_async holds the poll-overlap guard across the whole worker;
     the worker's dispatch_agent takes a SEPARATE lock for the _dispatching_prs guard.
@@ -1511,129 +1067,6 @@ def test_autofix_poll_does_not_deadlock_on_dispatch(store, monkeypatch):
 
 
 # MARK: - the device's automatic-task cap
-
-
-def test_running_auto_tasks_combines_the_three_kinds_of_evidence():
-    """Live-but-untracked counts (an applet restart loses the book while the agents
-    run on); a tracked PANEL agent does not (a click is the operator's own act); a
-    tracked AUTO agent counts even before `ps` has caught up with it."""
-    run = autofix.running_auto_tasks
-    assert run(set(), set(), set()) == 0
-    assert run({1, 2}, set(), set()) == 2            # untracked ⇒ counted as automatic
-    assert run({1, 2}, set(), {1}) == 1              # …unless it is a known manual one
-    assert run(set(), {3}, set()) == 1               # spawned, not yet visible in ps
-    assert run({3}, {3}, set()) == 1                 # …and not counted twice once it is
-    assert run({1, 2, 3}, {4}, {2}) == 3             # 1, 3 and 4
-
-
-def test_an_agent_waiting_at_its_prompt_does_not_hold_a_bay():
-    """The wedge this subtraction exists for: an agent is spawned into an INTERACTIVE
-    session, so finishing its work is not an exit. It sits at its prompt, `ps` keeps
-    showing it, and the bay it took is never given back — a machine whose finished
-    windows are left open defers automatic work for as long as they stay open (seen
-    2026-08-05: two agents idle since the previous evening, both bays of a cap of 2
-    held, auto work deferred 12h later).
-
-    Idle is subtracted from the UNION, not from `live_prs`: a tracked auto agent that
-    goes quiet is re-added by `| auto_prs` otherwise, and the tracked ones are exactly
-    the agents this applet started."""
-    run = autofix.running_auto_tasks
-    assert run({1, 2}, set(), set(), {1}) == 1        # untracked and idle ⇒ freed
-    assert run({1, 2}, set(), set(), {1, 2}) == 0     # both idle ⇒ the cap is empty
-    assert run({1}, {1}, set(), {1}) == 0             # tracked and idle ⇒ freed too
-    assert run({1, 2}, set(), set(), set()) == 2      # nothing idle ⇒ unchanged
-    assert run({1, 2}, set(), set(), {9}) == 2        # an idle PR nobody is running
-    assert run({1, 2}, set(), set(), None) == 2       # no evidence ⇒ nothing freed
-
-
-def test_idle_pr_items_reads_the_pane_on_the_agents_own_tty():
-    """Which live agents are back at their prompt: the tty joins the `ps` line to the
-    tmux pane showing that session, and the CLI's own interrupt hint says whether the
-    turn is still running.
-
-    Evidence is required to free a bay, never to hold one — an agent whose pane could
-    not be read is absent from the result, so the cap keeps counting it."""
-    dump = "\n".join(
-        [
-            "pts/1       04:10 claude Review PR #11 in software-mansion/argent. Use `gh`.",
-            "pts/2       04:10 claude Review PR #22 in software-mansion/argent. Use `gh`.",
-            "pts/3       04:10 claude Review PR #33 in software-mansion/argent. Use `gh`.",
-            # The spawning shell holds the unexpanded $(cat …), never the prompt.
-            "pts/2       04:10 /bin/zsh -i -c cd '/x'; claude \"$(cat '/tmp/p.txt')\"",
-            "?        01-02:03:04 grep PR #44 in software-mansion/argent",
-        ]
-    )
-    working = "● Reading files…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
-    at_prompt = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
-    tails = {"pts/1": working, "pts/2": at_prompt}  # pts/3 has no pane at all
-
-    idle = autofix.idle_pr_items(dump, tails, {ARGENT})
-    assert idle == {f"{ARGENT}#22"}, "only the agent whose own pane shows it at the prompt"
-    # No panes at all (tmux absent, or the dump failed) frees nothing.
-    assert autofix.idle_pr_items(dump, {}, {ARGENT}) == set()
-    # A pane on a tty whose agent is on a repo that is no root is not our business.
-    assert autofix.idle_pr_items(dump, tails, {"other-org/other-repo"}) == set()
-    # Only the agents' own panes are worth capturing — the tick that runs this must
-    # not pay a `capture-pane` for every pane the developer happens to have open.
-    assert autofix.agent_ttys(dump, {ARGENT}) == {"pts/1", "pts/2", "pts/3"}
-    # The argv scan reads the very same lines, so one `ps` pass answers both.
-    assert autofix.live_pr_items(dump, {ARGENT}) == {
-        f"{ARGENT}#11", f"{ARGENT}#22", f"{ARGENT}#33"}
-
-
-def test_the_agent_scans_still_read_a_ps_dump_with_no_tty_column():
-    """``live_pr_items`` predates both leading columns and is called on macOS
-    through the mesh node's own ``ps``; a dump whose first token is the command rather
-    than a tty must still yield its PRs, and must not invent a tty that could match a
-    real pane or an age that could pass for one."""
-    dump = "claude Review PR #11 in software-mansion/argent. Use the `gh` CLI.\n"
-    assert autofix.live_pr_items(dump, {ARGENT}) == {f"{ARGENT}#11"}
-    assert autofix.agent_ttys(dump, {ARGENT}) == {"claude"}
-    assert [a.elapsed for a in autofix.agent_lines(dump, {ARGENT})] == [None]
-    # …and "claude" matches no pane, so nothing is ever read as idle off it.
-    assert autofix.idle_pr_items(dump, {"pts/1": "at the prompt"}, {ARGENT}) == set()
-
-
-def test_elapsed_seconds_reads_every_shape_of_ps_etime():
-    """``[[DD-]HH:]MM:SS``, which is what BOTH ``ps`` implementations print — macOS
-    has no ``etimes`` keyword at all. Anything else is None rather than a guess,
-    because the same column position holds an argv word on a bare ``args=`` dump."""
-    assert autofix.elapsed_seconds("00:04") == 4
-    assert autofix.elapsed_seconds("04:10") == 250
-    assert autofix.elapsed_seconds("01:02:03") == 3723
-    assert autofix.elapsed_seconds("2-03:04:05") == 2 * 86400 + 3 * 3600 + 4 * 60 + 5
-    for junk in ("", "claude", "Review", "12", "1:2:3:4", "-", "aa:bb"):
-        assert autofix.elapsed_seconds(junk) is None, junk
-
-
-def test_an_agent_that_has_not_drawn_its_first_turn_is_not_idle():
-    """A booting agent shows the bare prompt of a finished one — the interrupt hint is
-    on neither screen. Read as idle it hands its bay straight back to the poll that
-    started it, and the next dispatch of that poll is seconds behind: a cap of one,
-    two agents.
-
-    The same window and the same reasoning as the resolver's own screen rung
-    (`agentstate.FIRST_TURN_GRACE`), taken here from the process's age rather than
-    from a record, so it also covers an agent this machine has no book entry for."""
-    from diplomat_runtime import agentstate
-
-    grace = agentstate.FIRST_TURN_GRACE
-    at_prompt = "● Posted the review.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
-
-    def dump(etime):
-        return f"pts/1    {etime} claude Review PR #11 in software-mansion/argent.\n"
-
-    def idle(etime):
-        return autofix.idle_pr_items(dump(etime), {"pts/1": at_prompt}, {ARGENT})
-
-    assert grace == 45.0
-    assert idle("00:02") == set()          # two seconds up: still booting
-    assert idle("00:45") == set()          # exactly the grace is not yet past it
-    assert idle("00:46") == {f"{ARGENT}#11"}   # past it, and the screen is believed
-    assert idle("12:00") == {f"{ARGENT}#11"}
-    # Live and counted the whole time — the grace holds a bay, it never hides an agent.
-    for etime in ("00:02", "00:46"):
-        assert autofix.live_pr_items(dump(etime), {ARGENT}) == {f"{ARGENT}#11"}
 
 
 def test_clamp_auto_task_limit_holds_the_stepper_range():
@@ -1804,9 +1237,8 @@ def test_the_dollar_reserve_is_held_to_what_its_knob_can_express():
 
 
 def test_auto_task_limit_persists_to_the_shared_config_file(store):
-    """It lives in ~/.diplomat/config.json, not QSettings, because the mesh node
-    that spawns peer-routed work is a separate Qt-less process reading the same
-    cap."""
+    """It lives in ~/.diplomat/config.json, not QSettings, because the
+    ``DIPLOMAT_AGENTS`` dump is a separate Qt-less process reading the same cap."""
     from diplomat_runtime import appconfig
 
     assert store.auto_task_limit == 2  # default, with nothing written
@@ -2190,8 +1622,7 @@ def test_a_run_with_no_tty_is_closed_by_the_name_its_session_was_opened_under(
 
 def test_the_tty_walk_still_reaches_a_session_this_applet_never_named(store, monkeypatch):
     """The fallback, and it is not decoration: a run spawned before sessions were named
-    and one the mesh placed here — whose terminal the NODE opened — are both windows
-    with no name of ours on them."""
+    is a window with no name of ours on it."""
     from diplomat_runtime import agentstate as A
 
     killed = _killed(monkeypatch)   # the name route answers no, as it would for those
@@ -2372,9 +1803,9 @@ def test_the_budget_reading_is_taken_in_the_currencies_the_deadline_can_spend(
     reading the new one's funded balance arms the deadline against the very agents the
     exhausted windows parked.
 
-    And only those runs. A panel click, a peer's run and an untracked row each draw on
-    an account this rung can do nothing about, so a ceiling any of them spends says
-    nothing about it."""
+    And only those runs. A panel click and an untracked row each draw on an account
+    this rung can do nothing about, so a ceiling either of them spends says nothing
+    about it."""
     from diplomat_app import probes
     from diplomat_runtime import agentregistry
     from diplomat_runtime import agentstate as A
@@ -2393,13 +1824,11 @@ def test_the_budget_reading_is_taken_in_the_currencies_the_deadline_can_spend(
 
     run_under(801, "claude")
     run_under(802, "hermes", source=A.SOURCE_PANEL)
-    run_under(803, "opencode", placement=A.PLACEMENT_MESH_PEER, node="brick",
-              work_key="review:o/r#803:sha")
     # No run directory, so no runner of its own — and left in, its "" would stand in
     # the selection and put a currency in the join that the rung cannot act on.
     agentregistry.save(agentregistry.load() + [
         A.RunRecord(run_id="untracked:o/r#804", dispatched_at=time.time(), pr_number=804,
-                    source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL, tty="pts/8",
+                    source=A.SOURCE_AUTO, tty="pts/8",
                     untracked=True)])
 
     store.refresh_token_budget()
@@ -2482,7 +1911,7 @@ def test_a_long_manual_run_never_starts_spending_the_automatic_budget(
     store.refresh_auto_task_count()
 
     (row,) = store.running_tasks  # it is on the panel — every run is
-    assert row.state == "running" and not row.mesh
+    assert row.state == "running"
     assert store.free_auto_slots == 2  # …but it is not a bay of the automatic cap
 
 
@@ -2516,31 +1945,6 @@ def test_at_capacity_is_noted_once_per_episode(store, monkeypatch):
     assert len([e for e in activity.read() if e.action == "at-capacity"]) == 2
 
 
-def test_capacity_refusal_never_consults_the_mesh(store, monkeypatch):
-    """A claim has gossip side effects and is held by the executor for its agent's
-    lifetime. A device that is about to refuse to start the work must not take one
-    on the way — every machine scans, so a peer with room finds the same unit."""
-    _spawn_recorder(monkeypatch, finish=False)
-    monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
-    routed: list = []
-    monkeypatch.setattr(
-        store, "_route_via_mesh",
-        lambda job: (routed.append(job.work_key) or "spawned", False, "brick"),
-    )
-    store.auto_task_limit = 1
-
-    assert store.dispatch_agent(_job(number=1), autofix.SOURCE_AUTO) == "spawned"
-    # A peer ran #1, so it spends the peer's budget, not this machine's. What fills
-    # the cap here is an agent nobody booked — one that outlived an applet restart,
-    # say — which the legacy prompt scan is still what finds.
-    fake_probes(monkeypatch, live_prs={99})
-    assert (
-        store.dispatch_agent(_job(number=2), autofix.SOURCE_AUTO)
-        == autofix.VERDICT_AT_CAPACITY
-    )
-    assert len(routed) == 1  # no second consult, no second claim
-
-
 def test_the_cap_spans_both_monitors(store, monkeypatch):
     """It is the DEVICE's cap, not one per monitor. A poll cycle runs the conflict
     reconciler and the review-request monitor back to back; each finds its own queue,
@@ -2569,7 +1973,7 @@ def test_the_cap_spans_both_monitors(store, monkeypatch):
 
 def test_queue_key_names_the_verb_and_the_item():
     """Stable across polls and restarts, which is what lets the operator's drag order
-    outlive the list. Not the mesh work key: that one is scoped to a head sha, so a
+    outlive the list. Not the ledger key: that one is scoped to a head sha, so a
     push during the wait would read as a different task."""
     assert autofix.queue_key("conflicts", item(7)) == "conflicts:o/r#7"
     # One PR can owe two monitors at once — a conflict AND an unaddressed review.
@@ -3236,9 +2640,9 @@ def test_execute_now_says_why_when_nothing_opens(store, monkeypatch):
 
 
 def test_execute_now_answers_the_press_before_the_worker_starts(store, monkeypatch):
-    """The dispatch is a worker thread's seconds-long round trip — a `ps` scan, a mesh
-    placement, a terminal. If the row only changed when that came back, the press would
-    look like it had done nothing (or, worse, deleted the task)."""
+    """The dispatch is a worker thread's seconds-long round trip - a `ps` scan, a
+    terminal. If the row only changed when that came back, the press would look like it
+    had done nothing (or, worse, deleted the task)."""
     entry = autofix.QueuedTask(
         id="review-req:o/r#3", job=_job(number=3, counter="review_requests"), attempt=1
     )
@@ -3329,9 +2733,9 @@ def test_a_starting_task_holds_the_bay_it_is_about_to_fill(store):
 def test_a_dispatch_that_raises_leaves_no_row_starting(store, monkeypatch):
     """The band is the one list a poll cannot rebuild — a starting key is left out of
     the published queue on purpose — so the hand-off out of it has to survive a raise.
-    The dispatch reads files, scans `ps` and, on a live mesh, talks to a node; one of
-    those throwing would otherwise strand a row that never resolves, over work nothing
-    re-offers. The same throw before the band existed cost only the poll it was in."""
+    The dispatch reads files and scans `ps`; either throwing would otherwise strand a
+    row that never resolves, over work nothing re-offers. The same throw before the band
+    existed cost only the poll it was in."""
     entry = autofix.QueuedTask(
         id="review-req:o/r#3", job=_job(number=3, counter="review_requests"), attempt=1
     )
@@ -3644,8 +3048,7 @@ def test_an_automatic_run_its_cli_reported_done_has_its_window_closed(store, mon
 
 def test_a_finished_run_in_a_session_it_did_not_name_is_closed_by_its_tty(
         store, monkeypatch):
-    """When its own session does not answer — one the mesh placed here, whose terminal
-    the node opened — its tty does: the reaper's second route."""
+    """When its own session does not answer, its tty does: the reaper's second route."""
     from diplomat_runtime import agentregistry
 
     killed = _killed(monkeypatch)

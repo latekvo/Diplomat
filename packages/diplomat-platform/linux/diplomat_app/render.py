@@ -7,7 +7,7 @@ a real display by grabbing the widget's own pixels:
         QT_QPA_PLATFORM=offscreen python -m diplomat_app
 
 what ∈ {panel, lookup, wizard, issues, conflicts, audit, settings[-explain],
-devices, devices-screen[-remote[-away]|-off], machines-screen[-idle|-off], mesh,
+devices, devices-screen[-remote[-away]|-off], machines-screen[-idle|-off],
 telemetry, comms, comms-panel, comms-empty, tasks}.
 With DIPLOMAT_RENDER_LIVE=1 it fetches real data first; otherwise it uses a small
 synthetic fixture.
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import QApplication
 
 from diplomat_runtime import agentregistry, agentstate
 from diplomat_runtime.models import Fmt, OpenIssue, OpenPR
-from . import probes, szpont
+from . import probes
 from .panel import Panel
 from .store import Store
 
@@ -426,7 +426,7 @@ def _queue_fixture(store: Store) -> None:
                 # would only be a second, drifting copy of the golden fixtures.
                 prompt="",
                 pr_url=f"https://github.com/{slug}/pull/{number}" if is_pr else None,
-                pr_number=number if is_pr else None, duty=kind, counter=counter,
+                pr_number=number if is_pr else None, counter=counter,
             ),
             attempt=attempt,
         )
@@ -472,7 +472,7 @@ def _queue_fixture(store: Store) -> None:
     busy = "● Reading…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
     at_prompt = "● Done.\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle)"
 
-    def _fixed_probes(records, now, merged=None, tokens=None, mesh_enabled=True):
+    def _fixed_probes(records, now, merged=None, tokens=None):
         return agentstate.Evidence(
             processes=agentstate.Observation.present({
                 4021: agentstate.ProcInfo(tty="pts/40", elapsed=23 * 60,
@@ -484,7 +484,6 @@ def _queue_fixture(store: Store) -> None:
             tails=agentstate.Observation.present({"pts/40": busy,
                                                   "pts/37": at_prompt,
                                                   "pts/35": busy}),
-            claims=agentstate.Observation.present(set()),
             merged_prs=agentstate.Observation.present(set()),
             # #351 is the third way the panel learns of an agent: one nothing here
             # dispatched, found only by the prompt scan (what an applet restart or
@@ -627,9 +626,7 @@ def _telemetry_ledger_fixture() -> None:
         telemetry.append({"at": queued, "ev": "queued", "key": key,
                           "duty": duty, "pr": 300 + i})
         telemetry.append({"at": queued + wait, "ev": "started", "key": key,
-                          "remote": i % 11 == 0, "attempt": 1})
-        if i % 11 == 0:
-            continue  # ran on a peer: no local sentinel, no local cost
+                          "attempt": 1})
         # Right-skewed, as real agent runs are: most around 2% of a window, a few
         # several times that.
         telemetry.append({"at": queued + wait + run, "ev": "done", "key": key,
@@ -643,66 +640,6 @@ def _telemetry_ledger_fixture() -> None:
                           "key": f"{kind}:github.com/software-mansion/argent#{900 + n}@f{n}",
                           "duty": duty, "pr": 900 + n})
     telemetry._reset_cache()
-
-
-def _mesh_fixture(store: Store) -> None:
-    """Synthetic mesh topology so the ⬡ Mesh screen can be eyeballed: a Linux self
-    node, one strong healthy macOS peer, one weak dead macOS peer, the three
-    duties with one platform shortfall, and both WAN states an edge can be in (a
-    peer this pair can re-form with off the LAN, and one it cannot). Enables the
-    mesh via the render-only override (never persisting to real QSettings, never
-    starting a node)."""
-    self_id = "n-self-linux"
-    peer_ok = "n-mbp-strong"
-    peer_dead = "n-mbp-weak"
-    store._mesh_enabled_override = True
-    store.mesh_state = {
-        # os.getpid() → node_running() sees a live pid, so the column reads "live".
-        "updatedAt": "now",
-        "pid": os.getpid(),
-        "tcpPort": 40878,
-        "self": {
-            "id": self_id, "name": "softoobox", "platform": "linux",
-            "tier": 4, "tokens": "ok", "tcpPort": 40878, "epoch": 1, "seq": 12,
-            "tokensAuto": True, "tokensPct": 0.64,
-            "tokensWeekPct": 0.73,
-            "sees": [peer_ok], "dutiesEnabled": {}, "v": 1,
-        },
-        "peers": [
-            # A pinned peer: the quota row shows its real percentages + "pinned".
-            {"id": peer_ok, "name": "mbp-strong", "platform": "macos",
-             "tier": 1, "tokens": "ok", "tcpPort": 40879, "epoch": 1, "seq": 20,
-             "tokensAuto": False, "tokensPct": 0.31,
-             "tokensWeekPct": 0.55,
-             "sees": [self_id], "dutiesEnabled": {}, "v": 1,
-             "link": "up", "addr": "192.168.1.21", "lastSeenSecsAgo": 1.2,
-             "transport": "lan", "wan": "iroh"},
-            # A legacy peer (no real probe): the quota row falls back to "≈NN%".
-            {"id": peer_dead, "name": "mbp-weak", "platform": "macos",
-             "tier": 5, "tokens": "low", "tcpPort": 40880, "epoch": 1, "seq": 8,
-             "tokensPct": 0.2,
-             "sees": [], "dutiesEnabled": {}, "v": 1,
-             "link": "down", "addr": "192.168.1.37", "lastSeenSecsAgo": 42,
-             "transport": "lan", "wan": ""},
-        ],
-        # This machine runs both WAN transports: iroh is up (so there is an id to
-        # copy), Tor is still bootstrapping (the state a fresh node spends minutes in).
-        "wan": {
-            "preferred": "iroh",
-            "transports": {
-                "iroh": {"enabled": True, "ready": True, "address": "3f" * 32},
-                "tor": {"enabled": True, "ready": False, "address": None},
-            },
-        },
-        "assignments": {
-            "review": {"duty": "review", "assigned": [peer_ok], "shortfall": []},
-            "conflicts": {"duty": "conflicts", "assigned": [self_id], "shortfall": []},
-            "audit": {"duty": "audit", "assigned": [self_id],
-                      "shortfall": [{"platform": "macos", "missing": 1}]},
-        },
-        "overrides": {"rev": 0, "updatedBy": "", "duties": {}},
-        "v": 1,
-    }
 
 
 def _comms_fixture(store: Store, *, signed_in: bool) -> None:
@@ -990,13 +927,14 @@ def _tasks_fixture(store: Store) -> bool:
     cfg = core.config()
     home = f"https://github.com/{cfg['owner']}/{cfg['repo']}"
     pr, issue = f"{home}/pull/1714", f"{home}/issues/1702"
-    tor = "https://github.com/latekvo/szpontnet/pull/27"
+    tor = "https://github.com/latekvo/tor-transport/pull/27"
     old = f"{home}/pull/1650"
     answers = {
         f"{cfg['owner']}/{cfg['repo']}#1714".lower(): gh_pr(
             pr, "Physical iPhone runner", comments=[("C1", "kacper", "old")]),
         f"{cfg['owner']}/{cfg['repo']}#1702".lower(): gh_issue(issue, "Support real iPhones"),
-        "latekvo/szpontnet#27": gh_pr(tor, "Tor onion transport", review="REVIEW_REQUIRED"),
+        "latekvo/tor-transport#27": gh_pr(tor, "Tor onion transport",
+                                          review="REVIEW_REQUIRED"),
         f"{cfg['owner']}/{cfg['repo']}#1650".lower(): gh_pr(old, "Drop the old allocator",
                                                             state="MERGED"),
     }
@@ -1011,7 +949,8 @@ def _tasks_fixture(store: Store) -> bool:
                    "links": [pr, "#1702",
                              "https://swmansion.slack.com/archives/D0B54QMA6DT/p1793373966186819"]})
     made({"op": "create", "title": "Tor transport", "tags": ["area:network"],
-          "links": ["latekvo/szpontnet#27", "https://community.torproject.org/onion-services/"]})
+          "links": ["latekvo/tor-transport#27",
+                    "https://community.torproject.org/onion-services/"]})
     docs = made({"op": "create", "title": "Docs refresh", "tags": ["kind:docs"]})
     tasks.edit({"op": "note", "id": docs, "text": "waiting for the new screenshots",
                 "tags": ["waiting"]})
@@ -1101,13 +1040,13 @@ def _goals_fixture(store: Store, home: str, answers: dict, stub_dir, scratch) ->
         kind="issues", audit_action="issues", label="Issues · #1803 · deep", prompt=""), 1)]
     busy = "● Reading…\n⏵⏵ bypass permissions on · esc to interrupt · ← for agents"
 
-    def _fixed_probes(records, now, merged=None, tokens=None, mesh_enabled=True):
+    def _fixed_probes(records, now, merged=None, tokens=None):
         present = agentstate.Observation.present
         return agentstate.Evidence(
             processes=present({pid: agentstate.ProcInfo(tty=tty, elapsed=600, is_agent=True)
                                for pid, tty in ((6001, "pts/60"), (6002, "pts/61"))}),
             sentinels=present(set()), tails=present({"pts/60": busy, "pts/61": busy}),
-            claims=present(set()), merged_prs=present(set()), live_agents=present({}),
+            merged_prs=present(set()), live_agents=present({}),
             tokens_left=present(True))
 
     probes.gather = _fixed_probes
@@ -1126,24 +1065,6 @@ def run(what: str, out: str) -> int:
         store.refresh_allocator_install_async = lambda: None
         store.refresh_machines_install_async = lambda: None
         store.refresh_update_status_async = lambda: None
-
-    # ⬡ is a whole screen only when the add-on is installed, so asking for that
-    # render without it is a request for something that does not exist — said
-    # here, where the answer names what is missing, rather than as a KeyError
-    # from the screen switch below.
-    if what == "mesh":
-        szpont.require()
-
-    # The mesh fixture must land before Panel() — the MeshView paints from the
-    # store snapshot at construction. The wizard modes get it too, so their
-    # "⬡ Run on mesh" row (+ destination preview) is visible. Without the add-on
-    # every one of those is absent, and the fixture would be a synthetic topology
-    # nothing reads.
-    if szpont.AVAILABLE and what in (
-        "mesh", "panel", "settings", "settings-explain", "wizard", "issues",
-        "conflicts", "audit"
-    ):
-        _mesh_fixture(store)
 
     # Also before Panel(): Settings reads every one of these once, as it builds.
     if what.startswith("settings"):
@@ -1189,10 +1110,6 @@ def run(what: str, out: str) -> int:
         _device_fixture(store)
         panel._rebuild_devices()
         panel._update_results()
-    elif what == "mesh":
-        # Fixture already applied above; open the Mesh screen and repaint from it.
-        panel._toggle_mesh()
-        store.mesh_changed.emit()
     elif what == "telemetry":
         panel._toggle_telemetry()
     elif what in ("comms", "comms-empty"):
@@ -1214,7 +1131,6 @@ def run(what: str, out: str) -> int:
         panel._rebuild_devices()
         panel._rebuild_left_pane()
         panel._rebuild_agent_tasks()
-        store.mesh_changed.emit()
         panel._update_results()
 
     panel.show()

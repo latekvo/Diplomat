@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 from diplomat_runtime import (
-    agentregistry, appconfig, opencodeapi, review, runner, szponthost, usagescan,
+    agentregistry, appconfig, opencodeapi, review, runner, usagescan,
 )
 from diplomat_runtime.agentstate import RunRecord, SessionState
 from diplomat_app import probes
@@ -37,10 +37,6 @@ T0 = 1_000_000.0
 PROMPT = "Review PR #7 in o/r\nwith a second line and a 'quote'"
 SID = "ses_diplomat_0123456789abcdef0123456789abcdef"
 PASSWORD = "s3cret-service-password"
-
-#: Captured at import, before conftest's fence replaces it for every test.
-_real_spawn_macos = szponthost._spawn_macos
-
 
 def quiet_shell(directory: Path, prelude: str = "") -> str:
     """A user shell that runs ``prelude`` and sources nothing else, whether asked to log
@@ -329,8 +325,8 @@ def test_another_runner_never_asks_which_opencode_is_installed(tmp_path, monkeyp
 
 
 def test_a_2x_spawn_without_a_pid_file_still_exits_its_own_shell(opencode, monkeypatch):
-    """The mesh node spawns with no pid file, and the 2.x string's ``|| exit`` would
-    otherwise end the WINDOW's shell before the exit sentinel is written."""
+    """The 2.x string's ``|| exit`` would otherwise end the WINDOW's shell before the
+    exit sentinel is written."""
     monkeypatch.setattr(review, "user_shell", lambda: "/bin/zsh")
     cmd = review.shell_command("/tmp/p.txt", "/tmp/done", opencode_session=SID)
     agent = runner.agent_command("/tmp/p.txt", opencode_session=SID)
@@ -413,33 +409,6 @@ def test_a_1x_run_gets_its_port_and_binds_later(opencode, monkeypatch):
     assert calls[0]["port"] == agentregistry.port(run_id) is not None
     assert agentregistry.bound_session(run_id) == ""
     assert agentregistry.service_session(run_id) == ""
-
-
-def test_a_mesh_job_on_2x_is_started_through_the_service(opencode, as_v2, monkeypatch,
-                                                         tmp_path):
-    """No run directory to bind into, but the spawn itself must still be the 2.x one —
-    the 1.x spelling starts nothing on 2.x."""
-    monkeypatch.setattr(szponthost.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(review, "write_prompt",
-                        lambda prompt: str(_prompt_file(tmp_path)))
-    calls = _spawned(monkeypatch)
-    szponthost.DiplomatHost().run_job(PROMPT, str(tmp_path / "job.done"))
-    sid = calls[0]["opencode_session"]
-    assert sid.startswith("ses_diplomat_")
-    assert _staged(Path(calls[0]["prompt_file"]))[0]["id"] == sid
-
-
-def test_a_mesh_job_on_macos_is_started_through_the_service(opencode, as_v2,
-                                                            monkeypatch, tmp_path):
-    launched: list[list] = []
-    monkeypatch.setattr(szponthost, "_spawn_macos", _real_spawn_macos)
-    monkeypatch.setattr(szponthost.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(review, "write_prompt",
-                        lambda prompt: str(_prompt_file(tmp_path)))
-    monkeypatch.setattr(review, "popen_detached", lambda argv: launched.append(argv))
-    szponthost.DiplomatHost().run_job(PROMPT, None)
-    assert "opencode api session.create" in launched[0][2]
-    assert "--prompt" not in launched[0][2]
 
 
 # MARK: - Asking the service
@@ -822,7 +791,7 @@ def repo_o_r(monkeypatch):
 
 def test_a_2x_tui_is_found_by_the_prompt_its_session_opened_on(service, repo_o_r):
     """Its argv is ``opencode --session <id>`` and nothing else; a scan of argvs alone
-    reads a mesh-placed 2.x agent as no agent and retires it mid-turn."""
+    reads a 2.x agent as no agent and retires it mid-turn."""
     _opening(service, SID, PROMPT)
     dump = _ps(f"opencode --session {SID}")
     assert probes.live_agents(dump, ROOTS).value == {"o/r#7": "pts/0"}
@@ -866,24 +835,6 @@ def test_the_shells_around_a_2x_tui_are_not_its_sighting(service, repo_o_r):
     assert probes.live_agents(dump, ROOTS).value == {"o/r#7": "pts/5"}
 
 
-def test_the_mesh_node_takes_a_2x_tuis_tty_not_its_wrappers(service):
-    from diplomat_runtime import autofix
-
-    _opening(service, SID, PROMPT)
-    dump = ("".join(f"?? 00:09 {w}\n" for w in WRAPPERS)
-            + f"ttys005 00:08 /opt/npm/bin/opencode --session {SID}\n")
-    assert autofix.agent_ttys(dump, ROOTS) == {"ttys005"}
-    assert autofix.agent_ttys(f"opencode --session {SID}\n", ROOTS) == {"opencode"}
-
-
-def test_the_mesh_dedup_sees_a_2x_tui_too(service):
-    from diplomat_runtime import autofix
-
-    _opening(service, SID, PROMPT)
-    assert autofix.live_pr_items(f"pts/3 00:30 opencode --session {SID}\n",
-                                 ROOTS) == {"o/r#7"}
-
-
 def test_an_opening_prompt_is_asked_once_per_session(service, repo_o_r):
     _opening(service, SID, PROMPT)
     dump = _ps(f"opencode --session {SID}")
@@ -925,13 +876,9 @@ def test_a_service_that_will_not_answer_matches_nothing(repo_o_r):
     assert probes.live_agents(_ps(f"opencode --session {SID}"), ROOTS).value == {}
 
 
-def _mesh_here_run(run_id: str = "m1") -> RunRecord:
-    """A run the mesh placed back on this machine: the node opened its window, so there
-    is no pid and no session bound at spawn."""
-    from diplomat_runtime import agentstate
-
-    record = RunRecord(run_id=run_id, dispatched_at=T0, pr_number=7,
-                       placement=agentstate.PLACEMENT_MESH_HERE)
+def _unbound_run(run_id: str = "m1") -> RunRecord:
+    """A run with no pid and no session bound at its spawn."""
+    record = RunRecord(run_id=run_id, dispatched_at=T0, pr_number=7)
     agentregistry.create_run(record, PROMPT)
     agentregistry.runner_path(run_id).write_text(runner.OPENCODE, encoding="utf-8")
     return record
@@ -942,14 +889,14 @@ def _busy(service, session_id: str = SID) -> None:
     service.routes[("GET", "/api/session/active")] = (200, {"data": {session_id: {}}})
 
 
-def test_a_mesh_placed_2x_run_is_bound_by_its_opening_prompt_and_asked(service,
-                                                                     monkeypatch):
+def test_an_unbound_2x_run_is_bound_by_its_opening_prompt_and_asked(service,
+                                                                    monkeypatch):
     _opening(service, OTHER, "Review PR #8 in o/r")
     _opening(service, SID, PROMPT)
     _busy(service)
     monkeypatch.setattr(probes, "_ps_dump", lambda now: _ps(
         f"opencode --session {OTHER}", f"opencode --session {SID}"))
-    obs = probes.agent_sessions([_mesh_here_run()], "/repo", T0)
+    obs = probes.agent_sessions([_unbound_run()], "/repo", T0)
     assert obs.value == {"m1": SessionState(busy=True)}
     assert agentregistry.service_session("m1") == SID
 
@@ -958,15 +905,15 @@ def test_a_session_another_run_holds_is_not_bound_again(service, monkeypatch):
     _opening(service, SID, PROMPT)
     _busy(service)
     monkeypatch.setattr(probes, "_ps_dump", lambda now: _ps(f"opencode --session {SID}"))
-    probes.agent_sessions([_v2_run("r1"), _mesh_here_run()], "/repo", T0)
+    probes.agent_sessions([_v2_run("r1"), _unbound_run()], "/repo", T0)
     assert agentregistry.bound_session("m1") == ""
 
 
-def test_a_bound_mesh_placed_run_is_interrupted_when_retired(service, monkeypatch):
+def test_a_run_bound_by_its_prompt_is_interrupted_when_retired(service, monkeypatch):
     _opening(service, SID, PROMPT)
     _busy(service)
     monkeypatch.setattr(probes, "_ps_dump", lambda now: _ps(f"opencode --session {SID}"))
-    record = _mesh_here_run()
+    record = _unbound_run()
     probes.agent_sessions([record], "/repo", T0)
     assert ("interrupt", SID) in _retire(monkeypatch, [record])
 

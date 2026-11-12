@@ -1,10 +1,10 @@
 """Resolve-conflicts wizard — pick whose PRs to sweep, then SPAWN.
 
-The Linux analogue of ConflictWizardView.swift. Collects the same choice (mine /
-someone else's / one specific PR) and builds the prompt from the shared
-assets/conflicts.json. Dispatching it — over the mesh, or locally through the same
-gate the auto-fix monitor rides — is :class:`~diplomat_app.wizardbase.SpawnWizard`'s
-job. Persistent widget (state survives data refreshes).
+The Linux analogue of ConflictWizardView.swift. Collects the same choice (mine / someone
+else's / one specific PR) and builds the prompt from the shared assets/conflicts.json.
+Dispatching it - through the same gate the auto-fix monitor rides - is
+:class:`~diplomat_app.wizardbase.SpawnWizard`'s job. Persistent widget (state survives
+data refreshes).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from . import conflicts, glyphs, widgets
 from .conflicts import Target
 from .store import Store
-from .wizardbase import SpawnWizard, mesh_applicable, mismatch_warning
+from .wizardbase import SpawnWizard, mismatch_warning
 
 _TINT = "#32ADE6"  # cyan, matching the macOS Resolve-conflicts card
 
@@ -59,7 +59,6 @@ class ConflictWizardView(SpawnWizard):
             "still flags the PR conflicting."
         ))
 
-        # Mesh routing (visible only while the LAN mesh is enabled + running).
         self._add_dispatch_controls(root)
 
         root.addStretch(1)
@@ -88,8 +87,6 @@ class ConflictWizardView(SpawnWizard):
             self.pr_warning.setVisible(True)
         else:
             self.pr_warning.setVisible(False)
-
-        self.mesh_row.set_applicable(mesh_applicable(cfg, True))
 
         self._restyle_spawn()
 

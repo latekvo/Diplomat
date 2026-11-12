@@ -14,23 +14,20 @@ the monitors record events and every figure is derived on read. Nothing in the
 file is a summary; a bug in the arithmetic is fixed by editing this module, not
 by re-gathering a fortnight of data.
 
-The event vocabulary, per unit of auto-work (keyed by the mesh work key, which is
-already the identity two machines agree on — :func:`autofix.work_key`):
+The event vocabulary, per unit of auto-work (keyed by :func:`autofix.ledger_key`):
 
 ``queued``
     a poll saw this work owed for the first time.
 ``started``
-    an agent was dispatched for it (``remote`` when the mesh placed it on a peer,
-    whose quota it then spends rather than ours).
+    an agent was dispatched for it.
 ``done``
-    the agent exited — timed from its completion sentinel, or from the last turn of
-    its transcript where the mesh placed the run and kept no sentinel we can read —
-    carrying the tokens that transcript accounts for (see :mod:`usagescan`), and,
-    for a runner the provider bills in money, what it charged and the model it
-    charged for (see :func:`hermesstore.session_price`).
+    the agent exited - timed from its completion sentinel, or from the last turn of its
+    transcript where it left none - carrying the tokens that transcript accounts for
+    (see :mod:`usagescan`), and, for a runner the provider bills in money, what it
+    charged and the model it charged for (see :func:`hermesstore.session_price`).
 ``cleared``
     a poll no longer sees it owed and we never started it — someone replied by
-    hand, the PR closed, a peer took it.
+    hand, or the PR closed.
 
 plus a ``sample`` every :data:`SAMPLE_INTERVAL_SECS` carrying the account's
 remaining quota fractions and this machine's cumulative Claude token counters,
@@ -247,9 +244,8 @@ def record_queued(key: str, duty: str, pr: int) -> None:
     append({"at": time.time(), "ev": "queued", "key": key, "duty": duty, "pr": pr})
 
 
-def record_started(key: str, remote: bool = False, attempt: int = 1) -> None:
-    append({"at": time.time(), "ev": "started", "key": key,
-            "remote": remote, "attempt": attempt})
+def record_started(key: str, attempt: int = 1) -> None:
+    append({"at": time.time(), "ev": "started", "key": key, "attempt": attempt})
 
 
 def record_done(key: str, at: float, tokens: float | None,
@@ -299,13 +295,12 @@ def record_completion(key: str, prompt: str, started_at: float,
     running totals on. Everything else is a Claude Code run, found in ``~/.claude`` by
     the prompt it opened with.
 
-    ``exited_at`` is the completion sentinel's mtime, for a run that left one. A run
-    the mesh placed leaves none: the node deletes its own sentinel the instant it
-    fires, so the applet never sees it. A Claude Code run is dated from its
-    transcript's last turn instead — written seconds before the agent exits — where
-    ``noticed_at`` is the poll that found the run gone, up to a poll period later,
-    and would inflate the run time by that much. A foreign runner is priced by
-    session id rather than by transcript and leaves nothing finer than the poll.
+    ``exited_at`` is the completion sentinel's mtime, for a run that left one. A Claude
+    Code run is dated from its transcript's last turn instead - written seconds before
+    the agent exits - where ``noticed_at`` is the poll that found the run gone, up to a
+    poll period later, and would inflate the run time by that much. A foreign runner is
+    priced by session id rather than by transcript and leaves nothing finer than the
+    poll.
 
     Attribution can fail either way — the applet restarting mid-agent loses the prompt
     the match needs, and a session whose window was closed before it was matched has
@@ -450,7 +445,6 @@ class Task:
     started_at: float | None = None
     done_at: float | None = None
     cleared_at: float | None = None
-    remote: bool = False
     tokens: float | None = None
     #: Which CLI ran it (a :mod:`runner` key), or blank for a task recorded before
     #: there was a choice of one.
@@ -617,7 +611,6 @@ def fold(lines: list[str]) -> Ledger:
         elif ev == "started":
             if task.started_at is None:
                 task.started_at = at
-                task.remote = obj.get("remote") is True
         elif ev == "done":
             agent_runner = obj.get("runner")
             agent_runner = agent_runner if isinstance(agent_runner, str) else ""
@@ -655,9 +648,8 @@ def fold(lines: list[str]) -> Ledger:
             if task.cleared_at is None:
                 task.cleared_at = at
 
-    # Samples arrive in append order, which is chronological — but two processes
-    # (the applet and a mesh node) append to one file, so a slow write can land
-    # out of order. Every consumer below walks consecutive pairs, so sort once.
+    # Every consumer below walks consecutive pairs, so sort once rather than trust
+    # the file's order.
     samples.sort(key=lambda s: s.at)
     return Ledger(tasks=[by_key[k] for k in order], samples=samples)
 
@@ -855,9 +847,7 @@ def finished_series(tasks: list[Task], *, now: float, days: float,
     """How many tasks finished in each equal bucket of the lookback, oldest first.
 
     Bucketed by when a task ENDED, not when it started or was queued: a run that
-    spanned two buckets is one delivery, and it happened at its exit. Work the mesh
-    placed on a peer is counted like any other — it was delivered — even though its
-    cost belongs to that peer and is kept out of every per-task figure.
+    spanned two buckets is one delivery, and it happened at its exit.
 
     The buckets are laid backwards from ``now`` rather than forwards from the start
     of the range, so the newest bar covers a whole bucket like every other one. Laid
@@ -921,10 +911,9 @@ def quota_series(samples: list[Sample], *, now: float,
 @dataclass(frozen=True)
 class TaskSpan:
     """One task's life, for the rate-limit chart's overlay markers. ``done`` is None
-    for a task still running, or one the mesh placed on a peer that this node never
-    saw finish. ``started_pct``/``done_pct`` are the weekly-quota level at each
-    instant, read off the same readings the purple line is drawn from so a marker
-    sits on that line — None only when no reading carries a week value."""
+    for a task still running. ``started_pct``/``done_pct`` are the weekly-quota level at
+    each instant, read off the same readings the purple line is drawn from so a marker
+    sits on that line - None only when no reading carries a week value."""
 
     started: float
     done: float | None
@@ -1061,7 +1050,6 @@ class Summary:
     queued_count: int = 0
     started_count: int = 0
     done_count: int = 0
-    remote_count: int = 0
     #: Finished tasks whose transcript could not be tied back to the run, so they
     #: carry no tokens and sit out the spread.
     unattributed_count: int = 0
@@ -1100,11 +1088,10 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
     # agent runs.
     in_range = [t for t in ledger.tasks
                 if t.started_at is not None and start <= t.started_at <= now]
-    local = [t for t in in_range if not t.remote]
-    runs = [t.run_secs for t in local if t.run_secs is not None]
+    runs = [t.run_secs for t in in_range if t.run_secs is not None]
     waits = [t.wait_secs for t in in_range if t.wait_secs is not None]
 
-    priced = [t for t in local if t.tokens is not None and t.tokens > 0]
+    priced = [t for t in in_range if t.tokens is not None and t.tokens > 0]
     # Two lists, because the two figures ask different questions: what a task cost is
     # a token count whoever billed it, while a share of a window is the account's and
     # only its own tasks may be measured against it.
@@ -1128,7 +1115,7 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
     # direction of the two. Ties go to the first seen, as they do in the Swift twin.
     # Another runner's bills price nothing: it is logged into its own provider, or
     # into none.
-    billed = [t for t in local if t.usd is not None and t.usd > 0
+    billed = [t for t in in_range if t.usd is not None and t.usd > 0
               and (not usd_runner or t.runner == usd_runner)]
     latest: Task | None = None
     for task in billed:
@@ -1181,9 +1168,8 @@ def summarize(ledger: Ledger, *, now: float, days: float, steps: int,
         queued_count=sum(1 for t in ledger.tasks
                          if t.queued_at is not None and start <= t.queued_at <= now),
         started_count=len(in_range),
-        done_count=sum(1 for t in local if t.done_at is not None),
-        remote_count=sum(1 for t in in_range if t.remote),
-        unattributed_count=sum(1 for t in local
+        done_count=sum(1 for t in in_range if t.done_at is not None),
+        unattributed_count=sum(1 for t in in_range
                                if t.done_at is not None and not (t.tokens or 0) > 0),
         first_sample_at=ledger.samples[0].at if ledger.samples else None,
         last_sample_at=ledger.samples[-1].at if ledger.samples else None,
@@ -1308,7 +1294,7 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
                 "key": t.key, "duty": t.duty, "pr": t.pr,
                 "queuedAt": _opt(t.queued_at), "startedAt": _opt(t.started_at),
                 "doneAt": _opt(t.done_at), "clearedAt": _opt(t.cleared_at),
-                "remote": t.remote, "tokens": _opt(t.tokens), "runner": t.runner,
+                "tokens": _opt(t.tokens), "runner": t.runner,
                 "usd": _opt(t.usd), "model": t.model,
                 "runSecs": _opt(t.run_secs), "waitSecs": _opt(t.wait_secs),
             }
@@ -1350,7 +1336,6 @@ def parity_payload(ledger: Ledger, summary: Summary) -> dict:
         "queuedCount": summary.queued_count,
         "startedCount": summary.started_count,
         "doneCount": summary.done_count,
-        "remoteCount": summary.remote_count,
         "unattributedCount": summary.unattributed_count,
         "firstSampleAt": _opt(summary.first_sample_at),
         "lastSampleAt": _opt(summary.last_sample_at),

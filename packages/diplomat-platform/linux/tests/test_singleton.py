@@ -42,8 +42,7 @@ def test_cmdline_matches_applet_gui(tokens):
 @pytest.mark.parametrize(
     "tokens",
     [
-        ["python3", "-m", "szpontnet"],  # mesh node — must NOT match
-        ["python3", "-m", "argent_utils.mesh"],  # legacy mesh node
+        ["python3", "-m", "diplomat_app.render"],  # a submodule is no GUI launch
         ["python3", "-m", "something_else"],
         ["python3", "script.py"],  # no -m at all
         ["python3", "-m"],  # -m with nothing after it

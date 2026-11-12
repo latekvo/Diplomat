@@ -70,8 +70,7 @@ def _python(records, evidence, now=T0, limit=LIMIT,
 
     def verdict(s: A.Resolution) -> dict:
         return {"state": s.state, "reason": s.reason, "wedged": s.wedged,
-                "expired": s.expired, "unfindable": s.unfindable, "lapsed": s.lapsed,
-                "reported": s.reported}
+                "expired": s.expired, "lapsed": s.lapsed, "reported": s.reported}
 
     return {
         "rows": [{"runId": r.run_id, **verdict(s)} for r, s in t.rows],
@@ -96,11 +95,10 @@ def _python(records, evidence, now=T0, limit=LIMIT,
         # retrying a window it cannot close, and would go on retiring the run. pid, tty,
         # dispatchedAt and source are what a released record inherits from the run it
         # replaces, and the pid is its identity from then on.
-        "records": [{"runId": r.run_id, "claimSeenAt": r.claim_seen_at,
+        "records": [{"runId": r.run_id,
                      "untracked": r.untracked, "released": r.released,
                      "source": r.source,
                      "pid": r.pid, "tty": r.tty, "dispatchedAt": r.dispatched_at,
-                     "placement": r.placement,
                      "quietDigest": r.quiet_digest, "quietSince": r.quiet_since,
                      "reapRefusedAt": r.reap_refused_at}
                     for r in t.records],
@@ -218,12 +216,12 @@ def test_each_scenario_resolves_identically(name, record, evidence, _state, _rea
 #
 # The per-case runs above each hold a single record, so they cannot catch a
 # disagreement about ORDER, about which records are summed into the cap, or about the
-# claim-then-synthesize sequence. This one does.
+# adopt-then-synthesize sequence. This one does.
 
 
 def _mixed():
-    """Records covering every state and every placement/source combination, plus a
-    live PR with no record so the untracked synthesis runs."""
+    """Records covering every state a readable machine produces and both sources, plus
+    a live PR with no record so the untracked synthesis runs."""
     records = [
         rec(run_id="working", pid=1, dispatched_at=T0 - 300, pr_number=301),
         rec(run_id="at-prompt", pid=2, tty="pts/4", dispatched_at=T0 - 400,
@@ -233,27 +231,15 @@ def _mixed():
         rec(run_id="exited", pid=99, dispatched_at=T0 - 600, pr_number=304),
         rec(run_id="landed", pid=4, tty="pts/6", dispatched_at=T0 - 700,
             pr_number=305),
-        rec(run_id="on-a-peer", placement=A.PLACEMENT_MESH_PEER, node="brick",
-            work_key="review:306:sha", pid=None, tty="", dispatched_at=T0 - 800,
-            pr_number=306, claim_seen_at=None),
-        rec(run_id="peer-gone", placement=A.PLACEMENT_MESH_PEER, node="brick",
-            work_key="review:307:sha", pid=None, tty="", dispatched_at=T0 - 900,
-            pr_number=307, claim_seen_at=T0 - 200),
-        rec(run_id="mesh-here", placement=A.PLACEMENT_MESH_HERE, pid=5, tty="pts/7",
-            work_key="review:308:sha", dispatched_at=T0 - 1000, pr_number=308),
         rec(run_id="just-spawned", pid=None, dispatched_at=T0 - 3, pr_number=309),
-        # Mesh-here, so no pid file was ever owed, and no PR for the scan to look
-        # for: nothing can be asked about it — the fixture's one `unknown`.
-        rec(run_id="lost", placement=A.PLACEMENT_MESH_HERE, pid=None, tty="",
-            dispatched_at=T0 - 5000, pr_number=None),
-        # Local and pid-less long past the grace: the spawn's own report that its
-        # terminal never ran the command. Carries a PR the scan cannot find, so the
-        # two sides also have to agree on which of the two rungs answers first.
+        # Pid-less long past the grace: the spawn's own report that its terminal never
+        # ran the command. Carries a PR the scan cannot find, so the two sides also
+        # have to agree on which of the two rungs answers first.
         rec(run_id="never-ran", pid=None, tty="", dispatched_at=T0 - 5000,
             pr_number=310),
-        # A pid-less run the mesh placed back here, found by the prompt scan.
-        rec(run_id="mesh-no-pid", pid=None, tty="", placement=A.PLACEMENT_MESH_HERE,
-            dispatched_at=T0 - 5000, pr_number=311),
+        # The same, found by the prompt scan.
+        rec(run_id="no-pid-seen", pid=None, tty="", dispatched_at=T0 - 5000,
+            pr_number=311),
         # Alive, working, and past the deadline — so the fixture carries the one rung
         # that overrules a screen rather than reading it, and the two sides have to
         # agree on the age it quotes as well as on the verdict.
@@ -279,11 +265,6 @@ def _mixed():
         # Reported over beside the released "untracked:o/r#315", whose run id is taken.
         rec(run_id="reported-past-released", pid=12, tty="pts/19",
             dispatched_at=T0 - 1250, pr_number=315),
-        # A peer's run whose PR landed seconds after dispatch, while this box's scan
-        # sees a session on it: nothing is released.
-        rec(run_id="peer-landed", placement=A.PLACEMENT_MESH_PEER, node="brick",
-            work_key="review:316:sha", pid=None, tty="", dispatched_at=T0 - 10,
-            pr_number=316, claim_seen_at=T0 - 1),
         # Reported over after twenty still minutes: its agent is released and closed on
         # this tick.
         rec(run_id="reported-still", pid=10, tty="pts/17", dispatched_at=T0 - 1400,
@@ -295,23 +276,22 @@ def _mixed():
             dispatched_at=T0 - 1500, pr_number=318,
             quiet_digest=A.pane_digest(AT_PROMPT), quiet_since=T0 - A.QUIET_TIMEOUT,
             reap_refused_at=T0 - 60),
-        # Placed here by the mesh on a released agent's PR, which the scan still names
-        # by the released agent's tty: it adopts none.
+        # Pid-less on a released agent's PR, which the scan still names by the released
+        # agent's tty: it adopts none.
         rec(run_id="untracked:o/r#319", pid=13, tty="pts/20", untracked=True, released=True,
             dispatched_at=T0 - 1700, pr_number=319),
-        rec(run_id="placed-beside-released", pid=None, tty="",
-            placement=A.PLACEMENT_MESH_HERE, dispatched_at=T0 - 30, pr_number=319),
+        rec(run_id="pidless-beside-released", pid=None, tty="",
+            dispatched_at=T0 - 30, pr_number=319),
         # A pid-less untracked record whose PR's sighting is another record's tty: it
         # stays where it is.
         rec(run_id="untracked:o/r#320", pid=None, tty="pts/21", untracked=True,
             dispatched_at=T0 - 1800, pr_number=320),
-        rec(run_id="placed-holding", pid=None, tty="pts/22",
-            placement=A.PLACEMENT_MESH_HERE, dispatched_at=T0 - 40, pr_number=320),
+        rec(run_id="pidless-holding", pid=None, tty="pts/22",
+            dispatched_at=T0 - 40, pr_number=320),
     ]
     evidence = ev(
         processes={1: proc(elapsed=300), 2: proc(elapsed=400, tty="pts/4"),
                    3: proc(elapsed=500, tty="pts/5"), 4: proc(elapsed=700, tty="pts/6"),
-                   5: proc(elapsed=1000, tty="pts/7"),
                    6: proc(elapsed=PAST_DEADLINE, tty="pts/10"),
                    7: proc(elapsed=1100, tty="pts/11"),
                    8: proc(elapsed=1200, tty="pts/13"),
@@ -321,15 +301,14 @@ def _mixed():
                    12: proc(elapsed=1250, tty="pts/19"),
                    13: proc(elapsed=1700, tty="pts/20")},
         tails={"pts/3": WORKING, "pts/4": AT_PROMPT, "pts/5": WORKING,
-               "pts/6": WORKING, "pts/7": AT_PROMPT, "pts/9": WORKING,
+               "pts/6": WORKING, "pts/9": WORKING,
                "pts/10": WORKING, "pts/11": AT_PROMPT, "pts/12": WORKING,
-               "pts/13": WORKING, "pts/15": AT_PROMPT, "pts/16": WORKING,
+               "pts/13": WORKING, "pts/15": AT_PROMPT,
                "pts/17": AT_PROMPT, "pts/18": AT_PROMPT, "pts/19": AT_PROMPT,
                "pts/20": AT_PROMPT, "pts/21": AT_PROMPT, "pts/22": WORKING},
-        claims={"review:306:sha", "review:316:sha"},
-        merged={305, 316},
+        merged={305},
         live_agents={404: "pts/8", 311: "pts/9", 313: "pts/11", 314: "pts/12",
-                     315: "pts/14", 301: "pts/15", 316: "pts/16", 317: "pts/17",
+                     315: "pts/14", 301: "pts/15", 317: "pts/17",
                      318: "pts/18", 319: "pts/20", 320: "pts/22"},
         activity={"reported": ("idle", T0 - 5), "reported-beside": ("idle", T0 - 5),
                   "pidless-beside": ("idle", T0 - 5),
@@ -353,9 +332,10 @@ def test_the_whole_tick_agrees(mixed_results):
 
 def test_the_fixture_actually_reaches_every_state(mixed_results):
     """Anti-vacuity: a fixture that only ever produces `running` would diff clean
-    while every other rung drifted freely."""
+    while every other rung drifted freely. `unknown` takes evidence that could not be
+    read, which the per-case runs above cover and a fixture read whole cannot."""
     _swift_out, python = mixed_results
-    assert {r["state"] for r in python["rows"]} == set(A.STATE_ORDER)
+    assert {r["state"] for r in python["rows"]} == set(A.STATE_ORDER) - {A.UNKNOWN}
 
 
 def test_the_fixture_exercises_every_projection(mixed_results):
@@ -372,8 +352,6 @@ def test_the_fixture_exercises_every_projection(mixed_results):
         "the dedup answer must be both True and False somewhere in the fixture"
     assert any(r["untracked"] for r in python["records"]), \
         "the untracked synthesis never ran"
-    assert any(r["claimSeenAt"] is not None for r in python["records"]), \
-        "no claim sighting was taken — observe_claims is untested"
     assert any(r["runId"] == "untracked:o/r#313" and r["released"] and r["pid"] == 7
                for r in python["records"]), "no ended run released its agent"
     heirs = {r["runId"]: r["pid"] for r in python["records"] if r["released"]}
@@ -392,7 +370,7 @@ def test_the_fixture_exercises_every_projection(mixed_results):
     assert "untracked:o/r#318" not in python["reapable"], \
         "a released agent must wait out its run's refused close"
     ttys = {r["runId"]: r["tty"] for r in python["records"]}
-    assert (ttys["placed-beside-released"], ttys["untracked:o/r#320"]) == ("", "pts/21"), \
+    assert (ttys["pidless-beside-released"], ttys["untracked:o/r#320"]) == ("", "pts/21"), \
         "a pid-less record took another record's tty off the scan"
 
 
@@ -418,9 +396,9 @@ _RELEASE_INTO_ITS_OWN_NAME = {
     "now": 1000000.0, "limit": 2, "deadline": 14400.0,
     "records": [{"runId": "untracked:o/r#337", "dispatchedAt": 1000000.0, "prNumber": 337,
                  "prUrl": "https://github.com/o/r/pull/337", "kind": "review",
-                 "label": "Auto · Review · #337", "source": "auto", "placement": "local",
-                 "node": "", "workKey": "", "ledgerKey": "", "pid": None, "tty": "pts/3",
-                 "claimSeenAt": None, "quietDigest": "", "quietSince": None,
+                 "label": "Auto · Review · #337", "source": "auto",
+                 "ledgerKey": "", "pid": None, "tty": "pts/3",
+                 "quietDigest": "", "quietSince": None,
                  "reapRefusedAt": None, "untracked": 1, "released": False}],
     "evidence": {
         key: {"status": "present", "value": value, "reason": ""}
@@ -428,7 +406,7 @@ _RELEASE_INTO_ITS_OWN_NAME = {
             "activity": {}, "processes": {}, "sentinels": [],
             "tails": {"pts/3": "● Posted the review.\n❯\n"
                                "⏵⏵ bypass permissions on (shift+tab to cycle)"},
-            "claims": [], "mergedPrs": ["o/r#337"], "liveAgents": {"o/r#337": "pts/3"},
+            "mergedPrs": ["o/r#337"], "liveAgents": {"o/r#337": "pts/3"},
             "sessions": {}, "tokensLeft": True}.items()},
 }
 
