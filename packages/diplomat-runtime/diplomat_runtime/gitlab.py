@@ -2,13 +2,15 @@
 
 Each ``assets/graphql/gitlab-*.graphql`` answer is turned into the exact envelope the
 GitHub query of the same job returns, so one parser reads both. Twin of
-``GitLab.swift``, and no call to glab but through the ``search`` an adapter is handed; the shared fixtures in
-``packages/diplomat-core/Tests/fixtures/gitlab`` pin the two to one output.
+``GitLab.swift``; nothing here calls glab but the ``search`` an adapter is handed. The
+shared fixtures in ``packages/diplomat-core/Tests/fixtures/gitlab`` pin the two twins to
+one output.
 
 GitLab has no author association, so a project member reads as ``MEMBER`` and anyone
 else as ``NONE``; an author past a full member page is asked of ``search``, which looks
-usernames up with ``gitlab-member-search``. It records a review request, an approval, a requested change and a
-ready-for-review as system ("activity") notes only, so those are read off note bodies.
+usernames up with ``gitlab-member-search``. GitLab records a review request, an
+approval, a requested change and a ready-for-review as system ("activity") notes only,
+so those are read off note bodies.
 """
 
 from __future__ import annotations
