@@ -348,6 +348,16 @@ def test_a_work_items_link_is_an_issue():
     assert item_key_from_url(item) == "group/sub/proj#7"
 
 
+def test_comms_fixes_a_gitlab_issue_served_as_a_work_item(lab_only, monkeypatch):
+    monkeypatch.setattr("diplomat_app.store.Store._comms_banned", lambda self, a: False)
+    url = f"https://{HOST}/group/sub/proj/-/work_items/5"
+    what, ask = lab_only._comms_fix(5, "group/sub/proj", LAB,
+                                    {"number": 5, "url": url, "author": "bob",
+                                     "state": "OPEN"})
+    assert ask is not None, what
+    assert (ask.number, ask.url, ask.author) == (5, url, "bob")
+
+
 def test_a_roots_links_are_its_hosts():
     assert LAB.link("pull", 5) == f"https://{HOST}/group/sub/proj/-/merge_requests/5"
     assert LAB.link("issues", 5) == f"https://{HOST}/group/sub/proj/-/issues/5"

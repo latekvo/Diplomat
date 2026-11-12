@@ -4629,7 +4629,8 @@ class Store(QObject):
             return f"{ref} is not an issue of {self._comms_repo_name(root)}", None
         if "error" in found:
             return f"couldn't ask GitHub about issue {ref} ({found['error']})", None
-        if "/issues/" not in str(found.get("url", "")):
+        # GitLab numbers merge requests apart from issues, so its issue answer is one.
+        if not root.is_gitlab and "/issues/" not in str(found.get("url", "")):
             return f"{ref} is a pull request, not an issue", None
         if str(found.get("state", "")).upper() != "OPEN":
             return f"issue {ref} is {str(found.get('state', '')).lower()}", None
