@@ -1,0 +1,8 @@
+{
+  "asked": [
+    [
+      "sam"
+    ]
+  ],
+  "error": "cannot tell whether sam is a GitLab project member: a full page of members matches the search for it"
+}

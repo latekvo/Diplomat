@@ -11,20 +11,26 @@ public enum GLab {
     /// Where glab is looked for before `PATH`.
     public static let candidatePaths = ["/opt/homebrew/bin/glab", "/usr/local/bin/glab", "/usr/bin/glab"]
 
-    /// `$DIPLOMAT_GLAB`, else the first candidate, else the first `glab` on `PATH`. A found
-    /// path is kept until it fails to launch.
+    /// `$DIPLOMAT_GLAB`, else `locate`'s answer. A found path is kept until it fails to launch.
     static func glabPath() throws -> String {
         let env = ProcessInfo.processInfo.environment
         if let o = env["DIPLOMAT_GLAB"], !o.isEmpty { return o }
         pathLock.lock()
         defer { pathLock.unlock() }
         if let p = cachedPath { return p }
-        let onPath = (env["PATH"] ?? "").split(separator: ":").map { "\($0)/glab" }
-        guard let found = (candidatePaths + onPath).first(where: {
-            FileManager.default.isExecutableFile(atPath: $0)
-        }) else { throw GHError.glabNotFound }
+        guard let found = locate(env: env) else { throw GHError.glabNotFound }
         cachedPath = found
         return found
+    }
+
+    /// The first of `candidates`, else the first `glab` on `env`'s `PATH`, else the one
+    /// `env`'s `SHELL` names as a login shell: an app started by launchd has a bare `PATH`.
+    public static func locate(env: [String: String], candidates: [String] = candidatePaths) -> String? {
+        let onPath = (env["PATH"] ?? "").split(separator: ":").map { "\($0)/glab" }
+        if let found = (candidates + onPath).first(where: {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }) { return found }
+        return LoginShell.locate("glab", shell: env["SHELL"] ?? "/bin/sh")
     }
 
     private static func forget(_ path: String) {
@@ -70,7 +76,25 @@ public enum GLab {
     public static func graphql(_ queryName: String, host: String,
                                variables: [(String, String)] = [],
                                typedVariables: [(String, String)] = []) async throws -> Data {
-        let query = try CoreAssets.graphql(queryName)
+        try await ask(try CoreAssets.graphql(queryName), host: host, variables: variables,
+                      typedVariables: typedVariables)
+    }
+
+    /// The members of project `slug` on `host` among `usernames`, lowercased: one
+    /// `gitlab-member-search` query per chunk of them (`GitLab.memberSearches`), any
+    /// failure thrown as a failed read's.
+    public static func members(host: String, slug: String, usernames: [String]) async throws -> Set<String> {
+        var found = Set<String>()
+        for (query, variables) in try GitLab.memberSearches(usernames) {
+            let data = try await ask(query, host: host, variables: [("path", slug)] + variables)
+            found.formUnion(try GitLab.searchedMembers(data, variables: variables))
+        }
+        return found
+    }
+
+    /// `graphql` of query text rather than an asset's name.
+    private static func ask(_ query: String, host: String, variables: [(String, String)],
+                            typedVariables: [(String, String)] = []) async throws -> Data {
         var args = ["api", "--hostname", host, "graphql", "-f", "query=\(query)"]
         for (k, v) in variables { args += ["-f", "\(k)=\(v)"] }
         for (k, v) in typedVariables { args += ["-F", "\(k)=\(v)"] }

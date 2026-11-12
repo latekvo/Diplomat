@@ -3,9 +3,13 @@
 # notes, so the activity notes carry those times, and comments are the rest. A request
 # older than the activity window reads as made at the window's oldest note (at the MR's
 # creation when the window is empty), so a response of mine inside the window answers it.
+# An author past a full member page is looked up with gitlab-member-search.
 query($path: ID!, $reviewer: String!, $withFiles: Boolean!) {
   project(fullPath: $path) {
-    projectMembers(first: 100, relations: [DIRECT, INHERITED]) { nodes { user { username } } }
+    projectMembers(first: 100, relations: [DIRECT, INHERITED, INVITED_GROUPS, SHARED_INTO_ANCESTORS]) {
+      pageInfo { hasNextPage }
+      nodes { user { username } }
+    }
     mergeRequests(state: opened, reviewerUsername: $reviewer, first: 30, sort: UPDATED_DESC) {
       nodes {
         iid title webUrl diffHeadSha createdAt
