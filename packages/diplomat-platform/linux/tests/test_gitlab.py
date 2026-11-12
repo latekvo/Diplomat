@@ -310,6 +310,51 @@ def test_the_drain_keeps_a_conflict_fix_on_an_undecided_merge_request(lab_only, 
     assert [t.id for t in lab_only.queued_tasks] == ["conflicts:group/sub/proj#6"]
 
 
+def test_the_commit_keeps_a_conflict_fix_on_an_undecided_merge_request(lab_only, monkeypatch):
+    from dataclasses import replace
+
+    from test_autofix import _job, _snap
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [HUB, LAB])
+    lab_only.queued_tasks = [
+        autofix.QueuedTask(key, replace(_job(number=n, action="conflicts", counter="conflicts"),
+                                        pr_url=url), 1)
+        for key, n, url in (("conflicts:group/sub/proj#6", 6, LAB.link("pull", 6)),
+                            ("conflicts:o/r#8", 8, HUB.link("pull", 8)))]
+    snaps = [replace(_snap(number=6, mergeable="UNKNOWN"), url=LAB.link("pull", 6)),
+             _snap(number=8, mergeable="UNKNOWN")]
+    lab_only._staged_queue = []
+    lab_only._reconcile_my_conflicts(snaps, 0.0)
+    lab_only.commit_queue()
+    assert [t.id for t in lab_only.queued_tasks] == ["conflicts:group/sub/proj#6"]
+
+
+def test_a_queued_conflict_fix_outlives_a_poll_that_reads_its_merge_request_unchecked(
+        lab_only, monkeypatch):
+    import copy
+
+    conflicting = _fixture("monitor-prs", "input")
+    fake = FakeGlab(monkeypatch, viewer={"data": {"currentUser": {"username": "carol"}}},
+                    monitor_prs=conflicting,
+                    review_requests=_fixture("review-requests-nofiles", "input"),
+                    issues={"data": {"project": {"issues": {"nodes": []},
+                                                 "projectMembers": {"nodes": []}}}})
+    lab_only._autofix_poll_once()
+    lab_only._autofix_poll_once()
+    assert "conflicts:group/sub/proj#12" in {t.id for t in lab_only.queued_tasks}
+
+    unchecked = copy.deepcopy(conflicting)
+    mr = next(m for m in unchecked["data"]["project"]["mergeRequests"]["nodes"]
+              if m["iid"] == "12")
+    mr.update(conflicts=False, detailedMergeStatus="UNCHECKED")
+    fake.answers["monitor-prs"] = unchecked
+    fake.rest = {"projects/group%2Fsub%2Fproj/merge_requests/12?with_merge_status_recheck=true":
+                 {"has_conflicts": False, "detailed_merge_status": "unchecked"}}
+    lab_only._autofix_poll_once()
+    assert lab_only.autofix_poll_error is None
+    assert "conflicts:group/sub/proj#12" in {t.id for t in lab_only.queued_tasks}
+
+
 def test_a_request_older_than_the_activity_window_is_answered_inside_it(monkeypatch):
     from diplomat_app import autofixmonitor
 

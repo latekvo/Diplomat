@@ -163,6 +163,14 @@ def _count(n: int, noun: str) -> str:
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
+def _undecided_merge_request(snap, lab: set[str]) -> bool:
+    """An undecided merge status on a root of ``lab`` (GitLab slugs). GitLab leaves a
+    merge request unchecked after a push to its target until something asks it again,
+    so there an undecided one may still conflict, and a conflict fix queued for it
+    stands."""
+    return snap.mergeable == "UNKNOWN" and (snap.item or "").partition("#")[0] in lab
+
+
 def _installer_files(pr: OpenPR) -> list[str]:
     """The installer-owned paths in a PR — counted in line2 and listed in line3,
     so they must be the same set in both."""
@@ -1833,6 +1841,13 @@ class Store(QObject):
         keep = {s.item for s in snaps if s.mergeable != "MERGEABLE"}
         self._save_attempts(key, {k: v for k, v in attempts.items()
                                   if k in keep or self._held(k)})
+        # Re-offered as it stands, so this cycle's commit keeps it; nothing new starts on
+        # a status nobody has decided.
+        lab = {r.slug.lower() for r in review.repo_roots() if r.is_gitlab}
+        queued = {e.id: e for e in self.queued_tasks}
+        self._staged_queue = self._staged_queue + [
+            queued[k] for s in snaps if _undecided_merge_request(s, lab)
+            and (k := autofix.queue_key(autofix.WORK_CONFLICTS, s.item)) in queued]
 
     def _community_marks(self) -> dict[str, str]:
         """The new-community-issue monitor's mark per root slug, as stored. A single
@@ -3148,10 +3163,8 @@ class Store(QObject):
             return slug not in polled or (
                 action == REVIEW_REQ_ACTION and f"Review requests:{slug}" in self._roots_unread)
 
-        # GitLab leaves a merge request's status unchecked after a push to its target
-        # until something asks it again, so there an undecided one counts as conflicting.
         conflicting = {s.item for s in snaps if s.mergeable == "CONFLICTING"
-                       or s.mergeable == "UNKNOWN" and (s.item or "").partition("#")[0] in lab}
+                       or _undecided_merge_request(s, lab)}
         owing_reply = {s.item for s in snaps if s.threads_i_owe > 0}
         # Dropped here rather than left for this cycle's commit to omit: the commit is
         # the far side of two monitor runs, and a row already known to be answered
