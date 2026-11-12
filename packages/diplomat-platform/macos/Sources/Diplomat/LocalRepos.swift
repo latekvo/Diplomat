@@ -7,9 +7,9 @@ enum LocalRepos {
     struct Checkout: Equatable {
         /// As entered; `~` is expanded only for the lookup and the spawn.
         let path: String
-        /// Its GitHub and GitLab remotes (`LocalRepo.entries`), Settings naming it by
-        /// `LocalRepo.settingsName` of them. Empty for a path that is no checkout or has
-        /// neither: listed, but no link resolves to it.
+        /// Its GitHub and GitLab remotes (`LocalRepo.entries`), Settings naming it by the
+        /// first. Empty for a path that is no checkout or has neither: listed, but no link
+        /// resolves to it.
         let repos: [PRRef.LocalRepo]
     }
 

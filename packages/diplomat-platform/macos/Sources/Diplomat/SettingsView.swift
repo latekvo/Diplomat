@@ -248,9 +248,11 @@ struct SettingsView: View {
         "The first is the primary: an agent whose job names no repo starts there. Every "
             + "automatic job runs across all of them, and the header picks the one the "
             + "lists, search and wizards work on. Each is known by one GitHub or GitLab repo from "
-            + "its remotes: \(repoSlug) if its upstream or origin names it or a GitHub repo of "
-            + "that name under another owner (a fork or a move), else upstream, else origin. "
-            + "A GitLab one is read through glab, signed in to its host. "
+            + "its remotes: \(repoSlug) if its GitHub upstream or origin names it or a GitHub "
+            + "repo of that name under another owner (a fork or a move), else its first GitHub "
+            + "remote (upstream, then origin, then the rest). Only a checkout with no GitHub "
+            + "remote is known by a GitLab one, in the same order, read through glab signed in "
+            + "to its host. "
             + "None listed = "
             + "\(RepoPaths.defaultAgentRepo). DIPLOMAT_REPO in this app's environment "
             + "outranks the list."
@@ -405,7 +407,7 @@ struct SettingsView: View {
 
     private func otherRepoRow(_ path: String, checkout: LocalRepos.Checkout?,
                               remove: @escaping () -> Void) -> some View {
-        let slug = checkout.flatMap { PRRef.LocalRepo.settingsName($0.repos) }?.slug
+        let slug = checkout?.repos.first?.slug
         return HStack(spacing: 6) {
             Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 1) {

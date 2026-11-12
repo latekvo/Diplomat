@@ -130,11 +130,26 @@ func gitlabSmoke() async throws {
           + "\(["/w/mirror", "/w/sibling", "/w/fork"].map(rootOf))")
     let sibling = PRRef.LocalRepo.entries(path: "/w/sibling", remotes: besideGitHub["/w/sibling"]!)
     let labOnly = PRRef.LocalRepo.entries(path: "/w/lab", remotes: "remote.origin.url https://gitlab.com/g/p")
-    check(sibling.map(\.slug) == ["g/sub/p", "x/y"]
-          && PRRef.LocalRepo.settingsName(sibling)?.slug == "x/y"
-          && PRRef.LocalRepo.settingsName(labOnly)?.slug == "g/p"
-          && PRRef.LocalRepo.settingsName([]) == nil,
-          "Settings names a checkout by its GitHub remote ahead of a GitLab origin, as it resolves")
+    check(sibling.map(\.slug) == ["x/y", "g/sub/p"] && labOnly.map(\.slug) == ["g/p"],
+          "a checkout's GitHub remotes rank ahead of a GitLab origin, so Settings names it by "
+          + "the first as it resolves: \(sibling.map(\.slug))")
+    let mirrored = PRRef.LocalRepo.entries(path: "/w/widget", remotes: """
+        remote.lab.url https://gitlab.com/acme/lab
+        remote.upstream.url https://gitlab.com/acme/widget
+        remote.origin.url git@github.com:acme/widget.git
+        """)
+    let ghWidget = PRRef.LocalRepo(owner: "acme", repo: "widget", path: "/w/widget")
+    check(mirrored == [ghWidget,
+                       PRRef.LocalRepo(owner: "acme", repo: "widget", path: "/w/widget", host: "gitlab.com"),
+                       PRRef.LocalRepo(owner: "acme", repo: "lab", path: "/w/widget", host: "gitlab.com")],
+          "GitHub first, then GitLab, each upstream, origin, the rest: \(mirrored.map { "\($0.host)/\($0.slug)" })")
+    check(PRRef.parse("acme/widget#5", owner: "o", repo: "r", also: mirrored).repo == ghWidget
+          && PRRef.parse("https://github.com/acme/widget/pull/5", owner: "o", repo: "r",
+                         also: mirrored).repo == ghWidget
+          && PRRef.parse("https://gitlab.com/acme/widget/-/merge_requests/5", owner: "o", repo: "r",
+                         also: mirrored).repo?.host == "gitlab.com",
+          "with a GitLab upstream of the same slug, a host-less acme/widget#5 and a github.com link "
+          + "name the GitHub repo, a GitLab link the GitLab one")
 
     section("gitlab: references, keys and links")
     let home = PRRef.LocalRepo(owner: "group/sub", repo: "proj", path: "/w/proj", host: "gitlab.example.com")
@@ -182,7 +197,7 @@ func gitlabSmoke() async throws {
 
     let gh = PRRef.LocalRepo(owner: "o", repo: "r", path: "/p")
     let ghJSON = String(decoding: try JSONEncoder().encode(gh), as: UTF8.self)
-    check(!ghJSON.contains("host"), "a GitHub root persists as before, without a host: \(ghJSON)")
+    check(!ghJSON.contains("host"), "a GitHub root persists without a host: \(ghJSON)")
     let old = try JSONDecoder().decode(PRRef.LocalRepo.self,
                                        from: Data(#"{"owner":"o","repo":"r","path":"/p"}"#.utf8))
     check(old == gh && old.host == "github.com" && !old.isGitLab, "a payload without a host is GitHub")
@@ -264,6 +279,52 @@ func gitlabSmoke() async throws {
     catch { signedOut = (error as? LocalizedError)?.errorDescription ?? "\(error)" }
     check(signedOut == "not signed in to gitlab.example.com", "no viewer is an error: \(signedOut)")
 
+    // A thread's system notes ("changed this line in version 2 of the diff", authored by
+    // whoever pushed) are no reply: the reviewer's comment stays its last.
+    let systemNotes = #"""
+        {"data":{"project":{"mergeRequests":{"nodes":[{"iid":"3","discussions":{"nodes":[
+          {"resolvable":true,"resolved":false,"notes":{"nodes":[
+            {"author":{"username":"bob"},"body":"Fix this.","system":false,"userPermissions":{"resolveNote":false}},
+            {"author":{"username":"alice"},"body":"changed this line in version 2 of the diff","system":true,
+             "userPermissions":{"resolveNote":true}}]}},
+          {"resolvable":true,"resolved":false,"notes":{"nodes":[
+            {"author":{"username":"alice"},"body":"changed this line","system":true,"userPermissions":{"resolveNote":true}}]}}
+        ]}}]}}}}
+        """#
+    let adaptedThreads = try canonical(try GitLab.monitorPRs(Data(systemNotes.utf8)))
+    check(adaptedThreads.contains(#""reviewThreads":{"nodes":[{"comments":{"nodes":[{"author":{"login":"bob"},"body":"Fix this."}],"totalCount":1},"isResolved":false,"viewerCanResolve":true},{"comments":{"nodes":[],"totalCount":0},"isResolved":false,"viewerCanResolve":true}]}"#),
+          "a thread's last comment and count leave its system notes out, its resolvability "
+          + "read off its last note of any kind: \(adaptedThreads)")
+
+    func rest(_ json: String) -> String { GitLab.mergeable(rest: Data(json.utf8)) }
+    check(rest(#"{"has_conflicts":true,"detailed_merge_status":"conflict"}"#) == "CONFLICTING"
+          && rest(#"{"has_conflicts":true,"detailed_merge_status":"checking"}"#) == "CONFLICTING"
+          && rest(#"{"has_conflicts":false,"detailed_merge_status":"mergeable"}"#) == "MERGEABLE"
+          && rest(#"{"has_conflicts":false,"detailed_merge_status":"need_rebase"}"#) == "MERGEABLE"
+          && rest(#"{"has_conflicts":false,"detailed_merge_status":"unchecked"}"#) == "UNKNOWN"
+          && rest(#"{"has_conflicts":false,"detailed_merge_status":"checking"}"#) == "UNKNOWN"
+          && rest(#"{"has_conflicts":false,"detailed_merge_status":"preparing"}"#) == "UNKNOWN"
+          && rest(#"{"has_conflicts":false}"#) == "UNKNOWN" && rest("[]") == "UNKNOWN" && rest("") == "UNKNOWN",
+          "a REST merge request's status reads by the adapters' rule")
+
+    let glRoot = PRRef.LocalRepo(owner: "g/sub", repo: "p", path: "", host: "gitlab.example.com")
+    let ghRoot = PRRef.LocalRepo(owner: "o", repo: "r", path: "")
+    func snap(_ url: String, _ mergeable: String) -> PRSnapshot {
+        PRSnapshot(number: 0, title: "", url: url, isDraft: false, mergeable: mergeable,
+                   reviewDecision: "", threadsUnresolved: 0)
+    }
+    let owed = AgentTaskQueue.conflicting([
+        snap("https://gitlab.example.com/g/sub/p/-/merge_requests/1", "UNKNOWN"),
+        snap("https://gitlab.example.com/g/sub/p/-/merge_requests/2", "CONFLICTING"),
+        snap("https://gitlab.example.com/g/sub/p/-/merge_requests/3", "MERGEABLE"),
+        snap("https://github.com/o/r/pull/4", "UNKNOWN"),
+        snap("https://github.com/o/r/pull/5", "CONFLICTING"),
+        snap("https://gitlab.example.com/x/y/-/merge_requests/6", "UNKNOWN"),
+    ], roots: [glRoot, ghRoot])
+    check(owed == ["g/sub/p#1", "g/sub/p#2", "o/r#5"],
+          "a conflict fix stays owed on a CONFLICTING PR, and on a GitLab root's merge request "
+          + "GitLab has not checked: \(owed.sorted())")
+
     section("gitlab: glab runner")
     let stubDir = scratch.appendingPathComponent("stub")
     try fm.createDirectory(at: stubDir, withIntermediateDirectories: true)
@@ -331,6 +392,15 @@ func gitlabSmoke() async throws {
     check(gone == "GitLab merge request not found", "a merge request that is not there: \(gone)")
     check(GLab.repoFlag(host: "gitlab.example.com", slug: "group/sub/proj")
           == ["-R", "https://gitlab.example.com/group/sub/proj"], "-R names the host too")
+    try answer(#"{"iid":12,"has_conflicts":true,"detailed_merge_status":"conflict"}"#)
+    let rechecked = try await API.recheckedMergeable(number: 12, root: home)
+    check(rechecked == "CONFLICTING"
+          && argv() == ["api", "--hostname", "gitlab.example.com",
+                        "projects/group%2Fsub%2Fproj/merge_requests/12?with_merge_status_recheck=true", ""],
+          "a merge request's status is read over REST, asking GitLab to recheck it: \(rechecked) \(argv())")
+    try answer("", code: 1, err: "403 Forbidden")
+    let recheckRefused = await failure { _ = try await API.recheckedMergeable(number: 12, root: home) }
+    check(recheckRefused == "glab exited 1: 403 Forbidden", "a recheck glab refuses throws: \(recheckRefused)")
 
     section("gitlab: prompt note")
     let note = try CoreAssets.gitlab().promptNote
@@ -341,7 +411,7 @@ func gitlabSmoke() async throws {
         check(at == 1, "\(kind): the note follows the opening line, at \(at.map(String.init) ?? "nil")")
         let p = at.map { paragraphs[$0] } ?? ""
         check(p.contains("GitLab at gitlab.example.com (project group/sub/proj)")
-              && p.contains("`--repo group/sub/proj`") && !p.contains("{"),
+              && p.contains("`--repo https://gitlab.example.com/group/sub/proj`") && !p.contains("{"),
               "\(kind): the note names the host and nested project: \(p.prefix(120))")
         check(paragraphs.filter { $0.contains("hosted on GitLab") }.count == 1, "\(kind): one note")
     }

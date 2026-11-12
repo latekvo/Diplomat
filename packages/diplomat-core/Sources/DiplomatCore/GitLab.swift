@@ -130,6 +130,16 @@ public enum GitLab {
                            "author": login(obj["author"]), "state": state(obj["state"])])
     }
 
+    /// The `mergeable` a REST `projects/:id/merge_requests/:iid` answer reads as, by the
+    /// rule the GraphQL adapters follow: `UNKNOWN` while GitLab has not checked it, or for
+    /// an answer that is no merge request.
+    public static func mergeable(rest data: Data) -> String {
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? JSON else { return "UNKNOWN" }
+        return mergeable(["conflicts": obj["has_conflicts"] ?? NSNull(),
+                          "detailedMergeStatus": (obj["detailed_merge_status"] as? String)?.uppercased()
+                              ?? NSNull()])
+    }
+
     /// GitHub's spelling of a GitLab state: `OPEN` for opened or locked, else uppercased.
     private static func state(_ raw: Any?) -> String {
         let s = raw as? String ?? ""
@@ -214,19 +224,21 @@ public enum GitLab {
         list(mr["diffStats"]).map { ["path": $0["path"] ?? NSNull()] }
     }
 
-    /// Each resolvable discussion as a review thread, its last note standing for GitHub's
-    /// `comments(last: 1)`.
+    /// Each resolvable discussion as a review thread, its last comment standing for
+    /// GitHub's `comments(last: 1)`. System notes ("changed this line in version 2 of the
+    /// diff", left in the thread by whoever pushed) are no comments; whether I may resolve
+    /// it is read off its last note of any kind.
     private static func threads(_ mr: JSON) -> [JSON] {
         list(mr["discussions"]).filter { $0["resolvable"] as? Bool == true }.map { d in
             let notes = list(d["notes"])
-            let last = notes.last
-            let resolve = (last?["userPermissions"] as? JSON)?["resolveNote"] as? Bool
-            let comments: [JSON] = last.map {
+            let said = notes.filter { $0["system"] as? Bool != true }
+            let resolve = (notes.last?["userPermissions"] as? JSON)?["resolveNote"] as? Bool
+            let comments: [JSON] = said.last.map {
                 [["author": login($0["author"]), "body": $0["body"] ?? NSNull()]]
             } ?? []
             return ["isResolved": d["resolved"] as? Bool ?? false,
                     "viewerCanResolve": resolve.map { $0 as Any } ?? NSNull(),
-                    "comments": ["totalCount": notes.count, "nodes": comments] as JSON]
+                    "comments": ["totalCount": said.count, "nodes": comments] as JSON]
         }
     }
 

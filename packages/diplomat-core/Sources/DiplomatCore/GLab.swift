@@ -55,6 +55,11 @@ public enum GLab {
         ["-R", "https://\(host)/\(slug)"]
     }
 
+    /// Project `slug` as a REST path's `projects/:id` takes it, URL-encoded.
+    public static func projectID(_ slug: String) -> String {
+        slug.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? slug
+    }
+
     /// Run a shared `assets/graphql/<queryName>` query against `host`. `variables` go
     /// through `-f` (strings), `typedVariables` through `-F` (parsed into the declared type,
     /// as a `Boolean!` needs). One retry, as `GH.graphql`.

@@ -3365,6 +3365,16 @@ do {
     for (flag, value) in [("-f", "owner=acme"), ("-f", "name=widgets"), ("-f", "me=alice"), ("-F", "number=7")] {
         check(zip(asked, asked.dropFirst()).contains { $0 == (flag, value) }, "audit passes \(flag) \(value)")
     }
+    // Without the gh login a GitHub PR cannot be checked, which the feed says; a GitLab
+    // merge request is never checked, login or not.
+    var unknownLogin = ""
+    do { _ = try await ReviewAudit.audit(prURL: "https://github.com/acme/widgets/pull/7", me: "", since: since) }
+    catch { unknownLogin = error.localizedDescription }
+    let gitlabRun = try? await ReviewAudit.audit(
+        prURL: "https://gitlab.example.com/g/sub/p/-/merge_requests/7", me: "", since: since)
+    check(unknownLogin == "the gh login is not known yet" && gitlabRun == [],
+          "no gh login fails a GitHub PR's check, and says nothing of a merge request's: "
+          + "\(unknownLogin) \(String(describing: gitlabRun))")
 }
 print("ReviewAudit assertions passed")
 

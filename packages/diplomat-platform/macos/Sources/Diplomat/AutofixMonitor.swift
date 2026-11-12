@@ -11,18 +11,29 @@ enum AutofixMonitor {
     /// One GraphQL search over my open, authored PRs in `root`, with each PR's
     /// mergeability, review verdict, and review-thread resolution — everything the diff
     /// and the reconcilers need, in a single request (`assets/graphql/monitor-prs`,
-    /// `gitlab-monitor-prs` on GitLab).
+    /// `gitlab-monitor-prs` on GitLab). A merge request GitLab has not checked is asked
+    /// again, through a read that rechecks it (`API.recheckedMergeable`); one that read
+    /// fails for stays `UNKNOWN`.
     static func fetchSnapshots(root: PRRef.LocalRepo, me: String) async throws -> [PRSnapshot] {
-        let data: Data
-        if root.isGitLab {
-            data = try GitLab.monitorPRs(try await GLab.graphql(
-                "gitlab-monitor-prs", host: root.host,
-                variables: [("path", root.slug), ("author", me)]))
-        } else {
+        guard root.isGitLab else {
             let q = "repo:\(root.owner)/\(root.repo) author:\(me) is:pr is:open"
-            data = try await GH.graphql("monitor-prs", repo: nil, variables: [("q", q)])
+            return try parse(try await GH.graphql("monitor-prs", repo: nil, variables: [("q", q)]), me: me)
         }
-        return try parse(data, me: me)
+        var snaps: [PRSnapshot] = []
+        for s in try parse(try GitLab.monitorPRs(try await GLab.graphql(
+            "gitlab-monitor-prs", host: root.host,
+            variables: [("path", root.slug), ("author", me)])), me: me) {
+            guard s.mergeable == "UNKNOWN",
+                  let m = try? await API.recheckedMergeable(number: s.number, root: root) else {
+                snaps.append(s)
+                continue
+            }
+            snaps.append(PRSnapshot(number: s.number, title: s.title, url: s.url, isDraft: s.isDraft,
+                                    mergeable: m, reviewDecision: s.reviewDecision,
+                                    threadsUnresolved: s.threadsUnresolved,
+                                    threadsIOwe: s.threadsIOwe, headSha: s.headSha))
+        }
+        return snaps
     }
 
     /// The items (`PRRef.itemKey`) of the PRs this repo has recently merged or closed:
