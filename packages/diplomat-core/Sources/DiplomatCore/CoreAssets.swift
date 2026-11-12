@@ -238,6 +238,9 @@ public enum CoreAssets {
         public let model: String
         public let classifierTimeoutSecs: Double
         public let classifierSecsPerMessage: Double
+        public let classifierRetrySecs: Double
+        public let classifierRetryMaxSecs: Double
+        public let classifierGiveUpSecs: Double
         public let maxLogBytes: Int
         public let labelSummaryMax: Int
         public struct Replies: Decodable {
@@ -245,6 +248,7 @@ public enum CoreAssets {
             public let awayAfterSecs: Int
             public let awayAfterStepSecs: Int
             public let awayAfterMaxSecs: Int
+            public let maxAgeSecs: Int
             public let roundMins: Int
             /// Keyed by `CommsQueuedWork.kind`.
             public let runSecs: [String: Int]
@@ -307,7 +311,8 @@ public enum CoreAssets {
                  indexLagSecs, seenLimit, searchCount,
                  maxSearchPages, catchUpHours, httpTimeoutSecs, loginRefreshSecs,
                  loginRefreshTimeoutSecs, slackBudgetSecs, maxProfileReads, model, classifierTimeoutSecs,
-                 classifierSecsPerMessage, maxLogBytes, labelSummaryMax, queries, classifier, investigate, replies, answer
+                 classifierSecsPerMessage, classifierRetrySecs, classifierRetryMaxSecs,
+                 classifierGiveUpSecs, maxLogBytes, labelSummaryMax, queries, classifier, investigate, replies, answer
         }
     }
 

@@ -421,6 +421,15 @@ func tasksSmoke() async throws {
     ], watermark: at(0))
     check(waiting.events.map(\.text) == ["#12 a"] && waiting.watermark == at(1),
           "an untriaged ping holds its whole second and what follows: \(waiting.events.map(\.text))")
+    let failing = message("#12 c", ts: "1762000001.000100")
+    let retrying = TaskSync.slack(tasks: held, comms: [ping(message("#12 a"), at: at(1), .none("n")),
+                                                       ping(failing, at: at(2), nil),
+                                                       ping(message("#12 d", ts: "1762000002.000100"), at: at(3), nil)],
+                                  watermark: at(0), now: at(600), watched: watched, retrying: [failing.id],
+                                  holdSecs: 3_600, excerptChars: 200)
+    check(retrying.events.map(\.text) == ["#12 a", "#12 c"] && retrying.watermark == at(2)
+          && retrying.events.last?.tags == ["slack", "@alice", "#general"],
+          "…but for one whose triage call failed, told without a triage: \(retrying.events.map(\.text))")
     let markupText = "see <https://github.com/acme/app/pull/12|the PR> and <https://x.io/a>\ncc <@U123> in <#C1|general>, <@U9|bob> <#C2>"
     func markup(_ chars: Int) -> [String?] {
         TaskSync.slack(tasks: held, comms: [ping(message(markupText), at: at(2), .none("n"))], watermark: at(1),
@@ -663,6 +672,17 @@ private func tasksRunSmoke() async throws {
     check(sameSecond.events == 1 && TaskStore.events(in: dir).last?.tags.contains("@bob") == true,
           "a ping logged in the second the last sync read is told, the one it took is not again: \(sameSecond)")
 
+    // A ping Comms has no decision for, its triage call having failed.
+    let carol = message("o/r#7 any news?", ts: "1762000350.000001", user: "carol",
+                        permalink: "https://ours.slack.com/archives/C1/p1762000350000001")
+    CommsLog.append(CommsEvent(at: at(186), kind: .ping, id: carol.id, message: carol), in: comms)
+    CommsState(retries: [CommsRetry(messages: [carol], failures: 1, since: 0, nextAt: 0, reason: "r")])
+        .save(in: comms)
+    let failing = await TaskSync.run(now: at(187), dir: dir, commsDir: comms)
+    check(failing.events == 1 && TaskStore.events(in: dir).last?.tags == ["slack", "@carol", "#general"]
+          && TaskStore.mirror(in: dir).commsWatermark == at(186),
+          "a ping waiting on a failed triage call is told at once, without a triage: \(failing)")
+
     // Alice is banned: her ping leaves the history, and her next one is not told.
     try #"{"banned":[{"login":"Slack:U-alice","source":"slack"}]}"#
         .write(to: stub.appendingPathComponent("banned.json"), atomically: true, encoding: .utf8)
@@ -672,7 +692,7 @@ private func tasksRunSmoke() async throws {
     let historyBefore = TaskStore.events(in: dir)
     let banned = await TaskSync.run(now: at(240), dir: dir, commsDir: comms)
     let slackLeft = TaskStore.events(in: dir).filter { $0.source == "slack" }
-    check(banned.ok && banned.events == 0 && slackLeft.map { $0.tags[1] } == ["@bob"]
+    check(banned.ok && banned.events == 0 && slackLeft.map { $0.tags[1] } == ["@bob", "@carol"]
           && TaskStore.events(in: dir).count == historyBefore.count - 1
           && mode(dir.appendingPathComponent("events.jsonl")) == 0o600,
           "a sender banned since is dropped from the history and not told again: \(slackLeft.map(\.tags))")

@@ -35,8 +35,8 @@ public struct CommsBatch: Equatable, Sendable {
 /// arrives on stdin, fenced and quoted.
 public enum CommsClassifier {
     /// Starts the reason of a decision no answer came back for (no `claude`, a timeout, a
-    /// crash, an error result). `CommsWatch.tick` reports those as the tick's error, since
-    /// every later ping would fail the same way.
+    /// crash, an error result). `CommsWatch.tick` tries those messages again (`CommsRetry`)
+    /// and reports the failure as the tick's error.
     public static let failurePrefix = "classifier failed: "
 
     /// `classifier.instructions`, its repository wording `classifier.repos.one`'s for one
@@ -273,6 +273,31 @@ public enum CommsClassifier {
     }
 }
 
+/// Messages whose triage call failed, waiting for another one.
+public struct CommsRetry: Codable, Equatable, Sendable {
+    public var messages: [CommsMessage]
+    public var failures: Int
+    /// The first failure and the next call, Unix seconds.
+    public var since: Double
+    public var nextAt: Double
+    /// The newest failure: their decisions' reason once given up.
+    public var reason: String
+
+    public init(messages: [CommsMessage], failures: Int, since: Double, nextAt: Double,
+                reason: String) {
+        self.messages = messages
+        self.failures = failures
+        self.since = since
+        self.nextAt = nextAt
+        self.reason = reason
+    }
+
+    public static func delay(failures: Int, assets: CoreAssets.CommsModel) -> Double {
+        min(assets.classifierRetryMaxSecs,
+            assets.classifierRetrySecs * pow(2, Double(failures - 1)))
+    }
+}
+
 public struct CommsState: Codable, Equatable, Sendable {
     /// The Slack ts at or below which nothing is looked at again; nil before the first tick.
     public var watermark: String?
@@ -281,14 +306,13 @@ public struct CommsState: Codable, Equatable, Sendable {
     public var me: CommsIdentity?
     /// The last tick's failure, so an `error` event fires on the transition only.
     public var error: String?
-    /// The last triage's failure, kept until one succeeds: a tick with nothing to triage
-    /// still ends on it.
-    public var classifierError: String?
     /// Taken, but not yet handed to a front-end as pings; the next tick hands them over
     /// first.
     public var unannounced: [CommsMessage]
     /// Pinged and waiting for triage, oldest first.
     public var queue: [CommsMessage]
+    /// Taken from the queue by a triage call that failed, the newest failure last.
+    public var retries: [CommsRetry]
     /// Triaged (or taken for triage) but not yet handed to a front-end; the next tick
     /// hands them over first.
     public var undelivered: [CommsTickResult.Item]
@@ -300,24 +324,25 @@ public struct CommsState: Codable, Equatable, Sendable {
     public var loginRefreshedAt: Double?
 
     public init(watermark: String? = nil, seen: [String] = [], me: CommsIdentity? = nil,
-                error: String? = nil, classifierError: String? = nil,
+                error: String? = nil,
                 unannounced: [CommsMessage] = [], queue: [CommsMessage] = [],
+                retries: [CommsRetry] = [],
                 undelivered: [CommsTickResult.Item] = [], gaps: [String: String] = [:],
                 loginRefreshedAt: Double? = nil) {
         self.watermark = watermark
         self.seen = seen
         self.me = me
         self.error = error
-        self.classifierError = classifierError
         self.unannounced = unannounced
         self.queue = queue
+        self.retries = retries
         self.undelivered = undelivered
         self.gaps = gaps
         self.loginRefreshedAt = loginRefreshedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case watermark, seen, me, error, classifierError, unannounced, queue, undelivered, gaps,
+        case watermark, seen, me, error, unannounced, queue, retries, undelivered, gaps,
              loginRefreshedAt
     }
 
@@ -327,10 +352,10 @@ public struct CommsState: Codable, Equatable, Sendable {
                   seen: (try? c.decodeIfPresent([String].self, forKey: .seen)) ?? [],
                   me: try? c.decodeIfPresent(CommsIdentity.self, forKey: .me),
                   error: try? c.decodeIfPresent(String.self, forKey: .error),
-                  classifierError: try? c.decodeIfPresent(String.self, forKey: .classifierError),
                   unannounced: (try? c.decodeIfPresent([CommsMessage].self,
                                                        forKey: .unannounced)) ?? [],
                   queue: (try? c.decodeIfPresent([CommsMessage].self, forKey: .queue)) ?? [],
+                  retries: (try? c.decodeIfPresent([CommsRetry].self, forKey: .retries)) ?? [],
                   undelivered: (try? c.decodeIfPresent([CommsTickResult.Item].self,
                                                        forKey: .undelivered)) ?? [],
                   gaps: (try? c.decodeIfPresent([String: String].self, forKey: .gaps)) ?? [:],
@@ -350,8 +375,8 @@ public struct CommsState: Codable, Equatable, Sendable {
         return state
     }
 
-    /// Atomic, so a crash mid-write leaves the previous state; 0600, since the queue and
-    /// what is undelivered hold message text.
+    /// Atomic, so a crash mid-write leaves the previous state; 0600, since the queue, the
+    /// retries and what is undelivered hold message text.
     public func save(in dir: URL = CommsLog.dir) {
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys]
@@ -459,11 +484,15 @@ public enum CommsWatch {
     /// The queue is triaged in batches, one `classify` call each (`flush`): its oldest
     /// `batchSize` once it holds that many or its newest message is
     /// `settings.flushAfterSecs` old; at most one batch a tick. A tick whose Slack calls fail
-    /// triages nothing: offline, the classifier would fail too, and spend the batch. An
-    /// answer naming several PRs or issues is handed over as one item per target
-    /// (`CommsTickResult.Item.targets`).
+    /// triages nothing: offline, the classifier would fail too. An answer naming several
+    /// PRs or issues is handed over as one item per target (`CommsTickResult.Item.targets`).
     ///
-    /// A queued message from one of `settings.bannedSenders` is never triaged: its decision
+    /// Messages whose call failed (`CommsClassifier.failurePrefix`) get no decision: the
+    /// call is made again for them alone, `CommsRetry.delay` after each failure, as that
+    /// tick's batch. `classifierGiveUpSecs` after the first failure they are handed over as
+    /// a `none` with the newest failure's reason.
+    ///
+    /// A waiting message from one of `settings.bannedSenders` is never triaged: its decision
     /// is a `none` whose reason starts with `bannedPrefix`, on the tick it is taken or the
     /// first after the ban.
     ///
@@ -482,8 +511,8 @@ public enum CommsWatch {
     /// once per `loginRefreshSecs`.
     ///
     /// A Slack failure leaves the watermark in place and is the result's `error`; so is the
-    /// last triage's failure, until one succeeds. An `error` event is logged only on the
-    /// tick that goes from working to failing.
+    /// newest triage failure whose messages still wait. An `error` event is logged only on
+    /// the tick that goes from working to failing.
     public static func tick(settings: CommsSettings, now: Date = Date(),
                             dir: URL = CommsLog.dir, api: SlackAPI? = nil,
                             deliver: (CommsTickResult) -> Bool = { _ in true },
@@ -496,7 +525,7 @@ public enum CommsWatch {
             notices.append(text)
         }
         func finish(error: String?) -> CommsTickResult {
-            let error = error ?? state.classifierError
+            let error = error ?? state.retries.last?.reason
             let result = CommsTickResult(me: state.me, pings: state.unannounced,
                                          items: state.undelivered, error: error, notices: notices)
             if deliver(result) {
@@ -641,7 +670,7 @@ public enum CommsWatch {
         return finish(error: nil)
     }
 
-    /// Triages the queue's due batch, if one is: see `tick`. A batch with an `injection`
+    /// Triages the due batch, if one is: see `tick`. A batch with an `injection`
     /// among its answers is triaged again one message per call, each with only its own
     /// conversation's context, so no sender is banned, nor anything asked, on the strength
     /// of another batch message's text.
@@ -649,22 +678,40 @@ public enum CommsWatch {
                               dir: URL, assets: CoreAssets.CommsModel, notice: (String) -> Void,
                               classify: (CommsBatch) -> [CommsDecision]) {
         func ts(_ m: CommsMessage) -> Int { CommsTS.number(m.ts) ?? 0 }
+        func banned(_ m: CommsMessage) -> Bool { settings.bannedSenders.contains(m.userID) }
+        let clock = now.timeIntervalSince1970
         state.queue.sort { (ts($0), $0.id) < (ts($1), $1.id) }
-        for m in state.queue where settings.bannedSenders.contains(m.userID) {
+        for m in state.queue + state.retries.flatMap(\.messages) where banned(m) {
             state.undelivered.append(CommsTickResult.Item(message: m,
                                                           decision: .none(bannedReason(m))))
         }
-        state.queue.removeAll { settings.bannedSenders.contains($0.userID) }
+        state.queue.removeAll(where: banned)
+        for i in state.retries.indices { state.retries[i].messages.removeAll(where: banned) }
+        let givenUp = state.retries.filter { clock - $0.since >= assets.classifierGiveUpSecs }
+        for retry in givenUp {
+            state.undelivered += retry.messages.map {
+                CommsTickResult.Item(message: $0, decision: .none(retry.reason))
+            }
+        }
+        state.retries.removeAll { $0.messages.isEmpty || givenUp.contains($0) }
         // A message stamped ahead of this clock is age 0, not too young for a flush at 0.
         let stale = state.queue.last.map {
             max(0, CommsTS.number(now) - ts($0)) >= settings.flushAfterSecs * 1_000_000
         } ?? false
-        guard state.queue.count >= settings.batchSize || stale else {
+        var retried: CommsRetry?
+        let messages: [CommsMessage]
+        if let i = state.retries.firstIndex(where: { $0.nextAt <= clock }) {
+            retried = state.retries[i]
+            messages = Array(state.retries[i].messages.prefix(settings.batchSize))
+            state.retries[i].messages.removeFirst(messages.count)
+            if state.retries[i].messages.isEmpty { state.retries.remove(at: i) }
+        } else if state.queue.count >= settings.batchSize || stale {
+            messages = Array(state.queue.prefix(settings.batchSize))
+            state.queue.removeFirst(messages.count)
+        } else {
             state.save(in: dir)
             return
         }
-        let messages = Array(state.queue.prefix(settings.batchSize))
-        state.queue.removeFirst(messages.count)
         let at = state.undelivered.count
         state.undelivered += messages.map {
             CommsTickResult.Item(message: $0, decision: .none(interrupted))
@@ -682,17 +729,24 @@ public enum CommsWatch {
                        settings: settings, classify)[0]
             }
         }
-        state.undelivered.replaceSubrange(at..., with: zip(messages, decisions).flatMap {
-            CommsTickResult.Item.targets($0, $1, maxTargets: assets.maxTargets)
+        let answered = Array(zip(messages, decisions))
+        let failed = answered.filter { $1.reason.hasPrefix(CommsClassifier.failurePrefix) }
+        state.undelivered.replaceSubrange(at..., with: answered.flatMap {
+            $1.reason.hasPrefix(CommsClassifier.failurePrefix) ? []
+                : CommsTickResult.Item.targets($0, $1, maxTargets: assets.maxTargets)
         })
+        if let reason = failed.first?.1.reason {
+            let failures = (retried?.failures ?? 0) + 1
+            state.retries.append(CommsRetry(
+                messages: failed.map(\.0), failures: failures, since: retried?.since ?? clock,
+                nextAt: clock + CommsRetry.delay(failures: failures, assets: assets),
+                reason: reason))
+        }
         for decision in decisions where decision.numbers.count > assets.maxTargets {
             let left = decision.targets.dropFirst(assets.maxTargets).map(\.ref)
             notice("A Slack message named more than the \(assets.maxTargets) a message can act on, "
                    + "so nothing was done for \(left.joined(separator: ", ")).")
         }
-        state.classifierError = decisions.first {
-            $0.reason.hasPrefix(CommsClassifier.failurePrefix)
-        }?.reason
         state.save(in: dir)
     }
 
@@ -714,13 +768,16 @@ public enum CommsWatch {
         }
     }
 
-    /// Per conversation of `messages`, its newest `contextMessages` pings already triaged,
-    /// at most `contextHours` older than the oldest of `messages`; oldest first. A banned
+    /// Per conversation of `messages`, its newest `contextMessages` pings already triaged
+    /// and sent before the last of `messages` in it, at most `contextHours` older than the
+    /// oldest of `messages`; oldest first. A banned
     /// sender's, or one triaged as an injection, is left out: its text reaches no model
     /// again.
     public static func context(for messages: [CommsMessage], in dir: URL, settings: CommsSettings,
                         assets: CoreAssets.CommsModel) -> [CommsMessage] {
-        let places = Set(messages.map(\.channelID)), ids = Set(messages.map(\.id))
+        let ids = Set(messages.map(\.id))
+        var last: [String: Int] = [:]
+        for m in messages { last[m.channelID] = max(last[m.channelID] ?? 0, CommsTS.number(m.ts) ?? 0) }
         guard assets.contextMessages > 0,
               let oldest = messages.compactMap({ CommsTS.number($0.ts) }).min() else { return [] }
         let since = oldest - assets.contextHours * 3_600 * 1_000_000
@@ -730,9 +787,10 @@ public enum CommsWatch {
         let earlier = CommsLog.fold(CommsLog.read(in: dir)).compactMap { item -> CommsMessage? in
             guard let d = item.decision, d.action != .injection,
                   !d.reason.hasPrefix(bannedPrefix), !item.message.isExtraTarget,
-                  places.contains(item.message.channelID), !ids.contains(item.message.id),
+                  !ids.contains(item.message.id),
                   !settings.bannedSenders.contains(item.message.userID),
-                  let n = CommsTS.number(item.message.ts), n >= since else { return nil }
+                  let n = CommsTS.number(item.message.ts), n >= since,
+                  n < last[item.message.channelID] ?? 0 else { return nil }
             return item.message
         }
         return Dictionary(grouping: earlier, by: \.channelID).values
