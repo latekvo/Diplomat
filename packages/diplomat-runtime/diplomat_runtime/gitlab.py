@@ -2,27 +2,27 @@
 
 Each ``assets/graphql/gitlab-*.graphql`` answer is turned into the exact envelope the
 GitHub query of the same job returns, so one parser reads both. Twin of
-``GitLab.swift``; nothing here calls glab but the ``search`` an adapter is handed. The
+``GitLab.swift``; nothing here calls glab but the ``lookup`` an adapter is handed. The
 shared fixtures in ``packages/diplomat-core/Tests/fixtures/gitlab`` pin the two twins to
 one output.
 
 GitLab has no author association, so a project member reads as ``MEMBER`` and anyone
-else as ``NONE``; an author past a full member page is asked of ``search``, which looks
-usernames up with ``gitlab-member-search``. GitLab records a review request, an
-approval, a requested change and a ready-for-review as system ("activity") notes only,
-so those are read off note bodies.
+else as ``NONE``; an author past a full member page is asked of ``lookup``, which reads
+their ids off the REST ``members/all`` (:func:`member_paths`). GitLab records a review
+request, an approval, a requested change and a ready-for-review as system ("activity")
+notes only, so those are read off note bodies.
 """
 
 from __future__ import annotations
 
 import re
+import urllib.parse
 from collections.abc import Callable
 
-from . import core
 from .gh import GHError
 
-#: Lowercased usernames -> the project members among them.
-Search = Callable[[list[str]], set[str]]
+#: User ids -> the project members among them.
+Lookup = Callable[[list[int]], set[int]]
 
 #: ``detailedMergeStatus`` values GitLab answers while it has not decided yet.
 _UNDECIDED = {"UNCHECKED", "CHECKING", "PREPARING"}
@@ -32,11 +32,12 @@ _UNREQUESTED = " and removed review request"
 _REVIEWED = ("approved this merge request", "requested changes")
 _MENTION = re.compile(r"@([\w.-]+)")
 _MR_STATES = {"opened": "OPEN", "locked": "OPEN", "closed": "CLOSED", "merged": "MERGED"}
-#: The placeholder ``gitlab-member-search`` repeats a line for, and how many usernames
-#: one query of it looks up: each search costs 22 of the 200 complexity GitLab allows a
-#: query read without a token.
-_SLOT = "uN"
-_SEARCH_CHUNK = 9
+_USER_GID = re.compile(r"gid://gitlab/User/([0-9]+)")
+#: User ids one ``members/all`` read asks about. Fewer than its page of 100, so one page
+#: holds every member among them, and few enough for the answer's ``Link`` header, which
+#: repeats every id twice: a self-hosted GitLab answered 502 past about 80 ids, the header
+#: outgrowing its proxy's buffer.
+_MEMBER_CHUNK = 40
 
 
 def _project(env: dict) -> dict:
@@ -51,50 +52,33 @@ def _login(user: dict | None) -> dict | None:
     return {"login": user["username"]} if user else None
 
 
-def _members(project: dict, users: list[dict | None], search: Search) -> set[str]:
+def _members(project: dict, users: list[dict | None], lookup: Lookup) -> set[str]:
     """The lowercased usernames of the project's members: its member page, and when that
-    page is full, what ``search`` answers for each of ``users`` the page does not hold."""
+    page is full, those of ``users`` the page does not hold whose ids ``lookup`` answers."""
     page = project.get("projectMembers") or {}
     members = {(m.get("user") or {}).get("username", "").lower() for m in _nodes(page)} - {""}
     if (page.get("pageInfo") or {}).get("hasNextPage"):
-        members |= search(sorted({u["username"].lower() for u in users if u} - members))
+        unlisted = {_user_id(u): u["username"].lower() for u in users
+                    if u and u["username"].lower() not in members}
+        members |= {unlisted[i] for i in lookup(sorted(unlisted)) if i in unlisted}
     return members
 
 
-def member_searches(usernames: list[str]) -> list[tuple[str, dict[str, str]]]:
-    """The ``gitlab-member-search`` queries looking ``usernames`` up, at most 9 to a
-    query, each with its variables: the i-th username of its query in ``u<i>``. The
-    query's ``$path`` is the caller's."""
-    template = core.read_graphql("gitlab-member-search").splitlines(keepends=True)
-    out = []
-    for start in range(0, len(usernames), _SEARCH_CHUNK):
-        chunk = usernames[start:start + _SEARCH_CHUNK]
-        text = "".join(
-            "".join(line.replace(_SLOT, f"u{i}") for i in range(len(chunk)))
-            if _SLOT in line else line
-            for line in template)
-        out.append((text, {f"u{i}": name for i, name in enumerate(chunk)}))
-    return out
+def _user_id(user: dict) -> int:
+    found = _USER_GID.fullmatch(user.get("id") or "")
+    if not found:
+        raise GHError(f"GitLab user {user['username']} has no readable id")
+    return int(found.group(1))
 
 
-def searched_members(env: dict, variables: dict[str, str]) -> set[str]:
-    """The members among the usernames a ``gitlab-member-search`` query asked for in
-    ``variables``, lowercased: a username is one when its search answers it exactly
-    (GitLab usernames are case-insensitive). A search whose page is full without it
-    cannot tell, so it raises rather than read the user as no member."""
-    project = _project(env)
-    found = set()
-    for alias, username in variables.items():
-        conn = project.get(alias)
-        if conn is None:
-            raise GHError(f"GitLab member search answered nothing for {username}")
-        if username.lower() in {(m.get("user") or {}).get("username", "").lower()
-                                for m in _nodes(conn)}:
-            found.add(username.lower())
-        elif (conn.get("pageInfo") or {}).get("hasNextPage"):
-            raise GHError(f"cannot tell whether {username} is a GitLab project member: "
-                          "a full page of members matches the search for it")
-    return found
+def member_paths(slug: str, ids: list[int]) -> list[str]:
+    """The REST reads of which of ``ids`` are members of project ``slug``, direct,
+    inherited or through a shared group: at most 40 ids to a read, in the order
+    given."""
+    project = urllib.parse.quote(slug, safe="")
+    return [f"projects/{project}/members/all?per_page=100"
+            + "".join(f"&user_ids[]={i}" for i in ids[start:start + _MEMBER_CHUNK])
+            for start in range(0, len(ids), _MEMBER_CHUNK)]
 
 
 def _association(user: dict | None, members: set[str]) -> str:
@@ -229,12 +213,12 @@ def _request_of(reviewer: str, events: list[dict], mr: dict, activity: list[dict
              "requestedReviewer": {"__typename": "User", "login": reviewer}}]
 
 
-def review_requests(env: dict, reviewer: str, search: Search) -> dict:
+def review_requests(env: dict, reviewer: str, lookup: Lookup) -> dict:
     """``gitlab-review-requests`` asked for ``reviewer`` as ``review-requests``;
     ``files`` only when the query asked for ``diffStats``."""
     project = _project(env)
     members = _members(project, [mr.get("author") for mr in _nodes(project.get("mergeRequests"))],
-                       search)
+                       lookup)
     nodes = []
     for mr in _nodes(project.get("mergeRequests")):
         activity = _nodes(mr.get("activity"))
@@ -260,12 +244,12 @@ def review_requests(env: dict, reviewer: str, search: Search) -> dict:
     return {"data": {"search": {"nodes": nodes}}}
 
 
-def issues(env: dict, search: Search) -> dict:
+def issues(env: dict, lookup: Lookup) -> dict:
     """``gitlab-issues`` as ``issues``."""
     project = _project(env)
     members = _members(project, [user for i in _nodes(project.get("issues"))
                                  for user in [i.get("author")]
-                                 + [n.get("author") for n in _nodes(i.get("notes"))]], search)
+                                 + [n.get("author") for n in _nodes(i.get("notes"))]], lookup)
     nodes = [{
         "number": int(i["iid"]),
         "title": i.get("title"),

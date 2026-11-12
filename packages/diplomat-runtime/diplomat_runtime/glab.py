@@ -11,11 +11,14 @@ import json
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
+from typing import TypeVar
 
 from . import core, gitlab
 from .gh import GHError
 from .prref import LocalRepo
 
+T = TypeVar("T")
 _CANDIDATES = ["/usr/bin/glab", "/usr/local/bin/glab", "/opt/homebrew/bin/glab"]
 # Set only on success, so a glab installed after launch is picked up by the next call.
 _cached_path: str | None = None
@@ -64,35 +67,36 @@ def graphql(query_name: str, host: str, variables: dict[str, str] | None = None,
     A query asking for ``project(fullPath: $path)`` that answers ``null`` raises: a
     project missing or hidden from this login is an unreadable root, never one with
     nothing open. Retries once on failure, like :func:`gh.graphql`."""
-    return _ask(core.read_graphql(query_name), host, variables, typed_variables)
-
-
-def _ask(query: str, host: str, variables: dict[str, str] | None,
-         typed_variables: dict[str, str] | None) -> dict:
+    query = core.read_graphql(query_name)
     args = ["api", "--hostname", host, "graphql", "-f", f"query={query}"]
     for k, v in (variables or {}).items():
         args += ["-f", f"{k}={v}"]
     for k, v in (typed_variables or {}).items():
         args += ["-F", f"{k}={v}"]
 
-    last: Exception | None = None
-    for attempt in range(2):
-        try:
-            env = json.loads(run(args))
-            errs = env.get("errors")
-            if errs:
-                msgs = "; ".join(e.get("message", "?") for e in errs)
-                raise GHError(f"GraphQL: {msgs}")
-            data = env.get("data") or {}
-            if "project" in data and data["project"] is None:
-                path = (variables or {}).get("path", "?")
-                raise GHError(f"GitLab project {path} not found on {host}")
-            return env
-        except Exception as exc:  # noqa: BLE001 — bubble the real failure up
-            last = exc
-            if attempt == 0:
-                time.sleep(0.8)
-    raise last  # type: ignore[misc]
+    def ask() -> dict:
+        env = json.loads(run(args))
+        errs = env.get("errors")
+        if errs:
+            msgs = "; ".join(e.get("message", "?") for e in errs)
+            raise GHError(f"GraphQL: {msgs}")
+        data = env.get("data") or {}
+        if "project" in data and data["project"] is None:
+            path = (variables or {}).get("path", "?")
+            raise GHError(f"GitLab project {path} not found on {host}")
+        return env
+
+    return _twice(ask)
+
+
+def _twice(call: Callable[[], T]) -> T:
+    """``call()``, asked once more after a pause when it raises; the second failure is
+    the one raised."""
+    try:
+        return call()
+    except Exception:  # noqa: BLE001 — retried, and a second failure bubbles up
+        time.sleep(0.8)
+        return call()
 
 
 def project(query_name: str, root: LocalRepo, variables: dict[str, str] | None = None,
@@ -102,12 +106,12 @@ def project(query_name: str, root: LocalRepo, variables: dict[str, str] | None =
                    typed_variables)
 
 
-def members(root: LocalRepo, usernames: list[str]) -> set[str]:
-    """The members of ``root``'s project among ``usernames``, lowercased: one
-    ``gitlab-member-search`` query per chunk of them (:func:`gitlab.member_searches`),
-    any failure raising as a failed read does."""
-    found: set[str] = set()
-    for query, variables in gitlab.member_searches(usernames):
-        env = _ask(query, root.host, {"path": root.slug, **variables}, None)
-        found |= gitlab.searched_members(env, variables)
+def members(root: LocalRepo, ids: list[int]) -> set[int]:
+    """The members of ``root``'s project among user ``ids``: one REST read per chunk of
+    them (:func:`gitlab.member_paths`), each retried once like :func:`graphql`, and any
+    failure raised as a failed read is."""
+    found: set[int] = set()
+    for path in gitlab.member_paths(root.slug, ids):
+        found |= {m["id"] for m in _twice(lambda: json.loads(
+            run(["api", "--hostname", root.host, path])))}
     return found

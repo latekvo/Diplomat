@@ -28,27 +28,26 @@ LAB = LocalRepo("group/sub", "proj", "/src/proj", HOST)
 HUB = LocalRepo("o", "r", "/src/r")
 
 
-def _unasked(usernames: list[str]) -> set[str]:
-    raise AssertionError(f"a member page with no more searched for {usernames}")
+def _unasked(ids: list[int]) -> set[int]:
+    raise AssertionError(f"a member page with no more looked up {ids}")
 
 
-def _review_requests(env: dict, search) -> dict:
-    return gitlab.review_requests(env, "carol", search)
+def _review_requests(env: dict, lookup) -> dict:
+    return gitlab.review_requests(env, "carol", lookup)
 
 
 #: The review-requests fixtures are answers to the query asked for reviewer ``carol``.
-#: Their member pages hold every member, so no adapter searches.
+#: Their member pages hold every member, so no adapter looks one up.
 ADAPTERS = {
     "prs": gitlab.prs, "monitor-prs": gitlab.monitor_prs, "closed-prs": gitlab.closed_prs,
     **{name: lambda env: _review_requests(env, _unasked)
        for name in ("review-requests", "review-requests-nofiles", "review-requests-window")},
     "issues": lambda env: gitlab.issues(env, _unasked), "mr": gitlab.mr,
 }
-#: Fixtures whose member page has more: ``{answer, search}`` in, where ``search`` is the
-#: ``gitlab-member-search`` answer, and ``{asked, result}`` or ``{asked, error}`` out,
-#: ``asked`` the username lists the adapter searched for.
-PAGED = {"issues-paged": gitlab.issues, "issues-paged-unsure": gitlab.issues,
-         "review-requests-paged": _review_requests}
+#: Fixtures whose member page has more: ``{answer, members}`` in, where ``members`` is
+#: the ``members/all`` answer the lookup reads whatever it is asked, and ``{asked,
+#: result}`` out, ``asked`` the id lists the adapter looked up.
+PAGED = {"issues-paged": gitlab.issues, "review-requests-paged": _review_requests}
 QUERIES = ("viewer", "prs", "monitor-prs", "closed-prs", "review-requests", "issues", "mr")
 RELATIONS = "relations: [DIRECT, INHERITED, INVITED_GROUPS, SHARED_INTO_ANCESTORS]"
 
@@ -63,39 +62,35 @@ def test_each_adapter_turns_the_gitlab_answer_into_its_github_twin(name):
 
 
 @pytest.mark.parametrize("name", sorted(PAGED))
-def test_an_author_past_a_full_member_page_is_searched_for(name):
+def test_an_author_past_a_full_member_page_is_looked_up_by_id(name):
     case = _fixture(name, "input")
-    asked: list[list[str]] = []
+    asked: list[list[int]] = []
 
-    def search(usernames: list[str]) -> set[str]:
-        asked.append(usernames)
-        found: set[str] = set()
-        for _, variables in gitlab.member_searches(usernames):
-            found |= gitlab.searched_members(case["search"], variables)
-        return found
+    def lookup(ids: list[int]) -> set[int]:
+        asked.append(ids)
+        return {m["id"] for m in case["members"]}
 
-    try:
-        got = {"result": PAGED[name](case["answer"], search)}
-    except gh.GHError as exc:
-        got = {"error": str(exc)}
-    assert {"asked": asked, **got} == _fixture(name, "expected")
+    got = PAGED[name](case["answer"], lookup)
+    assert {"asked": asked, "result": got} == _fixture(name, "expected")
 
 
-def test_a_member_search_asks_nine_usernames_a_query():
-    usernames = _fixture("member-search", "input")["usernames"]
-    assert [{"query": q, "variables": v} for q, v in gitlab.member_searches(usernames)] \
-        == _fixture("member-search", "expected")
-    assert gitlab.member_searches([]) == []
+def test_a_member_lookup_asks_forty_ids_a_read():
+    case = _fixture("member-paths", "input")
+    assert gitlab.member_paths(case["slug"], case["ids"]) == _fixture("member-paths",
+                                                                      "expected")
+    assert gitlab.member_paths("g/p", []) == []
 
 
-def test_a_member_search_answer_missing_a_username_is_an_error():
-    with pytest.raises(gh.GHError, match="GitLab member search answered nothing for bob"):
-        gitlab.searched_members({"data": {"project": {}}}, {"u0": "bob"})
+def test_an_author_with_no_readable_id_fails_the_read():
+    env = _fixture("issues-paged", "input")["answer"]
+    env["data"]["project"]["issues"]["nodes"][0]["author"]["id"] = "gid://gitlab/User/14x"
+    with pytest.raises(gh.GHError, match="GitLab user Dave has no readable id"):
+        gitlab.issues(env, lambda ids: set())
 
 
 def test_every_fixture_has_an_adapter():
     names = {p.name.split(".")[0] for p in FIXTURES.glob("*.json")}
-    assert names == set(ADAPTERS) | set(PAGED) | {"member-search"}
+    assert names == set(ADAPTERS) | set(PAGED) | {"member-paths"}
 
 
 def test_the_queries_ask_what_their_adapters_read():
@@ -114,9 +109,9 @@ def test_the_queries_ask_what_their_adapters_read():
         text = core.read_graphql(f"gitlab-{name}")
         assert f"projectMembers(first: 100, {RELATIONS}) {{\n      pageInfo {{ hasNextPage }}" \
             in text, name
-    search = core.read_graphql("gitlab-member-search")
-    assert f"projectMembers(search: $uN, {RELATIONS}, first: 100)" in search
-    assert not any("uN" in line for line in search.splitlines() if line.startswith("#"))
+        assert "        author { id username }\n" in text, name
+    assert "notes(first: 100, filter: ONLY_COMMENTS) { nodes { author { id username } } }" \
+        in core.read_graphql("gitlab-issues")
 
 
 # ---- glab ---------------------------------------------------------------------
@@ -148,7 +143,7 @@ class FakeGlab:
             return json.dumps(answer).encode()
         pairs = dict(args[i + 1].split("=", 1) for i, a in enumerate(args) if a in ("-f", "-F"))
         query = pairs.pop("query")
-        name = "member-search" if "projectMembers(search:" in query else self._names[query]
+        name = self._names[query]
         self.asked.append((name, pairs, args[args.index("--hostname") + 1]))
         answer = self.answers[name]
         if isinstance(answer, Exception):
@@ -219,41 +214,46 @@ def test_open_merge_requests_and_issues_are_read_through_glab(monkeypatch):
     assert item_key_from_url(issues[0].url) == "group/sub/proj#5"
 
 
-def test_a_full_member_page_costs_one_search_and_a_failed_one_fails_the_read(monkeypatch):
+MEMBERS_14_15 = "projects/group%2Fsub%2Fproj/members/all?per_page=100&user_ids[]=14&user_ids[]=15"
+
+
+def test_a_full_member_page_costs_one_lookup_and_a_failed_one_fails_the_read(monkeypatch):
     paged = _fixture("issues-paged", "input")
-    fake = FakeGlab(monkeypatch, issues=paged["answer"], member_search=paged["search"])
+    fake = FakeGlab(monkeypatch, issues=paged["answer"])
+    fake.rest = {MEMBERS_14_15: paged["members"]}
     issues = API.fetch_open_issues(LAB)
-    assert fake.asked[1] == ("member-search", {"path": "group/sub/proj", "u0": "dave",
-                                               "u1": "erin"}, HOST)
-    assert fake.names() == ["issues", "member-search"]
+    assert fake.rest_asked == [MEMBERS_14_15]
+    assert fake.argv[1] == ["api", "--hostname", HOST, MEMBERS_14_15]
     assert [(i.number, i.author_association, i.member_responded) for i in issues] == [
         (9, "MEMBER", False), (8, "NONE", True), (7, "NONE", False)]
 
-    fake.answers["member-search"] = gh.GHError("glab exited 1: glab: 502 Bad Gateway")
+    fake.rest = {MEMBERS_14_15: gh.GHError("glab exited 1: glab: 502 Bad Gateway")}
+    fake.rest_asked.clear()
     with pytest.raises(gh.GHError, match="502 Bad Gateway"):
         API.fetch_open_issues(LAB)
+    assert fake.rest_asked == [MEMBERS_14_15] * 2, "retried once"
 
 
-def test_a_review_requests_author_past_a_full_member_page_is_searched_for(monkeypatch):
+def test_a_review_requests_author_past_a_full_member_page_is_looked_up(monkeypatch):
     from diplomat_app import autofixmonitor
 
     paged = _fixture("review-requests-paged", "input")
-    fake = FakeGlab(monkeypatch, review_requests=paged["answer"], member_search=paged["search"])
+    fake = FakeGlab(monkeypatch, review_requests=paged["answer"])
+    fake.rest = {MEMBERS_14_15: paged["members"]}
     reqs = autofixmonitor.fetch_review_requests(LAB, "carol")
-    assert fake.names() == ["review-requests", "member-search"]
+    assert fake.rest_asked == [MEMBERS_14_15]
     assert [(r.number, r.author_association) for r in reqs] == [
-        (3, "MEMBER"), (2, "NONE"), (1, "MEMBER")]
+        (3, "NONE"), (2, "MEMBER"), (1, "MEMBER")]
 
 
-def test_a_member_search_asks_glab_once_per_nine_usernames(monkeypatch):
-    """GitLab refuses a query of over 200 complexity read without a token, and each
-    search costs 22."""
-    nobody = {"data": {"project": {f"u{i}": {"pageInfo": {"hasNextPage": False}, "nodes": []}
-                                   for i in range(9)}}}
-    fake = FakeGlab(monkeypatch, member_search=nobody)
-    assert glab.members(LAB, [f"user{i}" for i in range(19)]) == set()
-    assert [len(a[1]) - 1 for a in fake.asked] == [9, 9, 1]
-    assert glab.members(LAB, []) == set() and len(fake.asked) == 3
+def test_a_member_lookup_asks_glab_once_per_forty_ids(monkeypatch):
+    fake = FakeGlab(monkeypatch)
+    paths = gitlab.member_paths(LAB.slug, list(range(1, 82)))
+    fake.rest = {paths[0]: [{"id": 7, "username": "a"}], paths[1]: [],
+                 paths[2]: [{"id": 81, "username": "b"}]}
+    assert glab.members(LAB, list(range(1, 82))) == {7, 81}
+    assert fake.rest_asked == paths and len(paths) == 3
+    assert glab.members(LAB, []) == set() and len(fake.rest_asked) == 3
 
 
 def test_the_monitor_reads_ask_for_me_by_username(monkeypatch):

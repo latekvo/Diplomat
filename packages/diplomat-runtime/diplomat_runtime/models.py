@@ -394,7 +394,7 @@ class API:
     @staticmethod
     def fetch_open_issues(root: LocalRepo) -> list[OpenIssue]:
         env = (gitlab.issues(glab.project("gitlab-issues", root),
-                             lambda names: glab.members(root, names)) if root.is_gitlab
+                             lambda ids: glab.members(root, ids)) if root.is_gitlab
                else gh.graphql("issues", repo=(root.owner, root.repo)))
         nodes = env["data"]["repository"]["issues"]["nodes"]
         team = Filters.team()
