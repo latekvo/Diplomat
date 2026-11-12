@@ -16,7 +16,7 @@ from . import core, gitlab
 from .gh import GHError
 from .prref import LocalRepo
 
-_CANDIDATES = ["/opt/homebrew/bin/glab", "/usr/local/bin/glab", "/usr/bin/glab"]
+_CANDIDATES = ["/usr/bin/glab", "/usr/local/bin/glab", "/opt/homebrew/bin/glab"]
 # Set only on success, so a glab installed after launch is picked up by the next call.
 _cached_path: str | None = None
 

@@ -1,4 +1,4 @@
-"""Where ``gh`` is looked for, and for how long the answer is kept."""
+"""Where ``gh`` and ``glab`` are looked for, and for how long the answer is kept."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import stat
 
 import pytest
 
-from diplomat_runtime import gh
+from diplomat_runtime import gh, glab
 from diplomat_runtime.gh import run as real_run  # bound before conftest swaps gh.run out
 
 
@@ -34,3 +34,11 @@ def test_a_gh_that_no_longer_launches_is_looked_for_again(tmp_path, monkeypatch,
         real_run([])
     _install(second, "two")
     assert real_run([]) == b"two\n"
+
+
+def test_glab_is_looked_for_where_gh_is(monkeypatch):
+    installed = {"/usr/bin/glab", "/opt/homebrew/bin/glab"}
+    monkeypatch.setattr(glab.shutil, "which", lambda p: p if p in installed else None)
+    monkeypatch.setattr(glab, "_cached_path", None)
+    assert glab.glab_path() == "/usr/bin/glab"
+    assert glab._CANDIDATES == [c.replace("/gh", "/glab") for c in gh._CANDIDATES]
