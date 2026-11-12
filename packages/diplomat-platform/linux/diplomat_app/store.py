@@ -48,6 +48,7 @@ from diplomat_runtime import (
     telemetry,
     tmuxwatch,
 )
+from diplomat_runtime.gh import GHError
 from diplomat_runtime.models import API, Filters, Fmt, OpenIssue, OpenPR
 from diplomat_runtime.prref import (LocalRepo, item_key, item_key_from_url, item_label,
                                     migrate_item_key, migrate_queue_key, split_item_key)
@@ -66,6 +67,7 @@ from . import (
 
 #: The review-request monitor's verb.
 REVIEW_REQ_ACTION = "review-req"
+GITHUB_LOGIN_UNKNOWN = "GitHub login unknown — is `gh` installed and authenticated?"
 
 GITHUB_ITEM = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/(?:pull|issues)/([0-9]+)$")
 #: An issue fix run's label (``RequestedWork.label_among``, the Fix-issues wizard's), past
@@ -1406,8 +1408,11 @@ class Store(QObject):
     def me_for(self, root: LocalRepo) -> str:
         """Who "me" is in ``root``: :attr:`effective_me` on GitHub; on GitLab the login
         glab is signed in to on its host, read once per host and kept once read. Raises
-        while that read fails, which leaves the root unread like any failed read."""
+        while that read fails or the GitHub login is unknown, which leaves the root
+        unread like any failed read."""
         if not root.is_gitlab:
+            if not self.effective_me:
+                raise GHError(GITHUB_LOGIN_UNKNOWN)
             return self.effective_me
         if root.host not in self._gitlab_me:
             self._gitlab_me[root.host] = API.fetch_viewer_login(root.host)
@@ -1595,10 +1600,10 @@ class Store(QObject):
         try:
             if not self.effective_me:
                 self.fetch_me()
-            if not self.effective_me:
-                self._note_poll_failure(
-                    "GitHub login unknown — is `gh` installed and authenticated?"
-                )
+            if not self.effective_me and not any(r.is_gitlab for r in review.repo_roots()):
+                # With a GitLab root the GitHub roots fail their reads alone
+                # (:meth:`me_for`), and the GitLab ones go on.
+                self._note_poll_failure(GITHUB_LOGIN_UNKNOWN)
             elif review.roots_guessed():
                 # Its one root would be the configured repo at the first path, which
                 # may check out another.
@@ -1914,7 +1919,10 @@ class Store(QObject):
         already queued too. One whose prompt will not assemble is left for the next
         pass, as :meth:`_offer_requested_work` leaves an ask. A fix whose issue has an
         agent on it already is recorded, not asked for. An item in no repo root is
-        skipped."""
+        skipped, and so is the whole pass while the GitHub login is unknown: a review
+        of my own PR would be asked for as someone else's."""
+        if not self.effective_me:
+            return
         done: dict[str, list[str]] = {}
         fixes = any(w["kind"] == "fix-issue" for _, w in work)
         agent_issues = self.goal_overlay().agent_issues if fixes else frozenset()

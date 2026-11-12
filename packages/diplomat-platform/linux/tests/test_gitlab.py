@@ -237,6 +237,61 @@ def test_a_poll_of_a_gitlab_root_queues_its_work_as_the_glab_login(lab_only, mon
             if a[0] in ("monitor-prs", "review-requests")} == {"carol"}
 
 
+def test_without_a_github_login_a_gitlab_root_is_polled_and_a_github_one_held(lab_only,
+                                                                              monkeypatch):
+    """No GitHub login stands the poll down only with no GitLab root: the GitHub roots
+    are then unread like a root whose read failed, and the GitLab ones are read."""
+    from diplomat_app import store as store_mod
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [HUB, LAB])
+    lab_only.me = ""
+    asked_gh: list = []
+
+    def signed_out(args, **_):
+        asked_gh.append(args)
+        raise gh.GHError("gh exited 1: not logged in")
+
+    monkeypatch.setattr(gh, "run", signed_out)
+    monkeypatch.setattr(gh.time, "sleep", lambda s: None)
+    fake = FakeGlab(monkeypatch, viewer={"data": {"currentUser": {"username": "carol"}}},
+                    monitor_prs=_fixture("monitor-prs", "input"),
+                    closed_prs=_fixture("closed-prs", "input"),
+                    review_requests=_fixture("review-requests-nofiles", "input"),
+                    issues={"data": {"project": {"issues": {"nodes": []},
+                                                 "projectMembers": {"nodes": []}}}})
+    logged: list[str] = []
+    monkeypatch.setattr(store_mod.activity, "log", lambda *a: logged.append(" ".join(a)))
+
+    lab_only._autofix_poll_once()
+
+    assert lab_only.autofix_poll_error is None
+    assert "conflicts:group/sub/proj#12" in {t.id for t in lab_only.queued_tasks}
+    assert lab_only._held_slugs == {"o/r"}
+    assert "monitor-prs" in fake.names()
+    assert not any("o/r" in " ".join(a) for a in asked_gh), "no read of the GitHub root"
+    assert any(store_mod.GITHUB_LOGIN_UNKNOWN in m and "o/r" in m for m in logged)
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [HUB])
+    lab_only._autofix_poll_once()
+    assert lab_only.autofix_poll_error == store_mod.GITHUB_LOGIN_UNKNOWN
+
+
+def test_the_goal_pass_waits_for_the_github_login(lab_only, monkeypatch):
+    """Without it a review of my own PR would be asked for as someone else's."""
+    monkeypatch.setattr(review, "repo_roots", lambda: [HUB, LAB])
+    asked: list = []
+    monkeypatch.setattr(lab_only, "_request", asked.extend)
+    monkeypatch.setattr(lab_only, "_edit_tracked_task", lambda op: None)
+    work = [("t1", {"kind": "review", "number": 5, "url": "https://github.com/o/r/pull/5",
+                    "author": "alice", "key": "k5"})]
+    lab_only.me = ""
+    lab_only._request_goal_work(work)
+    assert asked == []
+    lab_only.me = "alice"
+    lab_only._request_goal_work(work)
+    assert [w.author for w in asked] == [""], "my own PR, once the login is known"
+
+
 def test_refresh_lists_a_gitlab_roots_merge_requests(lab_only, monkeypatch):
     FakeGlab(monkeypatch, viewer={"data": {"currentUser": {"username": "carol"}}},
              prs=_fixture("prs", "input"), issues=_fixture("issues", "input"))
