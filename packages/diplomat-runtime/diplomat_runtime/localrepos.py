@@ -179,15 +179,18 @@ def _identity(repo: LocalRepo) -> str:
 @dataclass(frozen=True)
 class Checkout:
     """One path listed in Settings, and the repos it answers for: none when it is no
-    checkout or has no GitHub or GitLab remote. The first is the one Settings names it
-    by."""
+    checkout or has no GitHub or GitLab remote."""
 
     path: str
     repos: tuple[LocalRepo, ...]
 
     @property
     def slug(self) -> str | None:
-        return f"{self.repos[0].owner}/{self.repos[0].repo}" if self.repos else None
+        """What Settings names it by: its first GitHub repo, as :func:`resolve_roots`
+        ranks a GitHub remote over a GitLab one, else its first."""
+        pick = next((r for r in self.repos if not r.is_gitlab), None) or next(
+            iter(self.repos), None)
+        return pick.slug if pick else None
 
 
 def inspect(path: str, hosts: frozenset[str] = GITLAB_HOSTS) -> Checkout:
@@ -213,15 +216,16 @@ def resolve_roots(paths: list[str], remotes: dict[str, str],
     """The repo roots ``paths`` name, primary first. Twin of ``RepoRoots.resolve``.
 
     ``remotes`` maps an expanded path to its :func:`remote_config` output; a path
-    missing from it is no checkout. Each path answers for the ``configured`` GitHub repo
-    when its ``upstream`` or ``origin`` (any remote, with neither) is that repo, or a
-    GitHub repo of that name under another owner (a fork's ``origin``, or a URL from
-    before the repo moved); else for its first (:func:`entries`), a GitLab project being
-    only ever itself. Another remote naming it is a sibling fetched from, not what the
-    checkout is. A path with no GitHub or GitLab remote is skipped, and of two answering
-    for one repo the first wins. When nothing resolves, the first path stands for the
-    configured repo, so a missing checkout reads as the single root it always did
-    (:func:`guessed` tells the case of several)."""
+    missing from it is no checkout. A path with a GitHub remote answers for a GitHub
+    repo: the ``configured`` one when its GitHub ``upstream`` or ``origin`` (any GitHub
+    remote, with neither) is that repo, or a repo of that name under another owner (a
+    fork's ``origin``, or a URL from before the repo moved); else its first GitHub
+    remote (:func:`entries`). Another remote naming it is a sibling fetched from, not
+    what the checkout is. Only a path with no GitHub remote answers for a GitLab project:
+    its first GitLab remote, which is only ever itself. A path with no GitHub or GitLab
+    remote is skipped, and of two answering for one repo the first wins. When nothing
+    resolves, the first path stands for the configured repo, so a missing checkout reads
+    as the single root it always did (:func:`guessed` tells the case of several)."""
     want = f"{configured[0]}/{configured[1]}".lower()
     roots: list[LocalRepo] = []
     seen: set[str] = set()
@@ -230,13 +234,14 @@ def resolve_roots(paths: list[str], remotes: dict[str, str],
         if where not in remotes:
             continue
         found = entries(where, remotes[where], hosts=hosts)
-        own = [r for r in (entries(where, remotes[where], ("upstream", "origin"), hosts)
-                           or found) if not r.is_gitlab]
+        hub = [r for r in found if not r.is_gitlab]
+        own = [r for r in entries(where, remotes[where], ("upstream", "origin"), hosts)
+               if not r.is_gitlab] or hub
         pick = next((r for r in own if r.slug.lower() == want), None)
         if pick is None and any(r.repo.lower() == configured[1].lower() for r in own):
             pick = LocalRepo(configured[0], configured[1], where)
         if pick is None and found:
-            pick = found[0]
+            pick = (hub or found)[0]
         if pick is None or _identity(pick) in seen:
             continue
         seen.add(_identity(pick))

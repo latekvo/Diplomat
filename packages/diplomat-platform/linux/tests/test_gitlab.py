@@ -390,7 +390,30 @@ def test_a_gitlab_checkout_is_its_own_root_and_never_the_configured_repo():
     assert localrepos.resolve_roots(["/mixed"], remotes, configured) == [
         LocalRepo("Software-Mansion", "Argent", "/mixed")]
     assert localrepos.resolve_roots(["/mixed"], remotes, ("x", "y")) == [
-        LocalRepo("group/sub", "radon", "/mixed", "gitlab.com")]
+        LocalRepo("me", "argent", "/mixed")]
+
+
+def test_a_github_remote_outranks_a_gitlab_origin_as_it_did_before_gitlab_resolved():
+    """A GitLab mirror checked out beside a GitHub remote resolves to the GitHub repo it
+    always did: the configured one when the remote names it, else that GitHub sibling.
+    Only a checkout with no GitHub remote is a GitLab root, upstream before origin."""
+    remotes = {
+        "/mirror": "remote.origin.url git@gitlab.com:acme/widget.git\n"
+                   "remote.github.url git@github.com:acme/widget.git\n",
+        "/sibling": "remote.origin.url git@gitlab.com:acme/widget.git\n"
+                    "remote.gh.url https://github.com/someone/else\n",
+        "/lab": "remote.mirror.url git@gitlab.com:other/one.git\n"
+                "remote.origin.url git@gitlab.com:acme/widget.git\n",
+    }
+    assert localrepos.resolve_roots(["/mirror"], remotes, ("acme", "widget")) == [
+        LocalRepo("acme", "widget", "/mirror")]
+    assert localrepos.resolve_roots(["/sibling"], remotes, ("acme", "widget")) == [
+        LocalRepo("someone", "else", "/sibling")]
+    assert localrepos.resolve_roots(["/lab"], remotes, ("acme", "widget")) == [
+        LocalRepo("acme", "widget", "/lab", "gitlab.com")]
+    label = localrepos.Checkout("/sibling", tuple(localrepos.entries(
+        "/sibling", remotes["/sibling"]))).slug
+    assert label == "someone/else"
 
 
 def test_a_gitlab_root_is_never_the_meshs_checkout(monkeypatch):
