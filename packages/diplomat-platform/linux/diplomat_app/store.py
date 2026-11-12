@@ -3149,7 +3149,7 @@ class Store(QObject):
                 action == REVIEW_REQ_ACTION and f"Review requests:{slug}" in self._roots_unread)
 
         # GitLab leaves a merge request's status unchecked after a push to its target
-        # until something asks it again, so there an undecided one still conflicts.
+        # until something asks it again, so there an undecided one counts as conflicting.
         conflicting = {s.item for s in snaps if s.mergeable == "CONFLICTING"
                        or s.mergeable == "UNKNOWN" and (s.item or "").partition("#")[0] in lab}
         owing_reply = {s.item for s in snaps if s.threads_i_owe > 0}
