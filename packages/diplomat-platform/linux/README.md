@@ -141,7 +141,10 @@ here there are no session rows to sort, so the list starts at that order's *star
 - GitHub CLI `gh`, authenticated (`gh auth login`). Agents can run on a narrower
   token than that login instead - see
   [A narrow GitHub token for agents](../../../docs/settings.md#a-narrow-github-token-for-agents)
-  (on Linux it is read from the file `agentTokenFile` names)
+  (on Linux it is read from the file `agentTokenFile` names). That token is GitHub's
+  alone: agents on a GitLab root use your full `glab` login
+- For a GitLab repo root, the GitLab CLI `glab`, signed in to that root's host
+  (`glab auth login --hostname <host>`)
 - The `diplomat-core` binary for prompt assembly — build it with
   `./install/build-core.sh` (needs a Swift toolchain once), or point
   `DIPLOMAT_CORE_BIN` at a prebuilt one
@@ -422,12 +425,12 @@ diplomat_app/
   store.py        state, QSettings, tool catalog, row mapping, lookup
   conflicts.py    ConflictConfig
   audit.py        AuditConfig - the Full E2E test
-  probes.py       the only thing that LOOKS: ps, tmux panes, mesh claims, gh merge state,
+  probes.py       the only thing that LOOKS: ps, tmux panes, mesh claims, gh/glab merge state,
                   each answering present / unavailable / unsupported so a failure to look
                   is never mistaken for an answer. Tracks its own health
   agentdump.py    DIPLOMAT_AGENTS=1 — every record, every probe's raw answer, every verdict
                   and the one fact that decided it
-  autofixmonitor.py  the monitors' GitHub reads (monitor-prs / review-requests)
+  autofixmonitor.py  the monitors' GitHub and GitLab reads (monitor-prs / review-requests)
   bans.py         the allocator daemon's prompt-injection ban list
   selfupdate.py   fetch/merge, rebuild diplomat-core, relaunch (button + 6AM timer)
   migrate.py      one-time ~/.argent → ~/.diplomat state move
