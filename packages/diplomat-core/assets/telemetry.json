@@ -124,7 +124,7 @@
       "colorHex": "#32ADE6"
     },
     {
-      "_comment": "The delivered half of a pair: 'Owed work' charts what the monitors found and nobody had taken, this what actually finished. Bucketed by when a task ENDED, so a run spanning two buckets is one delivery counted in the bucket it ended in \u2014 and a task the mesh placed on a peer counts, because it was delivered, even though its cost is the peer's and stays out of the per-task figures.",
+      "_comment": "The delivered half of a pair: 'Owed work' charts what the monitors found and nobody had taken, this what actually finished. Bucketed by when a task ENDED, so a run spanning two buckets is one delivery counted in the bucket it ended in.",
       "id": "finishedWork",
       "title": "Finished work",
       "blurb": "Auto-tasks that finished, counted in equal buckets across the lookback.",
