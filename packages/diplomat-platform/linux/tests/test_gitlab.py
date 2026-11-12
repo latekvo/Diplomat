@@ -557,6 +557,32 @@ def test_the_review_wizard_asks_who_i_am_in_a_gitlab_checkout_it_never_read(lab_
     assert w._specific_author == review.SpecificAuthor.MINE
 
 
+@pytest.mark.parametrize("wizard,field,link", [
+    ("wizardview.WizardView", "specific_pr", "merge_requests/12"),
+    ("issuewizardview.IssueWizardView", "specific_issue", "issues/40"),
+    ("conflictwizardview.ConflictWizardView", "specific_pr", "merge_requests/12"),
+])
+def test_a_wizard_run_on_another_roots_item_is_mine_as_that_roots_login(
+        lab_only, monkeypatch, wizard, field, link):
+    """The GitHub root is on the panel; the pasted link is a GitLab root's."""
+    import importlib
+
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(review, "repo_roots", lambda: [HUB, LAB])
+    monkeypatch.setattr(lab_only, "start_background", lambda work, name=None: None)
+    FakeGlab(monkeypatch, viewer={"data": {"currentUser": {"username": "carol"}}})
+    assert lab_only.me_for(LAB) == "carol" and lab_only.selected_repo == HUB
+    module, name = wizard.split(".")
+    w = getattr(importlib.import_module(f"diplomat_app.{module}"), name)(lab_only)
+    assert w._config().me == "alice"
+    w.target.setCurrentIndex(w.target.findData(type(w._config().target).SPECIFIC))
+    getattr(w, field).setText(f"https://{HOST}/group/sub/proj/-/{link}")
+    cfg = w._config()
+    assert (cfg.target_root, cfg.me) == (LAB, "carol")
+
+
 def test_refresh_lists_a_gitlab_roots_merge_requests(lab_only, monkeypatch):
     FakeGlab(monkeypatch, viewer={"data": {"currentUser": {"username": "carol"}}},
              prs=_fixture("prs", "input"), issues=_fixture("issues", "input"))

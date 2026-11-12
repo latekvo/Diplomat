@@ -66,14 +66,15 @@ class ConflictWizardView(SpawnWizard):
         self._sync()
 
     def _config(self) -> conflicts.ConflictConfig:
-        return conflicts.ConflictConfig(
+        cfg = conflicts.ConflictConfig(
             target=self.target.currentData(),
             username=self.username.text(),
-            me=self.store.known_me(self.store.selected_repo),
             specific_pr=self.specific_pr.text(),
             local_repos=self.store.local_repos,
             home=self.store.selected_repo,
         )
+        cfg.me = self.store.known_me(cfg.target_root)
+        return cfg
 
     def _sync(self) -> None:
         cfg = self._config()

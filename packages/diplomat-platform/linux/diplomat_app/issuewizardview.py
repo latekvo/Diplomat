@@ -153,11 +153,10 @@ class IssueWizardView(SpawnWizard):
             return 0
 
     def _config(self) -> issues.IssueConfig:
-        return issues.IssueConfig(
+        cfg = issues.IssueConfig(
             depth=self._depth_ids[self.slider.value()],
             target=self.target.currentData(),
             username=self.username.text(),
-            me=self.store.known_me(self.store.selected_repo),
             specific_issue=self.specific_issue.text(),
             unassigned_only=self.unassigned_only.isChecked(),
             assign_to_me=self.assign_to_me.isChecked(),
@@ -167,6 +166,8 @@ class IssueWizardView(SpawnWizard):
             local_repos=self.store.local_repos,
             home=self.store.selected_repo,
         )
+        cfg.me = self.store.known_me(cfg.target_root)
+        return cfg
 
     def _sync(self) -> None:
         cfg = self._config()
@@ -179,9 +180,8 @@ class IssueWizardView(SpawnWizard):
         self.username.setVisible(cfg.target == Target.SOMEONE)
         self.specific_issue.setVisible(is_specific)
 
-        me = self.store.known_me(self.store.selected_repo)
-        self.mine_caption.setText(f"issues opened by @{me}" if (is_mine and me) else "")
-        self.mine_caption.setVisible(bool(is_mine and me))
+        self.mine_caption.setText(f"issues opened by @{cfg.me}" if (is_mine and cfg.me) else "")
+        self.mine_caption.setVisible(bool(is_mine and cfg.me))
 
         ref = cfg.issue_ref
         if is_specific and ref.repo_mismatch:

@@ -172,11 +172,10 @@ class WizardView(SpawnWizard):
             return 0
 
     def _config(self) -> review.ReviewConfig:
-        return review.ReviewConfig(
+        cfg = review.ReviewConfig(
             depth=review.depth_ids()[self.slider.value()],
             target=self.target.currentData(),
             username=self.username.text(),
-            me=self.store.known_me(self.store.selected_repo),
             mark_ready=self.mark_ready.isChecked(),
             leave_reviews=self.leave_reviews.isChecked(),
             reply_to_reviews=self.reply.isChecked(),
@@ -189,6 +188,8 @@ class WizardView(SpawnWizard):
             local_repos=self.store.local_repos,
             home=self.store.selected_repo,
         )
+        cfg.me = self.store.known_me(cfg.target_root)
+        return cfg
 
     def _sync(self) -> None:
         # Kick off / reset the specific-PR author poll BEFORE reading the config, so
@@ -209,9 +210,8 @@ class WizardView(SpawnWizard):
         self.drafts.setVisible(not is_specific)
         self.ready.setVisible(not is_specific)
 
-        me = self.store.known_me(self.store.selected_repo)
-        self.mine_caption.setText(f"PRs authored by @{me}" if (is_mine and me) else "")
-        self.mine_caption.setVisible(bool(is_mine and me))
+        self.mine_caption.setText(f"PRs authored by @{cfg.me}" if (is_mine and cfg.me) else "")
+        self.mine_caption.setVisible(bool(is_mine and cfg.me))
 
         ref = cfg.pr_ref
         if is_specific and ref.repo_mismatch:
