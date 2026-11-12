@@ -400,8 +400,7 @@ public enum API {
         try openIssues(root.isGitLab
             ? try await GitLab.issues(try await GLab.graphql("gitlab-issues", host: root.host,
                                                              variables: [("path", root.slug)]),
-                                      search: { try await GLab.members(host: root.host, slug: root.slug,
-                                                                       usernames: $0) })
+                                      lookup: { try await GLab.members(host: root.host, slug: root.slug, ids: $0) })
             : try await GH.graphql("issues", repo: (root.owner, root.repo)))
     }
 

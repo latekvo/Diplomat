@@ -2,36 +2,36 @@ import Foundation
 
 /// The answers of the `assets/graphql/gitlab-*` queries, each turned into the JSON its
 /// GitHub twin query answers with, so one parser reads both. No call to glab but through
-/// the `Search` an adapter is handed; Python twin: `diplomat_runtime/gitlab.py`, held to
+/// the `Lookup` an adapter is handed; Python twin: `diplomat_runtime/gitlab.py`, held to
 /// the same output by the shared fixtures in `Tests/fixtures/gitlab/`.
 ///
 /// GitLab has no author association, so a project member reads as `MEMBER` and anyone
-/// else as `NONE`; an author past a full member page is asked of the `Search`, which
-/// looks usernames up with `gitlab-member-search`. A merge request is numbered by its iid;
-/// a resolvable discussion is a review thread; and GitLab records a review request, an
-/// approval, a requested change and a ready-for-review as system notes, which stand in for
-/// GitHub's timeline events.
+/// else as `NONE`; an author past a full member page is asked of the `Lookup`, which reads
+/// their ids off the REST `members/all` (`memberPaths`). A merge request is numbered by
+/// its iid; a resolvable discussion is a review thread; and GitLab records a review
+/// request, an approval, a requested change and a ready-for-review as system notes, which
+/// stand in for GitHub's timeline events.
 public enum GitLab {
     typealias JSON = [String: Any]
 
-    /// Lowercased usernames -> the project members among them.
-    public typealias Search = ([String]) async throws -> Set<String>
+    /// User ids -> the project members among them.
+    public typealias Lookup = ([Int]) async throws -> Set<Int>
 
-    /// The placeholder `gitlab-member-search` repeats a line for, and how many usernames
-    /// one query of it looks up: each search costs 22 of the 200 complexity GitLab allows
-    /// a query read without a token.
-    static let searchSlot = "uN"
-    static let searchChunk = 9
+    /// User ids one `members/all` read asks about. Fewer than its page of 100, so one page
+    /// holds every member among them, and few enough for the answer's `Link` header, which
+    /// repeats every id twice: a self-hosted GitLab answered 502 past about 80 ids, the
+    /// header outgrowing its proxy's buffer.
+    static let memberChunk = 40
 
     /// The adapters by fixture name: `prs`, `issues` (any name starting so),
     /// `monitor-prs`, `closed-prs`, `review-requests` (any name starting so, each an
     /// answer asked for `reviewer`) and `mr`.
     public static func adapt(_ name: String, _ data: Data, reviewer: String,
-                             search: Search) async throws -> Data {
+                             lookup: Lookup) async throws -> Data {
         if name.hasPrefix("review-requests") {
-            return try await reviewRequests(data, reviewer: reviewer, search: search)
+            return try await reviewRequests(data, reviewer: reviewer, lookup: lookup)
         }
-        if name.hasPrefix("issues") { return try await issues(data, search: search) }
+        if name.hasPrefix("issues") { return try await issues(data, lookup: lookup) }
         switch name {
         case "prs": return try prs(data)
         case "monitor-prs": return try monitorPRs(data)
@@ -58,11 +58,11 @@ public enum GitLab {
     }
 
     /// `gitlab-issues` as `issues.graphql`: `{data: {repository: {issues: {nodes}}}}`.
-    public static func issues(_ data: Data, search: Search) async throws -> Data {
+    public static func issues(_ data: Data, lookup: Lookup) async throws -> Data {
         let project = try self.project(data)
         let members = try await self.members(project, list(project["issues"]).flatMap { i in
             [i["author"]] + list(i["notes"]).map { $0["author"] }
-        }, search: search)
+        }, lookup: lookup)
         let nodes = list(project["issues"]).map { i -> JSON in
             var n = common(i)
             n["createdAt"] = i["createdAt"] ?? NSNull()
@@ -106,10 +106,10 @@ public enum GitLab {
     /// `{data: {search: {nodes}}}`, with `files` only when the answer carries `diffStats`
     /// (`$withFiles`).
     public static func reviewRequests(_ data: Data, reviewer: String,
-                                      search: Search) async throws -> Data {
+                                      lookup: Lookup) async throws -> Data {
         let project = try self.project(data)
         let members = try await self.members(project, list(project["mergeRequests"]).map { $0["author"] },
-                                             search: search)
+                                             lookup: lookup)
         let nodes = list(project["mergeRequests"]).map { mr -> JSON in
             var n = common(mr)
             n["authorAssociation"] = association(username(mr["author"]), members)
@@ -214,54 +214,52 @@ public enum GitLab {
     }
 
     /// The lowercased usernames of the project's members: its member page, and when that
-    /// page is full, what `search` answers for each of `users` the page does not hold.
-    private static func members(_ project: JSON, _ users: [Any?], search: Search) async throws -> Set<String> {
+    /// page is full, those of `users` the page does not hold whose ids `lookup` answers.
+    private static func members(_ project: JSON, _ users: [Any?], lookup: Lookup) async throws -> Set<String> {
         let page = project["projectMembers"] as? JSON ?? [:]
         var members = Set(list(page).compactMap { username($0["user"])?.lowercased() })
         if (page["pageInfo"] as? JSON)?["hasNextPage"] as? Bool == true {
-            let unlisted = Set(users.compactMap { username($0)?.lowercased() }).subtracting(members)
-            members.formUnion(try await search(unlisted.sorted()))
+            var unlisted: [Int: String] = [:]
+            for case let user as JSON in users {
+                guard let name = username(user), !members.contains(name.lowercased()) else { continue }
+                unlisted[try userID(user, name: name)] = name.lowercased()
+            }
+            members.formUnion(try await lookup(unlisted.keys.sorted()).compactMap { unlisted[$0] })
         }
         return members
     }
 
-    /// The `gitlab-member-search` queries looking `usernames` up, at most `searchChunk` to
-    /// a query, each with its variables: the i-th username of its query in `u<i>`. The
-    /// query's `$path` is the caller's.
-    public static func memberSearches(_ usernames: [String]) throws
-        -> [(query: String, variables: [(String, String)])] {
-        let template = try CoreAssets.graphql("gitlab-member-search")
-            .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        return stride(from: 0, to: usernames.count, by: searchChunk).map { start in
-            let chunk = Array(usernames[start..<min(start + searchChunk, usernames.count)])
-            let lines = template.flatMap { line in
-                line.contains(searchSlot)
-                    ? chunk.indices.map { line.replacingOccurrences(of: searchSlot, with: "u\($0)") }
-                    : [line]
-            }
-            return (lines.joined(separator: "\n"), chunk.enumerated().map { ("u\($0.offset)", $0.element) })
+    /// The number of a user's `gid://gitlab/User/<n>` id.
+    private static func userID(_ user: JSON, name: String) throws -> Int {
+        let prefix = "gid://gitlab/User/"
+        let id = user["id"] as? String ?? ""
+        let digits = id.hasPrefix(prefix) ? id.dropFirst(prefix.count) : ""
+        guard digits.allSatisfy({ ("0"..."9").contains($0) }), let n = Int(digits) else {
+            throw GHError.unanswered("GitLab user \(name) has no readable id")
+        }
+        return n
+    }
+
+    /// The REST reads of which of `ids` are members of project `slug`, direct, inherited
+    /// or through a shared group: at most `memberChunk` ids to a read, in the order given.
+    public static func memberPaths(slug: String, ids: [Int]) -> [String] {
+        stride(from: 0, to: ids.count, by: memberChunk).map { start in
+            "projects/\(GLab.projectID(slug))/members/all?per_page=100"
+                + ids[start..<min(start + memberChunk, ids.count)].map { "&user_ids[]=\($0)" }.joined()
         }
     }
 
-    /// The members among the usernames a `gitlab-member-search` query asked for in
-    /// `variables`, lowercased: a username is one when its search answers it exactly
-    /// (GitLab usernames are case-insensitive). A search whose page is full without it
-    /// cannot tell, so it throws rather than read the user as no member.
-    public static func searchedMembers(_ data: Data, variables: [(String, String)]) throws -> Set<String> {
-        let project = try self.project(data)
-        var found = Set<String>()
-        for (alias, name) in variables {
-            guard let conn = project[alias] as? JSON else {
-                throw GHError.unanswered("GitLab member search answered nothing for \(name)")
-            }
-            if list(conn).contains(where: { username($0["user"])?.lowercased() == name.lowercased() }) {
-                found.insert(name.lowercased())
-            } else if (conn["pageInfo"] as? JSON)?["hasNextPage"] as? Bool == true {
-                throw GHError.unanswered("cannot tell whether \(name) is a GitLab project member: "
-                                         + "a full page of members matches the search for it")
-            }
+    /// The user ids a `members/all` read answers.
+    public static func memberIDs(_ data: Data) throws -> Set<Int> {
+        guard let page = try? JSONSerialization.jsonObject(with: data) as? [JSON] else {
+            throw GHError.unanswered("GitLab answered no member list")
         }
-        return found
+        return Set(try page.map { member in
+            guard let id = member["id"] as? Int else {
+                throw GHError.unanswered("GitLab answered a member without an id")
+            }
+            return id
+        })
     }
 
     private static func association(_ user: String?, _ members: Set<String>) -> String {

@@ -112,7 +112,7 @@ enum AutofixMonitor {
                 "gitlab-review-requests", host: root.host,
                 variables: [("path", root.slug), ("reviewer", me)],
                 typedVariables: [("withFiles", "\(includeFiles)")]), reviewer: me,
-                search: { try await GLab.members(host: root.host, slug: root.slug, usernames: $0) })
+                lookup: { try await GLab.members(host: root.host, slug: root.slug, ids: $0) })
         } else {
             let q = "repo:\(root.owner)/\(root.repo) review-requested:\(me) is:pr is:open"
             data = try await GH.graphql("review-requests", repo: nil,

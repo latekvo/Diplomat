@@ -61,10 +61,14 @@ public enum GLab {
         ["-R", "https://\(host)/\(slug)"]
     }
 
-    /// Project `slug` as a REST path's `projects/:id` takes it, URL-encoded.
+    /// Project `slug` as a REST path's `projects/:id` takes it: percent-encoded but for
+    /// the unreserved ASCII `A-Za-z0-9-._~`.
     public static func projectID(_ slug: String) -> String {
-        slug.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? slug
+        slug.addingPercentEncoding(withAllowedCharacters: unreserved) ?? slug
     }
+
+    private static let unreserved = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
     /// Run a shared `assets/graphql/<queryName>` query against `host`. `variables` go
     /// through `-f` (strings), `typedVariables` through `-F` (parsed into the declared type,
@@ -76,45 +80,41 @@ public enum GLab {
     public static func graphql(_ queryName: String, host: String,
                                variables: [(String, String)] = [],
                                typedVariables: [(String, String)] = []) async throws -> Data {
-        try await ask(try CoreAssets.graphql(queryName), host: host, variables: variables,
-                      typedVariables: typedVariables)
-    }
-
-    /// The members of project `slug` on `host` among `usernames`, lowercased: one
-    /// `gitlab-member-search` query per chunk of them (`GitLab.memberSearches`), any
-    /// failure thrown as a failed read's.
-    public static func members(host: String, slug: String, usernames: [String]) async throws -> Set<String> {
-        var found = Set<String>()
-        for (query, variables) in try GitLab.memberSearches(usernames) {
-            let data = try await ask(query, host: host, variables: [("path", slug)] + variables)
-            found.formUnion(try GitLab.searchedMembers(data, variables: variables))
-        }
-        return found
-    }
-
-    /// `graphql` of query text rather than an asset's name.
-    private static func ask(_ query: String, host: String, variables: [(String, String)],
-                            typedVariables: [(String, String)] = []) async throws -> Data {
+        let query = try CoreAssets.graphql(queryName)
         var args = ["api", "--hostname", host, "graphql", "-f", "query=\(query)"]
         for (k, v) in variables { args += ["-f", "\(k)=\(v)"] }
         for (k, v) in typedVariables { args += ["-F", "\(k)=\(v)"] }
         let path = variables.first { $0.0 == "path" }?.1
-
-        var lastError: Error?
-        for attempt in 0..<2 {
-            do {
-                let out = try await output(args)
-                try check(out.stdout, path: path, host: host)
-                guard out.status == 0 else {
-                    throw GHError.glabProcess(code: out.status, stderr: out.stderr)
-                }
-                return out.stdout
-            } catch {
-                lastError = error
-                if attempt == 0 { try? await Task.sleep(nanoseconds: 800_000_000) }
+        return try await twice {
+            let out = try await output(args)
+            try check(out.stdout, path: path, host: host)
+            guard out.status == 0 else {
+                throw GHError.glabProcess(code: out.status, stderr: out.stderr)
             }
+            return out.stdout
         }
-        throw lastError!
+    }
+
+    /// The members of project `slug` on `host` among user `ids`: one REST read per chunk
+    /// of them (`GitLab.memberPaths`), each retried once as `graphql`, any failure thrown
+    /// as a failed read's.
+    public static func members(host: String, slug: String, ids: [Int]) async throws -> Set<Int> {
+        var found = Set<Int>()
+        for path in GitLab.memberPaths(slug: slug, ids: ids) {
+            found.formUnion(try await twice {
+                try GitLab.memberIDs(try await run(["api", "--hostname", host, path]))
+            })
+        }
+        return found
+    }
+
+    /// `call()`, asked once more after a pause when it throws; the second failure is the
+    /// one thrown.
+    private static func twice<T>(_ call: () async throws -> T) async throws -> T {
+        do { return try await call() } catch {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            return try await call()
+        }
     }
 
     /// The failure a GraphQL answer holds: an `errors` array, or no `project` for a query

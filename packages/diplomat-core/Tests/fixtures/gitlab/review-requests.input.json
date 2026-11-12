@@ -27,6 +27,7 @@
             "diffHeadSha": "5555555555555555555555555555555555555555",
             "createdAt": "2026-11-04T08:00:00+01:00",
             "author": {
+              "id": "gid://gitlab/User/12",
               "username": "bob"
             },
             "diffStats": [
@@ -105,6 +106,7 @@
             "diffHeadSha": "6666666666666666666666666666666666666666",
             "createdAt": "2026-11-03T08:00:00+01:00",
             "author": {
+              "id": "gid://gitlab/User/26",
               "username": "Zed"
             },
             "diffStats": [],

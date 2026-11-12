@@ -249,49 +249,37 @@ func gitlabSmoke() async throws {
         .filter { $0.hasSuffix(".input.json") }.sorted()
     let names = inputs.map { String($0.dropLast(".input.json".count)) }
     check(Set(["prs", "issues", "monitor-prs", "closed-prs", "review-requests",
-               "review-requests-nofiles", "review-requests-window", "mr", "member-search",
-               "issues-paged", "issues-paged-unsure", "review-requests-paged"]).isSubset(of: Set(names)),
+               "review-requests-nofiles", "review-requests-window", "mr", "member-paths",
+               "issues-paged", "review-requests-paged"]).isSubset(of: Set(names)),
           "a fixture for every adapter in \(fixtures.path): \(names)")
     for name in names {
         let input = try Data(contentsOf: fixtures.appendingPathComponent("\(name).input.json"))
         let expected = try Data(contentsOf: fixtures.appendingPathComponent("\(name).expected.json"))
         let inputObject = try JSONSerialization.jsonObject(with: input) as? [String: Any]
         let got: String
-        if name == "member-search" {
-            // {usernames} -> each chunk's query text and variables.
-            got = try canonical(try JSONSerialization.data(withJSONObject: try GitLab.memberSearches(
-                inputObject?["usernames"] as? [String] ?? []).map { search -> [String: Any] in
-                    ["query": search.query,
-                     "variables": Dictionary(uniqueKeysWithValues: search.variables)]
-                }))
-        } else if let answer = inputObject?["answer"], let searchAnswer = inputObject?["search"] {
-            // {answer, search}: every member search is answered from `search`; what the
-            // adapter asked for, then its answer or its error.
-            let searchData = try JSONSerialization.data(withJSONObject: searchAnswer)
-            var asked: [[String]] = []
-            var outcome: [String: Any] = [:]
-            do {
-                let adapted = try await GitLab.adapt(name, try JSONSerialization.data(withJSONObject: answer),
-                                                     reviewer: "carol", search: { names in
-                    asked.append(names)
-                    return try GitLab.memberSearches(names).reduce(into: Set<String>()) {
-                        $0.formUnion(try GitLab.searchedMembers(searchData, variables: $1.variables))
-                    }
-                })
-                outcome["result"] = try JSONSerialization.jsonObject(with: adapted)
-            } catch {
-                outcome["error"] = (error as? LocalizedError)?.errorDescription ?? "\(error)"
-            }
-            outcome["asked"] = asked
-            got = try canonical(try JSONSerialization.data(withJSONObject: outcome))
+        if name == "member-paths" {
+            // {slug, ids} -> the members/all reads.
+            got = try canonical(try JSONSerialization.data(withJSONObject: GitLab.memberPaths(
+                slug: inputObject?["slug"] as? String ?? "", ids: inputObject?["ids"] as? [Int] ?? [])))
+        } else if let answer = inputObject?["answer"], let listed = inputObject?["members"] as? [[String: Any]] {
+            // {answer, members}: every lookup answers the ids of `members`, asked for or
+            // not; what the adapter asked for, then its answer.
+            var asked: [[Int]] = []
+            let adapted = try await GitLab.adapt(name, try JSONSerialization.data(withJSONObject: answer),
+                                                 reviewer: "carol", lookup: { ids in
+                asked.append(ids)
+                return Set(listed.compactMap { $0["id"] as? Int })
+            })
+            got = try canonical(try JSONSerialization.data(withJSONObject: [
+                "asked": asked, "result": try JSONSerialization.jsonObject(with: adapted)]))
         } else {
             // The review-requests answers are the query's asked for reviewer `carol`.
-            var searched = false
-            got = try canonical(try await GitLab.adapt(name, input, reviewer: "carol", search: { _ in
-                searched = true
+            var lookedUp = false
+            got = try canonical(try await GitLab.adapt(name, input, reviewer: "carol", lookup: { _ in
+                lookedUp = true
                 return []
             }))
-            check(!searched, "the \(name) answer's member page is whole, so no member is searched for")
+            check(!lookedUp, "the \(name) answer's member page is whole, so no member is looked up")
         }
         let want = try canonical(expected)
         check(got == want, "the \(name) adapter matches its fixture\n got: \(got)\nwant: \(want)")
@@ -373,8 +361,14 @@ func gitlabSmoke() async throws {
     let stub = stubDir.appendingPathComponent("glab")
     try """
         #!/bin/sh
-        printf '%s\\n' "$@" > '\(stubDir.path)/argv'
         echo call >> '\(stubDir.path)/calls'
+        case "$4" in *members/all*)
+            echo "$4" >> '\(stubDir.path)/memberpaths'
+            cat '\(stubDir.path)/members'
+            cat '\(stubDir.path)/err' >&2
+            exit "$(cat '\(stubDir.path)/memberscode')"
+        esac
+        printf '%s\\n' "$@" > '\(stubDir.path)/argv'
         cat '\(stubDir.path)/out'
         cat '\(stubDir.path)/err' >&2
         exit "$(cat '\(stubDir.path)/code')"
@@ -424,39 +418,67 @@ func gitlabSmoke() async throws {
     check(missing == "GitLab project group/sub/proj not found on gitlab.example.com",
           "a project the answer does not hold is an unreadable root, not an empty one: \(missing)")
 
-    // One answer serves both calls: the issues read, and the member search it makes past a
-    // full member page.
+    // A members/all read is answered from `members`, every other call from `out`.
+    func members(_ out: String, code: Int = 0) throws {
+        try out.write(to: stubDir.appendingPathComponent("members"), atomically: true, encoding: .utf8)
+        try "\(code)".write(to: stubDir.appendingPathComponent("memberscode"), atomically: true, encoding: .utf8)
+    }
     func calls() -> Int {
         let n = ((try? String(contentsOf: stubDir.appendingPathComponent("calls"), encoding: .utf8)) ?? "")
             .split(separator: "\n").count
         try? fm.removeItem(at: stubDir.appendingPathComponent("calls"))
         return n
     }
-    func pagedIssues(full: Bool, search: String) -> String {
+    func memberPaths() -> [String] {
+        let paths = ((try? String(contentsOf: stubDir.appendingPathComponent("memberpaths"), encoding: .utf8)) ?? "")
+            .split(separator: "\n").map(String.init)
+        try? fm.removeItem(at: stubDir.appendingPathComponent("memberpaths"))
+        return paths
+    }
+    func pagedIssues(full: Bool, id: String = "gid://gitlab/User/14") -> String {
         #"{"data":{"project":{"projectMembers":{"pageInfo":{"hasNextPage":\#(full)},"#
             + #""nodes":[{"user":{"username":"alice"}}]},"issues":{"nodes":["#
             + #"{"iid":"9","title":"t","webUrl":"https://gitlab.example.com/group/sub/proj/-/issues/9","#
             + #""createdAt":"2026-11-07T09:00:00+01:00","updatedAt":"2026-11-08T09:00:00+01:00","#
-            + #""author":{"username":"Dave"},"userNotesCount":0,"notes":{"nodes":[]}}]}\#(search)}}}"#
+            + #""author":{"id":"\#(id)","username":"Dave"},"userNotesCount":0,"notes":{"nodes":[]}}]}}}}"#
     }
-    let daveFound = #","u0":{"pageInfo":{"hasNextPage":false},"nodes":[{"user":{"username":"dave"}}]}"#
+    let daveRead = "projects/group%2Fsub%2Fproj/members/all?per_page=100&user_ids[]=14"
     _ = calls()
-    try answer(pagedIssues(full: false, search: ""))
+    _ = memberPaths()
+    try members(#"[{"id":14,"username":"dave"}]"#)
+    try answer(pagedIssues(full: false))
     let whole = try await API.fetchOpenIssues(home)
     let wholeCalls = calls()
-    try answer(pagedIssues(full: true, search: daveFound))
-    let searched = try await API.fetchOpenIssues(home)
-    let searchArgs = argv()
-    check(whole.map(\.authorAssociation) == ["NONE"] && wholeCalls == 1
-          && searched.map(\.authorAssociation) == ["MEMBER"] && calls() == 2
-          && searchArgs.contains("u0=dave") && searchArgs.contains("path=group/sub/proj")
-          && searchArgs.contains { $0.hasPrefix("    u0: projectMembers(search: $u0,") },
-          "an author past a full member page is looked up in one more glab call, none for a whole page: "
-          + "\(whole.map(\.authorAssociation)) \(wholeCalls) \(searched.map(\.authorAssociation))")
-    try answer(pagedIssues(full: true, search: ""))
-    let unsearched = await failure { _ = try await API.fetchOpenIssues(home) }
-    check(unsearched == "GitLab member search answered nothing for dave",
-          "a member search that fails fails the read: \(unsearched)")
+    let wholePaths = memberPaths()
+    try answer(pagedIssues(full: true))
+    let lookedUp = try await API.fetchOpenIssues(home)
+    let lookedUpCalls = calls()
+    let lookedUpPaths = memberPaths()
+    check(whole.map(\.authorAssociation) == ["NONE"] && wholeCalls == 1 && wholePaths.isEmpty
+          && lookedUp.map(\.authorAssociation) == ["MEMBER"] && lookedUpCalls == 2
+          && lookedUpPaths == [daveRead],
+          "an author past a full member page is looked up by id in one more glab call, none for a "
+          + "whole page: \(whole.map(\.authorAssociation)) \(wholeCalls) \(lookedUp.map(\.authorAssociation)) "
+          + "\(lookedUpCalls) \(lookedUpPaths)")
+    try members(#"[{"id":15,"username":"erin"}]"#)
+    let outsider = try await API.fetchOpenIssues(home)
+    check(outsider.map(\.authorAssociation) == ["NONE"] && memberPaths() == [daveRead],
+          "an author members/all does not answer is no member: \(outsider.map(\.authorAssociation))")
+    try members("", code: 1)
+    try answer(pagedIssues(full: true), err: "403 Forbidden")
+    _ = calls()
+    let unread = await failure { _ = try await API.fetchOpenIssues(home) }
+    check(unread == "glab exited 1: 403 Forbidden" && memberPaths() == [daveRead, daveRead] && calls() == 3,
+          "a members/all read failing twice fails the read with glab's error: \(unread)")
+    try members(#"[{"id":14,"username":"dave"}]"#)
+    try answer(pagedIssues(full: true, id: "gid://gitlab/Group/14"))
+    let unreadable = await failure { _ = try await API.fetchOpenIssues(home) }
+    check(unreadable == "GitLab user Dave has no readable id" && memberPaths().isEmpty,
+          "an author past a full page without a user id fails the read: \(unreadable)")
+    check((try? GitLab.memberIDs(Data(#"[{"id":14},{"id":12}]"#.utf8))) == [12, 14]
+          && (try? GitLab.memberIDs(Data(#"{"message":"404 Not Found"}"#.utf8))) == nil
+          && (try? GitLab.memberIDs(Data(#"[{"username":"dave"}]"#.utf8))) == nil,
+          "a members/all answer is its members' ids, and anything but a list of them is an error")
     try answer(#"{"errors":[{"message":"boom"}],"data":null}"#, code: 1)
     let errs = await failure { _ = try await API.fetchOpenPRs(home) }
     check(errs == "GraphQL: boom", "an errors array is the error: \(errs)")
