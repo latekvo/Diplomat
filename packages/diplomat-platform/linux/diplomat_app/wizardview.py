@@ -33,8 +33,8 @@ _TINT = "#FF2D78"  # pink, matching the macOS Review card
 
 class WizardView(SpawnWizard):
     # Emitted (queued to the main thread) when a background author poll resolves.
-    # Carries (pending_pr_text, author_login_or_empty) so the slot can ignore a
-    # result superseded by newer keystrokes - mirrors the macOS `pending` guard.
+    # Carries (pending_pr_text, author_login_or_empty, me_or_empty) so the slot can
+    # ignore a result superseded by newer keystrokes - mirrors the macOS `pending` guard.
     _author_resolved = Signal(str, str, str)
 
     # A whose-PRs sweep queues one review per PR (SpawnWizard._queue_sweep).
