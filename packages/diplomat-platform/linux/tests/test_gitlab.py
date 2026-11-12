@@ -309,10 +309,9 @@ def test_the_review_wizard_asks_who_i_am_in_a_gitlab_checkout_it_never_read(lab_
                                                                            monkeypatch):
     """A merge request of another root than the one on the panel: its author is
     compared with glab's login on that host, read for the poll, not with nothing."""
-    from PySide6.QtWidgets import QApplication
-
     from diplomat_app.wizardview import WizardView
     from diplomat_runtime.prtarget import PRTarget
+    from PySide6.QtWidgets import QApplication
 
     QApplication.instance() or QApplication([])
     monkeypatch.setattr(review, "repo_roots", lambda: [HUB, LAB])
