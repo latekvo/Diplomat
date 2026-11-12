@@ -24,6 +24,7 @@
               "updatedAt": "2026-11-08T09:00:00+01:00",
               "userNotesCount": 1,
               "author": {
+                "id": "gid://gitlab/User/14",
                 "username": "Dave"
               },
               "assignees": {
@@ -36,6 +37,7 @@
                 "nodes": [
                   {
                     "author": {
+                      "id": "gid://gitlab/User/15",
                       "username": "erin"
                     }
                   }
@@ -50,6 +52,7 @@
               "updatedAt": "2026-11-08T09:00:00+01:00",
               "userNotesCount": 2,
               "author": {
+                "id": "gid://gitlab/User/15",
                 "username": "erin"
               },
               "assignees": {
@@ -62,11 +65,13 @@
                 "nodes": [
                   {
                     "author": {
+                      "id": "gid://gitlab/User/14",
                       "username": "dave"
                     }
                   },
                   {
                     "author": {
+                      "id": "gid://gitlab/User/11",
                       "username": "alice"
                     }
                   }
@@ -100,39 +105,14 @@
       }
     }
   },
-  "search": {
-    "data": {
-      "project": {
-        "u0": {
-          "pageInfo": {
-            "hasNextPage": false
-          },
-          "nodes": [
-            {
-              "user": {
-                "username": "Dave"
-              }
-            },
-            {
-              "user": {
-                "username": "davey"
-              }
-            }
-          ]
-        },
-        "u1": {
-          "pageInfo": {
-            "hasNextPage": false
-          },
-          "nodes": [
-            {
-              "user": {
-                "username": "erinson"
-              }
-            }
-          ]
-        }
-      }
+  "members": [
+    {
+      "id": 14,
+      "username": "dave"
+    },
+    {
+      "id": 12,
+      "username": "bob"
     }
-  }
+  ]
 }

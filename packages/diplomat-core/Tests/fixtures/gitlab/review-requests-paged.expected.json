@@ -1,8 +1,8 @@
 {
   "asked": [
     [
-      "dave",
-      "erin"
+      14,
+      15
     ]
   ],
   "result": {
@@ -14,9 +14,9 @@
             "title": "MR 3",
             "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/3",
             "author": {
-              "login": "Dave"
+              "login": "erin"
             },
-            "authorAssociation": "MEMBER",
+            "authorAssociation": "NONE",
             "headRefOid": "3333333333333333333333333333333333333333",
             "timelineItems": {
               "nodes": [
@@ -41,9 +41,9 @@
             "title": "MR 2",
             "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/2",
             "author": {
-              "login": "erin"
+              "login": "Dave"
             },
-            "authorAssociation": "NONE",
+            "authorAssociation": "MEMBER",
             "headRefOid": "2222222222222222222222222222222222222222",
             "timelineItems": {
               "nodes": [

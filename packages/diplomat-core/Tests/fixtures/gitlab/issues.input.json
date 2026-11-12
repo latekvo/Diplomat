@@ -28,6 +28,7 @@
             "updatedAt": "2026-11-08T09:00:00+01:00",
             "userNotesCount": 2,
             "author": {
+              "id": "gid://gitlab/User/26",
               "username": "zed"
             },
             "assignees": {
@@ -47,11 +48,13 @@
               "nodes": [
                 {
                   "author": {
+                    "id": "gid://gitlab/User/12",
                     "username": "Bob"
                   }
                 },
                 {
                   "author": {
+                    "id": "gid://gitlab/User/26",
                     "username": "zed"
                   }
                 }
@@ -66,6 +69,7 @@
             "updatedAt": "2026-11-06T09:00:00+01:00",
             "userNotesCount": 0,
             "author": {
+              "id": "gid://gitlab/User/11",
               "username": "Alice"
             },
             "assignees": {

@@ -27,6 +27,7 @@
             "diffHeadSha": "7777777777777777777777777777777777777777",
             "createdAt": "2026-11-05T08:00:00+01:00",
             "author": {
+              "id": "gid://gitlab/User/11",
               "username": "Alice"
             },
             "activity": {
