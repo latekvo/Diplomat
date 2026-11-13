@@ -3361,8 +3361,7 @@ check(!quickPrompt.contains("a sibling that has it"), "quick depth carries no ab
 print("review moves + absence pass assertions passed")
 
 // ---- Whether the PR is the right change at all ----
-// Every review prompt asks it once, ahead of the depth's own instructions, whoever the
-// author and whatever the depth; the goldens would re-bless a prompt that lost it.
+// Every review prompt asks it once, ahead of the depth's instructions, whoever the author.
 section("premise check")
 let premiseParts = ["JUDGE THE PREMISE, NOT ONLY THE DIFF",
                     "trace the reported symptom down to where it originates",
@@ -3404,8 +3403,7 @@ for d in ReviewCatalog.depths() {
         check(false, "\(d.id) / an unknown-author prompt carries the premise and the CASE split")
     }
 }
-// It is a question about a PR under review, and without these negatives the loop above
-// would pass just as well on text appended to every prompt kind.
+// Without these the loop above would pass on text appended to every prompt kind.
 check(!ConflictConfig(me: "latekvo").buildPrompt().contains("JUDGE THE PREMISE"),
       "a conflict resolution judges no premise")
 check(!IssueConfig(me: "latekvo").forIssue(302).buildPrompt().contains("JUDGE THE PREMISE"),
