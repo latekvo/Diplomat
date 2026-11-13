@@ -14,7 +14,7 @@ threshold in one file and both platforms pick it up; the golden-prompt tests
 |------|---------------|
 | `config.json` | repo coordinates (`owner` / `repo`), and `minFreeDiskGiB`, the free-disk floor automatic work and the scheduled self-update hold to (`../Sources/DiplomatCore/DiskFloor.swift`, `diplomat_runtime/diskfloor.py`) |
 | `graphql/viewer.graphql` | `{ viewer { login } }` |
-| `graphql/prs.graphql` | open-PR query (uses `$owner`/`$name` variables) |
+| `graphql/prs.graphql` | open-PR query, 25 a page (uses `$owner`/`$name` variables, `$after` the previous page's cursor); the callers read four pages |
 | `graphql/issues.graphql` | open-issue query (uses `$owner`/`$name` variables) |
 | `graphql/monitor-prs.graphql` | the PR auto-fix monitor's snapshot of my open PRs (search query in `$q`): mergeability, review verdict, per-thread resolution |
 | `graphql/review-requests.graphql` | PRs requesting my review (`$q`), with the request/last-review timestamps; `$withFiles` optionally pulls changed paths for the verdict gate |
