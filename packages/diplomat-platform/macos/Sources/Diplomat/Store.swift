@@ -1023,9 +1023,7 @@ final class Store: ObservableObject {
 
     static let githubLoginUnknown = "GitHub login unknown — is `gh` installed and authenticated?"
 
-    /// glab's signed-in user by GitLab host. Only successes are kept, so a failed host is
-    /// asked again.
-    private var gitlabMe: [String: String] = [:]
+    private let gitlabMe = GitLabLogins()
 
     /// Who "me" is in `root`. Throws while unknown, failing the root's read for the cycle
     /// like any other failed read.
@@ -1036,16 +1034,13 @@ final class Store: ObservableObject {
             }
             return effectiveMe
         }
-        if let known = gitlabMe[root.host] { return known }
-        let login = try await API.fetchGitLabViewer(host: root.host)
-        gitlabMe[root.host] = login
-        return login
+        return try await gitlabMe.login(host: root.host)
     }
 
     /// `me(for:)` as last read, without asking: "" for a GitLab host not read yet.
     func knownMe(for root: PRRef.LocalRepo?) -> String {
         guard let root, root.isGitLab else { return effectiveMe }
-        return gitlabMe[root.host] ?? ""
+        return gitlabMe.known(host: root.host)
     }
 
     /// `cfg` as a wizard runs it. "me" follows `targetLocal`, not the selected root: a
@@ -1061,7 +1056,7 @@ final class Store: ObservableObject {
     /// Seed a GitLab host's user, for headless self-tests only.
     func pinGitLabMe(_ login: String, host: String) {
         guard Headless.active else { return }
-        gitlabMe[host.lowercased()] = login
+        gitlabMe.pin(login, host: host)
     }
 
     /// A tool's tint: the user's override if set & valid, else its catalog default.

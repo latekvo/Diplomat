@@ -152,7 +152,7 @@ enum RepoPaths {
         let guessed: Bool
 
         /// `gitlabHosts`: the hosts glab is configured for (`GLab.configuredHosts`).
-        init(paths: [String], remotes: [String: String], gitlabHosts: Set<String> = []) {
+        init(paths: [String], remotes: [String: String], gitlabHosts: GitLabHosts = []) {
             roots = RepoRoots.resolve(paths: paths, remotes: remotes,
                                       configured: CoreAssets.repoCoordinates(),
                                       gitlabHosts: gitlabHosts)

@@ -96,21 +96,24 @@ public enum GitLab {
         return try encode(["data": ["search": ["nodes": nodes]]])
     }
 
-    /// `gitlab-review-requests` as `review-requests.graphql` answers, with `files` only when
-    /// the answer carries `diffStats` (`$withFiles`).
+    /// `gitlab-review-requests` as `review-requests.graphql` answers, less the merge requests
+    /// `reviewer` answered (`request(of:)`), with `files` only when the answer carries
+    /// `diffStats` (`$withFiles`).
     public static func reviewRequests(_ data: Data, reviewer: String,
                                       lookup: Lookup) async throws -> Data {
         let project = try self.project(data)
-        let members = try await self.members(project, list(project["mergeRequests"]).map { $0["author"] },
-                                             lookup: lookup)
-        let nodes = try list(project["mergeRequests"]).map { mr -> JSON in
+        let owed = try list(project["mergeRequests"]).compactMap { mr -> (JSON, [JSON], [JSON])? in
+            let activity = list(mr["activity"])
+            let events = try activity.flatMap(reviewRequested)
+            return try request(of: reviewer, events, mr, activity).map { (mr, activity, $0 + events) }
+        }
+        let members = try await self.members(project, owed.map { $0.0["author"] }, lookup: lookup)
+        let nodes = try owed.map { mr, activity, requests -> JSON in
             var n = common(mr)
             n["authorAssociation"] = association(username(mr["author"]), members)
             n["headRefOid"] = mr["diffHeadSha"] ?? NSNull()
             if mr["diffStats"] != nil { n["files"] = ["nodes": paths(mr)] }
-            let activity = list(mr["activity"])
-            let events = try activity.flatMap(reviewRequested)
-            n["timelineItems"] = ["nodes": try request(of: reviewer, events, mr, activity) + events]
+            n["timelineItems"] = ["nodes": requests]
             n["reviews"] = ["nodes": try activity.filter {
                 let body = $0["body"] as? String ?? ""
                 return reviewed.contains { body.hasPrefix($0) }
@@ -125,6 +128,8 @@ public enum GitLab {
 
     /// Note openings of a submitted review; the last is GitHub's `COMMENTED`.
     private static let reviewed = ["approved this merge request", "requested changes", "left review comments"]
+    /// A reviewer's `reviewState` once they have answered the request.
+    private static let answeredStates: Set<String> = ["REVIEWED", "APPROVED", "REQUESTED_CHANGES"]
 
     /// `gitlab-mr` as `gh pr view --json state,author` prints it.
     public static func mergeRequest(_ data: Data) throws -> Data {
@@ -315,16 +320,24 @@ public enum GitLab {
         return [["__typename": "ReadyForReviewEvent", "createdAt": latest]]
     }
 
-    /// `reviewer`'s request when no note in the window names them: the query answers only
-    /// merge requests requesting their review, so it is at least as old as the window's
-    /// oldest note, or the merge request when the window is empty.
+    /// `reviewer`'s request when no note in the window names them: nil when their
+    /// `reviewState` says they answered it, as GitHub drops an answered request from
+    /// `review-requested:`; else at least as old as the window's oldest note (the merge
+    /// request, for an empty window), the query answering only merge requests requesting
+    /// their review.
     private static func request(of reviewer: String, _ events: [JSON], _ mr: JSON,
-                                _ activity: [JSON]) throws -> [JSON] {
+                                _ activity: [JSON]) throws -> [JSON]? {
+        let me = reviewer.lowercased()
         let named = events.contains {
-            (($0["requestedReviewer"] as? JSON)?["login"] as? String)?.lowercased()
-                == reviewer.lowercased()
+            (($0["requestedReviewer"] as? JSON)?["login"] as? String)?.lowercased() == me
         }
         guard !named else { return [] }
+        let answered = list((mr["reviewers"] as? JSON)?["nodes"]).contains {
+            ($0["username"] as? String)?.lowercased() == me
+                && answeredStates.contains(
+                    ($0["mergeRequestInteraction"] as? JSON)?["reviewState"] as? String ?? "")
+        }
+        guard !answered else { return nil }
         let oldest = try activity.compactMap { $0["createdAt"] as? String }.filter { !$0.isEmpty }
             .map { try utc($0) }.min()
         return [["createdAt": try oldest ?? utc(mr["createdAt"]),

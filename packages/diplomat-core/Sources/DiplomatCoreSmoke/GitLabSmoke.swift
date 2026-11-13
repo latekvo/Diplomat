@@ -34,8 +34,8 @@ func gitlabSmoke() async throws {
     check(GitLabHosts.parse(config: config) == ["gitlab.com", "gl.example.org", "gitlab.example.net"],
           "hosts are the keys alone at the first child's depth, port dropped, until the next "
           + "column-0 key: \(GitLabHosts.parse(config: config))")
-    check(GitLabHosts.parse(config: "aliases:\n    gl.example.org:\n").isEmpty
-          && GitLabHosts.parse(config: "").isEmpty,
+    check(GitLabHosts.parse(config: "aliases:\n    gl.example.org:\n") == []
+          && GitLabHosts.parse(config: "") == [],
           "no hosts section, no hosts")
 
     let fm = FileManager.default
@@ -57,7 +57,7 @@ func gitlabSmoke() async throws {
           "GLAB_CONFIG_DIR's config.yml comes first")
     check(GLab.configuredHosts(env: ["HOME": emptyHome, "XDG_CONFIG_HOME": xdg.path])
           == ["gl.xdg.example"], "then XDG_CONFIG_HOME's glab-cli/config.yml")
-    check(GLab.configuredHosts(env: ["HOME": emptyHome]).isEmpty, "none readable is none configured")
+    check(GLab.configuredHosts(env: ["HOME": emptyHome]) == [], "none readable is none configured")
     let dotHome = scratch.appendingPathComponent("home-dot")
     try writeConfig(dotHome.appendingPathComponent(".config/glab-cli"), host: "gl.dot.example")
     check(GLab.configuredHosts(env: ["HOME": dotHome.path]) == ["gl.dot.example"],
@@ -70,8 +70,61 @@ func gitlabSmoke() async throws {
           "on macOS, ~/Library/Application Support/glab-cli/config.yml")
     #endif
 
+    // glab-config: {config, remotes} -> {hosts: the parsed map, remotes: each parsed or null}.
+    let glabFixtures = try CoreAssets.assetsDir().deletingLastPathComponent()
+        .appendingPathComponent("Tests/fixtures/gitlab")
+    let glabCase = try JSONSerialization.jsonObject(
+        with: Data(contentsOf: glabFixtures.appendingPathComponent("glab-config.input.json"))) as? [String: Any]
+    let glabWant = try JSONSerialization.jsonObject(
+        with: Data(contentsOf: glabFixtures.appendingPathComponent("glab-config.expected.json"))) as? [String: Any]
+    let sshConfig = glabCase?["config"] as? String ?? ""
+    let sshHosts = GitLabHosts.parse(config: sshConfig)
+    check(sshHosts.hosts == glabWant?["hosts"] as? [String: String],
+          "a host's ssh_host at its first entry's indent names it, quotes, port and comment dropped; "
+          + "a host's own name wins; an empty, nested or top-level one names nothing: \(sshHosts.hosts)")
+    let parsedRemotes: [Any] = ((glabCase?["remotes"] as? [String]) ?? []).map { url in
+        PRRef.LocalRepo.coordinates(remoteURL: url, gitlabHosts: sshHosts)
+            .map { [$0.host, $0.owner, $0.repo] as Any } ?? NSNull()
+    }
+    check(NSArray(array: parsedRemotes) == NSArray(array: glabWant?["remotes"] as? [Any] ?? []),
+          "a remote on an ssh_host is on its configured host: \(parsedRemotes)")
+    try fm.createDirectory(at: scratch.appendingPathComponent("sshdir"), withIntermediateDirectories: true)
+    try sshConfig.write(to: scratch.appendingPathComponent("sshdir/config.yml"), atomically: true,
+                        encoding: .utf8)
+    let sshRoots = RepoRoots.resolve(
+        paths: ["/w/alias"], remotes: ["/w/alias": "remote.origin.url git@ssh.gl.example.com:ns/p.git"],
+        configured: (owner: "o", repo: "r"),
+        gitlabHosts: GLab.configuredHosts(env: ["HOME": emptyHome,
+                                                "GLAB_CONFIG_DIR": scratch.appendingPathComponent("sshdir").path]))
+    check(sshRoots == [PRRef.LocalRepo(owner: "ns", repo: "p", path: "/w/alias", host: "gl.example.com")],
+          "glab's config read from disk makes a checkout on an ssh_host a root on its host: \(sshRoots)")
+
+    section("gitlab: logins")
+    let loginDir = scratch.appendingPathComponent("logindir")
+    try fm.createDirectory(at: loginDir, withIntermediateDirectories: true)
+    let loginConfig = loginDir.appendingPathComponent("config.yml")
+    try "hosts:\n  gl.example.com:\n    user: first\n".write(to: loginConfig, atomically: true, encoding: .utf8)
+    final class Reads: @unchecked Sendable { var hosts: [String] = []; var login = "first" }
+    let reads = Reads()
+    let logins = GitLabLogins(env: ["HOME": emptyHome, "GLAB_CONFIG_DIR": loginDir.path]) { host in
+        reads.hosts.append(host)
+        return reads.login
+    }
+    let first = try await logins.login(host: "GL.example.com")
+    let again = try await logins.login(host: "gl.example.com")
+    check(first == "first" && again == "first" && reads.hosts == ["gl.example.com"],
+          "a host's login is read once while glab's config is unchanged: \(reads.hosts)")
+    reads.login = "second"
+    try "hosts:\n  gl.example.com:\n    user: second-account\n".write(to: loginConfig, atomically: true,
+                                                                    encoding: .utf8)
+    let switched = try await logins.login(host: "gl.example.com")
+    let kept = try await logins.login(host: "gl.example.com")
+    check(switched == "second" && kept == "second" && logins.known(host: "gl.example.com") == "second"
+          && reads.hosts.count == 2,
+          "a rewritten glab config (`glab auth login`) reads the login again, once: \(reads.hosts)")
+
     section("gitlab: remotes and roots")
-    func coords(_ url: String, _ hosts: Set<String> = []) -> [String]? {
+    func coords(_ url: String, _ hosts: GitLabHosts = []) -> [String]? {
         PRRef.LocalRepo.coordinates(remoteURL: url, gitlabHosts: hosts).map { [$0.host, $0.owner, $0.repo] }
     }
     check(coords("https://gitlab.example.com/group/sub/proj.git") == ["gitlab.example.com", "group/sub", "proj"]
@@ -255,7 +308,9 @@ func gitlabSmoke() async throws {
     }
     let inputs = ((try? fm.contentsOfDirectory(atPath: fixtures.path)) ?? [])
         .filter { $0.hasSuffix(".input.json") }.sorted()
+    // glab-config and keys pin no adapter; they are read in their own sections.
     let names = inputs.map { String($0.dropLast(".input.json".count)) }
+        .filter { $0 != "glab-config" && $0 != "keys" }
     check(Set(["prs", "issues", "monitor-prs", "closed-prs", "review-requests",
                "review-requests-nofiles", "review-requests-window", "mr", "member-paths",
                "issues-paged", "review-requests-paged"]).isSubset(of: Set(names)),
