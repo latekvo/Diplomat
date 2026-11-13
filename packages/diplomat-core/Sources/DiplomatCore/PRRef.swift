@@ -2,11 +2,10 @@ import Foundation
 
 /// A PR or issue reference parsed from a wizard's single-item text field.
 ///
-/// The field accepts a bare number (`337`, `#337`, and `!337` for a GitLab home's merge
-/// request), a full GitHub URL (`https://github.com/owner/repo/pull/337`, with any trailing
-/// path/query), a GitLab one (`https://<host>/group/sub/proj/-/merge_requests/337`), or the
-/// `owner/repo#337` shorthand, whose owner may be a nested GitLab namespace
-/// (`group/sub/proj#337`, and `group/sub/proj!337` for a merge request). When the input
+/// The field accepts a bare number (`337`, `#337`, `!337` on a GitLab home), a full GitHub
+/// or GitLab URL (`https://github.com/owner/repo/pull/337`,
+/// `https://<host>/group/sub/proj/-/merge_requests/337`, any trailing path/query), or the
+/// `owner/repo#337` shorthand (`group/sub/proj!337` too). When the input
 /// names a repo (URL or shorthand) it's checked against the home repo (the root the wizard
 /// works on, else the configured repo) and then the local checkouts listed in Settings, so
 /// a link to an unknown project is rejected instead of silently reviewing the wrong PR.
@@ -21,7 +20,7 @@ public struct PRRef: Equatable {
         public let owner: String
         public let repo: String
         public let path: String
-        /// The lowercased host the remote names: `github.com`, or a GitLab one.
+        /// Lowercased.
         public let host: String
 
         public init(owner: String, repo: String, path: String, host: String = LocalRepo.github) {
@@ -34,7 +33,6 @@ public struct PRRef: Equatable {
         public var slug: String { "\(owner)/\(repo)" }
         public var isGitLab: Bool { host != LocalRepo.github }
 
-        /// The web page of PR or merge request (`.pull`) or issue (`.issues`) `number` here.
         public func webURL(_ kind: Kind, number: Int) -> String {
             guard isGitLab else { return "https://github.com/\(slug)/\(kind.rawValue)/\(number)" }
             return "https://\(host)/\(slug)/-/\(kind == .pull ? "merge_requests" : "issues")/\(number)"
@@ -113,15 +111,14 @@ public struct PRRef: Equatable {
             return named(host: g[1].lowercased(), owner: g[2], repo: g[3], number: g[4],
                          want: want, also: also)
         }
-        // The OWNER/REPO#N shorthand (the whole string), OWNER a namespace of any depth;
-        // GitLab's NS/PROJ!N names a merge request.
+        // The OWNER/REPO#N shorthand (the whole string), OWNER of any depth; NS/PROJ!N is
+        // GitLab's for a merge request.
         let mark = kind == .pull ? "[#!]" : "#"
         if let g = firstMatch(s, #"^((?:[\w.-]+/)*[\w.-]+)/([\w.-]+)"# + mark + #"([0-9]+)$"#) {
             return named(host: nil, owner: g[1], repo: g[2], number: g[3], want: want, also: also)
         }
-        // A bare number, with an optional leading '#', or '!' for a merge request of a GitLab
-        // home. ASCII digits only — Int() alone also accepts "+337", which the Python port
-        // rejects.
+        // A bare number, optionally after '#' (or '!' on a GitLab home). ASCII digits only —
+        // Int() alone also accepts "+337", which the Python port rejects.
         let bang = kind == .pull && want.host != LocalRepo.github
         let bare = s.hasPrefix("#") || (bang && s.hasPrefix("!")) ? String(s.dropFirst()) : s
         if !bare.isEmpty, bare.allSatisfy({ $0.isASCII && $0.isNumber }),
@@ -130,8 +127,7 @@ public struct PRRef: Equatable {
         return PRRef(number: nil, repoMismatch: false)
     }
 
-    /// A named repo against the wanted one, then `also`. A nil `host` (the shorthand)
-    /// matches a repo on any host.
+    /// A nil `host` (the shorthand) matches any host.
     private static func named(host: String?, owner: String, repo: String, number: String,
                               want: (host: String, owner: String, repo: String),
                               also: [LocalRepo]) -> PRRef {
@@ -164,16 +160,16 @@ public struct PRRef: Equatable {
 
 extension PRRef {
     /// One PR or issue across every repo this machine works: `owner/repo#n`, lowercased.
-    /// GitHub numbers PRs and issues in one space per repo, so the key carries no kind; a
-    /// GitLab merge request is keyed by its iid, the queue keeping the two spaces apart by
-    /// verb. The key names no host. Python twin: `prref.item_key`.
+    /// GitHub numbers PRs and issues in one space per repo, so the key carries no kind;
+    /// GitLab's iids number them separately, and the queue tells the two apart by verb. The
+    /// key names no host. Python twin: `prref.item_key`.
     public static func itemKey(owner: String, repo: String, number: Int) -> String {
         "\(owner.lowercased())/\(repo.lowercased())#\(number)"
     }
 
-    /// The item key of a github.com PR or issue URL, or of a GitLab merge request or issue
-    /// one (`<host>/<ns...>/<proj>/-/merge_requests|issues|work_items/<n>`; GitLab serves
-    /// an issue at `work_items`), any trailing path or query; nil for anything else.
+    /// The item key of a github.com PR or issue URL, or a GitLab merge request or issue one
+    /// (GitLab also serves issues at `work_items`), any trailing path or query; nil for
+    /// anything else.
     public static func itemKey(url: String) -> String? {
         let s = url.trimmingCharacters(in: .whitespacesAndNewlines)
         if let g = firstMatch(s, #"^(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues)/([0-9]+)(?:[/?#]|$)"#),
@@ -197,7 +193,6 @@ extension PRRef {
         return (slug, n)
     }
 
-    /// A slug's owner (everything before its last `/`) and repo (the last segment).
     public static func splitSlug(_ slug: String) -> (owner: String, repo: String)? {
         guard let slash = slug.lastIndex(of: "/") else { return nil }
         return (String(slug[..<slash]), String(slug[slug.index(after: slash)...]))

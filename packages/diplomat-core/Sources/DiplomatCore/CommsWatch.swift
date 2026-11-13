@@ -40,8 +40,8 @@ public enum CommsClassifier {
     public static let failurePrefix = "classifier failed: "
 
     /// `classifier.instructions`, its repository wording `classifier.repos.one`'s for one
-    /// watched repository and `many`'s for several, `repos.gitlab`'s over them once one is
-    /// on GitLab.
+    /// watched repository and `many`'s for several, overlaid by `repos.gitlab`'s once one
+    /// is on GitLab.
     public static func prompt(settings: CommsSettings) -> String {
         guard let c = (try? CoreAssets.comms())?.classifier else { return "" }
         let names = settings.repos.map { String($0.split(separator: "/").last ?? "") }
@@ -415,7 +415,7 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
         /// front of its band and the first asked for should run first. A decision with one
         /// target or none is one item, as it stands. A row past the first is
         /// `<id>#<number>`, or `<id>#<owner/repo>#<number>` outside the primary repository,
-        /// then `#<action>` when an earlier target has its repository and number (a GitLab
+        /// then `#<action>` when an earlier target shares its repository and number (GitLab's
         /// merge request and issue).
         public static func targets(_ message: CommsMessage, _ decision: CommsDecision,
                             maxTargets: Int) -> [Item] {

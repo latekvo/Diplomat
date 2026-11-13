@@ -1,12 +1,10 @@
 import Foundation
 
 extension PRRef.LocalRepo {
-    /// The host and `owner`/`repo` a git remote URL names, or nil for a host that is neither
-    /// github.com nor GitLab (`GitLabHosts.contains`, with `gitlabHosts` the hosts glab is
-    /// configured for): the scp form (`git@github.com:o/r`) or a URL (`https`/`http`/`ssh`/
-    /// `git`, any user and port), with or without `.git`. On GitHub the owner is one segment;
-    /// on GitLab it is the project's namespace, of any depth. The host comes back lowercased.
-    /// Same patterns as `localrepos.py`.
+    /// The lowercased host and `owner`/`repo` a git remote URL names: the scp form
+    /// (`git@github.com:o/r`) or a URL (`https`/`http`/`ssh`/`git`, any user and port), with
+    /// or without `.git`; nil off github.com and GitLab (`GitLabHosts.contains`). A GitLab
+    /// owner is the whole namespace. Same patterns as `localrepos.py`.
     public static func coordinates(remoteURL: String, gitlabHosts: Set<String> = [])
         -> (host: String, owner: String, repo: String)? {
         let s = remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -19,8 +17,7 @@ extension PRRef.LocalRepo {
         return (host, g[2], g[3])
     }
 
-    /// The capture groups (1...n, "" for one that did not take part) of `pattern` matching
-    /// `s`, case-insensitively.
+    /// Capture groups 1...n, "" for one that did not take part; case-insensitive.
     private static func groups(_ s: String, _ pattern: String) -> [String]? {
         guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
               let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) else { return nil }
@@ -32,10 +29,10 @@ extension PRRef.LocalRepo {
     /// Every GitHub or GitLab remote of the checkout at `path`, from `git config --local
     /// --get-regexp '^remote\..*\.url$'` output, each once (by host and slug). A fork clone
     /// carries both the fork and the project it forked, and a link to either belongs in
-    /// that checkout. GitHub ones come before GitLab ones, as `RepoRoots.resolve` ranks
-    /// them, so a host-less `owner/repo#N` names the GitHub repo and Settings names the
-    /// checkout by the first. Within each, `upstream` comes first, then `origin`, then the
-    /// rest in config order. With `only`, just the remotes it names, ranked the same.
+    /// that checkout. GitHub ones rank first, as in `RepoRoots.resolve`, so a host-less
+    /// `owner/repo#N` names the GitHub repo; Settings names the checkout by the first.
+    /// Within each host, `upstream` comes first, then `origin`, then the rest in config
+    /// order. With `only`, just the remotes it names, ranked the same.
     /// Python twin: `localrepos.entries`.
     public static func entries(path: String, remotes: String, only: [String] = [],
                                gitlabHosts: Set<String> = []) -> [PRRef.LocalRepo] {
@@ -60,7 +57,6 @@ extension PRRef.LocalRepo {
             .filter { seen.insert($0.identity).inserted }
     }
 
-    /// What tells two repos apart: host and slug, lowercased.
     var identity: String { "\(host)/\(slug.lowercased())" }
 
     /// The coordinates a config with this home targets: the home's, else
@@ -69,8 +65,8 @@ extension PRRef.LocalRepo {
         home.map { ($0.owner, $0.repo) } ?? CoreAssets.repoCoordinates()
     }
 
-    /// The host a config with this home targets: the home's, else github.com, where
-    /// `assets/config.json`'s repo lives.
+    /// The host a config with this home targets: the home's, else github.com
+    /// (`assets/config.json`'s).
     static func host(home: PRRef.LocalRepo?) -> String {
         home?.host ?? PRRef.LocalRepo.github
     }
@@ -84,9 +80,8 @@ extension PRRef.LocalRepo {
     }
 }
 
-/// Which hosts a git remote is read as GitLab on: gitlab.com, every host glab is configured
-/// for (passed in as `configured`, from `GLab.configuredHosts`), and any host whose first
-/// DNS label is `gitlab` (`gitlab.example.com`); never github.com, whatever glab lists.
+/// The hosts a git remote reads as GitLab on: gitlab.com, `configured`
+/// (`GLab.configuredHosts`) and any `gitlab.*` host; never github.com, whatever glab lists.
 /// Python twin: `localrepos.gitlab_hosts`.
 public enum GitLabHosts {
     public static func contains(_ host: String, configured: Set<String>) -> Bool {
@@ -97,9 +92,8 @@ public enum GitLabHosts {
         return labels.count >= 2 && labels[0] == "gitlab" && !labels.contains(where: \.isEmpty)
     }
 
-    /// The hosts a glab `config.yml` lists: after a column-0 `hosts:` line, every line
-    /// indented as deep as its first child that holds a `host:` key alone, until the next
-    /// column-0 key. Blank and comment lines are skipped; a host's `:port` is dropped.
+    /// The hosts a glab `config.yml` lists: each bare `key:` line under column-0 `hosts:`
+    /// at its first child's indent, `:port` dropped.
     public static func parse(config: String) -> Set<String> {
         var out = Set<String>()
         var inHosts = false
@@ -133,14 +127,13 @@ public enum RepoRoots {
     ///
     /// `remotes` maps an expanded path to its `git config --local --get-regexp
     /// '^remote\..*\.url$'` output; a path missing from it is no checkout. A path with a
-    /// GitHub remote resolves among its GitHub remotes alone: it names the configured repo
-    /// (a github.com one) when its GitHub `upstream` or `origin` (any GitHub remote, with
-    /// neither) is that repo, or a repo of that name under another owner (a fork's
-    /// `origin`, or a URL from before the repo moved), and otherwise its first GitHub
-    /// remote (`LocalRepo.entries` order). Another remote naming the configured repo is a
-    /// sibling fetched from, not what the checkout is. Only a path with no GitHub remote
-    /// names a GitLab repo: its first GitLab remote, `upstream` then `origin` first. A path
-    /// with neither is skipped, and a repo two paths name keeps the first. When nothing
+    /// GitHub remote resolves among those alone: it names the configured repo when its
+    /// `upstream` or `origin` (any GitHub remote, with neither) is that repo, or a repo of
+    /// that name under another owner (a fork's `origin`, or a URL from before the repo
+    /// moved), and otherwise its first GitHub remote (`LocalRepo.entries` order). Another
+    /// remote naming the configured repo is a sibling fetched from, not what the checkout
+    /// is. A path with no GitHub remote names its first GitLab remote; one with neither is
+    /// skipped, and a repo two paths name keeps the first. When nothing
     /// resolves, the first path stands for the configured repo (`guessed` tells when that
     /// is a guess among several).
     public static func resolve(paths: [String], remotes: [String: String],

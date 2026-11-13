@@ -322,7 +322,6 @@ public enum API {
         try GitLab.viewer(try await GLab.graphql("gitlab-viewer", host: host), host: host)
     }
 
-    /// `root`'s open PRs, or merge requests on a GitLab root.
     public static func fetchOpenPRs(_ root: PRRef.LocalRepo) async throws -> [OpenPR] {
         try openPRs(root.isGitLab
             ? try GitLab.prs(try await GLab.graphql("gitlab-prs", host: root.host,
@@ -359,15 +358,13 @@ public enum API {
         }
     }
 
-    /// The lifecycle state of a single PR or merge request — "OPEN", "CLOSED", or
-    /// "MERGED". Used to mark a tracked agent session's PR as merged once it lands. One
-    /// cheap `gh pr view` (a `gitlab-mr` read on GitLab) per tracked PR.
+    /// A PR's or merge request's state — "OPEN", "CLOSED", or "MERGED". Marks a tracked
+    /// agent session's PR merged once it lands; one cheap read per tracked PR.
     public static func fetchPRState(number: Int, root: PRRef.LocalRepo) async throws -> String {
         struct R: Decodable { let state: String }
         return try JSONDecoder().decode(R.self, from: try await prView(number, root, "state")).state
     }
 
-    /// A PR's or merge request's author login, nil for none.
     public static func fetchPRAuthor(number: Int, root: PRRef.LocalRepo) async throws -> String? {
         struct R: Decodable { struct A: Decodable { let login: String? }; let author: A? }
         return try JSONDecoder().decode(R.self, from: try await prView(number, root, "author"))
@@ -384,18 +381,16 @@ public enum API {
             "gitlab-mr", host: root.host, variables: [("path", root.slug), ("iid", "\(number)")]))
     }
 
-    /// A merge request's `mergeable` from a REST read that asks GitLab to recheck it
-    /// (`with_merge_status_recheck`). GitLab checks a merge status lazily: after a push to
-    /// the target branch an open merge request reads unchecked until something asks, and
-    /// no GraphQL read does. The recheck runs in the background, so an answer still
-    /// unchecked is `UNKNOWN`, and the next read sees the result.
+    /// A merge request's `mergeable`, asking GitLab to recheck it: after a push to the
+    /// target branch it reads unchecked until something asks, and no GraphQL read does. The
+    /// recheck runs in the background, so this may still answer `UNKNOWN`; the next read
+    /// sees the result.
     public static func recheckedMergeable(number: Int, root: PRRef.LocalRepo) async throws -> String {
         GitLab.mergeable(rest: try await GLab.run(
             ["api", "--hostname", root.host,
              "projects/\(GLab.projectID(root.slug))/merge_requests/\(number)?with_merge_status_recheck=true"]))
     }
 
-    /// `root`'s open issues.
     public static func fetchOpenIssues(_ root: PRRef.LocalRepo) async throws -> [OpenIssue] {
         try openIssues(root.isGitLab
             ? try await GitLab.issues(try await GLab.graphql("gitlab-issues", host: root.host,

@@ -1,8 +1,6 @@
 import Foundation
 import DiplomatCore
 
-/// GitLab repo roots: host reading, remotes, roots, item keys and links, the glab runner,
-/// the adapters against the shared parity fixtures, and the prompt note.
 func gitlabSmoke() async throws {
     section("gitlab: hosts")
     check(GitLabHosts.contains("gitlab.com", configured: [])
@@ -272,8 +270,8 @@ func gitlabSmoke() async throws {
             got = try canonical(try JSONSerialization.data(withJSONObject: GitLab.memberPaths(
                 slug: inputObject?["slug"] as? String ?? "", ids: inputObject?["ids"] as? [Int] ?? [])))
         } else if let answer = inputObject?["answer"], let listed = inputObject?["members"] as? [[String: Any]] {
-            // {answer, members}: every lookup answers the ids of `members`, asked for or
-            // not; what the adapter asked for, then its answer.
+            // {answer, members}: every lookup answers all of `members`' ids; the result is
+            // what the adapter asked, then its answer.
             var asked: [[Int]] = []
             let adapted = try await GitLab.adapt(name, try JSONSerialization.data(withJSONObject: answer),
                                                  reviewer: "carol", lookup: { ids in
@@ -283,7 +281,7 @@ func gitlabSmoke() async throws {
             got = try canonical(try JSONSerialization.data(withJSONObject: [
                 "asked": asked, "result": try JSONSerialization.jsonObject(with: adapted)]))
         } else {
-            // The review-requests answers are the query's asked for reviewer `carol`.
+            // Review-requests fixtures were asked for reviewer `carol`.
             var lookedUp = false
             got = try canonical(try await GitLab.adapt(name, input, reviewer: "carol", lookup: { _ in
                 lookedUp = true
@@ -334,8 +332,6 @@ func gitlabSmoke() async throws {
     catch { signedOut = (error as? LocalizedError)?.errorDescription ?? "\(error)" }
     check(signedOut == "not signed in to gitlab.example.com", "no viewer is an error: \(signedOut)")
 
-    // A thread's system notes ("changed this line in version 2 of the diff", authored by
-    // whoever pushed) are no reply: the reviewer's comment stays its last.
     let systemNotes = #"""
         {"data":{"project":{"mergeRequests":{"nodes":[{"iid":"3","discussions":{"nodes":[
           {"resolvable":true,"resolved":false,"notes":{"nodes":[

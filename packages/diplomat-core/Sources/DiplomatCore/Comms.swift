@@ -278,8 +278,8 @@ public struct CommsDecision: Codable, Equatable, Sendable {
                              summary: summary, reason: why, language: language, settings: settings)
     }
 
-    /// Whether two targets name one item: the same number in the same repository, and on
-    /// GitLab, which numbers merge requests and issues apart, the same action too.
+    /// Same number and repository, and on GitLab, which numbers merge requests and issues
+    /// apart, the same action too.
     static func sameItem(_ a: CommsAsk, _ b: CommsAsk, settings: CommsSettings?) -> Bool {
         a.number == b.number && a.repo == b.repo
             && (a.action == b.action || settings?.gitlabHost(a.repo) == nil)
@@ -301,12 +301,11 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     }
 
     /// `text` with its references into repositories other than `repo` (a
-    /// `CommsSettings.canonical` slug, the primary by default) taken out: GitHub links and
-    /// GitLab ones (`<host>/<namespace>/<project>/-/merge_requests|issues|work_items/N`,
-    /// any host) with their Slack or markdown label, `owner/repo#N` for another repository
-    /// of `repo`'s owner (a namespace of any depth) or another watched one, and `name#N` for
-    /// a repository a link names or another watched one; for a `repo` on GitLab, `!N` as
-    /// well as `#N`. A number there is not one of `repo`'s, even when `repo` has a PR that
+    /// `CommsSettings.canonical` slug, the primary by default) taken out: GitHub and GitLab
+    /// (any host) links with their Slack or markdown label, `owner/repo#N` for another
+    /// repository of `repo`'s owner (a namespace of any depth) or another watched one, and
+    /// `name#N` for a repository a link names or another watched one; `!N` too for a `repo`
+    /// on GitLab. A number there is not one of `repo`'s, even when `repo` has a PR that
     /// happens to wear it. Any other `word#N` or `word/word#N` stays, for the classifier to
     /// judge: `PR#12`, `fix/login#12` and `swmansion/argent#12` cannot be told from a
     /// foreign reference here.
@@ -315,7 +314,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         let (home, name) = settings.coordinates(of: target)
         let slug = "\(home)/\(name)".lowercased()
         let mark = settings.gitlabHost(target) == nil ? "#" : "[#!]"
-        // Two groups per form, owner and repo, so every link alternative below holds four.
+        // Two groups (owner, repo) per host, so each link alternative below holds four.
         let url = #"(?:(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues|discussions|commit)/\w+"#
             + #"|(?:https?://)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::[0-9]+)?/((?:[\w.-]+/)*[\w.-]+)/([\w.-]+)/-/(?:merge_requests|issues|work_items)/[0-9]+)"#
         guard let links = try? NSRegularExpression(
@@ -395,8 +394,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// the object: an unknown action, or a number that is missing, fractional, a string or
     /// a boolean, lands in `init` as something it refuses. A target without an action
     /// takes the decision's. An older log line has `numbers`, or `number` alone, and no
-    /// `repo`: the primary repository's. The decoder's `settingsKey`, when set, is `init`'s
-    /// `settings`.
+    /// `repo`: the primary repository's. `settings` comes from the decoder's `settingsKey`.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let summary = (try? c.decode(String.self, forKey: .summary)) ?? ""
@@ -523,7 +521,6 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         return decode(data, settings: settings)
     }
 
-    /// `settings` reaches `init(from:)` as the decoder's `settingsKey`.
     private static func decode(_ data: Data, settings: CommsSettings? = nil) -> CommsDecision {
         let decoder = JSONDecoder()
         decoder.userInfo[settingsKey] = settings
@@ -571,12 +568,12 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     public private(set) var repos: [String]
     /// The operator's GitHub login; the classifier is told the message was sent to it.
     public var login: String
-    /// The host of each of `repos` on GitLab, by slug; one not here is on GitHub.
+    /// GitLab host by slug of `repos`; a slug absent here is on GitHub.
     public private(set) var gitlabHosts: [String: String]
 
     /// `repos` without the blank, malformed and repeated; with none left, the one repo
-    /// `owner`/`repo` name, else `assets/config.json`'s. `gitlabHosts` keeps the slugs
-    /// `repos` holds, any case.
+    /// `owner`/`repo` name, else `assets/config.json`'s. `gitlabHosts` keeps only slugs in
+    /// `repos`, any case.
     public init(keywords: [String] = [], senderAllowlist: [String] = [],
                 bannedSenders: [String] = [],
                 model: String? = nil, maxPerTick: Int? = nil, batchSize: Int? = nil,
@@ -621,8 +618,8 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     public var owner: String { coordinates(of: "").owner }
     public var repo: String { coordinates(of: "").repo }
 
-    /// A watched repository's coordinates, the owner everything before the last `/` (a
-    /// GitLab namespace may nest); "" names the primary.
+    /// A watched repository's coordinates, the owner all before the last `/`; "" names the
+    /// primary.
     public func coordinates(of slug: String) -> (owner: String, repo: String) {
         PRRef.splitSlug(slug.isEmpty ? repos[0] : slug) ?? ("", "")
     }

@@ -11,9 +11,8 @@ public enum GHError: LocalizedError {
     case glabNotFound
     case glabProcess(code: Int32, stderr: String)
     case glabTimeout(seconds: TimeInterval)
-    /// A read that could not be made, or answered without what it asked about: a GitLab
-    /// project that does not exist or cannot be seen, no signed-in user, no such merge
-    /// request.
+    /// A read answered without what it asked about: a missing or hidden GitLab project, no
+    /// signed-in user, no such merge request.
     case unanswered(String)
 
     public var errorDescription: String? {
@@ -162,10 +161,9 @@ public enum GH {
                                  failedToLaunch: { forget(path) })
     }
 
-    /// Run the CLI at `path` with `args` for at most `timeout`, then `timedOut` is thrown.
-    /// stdout/stderr are redirected to temp files so large payloads can't deadlock a pipe
-    /// buffer (and no cross-thread captures). `failedToLaunch` runs when the binary would
-    /// not start. `GLab` runs through here too.
+    /// Run the CLI at `path`, throwing `timedOut` past `timeout`; `failedToLaunch` runs when
+    /// it would not start. stdout/stderr go to temp files so large payloads can't deadlock a
+    /// pipe buffer (and no cross-thread captures).
     static func execute(_ path: String, _ args: [String], timeout: TimeInterval,
                         timedOut: Error, failedToLaunch: @escaping () -> Void) async throws -> Output {
         let tmp = FileManager.default.temporaryDirectory

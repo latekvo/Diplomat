@@ -368,8 +368,7 @@ public enum AgentState {
         public var tails: Observation<[String: String]>
         /// Work keys currently claimed somewhere on the mesh.
         public var claims: Observation<Set<String>>
-        /// The items (`PRRef.itemKey`) of the PRs and merge requests GitHub or GitLab reports
-        /// as MERGED.
+        /// The items (`PRRef.itemKey`) of the PRs and merge requests reported MERGED.
         public var mergedPRs: Observation<Set<String>>
         /// Item → the tty of an agent found by its prompt text in the process table
         /// (`promptItems`). The pre-registry identity mechanism, and still the only
@@ -1097,10 +1096,8 @@ public enum AgentState {
     // MARK: - Untracked agents
 
     /// The items an agent's prompt names, in order: each `PR #<n> in <slug>` whose slug is
-    /// one of `slugs` (lowercase), its owner possibly a nested GitLab namespace. Of the
-    /// path after `in`, the longest leading run of segments that is a slug counts, and the
-    /// whole path's trailing `.` no slug has is the prompt's sentence end, not the repo
-    /// name's.
+    /// one of `slugs` (lowercase). The longest leading run of path segments that is a slug
+    /// counts; a trailing `.` no slug has ends the sentence, not the repo name.
     public static func promptItems(_ text: String, slugs: Set<String>) -> [String] {
         guard let re = try? NSRegularExpression(pattern: #"PR #([0-9]+) in ([\w.-]+(?:/[\w.-]+)+)"#)
         else { return [] }
@@ -1189,8 +1186,8 @@ public enum AgentState {
     /// They count as automatic. An agent whose trigger is unknown spending a bay defers
     /// work; the opposite error dispatches a second agent onto a PR that has one.
     ///
-    /// A record's PR link is a merge request's when `roots` has its slug as a GitLab root,
-    /// else a github.com PR's, so the record's `item` is the scan's.
+    /// A slug that is a GitLab root in `roots` links its merge request, else a github.com
+    /// PR, so the record's `item` is the scan's.
     public static func synthesizeUntracked(_ records: [RunRecord],
                                            liveAgents: Observation<[String: String]>,
                                            roots: [PRRef.LocalRepo],
@@ -1444,8 +1441,6 @@ public enum AgentState {
     /// Released records are made LAST, from the verdicts, so the caller persists each
     /// before it forgets the run that ended. Both front-ends and the parity CLI go through
     /// here, so neither can get the sequence subtly different from the other.
-    ///
-    /// `roots` are the repo roots the scan's slugs come from (`synthesizeUntracked`).
     public static func tick(records: [RunRecord], evidence: Evidence,
                             roots: [PRRef.LocalRepo], now: TimeInterval, limit: Int,
                             deadline: TimeInterval? = nil) -> Tick {

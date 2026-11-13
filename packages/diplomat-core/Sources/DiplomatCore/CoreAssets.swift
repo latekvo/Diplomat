@@ -94,7 +94,7 @@ public enum CoreAssets {
         public let blocks: [String: String]
     }
 
-    /// What a prompt about a repository hosted on GitLab adds (`gitlab.json`).
+    /// `gitlab.json`: what a prompt about a GitLab repository adds.
     public struct GitLabModel: Decodable {
         /// The paragraph after the opening task line; `{host}`, `{owner}`, `{repo}`.
         public let promptNote: String
@@ -205,9 +205,8 @@ public enum CoreAssets {
             /// repository, `many` for several, each value filled into `instructions`;
             /// `gitlab`'s replace some of them once a watched repository is on GitLab.
             public struct Repos: Decodable {
-                /// `one`'s replacements for a GitLab project, `many`'s for several
-                /// repositories one of which is; `hosted` names where each of several is
-                /// (`hostedGitHub`, `hostedGitLab`).
+                /// Overrides of `one` for a GitLab project and of `many` when any watched
+                /// repository is; `hostedGitHub`/`hostedGitLab` say where each of several is.
                 public struct GitLab: Decodable {
                     public let one: [String: String]
                     public let many: [String: String]

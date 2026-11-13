@@ -1,33 +1,26 @@
 import Foundation
 
-/// The answers of the `assets/graphql/gitlab-*` queries, each turned into the JSON its
-/// GitHub twin query answers with, so one parser reads both. No call to glab but through
-/// the `Lookup` an adapter is handed; Python twin: `diplomat_runtime/gitlab.py`, held to
-/// the same output by the shared fixtures in `Tests/fixtures/gitlab/`.
+/// Each `assets/graphql/gitlab-*` answer as the JSON its GitHub twin query answers, so one
+/// parser reads both. Pure but for the `Lookup` an adapter is handed. Python twin:
+/// `diplomat_runtime/gitlab.py`, held to the same output by `Tests/fixtures/gitlab/`.
 ///
-/// GitLab has no author association, so a project member reads as `MEMBER` and anyone
-/// else as `NONE`; an author past a full member page is asked of the `Lookup`, which reads
-/// their ids off the REST `members/all` (`memberPaths`). A merge request is numbered by
-/// its iid; a resolvable discussion is a review thread; and GitLab records a review
-/// request, a submitted review and a ready-for-review as system notes, which stand in for
-/// GitHub's timeline events and reviews. Every time is given in UTC as GitHub gives it
-/// (`2026-10-25T00:40:00Z`), where GitLab gives the instance's offset, so times compare as
-/// strings.
+/// GitLab has no author association: a project member reads `MEMBER`, anyone else `NONE`.
+/// A merge request's number is its iid, a resolvable discussion is a review thread, and
+/// system notes stand in for GitHub's review-request, review and ready-for-review events.
+/// Times are converted from the instance's offset to UTC `Z`, as GitHub gives them, so they
+/// compare as strings.
 public enum GitLab {
     typealias JSON = [String: Any]
 
     /// User ids -> the project members among them.
     public typealias Lookup = ([Int]) async throws -> Set<Int>
 
-    /// User ids one `members/all` read asks about. Fewer than its page of 100, so one page
-    /// holds every member among them, and few enough for the answer's `Link` header, which
-    /// repeats every id twice: a self-hosted GitLab answered 502 past about 80 ids, the
-    /// header outgrowing its proxy's buffer.
+    /// Ids per `members/all` read: under its page of 100, and few enough for the answer's
+    /// `Link` header, which repeats every id twice; a self-hosted GitLab answered 502 past
+    /// about 80 ids, the header outgrowing its proxy's buffer.
     static let memberChunk = 40
 
-    /// The adapters by fixture name: `prs`, `issues` (any name starting so),
-    /// `monitor-prs`, `closed-prs`, `review-requests` (any name starting so, each an
-    /// answer asked for `reviewer`) and `mr`.
+    /// The adapter by fixture name; `reviewer` is who a `review-requests` answer was asked for.
     public static func adapt(_ name: String, _ data: Data, reviewer: String,
                              lookup: Lookup) async throws -> Data {
         if name.hasPrefix("review-requests") {
@@ -43,7 +36,7 @@ public enum GitLab {
         }
     }
 
-    /// `gitlab-prs` as `prs.graphql`: `{data: {repository: {pullRequests: {nodes}}}}`.
+    /// `gitlab-prs` as `prs.graphql` answers.
     public static func prs(_ data: Data) throws -> Data {
         let nodes = try list(try project(data)["mergeRequests"]).map { mr -> JSON in
             var n = common(mr)
@@ -59,7 +52,7 @@ public enum GitLab {
         return try encode(["data": ["repository": ["pullRequests": ["nodes": nodes]]]])
     }
 
-    /// `gitlab-issues` as `issues.graphql`: `{data: {repository: {issues: {nodes}}}}`.
+    /// `gitlab-issues` as `issues.graphql` answers.
     public static func issues(_ data: Data, lookup: Lookup) async throws -> Data {
         let project = try self.project(data)
         let members = try await self.members(project, list(project["issues"]).flatMap { i in
@@ -81,7 +74,7 @@ public enum GitLab {
         return try encode(["data": ["repository": ["issues": ["nodes": nodes]]]])
     }
 
-    /// `gitlab-monitor-prs` as `monitor-prs.graphql`: `{data: {search: {nodes}}}`.
+    /// `gitlab-monitor-prs` as `monitor-prs.graphql` answers.
     public static func monitorPRs(_ data: Data) throws -> Data {
         let nodes = list(try project(data)["mergeRequests"]).map { mr -> JSON in
             var n = common(mr)
@@ -96,17 +89,15 @@ public enum GitLab {
         return try encode(["data": ["search": ["nodes": nodes]]])
     }
 
-    /// `gitlab-closed-prs` as `closed-prs.graphql`: the merged then the closed, each
-    /// `{number}`, in `{data: {search: {nodes}}}`.
+    /// `gitlab-closed-prs` as `closed-prs.graphql` answers: the merged, then the closed.
     public static func closedPRs(_ data: Data) throws -> Data {
         let project = try self.project(data)
         let nodes = (list(project["merged"]) + list(project["closed"])).map { ["number": number($0)] }
         return try encode(["data": ["search": ["nodes": nodes]]])
     }
 
-    /// `gitlab-review-requests` asked for `reviewer`, as `review-requests.graphql`:
-    /// `{data: {search: {nodes}}}`, with `files` only when the answer carries `diffStats`
-    /// (`$withFiles`).
+    /// `gitlab-review-requests` as `review-requests.graphql` answers, with `files` only when
+    /// the answer carries `diffStats` (`$withFiles`).
     public static func reviewRequests(_ data: Data, reviewer: String,
                                       lookup: Lookup) async throws -> Data {
         let project = try self.project(data)
@@ -132,11 +123,10 @@ public enum GitLab {
         return try encode(["data": ["search": ["nodes": nodes]]])
     }
 
-    /// The activity-note openings of a submitted review: an approval, a requested change,
-    /// and a review published without either (GitHub's `COMMENTED`).
+    /// Note openings of a submitted review; the last is GitHub's `COMMENTED`.
     private static let reviewed = ["approved this merge request", "requested changes", "left review comments"]
 
-    /// `gitlab-mr` as `gh pr view --json state,author`: `{state, author: {login}}`.
+    /// `gitlab-mr` as `gh pr view --json state,author` prints it.
     public static func mergeRequest(_ data: Data) throws -> Data {
         guard let mr = try project(data)["mergeRequest"] as? JSON else {
             throw GHError.unanswered("GitLab merge request not found")
@@ -144,8 +134,8 @@ public enum GitLab {
         return try encode(["state": state(mr["state"]), "author": login(mr["author"])])
     }
 
-    /// A REST `projects/:id/merge_requests/:iid` or `.../issues/:iid` answer as
-    /// `gh pr view --json number,url,author,state` (`gh issue view`) prints one.
+    /// A REST merge request or issue as `gh pr|issue view --json number,url,author,state`
+    /// prints it.
     public static func itemView(_ data: Data) throws -> Data {
         guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? JSON else {
             throw GHError.unanswered("glab printed no merge request or issue")
@@ -154,9 +144,8 @@ public enum GitLab {
                            "author": login(obj["author"]), "state": state(obj["state"])])
     }
 
-    /// The `mergeable` a REST `projects/:id/merge_requests/:iid` answer reads as, by the
-    /// rule the GraphQL adapters follow: `UNKNOWN` while GitLab has not checked it, or for
-    /// an answer that is no merge request.
+    /// A REST merge request's `mergeable`, by the GraphQL adapters' rule; `UNKNOWN` for an
+    /// answer that is no merge request.
     public static func mergeable(rest data: Data) -> String {
         guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? JSON else { return "UNKNOWN" }
         return mergeable(["conflicts": obj["has_conflicts"] ?? NSNull(),
@@ -164,13 +153,12 @@ public enum GitLab {
                               ?? NSNull()])
     }
 
-    /// GitHub's spelling of a GitLab state: `OPEN` for opened or locked, else uppercased.
     private static func state(_ raw: Any?) -> String {
         let s = raw as? String ?? ""
         return ["opened": "OPEN", "locked": "OPEN"][s] ?? s.uppercased()
     }
 
-    /// `gitlab-viewer`'s signed-in username on `host`.
+    /// The username a `gitlab-viewer` answer holds.
     public static func viewer(_ data: Data, host: String) throws -> String {
         let obj = (try? JSONSerialization.jsonObject(with: data)) as? JSON
         guard let user = (obj?["data"] as? JSON)?["currentUser"] as? JSON,
@@ -204,13 +192,11 @@ public enum GitLab {
         (node["iid"] as? String).flatMap { Int($0) } ?? (node["iid"] as? Int).map { $0 as Any } ?? NSNull()
     }
 
-    /// What every item node carries: number, title, url, author.
     private static func common(_ node: JSON) -> JSON {
         ["number": number(node), "title": node["title"] ?? NSNull(),
          "url": node["webUrl"] ?? NSNull(), "author": login(node["author"])]
     }
 
-    /// A GitLab time in UTC, null for none.
     private static func utc(_ at: Any?) throws -> Any {
         guard let at = at as? String else { return NSNull() }
         return try utc(at)
@@ -227,13 +213,12 @@ public enum GitLab {
         (author as? JSON)?["username"] as? String
     }
 
-    /// `{login}` of a GitLab author, null for none.
     private static func login(_ author: Any?) -> Any {
         username(author).map { ["login": $0] as Any } ?? NSNull()
     }
 
-    /// The lowercased usernames of the project's members: its member page, and when that
-    /// page is full, those of `users` the page does not hold whose ids `lookup` answers.
+    /// Lowercased member usernames: the member page, plus, when it has a next page, those
+    /// of `users` it misses that `lookup` confirms.
     private static func members(_ project: JSON, _ users: [Any?], lookup: Lookup) async throws -> Set<String> {
         let page = project["projectMembers"] as? JSON ?? [:]
         var members = Set(list(page).compactMap { username($0["user"])?.lowercased() })
@@ -248,7 +233,6 @@ public enum GitLab {
         return members
     }
 
-    /// The number of a user's `gid://gitlab/User/<n>` id.
     private static func userID(_ user: JSON, name: String) throws -> Int {
         let prefix = "gid://gitlab/User/"
         let id = user["id"] as? String ?? ""
@@ -259,8 +243,8 @@ public enum GitLab {
         return n
     }
 
-    /// The REST reads of which of `ids` are members of project `slug`, direct, inherited
-    /// or through a shared group: at most `memberChunk` ids to a read, in the order given.
+    /// The `members/all` reads (direct, inherited or shared-group members) for `ids`,
+    /// `memberChunk` to a read.
     public static func memberPaths(slug: String, ids: [Int]) -> [String] {
         stride(from: 0, to: ids.count, by: memberChunk).map { start in
             "projects/\(GLab.projectID(slug))/members/all?per_page=100"
@@ -268,7 +252,6 @@ public enum GitLab {
         }
     }
 
-    /// The user ids a `members/all` read answers.
     public static func memberIDs(_ data: Data) throws -> Set<Int> {
         guard let page = try? JSONSerialization.jsonObject(with: data) as? [JSON] else {
             throw GHError.unanswered("GitLab answered no member list")
@@ -306,10 +289,9 @@ public enum GitLab {
         list(mr["diffStats"]).map { ["path": $0["path"] ?? NSNull()] }
     }
 
-    /// Each resolvable discussion as a review thread, its last comment standing for
-    /// GitHub's `comments(last: 1)`. System notes ("changed this line in version 2 of the
-    /// diff", left in the thread by whoever pushed) are no comments; whether I may resolve
-    /// it is read off its last note of any kind.
+    /// Resolvable discussions as review threads, the last non-system note standing for
+    /// GitHub's `comments(last: 1)`: a system note ("changed this line in version 2 of the
+    /// diff") is left by whoever pushed. `viewerCanResolve` is its last note's, of any kind.
     private static func threads(_ mr: JSON) -> [JSON] {
         list(mr["discussions"]).filter { $0["resolvable"] as? Bool == true }.map { d in
             let notes = list(d["notes"])
@@ -334,7 +316,7 @@ public enum GitLab {
     }
 
     /// `reviewer`'s request when no note in the window names them: the query answers only
-    /// merge requests that request their review, so it is at least as old as the window's
+    /// merge requests requesting their review, so it is at least as old as the window's
     /// oldest note, or the merge request when the window is empty.
     private static func request(of reviewer: String, _ events: [JSON], _ mr: JSON,
                                 _ activity: [JSON]) throws -> [JSON] {
@@ -349,8 +331,8 @@ public enum GitLab {
                  "requestedReviewer": ["__typename": "User", "login": reviewer]] as JSON]
     }
 
-    /// One review-requested event per user a "requested review from" note names, the
-    /// removals the same note carries left out.
+    /// One review-requested event per user a "requested review from" note names, minus the
+    /// removals the same note carries.
     private static func reviewRequested(_ note: JSON) throws -> [JSON] {
         let body = note["body"] as? String ?? ""
         let prefix = "requested review from "

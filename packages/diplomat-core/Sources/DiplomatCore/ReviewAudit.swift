@@ -98,8 +98,8 @@ public enum ReviewAudit {
     }
 
     /// Read my reviews on `prURL` and return `findings`. `[]` for a URL that names no
-    /// github.com PR (a GitLab merge request's). Throws when GitHub cannot be asked,
-    /// `me` (the gh login) not known yet included.
+    /// github.com PR (a GitLab merge request's). Throws when GitHub cannot be asked or `me`
+    /// is empty.
     public static func audit(prURL: String, me: String, since: TimeInterval) async throws -> [String] {
         guard let c = coordinates(prURL) else { return [] }
         guard !me.isEmpty else { throw GHError.unanswered("the gh login is not known yet") }

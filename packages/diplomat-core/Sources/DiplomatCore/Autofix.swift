@@ -509,8 +509,8 @@ public enum AutofixMesh {
         return "\(kind):\(ref)@\(headSha)"
     }
 
-    /// `<host>/<owner>/<repo>#<n>` for a PR URL, or a GitLab merge request's
-    /// (`<host>/<ns...>/<proj>/-/merge_requests/<n>`), or nil when it isn't one. Split out
+    /// `<host>/<owner>/<repo>#<n>` for a PR or GitLab merge request URL, or nil when it
+    /// isn't one. Split out
     /// of `workKey` so the ledger key below cannot parse a URL differently from the
     /// claim key — the two identify the same unit of work and are compared against
     /// each other in the ledger.
