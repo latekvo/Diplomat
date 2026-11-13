@@ -1176,3 +1176,24 @@ def test_an_issue_fix_is_its_own_roots_on_two_roots_of_one_slug(lab_only, monkey
     assert Store._comms_row_doing(
         autofix.queue_key(autofix.QUEUE_ISSUES_ACTION, "gitlab.other.org/acme/widget#9"),
         rows) is None
+
+
+def test_an_issue_fix_with_no_link_is_known_to_comms_by_its_label(monkeypatch):
+    """A run recorded with no link (an older build's) is known by its label, as
+    :func:`goal_overlay` knows it; one with a link by that link alone, so a GitLab twin's
+    #5 is never the GitHub one's though both wear one label."""
+    from diplomat_app.store import Store
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [TWIN_HUB, TWIN_LAB])
+
+    def row(item: str | None) -> autofix.RunningAgent:
+        return autofix.RunningAgent(pr_number=0, label="Auto · Issues · widget#5 · deep",
+                                    kind=autofix.QUEUE_ISSUES_ACTION, tracked=True,
+                                    item=item)
+
+    hub = autofix.queue_key(autofix.QUEUE_ISSUES_ACTION, "acme/widget#5")
+    lab, legacy = row(f"{HOST}/acme/widget#5"), row(None)
+    assert Store._comms_row_doing(hub, [lab]) is None
+    assert Store._comms_row_doing(hub, [lab, legacy]) is legacy
+    assert Store._comms_row_doing(
+        autofix.queue_key(autofix.QUEUE_ISSUES_ACTION, "acme/widget#6"), [legacy]) is None

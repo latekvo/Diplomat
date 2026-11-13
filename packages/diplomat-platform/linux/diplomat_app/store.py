@@ -860,7 +860,7 @@ class Store(QObject):
     @staticmethod
     def wizard_item_label(target: LocalRepo, number: int) -> str:
         """A wizard's single item: :func:`item_label` in a repo root, else the whole
-        ``owner/repo#N``. The Comms adoption of a running fix matches it."""
+        ``owner/repo#N``. Comms knows a running fix recorded with no link by it."""
         roots = review.repo_roots()
         if target.key not in {r.key for r in roots}:
             return f"{target.slug}#{number}"
@@ -4769,7 +4769,8 @@ class Store(QObject):
     def _comms_row_doing(key: str, rows: list[autofix.RunningAgent]
                          ) -> autofix.RunningAgent | None:
         """Twin of ``commsRow``: any review agent on that PR (the dispatch gate treats
-        every agent on a PR as that PR's), or a fix of that issue."""
+        every agent on a PR as that PR's), or a fix of that issue: by its link, else (a
+        run recorded with none) by its label (:meth:`autofix.RequestedWork.label_among`)."""
         item = autofix.item_of_key(key)
         if item is None:
             return None
@@ -4778,8 +4779,9 @@ class Store(QObject):
             return next((a for a in rows if a.item == item
                          and a.kind == autofix.QUEUE_REVIEW_ACTION), None)
         if verb == autofix.QUEUE_ISSUES_ACTION:
-            return next((a for a in rows if a.item == item
-                         and a.kind == autofix.QUEUE_ISSUES_ACTION), None)
+            named = f"Issues · {item_label(item, len(review.repo_roots()))} · "
+            return next((a for a in rows if a.kind == autofix.QUEUE_ISSUES_ACTION
+                         and (a.item == item if a.item else named in a.label)), None)
         return None
 
     @staticmethod
