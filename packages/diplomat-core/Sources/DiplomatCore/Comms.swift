@@ -305,15 +305,21 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// (any host) links with their Slack or markdown label, `owner/repo#N` for another
     /// repository of `repo`'s owner (a namespace of any depth) or another watched one, and
     /// `name#N` for a repository a link names or another watched one; `!N` too for a `repo`
-    /// on GitLab. A number there is not one of `repo`'s, even when `repo` has a PR that
-    /// happens to wear it. Any other `word#N` or `word/word#N` stays, for the classifier to
-    /// judge: `PR#12`, `fix/login#12` and `swmansion/argent#12` cannot be told from a
+    /// on GitLab. A link is `repo`'s own only on `repo`'s host (github.com, or its GitLab
+    /// host, any case, `www.` and `:port` dropped). A number there is not one of `repo`'s,
+    /// even when `repo` has a PR that happens to wear it. Any other `word#N` or
+    /// `word/word#N` stays, for the classifier to judge: `PR#12`, `fix/login#12` and `swmansion/argent#12` cannot be told from a
     /// foreign reference here.
     public static func ownRepoText(_ text: String, settings: CommsSettings,
                                    repo target: String = "") -> String {
         let (home, name) = settings.coordinates(of: target)
         let slug = "\(home)/\(name)".lowercased()
         let mark = settings.gitlabHost(target) == nil ? "#" : "[#!]"
+        func bare(_ host: String) -> String {
+            let h = host.lowercased().split(separator: ":").first.map(String.init) ?? ""
+            return h.hasPrefix("www.") ? String(h.dropFirst(4)) : h
+        }
+        let ownHost = bare(settings.gitlabHost(target) ?? PRRef.LocalRepo.github)
         // Two groups (owner, repo) per host, so each link alternative below holds four.
         let url = #"(?:(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues|discussions|commit)/\w+"#
             + #"|(?:https?://)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::[0-9]+)?/((?:[\w.-]+/)*[\w.-]+)/([\w.-]+)/-/(?:merge_requests|issues|work_items)/[0-9]+)"#
@@ -339,8 +345,16 @@ public struct CommsDecision: Codable, Equatable, Sendable {
             let named = "\(owner)/\(repo)".lowercased()
             let sameRepo = repo.lowercased() == name.lowercased()
             let isLink = group < 13
-            let foreign = named != slug && (isLink || owner.lowercased() == home.lowercased()
-                                            || watched.contains(named))
+            // A link's host is github.com (groups 1, 5, 9) or the run of host characters
+            // before its owner's `/` (groups 3, 7, 11).
+            let lead = NSRange(location: m.range.location,
+                               length: m.range(at: group).location - m.range.location)
+            let host = !isLink || group % 4 == 1 ? PRRef.LocalRepo.github
+                : String(source.substring(with: lead).dropLast().reversed()
+                    .prefix { $0.isASCII && ($0.isLetter || $0.isNumber || ".:-".contains($0)) }.reversed())
+            let own = named == slug && (!isLink || bare(host) == ownHost)
+            let foreign = !own && (isLink || owner.lowercased() == home.lowercased()
+                                   || watched.contains(named))
             guard foreign else { continue }
             out.replaceCharacters(in: m.range, with: "")
             if isLink && !sameRepo { others.insert(repo) }

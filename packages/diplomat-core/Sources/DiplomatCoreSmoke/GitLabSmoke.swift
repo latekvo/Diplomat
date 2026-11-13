@@ -375,6 +375,26 @@ func gitlabSmoke() async throws {
                                     settings: twinComms, repo: labTwin.key)
               == "see https://gitlab.example.com/acme/widget/-/merge_requests/5 and !7",
           "a GitLab root's own link stays in its own text")
+    func twinText(_ s: String, _ root: PRRef.LocalRepo) -> String {
+        CommsDecision.ownRepoText(s, settings: twinComms, repo: root.key)
+    }
+    let labMR = "https://gitlab.example.com/acme/widget/-/merge_requests/7"
+    for spelling in [labMR, "<\(labMR)|!7>", "[!7](\(labMR))", "gitlab.example.com/acme/widget/-/issues/7"] {
+        check(twinText("see \(spelling) ok", hubTwin) == "see  ok",
+              "the GitLab twin's \(spelling) is no number of the GitHub root of its slug")
+    }
+    for spelling in ["https://github.com/acme/widget/pull/7", "<https://github.com/acme/widget/issues/7|#7>",
+                     "https://gl.other.org/acme/widget/-/merge_requests/7"] {
+        check(twinText("see \(spelling) ok", labTwin) == "see  ok",
+              "\(spelling) is no number of the GitLab root of its slug")
+    }
+    for (kept, root) in [("https://www.GitHub.com/Acme/Widget/pull/7", hubTwin),
+                         ("[#7](https://github.com/acme/widget/issues/7)", hubTwin),
+                         ("https://GitLab.Example.com:8443/Acme/Widget/-/issues/7", labTwin),
+                         ("<\(labMR)|!7>", labTwin)] {
+        check(twinText("see \(kept) ok", root) == "see \(kept) ok",
+              "a link on the root's own host stays: \(kept) for \(root.key)")
+    }
     let otherRoot = PRRef.LocalRepo(owner: "o", repo: "r", path: "/w/o")
     check(PRRef.root(named: "Acme/Widget", in: [labTwin, hubTwin]) == hubTwin
           && PRRef.root(named: "acme/widget", in: [labTwin]) == labTwin
