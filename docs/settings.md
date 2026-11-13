@@ -160,8 +160,9 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   or any repo root: the prompt targets that repo and its agent starts in that
   checkout. Each is known by its GitHub and GitLab remotes, so a fork clone takes links to
   both. The one shown is its first GitHub remote, `upstream` then `origin`, else its
-  first GitLab one; a link naming no host (`owner/repo#N`) that fits both a GitHub and a
-  GitLab remote takes the GitHub one. A run in one of these never goes over
+  first GitLab one. A link naming no host (`owner/repo#N`) takes the repo picked in the
+  panel header when that one fits, else the GitHub one when it fits both a GitHub and a
+  GitLab remote. A run in one of these never goes over
   the mesh: only the configured repo's root's work does (see [Diplomat Mesh](mesh.md)). Bare numbers and sweeps target the repo picked
   in the panel header.
 - **Auto-queue fixes for my PRs / Auto-queue reviews that request me** - the two
