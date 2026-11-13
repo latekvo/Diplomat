@@ -1,0 +1,54 @@
+{
+  "roots": [
+    {
+      "key": "acme/widget",
+      "item": "acme/widget#5"
+    },
+    {
+      "key": "gitlab.example.com/acme/widget",
+      "item": "gitlab.example.com/acme/widget#5"
+    },
+    {
+      "key": "gitlab.example.com/group/sub/proj",
+      "item": "gitlab.example.com/group/sub/proj#5"
+    }
+  ],
+  "urls": [
+    "acme/widget#5",
+    "acme/widget#5",
+    "gitlab.example.com/acme/widget#5",
+    "gitlab.example.com/group/sub/proj#7",
+    "gitlab.example.com/group/sub/proj#7",
+    null
+  ],
+  "split": [
+    [
+      "acme/widget",
+      5
+    ],
+    [
+      "gitlab.example.com/acme/widget",
+      5
+    ],
+    [
+      "gitlab.example.com/group/sub/proj",
+      7
+    ],
+    null,
+    null
+  ],
+  "prompts": [
+    [
+      "gitlab.example.com/group/sub/proj#337"
+    ],
+    [],
+    [],
+    [
+      "software-mansion/argent#337"
+    ],
+    [],
+    [
+      "acme/widget#5"
+    ]
+  ]
+}
