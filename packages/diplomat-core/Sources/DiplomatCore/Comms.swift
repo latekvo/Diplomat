@@ -516,15 +516,25 @@ public struct CommsDecision: Codable, Equatable, Sendable {
         return nil
     }
 
-    /// `settings` reaches `init(from:)` as the decoder's `settingsKey`.
     private static func decode(_ object: [String: Any]?, settings: CommsSettings? = nil) -> CommsDecision {
-        let decoder = JSONDecoder()
-        decoder.userInfo[settingsKey] = settings
-        guard let object, let data = try? JSONSerialization.data(withJSONObject: object),
-              let decision = try? decoder.decode(CommsDecision.self, from: data) else {
+        guard let object, let data = try? JSONSerialization.data(withJSONObject: object) else {
             return .none("the classifier's answer was not a JSON object")
         }
-        return decision
+        return decode(data, settings: settings)
+    }
+
+    /// `settings` reaches `init(from:)` as the decoder's `settingsKey`.
+    private static func decode(_ data: Data, settings: CommsSettings? = nil) -> CommsDecision {
+        let decoder = JSONDecoder()
+        decoder.userInfo[settingsKey] = settings
+        guard let d = try? decoder.decode(CommsDecision.self, from: data) else {
+            return .none("the classifier's answer was not a JSON object")
+        }
+        // The marker is `CommsClassifier`'s alone: a reason the model wrote cannot claim it.
+        guard d.reason.hasPrefix(CommsClassifier.failurePrefix) else { return d }
+        return CommsDecision(action: d.action, targets: d.targets, summary: d.summary,
+                             reason: "triage: " + d.reason, evidence: d.evidence,
+                             language: d.language, repo: d.repo, settings: settings)
     }
 
     /// A model answering in prose sometimes wraps it in a Markdown code fence.

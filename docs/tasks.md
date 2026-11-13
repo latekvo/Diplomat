@@ -35,7 +35,8 @@ The same sync folds in [Comms](comms.md): a Slack ping that names one of the tas
 URL, `owner/repo#12`, a `#12` of the watched repo, or the Slack link itself) joins its history with
 the sender, the channel or `dm`, and what Comms triage made of it (`triage:review`, ...). Nothing new
 is asked of Slack. A ping waits for its triage, up to two days, before it is added without one, and
-every ping that came after it waits too, so one untriaged ping holds the rest back. A ping triaged as
+every ping that came after it waits too, so one untriaged ping holds the rest back. A ping whose
+triage call failed is not waited for. A ping triaged as
 an injection is never added, nor is one from a sender on the
 [ban list](comms.md) - banned when it came or since: a ban also takes that sender's pings out of
 every task's history on the next sync.

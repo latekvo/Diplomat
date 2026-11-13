@@ -172,6 +172,7 @@ All of them are on the **Comms (Slack)** card.
   `[Diplomat]:`, in the language of the message (Polish, English for anything else; an answer is
   written in the question's own language), only in the
   conversation the message was written in, at most once per message, however many PRs it asked for.
+  A message triaged more than two days after its ping gets none.
 - **Reply to…** **questions** (**default on**) / **reviews** / **fixes** / **investigations** (**default
   off**) - which kinds get one. A question is answered from the project's documentation, when that
   settles it plainly. The other three get an estimate of when the work should be done. Off, the work is
@@ -193,7 +194,8 @@ binary triage and the login refresh run.
 `~/.diplomat/comms/` (`DIPLOMAT_COMMS_DIR` moves it), readable by you alone - it holds your DMs:
 
 - `state.json` - the watermark (the newest Slack timestamp already handled), the ids seen near it,
-  the pings waiting for triage, who the Slack login is, and when the login was last refreshed.
+  the pings waiting for triage or for another try at it, who the Slack login is, and when the login
+  was last refreshed.
   Delete it and the next poll starts again from "now"; the pings that were waiting stay untriaged.
 - `events.jsonl` - the module's own log: one line per ping, triage answer, action, start and finish
   (and per poll failure, once on the way in). It is what the Comms screen is drawn from, and it is
@@ -223,5 +225,9 @@ messages without queueing their asks.
 - The context is earlier **pings** only: what Comms already saw of the conversation. Your own replies
   and messages that were not pings are not in it.
 - On Linux the Slack calls go through `curl`, which must be installed.
+- A triage call that fails - no `claude`, a usage limit, a timeout - leaves its pings undecided and
+  is made again: a minute later, then after twice as long each time, up to an hour apart. The status
+  shows the error while any ping waits. Five days after the first failure Comms gives up: those pings
+  show the failure and nothing is acted on.
 - Triage needs Claude Code's `claude` on the machine whichever agent runner you use; without it every
-  message is still pinged and nothing is acted on.
+  message is still pinged and its triage fails.
