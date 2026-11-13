@@ -29,6 +29,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from diplomat_runtime import review
+from diplomat_runtime.prref import LocalRepo
 from . import widgets
 from .meshspawn import MeshSpawnRow
 from .store import Store
@@ -37,11 +38,10 @@ from .store import Store
 def mismatch_warning(noun: str, cfg) -> str:
     """The line under a single-item field whose link names a repo nothing here works
     in: neither the home root's nor any other listed in Settings."""
-    owner, repo = cfg.home_repo
-    home = f"{owner}/{repo}"
+    home = cfg.home or LocalRepo(*cfg.home_repo, "")
     listed = (" or any repo listed in Settings"
-              if any(r.slug.lower() != home.lower() for r in cfg.local_repos) else "")
-    return f"That {noun} isn't in {home}{listed}."
+              if any(r.key != home.key for r in cfg.local_repos) else "")
+    return f"That {noun} isn't in {home.slug}{listed}."
 
 
 def mesh_applicable(cfg, opens_session: bool) -> bool:

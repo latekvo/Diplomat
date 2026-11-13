@@ -505,20 +505,20 @@ class Panel(QWidget):
 
     def _refresh_repo_picker(self) -> None:
         roots = review.repo_roots()
-        selected = self.store.selected_repo.slug.lower()
+        selected = self.store.selected_repo.key
         self.repo_label.setText(roots[0].slug)
         self.repo_label.setVisible(len(roots) == 1)
         self.repo_picker.setVisible(len(roots) > 1)
         self.repo_picker.clear()
         for r in roots:
-            self.repo_picker.addItem(r.slug, r.slug.lower())
+            self.repo_picker.addItem(r.slug, r.key)
         self.repo_picker.setCurrentIndex(
-            next((i for i, r in enumerate(roots) if r.slug.lower() == selected), 0))
+            next((i for i, r in enumerate(roots) if r.key == selected), 0))
 
     def _pick_repo(self, index: int) -> None:
-        slug = self.repo_picker.itemData(index)
-        if slug and slug != self.store.selected_repo.slug.lower():
-            self.store.select_repo(slug)
+        key = self.repo_picker.itemData(index)
+        if key and key != self.store.selected_repo.key:
+            self.store.select_repo(key)
 
     def _on_repo_selected(self) -> None:
         self._refresh_repo_picker()

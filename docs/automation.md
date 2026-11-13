@@ -34,7 +34,10 @@ root its PR or issue belongs to.
   re-qualifies, and a review left unaddressed (agent died, window closed) is
   retried on the same 5m→3h backoff until the review actually lands. Force-push
   dedup: a push re-stamps the review request, which would double-spawn - a new
-  request within 1h of a dispatch is treated as churn and suppressed. Banned
+  request within 1h of a dispatch is treated as churn and suppressed. GitLab keeps a
+  request only as a note: one older than the merge request's last 100 activity notes is
+  answered when GitLab's review state says I reviewed, approved or requested changes,
+  and otherwise reads as made at the oldest of those notes. Banned
   authors are never auto-reviewed, and Settings carries an **author allowlist**
   (*Only these authors*) that narrows the monitor further: blank means anyone who
   requests me, a list means only those logins and everyone else is left to me. It

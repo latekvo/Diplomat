@@ -382,8 +382,7 @@ def mesh_checkout() -> str | None:
         return None
     cfg = core.config()
     slug = f"{cfg['owner']}/{cfg['repo']}".lower()
-    return next((r.path for r in repo_roots()
-                 if not r.is_gitlab and r.slug.lower() == slug), None)
+    return next((r.path for r in repo_roots() if r.key == slug), None)
 
 
 def roots_complete() -> bool:

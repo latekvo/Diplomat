@@ -212,5 +212,5 @@ class IssueWizardView(SpawnWizard):
         own :class:`~diplomat_runtime.autofix.RequestedWork`."""
         cfg = self._config()
         n = cfg.issue_ref.number
-        scope = "issue" if n is None else self.store.wizard_item_label(*cfg.target_repo, n)
+        scope = "issue" if n is None else self.store.wizard_item_label(cfg.target_root, n)
         return f"Issues · {scope} · {issues.depth_by_id(cfg.depth)['title']}"

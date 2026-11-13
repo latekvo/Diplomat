@@ -1295,7 +1295,7 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     They count as automatic. An agent whose trigger is unknown spending a bay defers
     work; the opposite error dispatches a second agent onto a PR that has one.
 
-    Its link is a merge request's when ``roots`` has its slug as a GitLab root, else a
+    Its link is that of the PR in the root of ``roots`` its item key names, else a
     github.com PR's.
     """
     if not live_agents.ok:
@@ -1314,17 +1314,17 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
             r = replace(r, tty=tty, quiet_digest="", quiet_since=None)
         out.append(r)
     known = {r.item for r in out if r.item is not None}
-    gitlab = {r.slug.lower(): r for r in roots if r.is_gitlab}
+    by_key = {r.key: r for r in roots}
     for item in sorted(set(live) - known):
         split = split_item_key(item)
         if split is None:
             continue
-        slug, number = split
-        lab = gitlab.get(slug)
+        key, number = split
+        root = by_key.get(key)
         out.append(RunRecord(run_id=f"untracked:{item}", dispatched_at=now,
                              pr_number=number,
-                             pr_url=lab.link("pull", number) if lab
-                             else f"https://github.com/{slug}/pull/{number}",
+                             pr_url=root.link("pull", number) if root
+                             else f"https://github.com/{key}/pull/{number}",
                              source=SOURCE_AUTO, placement=PLACEMENT_LOCAL,
                              tty=live[item], untracked=True))
     return out

@@ -97,7 +97,7 @@ class ConflictWizardView(SpawnWizard):
     def _label(self) -> str:
         cfg = self._config()
         ref = cfg.single_ref
-        scope = (self.store.wizard_item_label(*cfg.target_repo, ref.number)
+        scope = (self.store.wizard_item_label(cfg.target_root, ref.number)
                  if ref is not None and ref.number is not None
                  else cfg.specific_pr.strip() or "main")
         return f"Resolve conflicts · {scope}"

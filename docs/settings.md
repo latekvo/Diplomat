@@ -128,10 +128,12 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   then the rest). Only a checkout with no GitHub remote is a GitLab root, by the same
   order. A remote is GitLab on gitlab.com, on
   any host whose first label is `gitlab` (`gitlab.example.com`), and on every host
-  `glab` is configured for (the `hosts:` of its `config.yml`); a GitLab project's owner
+  `glab` is configured for (the `hosts:` of its `config.yml`), where a host's `ssh_host`
+  names that host too; a GitLab project's owner
   is its whole namespace (`group/sub`). A GitLab root is read through `glab`, signed in
   to its host, and "me" there is glab's user on that host, not the GitHub username
-  above; its agents are told to use `glab`. GitHub-only whatever the roots: Tasks
+  above, read again whenever glab's `config.yml` changes (`glab auth login` as another
+  account rewrites it); its agents are told to use `glab`. GitHub-only whatever the roots: Tasks
   mirroring, the review audit, goal grouping, the username override,
   [the narrow agent token](#a-narrow-github-token-for-agents) (an agent on a GitLab root
   runs on your full `glab` login) and [Comms](comms.md)' answers to questions (the
@@ -140,7 +142,8 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   minute is taken again when next asked, so a checkout that appears later is picked up by
   the next poll. A row warns when the path isn't absolute, has no `.git`, or has no
   GitHub or GitLab remote - such a root is not watched, and two roots naming the same repo count
-  once. A lone root stands for the `assets/config.json` repo even then; with several and
+  once. A GitHub repo and a GitLab project of the same `owner/repo` are two roots, each
+  with its own queue rows, records and links. A lone root stands for the `assets/config.json` repo even then; with several and
   none resolving, the monitors stand down, and while the first does not resolve, Comms
   waits (a bare `#N` would name the next root's issue). Every automatic job (the
   monitors, [Comms](comms.md)) runs on every root; the panel works on the one picked in

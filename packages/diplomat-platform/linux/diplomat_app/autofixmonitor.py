@@ -105,7 +105,7 @@ def fetch_closed_prs(root: LocalRepo) -> set[str]:
         query = core.read_graphql("closed-prs")
         env = json.loads(gh.run(["api", "graphql", "-f", f"query={query}", "-f", f"q={q}"]))
     nodes = ((env.get("data") or {}).get("search") or {}).get("nodes") or []
-    return {item_key(root.owner, root.repo, n["number"])
+    return {item_key(root.owner, root.repo, n["number"], root.host)
             for n in nodes if n and n.get("number") is not None}
 
 

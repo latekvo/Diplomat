@@ -26,6 +26,8 @@ pytest.importorskip("PySide6")
 FIXTURES = Path(__file__).resolve().parents[3] / "diplomat-core/Tests/fixtures/gitlab"
 HOST = "gitlab.example.com"
 LAB = LocalRepo("group/sub", "proj", "/src/proj", HOST)
+#: LAB's root key: its items' keys are ``KEY#n``.
+KEY = f"{HOST}/group/sub/proj"
 HUB = LocalRepo("o", "r", "/src/r")
 
 
@@ -93,7 +95,7 @@ def test_an_author_with_no_readable_id_fails_the_read():
 
 def test_every_fixture_has_an_adapter():
     names = {p.name.split(".")[0] for p in FIXTURES.glob("*.json")}
-    assert names == set(ADAPTERS) | set(PAGED) | {"member-paths", "glab-config"}
+    assert names == set(ADAPTERS) | set(PAGED) | {"member-paths", "glab-config", "keys"}
 
 
 def test_the_queries_ask_what_their_adapters_read():
@@ -215,8 +217,8 @@ def test_open_merge_requests_and_issues_are_read_through_glab(monkeypatch):
     assert fake.names() == ["prs", "issues"]
     assert prs[0].number == 12
     assert prs[0].url == f"https://{HOST}/group/sub/proj/-/merge_requests/12"
-    assert item_key_from_url(prs[0].url) == "group/sub/proj#12"
-    assert item_key_from_url(issues[0].url) == "group/sub/proj#5"
+    assert item_key_from_url(prs[0].url) == f"{KEY}#12"
+    assert item_key_from_url(issues[0].url) == f"{KEY}#5"
 
 
 MEMBERS_14_15 = "projects/group%2Fsub%2Fproj/members/all?per_page=100&user_ids[]=14&user_ids[]=15"
@@ -306,13 +308,13 @@ def test_the_drain_keeps_a_conflict_fix_on_an_undecided_merge_request(lab_only, 
     lab_only.queued_tasks = [
         autofix.QueuedTask(key, replace(_job(number=n, action="conflicts", counter="conflicts"),
                                         pr_url=url), 1)
-        for key, n, url in (("conflicts:group/sub/proj#6", 6, LAB.link("pull", 6)),
+        for key, n, url in ((f"conflicts:{KEY}#6", 6, LAB.link("pull", 6)),
                             ("conflicts:o/r#8", 8, HUB.link("pull", 8)))]
     monkeypatch.setattr(type(lab_only), "_auto_tasks_running", lambda self: 99)  # no bays
     snaps = [replace(_snap(number=6, mergeable="UNKNOWN"), url=LAB.link("pull", 6)),
              _snap(number=8, mergeable="UNKNOWN")]
     lab_only._drain_queued_tasks(snaps, closed=set(), read=[HUB, LAB])
-    assert [t.id for t in lab_only.queued_tasks] == ["conflicts:group/sub/proj#6"]
+    assert [t.id for t in lab_only.queued_tasks] == [f"conflicts:{KEY}#6"]
 
 
 def test_the_commit_keeps_a_conflict_fix_on_an_undecided_merge_request(lab_only, monkeypatch):
@@ -324,14 +326,14 @@ def test_the_commit_keeps_a_conflict_fix_on_an_undecided_merge_request(lab_only,
     lab_only.queued_tasks = [
         autofix.QueuedTask(key, replace(_job(number=n, action="conflicts", counter="conflicts"),
                                         pr_url=url), 1)
-        for key, n, url in (("conflicts:group/sub/proj#6", 6, LAB.link("pull", 6)),
+        for key, n, url in ((f"conflicts:{KEY}#6", 6, LAB.link("pull", 6)),
                             ("conflicts:o/r#8", 8, HUB.link("pull", 8)))]
     snaps = [replace(_snap(number=6, mergeable="UNKNOWN"), url=LAB.link("pull", 6)),
              _snap(number=8, mergeable="UNKNOWN")]
     lab_only._staged_queue = []
     lab_only._reconcile_my_conflicts(snaps, 0.0)
     lab_only.commit_queue()
-    assert [t.id for t in lab_only.queued_tasks] == ["conflicts:group/sub/proj#6"]
+    assert [t.id for t in lab_only.queued_tasks] == [f"conflicts:{KEY}#6"]
 
 
 def test_a_queued_conflict_fix_outlives_a_poll_that_reads_its_merge_request_unchecked(
@@ -346,7 +348,7 @@ def test_a_queued_conflict_fix_outlives_a_poll_that_reads_its_merge_request_unch
                                                  "projectMembers": {"nodes": []}}}})
     lab_only._autofix_poll_once()
     lab_only._autofix_poll_once()
-    assert "conflicts:group/sub/proj#12" in {t.id for t in lab_only.queued_tasks}
+    assert f"conflicts:{KEY}#12" in {t.id for t in lab_only.queued_tasks}
 
     unchecked = copy.deepcopy(conflicting)
     mr = next(m for m in unchecked["data"]["project"]["mergeRequests"]["nodes"]
@@ -357,7 +359,7 @@ def test_a_queued_conflict_fix_outlives_a_poll_that_reads_its_merge_request_unch
                  {"has_conflicts": False, "detailed_merge_status": "unchecked"}}
     lab_only._autofix_poll_once()
     assert lab_only.autofix_poll_error is None
-    assert "conflicts:group/sub/proj#12" in {t.id for t in lab_only.queued_tasks}
+    assert f"conflicts:{KEY}#12" in {t.id for t in lab_only.queued_tasks}
 
 
 def test_a_request_older_than_the_activity_window_is_answered_inside_it(monkeypatch):
@@ -426,8 +428,7 @@ def test_the_panel_reads_a_page_of_merge_requests_as_long_as_githubs_of_pull_req
 def test_the_closed_read_keys_merge_requests_by_the_whole_namespace(nothing_closed,
                                                                     monkeypatch):
     FakeGlab(monkeypatch, closed_prs=_fixture("closed-prs", "input"))
-    assert nothing_closed(LAB) == {"group/sub/proj#28", "group/sub/proj#29",
-                                   "group/sub/proj#30"}
+    assert nothing_closed(LAB) == {f"{KEY}#28", f"{KEY}#29", f"{KEY}#30"}
 
 
 def test_a_merge_requests_state_and_author_come_from_its_iid(monkeypatch):
@@ -443,8 +444,8 @@ def test_the_merged_probe_asks_a_gitlab_item_of_its_own_root(monkeypatch):
     merged = {"data": {"project": {"mergeRequest": {"state": "merged", "author": None}}}}
     fake = FakeGlab(monkeypatch, mr=merged)
     monkeypatch.setattr(gh, "run", lambda args, **_: b'{"state":"OPEN"}\n')
-    obs = probes.merged_prs({"group/sub/proj#3", "o/r#3"}, [HUB, LAB])
-    assert obs.value == {"group/sub/proj#3"}
+    obs = probes.merged_prs({f"{KEY}#3", "o/r#3"}, [HUB, LAB])
+    assert obs.value == {f"{KEY}#3"}
     assert [(a[1]["path"], a[1]["iid"]) for a in fake.asked] == [("group/sub/proj", "3")]
 
 
@@ -518,8 +519,8 @@ def test_a_poll_of_a_gitlab_root_queues_its_work_as_the_glab_login(lab_only, mon
     lab_only._autofix_poll_once()
 
     ids = sorted(t.id for t in lab_only.queued_tasks)
-    assert "conflicts:group/sub/proj#12" in ids
-    assert "review-req:group/sub/proj#22" in ids
+    assert f"conflicts:{KEY}#12" in ids
+    assert f"review-req:{KEY}#22" in ids
     assert fake.names().count("viewer") == 1
     assert {a[1].get("author") or a[1].get("reviewer") for a in fake.asked
             if a[0] in ("monitor-prs", "review-requests")} == {"carol"}
@@ -553,8 +554,8 @@ def test_without_a_github_login_a_gitlab_root_is_polled_and_a_github_one_held(la
     lab_only._autofix_poll_once()
 
     assert lab_only.autofix_poll_error is None
-    assert "conflicts:group/sub/proj#12" in {t.id for t in lab_only.queued_tasks}
-    assert lab_only._held_slugs == {"o/r"}
+    assert f"conflicts:{KEY}#12" in {t.id for t in lab_only.queued_tasks}
+    assert lab_only._held_keys == {"o/r"}
     assert "monitor-prs" in fake.names()
     assert not any("o/r" in " ".join(a) for a in asked_gh), "no read of the GitHub root"
     assert any(store_mod.GITHUB_LOGIN_UNKNOWN in m and "o/r" in m for m in logged)
@@ -724,7 +725,7 @@ def test_a_work_items_link_is_an_issue():
     item = f"https://{HOST}/group/sub/proj/-/work_items/7?foo=1"
     assert parse_pr_ref(item, "group/sub", "proj", "issues", host=HOST).number == 7
     assert not parse_pr_ref(item, "group/sub", "proj", host=HOST).is_valid, "not a PR field's"
-    assert item_key_from_url(item) == "group/sub/proj#7"
+    assert item_key_from_url(item) == f"{KEY}#7"
 
 
 def test_comms_fixes_a_gitlab_issue_served_as_a_work_item(lab_only, monkeypatch):
@@ -787,7 +788,7 @@ def test_an_untracked_agent_on_a_merge_request_is_booked_once_under_its_link():
     find the agent unbooked again and add a second record."""
     from diplomat_runtime import agentstate as A
 
-    live = A.Observation.present({"group/sub/proj#337": "pts/7"})
+    live = A.Observation.present({f"{KEY}#337": "pts/7"})
     evidence = A.Evidence(processes=A.Observation.present({}),
                           sentinels=A.Observation.present(set()),
                           tails=A.Observation.present({}),
@@ -799,14 +800,14 @@ def test_an_untracked_agent_on_a_merge_request_is_booked_once_under_its_link():
     second = A.tick(first.records, evidence, 1008.0, 4, roots=(HUB, LAB))
     (run,) = second.records
     assert run.pr_url == f"https://{HOST}/group/sub/proj/-/merge_requests/337"
-    assert run.item == "group/sub/proj#337"
+    assert run.item == f"{KEY}#337"
     (hub,) = A.synthesize_untracked([], A.Observation.present({"o/r#5": ""}), 0.0,
                                     (HUB, LAB))
     assert hub.pr_url == "https://github.com/o/r/pull/5"
 
 
 def test_a_nested_namespace_is_labelled_by_its_last_segment():
-    assert prref.item_label("group/sub/proj#5", 2) == "proj#5"
+    assert prref.item_label(f"{KEY}#5", 2) == "proj#5"
 
 
 def test_a_merge_requests_work_key_keeps_the_whole_namespace():
@@ -966,13 +967,16 @@ def test_a_checkouts_github_remote_is_its_first_repo():
 
 def test_the_wizards_keep_a_listed_checkouts_repo_on_each_host(lab_only):
     """A listed checkout's GitHub repo and its GitLab mirror of the same slug are two
-    repos a pasted link can name; only a root's slug takes a listed repo's place."""
+    repos a pasted link can name; only a root's key takes a listed repo's place, so the
+    GitHub repo of a GitLab root's slug stays listed."""
     lab_only._local_checkouts = [
         localrepos.Checkout("/w", tuple(localrepos.entries("/w", MIRRORED))),
-        localrepos.Checkout("/x", (LocalRepo("Group/Sub", "Proj", "/x"),
+        localrepos.Checkout("/x", (LocalRepo("Group/Sub", "Proj", "/x", HOST),
+                                   LocalRepo("Group/Sub", "Proj", "/x"),
                                    LocalRepo("e", "f", "/x")))]
     assert lab_only.local_repos == (LAB, LocalRepo("acme", "widget", "/w"),
                                     LocalRepo("acme", "widget", "/w", "gitlab.com"),
+                                    LocalRepo("Group/Sub", "Proj", "/x"),
                                     LocalRepo("e", "f", "/x"))
 
 
@@ -985,3 +989,94 @@ def test_a_gitlab_root_is_never_the_meshs_checkout(monkeypatch):
     monkeypatch.setattr(review, "repo_roots", lambda: [
         LocalRepo("o", "r", "/src/lab", "gitlab.com")])
     assert review.mesh_checkout() is None
+
+
+# ---- one slug on GitHub and on GitLab ----------------------------------------------
+
+GOLDEN = FIXTURES.parents[2] / "assets/golden-prompts"
+TWIN_HUB = LocalRepo("Acme", "Widget", "/src/hub")
+TWIN_LAB = LocalRepo("acme", "widget", "/src/lab", HOST)
+
+
+def test_keys_name_a_gitlab_item_by_its_host():
+    """GitHub keys stay ``owner/repo#n``; a GitLab one carries its host, so the two
+    twins agree on every key (the fixture ``GitLab.swift``'s smoke reads too)."""
+    case, want = _fixture("keys", "input"), _fixture("keys", "expected")
+    roots = [LocalRepo(r["owner"], r["repo"], "", r["host"]) for r in case["roots"]]
+    assert [{"key": r.key, "item": prref.item_key(r.owner, r.repo, 5, r.host)}
+            for r in roots] == want["roots"]
+    assert [item_key_from_url(u) for u in case["urls"]] == want["urls"]
+    assert [list(s) if (s := prref.split_item_key(k)) else None
+            for k in case["split"]] == want["split"]
+    texts = [(GOLDEN / p["golden"]).read_text() if "golden" in p else p["text"]
+             for p in case["prompts"]]
+    assert [list(autofix.prompt_items(t, set(p["roots"])))
+            for t, p in zip(texts, case["prompts"])] == want["prompts"]
+
+
+def test_a_name_with_no_host_is_the_github_roots_first():
+    roots = [TWIN_LAB, TWIN_HUB]
+    assert prref.root_named("acme/widget", roots) is TWIN_HUB
+    assert prref.root_named(f"{HOST.upper()}/acme/widget", roots) is TWIN_LAB
+    assert prref.root_named("group/sub/proj", [TWIN_HUB, LAB]) is LAB
+    assert prref.root_named("acme/other", roots) is None
+    ref = parse_pr_ref("acme/widget#5", "o", "r", also=roots)
+    assert (ref.number, ref.repo) == (5, TWIN_HUB)
+    ref = parse_pr_ref(f"https://{HOST}/acme/widget/-/merge_requests/5", "o", "r", also=roots)
+    assert (ref.number, ref.repo) == (5, TWIN_LAB)
+    assert parse_pr_ref("acme/widget#5", "acme", "widget", also=roots, host=HOST).repo is None
+
+
+def test_one_slug_on_github_and_on_gitlab_is_two_roots_with_two_of_everything(
+        lab_only, monkeypatch):
+    """#5 of each is its own queued task, ledger task and run record, each resolving to
+    its own root, link and checkout; both resolve as roots; and a live agent on either
+    is that root's."""
+    from diplomat_app import autofixmonitor, probes
+
+    from diplomat_runtime import agentstate as A
+    from diplomat_runtime import telemetry
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [TWIN_HUB, TWIN_LAB])
+    FakeGlab(monkeypatch, viewer={"data": {"currentUser": {"username": "alice"}}})
+    monkeypatch.setattr(autofixmonitor, "fetch_snapshots", lambda root, me: [
+        autofix.PRSnapshot(5, "t", root.link("pull", 5), False, "CONFLICTING", "", 0, 0,
+                           head_sha="ab" * 20)])
+    monkeypatch.setattr(autofixmonitor, "fetch_review_requests", lambda *a, **k: [])
+    lab_only._autofix_poll_once()
+    lab_only._autofix_poll_once()
+
+    assert lab_only.autofix_poll_error is None
+    hub_key, lab_key = "conflicts:acme/widget#5", f"conflicts:{HOST}/acme/widget#5"
+    tasks = {t.id: t for t in lab_only.queued_tasks}
+    assert set(tasks) == {hub_key, lab_key}
+    for key, root in ((hub_key, TWIN_HUB), (lab_key, TWIN_LAB)):
+        job = tasks[key].job
+        assert (job.pr_url, job.checkout) == (root.link("pull", 5), root.path)
+        assert lab_only._root_named(autofix.item_of_key(key)) is root
+        record = A.RunRecord(run_id=key, dispatched_at=0.0, pr_number=5, pr_url=job.pr_url,
+                             source=A.SOURCE_AUTO, placement=A.PLACEMENT_LOCAL)
+        assert record.item == key.partition(":")[2]
+    assert {t.key for t in telemetry.load().tasks if t.key.startswith("conflicts:")} == {
+        f"conflicts:github.com/Acme/Widget#5@{'ab' * 20}",
+        f"conflicts:{HOST}/acme/widget#5@{'ab' * 20}"}
+
+    remotes = {"/hub": "remote.origin.url git@github.com:Acme/Widget.git\n",
+               "/lab": f"remote.origin.url git@{HOST}:acme/widget.git\n"}
+    assert localrepos.resolve_roots(["/hub", "/lab"], remotes, ("o", "r")) == [
+        LocalRepo("Acme", "Widget", "/hub"), LocalRepo("acme", "widget", "/lab", HOST)]
+    assert lab_only.local_repos == (TWIN_HUB, TWIN_LAB)
+
+    hub_prompt = (GOLDEN / "conflicts-single.txt").read_text().replace(
+        "software-mansion/argent", "acme/widget").replace("#337", "#5")
+    lab_prompt = (GOLDEN / "review-single-gitlab.txt").read_text().replace(
+        "group/sub/proj", "acme/widget").replace("#337", "#5")
+    # ps prints each argv on one line, a newline in it as "?".
+    dump = A.Observation.present("".join(
+        f"{pid} pts/{pid - 100} 00:05 claude {prompt.replace(chr(10), '?')}\n"
+        for pid, prompt in ((101, hub_prompt), (102, lab_prompt))))
+    live = probes.live_agents(dump, {r.key for r in (TWIN_HUB, TWIN_LAB)})
+    assert live.value == {"acme/widget#5": "pts/1", f"{HOST}/acme/widget#5": "pts/2"}
+    booked = A.synthesize_untracked([], live, 0.0, (TWIN_HUB, TWIN_LAB))
+    assert {r.pr_url: r.tty for r in booked} == {TWIN_HUB.link("pull", 5): "pts/1",
+                                                 TWIN_LAB.link("pull", 5): "pts/2"}

@@ -593,7 +593,7 @@ def _in(repo: str, action: str, number: int) -> dict:
 
 def test_the_tick_watches_every_root_primary_first(comms_store, monkeypatch):
     _two_roots(monkeypatch)
-    assert comms_store.comms_settings_payload()["repos"] == [PRIMARY, "acme/Widget"]
+    assert comms_store.comms_settings_payload()["repos"] == [PRIMARY.lower(), "acme/widget"]
 
 
 #: A GitLab root in a nested namespace.
@@ -610,11 +610,12 @@ def test_a_merge_request_and_an_issue_of_one_number_on_a_gitlab_root_are_two_ask
                         lambda: [LocalRepo(owner, repo, "/src/primary"), THIRD])
     monkeypatch.setenv("DIPLOMAT_CLAUDE", str(_stub_claude(tmp_path, {
         "action": "review", "summary": "Review !12, fix #12", "reason": "two asks",
-        "targets": [{"action": "review", "number": 12, "repo": "group/sub/third"},
-                    {"action": "fix_issue", "number": 12, "repo": "group/sub/third"}]})))
+        "targets": [{"action": "review", "number": 12, "repo": THIRD.key},
+                    {"action": "fix_issue", "number": 12, "repo": THIRD.key}]})))
     comms_store.comms_flush_after_secs = 0
     settings = comms_store.comms_settings_payload()
-    assert settings["gitlabHosts"] == {"group/sub/third": "gitlab.example.com"}
+    assert settings["repos"][1:] == ["gitlab.example.com/group/sub/third"]
+    assert settings["gitlabHosts"] == {"gitlab.example.com/group/sub/third": "gitlab.example.com"}
 
     secs = _first_tick(settings)
     _Slack.messages = [_slack_message(f"{secs + 5}.000100", "UALICE",
@@ -622,8 +623,8 @@ def test_a_merge_request_and_an_issue_of_one_number_on_a_gitlab_root_are_two_ask
     result = comms.tick(settings)
     assert result["error"] is None
     assert [i["decision"]["targets"] for i in result["items"]] == [
-        [{"action": "fix_issue", "number": 12, "repo": "group/sub/third"}],
-        [{"action": "review", "number": 12, "repo": "group/sub/third"}]]
+        [{"action": "fix_issue", "number": 12, "repo": THIRD.key}],
+        [{"action": "review", "number": 12, "repo": THIRD.key}]]
 
 
 @needs_core

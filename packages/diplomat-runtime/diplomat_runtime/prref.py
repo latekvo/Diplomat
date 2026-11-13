@@ -90,6 +90,12 @@ class LocalRepo:
     def is_gitlab(self) -> bool:
         return self.host != GITHUB
 
+    @property
+    def key(self) -> str:
+        """Its identity among repo roots, lowercased: the slug on GitHub, ``host/slug``
+        on GitLab, so one slug on both is two roots."""
+        return (f"{self.host}/{self.slug}" if self.is_gitlab else self.slug).lower()
+
     def link(self, kind: str, number: int) -> str:
         """The web URL of PR (``kind`` ``"pull"``) or issue (``"issues"``) ``number``."""
         if not self.is_gitlab:
@@ -98,10 +104,20 @@ class LocalRepo:
         return f"https://{self.host}/{self.slug}/-/{segment}/{number}"
 
 
-def item_key(owner: str, repo: str, number: int) -> str:
-    """``owner/repo#n``, lowercased: one PR or issue across every repo root. GitHub
-    numbers a repo's PRs and issues in one space, so the key carries no kind."""
-    return f"{owner.lower()}/{repo.lower()}#{number}"
+def item_key(owner: str, repo: str, number: int, host: str = GITHUB) -> str:
+    """One PR or issue across every repo root, its repo's :attr:`LocalRepo.key` and
+    number: ``owner/repo#n`` on GitHub, ``host/owner/repo#n`` on GitLab. A host has a
+    dot and a GitHub owner never does, so the two cannot clash. GitHub numbers a repo's
+    PRs and issues in one space, so the key carries no kind."""
+    return f"{LocalRepo(owner, repo, '', host).key}#{number}"
+
+
+def root_named(name: str, roots: Sequence[LocalRepo]) -> LocalRepo | None:
+    """The one of ``roots`` whose key is ``name``, else whose slug is (a name with no
+    host, a GitHub root's first), any case; ``None`` for neither."""
+    want = name.lower()
+    return (next((r for r in roots if r.key == want), None)
+            or next((r for r in roots if r.slug.lower() == want), None))
 
 
 def _link(url: str, kind: str) -> tuple[str, str, str, str] | None:
@@ -121,12 +137,13 @@ def item_key_from_url(url: str) -> str | None:
         found = _link(url, kind)
         if found:
             n = _int64(found[3])
-            return item_key(found[1], found[2], n) if n else None
+            return item_key(found[1], found[2], n, found[0]) if n else None
     return None
 
 
 def split_item_key(key: str) -> tuple[str, int] | None:
-    """``(slug, number)`` of an :func:`item_key`, or ``None`` when ``key`` is not one."""
+    """``(root key, number)`` of an :func:`item_key`, or ``None`` when ``key`` is not
+    one."""
     m = _ITEM_KEY.fullmatch(key)
     n = _int64(m.group(2)) if m else None
     return (m.group(1), n) if m and n else None
@@ -148,7 +165,8 @@ def migrate_queue_key(key: str, primary: str) -> str:
 
 
 def item_label(item: str, roots: int) -> str:
-    """``#N`` while one repo is loaded, else ``repo#N`` by the repo's name alone."""
+    """``#N`` while one repo is loaded, else ``repo#N`` by the repo's name alone, no
+    host or namespace."""
     split = split_item_key(item)
     if split is None:
         return item
@@ -180,7 +198,8 @@ def parse_pr_ref(raw: str, owner: str, repo: str, kind: str = "pull",
     """Parse ``raw`` against the expected ``owner``/``repo`` on ``host``, then ``also``
     in order (all case-insensitive): the expected repo wins over a listed one with the
     same coordinates, and the first listed match over a later one. A link names its
-    host and matches a repo there only; the shorthand names none and matches any.
+    host and matches a repo there only; the shorthand names none and matches any, a
+    GitHub one before a GitLab one.
     ``kind`` is ``"pull"`` for a PR field or ``"issues"`` for an issue one."""
     s = raw.strip()
     if not s:
@@ -199,7 +218,8 @@ def parse_pr_ref(raw: str, owner: str, repo: str, kind: str = "pull",
 
         if names(host, owner, repo):
             return PRRef(n, False)
-        local = next((x for x in also if names(x.host, x.owner, x.repo)), None)
+        listed = [x for x in also if names(x.host, x.owner, x.repo)]
+        local = next((x for x in listed if not x.is_gitlab), listed[0] if listed else None)
         return PRRef(n, local is None, local)
 
     merge_request = kind == "pull" and host.lower() != GITHUB

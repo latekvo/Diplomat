@@ -194,12 +194,12 @@ def ttys_running_an_agent(now: float) -> Observation:
         {p.tty for p in table.value.values() if p.is_agent and p.tty})
 
 
-def live_agents(dump: Observation, slugs: set[str],
+def live_agents(dump: Observation, keys: set[str],
                 sessions: dict[str, str] | None = None,
                 held_pids: frozenset[int] | set[int] = frozenset(),
                 by_pid: dict[int, str] | None = None) -> Observation:
     """Item key -> the tty of an agent visible in ``ps`` by its prompt text, on a PR
-    of a repo in ``slugs`` (:func:`autofix.prompt_items`).
+    of a repo root whose key is in ``keys`` (:func:`autofix.prompt_items`).
 
     The pre-registry identity mechanism, kept for the two questions a pid cannot
     answer: agents this applet has no record of at all
@@ -252,7 +252,7 @@ def live_agents(dump: Observation, slugs: set[str],
         session_id = opencodeapi.session_arg(args)
         if session_id and by_pid is not None and pid.isdigit():
             by_pid[int(pid)] = session_id
-        for pr in autofix.prompt_items(opencodeapi.scan_text(args), slugs):
+        for pr in autofix.prompt_items(opencodeapi.scan_text(args), keys):
             if pr in into:
                 continue
             into[pr] = "" if tty == "?" else tty.removeprefix("/dev/")
@@ -607,16 +607,16 @@ def merged_prs(items: set[str], roots: Iterable[LocalRepo] = ()) -> Observation:
     from diplomat_runtime.models import API
     from diplomat_runtime.prref import split_item_key
 
-    known = {r.slug.lower(): r for r in roots}
+    known = {r.key: r for r in roots}
     merged = set()
     for item in sorted(items):
         split = split_item_key(item)
         if split is None:
             continue
-        slug, number = split
-        owner, _, repo = slug.rpartition("/")
+        key, number = split
+        owner, _, repo = key.rpartition("/")
         try:
-            state = API.fetch_pr_state(number, known.get(slug) or LocalRepo(owner, repo, ""))
+            state = API.fetch_pr_state(number, known.get(key) or LocalRepo(owner, repo, ""))
         except Exception:  # noqa: BLE001 - a probe never raises into the tick
             continue
         if state == "MERGED":
@@ -680,7 +680,7 @@ def gather(records: list[RunRecord], now: float, *,
     by_pid: dict[int, str] = {}
     roots = tuple(review.repo_roots())
     scan = _note("agent scan",
-                 live_agents(dump, {r.slug.lower() for r in roots},
+                 live_agents(dump, {r.key for r in roots},
                              scan_sessions,
                              held_pids={r.pid for r in records if r.pid is not None},
                              by_pid=by_pid),

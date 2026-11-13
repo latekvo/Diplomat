@@ -13,7 +13,7 @@ import math
 import re
 from dataclasses import dataclass, replace
 
-from .prref import item_key, item_key_from_url, item_label, split_item_key
+from .prref import item_key_from_url, item_label, split_item_key
 
 # MARK: - Snapshot + fingerprint
 
@@ -1106,7 +1106,8 @@ class RequestedWork:
     #: The wizard config's ``prompt_payload`` for this one item. Its ``kind`` is also
     #: the queue verb the ask waits under, so the payload carries its own discriminator.
     config: dict
-    #: The repo the item is in, as a slug; "" in a row single-repo builds stored.
+    #: The repo root the item is in, as its key (``LocalRepo.key``); "" in a row
+    #: single-repo builds stored.
     repo: str = ""
 
     @property
@@ -1115,8 +1116,7 @@ class RequestedWork:
         no repo: an investigation, or a legacy row not yet given one."""
         if self.action == QUEUE_INVESTIGATE_ACTION or not self.repo:
             return None
-        owner, _, repo = self.repo.rpartition("/")
-        return item_key(owner, repo, self.number)
+        return f"{self.repo.lower()}#{self.number}"
 
     @property
     def action(self) -> str:
@@ -1235,35 +1235,46 @@ class RunningAgent:
 
 
 _LIVE_AGENT_RE = re.compile(r"PR #([0-9]+) in ([\w.-]+(?:/[\w.-]+)+)")
+#: The opening of ``assets/gitlab.json``'s ``promptNote``, which a prompt on a GitLab
+#: repo carries.
+_GITLAB_NOTE_RE = re.compile(
+    r"hosted on GitLab at ([A-Za-z0-9.-]+) \(project ([\w.-]+(?:/[\w.-]+)+)\)")
 
 
-def prompt_items(text: str, slugs: set[str]):
+def prompt_items(text: str, keys: set[str]):
     """Yield the item key of every ``PR #<n> in <owner>/<repo>`` in a prompt whose repo
-    is one of ``slugs``, the owner a namespace of any depth. Every single-PR prompt the
-    applet dispatches opens that way.
+    root's key is one of ``keys`` (``LocalRepo.key``), the owner a namespace of any
+    depth. Every single-PR prompt the applet dispatches opens that way. The repo is the
+    GitLab one when the prompt's GitLab note names its host and that project, else the
+    GitHub one.
 
-    The longest leading run of path segments in ``slugs`` is the repo.
+    The longest leading run of path segments in ``keys`` is the repo.
     The prompt goes on ``. Use the `gh` CLI``, and ``.`` is a repo-name character, so
     the whole path read with a trailing dot is taken without it when only that is in
-    ``slugs``.
+    ``keys``.
     """
-    wanted = {s.lower() for s in slugs}
+    wanted = {k.lower() for k in keys}
+    note = _GITLAB_NOTE_RE.search(text)
+    host, project = (note[1].lower(), note[2].lower()) if note else ("", "")
+
+    def key(slug: str) -> str:
+        return f"{host}/{slug}" if slug == project else slug
+
     for m in _LIVE_AGENT_RE.finditer(text):
         segments = m.group(2).lower().split("/")
         for end in range(len(segments), 1, -1):
             slug = "/".join(segments[:end])
-            if end == len(segments) and slug not in wanted:
+            if end == len(segments) and key(slug) not in wanted:
                 slug = slug.rstrip(".")
-            if slug in wanted:
-                owner, _, repo = slug.rpartition("/")
-                yield item_key(owner, repo, int(m.group(1)))
+            if key(slug) in wanted:
+                yield f"{key(slug)}#{int(m.group(1))}"
                 break
 
 
-def live_pr_items(ps_output: str, slugs: set[str]) -> set[str]:
-    """Item keys of ``claude`` agents alive in a ``ps`` args dump, on a PR of one of
-    the repos in ``slugs`` — the tracking-independent half of the monitor's in-flight
-    dedup (twin of AgentProbes.liveAgents on macOS).
+def live_pr_items(ps_output: str, keys: set[str]) -> set[str]:
+    """Item keys of ``claude`` agents alive in a ``ps`` args dump, on a PR of a repo
+    root whose key is in ``keys`` — the tracking-independent half of the monitor's
+    in-flight dedup (twin of AgentProbes.liveAgents on macOS).
 
     Every single-PR prompt the applet dispatches names its PR (:func:`prompt_items`)
     and ``claude`` receives the whole prompt as one argv, so a live agent is visible
@@ -1271,10 +1282,10 @@ def live_pr_items(ps_output: str, slugs: set[str]) -> set[str]:
     applet restart wipes it while the agents run on). Only lines containing ``claude``
     count: the spawning shell's argv holds the unexpanded ``$(cat …)``, never the
     prompt text."""
-    return {a.item for a in agent_lines(ps_output, slugs)}
+    return {a.item for a in agent_lines(ps_output, keys)}
 
 
-def agent_ttys(ps_output: str, slugs: set[str]) -> set[str]:
+def agent_ttys(ps_output: str, keys: set[str]) -> set[str]:
     """The ttys the live agents of :func:`live_pr_items` are running on, spelled as
     ``ps`` spells them (``pts/13``, no ``/dev/``).
 
@@ -1282,11 +1293,11 @@ def agent_ttys(ps_output: str, slugs: set[str]) -> set[str]:
     find two agents would put a ``capture-pane`` per pane on the panel's 8-second
     tick, where this puts one per agent. A process with no controlling tty appears
     as ``?``, matches no pane, and is simply never asked about."""
-    return {a.tty for a in agent_lines(ps_output, slugs)}
+    return {a.tty for a in agent_lines(ps_output, keys)}
 
 
 def idle_pr_items(
-    ps_output: str, pane_tails: dict[str, str], slugs: set[str]
+    ps_output: str, pane_tails: dict[str, str], keys: set[str]
 ) -> set[str]:
     """Of the agents alive in ``ps``, the item keys whose session has finished its
     turn and is waiting at its prompt.
@@ -1315,7 +1326,7 @@ def idle_pr_items(
     agent this machine has no book entry for at all. An age that could not be parsed
     counts as too young, because a bay is freed on positive evidence or not at all.
     """
-    return {a.item for a in agent_lines(ps_output, slugs)
+    return {a.item for a in agent_lines(ps_output, keys)
             if _at_prompt(a.elapsed, pane_tails.get(a.tty))}
 
 
@@ -1396,10 +1407,10 @@ class AgentLine:
     elapsed: float | None
 
 
-def agent_lines(ps_output: str, slugs: set[str]):
+def agent_lines(ps_output: str, keys: set[str]):
     """Yield an :class:`AgentLine` for every live agent in a ``ps`` dump whose prompt
-    names a PR of a repo in ``slugs`` (:func:`prompt_items`) — the one parse the
-    answers above are each a projection of, so they can never come to disagree about
+    names a PR of a repo root whose key is in ``keys`` (:func:`prompt_items`) — the one
+    parse the answers above are each a projection of, so they can never come to disagree about
     what counts as an agent.
 
     The tty is whatever leads the line, normalised free of ``/dev/`` (``ps`` omits it,
@@ -1414,7 +1425,7 @@ def agent_lines(ps_output: str, slugs: set[str]):
     from . import opencodeapi
 
     for tty, elapsed, argv in _agent_processes(ps_output):
-        for item in prompt_items(opencodeapi.scan_text(argv), slugs):
+        for item in prompt_items(opencodeapi.scan_text(argv), keys):
             yield AgentLine(tty=tty, item=item, elapsed=elapsed)
 
 

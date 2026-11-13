@@ -1130,7 +1130,7 @@ def test_one_roots_unreadable_review_requests_keep_its_records(quiet, monkeypatc
 
     assert quiet.autofix_poll_error is None and dispatched == ["o/r#8"]
     assert "o/other#7" in quiet._load_attempts("reviewReqAttempts")
-    assert quiet._held_slugs == {"o/other"}
+    assert quiet._held_keys == {"o/other"}
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_review_requests",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down")))
     quiet._autofix_poll_once()
