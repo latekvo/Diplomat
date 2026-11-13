@@ -373,7 +373,8 @@ def test_the_real_core_posts_one_ack_in_the_messages_thread(slack, no_comms_repl
     assert match, posted["message"]
     # Two runs of 45 minutes: the one ahead of it on the one bay, then its own.
     due = before + timedelta(seconds=2 * 2700)
-    shown = due.replace(hour=int(match[1]), minute=int(match[2]), second=0, microsecond=0)
+    # "today" and "tomorrow" count from the day it was sent, not the day it is due.
+    shown = before.replace(hour=int(match[1]), minute=int(match[2]), second=0, microsecond=0)
     if match[3] == "tomorrow":
         shown += timedelta(days=1)
     assert timedelta(0) <= shown - due.replace(second=0, microsecond=0) <= timedelta(minutes=6)
