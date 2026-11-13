@@ -1,7 +1,7 @@
 """Parse a PR or issue reference from a wizard's single-item text field.
 
-Mirrors ``PRRef.swift`` verbatim: accepts a bare number (``337`` / ``#337``, or
-``!337`` on a GitLab home repo), a
+Mirrors ``PRRef.swift`` verbatim: accepts a bare number (``337`` / ``#337``, or a
+merge request's ``!337`` on a GitLab home repo), a
 full GitHub URL (``https://github.com/owner/repo/pull/337`` with any trailing
 path/query), a GitLab one (``https://<host>/group/sub/proj/-/merge_requests/337``), or
 the ``owner/repo#337`` shorthand (owner may be a nested namespace; ``group/proj!337``

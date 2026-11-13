@@ -110,8 +110,8 @@ def is_gitlab_host(host: str, hosts: frozenset[str] = GITLAB_HOSTS) -> bool:
 
 def parse_remote(url: str, hosts: frozenset[str] = GITLAB_HOSTS
                  ) -> tuple[str, str, str] | None:
-    """Lowercased ``host``, ``owner`` and ``repo`` of a GitHub remote, or of a GitLab
-    one (``owner`` its whole namespace) on a host :func:`is_gitlab_host` takes."""
+    """``(host, owner, repo)`` of a GitHub remote, or of a GitLab one (``owner`` its
+    whole namespace) on a host :func:`is_gitlab_host` takes; the host lowercased."""
     url = url.strip()
     m = _GITHUB_REMOTE.match(url)
     if m:
