@@ -1101,6 +1101,31 @@ def test_a_gitlab_key_no_root_has_is_never_asked_of_github(monkeypatch):
     assert (booked.pr_url, booked.item) == (LAB.link("pull", 4), f"{KEY}#4")
 
 
+def test_a_key_on_a_dotless_gitlab_host_is_that_hosts_project(monkeypatch):
+    """A key's kind is its depth, not a dot: ``owner/repo`` is GitHub, and three segments
+    or more a GitLab project (which always has a namespace), so a glab host with no dot
+    (``localhost``) is never asked of GitHub."""
+    from diplomat_app import probes
+
+    from diplomat_runtime import agentstate as A
+
+    assert prref.repo_of_key("localhost/grp/proj") == LocalRepo("grp", "proj", "", "localhost")
+    assert prref.repo_of_key("gitlab/a/b/c") == LocalRepo("a/b", "c", "", "gitlab")
+    assert prref.repo_of_key("o/r") == LocalRepo("o", "r", "")
+    assert prref.repo_of_key("o/web.site") == LocalRepo("o", "web.site", "")
+
+    fake = FakeGlab(monkeypatch)
+    asked_gh = []
+    monkeypatch.setattr(gh, "run",
+                        lambda args, **_: asked_gh.append(args) or b'{"state":"MERGED"}\n')
+    assert probes.merged_prs({"localhost/grp/proj#3", "o/r#3"}).value == {"o/r#3"}
+    assert len(asked_gh) == 1 and fake.asked == []
+
+    live = A.Observation.present({"localhost/grp/proj#4": "pts/3"})
+    [booked] = A.synthesize_untracked([], live, 0.0, ())
+    assert booked.pr_url == "https://localhost/grp/proj/-/merge_requests/4"
+
+
 @needs_core
 def test_an_issue_fix_is_its_own_roots_on_two_roots_of_one_slug(lab_only, monkeypatch):
     """A fix asked on either twin records that root's issue link, so its row carries

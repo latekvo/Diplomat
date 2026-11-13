@@ -106,9 +106,10 @@ class LocalRepo:
 
 def item_key(owner: str, repo: str, number: int, host: str = GITHUB) -> str:
     """One PR or issue across every repo root, its repo's :attr:`LocalRepo.key` and
-    number: ``owner/repo#n`` on GitHub, ``host/owner/repo#n`` on GitLab. A host has a
-    dot and a GitHub owner never does, so the two cannot clash. GitHub numbers a repo's
-    PRs and issues in one space, so the key carries no kind."""
+    number: ``owner/repo#n`` on GitHub, ``host/owner/repo#n`` on GitLab. A GitLab
+    project always has a namespace, so its key has three segments or more where a GitHub
+    one has two, and the two cannot clash. GitHub numbers a repo's PRs and issues in one
+    space, so the key carries no kind."""
     return f"{LocalRepo(owner, repo, '', host).key}#{number}"
 
 
@@ -121,11 +122,9 @@ def root_named(name: str, roots: Sequence[LocalRepo]) -> LocalRepo | None:
 
 
 def repo_of_key(key: str) -> LocalRepo:
-    """The repo a :attr:`LocalRepo.key` names, with no checkout: a GitLab project when
-    its first segment has a dot (a host), else a GitHub repo."""
-    host, _, rest = key.partition("/")
-    if "." not in host:
-        host, rest = GITHUB, key
+    """The repo a :attr:`LocalRepo.key` names, with no checkout: a GitHub repo for
+    ``owner/repo``, else a GitLab project, its first segment the host."""
+    host, rest = (GITHUB, key) if key.count("/") < 2 else key.split("/", 1)
     owner, _, repo = rest.rpartition("/")
     return LocalRepo(owner, repo, "", host)
 
