@@ -3360,6 +3360,59 @@ check(!quickPrompt.contains("nearest twin"), "quick depth runs no swarm and name
 check(!quickPrompt.contains("a sibling that has it"), "quick depth carries no absence pass")
 print("review moves + absence pass assertions passed")
 
+// ---- Whether the PR is the right change at all ----
+// Every review prompt asks it once, ahead of the depth's own instructions, whoever the
+// author and whatever the depth; the goldens would re-bless a prompt that lost it.
+section("premise check")
+let premiseParts = ["JUDGE THE PREMISE, NOT ONLY THE DIFF",
+                    "trace the reported symptom down to where it originates",
+                    "only stop the symptom from showing",
+                    "A PR whose premise fails is NOT clean",
+                    "at least MEDIUM, never a LOW or a nitpick",
+                    "with no case it gets wrong, is a preference: drop it on sight",
+                    "one line per PR: what it is for and whether its premise held"]
+for d in ReviewCatalog.depths() {
+    let shapes: [(String, String)] = [
+        ("mine sweep", ReviewConfig(depth: d.id, me: "latekvo").buildPrompt()),
+        ("someone's sweep", ReviewConfig(depth: d.id, target: .someone, username: "someuser",
+                                         me: "latekvo").buildPrompt()),
+        ("known mine", ReviewConfig(depth: d.id, target: .specific, me: "latekvo",
+                                    specificPR: "500", specificAuthor: .mine).buildPrompt()),
+        ("known theirs", ReviewConfig(depth: d.id, target: .specific, me: "latekvo",
+                                      specificPR: "500", specificAuthor: .theirs).buildPrompt()),
+        ("unknown author", ReviewConfig(depth: d.id, target: .specific, me: "latekvo",
+                                        specificPR: "500").buildPrompt()),
+    ]
+    for (shape, p) in shapes {
+        for part in premiseParts {
+            check(p.contains(part), "\(d.id) / \(shape) carries the premise check - '\(part)'")
+        }
+        check(p.components(separatedBy: premiseParts[0]).count == 2,
+              "\(d.id) / \(shape) asks the premise once")
+        if let premise = p.range(of: premiseParts[0]), let technical = p.range(of: d.fragment) {
+            check(premise.lowerBound < technical.lowerBound,
+                  "\(d.id) / \(shape) asks the premise ahead of the technical review")
+        } else {
+            check(false, "\(d.id) / \(shape) carries both the premise and the depth fragment")
+        }
+    }
+    // Both cases of an unknown-author PR share it, so it sits above the split.
+    let unknown = shapes[4].1
+    if let premise = unknown.range(of: premiseParts[0]), let caseA = unknown.range(of: "▸ CASE A") {
+        check(premise.lowerBound < caseA.lowerBound, "\(d.id) / the premise sits above the CASE split")
+    } else {
+        check(false, "\(d.id) / an unknown-author prompt carries the premise and the CASE split")
+    }
+}
+// It is a question about a PR under review, and without these negatives the loop above
+// would pass just as well on text appended to every prompt kind.
+check(!ConflictConfig(me: "latekvo").buildPrompt().contains("JUDGE THE PREMISE"),
+      "a conflict resolution judges no premise")
+check(!IssueConfig(me: "latekvo").forIssue(302).buildPrompt().contains("JUDGE THE PREMISE"),
+      "an issue fix judges no premise")
+check(!AuditConfig().buildPrompt().contains("JUDGE THE PREMISE"), "an audit judges no premise")
+print("premise check assertions passed")
+
 // ---- Where a swarm's spilled summaries may be read from ----
 // A runner that spills a subagent's full output writes it to one machine-wide cache under a
 // name carrying only a task index and a timestamp, and the applet dispatches several of
