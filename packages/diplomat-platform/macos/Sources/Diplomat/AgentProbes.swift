@@ -543,15 +543,15 @@ enum AgentProbes {
         return .present(Set(snapshot.claims.keys))
     }
 
-    // MARK: - GitHub
+    // MARK: - GitHub and GitLab
 
     /// Which of these items (`PRRef.itemKey`) GitHub (or GitLab, for an item of a GitLab
     /// root among `roots`) calls MERGED: the one terminal outcome that outranks anything a
     /// process is doing. Each is asked of its own repo; one in no root is asked of GitHub.
     ///
-    /// One `gh` call per PR, so this belongs on the slow refresh, not the process poll. A
-    /// PR whose probe fails is simply absent from the answer; a partial answer is still
-    /// positive evidence about the PRs it covers.
+    /// One `gh` or `glab` call per PR, so this belongs on the slow refresh, not the process
+    /// poll. A PR whose probe fails is simply absent from the answer; a partial answer is
+    /// still positive evidence about the PRs it covers.
     static func mergedPRs(_ items: Set<String>, roots: [PRRef.LocalRepo]) async -> Observation<Set<String>> {
         guard !items.isEmpty else { return .present([]) }
         var merged = Set<String>()

@@ -1156,6 +1156,18 @@ enum QueueTest {
         check("…while a GitHub root's me stays the GitHub one",
               await meIn(rootA) == "alice" && store.knownMe(for: rootA) == "alice"
                 && store.knownMe(for: nil) == "alice")
+        // A wizard's run is "me" of the root it targets: a link to a GitLab root's item
+        // from the GitHub root shown names glab's user there, a sweep the shown root's me.
+        let rootsBefore = store.roots
+        store.pinRoots([rootA, onGitLab])
+        let mrLink = "https://gitlab.example.com/g/sub/p/-/merge_requests/3"
+        let wizardMes = [store.wizardRun(ReviewConfig(target: .specific, specificPR: mrLink)).me,
+                         store.wizardRun(IssueConfig(target: .specific, specificIssue: "g/sub/p#4")).me,
+                         store.wizardRun(ConflictConfig(target: .specific, specificPR: mrLink)).me,
+                         store.wizardRun(ReviewConfig(target: .mine, specificPR: mrLink)).me]
+        check("…and a wizard's run takes the me of the root it targets: \(wizardMes)",
+              store.selectedRoot == rootA && wizardMes == ["gl-me", "gl-me", "gl-me", "alice"])
+        store.pinRoots(rootsBefore)
         store.usernameOverride = overrideBefore
 
         // 24a'. The monitors' reads of a GitLab root, through glab and the GitHub parsers,
@@ -1228,7 +1240,7 @@ enum QueueTest {
               + "there answers it, and from the merge request with no notes: "
               + "\(windowed.map { "\($0.number) \($0.requestedAt ?? "nil") \($0.oweReview)" })",
               windowed.map(\.number) == [31, 30]
-                && windowed.map(\.requestedAt) == ["2026-11-06T09:00:00+01:00", "2026-11-02T08:00:00+01:00"]
+                && windowed.map(\.requestedAt) == ["2026-11-06T08:00:00Z", "2026-11-02T07:00:00Z"]
                 && windowed.map(\.oweReview) == [false, true])
         glabAnswers(#"{"data":{"project":{"mergeRequest":{"state":"merged","author":null}}}}"#)
         let landed = await AgentProbes.mergedPRs(["g/sub/p#7"], roots: [rootA, onGitLab])

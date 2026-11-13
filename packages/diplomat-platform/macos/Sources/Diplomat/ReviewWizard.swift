@@ -867,11 +867,10 @@ struct ReviewWizardView: View {
     }
 
     private var config: ReviewConfig {
-        var cfg = ReviewConfig(
+        store.wizardRun(ReviewConfig(
             depth: depth.id,
             target: target,
             username: username,
-            me: store.knownMe(for: store.selectedRoot),
             markReady: markReady,
             leaveReviews: leaveReviews,
             replyToReviews: replyToReviews,
@@ -880,10 +879,7 @@ struct ReviewWizardView: View {
             specificPR: specificPR,
             finalPass: finalPass,
             softApprove: softApprove,
-            specificAuthor: specificAuthor)
-        cfg.home = store.selectedRoot
-        cfg.localRepos = store.wizardRepos
-        return cfg
+            specificAuthor: specificAuthor))
     }
 
     var body: some View {

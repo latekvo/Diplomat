@@ -368,7 +368,8 @@ public enum AgentState {
         public var tails: Observation<[String: String]>
         /// Work keys currently claimed somewhere on the mesh.
         public var claims: Observation<Set<String>>
-        /// The items (`PRRef.itemKey`) of the PRs GitHub reports as MERGED.
+        /// The items (`PRRef.itemKey`) of the PRs and merge requests GitHub or GitLab reports
+        /// as MERGED.
         public var mergedPRs: Observation<Set<String>>
         /// Item → the tty of an agent found by its prompt text in the process table
         /// (`promptItems`). The pre-registry identity mechanism, and still the only
@@ -1384,8 +1385,8 @@ public enum AgentState {
 
     /// The automatic runs on this machine whose own runner reported the turn over
     /// (`Resolution.reported`): their window is closed as they retire, their work being
-    /// on GitHub or in a report. A panel run is the operator's session, and an untracked
-    /// agent's `auto` is the cap's assumption, not a dispatch.
+    /// on GitHub, on GitLab or in a report. A panel run is the operator's session, and an
+    /// untracked agent's `auto` is the cap's assumption, not a dispatch.
     ///
     /// Unlike `reapable`, a close that reaches nothing withholds no retirement: the
     /// record a live agent is released to (`releaseEnded`) is the stillness backstop's.

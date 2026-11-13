@@ -5,7 +5,7 @@ import Foundation
 // warrants dispatching an agent — a NEW merge conflict, or NEW review work (more
 // unresolved threads, or a fresh CHANGES_REQUESTED verdict). Kept here (not in the
 // macOS UI layer) so it's cross-platform and unit-testable; the front-end supplies the
-// GitHub snapshot and performs the spawn.
+// GitHub or GitLab snapshot and performs the spawn.
 //
 // Deliberately edge-triggered: an event fires only on the transition, and the caller
 // persists the returned fingerprints, so a persistent condition never re-dispatches.

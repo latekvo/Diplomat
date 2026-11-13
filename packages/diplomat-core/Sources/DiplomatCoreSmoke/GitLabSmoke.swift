@@ -153,6 +153,16 @@ func gitlabSmoke() async throws {
 
     section("gitlab: references, keys and links")
     let home = PRRef.LocalRepo(owner: "group/sub", repo: "proj", path: "/w/proj", host: "gitlab.example.com")
+    let ghHome = PRRef.LocalRepo(owner: "o", repo: "r", path: "/w/r")
+    let listed = LookupResult(number: 12, onLists: [], presence: "",
+                              url: "https://gitlab.example.com/group/sub/proj/-/merge_requests/12")
+    let unlisted = LookupResult(number: 12, onLists: [], presence: "", url: nil)
+    let openListed = listed.openButton(on: home), openGH = unlisted.openButton(on: ghHome)
+    check(openListed?.tooltip == "Open #12 on GitLab" && openListed?.link == listed.url
+          && unlisted.openButton(on: home) == nil
+          && openGH?.tooltip == "Open #12 on GitHub" && openGH?.link == "https://github.com/o/r/issues/12",
+          "the lookup opens a listed item on its forge; a number on no list only on GitHub, as an issue: "
+          + "\(String(describing: openListed)) \(String(describing: unlisted.openButton(on: home)))")
     let mr = "https://gitlab.example.com/group/sub/proj/-/merge_requests/12"
     let p1 = PRRef.parse(mr, owner: "group/sub", repo: "proj", host: "gitlab.example.com")
     check(p1.number == 12 && !p1.repoMismatch, "a merge request URL in the home repo")
@@ -285,6 +295,21 @@ func gitlabSmoke() async throws {
         check(got == want, "the \(name) adapter matches its fixture\n got: \(got)\nwant: \(want)")
     }
     print("adapter fixtures matched: \(names.count)")
+
+    func readyAnswer(_ times: [String]) throws -> Data {
+        let notes = times.map { ["body": "marked this merge request as **ready**", "createdAt": $0] }
+        return try JSONSerialization.data(withJSONObject: ["data": ["project": ["mergeRequests": ["nodes": [
+            ["iid": "5", "notes": ["nodes": notes]]]]]]])
+    }
+    let readied = String(decoding: try GitLab.prs(try readyAnswer(["2026-10-25T02:40:00+02:00",
+                                                                   "2026-10-25T02:10:00+01:00"])),
+                         as: UTF8.self)
+    check(readied.contains(#"{"__typename":"ReadyForReviewEvent","createdAt":"2026-10-25T01:10:00Z"}"#),
+          "the latest ready note is the latest in UTC, across a clock change: \(readied)")
+    var badTime = ""
+    do { _ = try GitLab.prs(try readyAnswer(["yesterday"])) }
+    catch { badTime = (error as? LocalizedError)?.errorDescription ?? "\(error)" }
+    check(badTime == "GitLab time yesterday is unreadable", "an unreadable time is an error: \(badTime)")
 
     var refused = ""
     do { _ = try GitLab.mergeRequest(Data(#"{"data":{"project":{"mergeRequest":null}}}"#.utf8)) }

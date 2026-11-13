@@ -45,14 +45,7 @@ struct ConflictWizardView: View {
     @State private var meshDispatching = false
 
     private var config: ConflictConfig {
-        var cfg = ConflictConfig(
-            target: target,
-            username: username,
-            me: store.knownMe(for: store.selectedRoot),
-            specificPR: specificPR)
-        cfg.home = store.selectedRoot
-        cfg.localRepos = store.wizardRepos
-        return cfg
+        store.wizardRun(ConflictConfig(target: target, username: username, specificPR: specificPR))
     }
 
     var body: some View {
