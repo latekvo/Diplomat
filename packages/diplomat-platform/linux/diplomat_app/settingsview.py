@@ -41,7 +41,7 @@ from diplomat_runtime import (
     usagescan,
 )
 from diplomat_runtime.models import Fmt
-from diplomat_runtime.prref import LocalRepo
+from diplomat_runtime.prref import LocalRepo, root_label
 from . import (
     glyphs,
     szpont,
@@ -432,7 +432,8 @@ class SettingsView(QWidget):
             root = None if shadowed else resolved.get(os.path.expanduser(path))
             problem = "" if shadowed else self._root_problem(path, root)
             problems += bool(problem)
-            self._roots_list.addWidget(self._root_row(i, path, root, problem))
+            name = root_label(root, list(resolved.values())) if root else ""
+            self._roots_list.addWidget(self._root_row(i, path, name, problem))
         self._roots_host.setVisible(bool(paths))
 
         primary = review.repo_path()
@@ -466,8 +467,7 @@ class SettingsView(QWidget):
             f"environment outranks the list."
         ))
 
-    def _root_row(self, index: int, path: str, root: LocalRepo | None,
-                  problem: str) -> QWidget:
+    def _root_row(self, index: int, path: str, label: str, problem: str) -> QWidget:
         row = QWidget()
         line = QHBoxLayout(row)
         line.setContentsMargins(0, 0, 0, 0)
@@ -476,7 +476,7 @@ class SettingsView(QWidget):
             name = QLabel(f"⚠ {problem}")
             name.setStyleSheet(f"font-size: 11px; font-weight: 600; color: {_ORANGE};")
         else:
-            name = QLabel(root.slug if root else "")
+            name = QLabel(label)
             name.setStyleSheet("font-size: 11px; font-weight: 600;")
         name.setTextFormat(Qt.TextFormat.PlainText)
         line.addWidget(name)

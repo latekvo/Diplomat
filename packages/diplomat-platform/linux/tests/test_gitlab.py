@@ -1080,3 +1080,58 @@ def test_one_slug_on_github_and_on_gitlab_is_two_roots_with_two_of_everything(
     booked = A.synthesize_untracked([], live, 0.0, (TWIN_HUB, TWIN_LAB))
     assert {r.pr_url: r.tty for r in booked} == {TWIN_HUB.link("pull", 5): "pts/1",
                                                  TWIN_LAB.link("pull", 5): "pts/2"}
+
+
+def test_a_gitlab_key_no_root_has_is_never_asked_of_github(monkeypatch):
+    """Its first segment is a host, so it names no GitHub repo: with no root to ask
+    through it is left unknown, and an untracked agent on it is linked on its host."""
+    from diplomat_app import probes
+
+    from diplomat_runtime import agentstate as A
+
+    fake = FakeGlab(monkeypatch)
+    asked_gh = []
+    monkeypatch.setattr(gh, "run",
+                        lambda args, **_: asked_gh.append(args) or b'{"state":"MERGED"}\n')
+    assert probes.merged_prs({f"{KEY}#3", "o/r#3"}).value == {"o/r#3"}
+    assert len(asked_gh) == 1 and fake.asked == []
+
+    live = A.Observation.present({f"{KEY}#4": "pts/3"})
+    [booked] = A.synthesize_untracked([], live, 0.0, ())
+    assert (booked.pr_url, booked.item) == (LAB.link("pull", 4), f"{KEY}#4")
+
+
+@needs_core
+def test_an_issue_fix_is_its_own_roots_on_two_roots_of_one_slug(lab_only, monkeypatch):
+    """A fix asked on either twin records that root's issue link, so its row carries
+    that root's item and Comms knows the fix as that root's only, though both rows wear
+    one label."""
+    from types import SimpleNamespace
+
+    from diplomat_app import issues
+    from diplomat_app.store import Store
+
+    from diplomat_runtime import agentstate as A
+
+    monkeypatch.setattr(review, "repo_roots", lambda: [TWIN_HUB, TWIN_LAB])
+    records = []
+    for root in (TWIN_HUB, TWIN_LAB):
+        config = issues.IssueConfig(target=issues.Target.SPECIFIC, specific_issue="9",
+                                    home=root).prompt_payload()
+        entry = autofix.RequestedWork(number=9, url="", author="", config=config,
+                                      repo=root.key)
+        job = lab_only._requested_task(entry).job
+        assert (job.pr_url, job.pr_number) == (root.link("issues", 9), None)
+        records.append((A.RunRecord(run_id=root.key, dispatched_at=0.0, pr_url=job.pr_url,
+                                    kind=autofix.QUEUE_ISSUES_ACTION,
+                                    label="Issues · widget#9 · deep"),
+                        SimpleNamespace(state="running", reason="")))
+    monkeypatch.setattr(lab_only, "_agent_tick", lambda: SimpleNamespace(rows=records))
+    rows = lab_only.running_tasks
+    assert [a.item for a in rows] == ["acme/widget#9", f"{HOST}/acme/widget#9"]
+    for row in rows:
+        assert Store._comms_row_doing(
+            autofix.queue_key(autofix.QUEUE_ISSUES_ACTION, row.item), rows) is row
+    assert Store._comms_row_doing(
+        autofix.queue_key(autofix.QUEUE_ISSUES_ACTION, "gitlab.other.org/acme/widget#9"),
+        rows) is None

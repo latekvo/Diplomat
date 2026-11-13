@@ -597,7 +597,8 @@ def mesh_claims(enabled: bool = True) -> Observation:
 def merged_prs(items: set[str], roots: Iterable[LocalRepo] = ()) -> Observation:
     """Which of these PRs (item keys) their host calls MERGED — the one terminal outcome
     that outranks anything a process is doing. Each is asked of its repo's host: a
-    GitLab root's (in ``roots``) of its GitLab, any other of GitHub.
+    GitLab root's (in ``roots``) of its GitLab, a GitHub key's of GitHub. A GitLab key
+    no root has is never asked, so it is not in the answer.
 
     One ``gh`` or ``glab`` call per PR, so this belongs on the slow refresh, not the 8-second
     tick. The reading is always PRESENT: a PR whose probe fails is simply absent from
@@ -605,7 +606,7 @@ def merged_prs(items: set[str], roots: Iterable[LocalRepo] = ()) -> Observation:
     covers, and an empty ask is a real "none of them".
     """
     from diplomat_runtime.models import API
-    from diplomat_runtime.prref import split_item_key
+    from diplomat_runtime.prref import repo_of_key, split_item_key
 
     known = {r.key: r for r in roots}
     merged = set()
@@ -614,9 +615,11 @@ def merged_prs(items: set[str], roots: Iterable[LocalRepo] = ()) -> Observation:
         if split is None:
             continue
         key, number = split
-        owner, _, repo = key.rpartition("/")
+        root = known.get(key) or repo_of_key(key)
+        if root.is_gitlab and key not in known:
+            continue
         try:
-            state = API.fetch_pr_state(number, known.get(key) or LocalRepo(owner, repo, ""))
+            state = API.fetch_pr_state(number, root)
         except Exception:  # noqa: BLE001 - a probe never raises into the tick
             continue
         if state == "MERGED":

@@ -22,7 +22,7 @@ from diplomat_runtime import (
 )
 from diplomat_runtime.autofix import PRSnapshot, ReviewRequest
 from diplomat_runtime.models import API, OpenIssue, OpenPR
-from diplomat_runtime.prref import LocalRepo
+from diplomat_runtime.prref import LocalRepo, item_key_from_url, root_label
 from diplomat_runtime.prtarget import PRTarget
 
 pytest.importorskip("PySide6")
@@ -770,9 +770,11 @@ def test_comms_adopts_a_fix_the_issues_wizard_is_running(wizard_store, dispatche
     w._spawn()
     [job] = dispatched
     rows = [autofix.RunningAgent(pr_number=None, label=job.label,
-                                 kind=autofix.QUEUE_ISSUES_ACTION, tracked=True)]
+                                 kind=autofix.QUEUE_ISSUES_ACTION, tracked=True,
+                                 item=item_key_from_url(job.pr_url))]
 
     assert job.label.startswith("Issues · other#12 · ")
+    assert (job.pr_url, job.pr_number) == ("https://github.com/o/other/issues/12", None)
     assert Store._comms_row_doing(
         autofix.queue_key(autofix.QUEUE_ISSUES_ACTION, "o/other#12"), rows) is rows[0]
     assert Store._comms_row_doing(
@@ -818,6 +820,50 @@ def test_the_header_offers_a_picker_only_with_several_roots(make_panel):
     two.repo_picker.setCurrentIndex(1)
     two.repo_picker.activated.emit(1)
     assert two.store.selected_repo == SECOND and refreshed == [1]
+
+
+def _one_slug_roots(base: str) -> list[LocalRepo]:
+    """``acme/widget`` on GitHub and on two GitLab hosts, and a GitLab slug of its own."""
+    return [LocalRepo("Acme", "Widget", f"{base}/hub"),
+            LocalRepo("acme", "widget", f"{base}/lab", "gitlab.example.com"),
+            LocalRepo("acme", "widget", f"{base}/elsewhere", "gitlab.other.org"),
+            LocalRepo("acme", "solo", f"{base}/solo", "gitlab.example.com")]
+
+
+ONE_SLUG_LABELS = ["Acme/Widget", "gitlab.example.com/acme/widget",
+                   "gitlab.other.org/acme/widget", "acme/solo"]
+
+
+def test_the_picker_names_a_gitlab_root_sharing_a_slug_by_its_host(make_panel):
+    roots = _one_slug_roots("/src")
+    panel = make_panel(roots)
+    assert [panel.repo_picker.itemText(i) for i in range(panel.repo_picker.count())] == \
+        ONE_SLUG_LABELS
+    assert [panel.repo_picker.itemData(i) for i in range(panel.repo_picker.count())] == \
+        [r.key for r in roots]
+    assert root_label(roots[1], [roots[1], roots[3]]) == "acme/widget"
+
+
+def test_settings_names_a_gitlab_root_sharing_a_slug_by_its_host(app, tmp_path,
+                                                                  monkeypatch):
+    from PySide6.QtWidgets import QLabel
+
+    from diplomat_app.settingsview import SettingsView
+    from diplomat_app.store import Store
+
+    monkeypatch.delenv("DIPLOMAT_REPO", raising=False)
+    monkeypatch.setattr(Store, "refresh_allocator_install_async", lambda self: None)
+    monkeypatch.setattr(Store, "refresh_update_status_async", lambda self: None)
+    roots = _one_slug_roots(str(tmp_path))
+    for r in roots:
+        (Path(r.path) / ".git").mkdir(parents=True)
+    appconfig.set_repo_roots([r.path for r in roots])
+    monkeypatch.setattr(review, "repo_roots", lambda: roots)
+    monkeypatch.setattr(review, "roots_guessed", lambda: False)
+    view = SettingsView(Store())
+    assert [view._roots_list.itemAt(i).widget().findChildren(QLabel)[0].text()
+            for i in range(view._roots_list.count())] == ONE_SLUG_LABELS
+    view.deleteLater()
 
 
 @pytest.fixture

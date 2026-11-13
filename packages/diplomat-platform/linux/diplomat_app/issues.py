@@ -159,6 +159,13 @@ class IssueConfig(RepoConfig):
         return self.issue_ref if self.is_single_issue else None
 
     @property
+    def single_link(self) -> str | None:
+        ref = self.single_ref
+        if ref is None or ref.number is None:
+            return None
+        return self.target_root.link("issues", ref.number)
+
+    @property
     def is_valid(self) -> bool:
         if self.is_single_issue:
             return self.issue_ref.is_valid

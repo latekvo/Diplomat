@@ -143,7 +143,8 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   the next poll. A row warns when the path isn't absolute, has no `.git`, or has no
   GitHub or GitLab remote - such a root is not watched, and two roots naming the same repo count
   once. A GitHub repo and a GitLab project of the same `owner/repo` are two roots, each
-  with its own queue rows, records and links. A lone root stands for the `assets/config.json` repo even then; with several and
+  with its own queue rows, records and links; here and in the header's picker the GitLab
+  one is named `host/owner/repo`. A lone root stands for the `assets/config.json` repo even then; with several and
   none resolving, the monitors stand down, and while the first does not resolve, Comms
   waits (a bare `#N` would name the next root's issue). Every automatic job (the
   monitors, [Comms](comms.md)) runs on every root; the panel works on the one picked in

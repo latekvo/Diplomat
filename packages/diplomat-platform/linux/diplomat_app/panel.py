@@ -31,6 +31,7 @@ import time
 
 from diplomat_runtime import activity, agentstate, autofix, review
 from diplomat_runtime.models import Fmt
+from diplomat_runtime.prref import root_label
 from . import deviceallocator, glyphs, szpont
 from .commsview import CommsView
 from .tasksview import TasksView
@@ -506,12 +507,12 @@ class Panel(QWidget):
     def _refresh_repo_picker(self) -> None:
         roots = review.repo_roots()
         selected = self.store.selected_repo.key
-        self.repo_label.setText(roots[0].slug)
+        self.repo_label.setText(root_label(roots[0], roots))
         self.repo_label.setVisible(len(roots) == 1)
         self.repo_picker.setVisible(len(roots) > 1)
         self.repo_picker.clear()
         for r in roots:
-            self.repo_picker.addItem(r.slug, r.key)
+            self.repo_picker.addItem(root_label(r, roots), r.key)
         self.repo_picker.setCurrentIndex(
             next((i for i, r in enumerate(roots) if r.key == selected), 0))
 

@@ -1035,7 +1035,9 @@ class AgentJob:
     audit_action: str  # activity-feed verb
     label: str  # label core (source prefix / retry suffix added by dispatch_label)
     prompt: str
-    pr_url: str | None = None  # the PR's link, for the sessions list; None = not PR-scoped
+    # The link of the PR or issue the job is about, which its run records; None for
+    # neither. PR-scoped only with ``pr_number``.
+    pr_url: str | None = None
     # Set for a PR-scoped job only, never an issue's, and None for a PR in another
     # listed checkout; with ``pr_url`` it makes :attr:`item`, the dedup key.
     pr_number: int | None = None
@@ -1222,7 +1224,8 @@ class RunningAgent:
     # guesswork this whole mechanism replaced.
     state: str = "running"
     reason: str = ""
-    # The run's `owner/repo#n` (`agentstate.RunRecord.item`); None for a run about no PR.
+    # The item key of the PR or issue the run is about, read off its link; None for a
+    # run about neither.
     item: str | None = None
 
     @property

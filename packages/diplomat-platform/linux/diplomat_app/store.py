@@ -51,8 +51,8 @@ from diplomat_runtime import (
 from diplomat_runtime.gh import GHError
 from diplomat_runtime.models import API, Filters, Fmt, OpenIssue, OpenPR
 from diplomat_runtime.prref import (LocalRepo, item_key, item_key_from_url, item_label,
-                                    migrate_item_key, migrate_queue_key, root_named,
-                                    split_item_key)
+                                    migrate_item_key, migrate_queue_key, repo_of_key,
+                                    root_named, split_item_key)
 from diplomat_runtime.prtarget import PRTarget
 from . import (
     autofixmonitor,
@@ -2708,7 +2708,7 @@ class Store(QObject):
                 mesh=r.placement != agentstate.PLACEMENT_LOCAL,
                 state=s.state,
                 reason=s.reason,
-                item=r.item,
+                item=item_key_from_url(r.pr_url),
             )
             for r, s in self._agent_tick().rows
             if s.state not in agentstate.ENDED
@@ -2986,6 +2986,11 @@ class Store(QObject):
         # that happens to share it. What keeps two agents off one issue instead is the
         # assignee claim, which every machine can see rather than just this one.
         is_pr = entry.action == autofix.QUEUE_REVIEW_ACTION
+        # An issue's link is its root's, by the ask's key (an ask may carry no url), so
+        # its run is that root's even once the root is gone.
+        link = entry.url if is_pr else (
+            (self._root_named(entry.repo) or repo_of_key(entry.repo)).link(
+                "issues", entry.number) if entry.item else None)
         where = (entry.config.get("home") or {}).get("path") or entry.config.get("checkout")
         task = autofix.QueuedTask(
             id=entry.key,
@@ -2994,7 +2999,7 @@ class Store(QObject):
                 audit_action=entry.action,
                 label=label,
                 prompt=promptcore.build_prompt(entry.config),
-                pr_url=entry.url if is_pr else None,
+                pr_url=link,
                 pr_number=entry.number if is_pr else None,
                 author_login=entry.author or None,
                 duty=entry.action,
@@ -4755,8 +4760,7 @@ class Store(QObject):
     def _comms_row_doing(key: str, rows: list[autofix.RunningAgent]
                          ) -> autofix.RunningAgent | None:
         """Twin of ``commsRow``: any review agent on that PR (the dispatch gate treats
-        every agent on a PR as that PR's), or a fix of that issue, known only by its
-        label (:attr:`autofix.RequestedWork.label`)."""
+        every agent on a PR as that PR's), or a fix of that issue."""
         item = autofix.item_of_key(key)
         if item is None:
             return None
@@ -4765,9 +4769,8 @@ class Store(QObject):
             return next((a for a in rows if a.item == item
                          and a.kind == autofix.QUEUE_REVIEW_ACTION), None)
         if verb == autofix.QUEUE_ISSUES_ACTION:
-            named = f"Issues · {item_label(item, len(review.repo_roots()))} · "
-            return next((a for a in rows if a.kind == autofix.QUEUE_ISSUES_ACTION
-                         and named in a.label), None)
+            return next((a for a in rows if a.item == item
+                         and a.kind == autofix.QUEUE_ISSUES_ACTION), None)
         return None
 
     @staticmethod
@@ -5133,8 +5136,8 @@ class Store(QObject):
                     kind=autofix.QUEUE_ISSUES_ACTION, audit_action=autofix.QUEUE_ISSUES_ACTION,
                     label=(f"Issues · {self._item_label(url, number)}"
                            f" · {issues.depth_by_id(cfg.depth)['title']}"),
-                    prompt=cfg.build_prompt(), duty=autofix.QUEUE_ISSUES_ACTION,
-                    checkout=root.path,
+                    prompt=cfg.build_prompt(), pr_url=cfg.single_link,
+                    duty=autofix.QUEUE_ISSUES_ACTION, checkout=root.path,
                 ), autofix.SOURCE_PANEL)
             except Exception as exc:  # noqa: BLE001 — a core that cannot build the prompt
                 verdict = str(exc)

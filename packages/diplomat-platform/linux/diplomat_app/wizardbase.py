@@ -174,7 +174,7 @@ class SpawnWizard(QWidget):
                 audit_action=self._kind,
                 label=label,
                 prompt=cfg.build_prompt(),
-                pr_url=cfg.single_pr_url,
+                pr_url=cfg.single_link,
                 pr_number=self._pr_number(cfg),
                 author_login=self._author_login(),
                 duty=self._kind,

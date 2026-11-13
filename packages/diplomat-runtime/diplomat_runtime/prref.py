@@ -120,6 +120,23 @@ def root_named(name: str, roots: Sequence[LocalRepo]) -> LocalRepo | None:
             or next((r for r in roots if r.slug.lower() == want), None))
 
 
+def repo_of_key(key: str) -> LocalRepo:
+    """The repo a :attr:`LocalRepo.key` names, with no checkout: a GitLab project when
+    its first segment has a dot (a host), else a GitHub repo."""
+    host, _, rest = key.partition("/")
+    if "." not in host:
+        host, rest = GITHUB, key
+    owner, _, repo = rest.rpartition("/")
+    return LocalRepo(owner, repo, "", host)
+
+
+def root_label(root: LocalRepo, roots: Sequence[LocalRepo]) -> str:
+    """How ``root`` is named among ``roots`` on screen: its slug, or ``host/slug`` for
+    a GitLab root whose slug another of ``roots`` has too."""
+    shared = any(r.key != root.key and r.slug.lower() == root.slug.lower() for r in roots)
+    return f"{root.host}/{root.slug}" if root.is_gitlab and shared else root.slug
+
+
 def _link(url: str, kind: str) -> tuple[str, str, str, str] | None:
     """``(host, owner, repo, digits)`` of a ``kind`` link: github.com's spelling, else
     GitLab's on any host."""

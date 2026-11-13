@@ -699,16 +699,18 @@ def test_an_investigation_of_a_repo_no_longer_a_root_is_refused_as_a_review_is(
 
 
 @needs_core
-@pytest.mark.parametrize("label, running", [
-    ("Issues · widget#9005 · deep", True),
-    (f"Issues · {PRIMARY.split('/')[1]}#9005 · deep", False),
+@pytest.mark.parametrize("item, running", [
+    ("acme/widget#9005", True),
+    (f"{PRIMARY}#9005", False),
+    ("gitlab.example.com/acme/widget#9005", False),
 ])
-def test_a_fix_running_in_another_root_is_known_by_its_repo_label(comms_store, monkeypatch,
-                                                                 label, running):
+def test_a_fix_running_in_another_root_is_known_by_its_root_key(comms_store, monkeypatch,
+                                                               item, running):
     _two_roots(monkeypatch)
     monkeypatch.setattr("diplomat_runtime.gh.run", _github({
         ("issue", 9005): ("OPEN", "https://github.com/acme/Widget/issues/9005", "dana")}, []))
-    _rows(monkeypatch, [autofix.RunningAgent(0, label, "issues", True, started_at=DISPATCHED)])
+    _rows(monkeypatch, [autofix.RunningAgent(0, "Issues · widget#9005 · deep", "issues", True,
+                                             started_at=DISPATCHED, item=item)])
     _tick(comms_store, monkeypatch, (_message(1, "fix widget#9005"),
                                      _in("acme/widget", "fix_issue", 9005)))
     outcome = next(e for e in _events() if e["kind"] == "action")["outcome"]
@@ -1145,17 +1147,17 @@ def test_a_review_an_agent_is_already_on_is_not_asked_for_again(comms_store, mon
 
 
 @needs_core
-@pytest.mark.parametrize("label, running", [
-    ("Issues · #9005 · deep", True),
-    ("Issues · #9005 · Deep · retry 2", True),
-    ("Issues · #900501 · deep", False),
-    ("Issues · #19005 · deep", False),
+@pytest.mark.parametrize("label, item, running", [
+    ("Issues · #9005 · deep", f"{PRIMARY}#9005", True),
+    ("Issues · #9005 · Deep · retry 2", f"{PRIMARY}#9005", True),
+    ("Issues · #9005 · deep", f"{PRIMARY}#900501", False),
+    ("Issues · #9005 · deep", "acme/widget#9005", False),
 ])
-def test_a_fix_already_running_is_known_by_its_issues_label(comms_store, monkeypatch,
-                                                          label, running):
+def test_a_fix_already_running_is_known_by_its_issue(comms_store, monkeypatch,
+                                                   label, item, running):
     comms_store.issues = [_issue(9005)]
     _rows(monkeypatch, [autofix.RunningAgent(0, label, "issues", True,
-                                             started_at=DISPATCHED)])
+                                             started_at=DISPATCHED, item=item)])
     _tick(comms_store, monkeypatch, _ask(1, "fix_issue", 9005))
     outcome = next(e for e in _events() if e["kind"] == "action")["outcome"]
     if running:

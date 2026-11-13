@@ -106,6 +106,12 @@ class RepoConfig:
         list's open-in-browser fallback; ``None`` when it isn't scoped to one."""
         return None
 
+    @property
+    def single_link(self) -> str | None:
+        """The link of the one PR or issue this run is about, which its run records;
+        ``None`` when it is about no one item."""
+        return self.single_pr_url
+
 
 def _repo_json(r: LocalRepo) -> dict:
     out = {"owner": r.owner, "repo": r.repo, "path": r.path}

@@ -59,7 +59,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from . import apiwatch, completion
-from .prref import LocalRepo, item_key_from_url, split_item_key
+from .prref import LocalRepo, item_key_from_url, repo_of_key, split_item_key
 
 # MARK: - Observations: evidence, or a named reason there is none
 
@@ -410,6 +410,7 @@ class RunRecord:
     run_id: str
     dispatched_at: float
     pr_number: int | None = None
+    #: The link of the PR or issue the run is about; "" for neither.
     pr_url: str = ""
     kind: str = ""
     label: str = ""
@@ -1295,8 +1296,8 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     They count as automatic. An agent whose trigger is unknown spending a bay defers
     work; the opposite error dispatches a second agent onto a PR that has one.
 
-    Its link is that of the PR in the root of ``roots`` its item key names, else a
-    github.com PR's.
+    Its link is that of the PR in the root of ``roots`` its item key names, else in
+    the repo the key names (:func:`prref.repo_of_key`).
     """
     if not live_agents.ok:
         return records
@@ -1320,11 +1321,9 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
         if split is None:
             continue
         key, number = split
-        root = by_key.get(key)
+        root = by_key.get(key) or repo_of_key(key)
         out.append(RunRecord(run_id=f"untracked:{item}", dispatched_at=now,
-                             pr_number=number,
-                             pr_url=root.link("pull", number) if root
-                             else f"https://github.com/{key}/pull/{number}",
+                             pr_number=number, pr_url=root.link("pull", number),
                              source=SOURCE_AUTO, placement=PLACEMENT_LOCAL,
                              tty=live[item], untracked=True))
     return out
