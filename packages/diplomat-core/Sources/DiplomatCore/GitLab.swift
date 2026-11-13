@@ -128,7 +128,6 @@ public enum GitLab {
 
     /// Note openings of a submitted review; the last is GitHub's `COMMENTED`.
     private static let reviewed = ["approved this merge request", "requested changes", "left review comments"]
-    /// A reviewer's `reviewState` once they have answered the request.
     private static let answeredStates: Set<String> = ["REVIEWED", "APPROVED", "REQUESTED_CHANGES"]
 
     /// `gitlab-mr` as `gh pr view --json state,author` prints it.
@@ -320,11 +319,10 @@ public enum GitLab {
         return [["__typename": "ReadyForReviewEvent", "createdAt": latest]]
     }
 
-    /// `reviewer`'s request when no note in the window names them: nil when their
-    /// `reviewState` says they answered it, as GitHub drops an answered request from
-    /// `review-requested:`; else at least as old as the window's oldest note (the merge
-    /// request, for an empty window), the query answering only merge requests requesting
-    /// their review.
+    /// `reviewer`'s request when no note in the window names them: nil once their
+    /// `reviewState` says they answered it, as GitHub's `review-requested:` drops it; else
+    /// dated at the window's oldest note (the merge request, for an empty window), the
+    /// query returning only merge requests requesting their review.
     private static func request(of reviewer: String, _ events: [JSON], _ mr: JSON,
                                 _ activity: [JSON]) throws -> [JSON]? {
         let me = reviewer.lowercased()

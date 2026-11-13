@@ -283,7 +283,7 @@ public enum AgentState {
         public var runID: String
         public var dispatchedAt: TimeInterval
         public var prNumber: Int?
-        /// The link of the PR or issue the run is about; "" for neither.
+        /// The PR's or issue's link; "" for neither.
         public var prURL: String
         public var kind: String
         public var label: String
@@ -1096,11 +1096,10 @@ public enum AgentState {
 
     // MARK: - Untracked agents
 
-    /// The items an agent's prompt names, in order: each `PR #<n> in <slug>` whose root is
-    /// one of `keys` (`LocalRepo.key`). A slug the prompt's GitLab note names ("hosted on
-    /// GitLab at <host> (project <slug>)") is that host's root, any other a GitHub one.
-    /// The longest leading run of path segments that is a root counts; a trailing `.` no
-    /// root has ends the sentence, not the repo name.
+    /// The items an agent's prompt names, in order: each `PR #<n> in <slug>` whose root key
+    /// is in `keys`. A slug named by a "hosted on GitLab at <host> (project <slug>)" note
+    /// is on that host, any other on GitHub. The longest leading run of segments that is a
+    /// root counts; a trailing `.` no root has ends the sentence, not the repo name.
     public static func promptItems(_ text: String, keys: Set<String>) -> [String] {
         guard let re = try? NSRegularExpression(pattern: #"PR #([0-9]+) in ([\w.-]+(?:/[\w.-]+)+)"#),
               let note = try? NSRegularExpression(
@@ -1199,8 +1198,8 @@ public enum AgentState {
     /// They count as automatic. An agent whose trigger is unknown spending a bay defers
     /// work; the opposite error dispatches a second agent onto a PR that has one.
     ///
-    /// Its link is the PR's in the root of `roots` its item key names, else in the repo the
-    /// key names (`PRRef.repo(ofKey:)`), so the record's `item` is the scan's.
+    /// Its link comes from its item key's root in `roots`, else `PRRef.repo(ofKey:)`, so
+    /// the record's `item` is the scan's.
     public static func synthesizeUntracked(_ records: [RunRecord],
                                            liveAgents: Observation<[String: String]>,
                                            roots: [PRRef.LocalRepo],

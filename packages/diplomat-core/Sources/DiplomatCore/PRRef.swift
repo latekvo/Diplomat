@@ -33,9 +33,8 @@ public struct PRRef: Equatable {
         /// The project path the forge's API takes, and what labels show.
         public var slug: String { "\(owner)/\(repo)" }
         public var isGitLab: Bool { host != LocalRepo.github }
-        /// The root's identity, lowercased: `slug` on GitHub, `host/slug` on GitLab, so a
-        /// GitHub and a GitLab project of one slug are two roots. Its items' keys are
-        /// `key#N` (`PRRef.itemKey`). Python twin: `LocalRepo.key`.
+        /// The root's identity, lowercased: `slug` on GitHub, `host/slug` on GitLab, so one
+        /// slug on both forges is two roots. Python twin: `LocalRepo.key`.
         public var key: String { (isGitLab ? "\(host)/\(slug)" : slug).lowercased() }
 
         public func webURL(_ kind: Kind, number: Int) -> String {
@@ -166,13 +165,11 @@ public struct PRRef: Equatable {
 // MARK: - Item identity across repos
 
 extension PRRef {
-    /// One PR or issue across every repo this machine works: its root's `LocalRepo.key`
-    /// and number, `owner/repo#n` on GitHub and `host/ns/proj#n` on GitLab, lowercased.
-    /// The two cannot clash: a GitHub repo is exactly owner/repo, a GitLab project always
-    /// has a namespace, so its key has three segments or more. GitHub numbers
-    /// PRs and issues in one space per repo, so the key carries no kind; GitLab's iids
-    /// number them separately, and the queue tells the two apart by verb. Python twin:
-    /// `prref.item_key`.
+    /// One PR or issue across every repo this machine works: `<LocalRepo.key>#n`. A GitLab
+    /// project always has a namespace, so its key has three segments or more and never
+    /// clashes with a GitHub `owner/repo`. GitHub numbers PRs and issues in one space per
+    /// repo, so the key carries no kind; GitLab's iids number them separately, and the
+    /// queue tells the two apart by verb. Python twin: `prref.item_key`.
     public static func itemKey(owner: String, repo: String, number: Int,
                                host: String = LocalRepo.github) -> String {
         "\(LocalRepo(owner: owner, repo: repo, path: "", host: host).key)#\(number)"
@@ -203,17 +200,17 @@ extension PRRef {
         return (root, n)
     }
 
-    /// The one of `roots` whose key is `name`, else whose slug is (a name with no host, a
-    /// GitHub root's first), any case; nil for neither. Python twin: `prref.root_named`.
+    /// The root of `roots` whose key is `name`, else whose slug is (a GitHub root first),
+    /// any case. Python twin: `prref.root_named`.
     public static func root(named name: String, in roots: [LocalRepo]) -> LocalRepo? {
         let want = name.lowercased()
         let slugs = roots.filter { $0.slug.lowercased() == want }
         return roots.first { $0.key == want } ?? slugs.first { !$0.isGitLab } ?? slugs.first
     }
 
-    /// The repo a `LocalRepo.key` names, with no checkout: a GitLab project on its first
-    /// segment's host when it has three segments or more, else a GitHub repo. Python
-    /// twin: `prref.repo_of_key`.
+    /// The repo a `LocalRepo.key` names, with no checkout: with three segments or more, a
+    /// GitLab project on the first one's host, else a GitHub repo. Python twin:
+    /// `prref.repo_of_key`.
     public static func repo(ofKey key: String) -> LocalRepo {
         let parts = key.split(separator: "/", maxSplits: 1).map(String.init)
         let (host, rest) = parts.count == 2 && parts[1].contains("/")

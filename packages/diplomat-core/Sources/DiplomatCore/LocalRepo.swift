@@ -90,13 +90,12 @@ public struct GitLabHosts: Equatable, ExpressibleByArrayLiteral {
                                 uniquingKeysWith: { first, _ in first })
     }
 
-    /// Each of `hosts` to itself.
     public init(arrayLiteral hosts: String...) {
         self.init(Dictionary(hosts.map { ($0, $0) }, uniquingKeysWith: { first, _ in first }))
     }
 
-    /// The GitLab host a remote on `host` is on, lowercased (an `ssh_host` read as its
-    /// host); nil when `host` is not GitLab.
+    /// The GitLab host a remote naming `host` is on (an `ssh_host` maps to its host); nil
+    /// off GitLab.
     public func host(of host: String) -> String? {
         let h = host.lowercased()
         return GitLabHosts.contains(h, configured: Set(hosts.keys)) ? hosts[h] ?? h : nil
@@ -110,10 +109,9 @@ public struct GitLabHosts: Equatable, ExpressibleByArrayLiteral {
         return labels.count >= 2 && labels[0] == "gitlab" && !labels.contains(where: \.isEmpty)
     }
 
-    /// A glab `config.yml`'s column-0 `hosts:` map: each bare `key:` line at its first
-    /// entry's indent to itself (`:port` dropped), and each host's non-empty `ssh_host:`
-    /// at the indent of that host's first entry (quotes and `:port` dropped) to the host.
-    /// A host's own name wins over another's `ssh_host`.
+    /// A glab `config.yml`'s column-0 `hosts:` map: each host key at the map's first indent
+    /// to itself, and each non-empty `ssh_host:` directly under a host to that host (quotes
+    /// and `:port` dropped). A host's own name wins over another's `ssh_host`.
     public static func parse(config: String) -> GitLabHosts {
         var named: [String: String] = [:]
         var aliases: [String: String] = [:]
@@ -129,9 +127,8 @@ public struct GitLabHosts: Equatable, ExpressibleByArrayLiteral {
         return GitLabHosts(aliases.merging(named) { _, own in own })
     }
 
-    /// Each host's entry in a glab `config.yml` by host (as `parse` reads them: lowercased,
-    /// `:port` dropped): its host line through its last child line, blank and comment
-    /// lines left out. A host listed twice has both entries.
+    /// Each host's entry in a glab `config.yml`, keyed as `parse` keys hosts: its host line
+    /// and child lines, blank and comment lines left out. A host listed twice gets both.
     public static func entries(config: String) -> [String: String] {
         var out: [String: String] = [:]
         for (host, lines) in hostBlocks(config) {
@@ -140,8 +137,6 @@ public struct GitLabHosts: Equatable, ExpressibleByArrayLiteral {
         return out
     }
 
-    /// The column-0 `hosts:` map's bare `key:` lines at its first entry's indent, each with
-    /// the lines below it (deeper ones), in order.
     private static func hostBlocks(_ config: String) -> [(host: String, lines: [String])] {
         var out: [(host: String, lines: [String])] = []
         var inHosts = false

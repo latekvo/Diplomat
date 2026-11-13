@@ -116,7 +116,6 @@ public enum GLab {
         }
     }
 
-    /// The first `config.yml` found where glab looks.
     static func configFile(env: [String: String]) -> String? {
         let home = env["HOME"] ?? NSHomeDirectory()
         var files: [String] = []
@@ -137,7 +136,6 @@ public enum GLab {
         return GitLabHosts.parse(config: text)
     }
 
-    /// `configFile`'s path, modification time and size, nil without one.
     static func configStamp(env: [String: String]) -> ConfigStamp? {
         guard let file = configFile(env: env),
               let a = try? FileManager.default.attributesOfItem(atPath: file) else { return nil }
@@ -152,15 +150,14 @@ public enum GLab {
     }
 }
 
-/// glab's signed-in user by GitLab host: what a GitLab root reads as "me". A host's login
-/// is kept while that host's own entry in glab's config file (`GitLabHosts.entries`) is
-/// unchanged: `glab auth login` and `logout` rewrite it, while glab's own writes to the
-/// file elsewhere (its update check's timestamp) leave it be. Only successes are kept, so
-/// a failed host is asked again. Python twin: `Store.me_for`.
+/// glab's signed-in user by GitLab host: what a GitLab root reads as "me". A login is kept
+/// while its host's own entry in glab's config (`GitLabHosts.entries`) is unchanged:
+/// `glab auth login`/`logout` rewrite it, glab's other writes (its update check's
+/// timestamp) don't. Only successes are kept, so a failed host is asked again. Python
+/// twin: `Store.me_for`.
 public final class GitLabLogins: @unchecked Sendable {
     private let lock = NSLock()
     private var logins: [String: (login: String, entry: String?)] = [:]
-    /// The config file's entries as last parsed, and the stamp they were parsed at.
     private var parsed: (stamp: GLab.ConfigStamp?, entries: [String: String])?
     private let env: [String: String]
     private let fetch: (String) async throws -> String
@@ -171,7 +168,6 @@ public final class GitLabLogins: @unchecked Sendable {
         self.fetch = fetch
     }
 
-    /// `host`'s login: the kept one while its config entry is unchanged, else read.
     public func login(host: String) async throws -> String {
         let h = host.lowercased()
         let entry = entry(h)
@@ -181,8 +177,7 @@ public final class GitLabLogins: @unchecked Sendable {
         return login
     }
 
-    /// `login(host:)` as last read, without asking: "" for a host not read yet or whose
-    /// config entry changed since.
+    /// The kept login, without asking; "" for a host not read yet or whose entry changed.
     public func known(host: String) -> String {
         let h = host.lowercased()
         let entry = entry(h)
@@ -196,8 +191,6 @@ public final class GitLabLogins: @unchecked Sendable {
         locked { logins[h] = (login, entry) }
     }
 
-    /// `host`'s entry in glab's config file, nil for none; the file is parsed again only
-    /// when its stamp moved.
     private func entry(_ host: String) -> String? {
         let stamp = GLab.configStamp(env: env)
         if let p = locked({ parsed }), p.stamp == stamp { return p.entries[host] }

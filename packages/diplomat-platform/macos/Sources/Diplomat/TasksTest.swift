@@ -378,8 +378,8 @@ enum TasksTest {
                    // Another root's PR and issue under the goals' numbers: not theirs.
                    run("h", 1823, "review", "Review · widgets#1823 · deep", .running, in: "acme/widgets"),
                    run("i", nil, "issues", "Issues · widgets#1805 · deep", .running),
-                   // An issue fix with a link is known by it: the GitLab project of the goals' slug
-                   // is not the goals' repo, whatever its label says.
+                   // Known by its link: a GitLab project of the goals' slug is not the goals'
+                   // repo, whatever its label says.
                    run("j", nil, "issues", "Issues · \(repo)#1819 · deep", .running,
                        link: "https://gitlab.example.com/\(owner)/\(repo)/-/issues/1819"),
                    run("k", nil, "issues", "Issues · deep", .running,

@@ -305,11 +305,11 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     /// (any host) links with their Slack or markdown label, `owner/repo#N` for another
     /// repository of `repo`'s owner (a namespace of any depth) or another watched one, and
     /// `name#N` for a repository a link names or another watched one; `!N` too for a `repo`
-    /// on GitLab. A link is `repo`'s own only on `repo`'s host (github.com, or its GitLab
-    /// host, any case, `www.` and `:port` dropped). A number there is not one of `repo`'s,
-    /// even when `repo` has a PR that happens to wear it. Any other `word#N` or
-    /// `word/word#N` stays, for the classifier to judge: `PR#12`, `fix/login#12` and `swmansion/argent#12` cannot be told from a
-    /// foreign reference here.
+    /// on GitLab. A link is `repo`'s own only on `repo`'s host (any case, `www.` and
+    /// `:port` dropped). A number there is not one of `repo`'s, even when `repo` has a PR
+    /// that happens to wear it. Any other `word#N` or `word/word#N` stays, for the
+    /// classifier to judge: `PR#12`, `fix/login#12` and `swmansion/argent#12` cannot be
+    /// told from a foreign reference here.
     public static func ownRepoText(_ text: String, settings: CommsSettings,
                                    repo target: String = "") -> String {
         let (home, name) = settings.coordinates(of: target)
@@ -980,8 +980,8 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
     public var text: String
     public var summary: String
     public var reportPath: String
-    /// The decision's repository (`CommsDecision.repo`): `owner/repo` is its key
-    /// (`CommsSettings.repos`), so a GitLab one's owner starts with its host.
+    /// The decision's repository (`CommsDecision.repo`) split from its key, so a GitLab
+    /// one's owner starts with its host.
     public var owner: String
     public var repo: String
     /// That repository's checkout; nil for the primary repo root. Set by the front-end,

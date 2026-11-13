@@ -41,8 +41,8 @@ public enum CommsClassifier {
 
     /// `classifier.instructions`, its repository wording `classifier.repos.one`'s for one
     /// watched repository and `many`'s for several, overlaid by `repos.gitlab`'s once one
-    /// is on GitLab. Several are named by their keys, the `repo` values the schema takes,
-    /// the primary's `{owner}/{repo}` too; one by its project path.
+    /// is on GitLab. Several are named by key (the schema's `repo` values), `{owner}/{repo}`
+    /// too; one by its project path.
     public static func prompt(settings: CommsSettings) -> String {
         guard let c = (try? CoreAssets.comms())?.classifier else { return "" }
         let names = settings.repos.map { String($0.split(separator: "/").last ?? "") }
