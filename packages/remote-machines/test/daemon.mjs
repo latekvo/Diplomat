@@ -266,8 +266,8 @@ try {
     await logWhen(/lost full unreachable ssh: Could not resolve/);
     // Discovery is minutes away; the periodic load scan brings it back.
     await logWhen(/lost full[^\n]*\n(.*\n)*.*reached full/);
-    const r = await callDaemon('GET', '/state');
-    assert.ok(r.machines.some((m) => m.target === 'full'), JSON.stringify(r.unavailable));
+    // The log line comes mid-scan; the snapshot follows once every probe is back.
+    await stateWhen((x) => x.machines.some((m) => m.target === 'full'), 'full back in the pool');
   });
 
   await check('the daemon exits once its last session is gone, taking its socket along', async () => {
