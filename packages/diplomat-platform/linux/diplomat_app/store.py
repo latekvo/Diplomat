@@ -2989,11 +2989,11 @@ class Store(QObject):
         cached = self._requested_tasks.get(entry.key)
         if cached is not None and cached[0] == stamp:
             return cached[1]
-        # A fix is deliberately NOT PR-scoped. The dispatch pipeline's dedup is
-        # PR-shaped throughout — the in-flight check matches a ``/pull/<n>`` URL and
-        # keys on a PR number — so handing it an issue number would collide with the PR
-        # that happens to share it. What keeps two agents off one issue instead is the
-        # assignee claim, which every machine can see rather than just this one.
+        # A fix is deliberately NOT PR-scoped: it carries its issue's link but no PR
+        # number. The dispatch pipeline's dedup is PR-shaped throughout, keyed on a PR
+        # number, so handing it an issue number would collide with the PR that happens
+        # to share it. What keeps two agents off one issue instead is the assignee
+        # claim, which every machine can see rather than just this one.
         is_pr = entry.action == autofix.QUEUE_REVIEW_ACTION
         # An issue's link is its root's, by the ask's key (an ask may carry no url), so
         # its run is that root's even once the root is gone.
