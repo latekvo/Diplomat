@@ -54,8 +54,7 @@ prompt:
 Whatever the depth, every review judges the PR's **premise** before its diff: what it
 sets out to solve, whether its diagnosis and assumptions hold against the code, and
 whether the change removes the cause or only hides the symptom. A proven workaround for
-a cause the repo could fix at its origin is a finding of at least MEDIUM, so such a PR
-is never marked ready, approved, or reported clean.
+a cause the repo could fix at its origin is a finding of at least MEDIUM.
 
 Contextual controls (the action checkboxes, the someone-else's handle field, and the
 single-PR field) **appear only where they apply** - for a specific PR the wizard
