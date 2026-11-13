@@ -250,7 +250,8 @@ struct IssueWizardView: View {
     /// `Store.RequestedWork`.
     private var trackingLabel: String {
         let (owner, repo) = config.targetRepo
-        let item = config.issueRef.number.map { store.itemLabel(owner: owner, repo: repo, number: $0) }
+        let item = config.issueRef.number.map { store.itemLabel(config.targetLocal ?? PRRef.LocalRepo(owner: owner, repo: repo, path: ""),
+                                                     number: $0) }
         return "Issues · \(item ?? "issue") · \(depth.title)"
     }
 
@@ -287,7 +288,7 @@ struct IssueWizardView: View {
         let term = AgentSpawner.resolved(store.terminal)
         let job = Store.AgentJob(kind: "issues", auditAction: "issues",
                                  label: trackingLabel, prompt: cfg.buildPrompt(),
-                                 prURL: nil, prNumber: nil,
+                                 prURL: cfg.singleLink, prNumber: nil,
                                  authorLogin: nil, duty: "issues",
                                  workKey: "", counter: nil, directory: cfg.checkout)
         status = "Launching \(term.title)…"

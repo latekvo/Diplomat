@@ -296,8 +296,8 @@ for url in ["https://gitlab.com/o/r/pull/1", "https://github.com.evil.io/o/r/pul
             "https://github.com/o/r/pull/0", "u1", ""] {
     check(PRRef.itemKey(url: url) == nil, "\(url) names no item")
 }
-check(PRRef.splitItemKey("o/r.js#12").map { [$0.slug, String($0.number)] } == ["o/r.js", "12"],
-      "an item key splits into its slug and number")
+check(PRRef.splitItemKey("o/r.js#12").map { [$0.root, String($0.number)] } == ["o/r.js", "12"],
+      "an item key splits into its root key and number")
 for bad in ["o/r#x", "or#1", "o//x#1", "o/r/#1", "/r#1", "o/#1", "#1", "o/r#", "o/r#+1", "12"] {
     check(PRRef.splitItemKey(bad) == nil, "\(bad) is not an item key")
 }
@@ -2499,17 +2499,18 @@ do {
 
     let lab = PRRef.LocalRepo(owner: "Group/Sub", repo: "Proj", path: "/w/proj",
                               host: "gitlab.example.com")
-    let labScan: Observation<[String: String]> = .present(["group/sub/proj#337": "pts/4"])
+    let labScan: Observation<[String: String]> = .present(["gitlab.example.com/group/sub/proj#337": "pts/4"])
     let hub = PRRef.LocalRepo(owner: "O", repo: "A", path: "/w/a")
-    check(AgentState.synthesizeUntracked([], liveAgents: .present(["o/a#5": "pts/5"]), roots: [hub],
-                                         now: now).map(\.prURL) == ["https://github.com/o/a/pull/5"],
-          "a GitHub root's untracked run links to github.com under the scan's slug")
+    let hubRun = AgentState.synthesizeUntracked([], liveAgents: .present(["o/a#5": "pts/5"]),
+                                                roots: [hub], now: now)
+    check(hubRun.map(\.prURL) == ["https://github.com/O/A/pull/5"] && hubRun.map(\.item) == ["o/a#5"],
+          "a GitHub root's untracked run links to its root's PR on github.com, its item the scan's")
     let labRun = AgentState.synthesizeUntracked([], liveAgents: labScan, roots: [lab], now: now)
     let labAgain = AgentState.synthesizeUntracked(labRun, liveAgents: labScan, roots: [lab],
                                                   now: now + 8)
     check(labRun.map(\.prURL) == ["https://gitlab.example.com/Group/Sub/Proj/-/merge_requests/337"]
-          && labRun.map(\.item) == ["group/sub/proj#337"]
-          && labAgain.map(\.runID) == ["untracked:group/sub/proj#337"],
+          && labRun.map(\.item) == ["gitlab.example.com/group/sub/proj#337"]
+          && labAgain.map(\.runID) == ["untracked:gitlab.example.com/group/sub/proj#337"],
           "an agent on a nested GitLab merge request is one untracked run, linked to the merge "
           + "request, on the scan's item, tick after tick: \(labAgain.map(\.prURL))")
 
@@ -2546,19 +2547,19 @@ do {
 
     let roots: Set<String> = ["software-mansion/argent", "o/r.js"]
     check(AgentState.promptItems("Review PR #12 in software-mansion/argent. Use the `gh` CLI",
-                                 slugs: roots) == ["software-mansion/argent#12"],
+                                 keys: roots) == ["software-mansion/argent#12"],
           "the prompt's closing period is not part of the repo")
-    check(AgentState.promptItems("PR #3 in o/r.js. and PR #4 in O/R.JS now", slugs: roots)
+    check(AgentState.promptItems("PR #3 in o/r.js. and PR #4 in O/R.JS now", keys: roots)
           == ["o/r.js#3", "o/r.js#4"],
           "a repo whose name has a dot keeps it, and the slug is matched case-insensitively")
     check(AgentState.promptItems("PR #9 in other/repo. PR #10 in o/r. PR #11 in o/r.jsx",
-                                 slugs: roots).isEmpty,
+                                 keys: roots).isEmpty,
           "a repo outside the roots, or one that only starts like a root, is no sighting")
     let nested: Set<String> = ["group/sub/proj", "group/sub", "o/r.js"]
     check(AgentState.promptItems("Review PR #337 in group/sub/proj. Then PR #8 in Group/Sub/Proj",
-                                 slugs: nested) == ["group/sub/proj#337", "group/sub/proj#8"]
-          && AgentState.promptItems("PR #3 in o/r.js.", slugs: nested) == ["o/r.js#3"]
-          && AgentState.promptItems("PR #4 in group/sub./proj", slugs: nested).isEmpty,
+                                 keys: nested) == ["group/sub/proj#337", "group/sub/proj#8"]
+          && AgentState.promptItems("PR #3 in o/r.js.", keys: nested) == ["o/r.js#3"]
+          && AgentState.promptItems("PR #4 in group/sub./proj", keys: nested).isEmpty,
           "a nested GitLab namespace is read too, the longest slug counting, its period the sentence's")
     print("cross-repo agent state assertions passed")
 }

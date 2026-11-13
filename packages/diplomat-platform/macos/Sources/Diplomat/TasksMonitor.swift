@@ -178,9 +178,8 @@ extension Store {
     ///   asked-for review or fix
     static func goalOverlay(rows: [AgentRow], queued: [QueuedAgentTask], requested: [RequestedWork],
                             startingFixes: Set<Int>, watched: PRRef.LocalRepo) -> GoalOverlay {
-        let slug = watched.slug.lowercased()
         func number(_ item: String?) -> Int? {
-            guard let split = item.flatMap(PRRef.splitItemKey), split.slug == slug else { return nil }
+            guard let split = item.flatMap(PRRef.splitItemKey), split.root == watched.key else { return nil }
             return split.number
         }
         var out = GoalOverlay(agentIssues: startingFixes)
@@ -345,8 +344,8 @@ extension Store {
         guard let ref = GitHubRef(url: node.url) else { return "not a GitHub issue: \(node.url)" }
         let item = PRRef.itemKey(url: node.url)
         guard root(ofItem: item) != nil else {
-            let slug = item.flatMap(PRRef.splitItemKey)?.slug ?? node.url
-            return "\(slug) is not a repo root, so no fix was started"
+            let root = item.flatMap(PRRef.splitItemKey)?.root ?? node.url
+            return "\(root) is not a repo root, so no fix was started"
         }
         guard goalOverlay.badge(node, watched: CoreAssets.repoCoordinates()) == nil else { return nil }
         goalFixesStarting.insert(ref.number)
@@ -369,7 +368,7 @@ extension Store {
         let ask = goalPlusAsk(number: number, url: node.url, author: node.author)
         let action = ask.config.action
         return AgentJob(kind: action, auditAction: action, label: ask.label(roots: roots.count),
-                        prompt: ask.config.buildPrompt(), prURL: nil, prNumber: nil,
+                        prompt: ask.config.buildPrompt(), prURL: ask.issueLink(in: roots), prNumber: nil,
                         authorLogin: node.author, duty: action, workKey: "", counter: nil,
                         directory: ask.config.checkout)
     }

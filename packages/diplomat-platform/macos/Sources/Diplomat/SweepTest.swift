@@ -174,7 +174,7 @@ enum SweepTest {
         """)
         var asked: [String] = []
         let openings = ["ses_mesh": "Review PR #9 in o/r", "ses_other": "Review PR #9 in x/y"]
-        let scanned = AgentProbes.scan(dump, slugs: ["o/r"]) {
+        let scanned = AgentProbes.scan(dump, keys: ["o/r"]) {
             asked.append($0)
             return openings[$0]
         }
@@ -189,7 +189,7 @@ enum SweepTest {
         let claudeFirst = AgentProbes.scan(.present("""
           780 ttys029    00:50 claude Review PR #9 in o/r
           801 ttys031    00:40 opencode --session ses_mesh
-        """), slugs: ["o/r"]) { openings[$0] }
+        """), keys: ["o/r"]) { openings[$0] }
         check("…and a PR first seen on another agent's line is given no session",
               claudeFirst.agents.value == ["o/r#9": "ttys029"] && claudeFirst.sessions.isEmpty)
         // A released run is held by its pid, so the PR's sighting, and with it the PR's
@@ -200,12 +200,12 @@ enum SweepTest {
           805 ttys035    00:30 opencode --session ses_again
         """)
         let again = openings.merging(["ses_again": "Review PR #9 in o/r"]) { own, _ in own }
-        let heldOne = AgentProbes.scan(twoTUIs, slugs: ["o/r"],
+        let heldOne = AgentProbes.scan(twoTUIs, keys: ["o/r"],
                                        heldPIDs: [780, 801]) { again[$0] }
         let heldAll = AgentProbes.scan(.present("""
           801 ttys031    00:40 opencode --session ses_mesh
           805 ttys035    00:30 opencode --session ses_again
-        """), slugs: ["o/r"], heldPIDs: [801, 805]) { again[$0] }
+        """), keys: ["o/r"], heldPIDs: [801, 805]) { again[$0] }
         check("…a held agent's line is its PR's sighting only when no other is up on it",
               heldOne.agents.value == ["o/r#9": "ttys035"]
                 && heldOne.sessions == ["o/r#9": "ses_again"]

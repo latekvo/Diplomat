@@ -59,7 +59,7 @@ enum AutofixMonitor {
         }
         let r = try JSONDecoder().decode(Resp.self, from: data)
         return Set(r.data.search.nodes.compactMap(\.number).map {
-            PRRef.itemKey(owner: root.owner, repo: root.repo, number: $0)
+            PRRef.itemKey(owner: root.owner, repo: root.repo, number: $0, host: root.host)
         })
     }
 

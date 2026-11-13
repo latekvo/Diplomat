@@ -116,9 +116,8 @@ public enum GLab {
         }
     }
 
-    /// The hosts in the first `config.yml` found where glab looks; empty when none is readable.
-    public static func configuredHosts(env: [String: String] = ProcessInfo.processInfo.environment)
-        -> Set<String> {
+    /// The first `config.yml` found where glab looks.
+    static func configFile(env: [String: String]) -> String? {
         let home = env["HOME"] ?? NSHomeDirectory()
         var files: [String] = []
         if let d = env["GLAB_CONFIG_DIR"], !d.isEmpty { files.append("\(d)/config.yml") }
@@ -127,8 +126,70 @@ public enum GLab {
         #if os(macOS)
         files.append("\(home)/Library/Application Support/glab-cli/config.yml")
         #endif
-        guard let file = files.first(where: { FileManager.default.fileExists(atPath: $0) }),
+        return files.first { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    /// The hosts in `configFile`; none when it is unreadable.
+    public static func configuredHosts(env: [String: String] = ProcessInfo.processInfo.environment)
+        -> GitLabHosts {
+        guard let file = configFile(env: env),
               let text = try? String(contentsOfFile: file, encoding: .utf8) else { return [] }
         return GitLabHosts.parse(config: text)
+    }
+
+    /// `configFile`'s modification time and size, nil without one: `glab auth login`
+    /// rewrites it, so a change may mean another account.
+    static func configStamp(env: [String: String]) -> ConfigStamp? {
+        guard let file = configFile(env: env),
+              let a = try? FileManager.default.attributesOfItem(atPath: file) else { return nil }
+        return ConfigStamp(modified: a[.modificationDate] as? Date, size: (a[.size] as? NSNumber)?.intValue)
+    }
+
+    struct ConfigStamp: Equatable {
+        let modified: Date?
+        let size: Int?
+    }
+}
+
+/// glab's signed-in user by GitLab host: what a GitLab root reads as "me". A host's login
+/// is kept until glab's config file changes; only successes are kept, so a failed host is
+/// asked again. Python twin: `Store.me_for`.
+public final class GitLabLogins: @unchecked Sendable {
+    private let lock = NSLock()
+    private var logins: [String: (login: String, stamp: GLab.ConfigStamp?)] = [:]
+    private let env: [String: String]
+    private let fetch: (String) async throws -> String
+
+    public init(env: [String: String] = ProcessInfo.processInfo.environment,
+                fetch: @escaping (String) async throws -> String = API.fetchGitLabViewer(host:)) {
+        self.env = env
+        self.fetch = fetch
+    }
+
+    /// `host`'s login: the kept one while glab's config file is unchanged, else read.
+    public func login(host: String) async throws -> String {
+        let h = host.lowercased()
+        let stamp = GLab.configStamp(env: env)
+        if let kept = locked({ logins[h] }), kept.stamp == stamp { return kept.login }
+        let login = try await fetch(h)
+        locked { logins[h] = (login, stamp) }
+        return login
+    }
+
+    /// `login(host:)` as last read, without asking: "" for a host not read yet.
+    public func known(host: String) -> String {
+        locked { logins[host.lowercased()]?.login ?? "" }
+    }
+
+    /// Keep `login` for `host` as if just read.
+    public func pin(_ login: String, host: String) {
+        let stamp = GLab.configStamp(env: env)
+        locked { logins[host.lowercased()] = (login, stamp) }
+    }
+
+    private func locked<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
     }
 }

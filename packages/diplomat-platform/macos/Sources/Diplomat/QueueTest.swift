@@ -618,8 +618,12 @@ enum QueueTest {
               store.queuedTasks.map(\.job.label) == ["Issues · #31 · deep",
                                                      "Issues · #41 · deep"]
                   && store.queuedTasks.allSatisfy(\.job.requested))
-        check("…and none of them PR-scoped, so issue #31 cannot dedup against PR #31",
-              store.queuedTasks.allSatisfy { $0.job.prNumber == nil && $0.job.prURL == nil })
+        check("…and none of them PR-scoped, so issue #31 cannot dedup against PR #31, each "
+              + "carrying its issue's link: \(store.queuedTasks.map(\.job.prURL))",
+              store.queuedTasks.allSatisfy { $0.job.prNumber == nil && $0.job.item == nil }
+                  && store.queuedTasks.map(\.job.prURL) == [31, 41].map {
+                      "https://github.com/software-mansion/argent/issues/\($0)"
+                  })
 
         // The two asks live in one list, told apart by their key alone — so a review of
         // PR #31 queued alongside is a second row, and cancelling one leaves the other.
@@ -1223,9 +1227,9 @@ enum QueueTest {
               } && recheckCalls().count == unchecked.count)
         glabAnswers(fixture("closed-prs.input.json"))
         let closedMRs = (try? await AutofixMonitor.fetchClosedPRs(root: onGitLab)) ?? []
-        check("…its closed ones keyed by its nested slug: \(closedMRs.sorted())",
+        check("…its closed ones keyed by its host and nested slug: \(closedMRs.sorted())",
               !closedMRs.isEmpty && closedMRs.count == searchNodes("closed-prs.expected.json")
-                && closedMRs.allSatisfy { $0.hasPrefix("g/sub/p#") })
+                && closedMRs.allSatisfy { $0.hasPrefix("gitlab.example.com/g/sub/p#") })
         glabAnswers(fixture("review-requests.input.json"))
         let asks = (try? await AutofixMonitor.fetchReviewRequests(root: onGitLab, me: "gl-me",
                                                                  includeFiles: true)) ?? []
@@ -1241,11 +1245,24 @@ enum QueueTest {
                 && windowed.map(\.requestedAt) == ["2026-11-06T08:00:00Z", "2026-11-02T07:00:00Z"]
                 && windowed.map(\.oweReview) == [false, true])
         glabAnswers(#"{"data":{"project":{"mergeRequest":{"state":"merged","author":null}}}}"#)
-        let landed = await AgentProbes.mergedPRs(["g/sub/p#7"], roots: [rootA, onGitLab])
+        let landed = await AgentProbes.mergedPRs(["gitlab.example.com/g/sub/p#7"], roots: [rootA, onGitLab])
         check("a GitLab root's merged merge request is asked of glab on its host",
-              { if case .present(let s) = landed { return s == ["g/sub/p#7"] }; return false }()
+              { if case .present(let s) = landed { return s == ["gitlab.example.com/g/sub/p#7"] }; return false }()
                 && glabArgv().contains("gitlab.example.com")
                 && glabArgv().contains("iid=7"))
+        // gh and glab both call it merged, so asking either shows.
+        let mergedGH = feed.appendingPathComponent("gh-merged")
+        try? "#!/bin/sh\necho '{\"state\":\"MERGED\"}'\n".write(to: mergedGH, atomically: true, encoding: .utf8)
+        chmod(mergedGH.path, 0o755)
+        let ghBefore = ProcessInfo.processInfo.environment["DIPLOMAT_GH"]
+        setenv("DIPLOMAT_GH", mergedGH.path, 1)
+        let callsBefore = glabCallCount()
+        let strayKey = await AgentProbes.mergedPRs(["gitlab.example.com/g/gone#7", "o/gone#7"], roots: [rootA])
+        if let ghBefore { setenv("DIPLOMAT_GH", ghBefore, 1) } else { unsetenv("DIPLOMAT_GH") }
+        check("…while a GitLab key no root has is asked of no host, so it is never merged; a "
+              + "GitHub one is asked of GitHub: \(strayKey)",
+              { if case .present(let s) = strayKey { return s == ["o/gone#7"] }; return false }()
+                && glabCallCount() == callsBefore)
 
         // 24a''. An unchecked GitLab merge request keeps its queued conflict fix (GitLab
         //        has not looked yet); a GitHub PR's UNKNOWN drops it.
@@ -1261,7 +1278,7 @@ enum QueueTest {
         _ = await offer(job(8, action: "conflicts", label: "Resolve · alpha#8", counter: .conflicts,
                             url: alphaURL))
         store.commitQueue()
-        let mrFix = AgentTaskQueue.key(auditAction: "conflicts", item: "g/sub/p#8")
+        let mrFix = AgentTaskQueue.key(auditAction: "conflicts", item: "gitlab.example.com/g/sub/p#8")
         let alphaFix = AgentTaskQueue.key(auditAction: "conflicts", item: "o1/alpha#8")
         func unknown(_ url: String) -> PRSnapshot {
             PRSnapshot(number: 8, title: "t", url: url, isDraft: false, mergeable: "UNKNOWN",
@@ -1276,7 +1293,7 @@ enum QueueTest {
               queuedBoth && fixes() == [mrFix])
         // The cycle's commit keeps what the cycle offered.
         let otherMR = "https://gitlab.example.com/g/sub/p/-/merge_requests/9"
-        let otherFix = AgentTaskQueue.key(auditAction: "conflicts", item: "g/sub/p#9")
+        let otherFix = AgentTaskQueue.key(auditAction: "conflicts", item: "gitlab.example.com/g/sub/p#9")
         let cycle = [unknown(mrURL), unknown(alphaURL),
                      PRSnapshot(number: 9, title: "t", url: otherMR, isDraft: false, mergeable: "UNKNOWN",
                                 reviewDecision: "", threadsUnresolved: 0)]
@@ -1361,8 +1378,8 @@ enum QueueTest {
                    isDraft: true, author: "alice", createdAt: Date(),
                    readyForReviewAt: nil, files: [], reviewDecision: nil, reviewThreads: [])
         }
-        store.seedPanelLists(slug: "o1/alpha", prs: [rootPR(rootA, 1)], issues: [])
-        store.seedPanelLists(slug: "o2/beta", prs: [rootPR(rootB, 2), rootPR(rootB, 3)], issues: [])
+        store.seedPanelLists(key: "o1/alpha", prs: [rootPR(rootA, 1)], issues: [])
+        store.seedPanelLists(key: "o2/beta", prs: [rootPR(rootB, 2), rootPR(rootB, 3)], issues: [])
         check("with none chosen, the panel shows the primary root's PRs",
               store.prs.map(\.url) == ["https://github.com/o1/alpha/pull/1"])
         store.selectedRepo = "o2/beta"
@@ -1377,6 +1394,41 @@ enum QueueTest {
         store.selectedRepo = "o9/gone"
         check("a chosen root that is gone reads as the primary",
               store.selectedRoot == rootA && store.prs.map(\.number) == [1])
+        let twinGH = PRRef.LocalRepo(owner: "acme", repo: "widget",
+                                     path: feed.appendingPathComponent("gh-widget").path)
+        let twinGL = PRRef.LocalRepo(owner: "acme", repo: "widget",
+                                     path: feed.appendingPathComponent("gl-widget").path,
+                                     host: "gitlab.example.com")
+        let twinMR = "https://gitlab.example.com/acme/widget/-/merge_requests/7"
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.pinRoots([rootA, twinGH, twinGL])
+        store.seedPanelLists(key: twinGH.key, prs: [rootPR(twinGH, 7)], issues: [])
+        store.seedPanelLists(key: twinGL.key, prs: [OpenPR(number: 7, title: "MR 7", url: twinMR,
+                                                           isDraft: true, author: "alice", createdAt: Date(),
+                                                           readyForReviewAt: nil, files: [],
+                                                           reviewDecision: nil, reviewThreads: [])],
+                             issues: [])
+        store.selectedRepo = twinGL.key
+        check("a GitLab root of a GitHub root's slug is chosen by its key, and shows its own list",
+              store.selectedRoot == twinGL && store.prs.map(\.url) == [twinMR])
+        let twinSwept = store.requestReviewSweep(ReviewConfig(depth: "deep", target: .mine, me: "alice",
+                                                              includeDrafts: true, includeReady: false))
+        store.selectedRepo = twinGH.key
+        let ghSwept = store.requestReviewSweep(ReviewConfig(depth: "deep", target: .mine, me: "alice",
+                                                            includeDrafts: true, includeReady: false))
+        let twinKeys = ["review:gitlab.example.com/acme/widget#7", "review:acme/widget#7"]
+        check("…each of the two asks for its own PR of one number, run in its own checkout: "
+              + "\(twinSwept.queued) \(ghSwept.queued) \(store.requestedWork.map(\.key)) "
+              + "\(store.queuedTasks.map { "\($0.id) \($0.job.directory ?? "nil")" })",
+              twinSwept.queued == 1 && ghSwept.queued == 1 && store.selectedRoot == twinGH
+                  && store.requestedWork.map(\.key) == twinKeys
+                  && twinKeys.map { key in store.queuedTasks.first { $0.id == key }?.job.directory }
+                      == [twinGL.path, twinGH.path])
+        check("…and the picker names the GitLab one by its host",
+              store.roots.map { PRRef.rootLabel($0, roots: store.roots) }
+                  == ["o1/alpha", "acme/widget", "gitlab.example.com/acme/widget"])
+        store.pinRoots([rootA, rootB])
         store.selectedRepo = ""
         store.requestedWork = []
         store.queuedTasks = []

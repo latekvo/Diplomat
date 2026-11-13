@@ -146,7 +146,8 @@ struct ConflictWizardView: View {
 
     private var itemLabel: String? {
         let (owner, repo) = config.targetRepo
-        return linkedNumber.map { store.itemLabel(owner: owner, repo: repo, number: $0) }
+        return linkedNumber.map { store.itemLabel(config.targetLocal ?? PRRef.LocalRepo(owner: owner, repo: repo, path: ""),
+                                                     number: $0) }
     }
 
     /// The single PR's number whichever repo it is in — the tracking link.

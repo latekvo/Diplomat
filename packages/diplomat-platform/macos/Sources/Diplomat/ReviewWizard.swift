@@ -1091,7 +1091,8 @@ struct ReviewWizardView: View {
     /// `Store.RequestedWork`.
     private var trackingLabel: String {
         let (owner, repo) = config.targetRepo
-        let item = config.prRef.number.map { store.itemLabel(owner: owner, repo: repo, number: $0) }
+        let item = config.prRef.number.map { store.itemLabel(config.targetLocal ?? PRRef.LocalRepo(owner: owner, repo: repo, path: ""),
+                                                     number: $0) }
         return "Review · \(item ?? "PR") · \(depth.title)"
     }
 

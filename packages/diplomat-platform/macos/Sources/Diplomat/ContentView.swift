@@ -166,15 +166,17 @@ struct ContentView: View {
     /// one root's caption.
     @ViewBuilder
     private var repoPicker: some View {
-        let current = store.selectedRoot.slug
-        if store.roots.count > 1 {
+        let roots = store.roots
+        let selected = store.selectedRoot
+        let current = PRRef.rootLabel(selected, roots: roots)
+        if roots.count > 1 {
             Menu {
-                ForEach(store.roots, id: \.slug) { root in
-                    Button { store.selectedRepo = root.slug.lowercased() } label: {
-                        if root.slug == current {
-                            Label(root.slug, systemImage: "checkmark")
+                ForEach(roots, id: \.key) { root in
+                    Button { store.selectedRepo = root.key } label: {
+                        if root.key == selected.key {
+                            Label(PRRef.rootLabel(root, roots: roots), systemImage: "checkmark")
                         } else {
-                            Text(root.slug)
+                            Text(PRRef.rootLabel(root, roots: roots))
                         }
                     }
                 }

@@ -301,7 +301,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
     }
 
     /// `text` with its references into repositories other than `repo` (a
-    /// `CommsSettings.canonical` slug, the primary by default) taken out: GitHub and GitLab
+    /// `CommsSettings.canonical` key, the primary by default) taken out: GitHub and GitLab
     /// (any host) links with their Slack or markdown label, `owner/repo#N` for another
     /// repository of `repo`'s owner (a namespace of any depth) or another watched one, and
     /// `name#N` for a repository a link names or another watched one; `!N` too for a `repo`
@@ -323,6 +323,8 @@ public struct CommsDecision: Codable, Equatable, Sendable {
                 + #"|\#(url)(?:/[\w./-]*)?(?:#[A-Za-z][\w-]*)?"#
                 + #"|(?<![\w./-])([A-Za-z0-9][\w.-]*(?:/[\w.-]+)*)/([\w.-]+)"# + mark + #"\d+"#,
             options: [.caseInsensitive]) else { return text }
+        let watched = Set(settings.repos.map { settings.coordinates(of: $0) }
+            .map { "\($0.owner)/\($0.repo)" })
         let source = text as NSString
         let out = NSMutableString(string: text)
         var others = Set(settings.repos.compactMap { s -> String? in
@@ -338,7 +340,7 @@ public struct CommsDecision: Codable, Equatable, Sendable {
             let sameRepo = repo.lowercased() == name.lowercased()
             let isLink = group < 13
             let foreign = named != slug && (isLink || owner.lowercased() == home.lowercased()
-                                            || settings.repos.contains(named))
+                                            || watched.contains(named))
             guard foreign else { continue }
             out.replaceCharacters(in: m.range, with: "")
             if isLink && !sameRepo { others.insert(repo) }
@@ -563,16 +565,16 @@ public struct CommsSettings: Codable, Equatable, Sendable {
     public var batchSize: Int
     /// A queue shorter than `batchSize` is triaged once its newest message is this old.
     public var flushAfterSecs: Int
-    /// The watched repositories (the front-end's repo roots) as lowercased `owner/repo`
-    /// slugs, the primary first; never empty. A bare number is the primary's.
+    /// The watched repositories (the front-end's repo roots) by their lowercased
+    /// `LocalRepo.key`, the primary first; never empty. A bare number is the primary's.
     public private(set) var repos: [String]
     /// The operator's GitHub login; the classifier is told the message was sent to it.
     public var login: String
-    /// GitLab host by slug of `repos`; a slug absent here is on GitHub.
+    /// GitLab host by key of `repos`; a key absent here is on GitHub.
     public private(set) var gitlabHosts: [String: String]
 
     /// `repos` without the blank, malformed and repeated; with none left, the one repo
-    /// `owner`/`repo` name, else `assets/config.json`'s. `gitlabHosts` keeps only slugs in
+    /// `owner`/`repo` name, else `assets/config.json`'s. `gitlabHosts` keeps only keys in
     /// `repos`, any case.
     public init(keywords: [String] = [], senderAllowlist: [String] = [],
                 bannedSenders: [String] = [],
@@ -589,45 +591,47 @@ public struct CommsSettings: Codable, Equatable, Sendable {
         self.maxPerTick = max(1, maxPerTick ?? assets?.maxPerTick ?? 8)
         self.batchSize = max(1, batchSize ?? assets?.batchSize ?? 8)
         self.flushAfterSecs = max(0, flushAfterSecs ?? assets?.flushAfterSecs ?? 1800)
-        var slugs: [String] = []
+        var keys: [String] = []
         for r in repos {
             let s = r.trimmingCharacters(in: .whitespaces).lowercased()
             let segments = s.split(separator: "/", omittingEmptySubsequences: false)
-            if segments.count >= 2, !segments.contains(where: \.isEmpty), !slugs.contains(s) {
-                slugs.append(s)
+            if segments.count >= 2, !segments.contains(where: \.isEmpty), !keys.contains(s) {
+                keys.append(s)
             }
         }
-        self.repos = slugs.isEmpty
-            ? ["\(owner ?? coordinates.owner)/\(repo ?? coordinates.repo)".lowercased()] : slugs
+        self.repos = keys.isEmpty
+            ? ["\(owner ?? coordinates.owner)/\(repo ?? coordinates.repo)".lowercased()] : keys
         self.login = login
         var hosts: [String: String] = [:]
-        for (slug, host) in gitlabHosts {
-            let s = slug.trimmingCharacters(in: .whitespaces).lowercased()
+        for (key, host) in gitlabHosts {
+            let s = key.trimmingCharacters(in: .whitespaces).lowercased()
             let h = host.trimmingCharacters(in: .whitespaces).lowercased()
             if self.repos.contains(s), !h.isEmpty { hosts[s] = h }
         }
         self.gitlabHosts = hosts
     }
 
-    /// The GitLab host of watched repository `slug` (any case, "" for the primary); nil for
+    /// The GitLab host of watched repository `key` (any case, "" for the primary); nil for
     /// one on GitHub or not watched.
-    public func gitlabHost(_ slug: String) -> String? {
-        canonical(slug).flatMap { gitlabHosts[$0.isEmpty ? repos[0] : $0] }
+    public func gitlabHost(_ key: String) -> String? {
+        canonical(key).flatMap { gitlabHosts[$0.isEmpty ? repos[0] : $0] }
     }
 
     public var owner: String { coordinates(of: "").owner }
     public var repo: String { coordinates(of: "").repo }
 
-    /// A watched repository's coordinates, the owner all before the last `/`; "" names the
-    /// primary.
-    public func coordinates(of slug: String) -> (owner: String, repo: String) {
-        PRRef.splitSlug(slug.isEmpty ? repos[0] : slug) ?? ("", "")
+    /// A watched repository's project coordinates (its key less a GitLab host), the owner
+    /// all before the last `/`; "" names the primary.
+    public func coordinates(of key: String) -> (owner: String, repo: String) {
+        let k = key.isEmpty ? repos[0] : key.lowercased()
+        let host = gitlabHost(k).map { "\($0)/" } ?? ""
+        return PRRef.splitSlug(k.hasPrefix(host) ? String(k.dropFirst(host.count)) : k) ?? ("", "")
     }
 
-    /// How a decision writes `slug` (any case, "" for the primary): "" for the primary,
+    /// How a decision writes `key` (any case, "" for the primary): "" for the primary,
     /// its lowercased self for another watched repository, nil for one not watched.
-    public func canonical(_ slug: String) -> String? {
-        let s = slug.trimmingCharacters(in: .whitespaces).lowercased()
+    public func canonical(_ key: String) -> String? {
+        let s = key.trimmingCharacters(in: .whitespaces).lowercased()
         if s.isEmpty || s == repos[0] { return "" }
         return repos.contains(s) ? s : nil
     }
@@ -776,7 +780,7 @@ public enum CommsSliderStops {
 /// list, the task cap and the budget gate all apply.
 ///
 /// JSON: `{"kind": "none"}`, `{"kind": "review" | "fix_issue" | "bump", "number": N,
-/// "repo"?: slug}` (`repo` as `CommsAsk.repo` writes it, absent for the primary
+/// "repo"?: key}` (`repo` as `CommsAsk.repo` writes it, absent for the primary
 /// repository), `{"kind": "investigate", "config": InvestigateConfig}`,
 /// `{"kind": "ban", "ban": CommsBan}`.
 public enum CommsEffect: Equatable, Sendable {
@@ -962,7 +966,8 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
     public var text: String
     public var summary: String
     public var reportPath: String
-    /// The decision's repository (`CommsDecision.repo`).
+    /// The decision's repository (`CommsDecision.repo`): `owner/repo` is its key
+    /// (`CommsSettings.repos`), so a GitLab one's owner starts with its host.
     public var owner: String
     public var repo: String
     /// That repository's checkout; nil for the primary repo root. Set by the front-end,
@@ -992,8 +997,8 @@ public struct InvestigateConfig: Codable, Equatable, Sendable {
                 reportDir: URL) {
         let number = CommsTS.number(message.ts) ?? 0
         // One no longer watched stays named, so the front-end refuses it as it does a review.
-        let (owner, repo) = settings.coordinates(of: settings.canonical(decision.repo)
-                                                     ?? decision.repo.lowercased())
+        let named = settings.canonical(decision.repo) ?? decision.repo.lowercased()
+        let (owner, repo) = PRRef.splitSlug(named.isEmpty ? settings.repos[0] : named) ?? ("", "")
         self.init(number: number, messageID: message.id, sender: message.sender,
                   senderID: message.userID, channel: message.place, permalink: message.permalink, text: message.text,
                   summary: decision.summary,
