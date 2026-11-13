@@ -450,10 +450,10 @@ class Store(QObject):
         self.autofix_poll_error_at: float | None = None
         self.unaddressed_reviews = 0
         self._poll_error_this_cycle: str | None = None
-        #: ``"<what>:<slug>"`` of each root read that failed last time
+        #: ``"<what>:<root key>"`` of each root read that failed last time
         #: (:meth:`_note_roots_read`).
         self._roots_unread: set[str] = set()
-        #: Slugs of the roots this cycle's read of my PRs or of review requests failed in.
+        #: Keys of the roots this cycle's read of my PRs or of review requests failed in.
         self._held_keys: frozenset[str] = frozenset()
         # The last resolved tick — what every agent question is answered from (the
         # dedup, the cap, the rows, the retirement). None until the first one.
@@ -647,7 +647,7 @@ class Store(QObject):
         # whenever the list is set: each is a `git` call, and the wizards read this on
         # every keystroke.
         self._local_checkouts: list[localrepos.Checkout] | None = None
-        # The panel's last fetch of each repo root, by lowercased slug, so switching
+        # The panel's last fetch of each repo root, by its key, so switching
         # the header's picker shows that root's lists at once while they refresh.
         self._panel_data: dict[str, tuple[list[OpenPR], list[OpenIssue], datetime]] = {}
         # The root whose lists `prs`/`issues` hold; None before any was shown.
