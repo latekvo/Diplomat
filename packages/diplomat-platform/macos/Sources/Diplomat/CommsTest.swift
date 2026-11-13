@@ -517,10 +517,11 @@ enum CommsTest {
 
         // MARK: the same work, asked for twice
         let whole = floor(Date().timeIntervalSince1970)   // the log keeps whole seconds
-        func run(_ id: String, _ pr: Int?, _ kind: String, _ label: String) -> Store.AgentRow {
+        func run(_ id: String, _ pr: Int?, _ kind: String, _ label: String,
+                 link: String? = nil) -> Store.AgentRow {
             Store.AgentRow(record: AgentState.RunRecord(
                 runID: id, dispatchedAt: whole - 5, prNumber: pr,
-                prURL: pr.map { "https://github.com/o/r/pull/\($0)" } ?? "", kind: kind,
+                prURL: link ?? pr.map { "https://github.com/o/r/pull/\($0)" } ?? "", kind: kind,
                 label: label, source: AgentDispatchGate.Source.auto.rawValue),
                 state: .running, reason: "", window: nil)
         }
@@ -629,8 +630,10 @@ enum CommsTest {
                 && folded(askTwin)?.label == monitorRun.record.label)
 
         let reviewRun = run("r3", 90041, "review", "Auto · Review-req · #90041 (@erin)")
-        let fixRun = run("r4", nil, "issues", "Issues · #90050 · deep")
-        let otherFix = run("r5", nil, "issues", "Issues · #900501 · deep")
+        let fixRun = run("r4", nil, "issues", "Issues · #90050 · deep",
+                         link: "https://github.com/o/r/issues/90050")
+        let otherFix = run("r5", nil, "issues", "Issues · #900501 · deep",
+                           link: "https://github.com/o/r/issues/900501")
         store.pinAgentRows([monitorRun, reviewRun, fixRun, otherFix])
         let askRunning = item(.review, 90041)
         let askFixRunning = item(.fixIssue, 90050)
@@ -1623,30 +1626,33 @@ enum CommsTest {
         await useRoots([primaryRoot, secondRoot, thirdRoot])
         await store.refreshRoots()
         store.pinGitLabMe("yuki-me", host: "gitlab.example.com")
-        check("a GitLab root is watched by its nested slug, on its host",
-              store.commsSettings.repos == ["o/r", "o/second", "g/sub/third"]
-                && store.commsSettings.gitlabHosts == ["g/sub/third": "gitlab.example.com"])
+        check("a GitLab root is watched by its key, its host before its nested slug",
+              store.commsSettings.repos == ["o/r", "o/second", "gitlab.example.com/g/sub/third"]
+                && store.commsSettings.gitlabHosts == ["gitlab.example.com/g/sub/third": "gitlab.example.com"])
         ghCalls = []
-        let onGitLab = targeted([CommsAsk(.review, 90300, repo: "g/sub/third"),
-                                 CommsAsk(.fixIssue, 90304, repo: "g/sub/third")])
+        let onGitLab = targeted([CommsAsk(.review, 90300, repo: "gitlab.example.com/g/sub/third"),
+                                 CommsAsk(.fixIssue, 90304, repo: "gitlab.example.com/g/sub/third")])
         await apply(onGitLab)
         check("…its merge request and issue are asked of glab on its host: \(ghCalls)",
               Set(ghCalls) == [["api", "--hostname", "gitlab.example.com",
                                "projects/g%2Fsub%2Fthird/merge_requests/90300"],
                               ["api", "--hostname", "gitlab.example.com",
                                "projects/g%2Fsub%2Fthird/issues/90304"]])
-        if case .review(let cfg)? = asked("review:g/sub/third#90300")?.config {
+        if case .review(let cfg)? = asked("review:gitlab.example.com/g/sub/third#90300")?.config {
             check("…and queued to run there as glab's user, told it is on GitLab",
                   outcome(onGitLab[0]).hasPrefix("queued") && cfg.me == "yuki-me"
                     && cfg.buildPrompt().contains("hosted on GitLab at gitlab.example.com")
-                    && tasked("review:g/sub/third#90300")?.job.directory == thirdRoot
-                    && tasked("review:g/sub/third#90300")?.job.prURL
+                    && tasked("review:gitlab.example.com/g/sub/third#90300")?.job.directory == thirdRoot
+                    && tasked("review:gitlab.example.com/g/sub/third#90300")?.job.prURL
                         == "https://gitlab.example.com/g/sub/third/-/merge_requests/90300"
-                    && asked("review:g/sub/third#90300")?.author == "yuki")
+                    && asked("review:gitlab.example.com/g/sub/third#90300")?.author == "yuki")
         } else {
             check("…and queued to run there as glab's user, told it is on GitLab", false)
         }
-        check("…the issue too", tasked("issues:g/sub/third#90304")?.job.directory == thirdRoot)
+        check("…the issue too, carrying its link on that host",
+              tasked("issues:gitlab.example.com/g/sub/third#90304")?.job.directory == thirdRoot
+                && tasked("issues:gitlab.example.com/g/sub/third#90304")?.job.prURL
+                    == "https://gitlab.example.com/g/sub/third/-/issues/90304")
         let glabMisses = [90301, 90302, 90303].map { targeted([CommsAsk(.review, $0, repo: "g/sub/third")]) }
         for miss in glabMisses { await apply(miss) }
         check("GitLab's 404 Not found is no such merge request: \(outcome(glabMisses[0][0]))",
@@ -1654,10 +1660,10 @@ enum CommsTest {
         check("…its 404 Project Not Found a lookup that failed: \(outcome(glabMisses[1][0]))",
               outcome(glabMisses[1][0]).hasPrefix("couldn't ask GitLab about PR third#90302 (")
                 && outcome(glabMisses[1][0]).contains("404 Project Not Found")
-                && asked("review:g/sub/third#90302") == nil)
+                && asked("review:gitlab.example.com/g/sub/third#90302") == nil)
         check("…and a merged one is not open: \(outcome(glabMisses[2][0]))",
               outcome(glabMisses[2][0]) == "PR third#90303 is merged, so nothing was queued"
-                && asked("review:g/sub/third#90303") == nil)
+                && asked("review:gitlab.example.com/g/sub/third#90303") == nil)
         store.requestedWork.removeAll { $0.key.contains("g/sub/third") }
         store.queuedTasks.removeAll { $0.id.contains("g/sub/third") }
         await useRoots([primaryRoot, secondRoot])
@@ -1678,16 +1684,28 @@ enum CommsTest {
               outcome(bumpSecond[0]) == "moved review:o/second#90210 to the front of its band"
                 && band(1).first == "review:o/second#90210")
 
-        // An issue fix's run is known by its label alone, which names the repo.
-        store.pinAgentRows([run("r30", nil, "issues", "Issues · second#90230 · deep")])
+        // An issue fix's run is known by the issue link it records, whatever its label.
+        store.pinAgentRows([run("r31", nil, "issues", "Issues · second#90230 · deep",
+                                link: "https://gitlab.example.com/o/second/-/issues/90230")])
+        let fixBesideGitLab = targeted([CommsAsk(.fixIssue, 90230, repo: "o/second")])
+        await apply(fixBesideGitLab)
+        check("a fix running in a GitLab project of a root's slug is not that root's issue's, "
+              + "its label alike: \(outcome(fixBesideGitLab[0]))",
+              outcome(fixBesideGitLab[0]).hasPrefix("queued") && tasked("issues:o/second#90230") != nil)
+        store.requestedWork.removeAll { $0.key == "issues:o/second#90230" }
+        store.queuedTasks.removeAll { $0.id == "issues:o/second#90230" }
+        store.pinAgentRows([run("r30", nil, "issues", "Issues · second#90230 · deep",
+                                link: "https://github.com/o/second/issues/90230")])
         let fixSecond = targeted([CommsAsk(.fixIssue, 90230, repo: "o/second")])
         let fixPrimary = targeted([CommsAsk(.fixIssue, 90230)])
         await apply(fixSecond + fixPrimary)
         check("a fix of an issue an agent is fixing in that root is not queued again",
               outcome(fixSecond[0]) == "already running" && tasked("issues:o/second#90230") == nil)
-        check("…while the same number in the primary root is",
+        check("…while the same number in the primary root is, carrying its issue's link and no PR",
               outcome(fixPrimary[0]).hasPrefix("queued") && tasked("issues:o/r#90230") != nil
-                && tasked("issues:o/r#90230")?.job.directory == primaryRoot)
+                && tasked("issues:o/r#90230")?.job.directory == primaryRoot
+                && tasked("issues:o/r#90230")?.job.prURL == "https://github.com/o/r/issues/90230"
+                && tasked("issues:o/r#90230")?.job.prNumber == nil)
         store.pinAgentRows([])
 
         let investigateSecond = CommsTickResult.Item(

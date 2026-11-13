@@ -53,10 +53,8 @@ extension PRRef.LocalRepo {
         return named.enumerated()
             .sorted { rank($0) < rank($1) }
             .map(\.element.repo)
-            .filter { seen.insert($0.identity).inserted }
+            .filter { seen.insert($0.key).inserted }
     }
-
-    var identity: String { "\(host)/\(slug.lowercased())" }
 
     /// The coordinates a config with this home targets: the home's, else
     /// `assets/config.json`'s.
@@ -196,7 +194,7 @@ public enum RepoRoots {
                 ? PRRef.LocalRepo(owner: configured.owner, repo: configured.repo, path: path) : nil
             guard let pick = own.first(where: { $0.slug.lowercased() == want })
                     ?? renamed ?? entries.first,
-                  seen.insert(pick.identity).inserted else { continue }
+                  seen.insert(pick.key).inserted else { continue }
             out.append(pick)
         }
         if out.isEmpty, let first = paths.first {

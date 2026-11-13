@@ -71,7 +71,7 @@ enum TrackTest {
         //     pid cannot speak for — ones nobody here dispatched. The spawning shell's
         //     argv holds an unexpanded `$(cat …)` rather than the prompt, and another
         //     repo's agent is not ours.
-        let scan = AgentProbes.liveAgents(dump, slugs: ["software-mansion/argent"]).value ?? [:]
+        let scan = AgentProbes.liveAgents(dump, keys: ["software-mansion/argent"]).value ?? [:]
         check("the scan finds this repo's agents and nothing else",
               Set(scan.keys) == ["software-mansion/argent#436", "software-mansion/argent#369"])
         check("…each on the tty its screen is read from",
@@ -85,10 +85,10 @@ enum TrackTest {
           300 ttys003    01:00 claude Review PR #845 in software-mansion/argent.
           """)
         check("a held agent is named only when it is its PR's last",
-              AgentProbes.liveAgents(twice, slugs: ["software-mansion/argent"],
+              AgentProbes.liveAgents(twice, keys: ["software-mansion/argent"],
                                      heldPIDs: [100, 300]).value
                 == ["software-mansion/argent#844": "ttys002", "software-mansion/argent#845": "ttys003"]
-                && AgentProbes.liveAgents(twice, slugs: ["software-mansion/argent"])
+                && AgentProbes.liveAgents(twice, keys: ["software-mansion/argent"])
                     .value?["software-mansion/argent#844"] == "ttys001")
 
         // 2c. The two sources that have to meet on a tty do not spell it the same way:
@@ -368,7 +368,7 @@ enum TrackTest {
             AgentProbes.resetCache()   // each pass is its own look at the machine
             let at = Date().timeIntervalSince1970
             let records = AgentRegistry.adoptPids(AgentRegistry.load())
-            let evidence = AgentProbes.gather(records: records, now: at, slugs: ["o/r"],
+            let evidence = AgentProbes.gather(records: records, now: at, keys: ["o/r"],
                                               directory: AgentSpawner.repoPath,
                                               meshEnabled: false, meshState: nil,
                                               merged: .present([]),

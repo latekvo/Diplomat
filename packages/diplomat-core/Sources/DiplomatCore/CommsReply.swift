@@ -340,8 +340,8 @@ public enum CommsReplier {
 
     /// The answer as one paragraph of at most `answer.maxChars`, with nothing Slack would
     /// turn into a mention, a broadcast or a link the project's own prefixes do not start:
-    /// those of `answer.linkPrefixes` filled with `repo` (a `CommsSettings.canonical`
-    /// slug), and those that name no repository when `repo` is `assets/config.json`'s.
+    /// those of `answer.linkPrefixes` filled with `repo`'s project (a `CommsSettings.canonical`
+    /// key), and those that name no repository when `repo` is `assets/config.json`'s.
     public static func sanitize(_ text: String, settings: CommsSettings, repo: String = "",
                                 assets: CoreAssets.CommsModel) -> String {
         var s = text
@@ -418,7 +418,7 @@ public enum CommsAnswerer {
         }
     }
 
-    /// About `repo`, a `CommsSettings.canonical` slug.
+    /// About `repo`, a `CommsSettings.canonical` key.
     public static func prompt(settings: CommsSettings, repo: String = "", name: String) -> String {
         guard let a = (try? CoreAssets.comms())?.answer else { return "" }
         let (owner, project) = settings.coordinates(of: repo)

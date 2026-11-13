@@ -244,10 +244,11 @@ func gitlabSmoke() async throws {
                          kind: .issues).number == nil,
           "an issue field takes /-/issues and /-/work_items links, not a merge request's")
 
-    check(PRRef.itemKey(url: mr) == "group/sub/proj#12"
-          && PRRef.itemKey(url: "https://gitlab.example.com/Group/Sub/Proj/-/issues/7?x=1") == "group/sub/proj#7"
-          && PRRef.itemKey(url: "gitlab.example.com:8443/g/p/-/work_items/3/") == "g/p#3",
-          "GitLab merge request, issue and work item URLs are keyed by slug and iid")
+    check(PRRef.itemKey(url: mr) == "gitlab.example.com/group/sub/proj#12"
+          && PRRef.itemKey(url: "https://GitLab.Example.com/Group/Sub/Proj/-/issues/7?x=1")
+              == "gitlab.example.com/group/sub/proj#7"
+          && PRRef.itemKey(url: "gitlab.example.com:8443/g/p/-/work_items/3/") == "gitlab.example.com/g/p#3",
+          "GitLab merge request, issue and work item URLs are keyed by host, slug and iid")
     for bad in ["https://gitlab.example.com/group/proj/merge_requests/12",
                 "https://gitlab.example.com/group/proj/-/merge_requests/0",
                 "https://gitlab.example.com/group/proj/-/pipelines/4",
@@ -255,7 +256,8 @@ func gitlabSmoke() async throws {
                 "https://gitlab.example.com/group/proj/-/issues/4x"] {
         check(PRRef.itemKey(url: bad) == nil, "\(bad) is no item")
     }
-    check(PRRef.splitItemKey("group/sub/proj#12").map { "\($0.slug)|\($0.number)" } == "group/sub/proj|12"
+    check(PRRef.splitItemKey("gitlab.example.com/group/sub/proj#12").map { "\($0.root)|\($0.number)" }
+              == "gitlab.example.com/group/sub/proj|12"
           && PRRef.splitSlug("group/sub/proj").map { "\($0.owner)|\($0.repo)" } == "group/sub|proj"
           && PRRef.splitSlug("proj") == nil
           && PRRef.itemLabel(item: "group/sub/proj#12", roots: 2) == "proj#12",
@@ -296,6 +298,109 @@ func gitlabSmoke() async throws {
                                    prURL: "https://gitlab.example.com/group/sub/proj/-/issues/12",
                                    headSha: "abc") == "",
           "a merge request's work and ledger keys carry its host and namespace")
+
+    section("gitlab: keys (shared parity fixture)")
+    // keys: roots -> key + #5's item key; urls -> item key; split -> [root key, n]; prompts -> the
+    // live-agent scan's items among the given root keys.
+    let keyFixtures = try CoreAssets.assetsDir().deletingLastPathComponent()
+        .appendingPathComponent("Tests/fixtures/gitlab")
+    let keysIn = try JSONSerialization.jsonObject(
+        with: Data(contentsOf: keyFixtures.appendingPathComponent("keys.input.json"))) as? [String: Any] ?? [:]
+    let keysWant = try JSONSerialization.jsonObject(
+        with: Data(contentsOf: keyFixtures.appendingPathComponent("keys.expected.json"))) as? [String: Any] ?? [:]
+    let keyRoots: [Any] = ((keysIn["roots"] as? [[String: String]]) ?? []).map { r in
+        let root = PRRef.LocalRepo(owner: r["owner"] ?? "", repo: r["repo"] ?? "", path: "",
+                                   host: r["host"] ?? PRRef.LocalRepo.github)
+        return ["key": root.key,
+                "item": PRRef.itemKey(owner: root.owner, repo: root.repo, number: 5, host: root.host)]
+    }
+    let keyURLs: [Any] = ((keysIn["urls"] as? [String]) ?? []).map { PRRef.itemKey(url: $0) ?? NSNull() }
+    let keySplits: [Any] = ((keysIn["split"] as? [String]) ?? []).map {
+        PRRef.splitItemKey($0).map { [$0.root, $0.number] as [Any] } ?? NSNull()
+    }
+    let goldens = try CoreAssets.assetsDir().appendingPathComponent("golden-prompts")
+    let keyPrompts: [Any] = try ((keysIn["prompts"] as? [[String: Any]]) ?? []).map { p in
+        let text = try (p["golden"] as? String).map {
+            try String(contentsOf: goldens.appendingPathComponent($0), encoding: .utf8)
+        } ?? (p["text"] as? String ?? "")
+        return AgentState.promptItems(text, keys: Set(p["roots"] as? [String] ?? []))
+    }
+    for (name, got) in [("roots", keyRoots), ("urls", keyURLs), ("split", keySplits),
+                        ("prompts", keyPrompts)] {
+        check(NSArray(array: got) == NSArray(array: keysWant[name] as? [Any] ?? []),
+              "keys fixture \(name): \(got)")
+    }
+
+    section("gitlab: a GitHub and a GitLab root of one slug")
+    let hubTwin = PRRef.LocalRepo(owner: "acme", repo: "widget", path: "/w/hub")
+    let labTwin = PRRef.LocalRepo(owner: "acme", repo: "widget", path: "/w/lab", host: "gitlab.example.com")
+    let twinItems = [hubTwin, labTwin].map {
+        PRRef.itemKey(owner: $0.owner, repo: $0.repo, number: 5, host: $0.host)
+    }
+    check(Set(twinItems).count == 2
+          && Set(twinItems.map { AgentTaskQueue.key(auditAction: "review", item: $0) }).count == 2
+          && twinItems.map { PRRef.splitItemKey($0)?.root } == [hubTwin.key, labTwin.key]
+          && PRRef.itemKey(url: hubTwin.webURL(.pull, number: 5)) == twinItems[0]
+          && PRRef.itemKey(url: labTwin.webURL(.pull, number: 5)) == twinItems[1],
+          "#5 of each is two items and two queue keys, each back to its own root: \(twinItems)")
+    let twinRuns = AgentState.synthesizeUntracked(
+        [], liveAgents: .present([twinItems[0]: "pts/1", twinItems[1]: "pts/2"]),
+        roots: [hubTwin, labTwin], now: 0)
+    check(twinRuns.map(\.prURL) == ["https://github.com/acme/widget/pull/5",
+                                    "https://gitlab.example.com/acme/widget/-/merge_requests/5"]
+          && twinRuns.map(\.item) == twinItems,
+          "a live agent on either is an untracked run of its own root: \(twinRuns.map(\.prURL))")
+    let twinSnaps = twinItems.map { item -> PRSnapshot in
+        PRSnapshot(number: 5, title: "", url: item.hasPrefix("gitlab")
+                       ? labTwin.webURL(.pull, number: 5) : hubTwin.webURL(.pull, number: 5),
+                   isDraft: false, mergeable: "UNKNOWN", reviewDecision: "",
+                   threadsUnresolved: 0, threadsIOwe: 0, headSha: "")
+    }
+    check(AgentTaskQueue.conflicting(twinSnaps, roots: [hubTwin, labTwin]) == [twinItems[1]],
+          "an unchecked merge status is a possible conflict on the GitLab root alone")
+    check(PRRef.parse("acme/widget#5", owner: "o", repo: "r", also: [labTwin, hubTwin]).repo == hubTwin
+          && PRRef.parse("acme/widget!5", owner: "o", repo: "r", also: [labTwin]).repo == labTwin
+          && PRRef.parse(labTwin.webURL(.pull, number: 5), owner: "o", repo: "r",
+                         also: [hubTwin, labTwin]).repo == labTwin,
+          "a shorthand with no host is the GitHub root's on a tie; a link names its own")
+    let twinComms = CommsSettings(repos: [hubTwin.key, labTwin.key],
+                                  gitlabHosts: [labTwin.key: labTwin.host])
+    check(twinComms.repos == ["acme/widget", "gitlab.example.com/acme/widget"]
+          && twinComms.gitlabHost(labTwin.key) == "gitlab.example.com"
+          && twinComms.gitlabHost(hubTwin.key) == nil
+          && twinComms.coordinates(of: labTwin.key) == ("acme", "widget")
+          && twinComms.canonical("GitLab.Example.com/Acme/Widget") == labTwin.key,
+          "Comms watches both by key, each on its own host, a GitLab one's project its slug")
+    check(CommsDecision.ownRepoText("see https://gitlab.example.com/acme/widget/-/merge_requests/5 and !7",
+                                    settings: twinComms, repo: labTwin.key)
+              == "see https://gitlab.example.com/acme/widget/-/merge_requests/5 and !7",
+          "a GitLab root's own link stays in its own text")
+    let otherRoot = PRRef.LocalRepo(owner: "o", repo: "r", path: "/w/o")
+    check(PRRef.root(named: "Acme/Widget", in: [labTwin, hubTwin]) == hubTwin
+          && PRRef.root(named: "acme/widget", in: [labTwin]) == labTwin
+          && PRRef.root(named: "GitLab.Example.com/acme/widget", in: [hubTwin, labTwin]) == labTwin
+          && PRRef.root(named: "o/gone", in: [hubTwin, labTwin]) == nil,
+          "a name is a root's key, else its slug, a GitHub root's first")
+    check(PRRef.repo(ofKey: labTwin.key).webURL(.issues, number: 5)
+              == "https://gitlab.example.com/acme/widget/-/issues/5"
+          && PRRef.repo(ofKey: "gitlab.example.com/g/sub/p").slug == "g/sub/p"
+          && PRRef.repo(ofKey: hubTwin.key).webURL(.pull, number: 5) == "https://github.com/acme/widget/pull/5",
+          "a key with no root names its repo: a host first is GitLab's, else GitHub's")
+    check([hubTwin, labTwin, otherRoot].map { PRRef.rootLabel($0, roots: [hubTwin, labTwin, otherRoot]) }
+              == ["acme/widget", "gitlab.example.com/acme/widget", "o/r"]
+          && PRRef.rootLabel(labTwin, roots: [labTwin, otherRoot]) == "acme/widget",
+          "a GitLab root is named by its host only beside a root of its slug")
+    let strayRuns = AgentState.synthesizeUntracked(
+        [], liveAgents: .present(["gitlab.example.com/g/p#9": "pts/3"]), roots: [hubTwin], now: 0)
+    check(strayRuns.map(\.prURL) == ["https://gitlab.example.com/g/p/-/merge_requests/9"],
+          "an untracked agent on a GitLab key no root has is linked on its own host: \(strayRuns.map(\.prURL))")
+    var twinFix = IssueConfig(target: .specific, specificIssue: "5")
+    twinFix.home = labTwin
+    var twinSweep = twinFix
+    twinSweep.target = .all
+    check(twinFix.singleLink == "https://gitlab.example.com/acme/widget/-/issues/5"
+          && twinSweep.singleLink == nil,
+          "a fix of one issue records that issue's link on its root's host; a sweep none")
 
     section("gitlab: adapters (shared parity fixtures)")
     let fixtures = try CoreAssets.assetsDir().deletingLastPathComponent()
@@ -427,7 +532,7 @@ func gitlabSmoke() async throws {
         snap("https://github.com/o/r/pull/5", "CONFLICTING"),
         snap("https://gitlab.example.com/x/y/-/merge_requests/6", "UNKNOWN"),
     ], roots: [glRoot, ghRoot])
-    check(owed == ["g/sub/p#1", "g/sub/p#2", "o/r#5"],
+    check(owed == ["gitlab.example.com/g/sub/p#1", "gitlab.example.com/g/sub/p#2", "o/r#5"],
           "a conflict fix stays owed on a CONFLICTING PR, and on a GitLab root's merge request "
           + "GitLab has not checked: \(owed.sorted())")
 

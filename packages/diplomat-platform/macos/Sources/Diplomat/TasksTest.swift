@@ -286,6 +286,9 @@ enum TasksTest {
         let plusJob = store.goalPlusJob(plus, number: 1899)
         check("the + works in its issue's root, not the primary's",
               plusJob.directory == configuredRoot.path, "\(plusJob.directory ?? "nil")")
+        check("…and records its issue's link, no PR",
+              plusJob.prURL == "https://github.com/\(owner)/\(repo)/issues/1899" && plusJob.prNumber == nil,
+              "\(plusJob.prURL ?? "nil")")
         // Banned and in a scratch feed: were the root check missing, the dispatch would
         // stop at the ban and say so there, rather than open a terminal.
         let bans = scratch.appendingPathComponent("bans")

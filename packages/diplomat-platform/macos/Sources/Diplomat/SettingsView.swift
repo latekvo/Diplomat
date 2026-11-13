@@ -340,7 +340,8 @@ struct SettingsView: View {
         guard !guessed, let root = roots.first(where: { $0.path == path }) else {
             return ("No GitHub or GitLab remote, or a repo an earlier root already names - skipped", true)
         }
-        return (i == 0 ? "\(root.slug) - primary" : root.slug, false)
+        let name = PRRef.rootLabel(root, roots: roots)
+        return (i == 0 ? "\(name) - primary" : name, false)
     }
 
     private func chooseRepoRoots() {

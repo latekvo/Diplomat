@@ -283,6 +283,7 @@ public enum AgentState {
         public var runID: String
         public var dispatchedAt: TimeInterval
         public var prNumber: Int?
+        /// The link of the PR or issue the run is about; "" for neither.
         public var prURL: String
         public var kind: String
         public var label: String
@@ -1095,24 +1096,36 @@ public enum AgentState {
 
     // MARK: - Untracked agents
 
-    /// The items an agent's prompt names, in order: each `PR #<n> in <slug>` whose slug is
-    /// one of `slugs` (lowercase). The longest leading run of path segments that is a slug
-    /// counts; a trailing `.` no slug has ends the sentence, not the repo name.
-    public static func promptItems(_ text: String, slugs: Set<String>) -> [String] {
-        guard let re = try? NSRegularExpression(pattern: #"PR #([0-9]+) in ([\w.-]+(?:/[\w.-]+)+)"#)
+    /// The items an agent's prompt names, in order: each `PR #<n> in <slug>` whose root is
+    /// one of `keys` (`LocalRepo.key`). A slug the prompt's GitLab note names ("hosted on
+    /// GitLab at <host> (project <slug>)") is that host's root, any other a GitHub one.
+    /// The longest leading run of path segments that is a root counts; a trailing `.` no
+    /// root has ends the sentence, not the repo name.
+    public static func promptItems(_ text: String, keys: Set<String>) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: #"PR #([0-9]+) in ([\w.-]+(?:/[\w.-]+)+)"#),
+              let note = try? NSRegularExpression(
+                pattern: #"hosted on GitLab at ([A-Za-z0-9.-]+) \(project ([\w.-]+(?:/[\w.-]+)+)\)"#)
         else { return [] }
+        let whole = NSRange(text.startIndex..., in: text)
+        var hosts: [String: String] = [:]
+        for m in note.matches(in: text, range: whole) {
+            guard let h = Range(m.range(at: 1), in: text), let s = Range(m.range(at: 2), in: text)
+            else { continue }
+            hosts[text[s].lowercased()] = hosts[text[s].lowercased()] ?? text[h].lowercased()
+        }
+        func key(_ slug: String) -> String { hosts[slug].map { "\($0)/\(slug)" } ?? slug }
         var out: [String] = []
-        for m in re.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+        for m in re.matches(in: text, range: whole) {
             guard let n = Range(m.range(at: 1), in: text).flatMap({ Int(text[$0]) }),
                   let p = Range(m.range(at: 2), in: text) else { continue }
             let segments = text[p].lowercased().split(separator: "/")
             for count in stride(from: segments.count, through: 2, by: -1) {
                 var slug = segments.prefix(count).joined(separator: "/")
-                while count == segments.count, !slugs.contains(slug), slug.hasSuffix(".") {
+                while count == segments.count, !keys.contains(key(slug)), slug.hasSuffix(".") {
                     slug.removeLast()
                 }
-                if slugs.contains(slug) {
-                    out.append("\(slug)#\(n)")
+                if keys.contains(key(slug)) {
+                    out.append("\(key(slug))#\(n)")
                     break
                 }
             }
@@ -1186,8 +1199,8 @@ public enum AgentState {
     /// They count as automatic. An agent whose trigger is unknown spending a bay defers
     /// work; the opposite error dispatches a second agent onto a PR that has one.
     ///
-    /// A slug that is a GitLab root in `roots` links its merge request, else a github.com
-    /// PR, so the record's `item` is the scan's.
+    /// Its link is the PR's in the root of `roots` its item key names, else in the repo the
+    /// key names (`PRRef.repo(ofKey:)`), so the record's `item` is the scan's.
     public static func synthesizeUntracked(_ records: [RunRecord],
                                            liveAgents: Observation<[String: String]>,
                                            roots: [PRRef.LocalRepo],
@@ -1213,10 +1226,8 @@ public enum AgentState {
         }
         let known = Set(out.compactMap(\.item))
         for item in Set(live.keys).subtracting(known).sorted() {
-            guard let (slug, pr) = PRRef.splitItemKey(item) else { continue }
-            let url = roots.first { $0.isGitLab && $0.slug.lowercased() == slug }?
-                .webURL(.pull, number: pr)
-                ?? "https://github.com/\(slug)/pull/\(pr)"
+            guard let (key, pr) = PRRef.splitItemKey(item) else { continue }
+            let url = (roots.first { $0.key == key } ?? PRRef.repo(ofKey: key)).webURL(.pull, number: pr)
             out.append(RunRecord(runID: "untracked:\(item)", dispatchedAt: now,
                                  prNumber: pr, prURL: url,
                                  source: AgentDispatchGate.Source.auto.rawValue,

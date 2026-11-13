@@ -41,21 +41,24 @@ public enum CommsClassifier {
 
     /// `classifier.instructions`, its repository wording `classifier.repos.one`'s for one
     /// watched repository and `many`'s for several, overlaid by `repos.gitlab`'s once one
-    /// is on GitLab.
+    /// is on GitLab. Several are named by their keys, the `repo` values the schema takes,
+    /// the primary's `{owner}/{repo}` too; one by its project path.
     public static func prompt(settings: CommsSettings) -> String {
         guard let c = (try? CoreAssets.comms())?.classifier else { return "" }
         let names = settings.repos.map { String($0.split(separator: "/").last ?? "") }
-        let hosted = settings.repos.map { slug -> String in
-            let host = settings.gitlabHost(slug)
+        let hosted = settings.repos.map { key -> String in
+            let host = settings.gitlabHost(key)
             return CommsText.fill(host == nil ? c.repos.gitlab.hostedGitHub : c.repos.gitlab.hostedGitLab,
-                                  ["slug": slug, "host": host ?? ""])
+                                  ["slug": key, "host": host ?? ""])
         }
-        let base = ["owner": settings.owner, "repo": settings.repo,
+        let many = settings.repos.count > 1
+        let primary = many ? PRRef.splitSlug(settings.repos[0]) ?? ("", "")
+            : (settings.owner, settings.repo)
+        let base = ["owner": primary.0, "repo": primary.1,
                     "list": CommsText.list(settings.repos, and: "and"),
                     "example": names.dropFirst().first ?? "",
                     "host": settings.gitlabHost("") ?? "",
                     "hosted": CommsText.list(hosted, and: "and")]
-        let many = settings.repos.count > 1
         var wording = many ? c.repos.many : c.repos.one
         if settings.repos.contains(where: { settings.gitlabHost($0) != nil }) {
             wording.merge(many ? c.repos.gitlab.many : c.repos.gitlab.one) { $1 }
@@ -414,7 +417,7 @@ public struct CommsTickResult: Codable, Equatable, Sendable {
         /// own action, row in the log and queue entry; last first, as each goes to the
         /// front of its band and the first asked for should run first. A decision with one
         /// target or none is one item, as it stands. A row past the first is
-        /// `<id>#<number>`, or `<id>#<owner/repo>#<number>` outside the primary repository,
+        /// `<id>#<number>`, or `<id>#<repo key>#<number>` outside the primary repository,
         /// then `#<action>` when an earlier target shares its repository and number (GitLab's
         /// merge request and issue).
         public static func targets(_ message: CommsMessage, _ decision: CommsDecision,

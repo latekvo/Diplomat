@@ -30,8 +30,13 @@ public struct PRRef: Equatable {
             self.host = host.lowercased()
         }
 
+        /// The project path the forge's API takes, and what labels show.
         public var slug: String { "\(owner)/\(repo)" }
         public var isGitLab: Bool { host != LocalRepo.github }
+        /// The root's identity, lowercased: `slug` on GitHub, `host/slug` on GitLab, so a
+        /// GitHub and a GitLab project of one slug are two roots. Its items' keys are
+        /// `key#N` (`PRRef.itemKey`). Python twin: `LocalRepo.key`.
+        public var key: String { (isGitLab ? "\(host)/\(slug)" : slug).lowercased() }
 
         public func webURL(_ kind: Kind, number: Int) -> String {
             guard isGitLab else { return "https://github.com/\(slug)/\(kind.rawValue)/\(number)" }
@@ -89,7 +94,8 @@ public struct PRRef: Equatable {
     /// Parse `raw` against the expected `owner`/`repo` on `host`, then `also` in order (all
     /// compared case-insensitively). `kind` picks the URL path segment a pasted link must
     /// carry — `pull` (`merge_requests` on GitLab) for a PR field, `issues` for an issue
-    /// one. A URL matches a repo on its own host only; the shorthand names no host.
+    /// one. A URL matches a repo on its own host only; the shorthand names no host and
+    /// matches any, a listed GitHub repo before a GitLab one.
     public static func parse(_ raw: String, owner: String, repo: String,
                              host: String = LocalRepo.github,
                              kind: Kind = .pull, also: [LocalRepo] = []) -> PRRef {
@@ -138,7 +144,8 @@ public struct PRRef: Equatable {
                 && repo.caseInsensitiveCompare(r) == .orderedSame
         }
         if same(want.host, want.owner, want.repo) { return PRRef(number: n, repoMismatch: false) }
-        if let local = also.first(where: { same($0.host, $0.owner, $0.repo) }) {
+        let listed = also.filter { same($0.host, $0.owner, $0.repo) }
+        if let local = listed.first(where: { !$0.isGitLab }) ?? listed.first {
             return PRRef(number: n, repoMismatch: false, repo: local)
         }
         return PRRef(number: n, repoMismatch: true)
@@ -159,38 +166,67 @@ public struct PRRef: Equatable {
 // MARK: - Item identity across repos
 
 extension PRRef {
-    /// One PR or issue across every repo this machine works: `owner/repo#n`, lowercased.
-    /// GitHub numbers PRs and issues in one space per repo, so the key carries no kind;
-    /// GitLab's iids number them separately, and the queue tells the two apart by verb. The
-    /// key names no host. Python twin: `prref.item_key`.
-    public static func itemKey(owner: String, repo: String, number: Int) -> String {
-        "\(owner.lowercased())/\(repo.lowercased())#\(number)"
+    /// One PR or issue across every repo this machine works: its root's `LocalRepo.key`
+    /// and number, `owner/repo#n` on GitHub and `host/ns/proj#n` on GitLab, lowercased.
+    /// The two cannot clash: a host has a dot, a GitHub owner never does. GitHub numbers
+    /// PRs and issues in one space per repo, so the key carries no kind; GitLab's iids
+    /// number them separately, and the queue tells the two apart by verb. Python twin:
+    /// `prref.item_key`.
+    public static func itemKey(owner: String, repo: String, number: Int,
+                               host: String = LocalRepo.github) -> String {
+        "\(LocalRepo(owner: owner, repo: repo, path: "", host: host).key)#\(number)"
     }
 
     /// The item key of a github.com PR or issue URL, or a GitLab merge request or issue one
-    /// (GitLab also serves issues at `work_items`), any trailing path or query; nil for
-    /// anything else.
+    /// (GitLab also serves issues at `work_items`; the port is dropped), any trailing path
+    /// or query; nil for anything else.
     public static func itemKey(url: String) -> String? {
         let s = url.trimmingCharacters(in: .whitespacesAndNewlines)
         if let g = firstMatch(s, #"^(?:https?://)?(?:www\.)?github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues)/([0-9]+)(?:[/?#]|$)"#),
            let n = Int(g[3]), n > 0 {
             return itemKey(owner: g[1], repo: g[2], number: n)
         }
-        guard let g = firstMatch(s, #"^(?:https?://)?[A-Za-z0-9.-]+(?::[0-9]+)?/((?:[\w.-]+/)*[\w.-]+)/([\w.-]+)/-/(?:merge_requests|issues|work_items)/([0-9]+)(?:[/?#]|$)"#),
-              let n = Int(g[3]), n > 0 else { return nil }
-        return itemKey(owner: g[1], repo: g[2], number: n)
+        guard let g = firstMatch(s, #"^(?:https?://)?([A-Za-z0-9.-]+)(?::[0-9]+)?/((?:[\w.-]+/)*[\w.-]+)/([\w.-]+)/-/(?:merge_requests|issues|work_items)/([0-9]+)(?:[/?#]|$)"#),
+              let n = Int(g[4]), n > 0 else { return nil }
+        return itemKey(owner: g[2], repo: g[3], number: n, host: g[1])
     }
 
-    /// An item key's slug and number, or nil when `key` is not one. The slug's owner may be
-    /// a nested GitLab namespace.
-    public static func splitItemKey(_ key: String) -> (slug: String, number: Int)? {
+    /// An item key's root key (`LocalRepo.key`) and number, or nil when `key` is not one.
+    public static func splitItemKey(_ key: String) -> (root: String, number: Int)? {
         guard let hash = key.lastIndex(of: "#") else { return nil }
-        let slug = String(key[..<hash])
+        let root = String(key[..<hash])
         let digits = String(key[key.index(after: hash)...])
-        let segments = slug.split(separator: "/", omittingEmptySubsequences: false)
+        let segments = root.split(separator: "/", omittingEmptySubsequences: false)
         guard segments.count >= 2, !segments.contains(where: \.isEmpty),
               isDigits(digits), let n = Int(digits), n > 0 else { return nil }
-        return (slug, n)
+        return (root, n)
+    }
+
+    /// The one of `roots` whose key is `name`, else whose slug is (a name with no host, a
+    /// GitHub root's first), any case; nil for neither. Python twin: `prref.root_named`.
+    public static func root(named name: String, in roots: [LocalRepo]) -> LocalRepo? {
+        let want = name.lowercased()
+        let slugs = roots.filter { $0.slug.lowercased() == want }
+        return roots.first { $0.key == want } ?? slugs.first { !$0.isGitLab } ?? slugs.first
+    }
+
+    /// The repo a `LocalRepo.key` names, with no checkout: a GitLab project when its first
+    /// segment has a dot (a host), else a GitHub repo. Python twin: `prref.repo_of_key`.
+    public static func repo(ofKey key: String) -> LocalRepo {
+        let parts = key.split(separator: "/", maxSplits: 1).map(String.init)
+        let (host, rest) = parts.count == 2 && parts[0].contains(".")
+            ? (parts[0], parts[1]) : (LocalRepo.github, key)
+        let (owner, repo) = splitSlug(rest) ?? ("", rest)
+        return LocalRepo(owner: owner, repo: repo, path: "", host: host)
+    }
+
+    /// How `root` is named among `roots` on screen: its slug, or `host/slug` for a GitLab
+    /// root whose slug another of `roots` has too. Python twin: `prref.root_label`.
+    public static func rootLabel(_ root: LocalRepo, roots: [LocalRepo]) -> String {
+        let shared = roots.contains {
+            $0.key != root.key && $0.slug.lowercased() == root.slug.lowercased()
+        }
+        return root.isGitLab && shared ? "\(root.host)/\(root.slug)" : root.slug
     }
 
     public static func splitSlug(_ slug: String) -> (owner: String, repo: String)? {
@@ -199,7 +235,7 @@ extension PRRef {
     }
 
     /// A key persisted by a single-repo build, a bare `"N"`, as the item key of `N` in the
-    /// `primary` root (its slug); any other key unchanged.
+    /// `primary` root (its `LocalRepo.key`); any other key unchanged.
     public static func migrateItemKey(_ key: String, primary: String) -> String {
         isDigits(key) ? "\(primary.lowercased())#\(key)" : key
     }
@@ -218,8 +254,8 @@ extension PRRef {
     /// How a job label names an item: `#N` while one root is loaded, `<repo>#N` (the repo
     /// name alone) once several are.
     public static func itemLabel(item: String, roots: Int) -> String {
-        guard let (slug, n) = splitItemKey(item) else { return item }
-        guard roots > 1, let repo = slug.split(separator: "/").last else { return "#\(n)" }
+        guard let (root, n) = splitItemKey(item) else { return item }
+        guard roots > 1, let repo = root.split(separator: "/").last else { return "#\(n)" }
         return "\(repo)#\(n)"
     }
 

@@ -142,6 +142,28 @@ enum RepoPathsTest {
         check("a checkout on a host glab is configured for is a GitLab root",
               gitlab.roots == ["g/sub/proj", "o/early"] && gitlab.complete && gitlab.primary,
               "got \(gitlab)")
+        let twinGH = scratch.appendingPathComponent("twin-gh").path
+        let twinGL = scratch.appendingPathComponent("twin-gl").path
+        git("init", "-q", twinGH)
+        git("-C", twinGH, "remote", "add", "origin", "git@github.com:o/twin.git")
+        git("init", "-q", twinGL)
+        git("-C", twinGL, "remote", "add", "origin", "git@gl.example.org:O/Twin.git")
+        final class Roots { var value: [PRRef.LocalRepo] = [] }
+        let twins = Roots()
+        let resolvedTwins = DispatchSemaphore(value: 0)
+        Thread {
+            twins.value = RepoPaths.resolved(for: [early, twinGH, twinGL], now: t0).roots
+            resolvedTwins.signal()
+        }.start()
+        resolvedTwins.wait()
+        check("a GitHub repo and a GitLab project of one slug are two roots",
+              twins.value.map(\.key) == ["o/early", "o/twin", "gl.example.org/o/twin"],
+              "got \(twins.value.map(\.key))")
+        let twinLines = [twinGH, twinGL].enumerated().map {
+            SettingsView.rootStatus($0.offset + 1, $0.element, roots: twins.value, guessed: false).text
+        }
+        check("…and Settings names the GitLab one by its host, the GitHub one by its slug",
+              twinLines == ["o/twin", "gl.example.org/O/Twin"], "got \(twinLines)")
         RepoPaths.invalidateRoots()
 
         print("repopaths: a root's line in Settings")

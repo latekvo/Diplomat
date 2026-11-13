@@ -257,7 +257,7 @@ enum AgentProbes {
 
     /// Item → the tty of an agent visible in `ps` by its prompt: the text on its command
     /// line, or for a 2.x agent its session's opening message (`scan`), naming a PR in
-    /// one of `slugs` (`AgentState.promptItems`).
+    /// a root whose key is in `keys` (`AgentState.promptItems`).
     ///
     /// The pre-registry identity mechanism, kept for the two questions a pid cannot answer:
     /// agents this applet has no record of at all (`AgentState.synthesizeUntracked`), and
@@ -275,9 +275,9 @@ enum AgentProbes {
     /// when no other is up on its PR. Its record reads its tty off the process; the run
     /// that needs this scan's is one with no pid, and named its neighbour's it has no
     /// screen at all.
-    static func liveAgents(_ dump: Observation<String>, slugs: Set<String>,
+    static func liveAgents(_ dump: Observation<String>, keys: Set<String>,
                            heldPIDs: Set<Int> = []) -> Observation<[String: String]> {
-        scan(dump, slugs: slugs, heldPIDs: heldPIDs).agents
+        scan(dump, keys: keys, heldPIDs: heldPIDs).agents
     }
 
     /// `liveAgents`, plus item → the session of the 2.x TUI whose line is that item's
@@ -292,7 +292,7 @@ enum AgentProbes {
     /// not seen, like a line that names no PR.
     ///
     /// `openingPrompt` is the sweep self-test's seam.
-    static func scan(_ dump: Observation<String>, slugs: Set<String>,
+    static func scan(_ dump: Observation<String>, keys: Set<String>,
                      heldPIDs: Set<Int> = [],
                      openingPrompt: (String) -> String? = {
                          OpenCodeProbe.openingPrompt(sessionID: $0)
@@ -319,7 +319,7 @@ enum AgentProbes {
             }
             let searched = session.map { openingPrompt($0) ?? "" } ?? cols.args
             let isHeld = Int(cols.pid).map(heldPIDs.contains) == true
-            for item in AgentState.promptItems(searched, slugs: slugs) {
+            for item in AgentState.promptItems(searched, keys: keys) {
                 if isHeld {
                     guard held[item] == nil else { continue }
                     held[item] = cols.tty
@@ -546,8 +546,9 @@ enum AgentProbes {
     // MARK: - GitHub and GitLab
 
     /// Which of these items (`PRRef.itemKey`) their host calls MERGED: the one terminal
-    /// outcome that outranks anything a process is doing. An item of a GitLab root in
-    /// `roots` is asked of GitLab, any other of GitHub.
+    /// outcome that outranks anything a process is doing. An item of a root in `roots` is
+    /// asked of that root's host, a GitHub key's of GitHub. A GitLab key no root has is
+    /// never asked, so it is not in the answer.
     ///
     /// One `gh` or `glab` call per PR, so this belongs on the slow refresh, not the process
     /// poll. A PR whose probe fails is simply absent from the answer; a partial answer is
@@ -556,10 +557,11 @@ enum AgentProbes {
         guard !items.isEmpty else { return .present([]) }
         var merged = Set<String>()
         for item in items.sorted() {
-            guard let (slug, n) = PRRef.splitItemKey(item) else { continue }
-            let root = roots.first { $0.isGitLab && $0.slug.lowercased() == slug }
-                ?? PRRef.splitSlug(slug).map { PRRef.LocalRepo(owner: $0.owner, repo: $0.repo, path: "") }
-            if let root, let state = try? await API.fetchPRState(number: n, root: root),
+            guard let (key, n) = PRRef.splitItemKey(item) else { continue }
+            let known = roots.first { $0.key == key }
+            let root = known ?? PRRef.repo(ofKey: key)
+            if known == nil, root.isGitLab { continue }
+            if let state = try? await API.fetchPRState(number: n, root: root),
                state == "MERGED" {
                 merged.insert(item)
             }
@@ -607,14 +609,14 @@ enum AgentProbes {
     /// Beside the evidence, the 2.x sessions a TUI in this pass's process table is
     /// attached to, for retiring runs (`OpenCodeProbe.interrupts`).
     static func gather(records: [AgentState.RunRecord], now: TimeInterval,
-                       slugs: Set<String>, directory: String,
+                       keys: Set<String>, directory: String,
                        meshEnabled: Bool, meshState: MeshSnapshot?,
                        merged: Observation<Set<String>>,
                        tokens: Observation<Bool>)
         -> (evidence: AgentState.Evidence, attached: Observation<[String]>) {
         let dump = psDump(now: now)
         let table = note("processes", processTable(dump))
-        let scanned = scan(dump, slugs: slugs,
+        let scanned = scan(dump, keys: keys,
                            heldPIDs: Set(records.compactMap(\.pid)))
         let scan = note("agent scan", scanned.agents)
         OpenCodeProbe.adopt(records, sessions: scanned.sessions, byPID: scanned.byPID,
