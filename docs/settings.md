@@ -5,7 +5,8 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
 
 - **GitHub username** - override the handle used by the "My …" tools, the wizards
   and the monitors. Blank = the `gh`-authenticated user (`viewer.login`), resolved
-  eagerly at launch so it's the default everywhere.
+  eagerly at launch so it's the default everywhere. On a GitLab repo root "me" is
+  `glab`'s user on that host, which the override does not change.
 - <a id="agent-runner"></a>**Agent runner** - which agent CLI a spawn runs:
   **Claude Code** (the default, and what every existing install keeps), **OpenCode**
   or **Hermes**. Only the agent command changes - the agent word and its flags, or
@@ -120,14 +121,30 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   first is the *primary*. Blank = `~/dev/<repo>` for whichever repo
   [`assets/config.json`](../packages/diplomat-core/assets/config.json) targets, which
   **Add…** on a blank list keeps as the first root. Each
-  root is known by one GitHub repo, read from its remotes: the `assets/config.json`
-  repo if its `upstream` or `origin` (any remote, with neither) names it or a repo of
-  the same name under another owner (a fork's `origin`, an old owner's URL), else
-  `upstream`, else `origin`. A reading older than a
+  root is known by one GitHub or GitLab repo, read from its remotes: the
+  `assets/config.json` repo if its GitHub `upstream` or `origin` (any GitHub remote, with
+  neither) names it or a GitHub repo of the same name under another owner (a fork's
+  `origin`, an old owner's URL), else its first GitHub remote (`upstream`, then `origin`,
+  then the rest). Only a checkout with no GitHub remote is a GitLab root, by the same
+  order. A remote is GitLab on gitlab.com, on
+  any host whose first label is `gitlab` (`gitlab.example.com`), and on every host
+  `glab` is configured for (the `hosts:` of its `config.yml`), where a host's `ssh_host`
+  names that host too; a GitLab project's owner
+  is its whole namespace (`group/sub`). A GitLab root is read through `glab`, signed in
+  to its host, and "me" there is glab's user on that host, not the GitHub username
+  above, read again whenever that host's entry in glab's `config.yml` changes (`glab auth
+  login` as another account rewrites it); its agents are told to use `glab`. GitHub-only whatever the roots: Tasks
+  mirroring, the review audit, goal grouping, the username override,
+  [the narrow agent token](#a-narrow-github-token-for-agents) (an agent on a GitLab root
+  runs on your full `glab` login) and [Comms](comms.md)' answers to questions (the
+  documentation is read through `gh`, and only github.com links survive in them). A GitLab root
+  is never the configured repo, so its work stays off the mesh. A reading older than a
   minute is taken again when next asked, so a checkout that appears later is picked up by
   the next poll. A row warns when the path isn't absolute, has no `.git`, or has no
-  GitHub remote - such a root is not watched, and two roots naming the same repo count
-  once. A lone root stands for the `assets/config.json` repo even then; with several and
+  GitHub or GitLab remote - such a root is not watched, and two roots naming the same repo count
+  once. A GitHub repo and a GitLab project of the same `owner/repo` are two roots, each
+  with its own queue rows, records and links; here and in the header's picker the GitLab
+  one is named `host/owner/repo`. A lone root stands for the `assets/config.json` repo even then; with several and
   none resolving, the monitors stand down, and while the first does not resolve, Comms
   waits (a bare `#N` would name the next root's issue). Every automatic job (the
   monitors, [Comms](comms.md)) runs on every root; the panel works on the one picked in
@@ -141,8 +158,11 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
 - **Other repos** - more local checkouts, added with **Add…**, that are never watched.
   A PR or issue link (URL or `owner/repo#N`) pasted into a wizard may name any of them
   or any repo root: the prompt targets that repo and its agent starts in that
-  checkout. Each is known by its GitHub remotes (`upstream` is the one shown, then
-  `origin`), so a fork clone takes links to both. A run in one of these never goes over
+  checkout. Each is known by its GitHub and GitLab remotes, so a fork clone takes links to
+  both. The one shown is its first GitHub remote, `upstream` then `origin`, else its
+  first GitLab one. A link naming no host (`owner/repo#N`) takes the repo picked in the
+  panel header when that one fits, else the GitHub one when it fits both a GitHub and a
+  GitLab remote. A run in one of these never goes over
   the mesh: only the configured repo's root's work does (see [Diplomat Mesh](mesh.md)). Bare numbers and sweeps target the repo picked
   in the panel header.
 - **Auto-queue fixes for my PRs / Auto-queue reviews that request me** - the two
@@ -258,7 +278,8 @@ daemon's two idle limits, which live in the shared `~/.diplomat/config.json` ([`
   (`MEMBER`/`OWNER` = org; anything else = external). Reliable without org-admin API access.
 - **"unaddressed"** (issues) - no comment from a `MEMBER`/`OWNER`/`COLLABORATOR` **and** no assignee.
 - **"mine"** - authored by the *effective* handle: the Settings **GitHub username**
-  override when set, otherwise the authenticated `gh` user (`viewer.login`).
+  override when set, otherwise the authenticated `gh` user (`viewer.login`); in a GitLab
+  repo root, `glab`'s user on its host.
 - **"approved"** - GitHub's aggregate `reviewDecision == APPROVED`.
 - **"unaddressed review"** - a `reviewThread` where `viewerCanResolve` (so it *can* be
   marked resolved) is true, `isResolved` is false, and the **last** comment isn't yours -
@@ -329,7 +350,9 @@ token that cannot be read (a missing item, one empty or blank, a missing or blan
 starts nothing rather than falling back to the broad login: the spawn fails, and the
 work stays owed. Remove the key to go back.
 
-What it does not cover: `git` over SSH still pushes with your SSH keys, and a
+What it does not cover: `git` over SSH still pushes with your SSH keys, a
 `GH_TOKEN` or `GIT_CONFIG_COUNT` your shell rc exports replaces this one, because the
-agent's shell sources your rc after Diplomat sets it. To check it took, run
-`gh auth status` inside a spawned agent's window: it names `GH_TOKEN` as the source.
+agent's shell sources your rc after Diplomat sets it, and an agent on a GitLab root runs
+`glab` on your full login and `git` on your own credentials, which no token here narrows.
+To check it took, run `gh auth status` inside a spawned agent's window: it names `GH_TOKEN`
+as the source.

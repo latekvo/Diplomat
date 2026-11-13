@@ -635,3 +635,14 @@ def test_a_capacity_hook_that_raises_never_costs_the_node_the_job(monkeypatch):
 
     monkeypatch.setattr(szponthost.DiplomatHost, "at_job_capacity", boom)
     assert szpont_host.at_job_capacity([]) is False
+
+
+def test_a_gitlab_root_never_takes_a_mesh_job(monkeypatch):
+    """Mesh work is GitHub work: a GitLab project of the same slug is another repo."""
+    lab = LocalRepo("o", "r", "/src/lab", "gitlab.com")
+    monkeypatch.setattr(review, "roots_guessed", lambda: False)
+    monkeypatch.setattr(review, "repo_roots", lambda: [lab, LocalRepo("o", "r", "/src/r")])
+    assert szponthost._checkout_for("review:github.com/o/r#7@abc") == "/src/r"
+    monkeypatch.setattr(review, "repo_roots", lambda: [lab])
+    with pytest.raises(szpont_host.NoRunner, match="^no checkout of o/r on this machine$"):
+        szponthost._checkout_for("", "o/r")

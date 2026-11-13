@@ -79,11 +79,12 @@ public enum ThreadTriage {
 /// A PR review conversation thread (one inline comment chain).
 public struct ReviewThread {
     public let isResolved: Bool
-    public let viewerCanResolve: Bool
+    /// nil when the answer does not say (a GitLab discussion without notes).
+    public let viewerCanResolve: Bool?
     public let lastCommentAuthor: String?
     public let unansweredRunFinding: Bool
 
-    public init(isResolved: Bool, viewerCanResolve: Bool, lastCommentAuthor: String?,
+    public init(isResolved: Bool, viewerCanResolve: Bool?, lastCommentAuthor: String?,
                 unansweredRunFinding: Bool = false) {
         self.isResolved = isResolved
         self.viewerCanResolve = viewerCanResolve
@@ -316,21 +317,36 @@ public enum API {
         try await graphqlDecoded("viewer", repo: nil, as: ViewerResponse.self).data.viewer.login
     }
 
+    /// The signed-in GitLab user on `host`: what a GitLab root reads as "me".
+    public static func fetchGitLabViewer(host: String) async throws -> String {
+        try GitLab.viewer(try await GLab.graphql("gitlab-viewer", host: host), host: host)
+    }
+
     /// How many `prs.graphql` pages the panel reads: the 100 newest open PRs.
     static let openPRPages = 4
 
-    public static func fetchOpenPRs(owner: String, repo: String) async throws -> [OpenPR] {
+    public static func fetchOpenPRs(_ root: PRRef.LocalRepo) async throws -> [OpenPR] {
+        guard !root.isGitLab else {
+            let data = try GitLab.prs(try await GLab.graphql("gitlab-prs", host: root.host,
+                                                             variables: [("path", root.slug)]))
+            return openPRs(try decoded(data, as: PRResponse.self).data.repository.pullRequests.nodes)
+        }
         var nodes: [PRResponse.Node] = []
         var after: String?
         for _ in 0..<openPRPages {
-            let page = try await graphqlDecoded("prs", repo: (owner, repo),
+            let page = try await graphqlDecoded("prs", repo: (root.owner, root.repo),
                                                 variables: after.map { [("after", $0)] } ?? [],
                                                 as: PRResponse.self).data.repository.pullRequests
             nodes += page.nodes
-            guard page.pageInfo.hasNextPage, let next = page.pageInfo.endCursor else { break }
+            guard let info = page.pageInfo, info.hasNextPage, let next = info.endCursor else { break }
             after = next
         }
-        return nodes.map { n in
+        return openPRs(nodes)
+    }
+
+    /// The panel's PR list from `prs.graphql`-shaped nodes.
+    private static func openPRs(_ nodes: [PRResponse.Node]) -> [OpenPR] {
+        nodes.map { n in
             OpenPR(
                 number: n.number,
                 title: n.title,
@@ -356,18 +372,50 @@ public enum API {
         }
     }
 
-    /// The lifecycle state of a single PR — "OPEN", "CLOSED", or "MERGED". Used to
-    /// mark a tracked agent session's PR as merged once it lands. One cheap
-    /// `gh pr view` per tracked PR.
-    public static func fetchPRState(number: Int, owner: String, repo: String) async throws -> String {
-        let data = try await GH.run(
-            ["pr", "view", "\(number)", "--repo", "\(owner)/\(repo)", "--json", "state"])
-        struct StateResponse: Decodable { let state: String }
-        return try JSONDecoder().decode(StateResponse.self, from: data).state
+    /// A PR's or merge request's state — "OPEN", "CLOSED", or "MERGED". Marks a tracked
+    /// agent session's PR merged once it lands; one cheap read per tracked PR.
+    public static func fetchPRState(number: Int, root: PRRef.LocalRepo) async throws -> String {
+        struct R: Decodable { let state: String }
+        return try JSONDecoder().decode(R.self, from: try await prView(number, root, "state")).state
     }
 
-    public static func fetchOpenIssues(owner: String, repo: String) async throws -> [OpenIssue] {
-        let resp = try await graphqlDecoded("issues", repo: (owner, repo), as: IssueResponse.self)
+    public static func fetchPRAuthor(number: Int, root: PRRef.LocalRepo) async throws -> String? {
+        struct R: Decodable { struct A: Decodable { let login: String? }; let author: A? }
+        return try JSONDecoder().decode(R.self, from: try await prView(number, root, "author"))
+            .author?.login
+    }
+
+    /// `gh pr view --json <fields>`, or a merge request's `gitlab-mr` read in its shape.
+    private static func prView(_ number: Int, _ root: PRRef.LocalRepo, _ fields: String)
+        async throws -> Data {
+        guard root.isGitLab else {
+            return try await GH.run(["pr", "view", "\(number)", "--repo", root.slug, "--json", fields])
+        }
+        return try GitLab.mergeRequest(try await GLab.graphql(
+            "gitlab-mr", host: root.host, variables: [("path", root.slug), ("iid", "\(number)")]))
+    }
+
+    /// A merge request's `mergeable`, asking GitLab to recheck it: after a push to the
+    /// target branch it reads unchecked until something asks, and no GraphQL read does. The
+    /// recheck runs in the background, so this may still answer `UNKNOWN`; the next read
+    /// sees the result.
+    public static func recheckedMergeable(number: Int, root: PRRef.LocalRepo) async throws -> String {
+        GitLab.mergeable(rest: try await GLab.run(
+            ["api", "--hostname", root.host,
+             "projects/\(GLab.projectID(root.slug))/merge_requests/\(number)?with_merge_status_recheck=true"]))
+    }
+
+    public static func fetchOpenIssues(_ root: PRRef.LocalRepo) async throws -> [OpenIssue] {
+        try openIssues(root.isGitLab
+            ? try await GitLab.issues(try await GLab.graphql("gitlab-issues", host: root.host,
+                                                             variables: [("path", root.slug)]),
+                                      lookup: { try await GLab.members(host: root.host, slug: root.slug, ids: $0) })
+            : try await GH.graphql("issues", repo: (root.owner, root.repo)))
+    }
+
+    /// The panel's issue list from an `issues.graphql`-shaped answer.
+    static func openIssues(_ data: Data) throws -> [OpenIssue] {
+        let resp = try decoded(data, as: IssueResponse.self)
         return resp.data.repository.issues.nodes.map { n in
             OpenIssue(
                 number: n.number,
@@ -391,7 +439,10 @@ public enum API {
     private static func graphqlDecoded<T: Decodable>(_ queryName: String, repo: (owner: String, repo: String)?,
                                                      variables: [(String, String)] = [],
                                                      as: T.Type) async throws -> T {
-        let data = try await GH.graphql(queryName, repo: repo, variables: variables)
+        try decoded(try await GH.graphql(queryName, repo: repo, variables: variables), as: T.self)
+    }
+
+    private static func decoded<T: Decodable>(_ data: Data, as: T.Type) throws -> T {
         try checkGraphQLErrors(data)
         return try makeDecoder().decode(T.self, from: data)
     }
@@ -427,7 +478,8 @@ private struct PRResponse: Decodable {
     let data: D
     struct D: Decodable { let repository: Repo }
     struct Repo: Decodable { let pullRequests: Conn }
-    struct Conn: Decodable { let pageInfo: PageInfo; let nodes: [Node] }
+    /// nil in a `gitlab-prs` answer, which is one page.
+    struct Conn: Decodable { let pageInfo: PageInfo?; let nodes: [Node] }
     struct PageInfo: Decodable { let hasNextPage: Bool; let endCursor: String? }
     struct Node: Decodable {
         let number: Int
@@ -450,7 +502,7 @@ private struct PRResponse: Decodable {
     struct Threads: Decodable { let nodes: [Thread] }
     struct Thread: Decodable {
         let isResolved: Bool
-        let viewerCanResolve: Bool
+        let viewerCanResolve: Bool?
         let comments: ThreadComments
     }
     struct ThreadComments: Decodable {

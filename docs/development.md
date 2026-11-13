@@ -440,7 +440,7 @@ packages/
         ConflictWizard.swift / AuditWizard.swift   the Resolve-conflicts and Full-E2E-test wizards
         SettingsView.swift         settings (username, repo roots, monitors + auto-approve + task cap + rate-limit budget, watcher, tools, terminal, allocator)
         Store.swift                ObservableObject; settings + the monitor/watcher loops; logic in ToolData
-        AutofixMonitor.swift       the monitors' GitHub reads (monitor-prs / review-requests queries)
+        AutofixMonitor.swift       the monitors' GitHub and GitLab reads (monitor-prs / review-requests queries)
         AutofixStatus.swift        the monitor heartbeat behind the status pill
         ApiErrorWatcher.swift      iTerm/Terminal/tmux screen reader + continue-nudge sender
         AgentProbes.swift          the outside world, typed: `ps`, screens, sentinels, claims -> Evidence

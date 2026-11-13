@@ -166,15 +166,17 @@ struct ContentView: View {
     /// one root's caption.
     @ViewBuilder
     private var repoPicker: some View {
-        let current = store.selectedRoot.slug
-        if store.roots.count > 1 {
+        let roots = store.roots
+        let selected = store.selectedRoot
+        let current = PRRef.rootLabel(selected, roots: roots)
+        if roots.count > 1 {
             Menu {
-                ForEach(store.roots, id: \.slug) { root in
-                    Button { store.selectedRepo = root.slug.lowercased() } label: {
-                        if root.slug == current {
-                            Label(root.slug, systemImage: "checkmark")
+                ForEach(roots, id: \.key) { root in
+                    Button { store.selectedRepo = root.key } label: {
+                        if root.key == selected.key {
+                            Label(PRRef.rootLabel(root, roots: roots), systemImage: "checkmark")
                         } else {
-                            Text(root.slug)
+                            Text(PRRef.rootLabel(root, roots: roots))
                         }
                     }
                 }
@@ -733,7 +735,6 @@ struct ContentView: View {
 
     private func lookupView(_ n: Int) -> some View {
         let r = store.lookup(n)
-        let link = r.url ?? "https://github.com/\(store.selectedRoot.slug)/issues/\(n)"
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("#\(n)").font(.title3.bold().monospaced())
@@ -741,9 +742,11 @@ struct ContentView: View {
                     .font(.caption.bold())
                     .foregroundStyle(r.isOnAnyList ? .green : .secondary)
                 Spacer()
-                Button { if let u = URL(string: link) { NSWorkspace.shared.open(u) } } label: {
-                    Image(systemName: "arrow.up.forward.square")
-                }.buttonStyle(.borderless).tooltip("Open #\(n) on GitHub")
+                if let open = r.openButton(on: store.selectedRoot) {
+                    Button { if let u = URL(string: open.link) { NSWorkspace.shared.open(u) } } label: {
+                        Image(systemName: "arrow.up.forward.square")
+                    }.buttonStyle(.borderless).tooltip(open.tooltip)
+                }
             }
             Text(r.presence).font(.caption).foregroundStyle(.secondary)
             VStack(spacing: 5) {

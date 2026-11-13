@@ -20,7 +20,8 @@ from pathlib import Path
 
 import pytest
 from test_autofix import _spawn_recorder, store  # noqa: F401 — fixture
-from test_comms_core import _stub_claude, slack  # noqa: F401 — fixture
+from test_comms_core import _first_tick, _Slack, _stub_claude, slack  # noqa: F401 — fixture
+from test_comms_core import _message as _slack_message
 
 from diplomat_app import bans, issues
 from diplomat_app.store import Store, app_settings
@@ -592,7 +593,38 @@ def _in(repo: str, action: str, number: int) -> dict:
 
 def test_the_tick_watches_every_root_primary_first(comms_store, monkeypatch):
     _two_roots(monkeypatch)
-    assert comms_store.comms_settings_payload()["repos"] == [PRIMARY, "acme/Widget"]
+    assert comms_store.comms_settings_payload()["repos"] == [PRIMARY.lower(), "acme/widget"]
+
+
+#: A GitLab root in a nested namespace.
+THIRD = LocalRepo("group/sub", "third", "/src/third", host="gitlab.example.com")
+
+
+@needs_core
+def test_a_merge_request_and_an_issue_of_one_number_on_a_gitlab_root_are_two_asks(
+        tmp_path, slack, comms_store, monkeypatch):  # noqa: F811 — the stub Slack
+    """The Store's settings ticked through the real binary: GitLab numbers merge requests
+    and issues apart, so a review of !12 and a fix of #12 there are two items."""
+    owner, repo = PRIMARY.split("/")
+    monkeypatch.setattr(review, "repo_roots",
+                        lambda: [LocalRepo(owner, repo, "/src/primary"), THIRD])
+    monkeypatch.setenv("DIPLOMAT_CLAUDE", str(_stub_claude(tmp_path, {
+        "action": "review", "summary": "Review !12, fix #12", "reason": "two asks",
+        "targets": [{"action": "review", "number": 12, "repo": THIRD.key},
+                    {"action": "fix_issue", "number": 12, "repo": THIRD.key}]})))
+    comms_store.comms_flush_after_secs = 0
+    settings = comms_store.comms_settings_payload()
+    assert settings["repos"][1:] == ["gitlab.example.com/group/sub/third"]
+    assert settings["gitlabHosts"] == {"gitlab.example.com/group/sub/third": "gitlab.example.com"}
+
+    secs = _first_tick(settings)
+    _Slack.messages = [_slack_message(f"{secs + 5}.000100", "UALICE",
+                                      "in third, review !12 and fix #12 please")]
+    result = comms.tick(settings)
+    assert result["error"] is None
+    assert [i["decision"]["targets"] for i in result["items"]] == [
+        [{"action": "fix_issue", "number": 12, "repo": THIRD.key}],
+        [{"action": "review", "number": 12, "repo": THIRD.key}]]
 
 
 @needs_core
@@ -667,16 +699,18 @@ def test_an_investigation_of_a_repo_no_longer_a_root_is_refused_as_a_review_is(
 
 
 @needs_core
-@pytest.mark.parametrize("label, running", [
-    ("Issues · widget#9005 · deep", True),
-    (f"Issues · {PRIMARY.split('/')[1]}#9005 · deep", False),
+@pytest.mark.parametrize("item, running", [
+    ("acme/widget#9005", True),
+    (f"{PRIMARY}#9005", False),
+    ("gitlab.example.com/acme/widget#9005", False),
 ])
-def test_a_fix_running_in_another_root_is_known_by_its_repo_label(comms_store, monkeypatch,
-                                                                 label, running):
+def test_a_fix_running_in_another_root_is_known_by_its_root_key(comms_store, monkeypatch,
+                                                               item, running):
     _two_roots(monkeypatch)
     monkeypatch.setattr("diplomat_runtime.gh.run", _github({
         ("issue", 9005): ("OPEN", "https://github.com/acme/Widget/issues/9005", "dana")}, []))
-    _rows(monkeypatch, [autofix.RunningAgent(0, label, "issues", True, started_at=DISPATCHED)])
+    _rows(monkeypatch, [autofix.RunningAgent(0, "Issues · widget#9005 · deep", "issues", True,
+                                             started_at=DISPATCHED, item=item)])
     _tick(comms_store, monkeypatch, (_message(1, "fix widget#9005"),
                                      _in("acme/widget", "fix_issue", 9005)))
     outcome = next(e for e in _events() if e["kind"] == "action")["outcome"]
@@ -1113,17 +1147,17 @@ def test_a_review_an_agent_is_already_on_is_not_asked_for_again(comms_store, mon
 
 
 @needs_core
-@pytest.mark.parametrize("label, running", [
-    ("Issues · #9005 · deep", True),
-    ("Issues · #9005 · Deep · retry 2", True),
-    ("Issues · #900501 · deep", False),
-    ("Issues · #19005 · deep", False),
+@pytest.mark.parametrize("label, item, running", [
+    ("Issues · #9005 · deep", f"{PRIMARY}#9005", True),
+    ("Issues · #9005 · Deep · retry 2", f"{PRIMARY}#9005", True),
+    ("Issues · #9005 · deep", f"{PRIMARY}#900501", False),
+    ("Issues · #9005 · deep", "acme/widget#9005", False),
 ])
-def test_a_fix_already_running_is_known_by_its_issues_label(comms_store, monkeypatch,
-                                                          label, running):
+def test_a_fix_already_running_is_known_by_its_issue(comms_store, monkeypatch,
+                                                   label, item, running):
     comms_store.issues = [_issue(9005)]
     _rows(monkeypatch, [autofix.RunningAgent(0, label, "issues", True,
-                                             started_at=DISPATCHED)])
+                                             started_at=DISPATCHED, item=item)])
     _tick(comms_store, monkeypatch, _ask(1, "fix_issue", 9005))
     outcome = next(e for e in _events() if e["kind"] == "action")["outcome"]
     if running:

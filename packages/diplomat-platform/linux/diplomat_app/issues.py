@@ -90,11 +90,9 @@ class IssueConfig(RepoConfig):
 
     # An issue run is deliberately NOT PR-scoped, so ``single_pr_number`` /
     # ``single_pr_url`` stay ``None`` (inherited from RepoConfig, as for the audit).
-    # The dispatch pipeline's dedup is PR-shaped throughout — the in-flight check
-    # matches a ``/pull/<n>`` URL and keys on a PR number — so handing it an issue
-    # number would collide with the PR that happens to share it. What keeps two agents
-    # off one issue instead is ``assign_to_me``, which claims it on GitHub where every
-    # machine can see the claim, not just this one.
+    # The dispatch dedup keys on a PR number, which an issue's would collide with; what
+    # keeps two agents off one issue is ``assign_to_me``'s claim on its host, which every
+    # machine sees.
 
     @property
     def author_handle(self) -> str:
@@ -152,11 +150,18 @@ class IssueConfig(RepoConfig):
         shorthand, checked against :attr:`home_repo`, then ``local_repos``."""
         owner, repo = self.home_repo
         return parse_pr_ref(self.specific_issue, owner, repo, kind="issues",
-                            also=self.local_repos)
+                            also=self.local_repos, host=self.home_host)
 
     @property
     def single_ref(self) -> PRRef | None:
         return self.issue_ref if self.is_single_issue else None
+
+    @property
+    def single_link(self) -> str | None:
+        ref = self.single_ref
+        if ref is None or ref.number is None:
+            return None
+        return self.target_root.link("issues", ref.number)
 
     @property
     def is_valid(self) -> bool:

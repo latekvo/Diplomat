@@ -1,0 +1,67 @@
+{
+  "data": {
+    "search": {
+      "nodes": [
+        {
+          "number": 22,
+          "title": "Files not asked",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/22",
+          "author": {
+            "login": "Alice"
+          },
+          "authorAssociation": "MEMBER",
+          "headRefOid": "7777777777777777777777777777777777777777",
+          "timelineItems": {
+            "nodes": [
+              {
+                "createdAt": "2026-11-06T08:00:00Z",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              }
+            ]
+          },
+          "reviews": {
+            "nodes": []
+          },
+          "comments": {
+            "nodes": []
+          }
+        },
+        {
+          "number": 19,
+          "title": "Deleted author",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/19",
+          "author": null,
+          "authorAssociation": "NONE",
+          "headRefOid": "8888888888888888888888888888888888888888",
+          "timelineItems": {
+            "nodes": [
+              {
+                "createdAt": "2026-11-01T07:00:00Z",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              }
+            ]
+          },
+          "reviews": {
+            "nodes": []
+          },
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "carol"
+                },
+                "createdAt": "2026-11-03T08:00:00Z"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

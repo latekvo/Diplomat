@@ -1,0 +1,9 @@
+# GitLab twin of `gh pr view --json state,author`.
+query($path: ID!, $iid: String!) {
+  project(fullPath: $path) {
+    mergeRequest(iid: $iid) {
+      state
+      author { username }
+    }
+  }
+}

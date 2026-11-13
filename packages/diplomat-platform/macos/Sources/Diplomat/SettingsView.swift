@@ -119,7 +119,9 @@ struct SettingsView: View {
 
     private static let identityDetail = """
         Blank = whoever `gh` is authenticated as. Scopes the “My …” tools and the \
-        Review wizard: which PRs count as mine, and whose reviews the monitors owe.
+        Review wizard: which PRs count as mine, and whose reviews the monitors owe. \
+        In a GitLab repo root “me” is `glab`'s user on its host, which this does not \
+        change.
         """
 
     private var identityField: some View {
@@ -245,9 +247,12 @@ struct SettingsView: View {
     private var repoRootsDetail: String {
         "The first is the primary: an agent whose job names no repo starts there. Every "
             + "automatic job runs across all of them, and the header picks the one the "
-            + "lists, search and wizards work on. Each is known by one GitHub repo from its "
-            + "remotes: \(repoSlug) if its upstream or origin names it or a repo of that "
-            + "name under another owner (a fork or a move), else upstream, else origin. "
+            + "lists, search and wizards work on. Each is known by one GitHub or GitLab repo from "
+            + "its remotes: \(repoSlug) if its GitHub upstream or origin names it or a GitHub "
+            + "repo of that name under another owner (a fork or a move), else its first GitHub "
+            + "remote (upstream, then origin, then the rest). Only a checkout with no GitHub "
+            + "remote is known by a GitLab one, in the same order, read through glab signed in "
+            + "to its host. "
             + "None listed = "
             + "\(RepoPaths.defaultAgentRepo). DIPLOMAT_REPO in this app's environment "
             + "outranks the list."
@@ -333,9 +338,10 @@ struct SettingsView: View {
         }
         let path = RepoRoots.expand(trimmed)
         guard !guessed, let root = roots.first(where: { $0.path == path }) else {
-            return ("No GitHub remote, or a repo an earlier root already names - skipped", true)
+            return ("No GitHub or GitLab remote, or a repo an earlier root already names - skipped", true)
         }
-        return (i == 0 ? "\(root.slug) - primary" : root.slug, false)
+        let name = PRRef.rootLabel(root, roots: roots)
+        return (i == 0 ? "\(name) - primary" : name, false)
     }
 
     private func chooseRepoRoots() {
@@ -396,8 +402,8 @@ struct SettingsView: View {
 
     private static let otherReposDetail = """
         Paste a PR or issue link to one of these and its agent starts in that \
-        checkout, never over the mesh. Each is known by its GitHub remotes, \
-        `upstream` first.
+        checkout, never over the mesh. Each is known by its GitHub or GitLab remotes \
+        and named by the first, a GitHub one before GitLab and `upstream` first.
         """
 
     private func otherRepoRow(_ path: String, checkout: LocalRepos.Checkout?,
@@ -406,7 +412,7 @@ struct SettingsView: View {
         return HStack(spacing: 6) {
             Image(systemName: "folder").font(.caption).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text(slug ?? (checkout == nil ? "…" : "no GitHub remote here"))
+                Text(slug ?? (checkout == nil ? "…" : "no GitHub or GitLab remote here"))
                     .font(.callout)
                     .foregroundStyle(slug == nil && checkout != nil ? .orange : .primary)
                 Text(path).font(.caption2).foregroundStyle(.secondary)

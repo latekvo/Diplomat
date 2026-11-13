@@ -128,7 +128,7 @@ enum RepoPaths {
         return stored.isEmpty ? [defaultAgentRepo] : stored
     }
 
-    /// `rootPaths`, each resolved to the GitHub repo it is a checkout of
+    /// `rootPaths`, each resolved to the GitHub or GitLab repo it is a checkout of
     /// (`RepoRoots.resolve`); never empty.
     ///
     /// Reading the remotes costs a `git` call per root, so a resolution is kept for
@@ -144,19 +144,22 @@ enum RepoPaths {
 
     struct RootsReading: Equatable {
         let roots: [PRRef.LocalRepo]
-        /// Every path had a GitHub remote (`RepoRoots.allResolve`).
+        /// Every path had a GitHub or GitLab remote (`RepoRoots.allResolve`).
         let complete: Bool
         /// The first root is the first path's own repo (`RepoRoots.primaryResolves`).
         let primaryResolved: Bool
         /// None of several paths resolved, the one root a guess (`RepoRoots.guessed`).
         let guessed: Bool
 
-        init(paths: [String], remotes: [String: String]) {
+        /// `gitlabHosts`: the hosts glab is configured for (`GLab.configuredHosts`).
+        init(paths: [String], remotes: [String: String], gitlabHosts: GitLabHosts = []) {
             roots = RepoRoots.resolve(paths: paths, remotes: remotes,
-                                      configured: CoreAssets.repoCoordinates())
-            complete = RepoRoots.allResolve(paths: paths, remotes: remotes)
-            primaryResolved = RepoRoots.primaryResolves(paths: paths, remotes: remotes)
-            guessed = RepoRoots.guessed(paths: paths, remotes: remotes)
+                                      configured: CoreAssets.repoCoordinates(),
+                                      gitlabHosts: gitlabHosts)
+            complete = RepoRoots.allResolve(paths: paths, remotes: remotes, gitlabHosts: gitlabHosts)
+            primaryResolved = RepoRoots.primaryResolves(paths: paths, remotes: remotes,
+                                                        gitlabHosts: gitlabHosts)
+            guessed = RepoRoots.guessed(paths: paths, remotes: remotes, gitlabHosts: gitlabHosts)
         }
     }
 
@@ -197,7 +200,8 @@ enum RepoPaths {
         for path in paths.map(RepoRoots.expand) where isCheckout(path) {
             remotes[path] = LocalRepos.remotes(of: path)
         }
-        let reading = RootsReading(paths: paths, remotes: remotes)
+        let reading = RootsReading(paths: paths, remotes: remotes,
+                                   gitlabHosts: GLab.configuredHosts())
         rootsLock.lock()
         rootsCache = (paths, at, reading)
         rootsResolving = false

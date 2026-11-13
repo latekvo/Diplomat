@@ -419,7 +419,7 @@ def _queue_fixture(store: Store) -> None:
         # is an issue's, and the pipeline's dedup is PR-shaped.
         is_pr = kind != "issues"
         return autofix.QueuedTask(
-            id=autofix.queue_key(action, item_key(*slug.split("/"), number)),
+            id=autofix.queue_key(action, item_key(*slug.rsplit("/", 1), number)),
             job=autofix.AgentJob(
                 kind=kind, audit_action=action, label=label,
                 # No prompt: a render never dispatches, and an assembled one here
@@ -490,7 +490,7 @@ def _queue_fixture(store: Store) -> None:
             # dispatched, found only by the prompt scan (what an applet restart or
             # a hand-started session leaves behind).
             live_agents=agentstate.Observation.present(
-                {item_key(*slug.split("/"), 351): "pts/35"}),
+                {item_key(*slug.rsplit("/", 1), 351): "pts/35"}),
             # Read, and positive: the deadline's precondition is met for this whole
             # picture, so it doubles as the proof that nothing here is old enough and
             # occupied enough to be given up on. #377 is exactly four hours old and

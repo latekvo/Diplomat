@@ -434,9 +434,8 @@ def test_issues_config_mirrors_the_widgets(store):
 
 
 def test_issues_local_spawn_dispatches_an_unscoped_issues_job(store, dispatched, local_only):
-    """Not PR-scoped: the pipeline's dedup key is a PR URL, so handing it an issue
-    number would collide with the PR that shares it. The GitHub assignee claim is
-    what keeps two agents off one issue.
+    """Not PR-scoped: the dedup keys on a PR number, which an issue's would collide
+    with, so the job carries its issue's link alone.
 
     Nor is there an author to ban-check: whoever filed the issue is not the handle
     typed into the scope picker, and this wizard never fetches it. A swept issue is
@@ -446,8 +445,8 @@ def test_issues_local_spawn_dispatches_an_unscoped_issues_job(store, dispatched,
 
     job, source = dispatched[0]
     assert (job.kind, job.duty, job.audit_action) == ("issues", "issues", "issues")
-    assert job.pr_number is None
-    assert job.pr_url is None
+    assert job.pr_number is None and job.item is None
+    assert job.pr_url == f"https://github.com/{store.selected_repo.slug}/issues/421"
     assert job.author_login is None
     assert source == autofix.SOURCE_PANEL
 
@@ -769,7 +768,7 @@ def test_a_link_to_a_listed_repo_spawns_in_its_checkout(
     # Booked by its link only: a bare 291 would be deduped against the configured
     # repo's PR of that number.
     assert job.pr_number is None
-    assert job.pr_url == (None if cls is IssueWizardView else RADON_PR)
+    assert job.pr_url == (RADON_ISSUE if cls is IssueWizardView else RADON_PR)
 
 
 @pytest.mark.parametrize("cls, text, label", LISTED)
@@ -816,7 +815,7 @@ def test_the_warning_names_the_listed_repos_once_there_are_any(store, radon_list
 def test_the_author_poll_asks_about_the_listed_repo(store, radon_listed, monkeypatch):
     asked = []
     monkeypatch.setattr(review, "fetch_specific_author",
-                        lambda owner, repo, number: asked.append((owner, repo, number)))
+                        lambda root, number: asked.append((root.owner, root.repo, number)))
     monkeypatch.setattr(store, "start_background", lambda work: work())
     _single(store, WizardView, RADON_PR)
     # Other tests' wizards may still have a debounced poll in flight, landing here too.

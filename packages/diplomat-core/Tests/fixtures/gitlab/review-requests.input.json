@@ -1,0 +1,132 @@
+{
+  "data": {
+    "project": {
+      "projectMembers": {
+        "pageInfo": {
+          "hasNextPage": false
+        },
+        "nodes": [
+          {
+            "user": {
+              "username": "alice"
+            }
+          },
+          {
+            "user": {
+              "username": "bob"
+            }
+          }
+        ]
+      },
+      "mergeRequests": {
+        "nodes": [
+          {
+            "iid": "21",
+            "title": "Two reviewers, one swapped out",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/21",
+            "diffHeadSha": "5555555555555555555555555555555555555555",
+            "createdAt": "2026-11-04T08:00:00+01:00",
+            "author": {
+              "id": "gid://gitlab/User/12",
+              "username": "bob"
+            },
+            "diffStats": [
+              {
+                "path": "skills/y/SKILL.md"
+              },
+              {
+                "path": "src/b.rs"
+              }
+            ],
+            "activity": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "bob"
+                  },
+                  "createdAt": "2026-11-05T09:00:00+01:00",
+                  "body": "requested review from @carol and @dave"
+                },
+                {
+                  "author": {
+                    "username": "bob"
+                  },
+                  "createdAt": "2026-11-05T10:00:00+01:00",
+                  "body": "assigned to @carol"
+                },
+                {
+                  "author": {
+                    "username": "bob"
+                  },
+                  "createdAt": "2026-11-05T11:00:00+01:00",
+                  "body": "requested review from @erin and removed review request for @carol"
+                },
+                {
+                  "author": {
+                    "username": "dave"
+                  },
+                  "createdAt": "2026-11-05T12:00:00+01:00",
+                  "body": "approved this merge request"
+                },
+                {
+                  "author": {
+                    "username": "carol"
+                  },
+                  "createdAt": "2026-11-05T13:00:00+01:00",
+                  "body": "requested changes"
+                },
+                {
+                  "author": {
+                    "username": "bob"
+                  },
+                  "createdAt": "2026-11-05T14:00:00+01:00",
+                  "body": "marked this merge request as **ready**"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "carol"
+                  },
+                  "createdAt": "2026-11-05T15:00:00+01:00"
+                },
+                {
+                  "author": null,
+                  "createdAt": "2026-11-05T16:00:00+01:00"
+                }
+              ]
+            }
+          },
+          {
+            "iid": "20",
+            "title": "Outside author",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/20",
+            "diffHeadSha": "6666666666666666666666666666666666666666",
+            "createdAt": "2026-11-03T08:00:00+01:00",
+            "author": {
+              "id": "gid://gitlab/User/26",
+              "username": "Zed"
+            },
+            "diffStats": [],
+            "activity": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "zed"
+                  },
+                  "createdAt": "2026-11-04T09:00:00+01:00",
+                  "body": "requested review from @carol"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": []
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -33,9 +33,9 @@ _TINT = "#FF2D78"  # pink, matching the macOS Review card
 
 class WizardView(SpawnWizard):
     # Emitted (queued to the main thread) when a background author poll resolves.
-    # Carries (pending_pr_text, author_login_or_empty) so the slot can ignore a
-    # result superseded by newer keystrokes - mirrors the macOS `pending` guard.
-    _author_resolved = Signal(str, str)
+    # Carries (pending_pr_text, author_login_or_empty, me_or_empty) so the slot can
+    # ignore a result superseded by newer keystrokes - mirrors the macOS `pending` guard.
+    _author_resolved = Signal(str, str, str)
 
     # A whose-PRs sweep queues one review per PR (SpawnWizard._queue_sweep).
     _sweep_item = "PR"
@@ -172,11 +172,10 @@ class WizardView(SpawnWizard):
             return 0
 
     def _config(self) -> review.ReviewConfig:
-        return review.ReviewConfig(
+        cfg = review.ReviewConfig(
             depth=review.depth_ids()[self.slider.value()],
             target=self.target.currentData(),
             username=self.username.text(),
-            me=self.store.effective_me,
             mark_ready=self.mark_ready.isChecked(),
             leave_reviews=self.leave_reviews.isChecked(),
             reply_to_reviews=self.reply.isChecked(),
@@ -189,6 +188,8 @@ class WizardView(SpawnWizard):
             local_repos=self.store.local_repos,
             home=self.store.selected_repo,
         )
+        cfg.me = self.store.known_me(cfg.target_root)
+        return cfg
 
     def _sync(self) -> None:
         # Kick off / reset the specific-PR author poll BEFORE reading the config, so
@@ -209,9 +210,8 @@ class WizardView(SpawnWizard):
         self.drafts.setVisible(not is_specific)
         self.ready.setVisible(not is_specific)
 
-        me = self.store.effective_me
-        self.mine_caption.setText(f"PRs authored by @{me}" if (is_mine and me) else "")
-        self.mine_caption.setVisible(bool(is_mine and me))
+        self.mine_caption.setText(f"PRs authored by @{cfg.me}" if (is_mine and cfg.me) else "")
+        self.mine_caption.setVisible(bool(is_mine and cfg.me))
 
         ref = cfg.pr_ref
         if is_specific and ref.repo_mismatch:
@@ -280,7 +280,7 @@ class WizardView(SpawnWizard):
             self._specific_author = SpecificAuthor.UNKNOWN
             return
 
-        owner, repo = cfg.target_repo
+        target = cfg.target_root
         number = ref.number
         self._author_pending = pending
         self._author_loading = True
@@ -296,23 +296,26 @@ class WizardView(SpawnWizard):
             time.sleep(0.4)
             if self._author_pending != pending:
                 return
-            login = review.fetch_specific_author(owner, repo, number)
-            # Emit back to the main thread; the slot re-checks the guard + computes
-            # mine-vs-theirs against the (possibly changed) viewer login there.
-            self._author_resolved.emit(pending, login or "")
+            login = review.fetch_specific_author(target, number)
+            try:
+                me = self.store.me_for(target)
+            except Exception:  # noqa: BLE001 — an unknown "me" is an undecided author
+                me = ""
+            # Emit back to the main thread; the slot re-checks the guard there.
+            self._author_resolved.emit(pending, login or "", me)
 
         self.store.start_background(work)
 
-    def _on_author_resolved(self, pending: str, login: str) -> None:
-        """Main-thread slot: fold a resolved author login into the disposition,
-        unless newer input superseded it. Mirrors the tail of macOS refreshAuthor."""
+    def _on_author_resolved(self, pending: str, login: str, me: str) -> None:
+        """Main-thread slot: fold a resolved author login, and who "me" is in its repo
+        (:meth:`Store.me_for`, "" when unknown), into the disposition, unless newer
+        input superseded it. Mirrors the tail of macOS refreshAuthor."""
         # Superseded by newer input, or the user left the specific-PR target.
         if pending != self._author_pending:
             return
         if self.target.currentData() != PRTarget.SPECIFIC:
             return
         self._author_loading = False
-        me = self.store.effective_me
         self._specific_author_login = login or None
         if login and me:
             self._specific_author = (
@@ -342,7 +345,7 @@ class WizardView(SpawnWizard):
     def _label(self) -> str:
         cfg = self._config()
         ref = cfg.single_ref
-        scope = (self.store.wizard_item_label(*cfg.target_repo, ref.number)
+        scope = (self.store.wizard_item_label(cfg.target_root, ref.number)
                  if ref is not None and ref.number is not None
                  else cfg.specific_pr.strip() or "PRs")
         return f"Review · {scope} · {cfg.depth}"

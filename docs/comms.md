@@ -30,11 +30,14 @@ A message listing several PRs or issues acts on all of them, up to twenty: each 
 its own place in the queue, the first it names first. Each also gets its own kind of work, so
 "review #12 and fix issue #34" queues a review of #12 and a fix of #34. Comms acts only on the
 watched repos, one per repo root, the first the primary: triage is told to leave out references to
-other repositories, and GitHub links to their PRs, issues, discussions and commits, and
-`owner/repo#N` for another repo of the target's owner, are removed before its numbers are checked.
-A bare number is the primary's; it is another watched repo's only when the message, or an earlier
-one of its conversation, names that repo ("diplomat#12", "#12 in diplomat"), so #12 in two repos
-is two targets. An investigation or a question is about the repo it names, the primary otherwise,
+other repositories, and GitHub links to their PRs, issues, discussions and commits, GitLab links to
+their merge requests, issues and work items (`/-/merge_requests/N`, `/-/issues/N`,
+`/-/work_items/N`), and `owner/repo#N` for another repo of the target's owner, are removed before
+its numbers are checked. A bare number is the primary's; it is another watched repo's only when the
+message, or an earlier one of its conversation, names that repo ("diplomat#12", "#12 in
+diplomat"), so #12 in two repos is two targets. In a GitLab repo root `!N` names a merge request and
+`#N` an issue, which GitLab numbers apart, so "review !12 and fix #12" there is two targets too. An
+investigation or a question is about the repo it names, the primary otherwise,
 and its agent works in that repo's checkout.
 
 So a "can you look at #412 when you get a chance?" lands #412's review ahead of every review you

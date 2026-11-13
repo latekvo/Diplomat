@@ -1,0 +1,6 @@
+# The signed-in user on one host: "me" in its GitLab roots.
+query {
+  currentUser {
+    username
+  }
+}

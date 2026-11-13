@@ -1,10 +1,11 @@
-"""Which GitHub repos the extra checkouts listed in Settings answer for.
+"""Which GitHub repos and GitLab projects the extra checkouts listed in Settings answer
+for.
 
 A wizard accepts a pasted link to any of them (the ``also`` of
 :func:`prref.parse_pr_ref`) and starts its agent in that checkout instead of the repo
 root. A checkout's coordinates are read off its own git remotes rather than typed: a
 fork clone answers for its ``upstream`` and its ``origin`` alike, so every distinct
-GitHub remote is an entry of its own, all pointing at the one path.
+GitHub or GitLab remote is an entry of its own, all pointing at the one path.
 
 Resolved when the list changes and once at start, never per keystroke: each path is a
 ``git`` call.
@@ -15,13 +16,22 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
+from types import MappingProxyType
 
-from .prref import LocalRepo
+from .prref import GITHUB, LocalRepo
 
 #: Bound on the one ``git config`` read per path. It is local file I/O, so anything
 #: near this is a wedged filesystem, and the caller is the GUI thread.
 GIT_TIMEOUT = 5.0
+
+#: The GitLab hosts known without asking glab, each to its API host (a ``hosts`` of
+#: :func:`parse_remote`). Any host whose first DNS label is ``gitlab`` counts as well
+#: (:func:`is_gitlab_host`).
+GITLAB_HOSTS: Mapping[str, str] = MappingProxyType({"gitlab.com": "gitlab.com"})
 
 #: A GitHub remote in either spelling git writes: scp-like (``git@github.com:o/r``) or
 #: a URL (``https``/``http``/``ssh``/``git``, with any user and port), each with an
@@ -31,12 +41,158 @@ _GITHUB_REMOTE = re.compile(
     r"([\w.-]+)/([\w.-]+?)(?:\.git)?/?$",
     re.IGNORECASE,
 )
+#: The same spellings on any host, with a namespace of one or more segments: a GitLab
+#: remote once its host is one (:func:`is_gitlab_host`).
+_HOSTED_REMOTE = re.compile(
+    r"^(?:(?:https?|ssh|git)://(?:[^@/]+@)?([A-Za-z0-9.-]+)(?::[0-9]+)?/"
+    r"|[^@/:]+@([A-Za-z0-9.-]+):)"
+    r"([\w.-]+(?:/[\w.-]+)*)/([\w.-]+?)(?:\.git)?/?$",
+    re.IGNORECASE,
+)
+#: A host key of glab's ``hosts:`` map; its port is dropped, as a remote's is.
+_GLAB_HOST = re.compile(r"^\s+([A-Za-z0-9.-]+)(?::[0-9]+)?:\s*$")
+#: A host's ``ssh_host``, the host its SSH remotes name, quoted or not; port dropped.
+_GLAB_SSH_HOST = re.compile(
+    r"""^\s+ssh_host:\s*(["']?)([A-Za-z0-9.-]+)(?::[0-9]+)?\1\s*(?:#.*)?$""")
 
 
-def parse_remote(url: str) -> tuple[str, str] | None:
-    """``(owner, repo)`` of a GitHub remote URL, or ``None`` for any other remote."""
-    m = _GITHUB_REMOTE.match(url.strip())
-    return (m.group(1), m.group(2)) if m else None
+def glab_config_file() -> Path | None:
+    """The first existing glab config of ``$GLAB_CONFIG_DIR/config.yml``,
+    ``${XDG_CONFIG_HOME:-~/.config}/glab-cli/config.yml`` and, on macOS,
+    ``~/Library/Application Support/glab-cli/config.yml``."""
+    candidates = []
+    if os.environ.get("GLAB_CONFIG_DIR"):
+        candidates.append(Path(os.environ["GLAB_CONFIG_DIR"]) / "config.yml")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    candidates.append(Path(xdg) / "glab-cli" / "config.yml")
+    if sys.platform == "darwin":
+        candidates.append(Path.home() / "Library" / "Application Support" / "glab-cli"
+                          / "config.yml")
+    return next((c for c in candidates if c.is_file()), None)
+
+
+def glab_config_stamp() -> tuple[str, int, int] | None:
+    """``(path, mtime_ns, size)`` of glab's config file, or ``None`` for none."""
+    path = glab_config_file()
+    try:
+        st = path.stat() if path else None
+    except OSError:
+        return None
+    return (str(path), st.st_mtime_ns, st.st_size) if st else None
+
+
+def _host_blocks(text: str) -> list[tuple[str | None, list[str]]]:
+    """A glab config's top-level ``hosts:`` map, read without a YAML parser: per line at
+    the indent of the map's first entry, its host lowercased without port (``None`` for
+    a line naming none) and that line with the deeper ones under it, blank and comment
+    lines left out."""
+    blocks: list[tuple[str | None, list[str]]] = []
+    inside = False
+    indent: int | None = None
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            if inside:
+                break
+            inside = line.rstrip() == "hosts:"
+            continue
+        if not inside:
+            continue
+        lead = len(line) - len(line.lstrip())
+        indent = lead if indent is None else indent
+        if lead == indent:
+            m = _GLAB_HOST.match(line)
+            blocks.append((m.group(1).lower() if m else None, [line]))
+        elif lead > indent and blocks:
+            blocks[-1][1].append(line)
+    return blocks
+
+
+def config_hosts(text: str) -> dict[str, str]:
+    """Each host a remote may name to the glab ``hosts:`` host (:func:`_host_blocks`)
+    whose API answers for it, all lowercased: every host to itself, and a non-empty
+    ``ssh_host`` directly under a host to that host. A host's own name wins over
+    another's ``ssh_host``."""
+    hosts: dict[str, str] = {}
+    aliases: dict[str, str] = {}
+    for host, lines in _host_blocks(text):
+        if host is None:
+            continue
+        hosts[host] = host
+        child: int | None = None
+        for line in lines[1:]:
+            lead = len(line) - len(line.lstrip())
+            child = lead if child is None else child
+            if lead == child and (m := _GLAB_SSH_HOST.match(line)):
+                aliases.setdefault(m.group(2).lower(), host)
+    return {**aliases, **hosts}
+
+
+def config_entries(text: str) -> dict[str, str]:
+    """Each host of a glab config's ``hosts:`` map (:func:`_host_blocks`) to its entry:
+    its host line through its last child line, those of a host listed twice joined."""
+    entries: dict[str, str] = {}
+    for host, lines in _host_blocks(text):
+        if host is not None:
+            entries[host] = entries.get(host, "") + "\n".join(lines) + "\n"
+    return entries
+
+
+#: :func:`glab_host_entry`'s cache: the config's stamp and its entries.
+_entries: tuple[tuple[str, int, int] | None, dict[str, str]] = (None, {})
+
+
+def glab_host_entry(host: str) -> str | None:
+    """``host``'s entry in glab's config (:func:`config_entries`), ``None`` for none,
+    re-read only once the file's stamp moved. glab rewrites the file on its own (its
+    update check's timestamp), so the entry, not the file, says who is signed in."""
+    global _entries
+    stamp = glab_config_stamp()
+    if stamp != _entries[0]:
+        try:
+            text = Path(stamp[0]).read_text(encoding="utf-8") if stamp else ""
+        except (OSError, UnicodeDecodeError):
+            text = ""
+        _entries = (stamp, config_entries(text))
+    return _entries[1].get(host.lower())
+
+
+def gitlab_hosts() -> Mapping[str, str]:
+    """:data:`GITLAB_HOSTS` plus every host in glab's config (:func:`config_hosts`); a
+    missing or unreadable one adds none."""
+    path = glab_config_file()
+    try:
+        text = path.read_text(encoding="utf-8") if path else ""
+    except (OSError, UnicodeDecodeError):
+        text = ""
+    return {**GITLAB_HOSTS, **config_hosts(text)}
+
+
+def is_gitlab_host(host: str, hosts: Mapping[str, str] = GITLAB_HOSTS) -> bool:
+    """Whether ``host`` is one of ``hosts`` or has two or more non-empty DNS labels, the
+    first ``gitlab``."""
+    host = host.lower()
+    labels = host.split(".")
+    return host != GITHUB and (host in hosts or len(labels) >= 2 and labels[0] == "gitlab"
+                               and all(labels))
+
+
+def parse_remote(url: str, hosts: Mapping[str, str] = GITLAB_HOSTS
+                 ) -> tuple[str, str, str] | None:
+    """``(host, owner, repo)`` of a GitHub remote, or of a GitLab one (``owner`` its
+    whole namespace) on a host :func:`is_gitlab_host` takes, the host lowercased and
+    read through ``hosts`` (an ``ssh_host`` names its API host)."""
+    url = url.strip()
+    m = _GITHUB_REMOTE.match(url)
+    if m:
+        return GITHUB, m.group(1), m.group(2)
+    m = _HOSTED_REMOTE.match(url)
+    if m is None:
+        return None
+    host = (m.group(1) or m.group(2)).lower()
+    return (hosts.get(host, host), m.group(3), m.group(4)) if is_gitlab_host(host, hosts) \
+        else None
 
 
 def remote_config(path: str) -> str | None:
@@ -60,54 +216,62 @@ def remote_config(path: str) -> str | None:
     return out.stdout if out.returncode == 0 else None
 
 
-def entries(path: str, remotes: str, only: tuple[str, ...] = ()) -> list[LocalRepo]:
-    """Every GitHub remote in ``remotes`` (:func:`remote_config` output), or every one
-    named in ``only``, as a repo cloned at ``path``, each once: ``upstream`` first, then
-    ``origin``, then the rest in config order. Twin of
-    ``LocalRepo.entries(path:remotes:only:)``."""
+def entries(path: str, remotes: str, only: tuple[str, ...] = (),
+            hosts: Mapping[str, str] = GITLAB_HOSTS) -> list[LocalRepo]:
+    """Every GitHub or GitLab remote in ``remotes`` (:func:`remote_config` output), or
+    every one named in ``only``, as a repo cloned at ``path``, each once: GitHub before
+    GitLab, and within each ``upstream``, ``origin``, then the rest in config order.
+    Twin of ``LocalRepo.entries(path:remotes:only:)``."""
     named: list[tuple[str, LocalRepo]] = []
     for line in remotes.split("\n"):
         key, sep, url = line.partition(" ")
-        coords = parse_remote(url) if sep else None
+        coords = parse_remote(url, hosts) if sep else None
         if coords is None or not key.startswith("remote.") or not key.endswith(".url"):
             continue
         if only and key[len("remote."):-len(".url")] not in only:
             continue
         named.append((key[len("remote."):-len(".url")],
-                      LocalRepo(coords[0], coords[1], path)))
+                      LocalRepo(coords[1], coords[2], path, coords[0])))
     ranked = sorted(range(len(named)),
-                    key=lambda i: (named[i][0] != "upstream", named[i][0] != "origin", i))
+                    key=lambda i: (named[i][1].is_gitlab, named[i][0] != "upstream",
+                                   named[i][0] != "origin", i))
     out: list[LocalRepo] = []
     seen: set[str] = set()
     for i in ranked:
         repo = named[i][1]
-        if repo.slug.lower() not in seen:
-            seen.add(repo.slug.lower())
+        if _identity(repo) not in seen:
+            seen.add(_identity(repo))
             out.append(repo)
     return out
+
+
+def _identity(repo: LocalRepo) -> str:
+    return f"{repo.host}/{repo.slug}".lower()
 
 
 @dataclass(frozen=True)
 class Checkout:
     """One path listed in Settings, and the repos it answers for: none when it is no
-    checkout or has no GitHub remote. The first is the one Settings names it by."""
+    checkout or has no GitHub or GitLab remote."""
 
     path: str
     repos: tuple[LocalRepo, ...]
 
     @property
     def slug(self) -> str | None:
-        return f"{self.repos[0].owner}/{self.repos[0].repo}" if self.repos else None
+        """What Settings names it by: its first repo (:func:`entries`)."""
+        return self.repos[0].slug if self.repos else None
 
 
-def inspect(path: str) -> Checkout:
-    """``path`` (``~`` expanded) with its GitHub remotes (:func:`entries`)."""
+def inspect(path: str, hosts: Mapping[str, str] = GITLAB_HOSTS) -> Checkout:
+    """``path`` (``~`` expanded) with its GitHub and GitLab remotes (:func:`entries`)."""
     where = os.path.expanduser(path)
-    return Checkout(path, tuple(entries(where, remote_config(where) or "")))
+    return Checkout(path, tuple(entries(where, remote_config(where) or "", hosts=hosts)))
 
 
 def resolve(paths: list[str]) -> list[Checkout]:
-    return [inspect(p) for p in paths]
+    hosts = gitlab_hosts()
+    return [inspect(p, hosts) for p in paths]
 
 
 def local_repos(checkouts: list[Checkout]) -> tuple[LocalRepo, ...]:
@@ -117,18 +281,21 @@ def local_repos(checkouts: list[Checkout]) -> tuple[LocalRepo, ...]:
 
 
 def resolve_roots(paths: list[str], remotes: dict[str, str],
-                  configured: tuple[str, str]) -> list[LocalRepo]:
+                  configured: tuple[str, str],
+                  hosts: Mapping[str, str] = GITLAB_HOSTS) -> list[LocalRepo]:
     """The repo roots ``paths`` name, primary first. Twin of ``RepoRoots.resolve``.
 
     ``remotes`` maps an expanded path to its :func:`remote_config` output; a path
-    missing from it is no checkout. Each path answers for the ``configured`` repo when
-    its ``upstream`` or ``origin`` (any remote, with neither) is that repo, or a repo of
-    that name under another owner (a fork's ``origin``, or a URL from before the repo
-    moved); else for its first (:func:`entries`). Another remote naming it is a sibling
-    fetched from, not what the checkout is. A path with no GitHub remote is skipped, and
-    of two answering for one repo the first wins. When nothing resolves, the first path
-    stands for the configured repo, so a missing checkout reads as the single root it
-    always did (:func:`guessed` tells the case of several)."""
+    missing from it is no checkout. A path with a GitHub remote answers for the
+    ``configured`` repo when its GitHub ``upstream`` or ``origin`` (any GitHub remote,
+    with neither) is that repo, or a repo of that name under another owner (a fork's
+    ``origin``, or a URL from before the repo moved); else for its first GitHub remote.
+    Another remote naming it is a sibling fetched from, not what the checkout is. Only a
+    path with no GitHub remote answers for a GitLab project: its first GitLab remote,
+    never the configured repo. A path with neither is skipped, and of two answering for
+    one repo the first wins. When nothing resolves, the first path stands for the
+    configured repo, so a missing checkout reads as the single root it always did
+    (:func:`guessed` tells the case of several)."""
     want = f"{configured[0]}/{configured[1]}".lower()
     roots: list[LocalRepo] = []
     seen: set[str] = set()
@@ -136,43 +303,49 @@ def resolve_roots(paths: list[str], remotes: dict[str, str],
         where = os.path.expanduser(raw)
         if where not in remotes:
             continue
-        found = entries(where, remotes[where])
-        own = entries(where, remotes[where], ("upstream", "origin")) or found
+        found = entries(where, remotes[where], hosts=hosts)
+        hub = [r for r in found if not r.is_gitlab]
+        own = [r for r in entries(where, remotes[where], ("upstream", "origin"), hosts)
+               if not r.is_gitlab] or hub
         pick = next((r for r in own if r.slug.lower() == want), None)
         if pick is None and any(r.repo.lower() == configured[1].lower() for r in own):
             pick = LocalRepo(configured[0], configured[1], where)
         if pick is None and found:
             pick = found[0]
-        if pick is None or pick.slug.lower() in seen:
+        if pick is None or _identity(pick) in seen:
             continue
-        seen.add(pick.slug.lower())
+        seen.add(_identity(pick))
         roots.append(pick)
     if not roots and paths:
         return [LocalRepo(configured[0], configured[1], os.path.expanduser(paths[0]))]
     return roots
 
 
-def all_resolve(paths: list[str], remotes: dict[str, str]) -> bool:
-    """Whether every one of ``paths`` has a GitHub remote in ``remotes``, as
+def all_resolve(paths: list[str], remotes: dict[str, str],
+                hosts: Mapping[str, str] = GITLAB_HOSTS) -> bool:
+    """Whether every one of ``paths`` has a GitHub or GitLab remote in ``remotes``, as
     :func:`resolve_roots` reads them: False while one is missing, ``git`` failed on it,
-    or it has no GitHub remote. Twin of ``RepoRoots.allResolve``."""
-    return all(entries(w, remotes.get(w, "")) for w in map(os.path.expanduser, paths))
+    or it has neither. Twin of ``RepoRoots.allResolve``."""
+    return all(entries(w, remotes.get(w, ""), hosts=hosts)
+               for w in map(os.path.expanduser, paths))
 
 
-def primary_resolves(paths: list[str], remotes: dict[str, str]) -> bool:
+def primary_resolves(paths: list[str], remotes: dict[str, str],
+                     hosts: Mapping[str, str] = GITLAB_HOSTS) -> bool:
     """Whether :func:`resolve_roots`' first root is the first path's own repo: always
     with one path (the fallback is the single root it always was), else only while the
-    first path has a GitHub remote. Without one the next path's repo stands first, so
-    "the primary" names another repo. Twin of ``RepoRoots.primaryResolves``."""
+    first path has a GitHub or GitLab remote. Without one the next path's repo stands
+    first, so "the primary" names another repo. Twin of ``RepoRoots.primaryResolves``."""
     if len(paths) < 2:
         return True
     first = os.path.expanduser(paths[0])
-    return bool(entries(first, remotes.get(first, "")))
+    return bool(entries(first, remotes.get(first, ""), hosts=hosts))
 
 
-def guessed(paths: list[str], remotes: dict[str, str]) -> bool:
+def guessed(paths: list[str], remotes: dict[str, str],
+            hosts: Mapping[str, str] = GITLAB_HOSTS) -> bool:
     """Whether :func:`resolve_roots` fell back on several paths none of which resolved:
     its one root is then a guess that the first path checks out the configured repo,
     possibly a checkout of another. Twin of ``RepoRoots.guessed``."""
-    return len(paths) > 1 and not any(entries(w, remotes.get(w, ""))
+    return len(paths) > 1 and not any(entries(w, remotes.get(w, ""), hosts=hosts)
                                       for w in map(os.path.expanduser, paths))

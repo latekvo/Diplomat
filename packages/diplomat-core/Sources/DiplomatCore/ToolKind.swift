@@ -27,6 +27,14 @@ public struct LookupResult {
     public let url: String?       // canonical url if we know it (cached)
     public var isOnAnyList: Bool { !onLists.isEmpty }
 
+    /// The open button's tooltip and link: the listed url, else on GitHub the issue page,
+    /// which redirects to a PR of that number. None on GitLab without a url: merge requests
+    /// and issues number apart, so a number alone names no page.
+    public func openButton(on root: PRRef.LocalRepo) -> (tooltip: String, link: String)? {
+        guard let link = url ?? (root.isGitLab ? nil : root.webURL(.issues, number: number)) else { return nil }
+        return ("Open #\(number) on \(root.isGitLab ? "GitLab" : "GitHub")", link)
+    }
+
     public init(number: Int, onLists: [ToolKind], presence: String, url: String?) {
         self.number = number
         self.onLists = onLists

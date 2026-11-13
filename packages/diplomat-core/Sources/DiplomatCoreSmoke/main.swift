@@ -256,9 +256,10 @@ for url in ["git@github.com:software-mansion/radon.git", "https://github.com/sof
             "https://github.com/software-mansion/radon.git/", "ssh://git@github.com/software-mansion/radon.git",
             "https://user@github.com/software-mansion/radon.git",
             "ssh://git@github.com:22/software-mansion/radon.git"] {
-    check(PRRef.LocalRepo.coordinates(remoteURL: url) ?? ("", "") == ("software-mansion", "radon"), url)
+    check(PRRef.LocalRepo.coordinates(remoteURL: url) ?? ("", "", "")
+          == ("github.com", "software-mansion", "radon"), url)
 }
-check(PRRef.LocalRepo.coordinates(remoteURL: "git@gitlab.com:software-mansion/radon.git") == nil)
+check(PRRef.LocalRepo.coordinates(remoteURL: "git@bitbucket.org:software-mansion/radon.git") == nil)
 check(PRRef.LocalRepo.coordinates(remoteURL: "https://github.com.evil.io/a/b") == nil)
 check(PRRef.LocalRepo.coordinates(remoteURL: "/srv/git/radon.git") == nil)
 let remotes = """
@@ -269,7 +270,9 @@ remote.upstream.url https://github.com/software-mansion/radon.git
 remote.dup.url https://github.com/Software-Mansion/Radon
 """
 check(PRRef.LocalRepo.entries(path: "/r", remotes: remotes).map(\.slug)
-      == ["software-mansion/radon", "me/radon", "me/thing"])
+      == ["software-mansion/radon", "me/radon", "me/thing", "x/y"]
+      && PRRef.LocalRepo.entries(path: "/r", remotes: remotes).map(\.host)
+      == ["github.com", "github.com", "github.com", "gitlab.com"])
 check(PRRef.LocalRepo.entries(path: "/r", remotes: "").isEmpty)
 // A queued config stored before the field existed still decodes.
 var stored = try JSONSerialization.jsonObject(with: JSONEncoder().encode(single("337"))) as! [String: Any]
@@ -293,9 +296,9 @@ for url in ["https://gitlab.com/o/r/pull/1", "https://github.com.evil.io/o/r/pul
             "https://github.com/o/r/pull/0", "u1", ""] {
     check(PRRef.itemKey(url: url) == nil, "\(url) names no item")
 }
-check(PRRef.splitItemKey("o/r.js#12").map { [$0.slug, String($0.number)] } == ["o/r.js", "12"],
-      "an item key splits into its slug and number")
-for bad in ["o/r#x", "or#1", "o/r/x#1", "/r#1", "o/#1", "#1", "o/r#", "o/r#+1", "12"] {
+check(PRRef.splitItemKey("o/r.js#12").map { [$0.root, String($0.number)] } == ["o/r.js", "12"],
+      "an item key splits into its root key and number")
+for bad in ["o/r#x", "or#1", "o//x#1", "o/r/#1", "/r#1", "o/#1", "#1", "o/r#", "o/r#+1", "12"] {
     check(PRRef.splitItemKey(bad) == nil, "\(bad) is not an item key")
 }
 check(PRRef.migrateItemKey("12", primary: "O/R") == "o/r#12"
@@ -327,14 +330,17 @@ do {
     let home = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()
     let remotes = ["/w/fork": fork, "/w/radon": radonRemotes, "/w/plain": "",
                    "/w/gitlab": "remote.origin.url git@gitlab.com:x/y.git",
+                   "/w/bitbucket": "remote.origin.url git@bitbucket.org:x/y.git",
                    "\(home)/dev/radon2": radonRemotes]
-    let resolved = RepoRoots.resolve(paths: ["/w/fork", "/w/missing", "/w/radon", "/w/gitlab"],
+    let resolved = RepoRoots.resolve(paths: ["/w/fork", "/w/missing", "/w/radon", "/w/bitbucket",
+                                             "/w/gitlab"],
                                      remotes: remotes, configured: cfgSlug)
     check(resolved == [PRRef.LocalRepo(owner: "software-mansion", repo: "argent", path: "/w/fork"),
-                       PRRef.LocalRepo(owner: "software-mansion", repo: "radon", path: "/w/radon")],
+                       PRRef.LocalRepo(owner: "software-mansion", repo: "radon", path: "/w/radon"),
+                       PRRef.LocalRepo(owner: "x", repo: "y", path: "/w/gitlab", host: "gitlab.com")],
           "a fork clone (origin me/argent) is the configured repo, named as configured, not by "
-          + "its sibling remote; a path that is no checkout or has no GitHub remote is "
-          + "skipped: \(resolved)")
+          + "its sibling remote; a gitlab.com remote resolves to itself; a path that is no "
+          + "checkout or has neither a GitHub nor a GitLab remote is skipped: \(resolved)")
     let siblings = ["/radon": "remote.origin.url https://github.com/o/radon\n"
                         + "remote.argent.url https://github.com/\(cfgSlug.owner)/\(cfgSlug.repo)\n"
                         + "remote.fork.url https://github.com/me/argent",
@@ -381,19 +387,27 @@ do {
     check(RepoRoots.allResolve(paths: ["/w/radon", "~/dev/radon2"], remotes: remotes)
           && !RepoRoots.allResolve(paths: ["/w/radon", "/w/missing"], remotes: remotes)
           && !RepoRoots.allResolve(paths: ["/w/radon", "/w/plain"], remotes: remotes)
-          && !RepoRoots.allResolve(paths: ["/w/gitlab"], remotes: remotes),
-          "every path resolves only while each has a GitHub remote")
+          && !RepoRoots.allResolve(paths: ["/w/bitbucket"], remotes: remotes)
+          && RepoRoots.allResolve(paths: ["/w/gitlab"], remotes: remotes),
+          "every path resolves only while each has a GitHub or GitLab remote")
     let pair = ["/src/r", "/src/other"]
     let both = ["/src/r": "remote.origin.url https://github.com/o/r",
                 "/src/other": "remote.origin.url https://github.com/o/other"]
+    let otherFirst = ["/src/r": "remote.origin.url https://bitbucket.org/o/r",
+                      "/src/other": "remote.origin.url https://github.com/o/other"]
     let gitlabFirst = ["/src/r": "remote.origin.url https://gitlab.com/o/r",
                        "/src/other": "remote.origin.url https://github.com/o/other"]
     check(RepoRoots.primaryResolves(paths: pair, remotes: both)
           && !RepoRoots.guessed(paths: pair, remotes: both),
           "both paths resolving: the first root is the first path's, and not a guess")
-    check(!RepoRoots.primaryResolves(paths: pair, remotes: gitlabFirst)
-          && !RepoRoots.guessed(paths: pair, remotes: gitlabFirst),
-          "a first path with only a GitLab remote is no primary, the second still resolving")
+    check(!RepoRoots.primaryResolves(paths: pair, remotes: otherFirst)
+          && !RepoRoots.guessed(paths: pair, remotes: otherFirst),
+          "a first path with only a Bitbucket remote is no primary, the second still resolving")
+    check(RepoRoots.primaryResolves(paths: pair, remotes: gitlabFirst)
+          && !RepoRoots.guessed(paths: pair, remotes: [
+              "/src/r": gitlabFirst["/src/r"]!,
+              "/src/other": "remote.origin.url https://gitlab.example.com/g/sub/other"]),
+          "a first path with a GitLab remote is the primary, and two GitLab paths no guess")
     check(!RepoRoots.primaryResolves(paths: pair, remotes: [:])
           && RepoRoots.guessed(paths: pair, remotes: [:]),
           "none of several resolving: no primary, and the one root a guess")
@@ -2441,7 +2455,7 @@ do {
                                                                   isAgent: true)]) { a, _ in a }),
         sentinels: .present([]), tails: .present(["pts/3": working, "pts/9": working]),
         claims: .present(["w"]), mergedPRs: .present([]), liveAgents: .present([:])),
-        now: now, limit: 2)
+        roots: [], now: now, limit: 2)
     check(t.capLoad == ["auto"],
       "the cap counts automatic agents that run HERE — not a click, not a peer's")
     check(t.freeSlots == 1, "one of two bays filled")
@@ -2470,18 +2484,35 @@ do {
           "…and a PR number with no URL to place it names none either")
 
     let scan: Observation<[String: String]> = .present(["o/a#5": "pts/1", "o/b#5": "pts/2"])
-    let synth = AgentState.synthesizeUntracked([], liveAgents: scan, now: now)
+    let synth = AgentState.synthesizeUntracked([], liveAgents: scan, roots: [], now: now)
     check(synth.map(\.runID) == ["untracked:o/a#5", "untracked:o/b#5"]
           && synth.map(\.prURL) == ["https://github.com/o/a/pull/5",
                                     "https://github.com/o/b/pull/5"]
           && synth.allSatisfy { $0.prNumber == 5 && $0.untracked },
           "two live agents on #5 in two repos are two untracked runs: \(synth.map(\.runID))")
     let booked = AgentState.synthesizeUntracked([run("a", "o/a", tty: "pts/1")],
-                                                liveAgents: scan, now: now)
+                                                liveAgents: scan, roots: [], now: now)
     check(booked.map(\.runID) == ["a", "untracked:o/b#5"],
           "a record on o/a#5 covers only o/a's agent: \(booked.map(\.runID))")
-    check(AgentState.synthesizeUntracked(synth, liveAgents: scan, now: now).count == 2,
+    check(AgentState.synthesizeUntracked(synth, liveAgents: scan, roots: [], now: now).count == 2,
           "and the next tick makes no third")
+
+    let lab = PRRef.LocalRepo(owner: "Group/Sub", repo: "Proj", path: "/w/proj",
+                              host: "gitlab.example.com")
+    let labScan: Observation<[String: String]> = .present(["gitlab.example.com/group/sub/proj#337": "pts/4"])
+    let hub = PRRef.LocalRepo(owner: "O", repo: "A", path: "/w/a")
+    let hubRun = AgentState.synthesizeUntracked([], liveAgents: .present(["o/a#5": "pts/5"]),
+                                                roots: [hub], now: now)
+    check(hubRun.map(\.prURL) == ["https://github.com/O/A/pull/5"] && hubRun.map(\.item) == ["o/a#5"],
+          "a GitHub root's untracked run links to its root's PR on github.com, its item the scan's")
+    let labRun = AgentState.synthesizeUntracked([], liveAgents: labScan, roots: [lab], now: now)
+    let labAgain = AgentState.synthesizeUntracked(labRun, liveAgents: labScan, roots: [lab],
+                                                  now: now + 8)
+    check(labRun.map(\.prURL) == ["https://gitlab.example.com/Group/Sub/Proj/-/merge_requests/337"]
+          && labRun.map(\.item) == ["gitlab.example.com/group/sub/proj#337"]
+          && labAgain.map(\.runID) == ["untracked:gitlab.example.com/group/sub/proj#337"],
+          "an agent on a nested GitLab merge request is one untracked run, linked to the merge "
+          + "request, on the scan's item, tick after tick: \(labAgain.map(\.prURL))")
 
     let adopted = AgentState.adoptTTYs([run("a", "o/a")], processes: .present([:]),
                                        liveAgents: .present(["o/b#5": "pts/2"]))
@@ -2510,20 +2541,26 @@ do {
                                 tails: .present(["pts/1": "esc to interrupt"]),
                                 claims: .present([]), mergedPRs: .present([]),
                                 liveAgents: .present([:])),
-                            now: now, limit: 2)
+                            roots: [], now: now, limit: 2)
     check(t.inFlight(item: "o/a#5") && !t.inFlight(item: "o/b#5"),
           "an agent on o/a#5 blocks a second there and nothing on o/b#5")
 
     let roots: Set<String> = ["software-mansion/argent", "o/r.js"]
     check(AgentState.promptItems("Review PR #12 in software-mansion/argent. Use the `gh` CLI",
-                                 slugs: roots) == ["software-mansion/argent#12"],
+                                 keys: roots) == ["software-mansion/argent#12"],
           "the prompt's closing period is not part of the repo")
-    check(AgentState.promptItems("PR #3 in o/r.js. and PR #4 in O/R.JS now", slugs: roots)
+    check(AgentState.promptItems("PR #3 in o/r.js. and PR #4 in O/R.JS now", keys: roots)
           == ["o/r.js#3", "o/r.js#4"],
           "a repo whose name has a dot keeps it, and the slug is matched case-insensitively")
     check(AgentState.promptItems("PR #9 in other/repo. PR #10 in o/r. PR #11 in o/r.jsx",
-                                 slugs: roots).isEmpty,
+                                 keys: roots).isEmpty,
           "a repo outside the roots, or one that only starts like a root, is no sighting")
+    let nested: Set<String> = ["group/sub/proj", "group/sub", "o/r.js"]
+    check(AgentState.promptItems("Review PR #337 in group/sub/proj. Then PR #8 in Group/Sub/Proj",
+                                 keys: nested) == ["group/sub/proj#337", "group/sub/proj#8"]
+          && AgentState.promptItems("PR #3 in o/r.js.", keys: nested) == ["o/r.js#3"]
+          && AgentState.promptItems("PR #4 in group/sub./proj", keys: nested).isEmpty,
+          "a nested GitLab namespace is read too, the longest slug counting, its period the sentence's")
     print("cross-repo agent state assertions passed")
 }
 
@@ -3329,6 +3366,14 @@ do {
     for (flag, value) in [("-f", "owner=acme"), ("-f", "name=widgets"), ("-f", "me=alice"), ("-F", "number=7")] {
         check(zip(asked, asked.dropFirst()).contains { $0 == (flag, value) }, "audit passes \(flag) \(value)")
     }
+    var unknownLogin = ""
+    do { _ = try await ReviewAudit.audit(prURL: "https://github.com/acme/widgets/pull/7", me: "", since: since) }
+    catch { unknownLogin = error.localizedDescription }
+    let gitlabRun = try? await ReviewAudit.audit(
+        prURL: "https://gitlab.example.com/g/sub/p/-/merge_requests/7", me: "", since: since)
+    check(unknownLogin == "the gh login is not known yet" && gitlabRun == [],
+          "no gh login fails a GitHub PR's check, and says nothing of a merge request's: "
+          + "\(unknownLogin) \(String(describing: gitlabRun))")
 }
 print("ReviewAudit assertions passed")
 
@@ -3776,6 +3821,7 @@ print("comms assertions passed")
 try await tasksSmoke()
 try await goalsSmoke()
 print("tasks assertions passed")
+try await gitlabSmoke()
 
 // ---- Golden prompts (cross-platform parity) ----
 // Every prompt mode both front-ends can assemble is compared byte-for-byte against a
@@ -3785,6 +3831,9 @@ print("tasks assertions passed")
 // DiplomatCoreSmoke.
 section("golden prompts")
 let goldenMe = "testuser"
+// A GitLab home: the one input the GitLab goldens add to their GitHub twins.
+let goldenGitLab = PRRef.LocalRepo(owner: "group/sub", repo: "proj", path: "/w/proj",
+                                   host: "gitlab.example.com")
 let goldenModes: [(String, String)] = [
     ("review-mine-max", ReviewConfig(depth: "max", me: goldenMe).buildPrompt()),
     ("review-user-max", ReviewConfig(depth: "max", target: .someone, username: "someuser",
@@ -3818,6 +3867,13 @@ let goldenModes: [(String, String)] = [
         owner: "software-mansion", repo: "argent", login: goldenMe))),
     ("comms-classifier-multi", CommsClassifier.prompt(settings: CommsSettings(
         repos: ["software-mansion/argent", "latekvo/diplomat"], login: goldenMe))),
+    ("review-single-gitlab", { var c = ReviewConfig(depth: "max", target: .specific, me: goldenMe,
+                                                    specificPR: "337")
+                               c.home = goldenGitLab
+                               return c.buildPrompt() }()),
+    ("issues-single-gitlab", { var c = IssueConfig(target: .specific, me: goldenMe, specificIssue: "421")
+                               c.home = goldenGitLab
+                               return c.buildPrompt() }()),
 ]
 let goldenDir = try CoreAssets.assetsDir().appendingPathComponent("golden-prompts")
 if ProcessInfo.processInfo.environment["DIPLOMAT_GOLDEN_WRITE"] == "1" {
@@ -3892,12 +3948,12 @@ do {
         return ((try? String(contentsOf: log, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
     }
 
-    let many = try await API.fetchOpenPRs(owner: "many", repo: "r").map(\.number)
+    let many = try await API.fetchOpenPRs(PRRef.LocalRepo(owner: "many", repo: "r", path: "")).map(\.number)
     check(many == [1, 2, 3, 4], "four pages, in order, and no fifth, got: \(many)")
     let manyCalls = calls()
     check(manyCalls == ["many-", "many-c1", "many-c2", "many-c3"],
           "each page asks after the one before, got: \(manyCalls)")
-    let two = try await API.fetchOpenPRs(owner: "two", repo: "r").map(\.number)
+    let two = try await API.fetchOpenPRs(PRRef.LocalRepo(owner: "two", repo: "r", path: "")).map(\.number)
     let twoCalls = calls()
     check(two == [1, 2] && twoCalls == ["two-", "two-c1"],
           "the last page ends the reading, got: \(two) after \(twoCalls)")
@@ -4216,8 +4272,9 @@ do {
 if ProcessInfo.processInfo.environment["DIPLOMAT_DUMP"] == "1" {
     section("live gh dump (cross-check vs Python)")
     let viewer = try await API.fetchViewerLogin()
-    let realPRs = try await API.fetchOpenPRs(owner: cfg.owner, repo: cfg.repo)
-    let realIssues = try await API.fetchOpenIssues(owner: cfg.owner, repo: cfg.repo)
+    let configured = PRRef.LocalRepo(owner: cfg.owner, repo: cfg.repo, path: "")
+    let realPRs = try await API.fetchOpenPRs(configured)
+    let realIssues = try await API.fetchOpenIssues(configured)
     print("viewer @\(viewer) · PRs \(realPRs.count) · issues \(realIssues.count)")
     for kind in ToolKind.allCases {
         let c = ToolData.count(for: kind, prs: realPRs, issues: realIssues, me: viewer)

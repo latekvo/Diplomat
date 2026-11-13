@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from diplomat_runtime import apiwatch, runner, tmuxwatch
 from diplomat_runtime.agentstate import UNAVAILABLE, Evidence, Observation, ProcInfo, RunRecord
+from diplomat_runtime.prref import LocalRepo
 
 #: How long a probe's answer is reused. The resolver re-runs for every question the
 #: applet asks — that is deliberate, so no answer is ever stale — which makes THIS the
@@ -193,12 +194,12 @@ def ttys_running_an_agent(now: float) -> Observation:
         {p.tty for p in table.value.values() if p.is_agent and p.tty})
 
 
-def live_agents(dump: Observation, slugs: set[str],
+def live_agents(dump: Observation, keys: set[str],
                 sessions: dict[str, str] | None = None,
                 held_pids: frozenset[int] | set[int] = frozenset(),
                 by_pid: dict[int, str] | None = None) -> Observation:
     """Item key -> the tty of an agent visible in ``ps`` by its prompt text, on a PR
-    of a repo in ``slugs`` (:func:`autofix.prompt_items`).
+    of a repo root whose key is in ``keys`` (:func:`autofix.prompt_items`).
 
     The pre-registry identity mechanism, kept for the two questions a pid cannot
     answer: agents this applet has no record of at all
@@ -251,7 +252,7 @@ def live_agents(dump: Observation, slugs: set[str],
         session_id = opencodeapi.session_arg(args)
         if session_id and by_pid is not None and pid.isdigit():
             by_pid[int(pid)] = session_id
-        for pr in autofix.prompt_items(opencodeapi.scan_text(args), slugs):
+        for pr in autofix.prompt_items(opencodeapi.scan_text(args), keys):
             if pr in into:
                 continue
             into[pr] = "" if tty == "?" else tty.removeprefix("/dev/")
@@ -593,26 +594,32 @@ def mesh_claims(enabled: bool = True) -> Observation:
     return Observation.present(set(claims))
 
 
-def merged_prs(items: set[str]) -> Observation:
-    """Which of these PRs (item keys) GitHub calls MERGED — the one terminal outcome
-    that outranks anything a process is doing. Each is asked of its own repo.
+def merged_prs(items: set[str], roots: Iterable[LocalRepo] = ()) -> Observation:
+    """Which of these PRs (item keys) their host calls MERGED — the one terminal outcome
+    that outranks anything a process is doing. Each is asked of its repo's host: a
+    GitLab root's (in ``roots``) of its GitLab, a GitHub key's of GitHub; a GitLab key
+    no root has is never asked.
 
-    One ``gh`` call per PR, so this belongs on the slow refresh, not the 8-second
+    One ``gh`` or ``glab`` call per PR, so this belongs on the slow refresh, not the 8-second
     tick. The reading is always PRESENT: a PR whose probe fails is simply absent from
     the answer, so a partial answer is still positive evidence about the PRs it
     covers, and an empty ask is a real "none of them".
     """
     from diplomat_runtime.models import API
-    from diplomat_runtime.prref import split_item_key
+    from diplomat_runtime.prref import repo_of_key, split_item_key
 
+    known = {r.key: r for r in roots}
     merged = set()
     for item in sorted(items):
         split = split_item_key(item)
         if split is None:
             continue
-        (owner, repo), number = split[0].split("/", 1), split[1]
+        key, number = split
+        root = known.get(key) or repo_of_key(key)
+        if root.is_gitlab and key not in known:
+            continue
         try:
-            state = API.fetch_pr_state(number, owner, repo)
+            state = API.fetch_pr_state(number, root)
         except Exception:  # noqa: BLE001 - a probe never raises into the tick
             continue
         if state == "MERGED":
@@ -674,8 +681,9 @@ def gather(records: list[RunRecord], now: float, *,
     # read as working for a whole tick longer than it was.
     scan_sessions: dict[str, str] = {}
     by_pid: dict[int, str] = {}
+    roots = tuple(review.repo_roots())
     scan = _note("agent scan",
-                 live_agents(dump, {r.slug.lower() for r in review.repo_roots()},
+                 live_agents(dump, {r.key for r in roots},
                              scan_sessions,
                              held_pids={r.pid for r in records if r.pid is not None},
                              by_pid=by_pid),
@@ -687,7 +695,7 @@ def gather(records: list[RunRecord], now: float, *,
     # captured. It has no run directory, so no sentinel and no session to ask either:
     # its screen is the whole of the evidence about it, and left out it reads as
     # working until its window closes.
-    looked_up = agentstate.synthesize_untracked(looked_up, scan, now)
+    looked_up = agentstate.synthesize_untracked(looked_up, scan, now, roots)
     return Evidence(
         activity=_note("turn reports", agentregistry.activity(records), now),
         processes=table,

@@ -1,0 +1,19 @@
+# GitLab twin of issues.graphql (number = iid). Members stand in for author
+# association; an author past a full member page is looked up in REST members/all.
+query($path: ID!) {
+  project(fullPath: $path) {
+    projectMembers(first: 100, relations: [DIRECT, INHERITED, INVITED_GROUPS, SHARED_INTO_ANCESTORS]) {
+      pageInfo { hasNextPage }
+      nodes { user { username } }
+    }
+    issues(state: opened, first: 100, sort: CREATED_DESC) {
+      nodes {
+        iid title webUrl createdAt updatedAt userNotesCount
+        author { id username }
+        assignees(first: 10) { nodes { username } }
+        labels(first: 20) { nodes { title } }
+        notes(first: 100, filter: ONLY_COMMENTS) { nodes { author { id username } } }
+      }
+    }
+  }
+}

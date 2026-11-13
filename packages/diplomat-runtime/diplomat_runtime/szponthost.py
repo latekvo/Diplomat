@@ -188,21 +188,21 @@ class DiplomatHost(szpont_host.Host):
                          f"Declined a peer's job — {autobudget.shortfall(budget)}")
                 return True
 
-        slugs = {r.slug.lower() for r in roots}
+        keys = {r.key for r in roots}
         mine = {
             item_key(*ref[1:]) for ref in (autofix.parse_work_key(k) for k in running_keys)
             if ref is not None
         }
         dump = _ps_dump()
         book = agentregistry.load()
-        live = autofix.live_pr_items(dump, slugs)
+        live = autofix.live_pr_items(dump, keys)
         # `or {}` is the "everything is working" degradation this docstring promises:
         # tmux answering `None` means it could not be read, and no tty then resolves
         # to a tail, so nothing is subtracted as idle.
         tails = tmuxwatch.pane_tails_for_ttys(
-            autofix.agent_ttys(dump, slugs) | autofix.unscoped_auto_ttys(book, dump)
+            autofix.agent_ttys(dump, keys) | autofix.unscoped_auto_ttys(book, dump)
         ) or {}
-        idle = autofix.idle_pr_items(dump, tails, slugs)
+        idle = autofix.idle_pr_items(dump, tails, keys)
         return (autofix.running_auto_tasks(live, mine, set(), idle)
                 + autofix.running_unscoped_auto_runs(book, dump, tails, time.time())
                 >= appconfig.auto_task_limit())
@@ -233,7 +233,7 @@ class DiplomatHost(szpont_host.Host):
 
 
 def _checkout_for(work_key: str, repo: str = "") -> str | None:
-    """Where a job runs: the repo root checking out ``repo`` (``owner/name``), else the
+    """Where a job runs: the GitHub repo root checking out ``repo`` (``owner/name``), else the
     repo ``work_key`` names, else the configured repo's (:func:`review.mesh_checkout`).
     Raises :class:`szpont_host.NoRunner` for a repo with no root here, so the
     dispatcher fails the job over to a machine that has one, or for any job while no
@@ -251,7 +251,7 @@ def _checkout_for(work_key: str, repo: str = "") -> str | None:
                 raise szpont_host.NoRunner("no checkout of the configured repo on this machine")
             return checkout
         slug = f"{ref[1]}/{ref[2]}".lower()
-    root = next((r for r in review.repo_roots() if r.slug.lower() == slug), None)
+    root = next((r for r in review.repo_roots() if r.key == slug), None)
     if root is None:
         raise szpont_host.NoRunner(f"no checkout of {slug} on this machine")
     return root.path

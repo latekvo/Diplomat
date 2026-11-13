@@ -125,10 +125,10 @@ enum QueueTest {
 
         func job(_ number: Int, action: String = "review-req", label: String? = nil,
                  author: String? = nil,
-                 counter: Store.AutoCounter? = .reviewRequests) -> Store.AgentJob {
+                 counter: Store.AutoCounter? = .reviewRequests, url: String? = nil) -> Store.AgentJob {
             Store.AgentJob(kind: "review", auditAction: action,
                            label: label ?? "Review-req · #\(number)", prompt: "",
-                           prURL: "https://github.com/software-mansion/argent/pull/\(number)",
+                           prURL: url ?? "https://github.com/software-mansion/argent/pull/\(number)",
                            prNumber: number, authorLogin: author, duty: "review", workKey: "",
                            counter: counter,
                            attemptStamp: Store.AttemptStamp.unresolvedReview)
@@ -618,8 +618,12 @@ enum QueueTest {
               store.queuedTasks.map(\.job.label) == ["Issues · #31 · deep",
                                                      "Issues · #41 · deep"]
                   && store.queuedTasks.allSatisfy(\.job.requested))
-        check("…and none of them PR-scoped, so issue #31 cannot dedup against PR #31",
-              store.queuedTasks.allSatisfy { $0.job.prNumber == nil && $0.job.prURL == nil })
+        check("…and none of them PR-scoped, so issue #31 cannot dedup against PR #31, each "
+              + "carrying its issue's link: \(store.queuedTasks.map(\.job.prURL))",
+              store.queuedTasks.allSatisfy { $0.job.prNumber == nil && $0.job.item == nil }
+                  && store.queuedTasks.map(\.job.prURL) == [31, 41].map {
+                      "https://github.com/software-mansion/argent/issues/\($0)"
+                  })
 
         // The two asks live in one list, told apart by their key alone — so a review of
         // PR #31 queued alongside is a second row, and cancelling one leaves the other.
@@ -651,10 +655,10 @@ enum QueueTest {
                              memberResponded: false)
         }
         store.communityIssuesEnabled = true
-        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0)], root: argent)
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0)], root: argent, me: store.effectiveMe)
         check("the first community scan queues none of the backlog",
               store.requestedWork.isEmpty)
-        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)], root: argent)
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)], root: argent, me: store.effectiveMe)
         check("an outsider's issue filed after it is queued as a fix of that one issue",
               store.requestedWork.map(\.key) == [key("issues", 71)]
                   && store.requestedWork.first?.author == "outsider71"
@@ -663,14 +667,14 @@ enum QueueTest {
         check("…which re-checks its issue when its turn comes, as a swept fix does",
               store.queuedTasks.first?.job.prompt.contains("CAME OUT OF A SWEEP") == true)
         store.cancelRequestedWork(key("issues", 71))
-        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)], root: argent)
+        store.queueCommunityIssues([filed(70, "MEMBER", minutes: 0), filed(71)], root: argent, me: store.effectiveMe)
         check("…and only once, even after its ask is gone", store.requestedWork.isEmpty)
         store.communityIssuesEnabled = false
         store.communityIssuesEnabled = true
-        store.queueCommunityIssues([filed(72, minutes: 2)], root: argent)
+        store.queueCommunityIssues([filed(72, minutes: 2)], root: argent, me: store.effectiveMe)
         check("switched off and on, the next scan queues what was filed meanwhile not at all",
               store.requestedWork.isEmpty)
-        store.queueCommunityIssues([filed(72, minutes: 2), filed(73, minutes: 3)], root: argent)
+        store.queueCommunityIssues([filed(72, minutes: 2), filed(73, minutes: 3)], root: argent, me: store.effectiveMe)
         check("…and what is filed after it as before",
               store.requestedWork.map(\.key) == [key("issues", 73)])
         store.requestedWork = []
@@ -1013,14 +1017,14 @@ enum QueueTest {
         }
         store.requestedWork = []
         store.communityIssuesEnabled = true
-        store.queueCommunityIssues([filedIn(rootA, 80, minutes: 10)], root: rootA)
-        store.queueCommunityIssues([filedIn(rootB, 80, minutes: 11)], root: rootB)
+        store.queueCommunityIssues([filedIn(rootA, 80, minutes: 10)], root: rootA, me: store.effectiveMe)
+        store.queueCommunityIssues([filedIn(rootB, 80, minutes: 11)], root: rootB, me: store.effectiveMe)
         check("a root's first community scan queues none of its backlog, though filed after "
               + "another root's mark", store.requestedWork.isEmpty)
         store.queueCommunityIssues([filedIn(rootA, 80, minutes: 10), filedIn(rootA, 81, minutes: 12)],
-                                   root: rootA)
+                                   root: rootA, me: store.effectiveMe)
         store.queueCommunityIssues([filedIn(rootB, 80, minutes: 11), filedIn(rootB, 82, minutes: 13)],
-                                   root: rootB)
+                                   root: rootB, me: store.effectiveMe)
         let fixA = AgentTaskQueue.key(auditAction: "issues", item: "o1/alpha#81")
         let fixB = AgentTaskQueue.key(auditAction: "issues", item: "o2/beta#82")
         check("…and each root's later issue is queued as a fix in that root",
@@ -1030,17 +1034,17 @@ enum QueueTest {
         store.requestedWork = []
         store.queuedTasks = []
         store.pinRoots([rootA])
-        store.queueCommunityIssues([filedIn(rootA, 81, minutes: 12)], root: rootA)
+        store.queueCommunityIssues([filedIn(rootA, 81, minutes: 12)], root: rootA, me: store.effectiveMe)
         store.pinRoots([rootA, rootB])
         store.queueCommunityIssues([filedIn(rootB, 83, minutes: 14), filedIn(rootB, 84, minutes: 15),
-                                    filedIn(rootB, 85, minutes: 16)], root: rootB)
+                                    filedIn(rootB, 85, minutes: 16)], root: rootB, me: store.effectiveMe)
         check("a root removed and added back queues none of what was filed meanwhile",
               store.requestedWork.isEmpty)
         store.pinRoots([rootA], complete: false)
-        store.queueCommunityIssues([filedIn(rootA, 81, minutes: 12)], root: rootA)
+        store.queueCommunityIssues([filedIn(rootA, 81, minutes: 12)], root: rootA, me: store.effectiveMe)
         store.pinRoots([rootA, rootB])
         store.queueCommunityIssues([filedIn(rootB, 85, minutes: 16), filedIn(rootB, 86, minutes: 17)],
-                                   root: rootB)
+                                   root: rootB, me: store.effectiveMe)
         check("a root whose path failed to resolve for a poll keeps its mark: what it filed meanwhile is queued",
               store.requestedWork.map(\.key) == [AgentTaskQueue.key(auditAction: "issues", item: "o2/beta#86")])
         store.communityIssuesEnabled = false
@@ -1108,6 +1112,245 @@ enum QueueTest {
         store.pinRoots([rootA, rootB])
         check("with the configured repo in no root, nothing may",
               !store.meshRoutable(routed(rootA.path)) && !store.meshRoutable(routed(nil)))
+        let gitlabNamesake = PRRef.LocalRepo(owner: cfgOwner, repo: cfgRepo,
+                                             path: feed.appendingPathComponent("namesake").path,
+                                             host: "gitlab.example.com")
+        store.pinRoots([gitlabNamesake, rootB])
+        check("a GitLab project of the configured repo's name is not the configured repo",
+              !store.meshRoutable(routed(nil)) && !store.meshRoutable(checkout: gitlabNamesake.path))
+        store.pinRoots([rootA, rootB])
+
+        // 24a. "Me" in a GitLab root: glab's user on its host, cached only once read.
+        let glabStub = feed.appendingPathComponent("glab")
+        let glabCalls = feed.appendingPathComponent("glab-calls")
+        // A merge-status recheck answers from glab-rest, logging its path; the rest from glab-out.
+        try? ("#!/bin/sh\necho x >> '\(glabCalls.path)'\n"
+              + "case \"$*\" in *with_merge_status_recheck*) echo \"$3 $4\" >> '\(feed.path)/glab-rechecks'\n"
+              + "  cat '\(feed.path)/glab-rest'; exit \"$(cat '\(feed.path)/glab-rest-code')\" ;; esac\n"
+              + "printf '%s\\n' \"$@\" > '\(feed.path)/glab-argv'\n"
+              + "cat '\(feed.path)/glab-out'\nexit 0\n")
+            .write(to: glabStub, atomically: true, encoding: .utf8)
+        chmod(glabStub.path, 0o755)
+        setenv("DIPLOMAT_GLAB", glabStub.path, 1)
+        func glabAnswers(_ s: String) {
+            try? s.write(to: feed.appendingPathComponent("glab-out"), atomically: true, encoding: .utf8)
+        }
+        func glabCallCount() -> Int {
+            ((try? String(contentsOf: glabCalls, encoding: .utf8)) ?? "").split(separator: "\n").count
+        }
+        func meIn(_ root: PRRef.LocalRepo) async -> String {
+            do { return try await store.me(for: root) }
+            catch { return "error: \((error as? LocalizedError)?.errorDescription ?? "\(error)")" }
+        }
+        glabAnswers(#"{"data":{"currentUser":null}}"#)
+        let onGitLab = PRRef.LocalRepo(owner: "g/sub", repo: "p", path: "", host: "gitlab.example.com")
+        let signedOut = await meIn(onGitLab)
+        check("a GitLab host glab is not signed in to has no me: \(signedOut)",
+              signedOut == "error: not signed in to gitlab.example.com"
+                && store.knownMe(for: onGitLab).isEmpty)
+        glabAnswers(#"{"data":{"currentUser":{"username":"gl-me"}}}"#)
+        let glFirst = await meIn(onGitLab)
+        let glSecond = await meIn(PRRef.LocalRepo(owner: "x", repo: "y", path: "", host: "gitlab.example.com"))
+        check("…once signed in, glab's user, asked once per host: \(glFirst) \(glabCallCount())",
+              glFirst == "gl-me" && glSecond == "gl-me" && glabCallCount() == 2
+                && store.knownMe(for: onGitLab) == "gl-me")
+        let overrideBefore = store.usernameOverride
+        store.usernameOverride = "alice"
+        check("…while a GitHub root's me stays the GitHub one",
+              await meIn(rootA) == "alice" && store.knownMe(for: rootA) == "alice"
+                && store.knownMe(for: nil) == "alice")
+        // A link to a GitLab item from the GitHub root shown runs as glab's user; a sweep as
+        // the shown root's me.
+        let rootsBefore = store.roots
+        store.pinRoots([rootA, onGitLab])
+        let mrLink = "https://gitlab.example.com/g/sub/p/-/merge_requests/3"
+        let wizardMes = [store.wizardRun(ReviewConfig(target: .specific, specificPR: mrLink)).me,
+                         store.wizardRun(IssueConfig(target: .specific, specificIssue: "g/sub/p#4")).me,
+                         store.wizardRun(ConflictConfig(target: .specific, specificPR: mrLink)).me,
+                         store.wizardRun(ReviewConfig(target: .mine, specificPR: mrLink)).me]
+        check("…and a wizard's run takes the me of the root it targets: \(wizardMes)",
+              store.selectedRoot == rootA && wizardMes == ["gl-me", "gl-me", "gl-me", "alice"])
+        store.pinRoots(rootsBefore)
+        store.usernameOverride = overrideBefore
+
+        // 24a'. The monitors' GitLab reads, on the shared parity fixtures.
+        let fixtures = (try? CoreAssets.assetsDir())?.deletingLastPathComponent()
+            .appendingPathComponent("Tests/fixtures/gitlab")
+        func fixture(_ name: String) -> String {
+            fixtures.flatMap { try? String(contentsOf: $0.appendingPathComponent(name), encoding: .utf8) } ?? ""
+        }
+        func searchNodes(_ name: String) -> Int {
+            let obj = (try? JSONSerialization.jsonObject(with: Data(fixture(name).utf8))) as? [String: Any]
+            let search = (obj?["data"] as? [String: Any])?["search"] as? [String: Any]
+            return (search?["nodes"] as? [Any])?.count ?? -1
+        }
+        func glabArgv() -> [String] {
+            ((try? String(contentsOf: feed.appendingPathComponent("glab-argv"), encoding: .utf8)) ?? "")
+                .split(separator: "\n").map(String.init)
+        }
+        let rechecks = feed.appendingPathComponent("glab-rechecks")
+        func glabRest(_ s: String, code: Int = 0) {
+            try? s.write(to: feed.appendingPathComponent("glab-rest"), atomically: true, encoding: .utf8)
+            try? "\(code)".write(to: feed.appendingPathComponent("glab-rest-code"), atomically: true,
+                                 encoding: .utf8)
+            try? FileManager.default.removeItem(at: rechecks)
+        }
+        func recheckCalls() -> [String] {
+            ((try? String(contentsOf: rechecks, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        }
+        let graphqlOnly = ((try? AutofixMonitor.parse(GitLab.monitorPRs(Data(fixture("monitor-prs.input.json").utf8))))
+            ?? []).map { ($0.number, $0.mergeable) }
+        let unchecked = graphqlOnly.filter { $0.1 == "UNKNOWN" }.map(\.0)
+        glabRest(#"{"iid":0,"has_conflicts":true,"detailed_merge_status":"conflict"}"#)
+        glabAnswers(fixture("monitor-prs.input.json"))
+        let snaps = (try? await AutofixMonitor.fetchSnapshots(root: onGitLab, me: "gl-me")) ?? []
+        check("a GitLab root's open merge requests are snapshotted: \(snaps.count)",
+              !snaps.isEmpty && snaps.count == searchNodes("monitor-prs.expected.json")
+                && glabArgv().contains("path=g/sub/p") && glabArgv().contains("author=gl-me"))
+        // GitLab checks a merge status only when asked, and no GraphQL read asks.
+        check("…each one GitLab has not checked read again through the REST read that rechecks "
+              + "it, whose definite answer stands: \(recheckCalls()) \(snaps.map { "\($0.number) \($0.mergeable)" })",
+              !unchecked.isEmpty
+                && recheckCalls() == unchecked.map {
+                    "gitlab.example.com projects/g%2Fsub%2Fp/merge_requests/\($0)?with_merge_status_recheck=true"
+                }
+                && snaps.map { ($0.number, $0.mergeable) }.elementsEqual(graphqlOnly.map {
+                    ($0.0, $0.1 == "UNKNOWN" ? "CONFLICTING" : $0.1)
+                }, by: { $0 == $1 }))
+        glabRest(#"{"iid":0,"has_conflicts":false,"detailed_merge_status":"checking"}"#)
+        let stillChecking = (try? await AutofixMonitor.fetchSnapshots(root: onGitLab, me: "gl-me")) ?? []
+        glabRest("", code: 1)
+        let recheckFailed = (try? await AutofixMonitor.fetchSnapshots(root: onGitLab, me: "gl-me")) ?? []
+        check("…while one still checking, or whose recheck fails, reads unknown, the root read all the same",
+              [stillChecking, recheckFailed].allSatisfy {
+                  $0.map { ($0.number, $0.mergeable) }.elementsEqual(graphqlOnly, by: { $0 == $1 })
+              } && recheckCalls().count == unchecked.count)
+        glabAnswers(fixture("closed-prs.input.json"))
+        let closedMRs = (try? await AutofixMonitor.fetchClosedPRs(root: onGitLab)) ?? []
+        check("…its closed ones keyed by its host and nested slug: \(closedMRs.sorted())",
+              !closedMRs.isEmpty && closedMRs.count == searchNodes("closed-prs.expected.json")
+                && closedMRs.allSatisfy { $0.hasPrefix("gitlab.example.com/g/sub/p#") })
+        glabAnswers(fixture("review-requests.input.json"))
+        let asks = (try? await AutofixMonitor.fetchReviewRequests(root: onGitLab, me: "gl-me",
+                                                                 includeFiles: true)) ?? []
+        check("…and its review requests: \(asks.count)",
+              !asks.isEmpty && asks.count == searchNodes("review-requests.expected.json")
+                && glabArgv().contains("reviewer=gl-me") && glabArgv().contains("withFiles=true"))
+        glabAnswers(fixture("review-requests-window.input.json"))
+        let windowed = (try? await AutofixMonitor.fetchReviewRequests(root: onGitLab, me: "carol")) ?? []
+        check("…a request no note in the window names dates from its oldest note, so my comment "
+              + "there answers it, and from the merge request with no notes: "
+              + "\(windowed.map { "\($0.number) \($0.requestedAt ?? "nil") \($0.oweReview)" })",
+              windowed.map(\.number) == [31, 30]
+                && windowed.map(\.requestedAt) == ["2026-11-06T08:00:00Z", "2026-11-02T07:00:00Z"]
+                && windowed.map(\.oweReview) == [false, true])
+        glabAnswers(#"{"data":{"project":{"mergeRequest":{"state":"merged","author":null}}}}"#)
+        let landed = await AgentProbes.mergedPRs(["gitlab.example.com/g/sub/p#7"], roots: [rootA, onGitLab])
+        check("a GitLab root's merged merge request is asked of glab on its host",
+              { if case .present(let s) = landed { return s == ["gitlab.example.com/g/sub/p#7"] }; return false }()
+                && glabArgv().contains("gitlab.example.com")
+                && glabArgv().contains("iid=7"))
+        // gh and glab both answer MERGED, so any wrong ask shows.
+        let mergedGH = feed.appendingPathComponent("gh-merged")
+        let ghArgv = feed.appendingPathComponent("gh-argv")
+        try? ("#!/bin/sh\nprintf '%s ' \"$@\" >> '\(ghArgv.path)'\necho >> '\(ghArgv.path)'\n"
+              + "echo '{\"state\":\"MERGED\"}'\n").write(to: mergedGH, atomically: true, encoding: .utf8)
+        chmod(mergedGH.path, 0o755)
+        let ghBefore = ProcessInfo.processInfo.environment["DIPLOMAT_GH"]
+        setenv("DIPLOMAT_GH", mergedGH.path, 1)
+        let callsBefore = glabCallCount()
+        let strayKey = await AgentProbes.mergedPRs(["gitlab.example.com/g/gone#7", "localhost/g/gone#7",
+                                                    "o/gone#7"], roots: [rootA])
+        if let ghBefore { setenv("DIPLOMAT_GH", ghBefore, 1) } else { unsetenv("DIPLOMAT_GH") }
+        let ghAsked = ((try? String(contentsOf: ghArgv, encoding: .utf8)) ?? "")
+            .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        check("…while a GitLab key no root has, a dotless host's too, is asked of no host, so it "
+              + "is never merged; a GitHub one is asked of GitHub: \(strayKey) \(ghAsked)",
+              { if case .present(let s) = strayKey { return s == ["o/gone#7"] }; return false }()
+                && glabCallCount() == callsBefore
+                && ghAsked == ["pr view 7 --repo o/gone --json state"])
+
+        // 24a''. An unchecked GitLab merge request keeps its queued conflict fix (GitLab
+        //        has not looked yet); a GitHub PR's UNKNOWN drops it.
+        store.pinRoots([rootA, onGitLab])
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.prAutofixEnabled = true
+        store.autoTaskLimit = 1
+        bookAgent(1)
+        let mrURL = "https://gitlab.example.com/g/sub/p/-/merge_requests/8"
+        let alphaURL = "https://github.com/o1/alpha/pull/8"
+        _ = await offer(job(8, action: "conflicts", label: "Resolve · p#8", counter: .conflicts, url: mrURL))
+        _ = await offer(job(8, action: "conflicts", label: "Resolve · alpha#8", counter: .conflicts,
+                            url: alphaURL))
+        store.commitQueue()
+        let mrFix = AgentTaskQueue.key(auditAction: "conflicts", item: "gitlab.example.com/g/sub/p#8")
+        let alphaFix = AgentTaskQueue.key(auditAction: "conflicts", item: "o1/alpha#8")
+        func unknown(_ url: String) -> PRSnapshot {
+            PRSnapshot(number: 8, title: "t", url: url, isDraft: false, mergeable: "UNKNOWN",
+                       reviewDecision: "", threadsUnresolved: 0)
+        }
+        func fixes() -> Set<String> { Set(store.queuedTasks.map(\.id)).intersection([mrFix, alphaFix]) }
+        let queuedBoth = fixes() == [mrFix, alphaFix]
+        await store.drainQueuedTasks(snaps: [unknown(mrURL), unknown(alphaURL)], closed: [],
+                                     read: [rootA, onGitLab])
+        check("a conflict fix on a GitLab merge request reading unchecked stays queued, one on a "
+              + "GitHub PR reading UNKNOWN leaves: \(store.queuedTasks.map(\.id))",
+              queuedBoth && fixes() == [mrFix])
+        // The cycle's commit keeps what the cycle offered.
+        let otherMR = "https://gitlab.example.com/g/sub/p/-/merge_requests/9"
+        let otherFix = AgentTaskQueue.key(auditAction: "conflicts", item: "gitlab.example.com/g/sub/p#9")
+        let cycle = [unknown(mrURL), unknown(alphaURL),
+                     PRSnapshot(number: 9, title: "t", url: otherMR, isDraft: false, mergeable: "UNKNOWN",
+                                reviewDecision: "", threadsUnresolved: 0)]
+        await store.reconcileMyConflicts(snaps: cycle, now: Date())
+        store.commitQueue()
+        check("…and through the cycle's commit, while an unchecked merge request with no fix queued "
+              + "gets none: \(store.queuedTasks.map(\.id))",
+              fixes() == [mrFix] && !store.queuedTasks.contains { $0.id == otherFix })
+        emptyBook()
+        store.queuedTasks = []
+
+        // 24a'''. A GitLab root whose glab user is unknown is held, not run as nobody; its
+        //         mark waits for the next read.
+        let signedOutRoot = PRRef.LocalRepo(owner: "g", repo: "lab", path: "/w/lab",
+                                            host: "gitlab.signedout.example")
+        store.pinRoots([signedOutRoot])
+        store.requestedWork = []
+        store.communityIssuesEnabled = true
+        store.queueCommunityIssues([filedIn(signedOutRoot, 1, minutes: -60 * 24 * 60)], root: signedOutRoot,
+                                   me: "")
+        // One answer for every query: the issues read succeeds, the viewer read finds no user.
+        glabAnswers(fixture("issues.input.json"))
+        await store.pollCommunityIssues([signedOutRoot])
+        let heldAsks = store.requestedWork.map(\.key)
+        store.pinGitLabMe("lab-me", host: signedOutRoot.host)
+        await store.pollCommunityIssues([signedOutRoot])
+        let fixes = store.requestedWork.compactMap { w -> String? in
+            if case .issues(let cfg) = w.config { return "\(w.key) \(cfg.me)" }
+            return nil
+        }
+        // A later section counts the feed's root-read lines from the start: drop these.
+        let auditFeed = feed.appendingPathComponent("audit.jsonl")
+        let auditLines = ((try? String(contentsOf: auditFeed, encoding: .utf8)) ?? "").split(separator: "\n")
+        func isLab(_ line: Substring) -> Bool {
+            let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+            return (obj?["detail"] as? String)?.hasPrefix("Issues of g/lab ") == true
+        }
+        let labLines = auditLines.filter(isLab).map { line in
+            ((try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any])?["detail"] as? String ?? ""
+        }
+        check("a GitLab root whose glab user is unknown queues no community fix, logged as unread, "
+              + "and keeps its mark: \(heldAsks) then \(fixes)",
+              heldAsks.isEmpty && !fixes.isEmpty && fixes.allSatisfy { $0.hasSuffix(" lab-me") }
+                && labLines.first?.contains("not signed in to gitlab.signedout.example") == true)
+        try? (auditLines.filter { !isLab($0) }.joined(separator: "\n") + "\n")
+            .write(to: auditFeed, atomically: true, encoding: .utf8)
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.communityIssuesEnabled = false
+        store.pinRoots([rootA, rootB])
+        unsetenv("DIPLOMAT_GLAB")
 
         // 24b. A review-request record outlives a poll its root's path failed to resolve
         //      for: o/other#7's run concluded long ago and the request is still owed.
@@ -1141,8 +1384,8 @@ enum QueueTest {
                    isDraft: true, author: "alice", createdAt: Date(),
                    readyForReviewAt: nil, files: [], reviewDecision: nil, reviewThreads: [])
         }
-        store.seedPanelLists(slug: "o1/alpha", prs: [rootPR(rootA, 1)], issues: [])
-        store.seedPanelLists(slug: "o2/beta", prs: [rootPR(rootB, 2), rootPR(rootB, 3)], issues: [])
+        store.seedPanelLists(key: "o1/alpha", prs: [rootPR(rootA, 1)], issues: [])
+        store.seedPanelLists(key: "o2/beta", prs: [rootPR(rootB, 2), rootPR(rootB, 3)], issues: [])
         check("with none chosen, the panel shows the primary root's PRs",
               store.prs.map(\.url) == ["https://github.com/o1/alpha/pull/1"])
         store.selectedRepo = "o2/beta"
@@ -1157,6 +1400,41 @@ enum QueueTest {
         store.selectedRepo = "o9/gone"
         check("a chosen root that is gone reads as the primary",
               store.selectedRoot == rootA && store.prs.map(\.number) == [1])
+        let twinGH = PRRef.LocalRepo(owner: "acme", repo: "widget",
+                                     path: feed.appendingPathComponent("gh-widget").path)
+        let twinGL = PRRef.LocalRepo(owner: "acme", repo: "widget",
+                                     path: feed.appendingPathComponent("gl-widget").path,
+                                     host: "gitlab.example.com")
+        let twinMR = "https://gitlab.example.com/acme/widget/-/merge_requests/7"
+        store.requestedWork = []
+        store.queuedTasks = []
+        store.pinRoots([rootA, twinGH, twinGL])
+        store.seedPanelLists(key: twinGH.key, prs: [rootPR(twinGH, 7)], issues: [])
+        store.seedPanelLists(key: twinGL.key, prs: [OpenPR(number: 7, title: "MR 7", url: twinMR,
+                                                           isDraft: true, author: "alice", createdAt: Date(),
+                                                           readyForReviewAt: nil, files: [],
+                                                           reviewDecision: nil, reviewThreads: [])],
+                             issues: [])
+        store.selectedRepo = twinGL.key
+        check("a GitLab root of a GitHub root's slug is chosen by its key, and shows its own list",
+              store.selectedRoot == twinGL && store.prs.map(\.url) == [twinMR])
+        let twinSwept = store.requestReviewSweep(ReviewConfig(depth: "deep", target: .mine, me: "alice",
+                                                              includeDrafts: true, includeReady: false))
+        store.selectedRepo = twinGH.key
+        let ghSwept = store.requestReviewSweep(ReviewConfig(depth: "deep", target: .mine, me: "alice",
+                                                            includeDrafts: true, includeReady: false))
+        let twinKeys = ["review:gitlab.example.com/acme/widget#7", "review:acme/widget#7"]
+        check("…each of the two asks for its own PR of one number, run in its own checkout: "
+              + "\(twinSwept.queued) \(ghSwept.queued) \(store.requestedWork.map(\.key)) "
+              + "\(store.queuedTasks.map { "\($0.id) \($0.job.directory ?? "nil")" })",
+              twinSwept.queued == 1 && ghSwept.queued == 1 && store.selectedRoot == twinGH
+                  && store.requestedWork.map(\.key) == twinKeys
+                  && twinKeys.map { key in store.queuedTasks.first { $0.id == key }?.job.directory }
+                      == [twinGL.path, twinGH.path])
+        check("…and the picker names the GitLab one by its host",
+              store.roots.map { PRRef.rootLabel($0, roots: store.roots) }
+                  == ["o1/alpha", "acme/widget", "gitlab.example.com/acme/widget"])
+        store.pinRoots([rootA, rootB])
         store.selectedRepo = ""
         store.requestedWork = []
         store.queuedTasks = []
@@ -1214,7 +1492,7 @@ enum QueueTest {
         store.requestedWork = []
         store.queuedTasks = []
         store.autofixPollError = nil
-        let guessedMessage = "no repo root in Settings resolves to a GitHub checkout"
+        let guessedMessage = "no repo root in Settings resolves to a GitHub or GitLab checkout"
         store.pinRoots([configuredRoot], complete: false, primary: false, guessed: true)
         for _ in 0..<50 {
             await store.runAutofixPollOnce()

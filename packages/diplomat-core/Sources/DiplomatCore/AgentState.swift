@@ -283,6 +283,7 @@ public enum AgentState {
         public var runID: String
         public var dispatchedAt: TimeInterval
         public var prNumber: Int?
+        /// The PR's or issue's link; "" for neither.
         public var prURL: String
         public var kind: String
         public var label: String
@@ -368,7 +369,7 @@ public enum AgentState {
         public var tails: Observation<[String: String]>
         /// Work keys currently claimed somewhere on the mesh.
         public var claims: Observation<Set<String>>
-        /// The items (`PRRef.itemKey`) of the PRs GitHub reports as MERGED.
+        /// The items (`PRRef.itemKey`) of the PRs and merge requests reported MERGED.
         public var mergedPRs: Observation<Set<String>>
         /// Item → the tty of an agent found by its prompt text in the process table
         /// (`promptItems`). The pre-registry identity mechanism, and still the only
@@ -1095,20 +1096,38 @@ public enum AgentState {
 
     // MARK: - Untracked agents
 
-    /// The items an agent's prompt names, in order: each `PR #<n> in <owner>/<repo>` whose
-    /// repo is one of `slugs` (lowercase). A trailing `.` no slug has is the prompt's
-    /// sentence end, not the repo name's.
-    public static func promptItems(_ text: String, slugs: Set<String>) -> [String] {
-        guard let re = try? NSRegularExpression(pattern: #"PR #([0-9]+) in ([\w.-]+)/([\w.-]+)"#)
+    /// The items an agent's prompt names, in order: each `PR #<n> in <slug>` whose root key
+    /// is in `keys`. A slug named by a "hosted on GitLab at <host> (project <slug>)" note
+    /// is on that host, any other on GitHub. The longest leading run of segments that is a
+    /// root counts; a trailing `.` no root has ends the sentence, not the repo name.
+    public static func promptItems(_ text: String, keys: Set<String>) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: #"PR #([0-9]+) in ([\w.-]+(?:/[\w.-]+)+)"#),
+              let note = try? NSRegularExpression(
+                pattern: #"hosted on GitLab at ([A-Za-z0-9.-]+) \(project ([\w.-]+(?:/[\w.-]+)+)\)"#)
         else { return [] }
+        let whole = NSRange(text.startIndex..., in: text)
+        var hosts: [String: String] = [:]
+        for m in note.matches(in: text, range: whole) {
+            guard let h = Range(m.range(at: 1), in: text), let s = Range(m.range(at: 2), in: text)
+            else { continue }
+            hosts[text[s].lowercased()] = hosts[text[s].lowercased()] ?? text[h].lowercased()
+        }
+        func key(_ slug: String) -> String { hosts[slug].map { "\($0)/\(slug)" } ?? slug }
         var out: [String] = []
-        for m in re.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+        for m in re.matches(in: text, range: whole) {
             guard let n = Range(m.range(at: 1), in: text).flatMap({ Int(text[$0]) }),
-                  let o = Range(m.range(at: 2), in: text),
-                  let r = Range(m.range(at: 3), in: text) else { continue }
-            var slug = "\(text[o])/\(text[r])".lowercased()
-            while !slugs.contains(slug), slug.hasSuffix(".") { slug.removeLast() }
-            if slugs.contains(slug) { out.append("\(slug)#\(n)") }
+                  let p = Range(m.range(at: 2), in: text) else { continue }
+            let segments = text[p].lowercased().split(separator: "/")
+            for count in stride(from: segments.count, through: 2, by: -1) {
+                var slug = segments.prefix(count).joined(separator: "/")
+                while count == segments.count, !keys.contains(key(slug)), slug.hasSuffix(".") {
+                    slug.removeLast()
+                }
+                if keys.contains(key(slug)) {
+                    out.append("\(key(slug))#\(n)")
+                    break
+                }
+            }
         }
         return out
     }
@@ -1178,8 +1197,12 @@ public enum AgentState {
     ///
     /// They count as automatic. An agent whose trigger is unknown spending a bay defers
     /// work; the opposite error dispatches a second agent onto a PR that has one.
+    ///
+    /// Its link comes from its item key's root in `roots`, else `PRRef.repo(ofKey:)`, so
+    /// the record's `item` is the scan's.
     public static func synthesizeUntracked(_ records: [RunRecord],
                                            liveAgents: Observation<[String: String]>,
+                                           roots: [PRRef.LocalRepo],
                                            now: TimeInterval) -> [RunRecord] {
         guard let live = liveAgents.value else { return records }
         let held = Set(records.map(\.tty).filter { !$0.isEmpty })
@@ -1202,9 +1225,10 @@ public enum AgentState {
         }
         let known = Set(out.compactMap(\.item))
         for item in Set(live.keys).subtracting(known).sorted() {
-            guard let (slug, pr) = PRRef.splitItemKey(item) else { continue }
+            guard let (key, pr) = PRRef.splitItemKey(item) else { continue }
+            let url = (roots.first { $0.key == key } ?? PRRef.repo(ofKey: key)).webURL(.pull, number: pr)
             out.append(RunRecord(runID: "untracked:\(item)", dispatchedAt: now,
-                                 prNumber: pr, prURL: "https://github.com/\(slug)/pull/\(pr)",
+                                 prNumber: pr, prURL: url,
                                  source: AgentDispatchGate.Source.auto.rawValue,
                                  placement: .local, tty: live[item] ?? "",
                                  untracked: true))
@@ -1368,8 +1392,8 @@ public enum AgentState {
 
     /// The automatic runs on this machine whose own runner reported the turn over
     /// (`Resolution.reported`): their window is closed as they retire, their work being
-    /// on GitHub or in a report. A panel run is the operator's session, and an untracked
-    /// agent's `auto` is the cap's assumption, not a dispatch.
+    /// on GitHub, on GitLab or in a report. A panel run is the operator's session, and an
+    /// untracked agent's `auto` is the cap's assumption, not a dispatch.
     ///
     /// Unlike `reapable`, a close that reaches nothing withholds no retirement: the
     /// record a live agent is released to (`releaseEnded`) is the stillness backstop's.
@@ -1428,13 +1452,13 @@ public enum AgentState {
     /// before it forgets the run that ended. Both front-ends and the parity CLI go through
     /// here, so neither can get the sequence subtly different from the other.
     public static func tick(records: [RunRecord], evidence: Evidence,
-                            now: TimeInterval, limit: Int,
+                            roots: [PRRef.LocalRepo], now: TimeInterval, limit: Int,
                             deadline: TimeInterval? = nil) -> Tick {
         var recs = observeClaims(records, claims: evidence.claims, now: now)
         recs = adoptTTYs(recs, processes: evidence.processes,
                          liveAgents: evidence.liveAgents)
         recs = observeQuiescence(recs, tails: evidence.tails, now: now)
-        recs = synthesizeUntracked(recs, liveAgents: evidence.liveAgents, now: now)
+        recs = synthesizeUntracked(recs, liveAgents: evidence.liveAgents, roots: roots, now: now)
         var states = resolve(records: recs, evidence: evidence, now: now,
                              deadline: deadline)
         for (heir, verdict) in releaseEnded(recs, states: states, evidence: evidence,

@@ -24,6 +24,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 from diplomat_runtime import (
@@ -47,9 +48,11 @@ from diplomat_runtime import (
     telemetry,
     tmuxwatch,
 )
+from diplomat_runtime.gh import GHError
 from diplomat_runtime.models import API, Filters, Fmt, OpenIssue, OpenPR
 from diplomat_runtime.prref import (LocalRepo, item_key, item_key_from_url, item_label,
-                                    migrate_item_key, migrate_queue_key, split_item_key)
+                                    migrate_item_key, migrate_queue_key, repo_of_key,
+                                    root_named, split_item_key)
 from diplomat_runtime.prtarget import PRTarget
 from . import (
     autofixmonitor,
@@ -65,6 +68,7 @@ from . import (
 
 #: The review-request monitor's verb.
 REVIEW_REQ_ACTION = "review-req"
+GITHUB_LOGIN_UNKNOWN = "GitHub login unknown — is `gh` installed and authenticated?"
 
 GITHUB_ITEM = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/(?:pull|issues)/([0-9]+)$")
 #: An issue fix run's label (``RequestedWork.label_among``, the Fix-issues wizard's), past
@@ -97,21 +101,26 @@ def goal_overlay(records: list, states: dict, asks: list[autofix.RequestedWork],
                  queued: list[autofix.QueuedTask], watched: LocalRepo) -> GoalOverlay:
     """A run counts as the dispatch dedup counts it (:func:`agentstate.in_flight`): not
     released, in a blocking state. A PR's run is known by its item; an issue fix run
-    has none, and is known by its kind and label. Queued: the asks, and every queued
-    task, by its key's verb. Only ``watched``'s items count: the goals are its."""
-    slug = watched.slug.lower()
-
+    has none, and is known by its kind and its link's item (by its label when it has no
+    link). Queued: the asks, and every queued task, by its key's verb. Only
+    ``watched``'s items count: the goals are its."""
     def number(item: str | None) -> int | None:
         split = split_item_key(item or "")
-        return split[1] if split and split[0] == slug else None
+        return split[1] if split and split[0] == watched.key else None
 
     live = [r for r in records if r.run_id in states and not r.released
             and states[r.run_id].state in agentstate.BLOCKING]
     agent_issues = set()
     for r in live:
+        if r.pr_number is not None or r.kind != autofix.QUEUE_ISSUES_ACTION:
+            continue
+        if r.pr_url:
+            n = number(item_key_from_url(r.pr_url))
+            if n is not None:
+                agent_issues.add(n)
+            continue
         m = _ISSUE_RUN.search(r.label)
-        if (r.pr_number is None and r.kind == autofix.QUEUE_ISSUES_ACTION and m
-                and m[1].lower() in ("", watched.repo.lower())):
+        if m and m[1].lower() in ("", watched.repo.lower()):
             agent_issues.add(int(m[2]))
     keys = [a.key for a in asks] + [t.id for t in queued]
 
@@ -158,6 +167,13 @@ def mesh_switch(settings: QSettings) -> bool:
 def _count(n: int, noun: str) -> str:
     """``3 files`` / ``1 file`` — the pluralisation two row builders share."""
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _undecided_merge_request(snap, lab: set[str]) -> bool:
+    """An undecided merge status on a root of ``lab`` (GitLab roots' keys). After a push to
+    the target GitLab leaves it unchecked until asked, so it may still conflict, and a
+    conflict fix queued for it stands."""
+    return snap.mergeable == "UNKNOWN" and (snap.item or "").partition("#")[0] in lab
 
 
 def _installer_files(pr: OpenPR) -> list[str]:
@@ -380,6 +396,9 @@ class Store(QObject):
         self.selected: str = tools()[0].id
         self.has_loaded = False
         self.me = ""
+        # Per GitLab host: glab's login and the glab config entry it was read under
+        # (:meth:`me_for`).
+        self._gitlab_me: dict[str, tuple[str, str | None]] = {}
 
         # Live device-allocator state (pool + holders) and install status.
         self.device_state: dict | None = None
@@ -431,18 +450,18 @@ class Store(QObject):
         self.autofix_poll_error_at: float | None = None
         self.unaddressed_reviews = 0
         self._poll_error_this_cycle: str | None = None
-        #: ``"<what>:<slug>"`` of each root read that failed last time
+        #: ``"<what>:<root key>"`` of each root read that failed last time
         #: (:meth:`_note_roots_read`).
         self._roots_unread: set[str] = set()
-        #: Slugs of the roots this cycle's read of my PRs or of review requests failed in.
-        self._held_slugs: frozenset[str] = frozenset()
+        #: Keys of the roots this cycle's read of my PRs or of review requests failed in.
+        self._held_keys: frozenset[str] = frozenset()
         # The last resolved tick — what every agent question is answered from (the
         # dedup, the cap, the rows, the retirement). None until the first one.
         # Replaced, never mutated: the poll worker writes it while the GUI thread
         # draws from it. Its own short mutex guards the swap and the cache stamp.
         self._tick: agentstate.Tick | None = None
         self._tick_lock = threading.Lock()
-        # What the last merged-status probe found. It costs a `gh` call per PR, so it
+        # What the last merged-status probe found. It costs a `gh` or `glab` call per PR, so it
         # rides the slow refresh rather than the 8-second tick, and the fast ticks
         # carry the answer forward (UNAVAILABLE until the first one runs).
         self._merged_prs = agentstate.Observation.unavailable(
@@ -628,11 +647,11 @@ class Store(QObject):
         # whenever the list is set: each is a `git` call, and the wizards read this on
         # every keystroke.
         self._local_checkouts: list[localrepos.Checkout] | None = None
-        # The panel's last fetch of each repo root, by lowercased slug, so switching
-        # the header's picker shows that root's lists at once while they refresh.
+        # The panel's last fetch of each repo root, by its key, so switching the
+        # header's picker shows that root's lists at once while they refresh.
         self._panel_data: dict[str, tuple[list[OpenPR], list[OpenIssue], datetime]] = {}
         # The root whose lists `prs`/`issues` hold; None before any was shown.
-        self._shown_slug: str | None = None
+        self._shown_key: str | None = None
         # The roots as :meth:`_follow_roots` last saw them resolved.
         self._seen_roots: list[tuple[str, str]] | None = None
         review.follow_roots(self._follow_roots)
@@ -756,14 +775,14 @@ class Store(QObject):
         an edit in Settings, or a re-read (:data:`review.ROOTS_TTL`) that finds a root
         path resolving differently (:func:`review.follow_roots`), as soon as either
         happens. Until then a sweep or a wizard would read one root's lists as another's."""
-        seen = [(r.slug.lower(), r.path) for r in review.repo_roots()]
+        seen = [(r.key, r.path) for r in review.repo_roots()]
         if seen == self._seen_roots:
             return
         self._seen_roots = seen
         self.local_repos_changed.emit()
         # The lists on screen were of a root no longer among them, or of the primary
         # standing in for the selected one.
-        if self._shown_slug not in (None, self.selected_repo.slug.lower()):
+        if self._shown_key not in (None, self.selected_repo.key):
             self._show_panel_data(self.selected_repo)
             self.selected_repo_changed.emit()
             self.changed.emit()
@@ -774,10 +793,10 @@ class Store(QObject):
 
     @staticmethod
     def _root_named(item: str | None) -> LocalRepo | None:
-        """The repo root an item key (or slug) is in, or ``None``. A monitor dispatch of
-        an item in none is skipped: that number in the primary is another PR."""
-        slug = (item or "").partition("#")[0].lower()
-        return next((r for r in review.repo_roots() if r.slug.lower() == slug), None)
+        """The repo root an item key (or root key) is in, or ``None``. A monitor dispatch
+        of an item in none is skipped: that number in the primary is another PR."""
+        key = (item or "").partition("#")[0].lower()
+        return next((r for r in review.repo_roots() if r.key == key), None)
 
     @staticmethod
     def _root_of(item: str | None) -> LocalRepo:
@@ -786,24 +805,24 @@ class Store(QObject):
     @property
     def selected_repo(self) -> LocalRepo:
         """The repo root the panel's right column works on (the header's picker): its
-        lists, lookup, sweeps and wizards. The stored ``selectedRepo`` slug, or the
+        lists, lookup, sweeps and wizards. The stored ``selectedRepo`` root key, or the
         primary when that is no root any more."""
         want = str(self._settings.value("selectedRepo", "", str)).lower()
         roots = review.repo_roots()
-        return next((r for r in roots if r.slug.lower() == want), roots[0])
+        return next((r for r in roots if r.key == want), roots[0])
 
-    def select_repo(self, slug: str) -> None:
+    def select_repo(self, key: str) -> None:
         """Point the right column at another root, showing its last fetch at once; the
         caller asks for the refresh (:meth:`refresh`)."""
-        self._settings.setValue("selectedRepo", slug.lower())
+        self._settings.setValue("selectedRepo", key.lower())
         self._show_panel_data(self.selected_repo)
         self.selected_repo_changed.emit()
         self.changed.emit()
 
     def _show_panel_data(self, root: LocalRepo) -> None:
         """The panel lists as last fetched for ``root``, or none yet."""
-        self._shown_slug = root.slug.lower()
-        prs, issues_, at = self._panel_data.get(self._shown_slug, ([], [], None))
+        self._shown_key = root.key
+        prs, issues_, at = self._panel_data.get(self._shown_key, ([], [], None))
         self.prs, self.issues, self.last_updated = prs, issues_, at
         self.has_loaded = at is not None
 
@@ -824,38 +843,33 @@ class Store(QObject):
 
     @property
     def local_checkouts(self) -> list[localrepos.Checkout]:
-        """:attr:`other_repo_paths`, each with the GitHub repos it answers for."""
+        """:attr:`other_repo_paths`, each with the GitHub and GitLab repos it answers for."""
         if self._local_checkouts is None:
             self._local_checkouts = localrepos.resolve(self.other_repo_paths)
         return self._local_checkouts
 
     @property
     def local_repos(self) -> tuple[LocalRepo, ...]:
-        """The wizards' ``local_repos``: the repo roots, then every repo the other
-        listed checkouts answer for, one per slug with the root's winning."""
-        out: list[LocalRepo] = []
-        seen: set[str] = set()
-        for repo in (*review.repo_roots(), *localrepos.local_repos(self.local_checkouts)):
-            if repo.slug.lower() not in seen:
-                seen.add(repo.slug.lower())
-                out.append(repo)
-        return tuple(out)
+        """The wizards' ``local_repos``: the repo roots, then every repo the listed
+        checkouts answer for that is no root. Twin of ``Store.wizardRepos``."""
+        roots = review.repo_roots()
+        taken = {r.key for r in roots}
+        return (*roots, *(r for r in localrepos.local_repos(self.local_checkouts)
+                          if r.key not in taken))
 
     @staticmethod
-    def wizard_item_label(owner: str, repo: str, number: int) -> str:
+    def wizard_item_label(target: LocalRepo, number: int) -> str:
         """A wizard's single item: :func:`item_label` in a repo root, else the whole
-        ``owner/repo#N``. The Comms adoption of a running fix matches it."""
-        slug = f"{owner}/{repo}"
+        ``owner/repo#N``. Comms knows a running fix recorded with no link by it."""
         roots = review.repo_roots()
-        if slug.lower() not in {r.slug.lower() for r in roots}:
-            return f"{slug}#{number}"
-        return item_label(item_key(owner, repo, number), len(roots))
+        if target.key not in {r.key for r in roots}:
+            return f"{target.slug}#{number}"
+        return item_label(item_key(target.owner, target.repo, number, target.host), len(roots))
 
     def is_root(self, repo: LocalRepo | None) -> bool:
         """Whether ``repo`` is one of the repo roots: work there is deduped by item,
         unlike work in another listed checkout."""
-        return repo is not None and repo.slug.lower() in {
-            r.slug.lower() for r in review.repo_roots()}
+        return repo is not None and repo.key in {r.key for r in review.repo_roots()}
 
     @property
     def agent_runner(self) -> str:
@@ -1075,7 +1089,7 @@ class Store(QObject):
         view of its own list, and a mesh node has no queue to read it from. Pruned to
         what is still offered on every commit, so it can't grow past the work it
         describes."""
-        primary = self._primary().slug
+        primary = self._primary().key
         return [migrate_queue_key(str(k), primary)
                 for k in (self._settings.value("queuedTaskOrder", [], list) or [])]
 
@@ -1411,6 +1425,31 @@ class Store(QObject):
         o = self.username_override.strip()
         return o if o else self.me
 
+    def me_for(self, root: LocalRepo) -> str:
+        """Who "me" is in ``root``: :attr:`effective_me` on GitHub, glab's login on a
+        GitLab host, kept while that host's entry in glab's config is unchanged
+        (:meth:`known_me`). Raises while it is unknown, leaving the root unread like any
+        failed read."""
+        if not root.is_gitlab:
+            if not self.effective_me:
+                raise GHError(GITHUB_LOGIN_UNKNOWN)
+            return self.effective_me
+        entry = localrepos.glab_host_entry(root.host)
+        login, read_for = self._gitlab_me.get(root.host, ("", None))
+        if not login or read_for != entry:
+            login = API.fetch_viewer_login(root.host)
+            self._gitlab_me[root.host] = (login, entry)
+        return login
+
+    def known_me(self, root: LocalRepo) -> str:
+        """:meth:`me_for` without asking glab: "" on a GitLab host not read since its
+        entry in glab's config last changed (``glab auth login`` as another account
+        rewrites it)."""
+        if not root.is_gitlab:
+            return self.effective_me
+        login, entry = self._gitlab_me.get(root.host, ("", None))
+        return login if entry == localrepos.glab_host_entry(root.host) else ""
+
     def tint(self, tool_id: str) -> str:
         """A tool's tint as #RRGGBB: the user's override if set, else its default."""
         override = self.color_overrides.get(tool_id)
@@ -1465,16 +1504,20 @@ class Store(QObject):
         self.error = None
         self.loading_changed.emit(True)
         try:
-            self.me = API.fetch_viewer_login()
             # Again when the picker moved during the fetch: that one is cached, and
             # the root now selected is the one on screen.
             while True:
                 root = self.selected_repo
-                prs = API.fetch_open_prs(root.owner, root.repo)
-                found = API.fetch_open_issues(root.owner, root.repo)
-                self._panel_data[root.slug.lower()] = (
+                # Who the panel's "my PRs" lists compare against.
+                if root.is_gitlab:
+                    self.me_for(root)
+                else:
+                    self.me = API.fetch_viewer_login()
+                prs = API.fetch_open_prs(root)
+                found = API.fetch_open_issues(root)
+                self._panel_data[root.key] = (
                     prs, found, datetime.now().astimezone())
-                if self.selected_repo.slug.lower() == root.slug.lower():
+                if self.selected_repo == root:
                     self._show_panel_data(root)
                     break
         except Exception as exc:  # noqa: BLE001
@@ -1491,7 +1534,7 @@ class Store(QObject):
     # requesting my review, edge-triggers on new conflicts / review threads, and
     # spawns the same conflict-fix / review agents the panel wizards do — deduped by
     # an in-flight sentinel and rate-limited by ReviewReconcile backoff. The pure
-    # decision logic lives in autofix.py; the GitHub reads in autofixmonitor.py.
+    # decision logic lives in autofix.py; the GitHub and GitLab reads in autofixmonitor.py.
 
     def run_autofix_poll_async(self) -> None:
         """Kick one monitor poll on a worker thread (guarded against overlap). Safe to
@@ -1585,15 +1628,14 @@ class Store(QObject):
         try:
             if not self.effective_me:
                 self.fetch_me()
-            if not self.effective_me:
-                self._note_poll_failure(
-                    "GitHub login unknown — is `gh` installed and authenticated?"
-                )
+            if not self.effective_me and not any(r.is_gitlab for r in review.repo_roots()):
+                # With a GitLab root only the GitHub roots fail (:meth:`me_for`).
+                self._note_poll_failure(GITHUB_LOGIN_UNKNOWN)
             elif review.roots_guessed():
                 # Its one root would be the configured repo at the first path, which
                 # may check out another.
                 self._note_poll_failure(
-                    "no repo root in Settings resolves to a GitHub checkout")
+                    "no repo root in Settings resolves to a GitHub or GitLab checkout")
             else:
                 # Every root's fetches concatenated: one drain, diff and commit see every
                 # repo, and the telemetry ledger reconciles once per kind against the
@@ -1667,7 +1709,7 @@ class Store(QObject):
                       ) -> tuple[list | None, set[str] | None, list[LocalRepo]]:
         """This cycle's read of my open PRs and of the PRs that left the open state, and
         the roots both were read in. A root whose read failed is left out and held
-        (:attr:`_held_slugs`): its queued tasks, fingerprints and attempt records stand
+        (:attr:`_held_keys`): its queued tasks, fingerprints and attempt records stand
         untouched rather than be read as done. Only when every root's read failed is it
         a poll failure: both reads are ``None``, which stands their consumers down, and
         every root is returned, so the reads after this one fail on their own."""
@@ -1677,15 +1719,15 @@ class Store(QObject):
         failed: list[tuple[LocalRepo, Exception]] = []
         for r in roots:
             try:
-                found = autofixmonitor.fetch_snapshots(r.owner, r.repo, self.effective_me)
-                gone = autofixmonitor.fetch_closed_prs(r.owner, r.repo)
+                found = autofixmonitor.fetch_snapshots(r, self.me_for(r))
+                gone = autofixmonitor.fetch_closed_prs(r)
             except Exception as exc:  # noqa: BLE001 — any failure leaves the root unread
                 failed.append((r, exc))
                 continue
             snaps += found
             closed |= set(gone)
             read.append(r)
-        self._held_slugs = frozenset(r.slug.lower() for r, _ in failed)
+        self._held_keys = frozenset(r.key for r, _ in failed)
         if not read:
             self._note_poll_failure(failed[0][1])
             return None, None, roots
@@ -1696,26 +1738,26 @@ class Store(QObject):
                          failed: list[tuple[LocalRepo, Exception]]) -> None:
         """Log ``what`` of a root unreadable once per run of failed reads, and readable
         again once it reads. Not a poll failure: the other roots' work goes on."""
-        configured = {r.slug.lower() for r in review.repo_roots()}
+        configured = {r.key for r in review.repo_roots()}
         self._roots_unread = {k for k in self._roots_unread if k.partition(":")[2] in configured}
         for r, exc in failed:
-            key = f"{what}:{r.slug.lower()}"
+            key = f"{what}:{r.key}"
             if key not in self._roots_unread:
                 self._roots_unread.add(key)
                 activity.log("auto", "root-read-failed",
                              f"{what} of {r.slug} unreadable, its work waits: {str(exc)[:120]}")
         for r in read:
-            key = f"{what}:{r.slug.lower()}"
+            key = f"{what}:{r.key}"
             if key in self._roots_unread:
                 self._roots_unread.discard(key)
                 activity.log("auto", "root-read-recovered", f"{what} of {r.slug} readable again")
 
     @staticmethod
-    def _root_gone(slug: str) -> bool:
-        """Whether repo ``slug`` was taken out of the roots: every root resolved, and none
-        is that repo."""
-        return review.roots_complete() and slug.lower() not in {
-            r.slug.lower() for r in review.repo_roots()}
+    def _root_gone(key: str) -> bool:
+        """Whether root ``key`` was taken out of the roots: every root resolved, and none
+        has that key."""
+        return review.roots_complete() and key.lower() not in {
+            r.key for r in review.repo_roots()}
 
     def _queued_root_gone(self, key: str) -> bool:
         """:meth:`_root_gone` for the task queued as ``key``: its item's repo, or for an
@@ -1727,7 +1769,7 @@ class Store(QObject):
         return ask is not None and bool(ask.repo) and self._root_gone(ask.repo)
 
     def _held(self, item: str) -> bool:
-        return item.partition("#")[0] in self._held_slugs
+        return item.partition("#")[0] in self._held_keys
 
     def _poll_my_prs(self, snaps: list) -> None:
         now = time.time()
@@ -1810,9 +1852,16 @@ class Store(QObject):
         keep = {s.item for s in snaps if s.mergeable != "MERGEABLE"}
         self._save_attempts(key, {k: v for k, v in attempts.items()
                                   if k in keep or self._held(k)})
+        # Re-staged unchanged, so this cycle's commit keeps it; nothing new starts on an
+        # undecided status.
+        lab = {r.key for r in review.repo_roots() if r.is_gitlab}
+        queued = {e.id: e for e in self.queued_tasks}
+        self._staged_queue = self._staged_queue + [
+            queued[k] for s in snaps if _undecided_merge_request(s, lab)
+            and (k := autofix.queue_key(autofix.WORK_CONFLICTS, s.item)) in queued]
 
     def _community_marks(self) -> dict[str, str]:
-        """The new-community-issue monitor's mark per root slug, as stored. A single
+        """The new-community-issue monitor's mark per root key, as stored. A single
         mark single-repo builds stored was the configured repo's."""
         raw = str(self._settings.value("communityIssuesSince", "", str) or "")
         try:
@@ -1845,16 +1894,17 @@ class Store(QObject):
         read: list[LocalRepo] = []
         failed: list[tuple[LocalRepo, Exception]] = []
         for root in roots:
-            slug = root.slug.lower()
+            key = root.key
             try:
-                found = autofixmonitor.fetch_open_issues(root.owner, root.repo)
+                found = autofixmonitor.fetch_open_issues(root)
+                me = self.me_for(root)
             except Exception as exc:  # noqa: BLE001
                 # Not a poll failure even in every root: nothing owed is read from it.
                 failed.append((root, exc))
                 continue
             read.append(root)
             try:
-                since = datetime.fromisoformat(marks.get(slug, ""))
+                since = datetime.fromisoformat(marks.get(key, ""))
             except ValueError:
                 # Unset or unreadable: re-baseline rather than fail every poll from
                 # here on.
@@ -1862,23 +1912,23 @@ class Store(QObject):
             fresh, mark = Filters.new_community_issues(
                 found, since, datetime.now().astimezone())
             for issue in fresh:
-                item = item_key(root.owner, root.repo, issue.number)
+                item = item_key(root.owner, root.repo, issue.number, root.host)
                 who = f"Issue {item_label(item, len(review.repo_roots()))} by @{issue.author}"
                 if bans.is_banned(issue.author, banned):
                     activity.log("auto", "ban-skip",
                                  f"{who} - author is banned, not queued")
                     continue
                 cfg = issues.IssueConfig(target=issues.Target.CONTRIBUTORS,
-                                         me=self.effective_me, home=root)
+                                         me=me, home=root)
                 queued, _ = self._request([autofix.RequestedWork(
                     number=issue.number, url=issue.url, author=issue.author,
-                    config=cfg.for_issue(issue.number).prompt_payload(), repo=slug)])
+                    config=cfg.for_issue(issue.number).prompt_payload(), repo=key)])
                 if queued:
                     activity.log("auto", "community-issue", f"{who} - fix queued")
-            marks[slug] = mark.isoformat()
+            marks[key] = mark.isoformat()
         self._note_roots_read("Issues", read, failed)
         if complete:
-            current = {r.slug.lower() for r in roots}
+            current = {r.key for r in roots}
             marks = {k: v for k, v in marks.items() if k in current}
         self._settings.setValue("communityIssuesSince", json.dumps(marks))
 
@@ -1903,7 +1953,10 @@ class Store(QObject):
         already queued too. One whose prompt will not assemble is left for the next
         pass, as :meth:`_offer_requested_work` leaves an ask. A fix whose issue has an
         agent on it already is recorded, not asked for. An item in no repo root is
-        skipped."""
+        skipped, and so is the whole pass while the GitHub login is unknown: a review
+        of my own PR would be asked for as someone else's."""
+        if not self.effective_me:
+            return
         done: dict[str, list[str]] = {}
         fixes = any(w["kind"] == "fix-issue" for _, w in work)
         agent_issues = self.goal_overlay().agent_issues if fixes else frozenset()
@@ -1920,7 +1973,8 @@ class Store(QObject):
                 config = self._goal_fix_config(number, root)
             else:
                 config = self._review_request_config(number, verdict=False, home=root)
-                if self.effective_me and author.lower() == self.effective_me.lower():
+                me = self.known_me(root)
+                if me and author.lower() == me.lower():
                     config.specific_author = review.SpecificAuthor.MINE
                     author = ""
             try:
@@ -1940,7 +1994,7 @@ class Store(QObject):
         """The automatic pass's fix of a goal issue: feature requests included, since
         the goal it serves is often one, and, as a sweep's, re-checked when its turn
         comes: one closed or assigned by then is left alone."""
-        return issues.IssueConfig(target=issues.Target.ALL, me=self.effective_me,
+        return issues.IssueConfig(target=issues.Target.ALL, me=self.known_me(home),
                                   include_features=True, home=home).for_issue(number)
 
     def _goal_asks(self, op: dict) -> tuple[str, dict[str, str]] | None:
@@ -1988,8 +2042,7 @@ class Store(QObject):
         for root in roots:
             try:
                 reqs += autofixmonitor.fetch_review_requests(
-                    root.owner, root.repo, self.effective_me,
-                    include_files=self.auto_approve_enabled)
+                    root, self.me_for(root), include_files=self.auto_approve_enabled)
             except Exception as exc:  # noqa: BLE001
                 failed.append((root, exc))
                 continue
@@ -1998,7 +2051,7 @@ class Store(QObject):
             self._note_poll_failure(failed[0][1])
             return
         self._note_roots_read("Review requests", read, failed)
-        self._held_slugs |= {r.slug.lower() for r, _ in failed}
+        self._held_keys |= {r.key for r, _ in failed}
         complete = complete and not failed
         now = time.time()
         banned = bans.read()
@@ -2045,7 +2098,7 @@ class Store(QObject):
         records = {**self._load_attempts(key), **dispatched}
         kept = autofix.retained(records, {r.item: r.stamp for r in owed}, now)
         if not complete:
-            polled = {r.slug.lower() for r in read}
+            polled = {r.key for r in read}
             kept |= {k: a for k, a in records.items() if k.partition("#")[0] not in polled}
         self._save_attempts(key, kept)
         self.unaddressed_reviews = sum(
@@ -2379,7 +2432,7 @@ class Store(QObject):
             audit_action="conflicts",
             label=f"Resolve · {self._item_label(url, number)}",
             prompt=conflicts.ConflictConfig(
-                target=PRTarget.SPECIFIC, me=self.effective_me, specific_pr=str(number),
+                target=PRTarget.SPECIFIC, me=self.known_me(root), specific_pr=str(number),
                 home=root,
             ).build_prompt(),
             pr_url=url,
@@ -2404,7 +2457,7 @@ class Store(QObject):
             prompt=review.ReviewConfig(
                 depth="deep",
                 target=PRTarget.SPECIFIC,
-                me=self.effective_me,
+                me=self.known_me(root),
                 mark_ready=False,
                 leave_reviews=False,
                 reply_to_reviews=True,
@@ -2462,7 +2515,7 @@ class Store(QObject):
         return review.ReviewConfig(
             depth="max",
             target=PRTarget.SPECIFIC,
-            me=self.effective_me,
+            me=self.known_me(home),
             mark_ready=False,
             leave_reviews=True,
             reply_to_reviews=False,
@@ -2664,7 +2717,7 @@ class Store(QObject):
                 mesh=r.placement != agentstate.PLACEMENT_LOCAL,
                 state=s.state,
                 reason=s.reason,
-                item=r.item,
+                item=item_key_from_url(r.pr_url),
             )
             for r, s in self._agent_tick().rows
             if s.state not in agentstate.ENDED
@@ -2826,7 +2879,7 @@ class Store(QObject):
                 # The ban dimension, and only someone else's PR has one.
                 author=pr.author if cfg.disposition == review.SpecificAuthor.THEIRS else "",
                 config=cfg.for_pr(pr.number).prompt_payload(),
-                repo=(cfg.home or self._primary()).slug.lower(),
+                repo=(cfg.home or self._primary()).key,
             )
             for pr in targets
         ])
@@ -2853,7 +2906,7 @@ class Store(QObject):
                 # matching the login the wizard would ban-check.
                 author=issue.author if cfg.target == issues.Target.SOMEONE else "",
                 config=cfg.for_issue(issue.number).prompt_payload(),
-                repo=(cfg.home or self._primary()).slug.lower(),
+                repo=(cfg.home or self._primary()).key,
             )
             for issue in targets
         ])
@@ -2936,12 +2989,15 @@ class Store(QObject):
         cached = self._requested_tasks.get(entry.key)
         if cached is not None and cached[0] == stamp:
             return cached[1]
-        # A fix is deliberately NOT PR-scoped. The dispatch pipeline's dedup is
-        # PR-shaped throughout — the in-flight check matches a ``/pull/<n>`` URL and
-        # keys on a PR number — so handing it an issue number would collide with the PR
-        # that happens to share it. What keeps two agents off one issue instead is the
-        # assignee claim, which every machine can see rather than just this one.
+        # A fix carries its issue's link but no PR number: the dispatch dedup keys on a
+        # PR number, which an issue's would collide with. The assignee claim, which
+        # every machine sees, keeps two agents off one issue.
         is_pr = entry.action == autofix.QUEUE_REVIEW_ACTION
+        # Built from the ask's root key, not its url (which may be empty), so the run
+        # stays that root's even once the root is gone.
+        link = entry.url if is_pr else (
+            (self._root_named(entry.repo) or repo_of_key(entry.repo)).link(
+                "issues", entry.number) if entry.item else None)
         where = (entry.config.get("home") or {}).get("path") or entry.config.get("checkout")
         task = autofix.QueuedTask(
             id=entry.key,
@@ -2950,7 +3006,7 @@ class Store(QObject):
                 audit_action=entry.action,
                 label=label,
                 prompt=promptcore.build_prompt(entry.config),
-                pr_url=entry.url if is_pr else None,
+                pr_url=link,
                 pr_number=entry.number if is_pr else None,
                 author_login=entry.author or None,
                 duty=entry.action,
@@ -3002,9 +3058,9 @@ class Store(QObject):
         # Read together: the roots are re-read on a timer, and an ask is forgotten only
         # when the reading that left its repo out had every root path resolved.
         roots, complete = review.repo_roots(), review.roots_complete()
-        slugs = {r.slug.lower() for r in roots}
+        keys = {r.key for r in roots}
         for entry in self.requested_work:
-            if entry.repo and entry.repo.lower() not in slugs:
+            if entry.repo and entry.repo.lower() not in keys:
                 if complete:
                     self._forget_requested(entry.key)
                     activity.log("panel", "queue-drop",
@@ -3108,18 +3164,21 @@ class Store(QObject):
         just taken out of Settings is no longer the operator's to work. Nor is a review
         request in a root whose last read of review requests failed. This cycle's commit
         keeps or drops its row (:meth:`commit_queue`)."""
-        polled = {r.slug.lower() for r in (review.repo_roots() if read is None else read)}
+        roots = review.repo_roots() if read is None else read
+        polled = {r.key for r in roots}
+        lab = {r.key for r in roots if r.is_gitlab}
 
         def outside(entry: autofix.QueuedTask) -> bool:
             action, _, item = entry.id.partition(":")
             split = split_item_key(item)
             if split is None:
                 return self._queued_root_gone(entry.id)
-            slug = split[0].lower()
-            return slug not in polled or (
-                action == REVIEW_REQ_ACTION and f"Review requests:{slug}" in self._roots_unread)
+            key = split[0].lower()
+            return key not in polled or (
+                action == REVIEW_REQ_ACTION and f"Review requests:{key}" in self._roots_unread)
 
-        conflicting = {s.item for s in snaps if s.mergeable == "CONFLICTING"}
+        conflicting = {s.item for s in snaps if s.mergeable == "CONFLICTING"
+                       or _undecided_merge_request(s, lab)}
         owing_reply = {s.item for s in snaps if s.threads_i_owe > 0}
         # Dropped here rather than left for this cycle's commit to omit: the commit is
         # the far side of two monitor runs, and a row already known to be answered
@@ -3406,7 +3465,7 @@ class Store(QObject):
         evidence = probes.gather(records, now, merged=self._merged_prs,
                                  tokens=self._tokens_left, mesh_enabled=self.mesh_enabled)
         t = agentstate.tick(records, evidence, now, self.auto_task_limit,
-                            appconfig.run_deadline())
+                            appconfig.run_deadline(), tuple(review.repo_roots()))
         with self._tick_lock:
             self._tick = t
         return t
@@ -3693,11 +3752,12 @@ class Store(QObject):
         """Warn about each retired review run whose review did not go through
         GitHub's lifecycle (:mod:`diplomat_runtime.reviewaudit`). ``me`` is the gh
         login, not the username override: a PENDING review is listed to its author
-        alone, and the agent posts as the login."""
+        alone, and the agent posts as the login. A run on a GitLab merge request has no
+        review the audit reads (:func:`reviewaudit.audit`), so it needs no gh login."""
         logged = False
         for label, source, url, since in runs:
             try:
-                if not me:
+                if not me and reviewaudit.pr_coordinates(url):
                     raise ValueError("the gh login is not known yet")
                 found = reviewaudit.audit(url, me, since)
             except Exception as exc:  # noqa: BLE001 — a check that could not run says so
@@ -3803,10 +3863,10 @@ class Store(QObject):
         return item is not None and self._agent_tick().in_flight(item)
 
     def refresh_merged_statuses(self) -> None:
-        """Ask GitHub which of the tracked PRs have landed — the one terminal outcome
+        """Ask GitHub or GitLab which of the tracked PRs have landed — the one terminal outcome
         that outranks whatever a process is doing.
 
-        On the slow refresh, not the 8-second tick: it costs a ``gh`` call per PR. The
+        On the slow refresh, not the 8-second tick: it costs a ``gh`` or ``glab`` call per PR. The
         answer is carried forward by the fast ticks in between.
 
         Only the runs this applet dispatched: the resolver ends no untracked run on a
@@ -3815,7 +3875,7 @@ class Store(QObject):
         """
         items = {r.item for r in agentregistry.load()
                  if r.item is not None and not r.untracked}
-        self._merged_prs = probes.merged_prs(items)
+        self._merged_prs = probes.merged_prs(items, review.repo_roots())
 
     def refresh_token_budget(self) -> None:
         """Ask whether the account still has room to spend — the precondition on the
@@ -3868,7 +3928,7 @@ class Store(QObject):
             obj = json.loads(raw) if raw else {}
         except ValueError:
             return {}
-        primary = self._primary().slug
+        primary = self._primary().key
         out: dict[str, autofix.PRFingerprint] = {}
         for k, v in (obj or {}).items():
             try:
@@ -3898,7 +3958,7 @@ class Store(QObject):
             obj = json.loads(raw) if raw else {}
         except ValueError:
             return {}
-        primary = self._primary().slug
+        primary = self._primary().key
         out: dict[str, autofix.ReviewAttempt] = {}
         for k, v in (obj or {}).items():
             try:
@@ -4088,13 +4148,15 @@ class Store(QObject):
 
     def comms_settings_payload(self) -> dict:
         """The ``CommsSettings`` JSON a tick and a plan are given."""
+        roots = review.repo_roots()
         return {
             "keywordsRaw": self.comms_keywords_raw,
             "senderAllowlistRaw": self.comms_sender_allowlist_raw,
             "model": self.comms_model,
             "batchSize": self.comms_batch_size,
             "flushAfterSecs": self.comms_flush_after_secs,
-            "repos": [r.slug for r in review.repo_roots()],
+            "repos": [r.key for r in roots],
+            "gitlabHosts": {r.key: r.host for r in roots if r.is_gitlab},
             "login": self.effective_me,
             "bannedSenders": bans.slack_ids(bans.read()),
         }
@@ -4154,7 +4216,7 @@ class Store(QObject):
                 items = comms.feed()
             except (RuntimeError, promptcore.CoreBinaryMissing, ValueError):
                 return
-            primary = self._primary().slug
+            primary = self._primary().key
             for i in items:
                 if i.get("queueKey"):
                     i["queueKey"] = migrate_queue_key(str(i["queueKey"]), primary)
@@ -4193,7 +4255,7 @@ class Store(QObject):
             return {"at": at, "me": None, "pings": [], "items": [],
                     "error": f"waiting for the first repo root, "
                              f"{review.repo_root_paths()[0]}, to resolve to a GitHub "
-                             f"checkout", "locked": comms.session_locked()}
+                             f"or GitLab checkout", "locked": comms.session_locked()}
         settings = self.comms_settings_payload()
         result = comms.tick(settings)
         toggles = self.comms_toggles()
@@ -4211,6 +4273,7 @@ class Store(QObject):
                 if root is not None:
                     entry["target"] = self._comms_lookup(
                         effect["kind"], int(effect.get("number") or 0), root)
+                    entry["me"] = self._comms_me(root)
             elif effect.get("kind") == "ban":
                 entry["reported"] = self._comms_report_ban(effect["ban"])
             items.append(entry)
@@ -4238,43 +4301,59 @@ class Store(QObject):
 
     @staticmethod
     def _comms_root(repo: str) -> LocalRepo | None:
-        """The repo root an effect's ``repo`` names ("" for the primary), or ``None``
-        when Settings dropped it after the ping was triaged."""
+        """The repo root an effect's ``repo`` names (:func:`prref.root_named`; "" for the
+        primary), or ``None`` when Settings dropped it after the ping was triaged."""
         roots = review.repo_roots()
-        if not repo:
-            return roots[0]
-        return next((r for r in roots if r.slug.lower() == repo.lower()), None)
+        return root_named(repo, roots) if repo else roots[0]
 
     @staticmethod
     def _comms_ref(root: LocalRepo, number: int) -> str:
         """``#N``, or ``repo#N`` beside another repo root (:func:`item_label`)."""
-        return item_label(item_key(root.owner, root.repo, number), len(review.repo_roots()))
+        return item_label(item_key(root.owner, root.repo, number, root.host),
+                          len(review.repo_roots()))
 
     @staticmethod
     def _comms_repo_name(root: LocalRepo) -> str:
         return "this repo" if len(review.repo_roots()) == 1 else root.slug
 
+    def _comms_me(self, root: LocalRepo) -> str:
+        """:meth:`me_for`, or "" while it cannot be read: then nothing is mine."""
+        try:
+            return self.me_for(root)
+        except Exception:  # noqa: BLE001 — any failed read leaves the login unknown
+            return ""
+
     def _comms_lookup(self, kind: str, number: int, root: LocalRepo) -> dict | None:
         """``{number, url, author, state}`` of ``root``'s ``#number``, open or not;
-        ``None`` when GitHub does not know it; ``{"error": why}`` when GitHub could not
-        be asked. The panel's last fetch holds only some open work, so ``gh`` answers
-        the rest. ``gh issue view`` answers a PR's number too, with its ``/pull/`` url."""
-        want = item_key(root.owner, root.repo, number)
+        ``None`` when its host does not know it; ``{"error": why}`` when it could not
+        be asked. The panel's last fetch holds only some open work, so ``gh`` (``glab``
+        on GitLab) answers the rest. ``gh issue view`` answers a PR's number too, with
+        its ``/pull/`` url; GitLab numbers merge requests apart from issues."""
+        want = item_key(root.owner, root.repo, number, root.host)
         listed = self.prs if kind == "review" else self.issues
         hit = next((i for i in listed if item_key_from_url(i.url) == want), None)
         if hit is not None:
             return {"number": hit.number, "url": hit.url, "author": hit.author,
                     "state": "OPEN"}
-        from diplomat_runtime import gh
+        from diplomat_runtime import gh, gitlab, glab
 
         try:
-            obj = json.loads(gh.run(["pr" if kind == "review" else "issue", "view",
-                                     str(number), "--repo", root.slug,
-                                     "--json", "number,url,author,state"], timeout=30))
+            if root.is_gitlab:
+                project = urllib.parse.quote(root.slug, safe="")
+                kinds = "merge_requests" if kind == "review" else "issues"
+                obj = gitlab.item_view(json.loads(glab.run(
+                    ["api", "--hostname", root.host, f"projects/{project}/{kinds}/{number}"],
+                    timeout=30)))
+            else:
+                obj = json.loads(gh.run(["pr" if kind == "review" else "issue", "view",
+                                         str(number), "--repo", root.slug,
+                                         "--json", "number,url,author,state"], timeout=30))
         except Exception as exc:  # noqa: BLE001 — gh's own failures are all GHError
             # Both views' "no such number"; "Could not resolve to a Repository" shares
-            # only the prefix.
-            if "Could not resolve to" in str(exc) and "with the number of" in str(exc):
+            # only the prefix. GitLab's is "404 Not found", its missing project's
+            # "404 Project Not Found".
+            if ("Could not resolve to" in str(exc) and "with the number of" in str(exc)
+                    or "404 Not found" in str(exc)):
                 return None
             return {"error": self.comms_snippet(str(exc), 120)}
         if not isinstance(obj, dict):
@@ -4448,11 +4527,11 @@ class Store(QObject):
         if kind == "review":
             verb = "comms-review"
             outcome, work = self._comms_review(number, repo, entry.get("root"),
-                                               entry.get("target"))
+                                               entry.get("target"), entry.get("me", ""))
         elif kind == "fix_issue":
             verb = "comms-fix"
             outcome, work = self._comms_fix(number, repo, entry.get("root"),
-                                            entry.get("target"))
+                                            entry.get("target"), entry.get("me", ""))
         elif kind == "investigate":
             verb, front = "comms-investigate", False
             outcome, work = self._comms_investigate(effect["config"])
@@ -4560,24 +4639,24 @@ class Store(QObject):
         return bool(login) and bans.is_banned(login, bans.read())
 
     def _comms_review(self, number: int, repo: str, root: LocalRepo | None,
-                      found: dict | None) -> tuple[str, autofix.RequestedWork | None]:
+                      found: dict | None, me: str) -> tuple[str, autofix.RequestedWork | None]:
         """``("review of #N", the ask)`` (the Review wizard's single-PR default) or
         ``(why there is none, None)``. ``root`` is :meth:`_comms_root`'s answer for
-        ``repo``, ``found`` :meth:`_comms_lookup`'s."""
+        ``repo``, ``found`` :meth:`_comms_lookup`'s, ``me`` :meth:`_comms_me`'s."""
         if root is None:
             return f"{repo}#{number} is not in a repo root", None
         ref = self._comms_ref(root, number)
         if found is None:
             return f"{ref} is not a PR of {self._comms_repo_name(root)}", None
         if "error" in found:
-            return f"couldn't ask GitHub about PR {ref} ({found['error']})", None
+            return (f"couldn't ask {'GitLab' if root.is_gitlab else 'GitHub'} about PR {ref} "
+                    f"({found['error']})"), None
         state = str(found.get("state", ""))
         if state.upper() != "OPEN":
             return f"PR {ref} is {state.lower()}", None
         author = str(found.get("author", ""))
         if self._comms_banned(author):
             return f"PR {ref} is by @{author}, who is banned; not queued", None
-        me = self.effective_me
         mine = bool(me) and author.lower() == me.lower()
         cfg = review.ReviewConfig(
             target=PRTarget.SPECIFIC, specific_pr=str(number), me=me,
@@ -4585,10 +4664,10 @@ class Store(QObject):
                              else review.SpecificAuthor.THEIRS), home=root)
         return f"review of {ref}", autofix.RequestedWork(
             number=number, url=str(found.get("url", "")), author="" if mine else author,
-            config=cfg.prompt_payload(), repo=root.slug.lower())
+            config=cfg.prompt_payload(), repo=root.key)
 
     def _comms_fix(self, number: int, repo: str, root: LocalRepo | None,
-                   found: dict | None) -> tuple[str, autofix.RequestedWork | None]:
+                   found: dict | None, me: str) -> tuple[str, autofix.RequestedWork | None]:
         """``("fix of issue #N", the ask)`` (the Fix-issues wizard's) or ``(why there is
         none, None)``, as :meth:`_comms_review`. Unlike a wizard fix it carries the
         issue's author as the ban dimension: somebody on Slack named the issue, not the
@@ -4599,21 +4678,22 @@ class Store(QObject):
         if found is None:
             return f"{ref} is not an issue of {self._comms_repo_name(root)}", None
         if "error" in found:
-            return f"couldn't ask GitHub about issue {ref} ({found['error']})", None
-        if "/issues/" not in str(found.get("url", "")):
+            return (f"couldn't ask {'GitLab' if root.is_gitlab else 'GitHub'} about issue {ref} "
+                    f"({found['error']})"), None
+        # GitLab numbers merge requests apart from issues, so its issue answer is one.
+        if not root.is_gitlab and "/issues/" not in str(found.get("url", "")):
             return f"{ref} is a pull request, not an issue", None
         if str(found.get("state", "")).upper() != "OPEN":
             return f"issue {ref} is {str(found.get('state', '')).lower()}", None
         author = str(found.get("author", ""))
         if self._comms_banned(author):
             return f"issue {ref} is by @{author}, who is banned; not queued", None
-        me = self.effective_me
         mine = bool(me) and author.lower() == me.lower()
         cfg = issues.IssueConfig(target=issues.Target.SPECIFIC,
                                  specific_issue=str(number), me=me, home=root)
         return f"fix of issue {ref}", autofix.RequestedWork(
             number=number, url=str(found.get("url", "")), author="" if mine else author,
-            config=cfg.prompt_payload(), repo=root.slug.lower())
+            config=cfg.prompt_payload(), repo=root.key)
 
     def _comms_investigate(self, cfg: dict) -> tuple[str, autofix.RequestedWork | None]:
         """``("investigation", the ask)`` in the checkout of the repo root the message
@@ -4631,12 +4711,12 @@ class Store(QObject):
         return "investigation", autofix.RequestedWork(
             number=int(cfg["number"]), url=str(cfg.get("permalink", "")),
             author=bans.slack_login(sender_id) if sender_id else "", config=cfg,
-            repo=root.slug.lower())
+            repo=root.key)
 
     def _comms_bump(self, number: int, repo: str) -> str:
         """Moves whatever is queued for that item ("" = the primary root's)."""
-        owner, _, name = (repo or self._primary().slug).partition("/")
-        item = item_key(owner, name, number)
+        root = self._comms_root(repo)
+        item = f"{root.key if root else repo.lower()}#{number}"
         moved = [t.id for t in self.queued_tasks if autofix.item_of_key(t.id) == item]
         for key in moved:
             self._move_to_band_front(key)
@@ -4685,8 +4765,8 @@ class Store(QObject):
     def _comms_row_doing(key: str, rows: list[autofix.RunningAgent]
                          ) -> autofix.RunningAgent | None:
         """Twin of ``commsRow``: any review agent on that PR (the dispatch gate treats
-        every agent on a PR as that PR's), or a fix of that issue, known only by its
-        label (:attr:`autofix.RequestedWork.label`)."""
+        every agent on a PR as that PR's), or a fix of that issue: by its link, else (a
+        run recorded with none) by its label (:meth:`autofix.RequestedWork.label_among`)."""
         item = autofix.item_of_key(key)
         if item is None:
             return None
@@ -4697,7 +4777,7 @@ class Store(QObject):
         if verb == autofix.QUEUE_ISSUES_ACTION:
             named = f"Issues · {item_label(item, len(review.repo_roots()))} · "
             return next((a for a in rows if a.kind == autofix.QUEUE_ISSUES_ACTION
-                         and named in a.label), None)
+                         and (a.item == item if a.item else named in a.label)), None)
         return None
 
     @staticmethod
@@ -5056,15 +5136,15 @@ class Store(QObject):
         def work() -> None:
             try:
                 # Named, as the wizard's press names it: the operator asked for this one.
-                cfg = issues.IssueConfig(target=issues.Target.SPECIFIC, me=self.effective_me,
+                cfg = issues.IssueConfig(target=issues.Target.SPECIFIC, me=self.known_me(root),
                                          specific_issue=str(number), include_features=True,
                                          home=root)
                 verdict = self.dispatch_agent(autofix.AgentJob(
                     kind=autofix.QUEUE_ISSUES_ACTION, audit_action=autofix.QUEUE_ISSUES_ACTION,
                     label=(f"Issues · {self._item_label(url, number)}"
                            f" · {issues.depth_by_id(cfg.depth)['title']}"),
-                    prompt=cfg.build_prompt(), duty=autofix.QUEUE_ISSUES_ACTION,
-                    checkout=root.path,
+                    prompt=cfg.build_prompt(), pr_url=cfg.single_link,
+                    duty=autofix.QUEUE_ISSUES_ACTION, checkout=root.path,
                 ), autofix.SOURCE_PANEL)
             except Exception as exc:  # noqa: BLE001 — a core that cannot build the prompt
                 verdict = str(exc)
@@ -5832,7 +5912,7 @@ class Store(QObject):
     # every render. `diplomat-platform/linux/tests/test_tooldata_parity.py` runs both over one fixture
     # and diffs the rows, so a change to either has to be made to both.
     def _row_specs(self) -> dict:
-        me = self.effective_me
+        me = self.known_me(self.selected_repo)
         return {
             "skillPRs": (
                 lambda: sorted(Filters.skill_prs(self.prs), key=lambda p: -p.number),

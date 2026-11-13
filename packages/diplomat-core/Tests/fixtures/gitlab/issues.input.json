@@ -1,0 +1,115 @@
+{
+  "data": {
+    "project": {
+      "projectMembers": {
+        "pageInfo": {
+          "hasNextPage": false
+        },
+        "nodes": [
+          {
+            "user": {
+              "username": "alice"
+            }
+          },
+          {
+            "user": {
+              "username": "bob"
+            }
+          }
+        ]
+      },
+      "issues": {
+        "nodes": [
+          {
+            "iid": "5",
+            "title": "Crash from an outsider",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/issues/5",
+            "createdAt": "2026-11-07T09:00:00+01:00",
+            "updatedAt": "2026-11-08T09:00:00+01:00",
+            "userNotesCount": 2,
+            "author": {
+              "id": "gid://gitlab/User/26",
+              "username": "zed"
+            },
+            "assignees": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": [
+                {
+                  "title": "bug"
+                },
+                {
+                  "title": "ios"
+                }
+              ]
+            },
+            "notes": {
+              "nodes": [
+                {
+                  "author": {
+                    "id": "gid://gitlab/User/12",
+                    "username": "Bob"
+                  }
+                },
+                {
+                  "author": {
+                    "id": "gid://gitlab/User/26",
+                    "username": "zed"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "iid": "4",
+            "title": "Member's own, assigned",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/issues/4",
+            "createdAt": "2026-11-06T09:00:00+01:00",
+            "updatedAt": "2026-11-06T09:00:00+01:00",
+            "userNotesCount": 0,
+            "author": {
+              "id": "gid://gitlab/User/11",
+              "username": "Alice"
+            },
+            "assignees": {
+              "nodes": [
+                {
+                  "username": "bob"
+                }
+              ]
+            },
+            "labels": {
+              "nodes": []
+            },
+            "notes": {
+              "nodes": []
+            }
+          },
+          {
+            "iid": "3",
+            "title": "Deleted author",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/issues/3",
+            "createdAt": "2026-11-05T09:00:00+01:00",
+            "updatedAt": "2026-11-05T10:00:00+01:00",
+            "userNotesCount": 1,
+            "author": null,
+            "assignees": {
+              "nodes": []
+            },
+            "labels": {
+              "nodes": []
+            },
+            "notes": {
+              "nodes": [
+                {
+                  "author": null
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

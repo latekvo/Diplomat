@@ -1,0 +1,191 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 12,
+            "title": "Conflicted, changes requested over an approval",
+            "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/12",
+            "isDraft": false,
+            "createdAt": "2026-11-01T08:00:00Z",
+            "reviewDecision": "CHANGES_REQUESTED",
+            "mergeable": "CONFLICTING",
+            "author": {
+              "login": "alice"
+            },
+            "files": {
+              "nodes": [
+                {
+                  "path": "src/a.rs"
+                },
+                {
+                  "path": "skills/x/SKILL.md"
+                }
+              ]
+            },
+            "timelineItems": {
+              "nodes": [
+                {
+                  "__typename": "ReadyForReviewEvent",
+                  "createdAt": "2026-11-04T09:00:00Z"
+                }
+              ]
+            },
+            "reviewThreads": {
+              "nodes": [
+                {
+                  "isResolved": false,
+                  "viewerCanResolve": true,
+                  "comments": {
+                    "totalCount": 2,
+                    "nodes": [
+                      {
+                        "author": {
+                          "login": "alice"
+                        },
+                        "body": "Done."
+                      }
+                    ]
+                  }
+                },
+                {
+                  "isResolved": false,
+                  "viewerCanResolve": false,
+                  "comments": {
+                    "totalCount": 1,
+                    "nodes": [
+                      {
+                        "author": {
+                          "login": "bob"
+                        },
+                        "body": "This leaks the handle."
+                      }
+                    ]
+                  }
+                },
+                {
+                  "isResolved": false,
+                  "viewerCanResolve": true,
+                  "comments": {
+                    "totalCount": 0,
+                    "nodes": []
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 11,
+            "title": "Checking, approved, deleted author",
+            "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/11",
+            "isDraft": true,
+            "createdAt": "2026-10-30T08:00:00Z",
+            "reviewDecision": "APPROVED",
+            "mergeable": "UNKNOWN",
+            "author": null,
+            "files": {
+              "nodes": []
+            },
+            "timelineItems": {
+              "nodes": []
+            },
+            "reviewThreads": {
+              "nodes": [
+                {
+                  "isResolved": true,
+                  "viewerCanResolve": true,
+                  "comments": {
+                    "totalCount": 1,
+                    "nodes": [
+                      {
+                        "author": {
+                          "login": "bob"
+                        },
+                        "body": "Nit."
+                      }
+                    ]
+                  }
+                },
+                {
+                  "isResolved": false,
+                  "viewerCanResolve": null,
+                  "comments": {
+                    "totalCount": 0,
+                    "nodes": []
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "number": 10,
+            "title": "Status not computed, review requested",
+            "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/10",
+            "isDraft": false,
+            "createdAt": "2026-10-29T08:00:00Z",
+            "reviewDecision": "REVIEW_REQUIRED",
+            "mergeable": "UNKNOWN",
+            "author": {
+              "login": "bob"
+            },
+            "files": {
+              "nodes": [
+                {
+                  "path": "README.md"
+                }
+              ]
+            },
+            "timelineItems": {
+              "nodes": []
+            },
+            "reviewThreads": {
+              "nodes": []
+            }
+          },
+          {
+            "number": 9,
+            "title": "Mergeable, no reviewers",
+            "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/9",
+            "isDraft": false,
+            "createdAt": "2026-10-28T08:00:00Z",
+            "reviewDecision": null,
+            "mergeable": "MERGEABLE",
+            "author": {
+              "login": "zed"
+            },
+            "files": {
+              "nodes": [
+                {
+                  "path": "docs/guide.md"
+                }
+              ]
+            },
+            "timelineItems": {
+              "nodes": []
+            },
+            "reviewThreads": {
+              "nodes": [
+                {
+                  "isResolved": false,
+                  "viewerCanResolve": false,
+                  "comments": {
+                    "totalCount": 1,
+                    "nodes": [
+                      {
+                        "author": {
+                          "login": "alice"
+                        },
+                        "body": "Why?"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

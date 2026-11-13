@@ -97,8 +97,9 @@ npx szpont                       # or:  pip install szpont && szpont
 macOS 13+ and Linux. It clones Diplomat into `~/.diplomat/checkout`, builds it, starts it, and
 updates it in place. You need git, a Swift toolchain (Xcode on macOS,
 [swiftly](https://swift.org/install) on Linux), python3 on Linux, and a logged-in
-[`gh`](https://cli.github.com). Optional: Node.js for the device allocator, python3 for the mesh on
-macOS, tmux for Ghostty windows or on Linux.
+[`gh`](https://cli.github.com). A GitLab repo root also needs [`glab`](https://gitlab.com/gitlab-org/cli)
+signed in to its host. Optional: Node.js for the device allocator, python3 for the mesh on macOS,
+tmux for Ghostty windows or on Linux.
 
 ```bash
 szpont --plan          # print what it would do, and do none of it
@@ -128,7 +129,8 @@ Everything here can be changed in Settings (⚙︎).
 
 Agents use your full `gh` login unless you give them
 [a narrower token](docs/settings.md#a-narrow-github-token-for-agents) limited to contents and pull
-requests, which is safer.
+requests, which is safer. That token is GitHub's alone: agents on a GitLab root use your full
+`glab` login.
 </details>
 
 <details>

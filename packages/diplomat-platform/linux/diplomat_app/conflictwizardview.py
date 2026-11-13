@@ -66,14 +66,15 @@ class ConflictWizardView(SpawnWizard):
         self._sync()
 
     def _config(self) -> conflicts.ConflictConfig:
-        return conflicts.ConflictConfig(
+        cfg = conflicts.ConflictConfig(
             target=self.target.currentData(),
             username=self.username.text(),
-            me=self.store.effective_me,
             specific_pr=self.specific_pr.text(),
             local_repos=self.store.local_repos,
             home=self.store.selected_repo,
         )
+        cfg.me = self.store.known_me(cfg.target_root)
+        return cfg
 
     def _sync(self) -> None:
         cfg = self._config()
@@ -96,7 +97,7 @@ class ConflictWizardView(SpawnWizard):
     def _label(self) -> str:
         cfg = self._config()
         ref = cfg.single_ref
-        scope = (self.store.wizard_item_label(*cfg.target_repo, ref.number)
+        scope = (self.store.wizard_item_label(cfg.target_root, ref.number)
                  if ref is not None and ref.number is not None
                  else cfg.specific_pr.strip() or "main")
         return f"Resolve conflicts · {scope}"

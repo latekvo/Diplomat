@@ -68,14 +68,16 @@ extension Store {
                       bannedSenders: BanList.slackUserIDs(in: BanList.read()),
                       model: commsModel, batchSize: commsBatchSize,
                       flushAfterSecs: commsFlushAfterSecs,
-                      repos: RepoPaths.roots.map(\.slug), login: effectiveMe)
+                      repos: RepoPaths.roots.map(\.key), login: effectiveMe,
+                      gitlabHosts: Dictionary(RepoPaths.roots.filter(\.isGitLab).map { ($0.key, $0.host) },
+                                              uniquingKeysWith: { first, _ in first }))
     }
 
     /// The repo root a Comms repository names (`CommsSettings.canonical`: "" for the
     /// primary); nil once it is no root.
     static func commsRoot(_ repo: String) -> PRRef.LocalRepo? {
         let roots = RepoPaths.roots
-        return repo.isEmpty ? roots.first : roots.first { $0.slug.lowercased() == repo.lowercased() }
+        return repo.isEmpty ? roots.first : PRRef.root(named: repo, in: roots)
     }
 
     var commsToggles: CommsToggles {
@@ -154,7 +156,7 @@ extension Store {
     /// A queue key a single-repo build logged (`review:42`) is read as the primary root's.
     private func absorbCommsLog(_ events: [CommsEvent], _ items: [CommsItem], _ mark: CommsLogMark) {
         commsLog = CommsLogCache(events: events, mark: mark)
-        let primary = RepoPaths.roots.first?.slug ?? ""
+        let primary = RepoPaths.roots.first?.key ?? ""
         let items = items.map { item -> CommsItem in
             var item = item
             item.queueKey = item.queueKey.map { PRRef.migrateQueueKey($0, primary: primary) }
@@ -264,7 +266,7 @@ extension Store {
         guard !primaryResolved else { return nil }
         let first = RepoPaths.rootPaths.first ?? ""
         return CommsTickResult(me: nil, items: [], error: "waiting for the first repo root, \(first), "
-                                   + "to resolve to a GitHub checkout")
+                                   + "to resolve to a GitHub or GitLab checkout")
     }
 
     /// Signs in the way a tick does, refreshing a dead login through Claude Code.
@@ -488,12 +490,13 @@ extension Store {
             case .found(let t) where t.isOpen: pr = t
             case let other: return refused("comms-review", who, Store.notOpen("PR", n, root, other))
             }
-            let mine = !effectiveMe.isEmpty && pr.author.lowercased() == effectiveMe.lowercased()
+            let login = (try? await me(for: root)) ?? ""
+            let mine = !login.isEmpty && pr.author.lowercased() == login.lowercased()
             if !mine, BanList.isBanned(pr.author, in: bannedAuthors) {
                 return refused("comms-review", who, "@\(pr.author) is banned, so "
                                + "\(Store.commsRef(n, in: root)) was not queued")
             }
-            var cfg = ReviewConfig(target: .specific, me: effectiveMe, specificPR: String(n),
+            var cfg = ReviewConfig(target: .specific, me: login, specificPR: String(n),
                                    specificAuthor: mine ? .mine : .theirs)
             cfg.home = root
             return queue(RequestedWork(number: n, url: pr.url, author: mine ? "" : pr.author,
@@ -512,7 +515,8 @@ extension Store {
                 return refused("comms-fix", who, "@\(issue.author) is banned, so "
                                + "\(Store.commsRef(n, in: root)) was not queued")
             }
-            var cfg = IssueConfig(target: .specific, me: effectiveMe, specificIssue: String(n))
+            var cfg = IssueConfig(target: .specific, me: (try? await me(for: root)) ?? "",
+                                  specificIssue: String(n))
             cfg.home = root
             return queue(RequestedWork(number: n, url: issue.url, author: issue.author,
                                        config: .issues(cfg)),
@@ -522,7 +526,7 @@ extension Store {
                 return refused("comms-bump", who, Store.notARoot(repo))
             }
             let ref = Store.commsRef(n, in: root)
-            let item = PRRef.itemKey(owner: root.owner, repo: root.repo, number: n)
+            let item = PRRef.itemKey(owner: root.owner, repo: root.repo, number: n, host: root.host)
             let keys = queuedTasks.map(\.id).filter { AgentTaskQueue.item(ofKey: $0) == item }
             for key in keys { moveQueuedTaskToFront(key) }
             let outcome = keys.isEmpty ? "nothing queued for \(ref)"
@@ -530,16 +534,16 @@ extension Store {
             return CommsActResult(verb: "comms-bump", outcome: outcome,
                                   feedLine: "Bump \(ref) asked by \(who) — \(outcome)")
         case .investigate(var cfg):
-            let slug = "\(cfg.owner)/\(cfg.repo)".lowercased()
-            guard let root = Store.commsRoot(slug) else {
-                return refused("comms-investigate", who, Store.notARoot(slug))
+            let key = "\(cfg.owner)/\(cfg.repo)".lowercased()
+            guard let root = Store.commsRoot(key) else {
+                return refused("comms-investigate", who, Store.notARoot(key))
             }
             cfg.checkout = root.path
             // The sender is the ask's ban dimension: the dispatch gate drops it if they
             // are banned while it waits.
             return queue(RequestedWork(number: cfg.number, url: cfg.permalink,
                                        author: cfg.banLogin, config: .investigate(cfg),
-                                       repo: slug),
+                                       repo: root.key),
                          verb: "comms-investigate", who: who, front: false)
         case .ban(let b):
             let reporter = Store.commsReporter
@@ -622,23 +626,23 @@ extension Store {
     }
 
     /// Any review agent on that PR (the dispatch gate treats every agent on a PR as that
-    /// PR's), or a fix of that issue, known only by the label every issue fix wears
-    /// (`RequestedWork.label`, `IssueWizard`).
+    /// PR's), or a fix of that issue, each known by the link its run records; a linkless
+    /// fix (an older build's) by the "Issues · <item label> · " it wears.
     private func commsRow(doing key: String) -> AgentRow? {
         guard let parts = Store.commsKeyParts(key) else { return nil }
+        let kind: String
         switch parts.verb {
-        case AgentTaskQueue.reviewAction, Store.reviewRequestAction:
-            return agentRows.first {
-                $0.record.item == parts.item && $0.record.kind == AgentTaskQueue.reviewAction
+        case AgentTaskQueue.reviewAction, Store.reviewRequestAction: kind = AgentTaskQueue.reviewAction
+        case AgentTaskQueue.issuesAction: kind = AgentTaskQueue.issuesAction
+        default: return nil
+        }
+        let label = "Issues · \(itemLabel(parts.item)) · "
+        return agentRows.first {
+            guard $0.record.kind == kind else { return false }
+            guard $0.record.prURL.isEmpty, kind == AgentTaskQueue.issuesAction else {
+                return PRRef.itemKey(url: $0.record.prURL) == parts.item
             }
-        case AgentTaskQueue.issuesAction:
-            return agentRows.first {
-                $0.record.kind == AgentTaskQueue.issuesAction
-                    && $0.record.label.contains(
-                        "Issues · \(PRRef.itemLabel(item: parts.item, roots: RepoPaths.roots.count)) · ")
-            }
-        default:
-            return nil
+            return $0.record.label.contains(label)
         }
     }
 
@@ -664,7 +668,8 @@ extension Store {
             let place = RepoPaths.roots.count > 1 ? root.slug : "this repo"
             return "no \(noun) #\(n) in \(place), so nothing was queued"
         case .unasked(let why):
-            return "couldn't ask GitHub about \(noun) \(ref) (\(why)), so nothing was queued"
+            return "couldn't ask \(root.isGitLab ? "GitLab" : "GitHub") about \(noun) \(ref) (\(why)), "
+                + "so nothing was queued"
         }
     }
 
@@ -673,21 +678,23 @@ extension Store {
     }
 
     private static func commsRef(_ n: Int, in root: PRRef.LocalRepo) -> String {
-        PRRef.itemLabel(item: PRRef.itemKey(owner: root.owner, repo: root.repo, number: n),
+        PRRef.itemLabel(item: PRRef.itemKey(owner: root.owner, repo: root.repo, number: n, host: root.host),
                         roots: RepoPaths.roots.count)
     }
 
     enum CommsLookup {
         case found(CommsTarget)
-        /// GitHub says the repo has no such PR or issue.
+        /// The host says the repo has no such PR or issue.
         case missing
-        /// No answer: gh failed, timed out or printed no PR or issue.
+        /// No answer: gh or glab failed, timed out or printed no PR or issue.
         case unasked(String)
     }
 
     /// `gh pr|issue view`'s "no such number". "Could not resolve to a Repository" shares
-    /// the prefix but means the repo itself could not be seen.
+    /// the prefix but means the repo itself could not be seen, as GitLab's
+    /// "404 Project Not Found" does beside its "404 Not found".
     static func ghSaysNotFound(_ error: Error) -> Bool {
+        if case GHError.glabProcess(_, let stderr) = error { return stderr.contains("404 Not found") }
         guard case GHError.process(_, let stderr) = error else { return false }
         return stderr.contains("Could not resolve to") && stderr.contains("with the number of")
     }
@@ -697,15 +704,15 @@ extension Store {
         return flat.count > max ? String(flat.prefix(max - 1)) + "…" : flat
     }
 
-    /// The panel's last fetch (open work only) first, then `gh` for what it lacks: an
-    /// issue a filtered list left out, a PR opened since, a closed one. The panel lists
-    /// one root at a time, so only an entry of `root`'s counts.
+    /// The panel's last fetch (open work only) first, then `gh` (`glab` on GitLab) for what
+    /// it lacks: an issue a filtered list left out, a PR opened since, a closed one. The
+    /// panel lists one root at a time, so only an entry of `root`'s counts.
     ///
     /// `gh issue view` answers a PR's number with that PR, so only an `/issues/` url is
     /// an issue.
     private func commsLookup(_ kind: CommsTargetKind, _ n: Int,
                              in root: PRRef.LocalRepo) async -> CommsLookup {
-        let item = PRRef.itemKey(owner: root.owner, repo: root.repo, number: n)
+        let item = PRRef.itemKey(owner: root.owner, repo: root.repo, number: n, host: root.host)
         switch kind {
         case .pr:
             if let pr = prs.first(where: { PRRef.itemKey(url: $0.url) == item }) {
@@ -718,30 +725,39 @@ extension Store {
                                           isOpen: true, state: "OPEN"))
             }
         }
-        let verb = kind == .pr ? "pr" : "issue"
-        let args = [verb, "view", String(n), "--repo", root.slug,
+        let args: [String]
+        if root.isGitLab {
+            args = ["api", "--hostname", root.host,
+                    "projects/\(GLab.projectID(root.slug))/\(kind == .pr ? "merge_requests" : "issues")/\(n)"]
+        } else {
+            args = [kind == .pr ? "pr" : "issue", "view", String(n), "--repo", root.slug,
                     "--json", "number,url,author,state"]
+        }
         let data: Data
         do {
+            let raw: Data
             if Headless.active, let stub = Store.commsGHOverride {
-                data = try await stub(args)
+                raw = try await stub(args)
             } else {
-                data = try await GH.run(args)
+                raw = root.isGitLab ? try await GLab.run(args) : try await GH.run(args)
             }
+            data = root.isGitLab ? try GitLab.itemView(raw) : raw
         } catch {
             if Store.ghSaysNotFound(error) { return .missing }
             let why = (error as? LocalizedError)?.errorDescription ?? "\(error)"
             return .unasked(Store.snippet(why, max: 120))
         }
+        let tool = root.isGitLab ? "glab" : "gh"
         guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let state = obj["state"] as? String else {
-            return .unasked("gh printed no PR or issue")
+              let raw = obj["state"] as? String else {
+            return .unasked("\(tool) printed no PR or issue")
         }
         let url = obj["url"] as? String ?? ""
-        if kind == .issue, !url.contains("/issues/") { return .missing }
+        // GitLab's issues endpoint answers only issues.
+        if kind == .issue, !root.isGitLab, !url.contains("/issues/") { return .missing }
         let author = (obj["author"] as? [String: Any])?["login"] as? String ?? ""
-        return .found(CommsTarget(number: n, url: url, author: author, isOpen: state == "OPEN",
-                                  state: state))
+        return .found(CommsTarget(number: n, url: url, author: author, isOpen: raw == "OPEN",
+                                  state: raw))
     }
 
     /// Logs only transitions: a dead login fails every poll, and a line per poll would bury

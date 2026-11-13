@@ -2,7 +2,7 @@
 ReviewReconcile.swift and the VerdictPolicy / AuthorAllowlist in Review.swift.
 
 Kept deterministic and side-effect-free so it's testable in isolation: the
-GitHub reads live in :mod:`autofixmonitor`, and the spawn/track/persistence in
+GitHub and GitLab reads live in :mod:`autofixmonitor`, and the spawn/track/persistence in
 the Store. This module only decides *what* should happen given snapshots and
 prior state.
 """
@@ -13,7 +13,7 @@ import math
 import re
 from dataclasses import dataclass, replace
 
-from .prref import item_key, item_key_from_url, item_label, split_item_key
+from .prref import item_key_from_url, item_label, split_item_key
 
 # MARK: - Snapshot + fingerprint
 
@@ -345,7 +345,8 @@ WORK_CONFLICTS = "conflicts"  # conflict fixes on MY PRs → duty "conflicts"
 
 
 def _pr_ref(pr_url: str) -> str | None:
-    """``<host>/<owner>/<repo>#<n>`` for a PR URL, or None when it isn't one. Split
+    """``<host>/<owner>/<repo>#<n>`` for a PR URL (a GitLab merge request's owner is its
+    whole namespace), or None when it isn't one. Split
     out of :func:`work_key` so :func:`ledger_key` cannot parse a URL differently
     from the claim key — the two identify the same unit of work and are compared
     against each other in the telemetry ledger."""
@@ -357,9 +358,13 @@ def _pr_ref(pr_url: str) -> str | None:
         return None
     host = (u.hostname or "").lower()
     parts = [p for p in (u.path or "").split("/") if p]
-    if not host or len(parts) != 4 or parts[2] != "pull" or not parts[3].isdigit():
+    if not host or not parts or not parts[-1].isdigit():
         return None
-    return f"{host}/{parts[0]}/{parts[1]}#{parts[3]}"
+    if len(parts) == 4 and parts[2] == "pull":
+        return f"{host}/{parts[0]}/{parts[1]}#{parts[3]}"
+    if len(parts) >= 5 and parts[-3:-1] == ["-", "merge_requests"]:
+        return f"{host}/{'/'.join(parts[:-3])}#{parts[-1]}"
+    return None
 
 
 def work_key(kind: str, pr_url: str, head_sha: str) -> str:
@@ -1030,7 +1035,8 @@ class AgentJob:
     audit_action: str  # activity-feed verb
     label: str  # label core (source prefix / retry suffix added by dispatch_label)
     prompt: str
-    pr_url: str | None = None  # the PR's link, for the sessions list; None = not PR-scoped
+    # The PR or issue link its run records; None for neither.
+    pr_url: str | None = None
     # Set for a PR-scoped job only, never an issue's, and None for a PR in another
     # listed checkout; with ``pr_url`` it makes :attr:`item`, the dedup key.
     pr_number: int | None = None
@@ -1101,7 +1107,7 @@ class RequestedWork:
     #: The wizard config's ``prompt_payload`` for this one item. Its ``kind`` is also
     #: the queue verb the ask waits under, so the payload carries its own discriminator.
     config: dict
-    #: The repo the item is in, as a slug; "" in a row single-repo builds stored.
+    #: The item's root, as its ``LocalRepo.key``; "" in a row single-repo builds stored.
     repo: str = ""
 
     @property
@@ -1110,8 +1116,7 @@ class RequestedWork:
         no repo: an investigation, or a legacy row not yet given one."""
         if self.action == QUEUE_INVESTIGATE_ACTION or not self.repo:
             return None
-        owner, _, repo = self.repo.partition("/")
-        return item_key(owner, repo, self.number)
+        return f"{self.repo.lower()}#{self.number}"
 
     @property
     def action(self) -> str:
@@ -1217,7 +1222,7 @@ class RunningAgent:
     # guesswork this whole mechanism replaced.
     state: str = "running"
     reason: str = ""
-    # The run's `owner/repo#n` (`agentstate.RunRecord.item`); None for a run about no PR.
+    # The run's PR or issue item key, read off its link; None for neither.
     item: str | None = None
 
     @property
@@ -1229,29 +1234,46 @@ class RunningAgent:
         return self.state == "awaiting_input"
 
 
-_LIVE_AGENT_RE = re.compile(r"PR #([0-9]+) in ([\w.-]+)/([\w.-]+)")
+_LIVE_AGENT_RE = re.compile(r"PR #([0-9]+) in ([\w.-]+(?:/[\w.-]+)+)")
+#: The opening of ``assets/gitlab.json``'s ``promptNote``, which a prompt on a GitLab
+#: repo carries.
+_GITLAB_NOTE_RE = re.compile(
+    r"hosted on GitLab at ([A-Za-z0-9.-]+) \(project ([\w.-]+(?:/[\w.-]+)+)\)")
 
 
-def prompt_items(text: str, slugs: set[str]):
+def prompt_items(text: str, keys: set[str]):
     """Yield the item key of every ``PR #<n> in <owner>/<repo>`` in a prompt whose repo
-    is one of ``slugs``. Every single-PR prompt the applet dispatches opens that way.
+    root's key is one of ``keys`` (``LocalRepo.key``), the owner a namespace of any
+    depth. Every single-PR prompt the applet dispatches opens that way. The repo is
+    GitLab's when the prompt's GitLab note names that project, else GitHub's.
 
+    The longest leading run of path segments in ``keys`` is the repo.
     The prompt goes on ``. Use the `gh` CLI``, and ``.`` is a repo-name character, so
-    a name read with a trailing dot is taken without it when only that is in ``slugs``.
+    the whole path read with a trailing dot is taken without it when only that is in
+    ``keys``.
     """
-    wanted = {s.lower() for s in slugs}
+    wanted = {k.lower() for k in keys}
+    note = _GITLAB_NOTE_RE.search(text)
+    host, project = (note[1].lower(), note[2].lower()) if note else ("", "")
+
+    def key(slug: str) -> str:
+        return f"{host}/{slug}" if slug == project else slug
+
     for m in _LIVE_AGENT_RE.finditer(text):
-        owner, repo = m.group(2).lower(), m.group(3).lower()
-        if f"{owner}/{repo}" not in wanted:
-            repo = repo.rstrip(".")
-        if f"{owner}/{repo}" in wanted:
-            yield item_key(owner, repo, int(m.group(1)))
+        segments = m.group(2).lower().split("/")
+        for end in range(len(segments), 1, -1):
+            slug = "/".join(segments[:end])
+            if end == len(segments) and key(slug) not in wanted:
+                slug = slug.rstrip(".")
+            if key(slug) in wanted:
+                yield f"{key(slug)}#{int(m.group(1))}"
+                break
 
 
-def live_pr_items(ps_output: str, slugs: set[str]) -> set[str]:
-    """Item keys of ``claude`` agents alive in a ``ps`` args dump, on a PR of one of
-    the repos in ``slugs`` — the tracking-independent half of the monitor's in-flight
-    dedup (twin of AgentProbes.liveAgents on macOS).
+def live_pr_items(ps_output: str, keys: set[str]) -> set[str]:
+    """Item keys of ``claude`` agents alive in a ``ps`` args dump, on a PR of a repo
+    root whose key is in ``keys`` — the tracking-independent half of the monitor's
+    in-flight dedup (twin of AgentProbes.liveAgents on macOS).
 
     Every single-PR prompt the applet dispatches names its PR (:func:`prompt_items`)
     and ``claude`` receives the whole prompt as one argv, so a live agent is visible
@@ -1259,10 +1281,10 @@ def live_pr_items(ps_output: str, slugs: set[str]) -> set[str]:
     applet restart wipes it while the agents run on). Only lines containing ``claude``
     count: the spawning shell's argv holds the unexpanded ``$(cat …)``, never the
     prompt text."""
-    return {a.item for a in agent_lines(ps_output, slugs)}
+    return {a.item for a in agent_lines(ps_output, keys)}
 
 
-def agent_ttys(ps_output: str, slugs: set[str]) -> set[str]:
+def agent_ttys(ps_output: str, keys: set[str]) -> set[str]:
     """The ttys the live agents of :func:`live_pr_items` are running on, spelled as
     ``ps`` spells them (``pts/13``, no ``/dev/``).
 
@@ -1270,11 +1292,11 @@ def agent_ttys(ps_output: str, slugs: set[str]) -> set[str]:
     find two agents would put a ``capture-pane`` per pane on the panel's 8-second
     tick, where this puts one per agent. A process with no controlling tty appears
     as ``?``, matches no pane, and is simply never asked about."""
-    return {a.tty for a in agent_lines(ps_output, slugs)}
+    return {a.tty for a in agent_lines(ps_output, keys)}
 
 
 def idle_pr_items(
-    ps_output: str, pane_tails: dict[str, str], slugs: set[str]
+    ps_output: str, pane_tails: dict[str, str], keys: set[str]
 ) -> set[str]:
     """Of the agents alive in ``ps``, the item keys whose session has finished its
     turn and is waiting at its prompt.
@@ -1303,7 +1325,7 @@ def idle_pr_items(
     agent this machine has no book entry for at all. An age that could not be parsed
     counts as too young, because a bay is freed on positive evidence or not at all.
     """
-    return {a.item for a in agent_lines(ps_output, slugs)
+    return {a.item for a in agent_lines(ps_output, keys)
             if _at_prompt(a.elapsed, pane_tails.get(a.tty))}
 
 
@@ -1384,11 +1406,11 @@ class AgentLine:
     elapsed: float | None
 
 
-def agent_lines(ps_output: str, slugs: set[str]):
+def agent_lines(ps_output: str, keys: set[str]):
     """Yield an :class:`AgentLine` for every live agent in a ``ps`` dump whose prompt
-    names a PR of a repo in ``slugs`` (:func:`prompt_items`) — the one parse the
-    answers above are each a projection of, so they can never come to disagree about
-    what counts as an agent.
+    names a PR of a repo root whose key is in ``keys`` (:func:`prompt_items`) — the one
+    parse the answers above are each a projection of, so they can never come to disagree
+    about what counts as an agent.
 
     The tty is whatever leads the line, normalised free of ``/dev/`` (``ps`` omits it,
     tmux does not), and the elapsed time is the token after it. On a bare ``args=``
@@ -1402,7 +1424,7 @@ def agent_lines(ps_output: str, slugs: set[str]):
     from . import opencodeapi
 
     for tty, elapsed, argv in _agent_processes(ps_output):
-        for item in prompt_items(opencodeapi.scan_text(argv), slugs):
+        for item in prompt_items(opencodeapi.scan_text(argv), keys):
             yield AgentLine(tty=tty, item=item, elapsed=elapsed)
 
 

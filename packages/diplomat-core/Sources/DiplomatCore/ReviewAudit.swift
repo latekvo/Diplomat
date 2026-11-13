@@ -98,9 +98,11 @@ public enum ReviewAudit {
     }
 
     /// Read my reviews on `prURL` and return `findings`. `[]` for a URL that names no
-    /// github.com PR. Throws when GitHub cannot be asked.
+    /// github.com PR (a GitLab merge request's). Throws when GitHub cannot be asked or `me`
+    /// is empty.
     public static func audit(prURL: String, me: String, since: TimeInterval) async throws -> [String] {
         guard let c = coordinates(prURL) else { return [] }
+        guard !me.isEmpty else { throw GHError.unanswered("the gh login is not known yet") }
         let data = try await GH.graphql("my-reviews", repo: (c.owner, c.repo),
                                         variables: [("me", me)],
                                         typedVariables: [("number", String(c.number))])

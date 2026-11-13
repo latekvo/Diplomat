@@ -116,11 +116,24 @@ public struct IssueConfig: Codable, Equatable {
     /// `targetRepo` came from, else the home's, or nil.
     public var checkout: String? { (isSingleIssue ? issueRef.repo?.path : nil) ?? home?.path }
 
+    /// The repo `targetRepo` names, nil for `assets/config.json`'s.
+    public var targetLocal: PRRef.LocalRepo? { (isSingleIssue ? issueRef.repo : nil) ?? home }
+
+    /// The fixed issue's link, which its run records; nil for a sweep. Python twin:
+    /// `IssueConfig.single_link`.
+    public var singleLink: String? {
+        guard isSingleIssue, let n = issueRef.number else { return nil }
+        let (owner, repo) = targetRepo
+        return (targetLocal ?? PRRef.LocalRepo(owner: owner, repo: repo, path: "")).webURL(.issues, number: n)
+    }
+
     /// The single-issue field parsed as a number / URL / `owner/repo#n` shorthand,
     /// checked against the home repo, then `localRepos`.
     public var issueRef: PRRef {
         let (owner, repo) = PRRef.LocalRepo.coordinates(home: home)
-        return PRRef.parse(specificIssue, owner: owner, repo: repo, kind: .issues, also: localRepos ?? [])
+        return PRRef.parse(specificIssue, owner: owner, repo: repo,
+                           host: PRRef.LocalRepo.host(home: home), kind: .issues,
+                           also: localRepos ?? [])
     }
 
     public var isValid: Bool {
@@ -175,6 +188,7 @@ public struct IssueConfig: Codable, Equatable {
 
         // 1. The one issue in front of the agent.
         out.append(fill(scope["single"] ?? ""))
+        if let n = PRRef.LocalRepo.gitlabNote(targetLocal) { out.append(n) }
 
         // 2. What a swept issue has to be re-checked for, its turn having come long
         //    after the sweep chose it: closed since, and claimed since.

@@ -31,6 +31,7 @@ import time
 
 from diplomat_runtime import activity, agentstate, autofix, review
 from diplomat_runtime.models import Fmt
+from diplomat_runtime.prref import root_label
 from . import deviceallocator, glyphs, szpont
 from .commsview import CommsView
 from .tasksview import TasksView
@@ -505,20 +506,20 @@ class Panel(QWidget):
 
     def _refresh_repo_picker(self) -> None:
         roots = review.repo_roots()
-        selected = self.store.selected_repo.slug.lower()
-        self.repo_label.setText(roots[0].slug)
+        selected = self.store.selected_repo.key
+        self.repo_label.setText(root_label(roots[0], roots))
         self.repo_label.setVisible(len(roots) == 1)
         self.repo_picker.setVisible(len(roots) > 1)
         self.repo_picker.clear()
         for r in roots:
-            self.repo_picker.addItem(r.slug, r.slug.lower())
+            self.repo_picker.addItem(root_label(r, roots), r.key)
         self.repo_picker.setCurrentIndex(
-            next((i for i, r in enumerate(roots) if r.slug.lower() == selected), 0))
+            next((i for i, r in enumerate(roots) if r.key == selected), 0))
 
     def _pick_repo(self, index: int) -> None:
-        slug = self.repo_picker.itemData(index)
-        if slug and slug != self.store.selected_repo.slug.lower():
-            self.store.select_repo(slug)
+        key = self.repo_picker.itemData(index)
+        if key and key != self.store.selected_repo.key:
+            self.store.select_repo(key)
 
     def _on_repo_selected(self) -> None:
         self._refresh_repo_picker()
@@ -1218,7 +1219,10 @@ class Panel(QWidget):
 
     def _rebuild_lookup(self, n: int) -> None:
         r = self.store.lookup(n)
-        link = r.url or f"https://github.com/{self.store.selected_repo.slug}/issues/{n}"
+        repo = self.store.selected_repo
+        # GitLab numbers merge requests and issues apart, so an unlisted number has no
+        # link.
+        link = r.url or (None if repo.is_gitlab else repo.link("issues", n))
 
         container = QWidget()
         col = QVBoxLayout(container)
@@ -1239,9 +1243,11 @@ class Panel(QWidget):
         )
         top.addWidget(status)
         top.addStretch(1)
-        open_btn = _icon_button("↗", f"Open #{n} on GitHub")
-        open_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(link)))
-        top.addWidget(open_btn)
+        if link:
+            open_btn = _icon_button(
+                "↗", f"Open #{n} on {'GitLab' if repo.is_gitlab else 'GitHub'}")
+            open_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(link)))
+            top.addWidget(open_btn)
         col.addLayout(top)
 
         presence = QLabel(r.presence)

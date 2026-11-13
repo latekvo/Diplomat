@@ -1,42 +1,59 @@
 import Foundation
 
 extension PRRef.LocalRepo {
-    /// The GitHub `owner`/`repo` a git remote URL names, or nil for any other host: the scp
-    /// form (`git@github.com:o/r`) or a URL (`https`/`http`/`ssh`/`git`, any user and
-    /// port), with or without `.git`. Same pattern as `localrepos.py`.
-    public static func coordinates(remoteURL: String) -> (owner: String, repo: String)? {
+    /// The lowercased host and `owner`/`repo` a git remote URL names: the scp form
+    /// (`git@github.com:o/r`) or a URL (`https`/`http`/`ssh`/`git`, any user and port), with
+    /// or without `.git`; nil off github.com and GitLab (`GitLabHosts.host(of:)`). A GitLab
+    /// owner is the whole namespace. Same patterns as `localrepos.py`.
+    public static func coordinates(remoteURL: String, gitlabHosts: GitLabHosts = [])
+        -> (host: String, owner: String, repo: String)? {
         let s = remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pattern = #"^(?:(?:https?|ssh|git)://(?:[^@/]+@)?github\.com(?::[0-9]+)?/|[^@/:]+@github\.com:)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$"#
-        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
-              let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
-              let o = Range(m.range(at: 1), in: s), let r = Range(m.range(at: 2), in: s)
-        else { return nil }
-        return (String(s[o]), String(s[r]))
+        let github = #"^(?:(?:https?|ssh|git)://(?:[^@/]+@)?github\.com(?::[0-9]+)?/|[^@/:]+@github\.com:)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$"#
+        if let g = groups(s, github) { return (PRRef.LocalRepo.github, g[0], g[1]) }
+        let gitlab = #"^(?:(?:https?|ssh|git)://(?:[^@/]+@)?([A-Za-z0-9.-]+)(?::[0-9]+)?/|[^@/:]+@([A-Za-z0-9.-]+):)((?:[\w.-]+/)*[\w.-]+)/([\w.-]+?)(?:\.git)?/?$"#
+        guard let g = groups(s, gitlab) else { return nil }
+        guard let host = gitlabHosts.host(of: g[0].isEmpty ? g[1] : g[0]) else { return nil }
+        return (host, g[2], g[3])
     }
 
-    /// Every GitHub remote of the checkout at `path`, from `git config --local
-    /// --get-regexp '^remote\..*\.url$'` output, each once. A fork clone carries both the fork and the
-    /// project it forked, and a link to either belongs in that checkout. `upstream` comes
-    /// first, then `origin`, then the rest in config order: the first entry is the one
-    /// Settings names the checkout by. With `only`, just the remotes it names, ranked the
-    /// same. Python twin: `localrepos.entries`.
-    public static func entries(path: String, remotes: String,
-                               only: [String] = []) -> [PRRef.LocalRepo] {
+    /// Capture groups 1...n, "" for one that did not take part; case-insensitive.
+    private static func groups(_ s: String, _ pattern: String) -> [String]? {
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) else { return nil }
+        return (1..<m.numberOfRanges).map { i in
+            Range(m.range(at: i), in: s).map { String(s[$0]) } ?? ""
+        }
+    }
+
+    /// Every GitHub or GitLab remote of the checkout at `path`, from `git config --local
+    /// --get-regexp '^remote\..*\.url$'` output, each once (by host and slug). A fork clone
+    /// carries both the fork and the project it forked, and a link to either belongs in
+    /// that checkout. GitHub ones rank first, as in `RepoRoots.resolve`, so a host-less
+    /// `owner/repo#N` names the GitHub repo; Settings names the checkout by the first.
+    /// Within each host, `upstream` comes first, then `origin`, then the rest in config
+    /// order. With `only`, just the remotes it names, ranked the same.
+    /// Python twin: `localrepos.entries`.
+    public static func entries(path: String, remotes: String, only: [String] = [],
+                               gitlabHosts: GitLabHosts = []) -> [PRRef.LocalRepo] {
         var named: [(remote: String, repo: PRRef.LocalRepo)] = []
         for line in remotes.split(separator: "\n") {
             let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
             guard parts.count == 2, parts[0].hasPrefix("remote."), parts[0].hasSuffix(".url"),
-                  let c = coordinates(remoteURL: parts[1]) else { continue }
+                  let c = coordinates(remoteURL: parts[1], gitlabHosts: gitlabHosts) else { continue }
             let remote = String(parts[0].dropFirst("remote.".count).dropLast(".url".count))
             if !only.isEmpty, !only.contains(remote) { continue }
-            named.append((remote, PRRef.LocalRepo(owner: c.owner, repo: c.repo, path: path)))
+            named.append((remote, PRRef.LocalRepo(owner: c.owner, repo: c.repo, path: path,
+                                                  host: c.host)))
         }
-        let rank = { (remote: String) in ["upstream", "origin"].firstIndex(of: remote) ?? 2 }
+        let rank = { (e: (offset: Int, element: (remote: String, repo: PRRef.LocalRepo))) in
+            (e.element.repo.isGitLab ? 1 : 0, ["upstream", "origin"].firstIndex(of: e.element.remote) ?? 2,
+             e.offset)
+        }
         var seen = Set<String>()
         return named.enumerated()
-            .sorted { (rank($0.element.remote), $0.offset) < (rank($1.element.remote), $1.offset) }
+            .sorted { rank($0) < rank($1) }
             .map(\.element.repo)
-            .filter { seen.insert($0.slug.lowercased()).inserted }
+            .filter { seen.insert($0.key).inserted }
     }
 
     /// The coordinates a config with this home targets: the home's, else
@@ -44,39 +61,161 @@ extension PRRef.LocalRepo {
     static func coordinates(home: PRRef.LocalRepo?) -> (owner: String, repo: String) {
         home.map { ($0.owner, $0.repo) } ?? CoreAssets.repoCoordinates()
     }
+
+    /// The host a config with this home targets: the home's, else github.com
+    /// (`assets/config.json`'s).
+    static func host(home: PRRef.LocalRepo?) -> String {
+        home?.host ?? PRRef.LocalRepo.github
+    }
+
+    /// `gitlab.json`'s paragraph for a prompt whose target is `repo`, nil off GitLab.
+    static func gitlabNote(_ repo: PRRef.LocalRepo?) -> String? {
+        guard let repo, repo.isGitLab, let note = try? CoreAssets.gitlab().promptNote else { return nil }
+        return note.replacingOccurrences(of: "{host}", with: repo.host)
+            .replacingOccurrences(of: "{owner}", with: repo.owner)
+            .replacingOccurrences(of: "{repo}", with: repo.repo)
+    }
 }
 
-/// The repo roots the operator loaded, each read as the one GitHub repo every automated
-/// job works there. Python twin: `localrepos.resolve_roots`.
+/// The hosts a git remote reads as GitLab on: gitlab.com, the hosts glab is configured for
+/// (`GLab.configuredHosts`) and any `gitlab.*` host; never github.com, whatever glab lists.
+/// Python twin: `localrepos.gitlab_hosts`.
+public struct GitLabHosts: Equatable, ExpressibleByArrayLiteral {
+    /// Each host a remote may name to the host glab's API answers on, lowercased: a
+    /// configured host to itself, its `ssh_host` to it.
+    public let hosts: [String: String]
+
+    public init(_ hosts: [String: String]) {
+        self.hosts = Dictionary(hosts.map { ($0.key.lowercased(), $0.value.lowercased()) },
+                                uniquingKeysWith: { first, _ in first })
+    }
+
+    public init(arrayLiteral hosts: String...) {
+        self.init(Dictionary(hosts.map { ($0, $0) }, uniquingKeysWith: { first, _ in first }))
+    }
+
+    /// The GitLab host a remote naming `host` is on (an `ssh_host` maps to its host); nil
+    /// off GitLab.
+    public func host(of host: String) -> String? {
+        let h = host.lowercased()
+        return GitLabHosts.contains(h, configured: Set(hosts.keys)) ? hosts[h] ?? h : nil
+    }
+
+    public static func contains(_ host: String, configured: Set<String>) -> Bool {
+        let h = host.lowercased()
+        if h == PRRef.LocalRepo.github { return false }
+        if h == "gitlab.com" || configured.contains(where: { $0.lowercased() == h }) { return true }
+        let labels = h.split(separator: ".", omittingEmptySubsequences: false)
+        return labels.count >= 2 && labels[0] == "gitlab" && !labels.contains(where: \.isEmpty)
+    }
+
+    /// A glab `config.yml`'s column-0 `hosts:` map: each host key at the map's first indent
+    /// to itself, and each non-empty `ssh_host:` directly under a host to that host (quotes
+    /// and `:port` dropped). A host's own name wins over another's `ssh_host`.
+    public static func parse(config: String) -> GitLabHosts {
+        var named: [String: String] = [:]
+        var aliases: [String: String] = [:]
+        let sshHost = try? NSRegularExpression(
+            pattern: #"^\s+ssh_host:\s*(["']?)([A-Za-z0-9.-]+)(?::[0-9]+)?\1\s*(?:#.*)?$"#)
+        for (host, lines) in hostBlocks(config) {
+            named[host] = host
+            guard let child = lines.dropFirst().first.map(depth) else { continue }
+            for line in lines.dropFirst() where depth(line) == child {
+                if let alias = capture(sshHost, 2, line), aliases[alias] == nil { aliases[alias] = host }
+            }
+        }
+        return GitLabHosts(aliases.merging(named) { _, own in own })
+    }
+
+    /// Each host's entry in a glab `config.yml`, keyed as `parse` keys hosts: its host line
+    /// and child lines, blank and comment lines left out. A host listed twice gets both.
+    public static func entries(config: String) -> [String: String] {
+        var out: [String: String] = [:]
+        for (host, lines) in hostBlocks(config) {
+            out[host] = (out[host].map { $0 + "\n" } ?? "") + lines.joined(separator: "\n")
+        }
+        return out
+    }
+
+    private static func hostBlocks(_ config: String) -> [(host: String, lines: [String])] {
+        var out: [(host: String, lines: [String])] = []
+        var inHosts = false
+        var indent: Int?
+        var current = false
+        let key = try? NSRegularExpression(pattern: #"^\s+([A-Za-z0-9.-]+)(?::[0-9]+)?:\s*$"#)
+        for raw in config.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(raw)
+            let body = line.trimmingCharacters(in: .whitespaces)
+            if body.isEmpty || body.hasPrefix("#") { continue }
+            let at = depth(line)
+            if at == 0 {
+                inHosts = body == "hosts:"
+                indent = nil
+                current = false
+                continue
+            }
+            guard inHosts else { continue }
+            let first = indent ?? at
+            indent = first
+            if at == first {
+                current = false
+                if let host = capture(key, 1, line) {
+                    out.append((host, [line]))
+                    current = true
+                }
+            } else if at > first, current {
+                out[out.count - 1].lines.append(line)
+            }
+        }
+        return out
+    }
+
+    private static func depth(_ line: String) -> Int { line.prefix { $0 == " " || $0 == "\t" }.count }
+
+    private static func capture(_ re: NSRegularExpression?, _ group: Int, _ line: String) -> String? {
+        re?.firstMatch(in: line, range: NSRange(line.startIndex..., in: line))
+            .flatMap { Range($0.range(at: group), in: line) }.map { line[$0].lowercased() }
+    }
+}
+
+/// The repo roots the operator loaded, each read as the one GitHub or GitLab repo every
+/// automated job works there. Python twin: `localrepos.resolve_roots`.
 public enum RepoRoots {
     /// Each of `paths` (a leading `~` expanded) as the repo it is a checkout of, in order.
     ///
     /// `remotes` maps an expanded path to its `git config --local --get-regexp
-    /// '^remote\..*\.url$'` output; a path missing from it is no checkout. A path names
-    /// the configured repo when its `upstream` or `origin` (any remote, with neither) is
-    /// that repo, or a repo of that name under another owner (a fork's `origin`, or a URL
-    /// from before the repo moved), and otherwise its first remote (`LocalRepo.entries`
-    /// order). Another remote naming it is a sibling fetched from, not what the checkout
-    /// is. A path with no GitHub remote is skipped, and a repo two paths name keeps the
-    /// first. When nothing resolves, the first path stands for the configured repo
-    /// (`guessed` tells when that is a guess among several).
+    /// '^remote\..*\.url$'` output; a path missing from it is no checkout. A path with a
+    /// GitHub remote resolves among those alone: it names the configured repo when its
+    /// `upstream` or `origin` (any GitHub remote, with neither) is that repo, or a repo of
+    /// that name under another owner (a fork's `origin`, or a URL from before the repo
+    /// moved), and otherwise its first GitHub remote (`LocalRepo.entries` order). Another
+    /// remote naming the configured repo is a sibling fetched from, not what the checkout
+    /// is. A path with no GitHub remote names its first GitLab remote; one with neither is
+    /// skipped, and a repo two paths name keeps the first. When nothing
+    /// resolves, the first path stands for the configured repo (`guessed` tells when that
+    /// is a guess among several).
     public static func resolve(paths: [String], remotes: [String: String],
-                               configured: (owner: String, repo: String)) -> [PRRef.LocalRepo] {
+                               configured: (owner: String, repo: String),
+                               gitlabHosts: GitLabHosts = []) -> [PRRef.LocalRepo] {
         let want = "\(configured.owner)/\(configured.repo)".lowercased()
         var seen = Set<String>()
         var out: [PRRef.LocalRepo] = []
         for raw in paths {
             let path = expand(raw)
             guard let config = remotes[path] else { continue }
-            let entries = PRRef.LocalRepo.entries(path: path, remotes: config)
+            let entries = PRRef.LocalRepo.entries(path: path, remotes: config,
+                                                  gitlabHosts: gitlabHosts)
             let ownRemotes = PRRef.LocalRepo.entries(path: path, remotes: config,
-                                                     only: ["upstream", "origin"])
-            let own = ownRemotes.isEmpty ? entries : ownRemotes
+                                                     only: ["upstream", "origin"],
+                                                     gitlabHosts: gitlabHosts)
+            let hub = entries.filter { !$0.isGitLab }
+            let github = ownRemotes.filter { !$0.isGitLab }
+            let own = github.isEmpty ? hub : github
             let renamed = own.contains { $0.repo.lowercased() == configured.repo.lowercased() }
                 ? PRRef.LocalRepo(owner: configured.owner, repo: configured.repo, path: path) : nil
             guard let pick = own.first(where: { $0.slug.lowercased() == want })
                     ?? renamed ?? entries.first,
-                  seen.insert(pick.slug.lowercased()).inserted else { continue }
+                  seen.insert(pick.key).inserted else { continue }
             out.append(pick)
         }
         if out.isEmpty, let first = paths.first {
@@ -86,32 +225,37 @@ public enum RepoRoots {
         return out
     }
 
-    /// Whether every one of `paths` has a GitHub remote in `remotes`, as `resolve` reads
-    /// them: false while one is missing, git failed on it, or it has no GitHub remote.
-    /// Python twin: `localrepos.all_resolve`.
-    public static func allResolve(paths: [String], remotes: [String: String]) -> Bool {
-        paths.allSatisfy {
-            !PRRef.LocalRepo.entries(path: expand($0), remotes: remotes[expand($0)] ?? "").isEmpty
-        }
+    /// Whether every one of `paths` has a GitHub or GitLab remote in `remotes`, as
+    /// `resolve` reads them: false while one is missing, git failed on it, or it has
+    /// neither. Python twin: `localrepos.all_resolve`.
+    public static func allResolve(paths: [String], remotes: [String: String],
+                                  gitlabHosts: GitLabHosts = []) -> Bool {
+        paths.allSatisfy { resolves($0, remotes, gitlabHosts) }
     }
 
     /// Whether `resolve`'s first root is the first path's own repo: always with one path,
-    /// else only while the first path has a GitHub remote. Without one the next path's
-    /// repo stands first, so "the primary" names another repo. Python twin:
+    /// else only while the first path has a GitHub or GitLab remote. Without one the next
+    /// path's repo stands first, so "the primary" names another repo. Python twin:
     /// `localrepos.primary_resolves`.
-    public static func primaryResolves(paths: [String], remotes: [String: String]) -> Bool {
+    public static func primaryResolves(paths: [String], remotes: [String: String],
+                                       gitlabHosts: GitLabHosts = []) -> Bool {
         guard paths.count >= 2 else { return true }
-        let first = expand(paths[0])
-        return !PRRef.LocalRepo.entries(path: first, remotes: remotes[first] ?? "").isEmpty
+        return resolves(paths[0], remotes, gitlabHosts)
     }
 
     /// Whether `resolve` fell back on several paths none of which resolved: its one root
     /// is then a guess that the first path checks out the configured repo, possibly a
     /// checkout of another. Python twin: `localrepos.guessed`.
-    public static func guessed(paths: [String], remotes: [String: String]) -> Bool {
-        paths.count > 1 && paths.allSatisfy {
-            PRRef.LocalRepo.entries(path: expand($0), remotes: remotes[expand($0)] ?? "").isEmpty
-        }
+    public static func guessed(paths: [String], remotes: [String: String],
+                               gitlabHosts: GitLabHosts = []) -> Bool {
+        paths.count > 1 && !paths.contains { resolves($0, remotes, gitlabHosts) }
+    }
+
+    private static func resolves(_ path: String, _ remotes: [String: String],
+                                 _ gitlabHosts: GitLabHosts) -> Bool {
+        let p = expand(path)
+        return !PRRef.LocalRepo.entries(path: p, remotes: remotes[p] ?? "",
+                                        gitlabHosts: gitlabHosts).isEmpty
     }
 
     /// `path` with a leading `~` (alone or before a `/`) replaced by `$HOME`, as Python's

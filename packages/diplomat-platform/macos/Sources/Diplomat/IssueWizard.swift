@@ -74,20 +74,16 @@ struct IssueWizardView: View {
     }
 
     private var config: IssueConfig {
-        var cfg = IssueConfig(
+        store.wizardRun(IssueConfig(
             depth: depth.id,
             target: target,
             username: username,
-            me: store.effectiveMe,
             specificIssue: specificIssue,
             unassignedOnly: unassignedOnly,
             assignToMe: assignToMe,
             openPRs: openPRs,
             commentOnIssue: commentOnIssue,
-            includeFeatures: includeFeatures)
-        cfg.home = store.selectedRoot
-        cfg.localRepos = store.wizardRepos
-        return cfg
+            includeFeatures: includeFeatures))
     }
 
     var body: some View {
@@ -165,8 +161,8 @@ struct IssueWizardView: View {
             }
             .transition(rowTransition)
         case .mine:
-            if !store.effectiveMe.isEmpty {
-                Text("issues opened by @\(store.effectiveMe)")
+            if !store.knownMe(for: store.selectedRoot).isEmpty {
+                Text("issues opened by @\(store.knownMe(for: store.selectedRoot))")
                     .font(.caption2).foregroundStyle(.secondary)
                     .transition(rowTransition)
             }
@@ -254,7 +250,8 @@ struct IssueWizardView: View {
     /// `Store.RequestedWork`.
     private var trackingLabel: String {
         let (owner, repo) = config.targetRepo
-        let item = config.issueRef.number.map { store.itemLabel(owner: owner, repo: repo, number: $0) }
+        let item = config.issueRef.number.map { store.itemLabel(config.targetLocal ?? PRRef.LocalRepo(owner: owner, repo: repo, path: ""),
+                                                     number: $0) }
         return "Issues · \(item ?? "issue") · \(depth.title)"
     }
 
@@ -291,7 +288,7 @@ struct IssueWizardView: View {
         let term = AgentSpawner.resolved(store.terminal)
         let job = Store.AgentJob(kind: "issues", auditAction: "issues",
                                  label: trackingLabel, prompt: cfg.buildPrompt(),
-                                 prURL: nil, prNumber: nil,
+                                 prURL: cfg.singleLink, prNumber: nil,
                                  authorLogin: nil, duty: "issues",
                                  workKey: "", counter: nil, directory: cfg.checkout)
         status = "Launching \(term.title)…"

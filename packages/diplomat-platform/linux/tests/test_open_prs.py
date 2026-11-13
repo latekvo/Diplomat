@@ -5,6 +5,9 @@ from __future__ import annotations
 
 from diplomat_runtime import gh
 from diplomat_runtime.models import API
+from diplomat_runtime.prref import LocalRepo
+
+ROOT = LocalRepo("o", "r", "/src/r")
 
 
 def _pr(number):
@@ -34,12 +37,12 @@ def _pages(monkeypatch, pages):
 def test_four_pages_are_read_in_order_and_no_fifth(monkeypatch):
     calls = _pages(monkeypatch, {None: (1, "c1"), "c1": (2, "c2"), "c2": (3, "c3"),
                                  "c3": (4, "c4"), "c4": (5, "c5")})
-    assert [p.number for p in API.fetch_open_prs("o", "r")] == [1, 2, 3, 4]
+    assert [p.number for p in API.fetch_open_prs(ROOT)] == [1, 2, 3, 4]
     assert calls == [("prs", ("o", "r"), None), ("prs", ("o", "r"), "c1"),
                      ("prs", ("o", "r"), "c2"), ("prs", ("o", "r"), "c3")]
 
 
 def test_the_last_page_ends_the_reading(monkeypatch):
     calls = _pages(monkeypatch, {None: (1, "c1"), "c1": (2, None)})
-    assert [p.number for p in API.fetch_open_prs("o", "r")] == [1, 2]
+    assert [p.number for p in API.fetch_open_prs(ROOT)] == [1, 2]
     assert [after for _, _, after in calls] == [None, "c1"]

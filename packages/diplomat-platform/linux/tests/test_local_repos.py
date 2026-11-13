@@ -53,22 +53,39 @@ def _checkout(tmp_path, name: str, **remotes: str):
     "ssh://git@github.com:22/software-mansion/radon.git",
 ])
 def test_every_github_remote_spelling_parses(url):
-    assert localrepos.parse_remote(url) == ("software-mansion", "radon")
+    assert localrepos.parse_remote(url) == ("github.com", "software-mansion", "radon")
 
 
 def test_a_repo_name_with_dots_keeps_them():
-    assert localrepos.parse_remote("git@github.com:o/o.github.io.git") == ("o", "o.github.io")
+    assert localrepos.parse_remote("git@github.com:o/o.github.io.git") == (
+        "github.com", "o", "o.github.io")
+
+
+@pytest.mark.parametrize("url, hosts, want", [
+    ("git@gitlab.com:software-mansion/radon.git", localrepos.GITLAB_HOSTS,
+     ("gitlab.com", "software-mansion", "radon")),
+    ("https://gitlab.com/group/sub/proj.git", localrepos.GITLAB_HOSTS,
+     ("gitlab.com", "group/sub", "proj")),
+    ("ssh://git@GitLab.Example.com:2222/a/b/c/proj", localrepos.GITLAB_HOSTS,
+     ("gitlab.example.com", "a/b/c", "proj")),
+    ("git@code.example.org:group/proj.git", localrepos.GITLAB_HOSTS, None),
+    ("git@code.example.org:group/proj.git", {"code.example.org": "code.example.org"},
+     ("code.example.org", "group", "proj")),
+    ("https://gitlab.com/proj", localrepos.GITLAB_HOSTS, None),
+])
+def test_a_gitlab_remote_keeps_its_whole_namespace_as_the_owner(url, hosts, want):
+    assert localrepos.parse_remote(url, hosts) == want
 
 
 @pytest.mark.parametrize("url", [
-    "git@gitlab.com:software-mansion/radon.git",
+    "git@bitbucket.org:software-mansion/radon.git",
     "https://example.com/software-mansion/radon",
     "/srv/git/radon.git",
     "https://github.com/software-mansion",
     "https://github.com.evil.io/software-mansion/radon",
     "",
 ])
-def test_anything_else_is_no_github_remote(url):
+def test_anything_else_is_no_remote_of_either(url):
     assert localrepos.parse_remote(url) is None
 
 
@@ -109,8 +126,8 @@ def test_two_remotes_on_one_repo_are_one_entry(tmp_path):
     assert len(localrepos.inspect(str(path)).repos) == 1
 
 
-def test_a_checkout_without_a_github_remote_answers_for_nothing(tmp_path):
-    path = _checkout(tmp_path, "mirror", origin="git@gitlab.com:x/y.git")
+def test_a_checkout_without_a_github_or_gitlab_remote_answers_for_nothing(tmp_path):
+    path = _checkout(tmp_path, "mirror", origin="git@bitbucket.org:x/y.git")
     c = localrepos.inspect(str(path))
     assert c.repos == () and c.slug is None
 
@@ -148,7 +165,7 @@ def _remotes(**urls: str) -> str:
 def test_entries_rank_upstream_then_origin_then_config_order_and_skip_the_rest():
     out = localrepos.entries("/p", _remotes(
         zeta="https://github.com/zeta/radon", origin="git@github.com:me/radon.git",
-        lab="git@gitlab.com:x/y.git", upstream="https://github.com/Software-Mansion/Radon",
+        bb="git@bitbucket.org:x/y.git", upstream="https://github.com/Software-Mansion/Radon",
         again="https://github.com/software-mansion/radon") + "garbage\n")
     assert out == [LocalRepo("Software-Mansion", "Radon", "/p"), LocalRepo("me", "radon", "/p"),
                    LocalRepo("zeta", "radon", "/p")]
@@ -199,22 +216,24 @@ def test_a_sibling_remote_naming_the_configured_repo_does_not_take_a_checkout():
         LocalRepo(OWNER, REPO, "/argent")]
 
 
-def test_every_path_resolves_only_while_each_has_a_github_remote():
+def test_every_path_resolves_only_while_each_has_a_github_or_gitlab_remote():
     remotes = {"/a": _remotes(origin="git@github.com:o/a.git"),
                os.path.expanduser("~/b"): _remotes(origin="git@github.com:o/b.git"),
-               "/plain": "", "/lab": _remotes(origin="git@gitlab.com:x/y.git")}
+               "/plain": "", "/bb": _remotes(origin="git@bitbucket.org:x/y.git"),
+               "/lab": _remotes(origin="git@gitlab.com:x/y.git")}
     assert localrepos.all_resolve(["/a", "~/b"], remotes)
     assert not localrepos.all_resolve(["/a", "/missing"], remotes)
     assert not localrepos.all_resolve(["/a", "/plain"], remotes)
-    assert not localrepos.all_resolve(["/lab"], remotes)
+    assert not localrepos.all_resolve(["/bb"], remotes)
+    assert localrepos.all_resolve(["/a", "/lab"], remotes)
 
 
-def test_roots_skip_a_path_with_no_github_remote_and_keep_the_first_of_a_repo():
-    remotes = {"/lab": _remotes(origin="git@gitlab.com:x/y.git"),
+def test_roots_skip_a_path_with_no_known_remote_and_keep_the_first_of_a_repo():
+    remotes = {"/bb": _remotes(origin="git@bitbucket.org:x/y.git"),
                "/b": _remotes(origin="git@github.com:software-mansion/radon.git"),
                "/a": _remotes(origin="https://github.com/Software-Mansion/radon"),
                "/c": _remotes(origin="https://github.com/o/other")}
-    assert localrepos.resolve_roots(["/lab", "/missing", "/b", "/a", "/c"], remotes,
+    assert localrepos.resolve_roots(["/bb", "/missing", "/b", "/a", "/c"], remotes,
                                     (OWNER, REPO)) == [
         LocalRepo("software-mansion", "radon", "/b"), LocalRepo("o", "other", "/c")]
 
@@ -292,7 +311,7 @@ def test_an_item_key_from_a_link(url, want):
 @pytest.mark.parametrize("key, want", [
     ("o/r.js#12", ("o/r.js", 12)),
     ("o/r", None), ("#12", None), ("o/r#", None), ("o/r#x", None), ("o/r#12x", None),
-    ("a/b/c#1", None), ("12", None),
+    ("a/b/c#1", ("a/b/c", 1)), ("a/#1", None), ("12", None),
 ])
 def test_splitting_an_item_key(key, want):
     assert prref.split_item_key(key) == want

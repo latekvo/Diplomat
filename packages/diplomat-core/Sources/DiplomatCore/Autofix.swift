@@ -5,7 +5,7 @@ import Foundation
 // warrants dispatching an agent — a NEW merge conflict, or NEW review work (more
 // unresolved threads, or a fresh CHANGES_REQUESTED verdict). Kept here (not in the
 // macOS UI layer) so it's cross-platform and unit-testable; the front-end supplies the
-// GitHub snapshot and performs the spawn.
+// GitHub or GitLab snapshot and performs the spawn.
 //
 // Deliberately edge-triggered: an event fires only on the transition, and the caller
 // persists the returned fingerprints, so a persistent condition never re-dispatches.
@@ -509,7 +509,8 @@ public enum AutofixMesh {
         return "\(kind):\(ref)@\(headSha)"
     }
 
-    /// `<host>/<owner>/<repo>#<n>` for a PR URL, or nil when it isn't one. Split out
+    /// `<host>/<owner>/<repo>#<n>` for a PR or GitLab merge request URL, or nil when it
+    /// isn't one. Split out
     /// of `workKey` so the ledger key below cannot parse a URL differently from the
     /// claim key — the two identify the same unit of work and are compared against
     /// each other in the ledger.
@@ -517,9 +518,11 @@ public enum AutofixMesh {
         guard let u = URL(string: prURL),
               let host = u.host?.lowercased(), !host.isEmpty else { return nil }
         let parts = u.pathComponents.filter { $0 != "/" }
-        guard parts.count == 4, parts[2] == "pull",
-              parts[3].allSatisfy(\.isNumber), !parts[3].isEmpty else { return nil }
-        return "\(host)/\(parts[0])/\(parts[1])#\(parts[3])"
+        guard let n = parts.last, n.allSatisfy(\.isNumber), !n.isEmpty else { return nil }
+        if parts.count == 4, parts[2] == "pull" { return "\(host)/\(parts[0])/\(parts[1])#\(n)" }
+        guard parts.count >= 5, parts[parts.count - 3] == "-",
+              parts[parts.count - 2] == "merge_requests" else { return nil }
+        return "\(host)/\(parts.dropLast(3).joined(separator: "/"))#\(n)"
     }
 
     /// The telemetry ledger's identity for one unit of work.

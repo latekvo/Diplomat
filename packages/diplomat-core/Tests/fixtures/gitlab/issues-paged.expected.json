@@ -1,0 +1,94 @@
+{
+  "asked": [
+    [
+      14,
+      15
+    ]
+  ],
+  "result": {
+    "data": {
+      "repository": {
+        "issues": {
+          "nodes": [
+            {
+              "number": 9,
+              "title": "From a member past the page",
+              "url": "https://gitlab.example.com/group/sub/proj/-/issues/9",
+              "createdAt": "2026-11-07T08:00:00Z",
+              "updatedAt": "2026-11-08T08:00:00Z",
+              "authorAssociation": "MEMBER",
+              "author": {
+                "login": "Dave"
+              },
+              "assignees": {
+                "nodes": []
+              },
+              "labels": {
+                "nodes": []
+              },
+              "comments": {
+                "totalCount": 1,
+                "nodes": [
+                  {
+                    "authorAssociation": "NONE"
+                  }
+                ]
+              }
+            },
+            {
+              "number": 8,
+              "title": "From an outsider",
+              "url": "https://gitlab.example.com/group/sub/proj/-/issues/8",
+              "createdAt": "2026-11-07T08:00:00Z",
+              "updatedAt": "2026-11-08T08:00:00Z",
+              "authorAssociation": "NONE",
+              "author": {
+                "login": "erin"
+              },
+              "assignees": {
+                "nodes": []
+              },
+              "labels": {
+                "nodes": []
+              },
+              "comments": {
+                "totalCount": 2,
+                "nodes": [
+                  {
+                    "authorAssociation": "MEMBER"
+                  },
+                  {
+                    "authorAssociation": "MEMBER"
+                  }
+                ]
+              }
+            },
+            {
+              "number": 7,
+              "title": "Deleted author",
+              "url": "https://gitlab.example.com/group/sub/proj/-/issues/7",
+              "createdAt": "2026-11-07T08:00:00Z",
+              "updatedAt": "2026-11-08T08:00:00Z",
+              "authorAssociation": "NONE",
+              "author": null,
+              "assignees": {
+                "nodes": []
+              },
+              "labels": {
+                "nodes": []
+              },
+              "comments": {
+                "totalCount": 1,
+                "nodes": [
+                  {
+                    "authorAssociation": "NONE"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

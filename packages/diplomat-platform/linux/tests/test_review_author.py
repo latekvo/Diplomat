@@ -19,6 +19,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from diplomat_runtime import gh, review  # noqa: E402
+from diplomat_runtime.prref import LocalRepo  # noqa: E402
 from diplomat_runtime.prtarget import PRTarget  # noqa: E402
 from diplomat_runtime.review import SpecificAuthor  # noqa: E402
 from diplomat_app.store import Store  # noqa: E402
@@ -42,7 +43,8 @@ def test_fetch_specific_author_parses_login(monkeypatch):
         return b'{"author": {"login": "octocat"}}'
 
     monkeypatch.setattr(gh, "run", fake_run)
-    assert review.fetch_specific_author("software-mansion", "argent", 337) == "octocat"
+    assert review.fetch_specific_author(
+        LocalRepo("software-mansion", "argent", "/src/argent"), 337) == "octocat"
     # It uses `gh pr view <n> --repo owner/repo --json author` (mirrors macOS).
     assert calls["args"] == [
         "pr", "view", "337", "--repo", "software-mansion/argent", "--json", "author"
@@ -54,15 +56,15 @@ def test_fetch_specific_author_none_on_failure(monkeypatch):
         raise gh.GHError("gh exited 1: no pull requests found")
 
     monkeypatch.setattr(gh, "run", boom)
-    assert review.fetch_specific_author("o", "r", 999) is None
+    assert review.fetch_specific_author(LocalRepo("o", "r", "/src/r"), 999) is None
 
 
 def test_fetch_specific_author_none_on_malformed(monkeypatch):
     monkeypatch.setattr(gh, "run", lambda args, timeout=60.0: b"not json")
-    assert review.fetch_specific_author("o", "r", 1) is None
+    assert review.fetch_specific_author(LocalRepo("o", "r", "/src/r"), 1) is None
     # A well-formed envelope missing the author still yields None, not a crash.
     monkeypatch.setattr(gh, "run", lambda args, timeout=60.0: b"{}")
-    assert review.fetch_specific_author("o", "r", 1) is None
+    assert review.fetch_specific_author(LocalRepo("o", "r", "/src/r"), 1) is None
 
 
 # MARK: - The wizard: ownership -> toggles + config
@@ -80,7 +82,7 @@ def _wizard_on_specific(qapp, me="latekvo"):
 def test_specific_pr_resolves_to_mine(qapp):
     w = _wizard_on_specific(qapp, me="latekvo")
     # Simulate the background poll resolving the author to me.
-    w._on_author_resolved(w.specific_pr.text(), "latekvo")
+    w._on_author_resolved(w.specific_pr.text(), "latekvo", "latekvo")
 
     assert w._specific_author == SpecificAuthor.MINE
     cfg = w._config()
@@ -99,7 +101,7 @@ def test_specific_pr_resolves_to_mine(qapp):
 
 def test_specific_pr_resolves_to_someone_else(qapp):
     w = _wizard_on_specific(qapp, me="latekvo")
-    w._on_author_resolved(w.specific_pr.text(), "someoneelse")
+    w._on_author_resolved(w.specific_pr.text(), "someoneelse", "latekvo")
 
     assert w._specific_author == SpecificAuthor.THEIRS
     cfg = w._config()
@@ -117,7 +119,7 @@ def test_specific_pr_resolves_to_someone_else(qapp):
 def test_specific_pr_unresolved_offers_everything(qapp):
     w = _wizard_on_specific(qapp, me="latekvo")
     # A failed poll (login == "") leaves the disposition UNKNOWN -> all toggles.
-    w._on_author_resolved(w.specific_pr.text(), "")
+    w._on_author_resolved(w.specific_pr.text(), "", "latekvo")
 
     assert w._specific_author == SpecificAuthor.UNKNOWN
     cfg = w._config()
@@ -132,16 +134,16 @@ def test_stale_author_result_is_ignored(qapp):
     # A poll that resolves for OLD input must not clobber the current PR's state
     # (mirrors the macOS `pending` supersede guard).
     w = _wizard_on_specific(qapp, me="latekvo")
-    w._on_author_resolved(w.specific_pr.text(), "latekvo")
+    w._on_author_resolved(w.specific_pr.text(), "latekvo", "latekvo")
     assert w._specific_author == SpecificAuthor.MINE
     # A late result for a superseded PR number is dropped.
-    w._on_author_resolved("999", "someoneelse")
+    w._on_author_resolved("999", "someoneelse", "latekvo")
     assert w._specific_author == SpecificAuthor.MINE
 
 
 def test_switching_away_from_specific_resets_disposition(qapp):
     w = _wizard_on_specific(qapp, me="latekvo")
-    w._on_author_resolved(w.specific_pr.text(), "someoneelse")
+    w._on_author_resolved(w.specific_pr.text(), "someoneelse", "latekvo")
     assert w._specific_author == SpecificAuthor.THEIRS
     # Back to a whose-PRs sweep: disposition resets, hint hides, and the sweep's own
     # target-driven toggles apply (mine -> mark-ready + reply, no formal review).

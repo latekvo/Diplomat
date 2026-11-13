@@ -94,6 +94,12 @@ public enum CoreAssets {
         public let blocks: [String: String]
     }
 
+    /// `gitlab.json`: what a prompt about a GitLab repository adds.
+    public struct GitLabModel: Decodable {
+        /// The paragraph after the opening task line; `{host}`, `{owner}`, `{repo}`.
+        public let promptNote: String
+    }
+
     /// The exception lists `AgentModel.displayName` consults when it turns a model id
     /// into the name the attribution tag wears. The rules themselves are in
     /// `AgentModel`; these are the parts no rule can derive.
@@ -196,10 +202,20 @@ public enum CoreAssets {
         }
         public struct Classifier: Decodable {
             /// The instructions' repository wording: `one` for a single watched
-            /// repository, `many` for several, each value filled into `instructions`.
+            /// repository, `many` for several, each value filled into `instructions`;
+            /// `gitlab`'s replace some of them once a watched repository is on GitLab.
             public struct Repos: Decodable {
+                /// Overrides of `one` for a GitLab project and of `many` when any watched
+                /// repository is; `hostedGitHub`/`hostedGitLab` say where each of several is.
+                public struct GitLab: Decodable {
+                    public let one: [String: String]
+                    public let many: [String: String]
+                    public let hostedGitHub: String
+                    public let hostedGitLab: String
+                }
                 public let one: [String: String]
                 public let many: [String: String]
+                public let gitlab: GitLab
             }
             public let instructions: String
             public let input: String
@@ -423,6 +439,7 @@ public enum CoreAssets {
     private static let _review = try? loadJSON("review.json", as: Review.self)
     private static let _conflicts = try? loadJSON("conflicts.json", as: Conflicts.self)
     private static let _audit = try? loadJSON("audit.json", as: Audit.self)
+    private static let _gitlab = try? loadJSON("gitlab.json", as: GitLabModel.self)
     private static let _issues = try? loadJSON("issues.json", as: Issues.self)
     private static let _models = try? loadJSON("models.json", as: Models.self)
     private static let _telemetry = try? loadJSON("telemetry.json", as: TelemetryModel.self)
@@ -501,6 +518,11 @@ public enum CoreAssets {
     public static func audit() throws -> Audit {
         guard let a = _audit else { return try loadJSON("audit.json", as: Audit.self) }
         return a
+    }
+
+    public static func gitlab() throws -> GitLabModel {
+        guard let g = _gitlab else { return try loadJSON("gitlab.json", as: GitLabModel.self) }
+        return g
     }
 
     public static func issues() throws -> Issues {

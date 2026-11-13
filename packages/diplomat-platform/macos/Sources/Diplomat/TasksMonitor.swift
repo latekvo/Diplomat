@@ -171,25 +171,25 @@ extension Store {
     /// The agents and queued work behind `GoalOverlay`, `watched`'s alone (the goals are
     /// its):
     /// - a PR has an agent while a run on it is in a blocking state (`AgentState.inFlight`'s
-    ///   rule); an issue while an issue fix run's label (`RequestedWork.label`,
-    ///   `IssueWizard`: "Issues · #N · …" or "Issues · repo#N · …") names it, or its goal
-    ///   fix is spawning
+    ///   rule); an issue while an issue fix run's link (else its `IssueWizard` label) names
+    ///   it, or its goal fix is spawning
     /// - queued: every queued or starting task about a PR, every `issues:` one, and every
     ///   asked-for review or fix
     static func goalOverlay(rows: [AgentRow], queued: [QueuedAgentTask], requested: [RequestedWork],
                             startingFixes: Set<Int>, watched: PRRef.LocalRepo) -> GoalOverlay {
-        let slug = watched.slug.lowercased()
         func number(_ item: String?) -> Int? {
-            guard let split = item.flatMap(PRRef.splitItemKey), split.slug == slug else { return nil }
+            guard let split = item.flatMap(PRRef.splitItemKey), split.root == watched.key else { return nil }
             return split.number
         }
         var out = GoalOverlay(agentIssues: startingFixes)
         for row in rows where !row.record.released && AgentState.blocking.contains(row.state) {
             if row.record.prNumber != nil {
                 if let n = number(row.record.item) { out.agentPRs.insert(n) }
-            } else if row.record.kind == AgentTaskQueue.issuesAction,
-                      let n = issueNumber(inLabel: row.record.label, repo: watched.repo) {
-                out.agentIssues.insert(n)
+            } else if row.record.kind == AgentTaskQueue.issuesAction {
+                let n = row.record.prURL.isEmpty
+                    ? issueNumber(inLabel: row.record.label, repo: watched.repo)
+                    : number(PRRef.itemKey(url: row.record.prURL))
+                if let n { out.agentIssues.insert(n) }
             }
         }
         let issueKey = AgentTaskQueue.issuesAction + ":"
@@ -308,8 +308,11 @@ extension Store {
     /// (`requestOne`, so the cap, the ban list and the queue switch apply), then recorded
     /// as `dispatched`, also when already asked for; a fix of an issue an agent is on is
     /// recorded without asking. `findings` needs nothing here: `isPaused` lets the my-PR
-    /// review reconcile run for `goalFindingItems`. An item in no repo root is skipped.
+    /// review reconcile run for `goalFindingItems`. An item in no repo root is skipped,
+    /// and the whole pass while the GitHub login is unknown: a review ask would take my
+    /// own PR for someone else's.
     func runGoalPass() async {
+        guard !effectiveMe.isEmpty else { return }
         let overlay = goalOverlay
         for view in taskViews where !view.work.isEmpty {
             var started: [String] = []
@@ -342,8 +345,8 @@ extension Store {
         guard let ref = GitHubRef(url: node.url) else { return "not a GitHub issue: \(node.url)" }
         let item = PRRef.itemKey(url: node.url)
         guard root(ofItem: item) != nil else {
-            let slug = item.flatMap(PRRef.splitItemKey)?.slug ?? node.url
-            return "\(slug) is not a repo root, so no fix was started"
+            let root = item.flatMap(PRRef.splitItemKey)?.root ?? node.url
+            return "\(root) is not a repo root, so no fix was started"
         }
         guard goalOverlay.badge(node, watched: CoreAssets.repoCoordinates()) == nil else { return nil }
         goalFixesStarting.insert(ref.number)
@@ -366,7 +369,7 @@ extension Store {
         let ask = goalPlusAsk(number: number, url: node.url, author: node.author)
         let action = ask.config.action
         return AgentJob(kind: action, auditAction: action, label: ask.label(roots: roots.count),
-                        prompt: ask.config.buildPrompt(), prURL: nil, prNumber: nil,
+                        prompt: ask.config.buildPrompt(), prURL: ask.issueLink(in: roots), prNumber: nil,
                         authorLogin: node.author, duty: action, workKey: "", counter: nil,
                         directory: ask.config.checkout)
     }

@@ -1,9 +1,12 @@
-"""GitHub reads for the PR auto-fix monitor — the Linux port of AutofixMonitor.swift.
+"""GitHub and GitLab reads for the PR auto-fix monitor — the Linux port of
+AutofixMonitor.swift.
 
 Three GraphQL searches over the `gh` CLI, decoded into the pure types in
 :mod:`autofix`. The queries themselves are the shared ones in ``assets/graphql/``
 (single source of truth with the macOS monitor), driven by a search ``$q``
-qualifier rather than the owner/name form :func:`gh.graphql` fills in itself.
+qualifier rather than the owner/name form :func:`gh.graphql` fills in itself. A GitLab
+root asks their ``gitlab-*`` twins through ``glab``, which :mod:`gitlab` adapts into the
+GitHub shape.
 
 They are the heaviest requests the applet makes and the only two on the poll's hot
 path, where either one failing costs the cycle: the queue drain stands down and
@@ -14,11 +17,12 @@ nothing is committed until a cycle succeeds. So they go through
 from __future__ import annotations
 
 import json
+import urllib.parse
 
-from diplomat_runtime import core, gh
+from diplomat_runtime import core, gh, gitlab, glab
 from diplomat_runtime.autofix import PRSnapshot, ReviewRequest
 from diplomat_runtime.models import API, OpenIssue, is_unanswered_run_finding, thread_owed
-from diplomat_runtime.prref import item_key
+from diplomat_runtime.prref import LocalRepo, item_key
 
 
 def _owed_thread(thread: dict, me: str) -> bool:
@@ -58,14 +62,34 @@ def _parse_snapshots(env: dict, me: str) -> list[PRSnapshot]:
     return out
 
 
-def fetch_snapshots(owner: str, repo: str, me: str) -> list[PRSnapshot]:
-    """One GraphQL search over my open, authored PRs (``assets/graphql/monitor-prs``)."""
-    q = f"repo:{owner}/{repo} author:{me} is:pr is:open"
-    env = gh.graphql("monitor-prs", variables={"q": q})
+def _recheck(root: LocalRepo, number: int) -> str:
+    """GitLab rechecks a merge status only when asked, and GraphQL never asks, so after
+    a push to the target it reads unchecked. This REST read asks, and answers when it
+    can; a failed read stays undecided."""
+    project = urllib.parse.quote(root.slug, safe="")
+    path = f"projects/{project}/merge_requests/{number}?with_merge_status_recheck=true"
+    try:
+        return gitlab.rest_mergeable(json.loads(
+            glab.run(["api", "--hostname", root.host, path], timeout=30)))
+    except Exception:  # noqa: BLE001 — never costs the root its read
+        return "UNKNOWN"
+
+
+def fetch_snapshots(root: LocalRepo, me: str) -> list[PRSnapshot]:
+    """One GraphQL search over my open, authored PRs (``assets/graphql/monitor-prs``),
+    and on GitLab a recheck of each one whose merge status is undecided."""
+    if root.is_gitlab:
+        env = gitlab.monitor_prs(glab.project("gitlab-monitor-prs", root, {"author": me}))
+        for node in env["data"]["search"]["nodes"]:
+            if node["mergeable"] == "UNKNOWN":
+                node["mergeable"] = _recheck(root, node["number"])
+    else:
+        q = f"repo:{root.slug} author:{me} is:pr is:open"
+        env = gh.graphql("monitor-prs", variables={"q": q})
     return _parse_snapshots(env, me)
 
 
-def fetch_closed_prs(owner: str, repo: str) -> set[str]:
+def fetch_closed_prs(root: LocalRepo) -> set[str]:
     """The PRs (item keys) this repo has recently merged or closed — what the queue is
     re-checked against (``assets/graphql/closed-prs``).
 
@@ -74,18 +98,21 @@ def fetch_closed_prs(owner: str, repo: str) -> set[str]:
     cannot be given a list of numbers to ask about. So it asks the cheap question the
     other way round — who closed lately — and the caller intersects.
     """
-    q = f"repo:{owner}/{repo} is:pr is:closed sort:updated-desc"
-    query = core.read_graphql("closed-prs")
-    data = gh.run(["api", "graphql", "-f", f"query={query}", "-f", f"q={q}"])
-    nodes = ((json.loads(data).get("data") or {}).get("search") or {}).get("nodes") or []
-    return {item_key(owner, repo, n["number"])
+    if root.is_gitlab:
+        env = gitlab.closed_prs(glab.project("gitlab-closed-prs", root))
+    else:
+        q = f"repo:{root.slug} is:pr is:closed sort:updated-desc"
+        query = core.read_graphql("closed-prs")
+        env = json.loads(gh.run(["api", "graphql", "-f", f"query={query}", "-f", f"q={q}"]))
+    nodes = ((env.get("data") or {}).get("search") or {}).get("nodes") or []
+    return {item_key(root.owner, root.repo, n["number"], root.host)
             for n in nodes if n and n.get("number") is not None}
 
 
-def fetch_open_issues(owner: str, repo: str) -> list[OpenIssue]:
+def fetch_open_issues(root: LocalRepo) -> list[OpenIssue]:
     """The repo's newest open issues, the same read the panel lists them from, for
     the new-community-issue monitor (:meth:`Store._poll_community_issues`)."""
-    return API.fetch_open_issues(owner, repo)
+    return API.fetch_open_issues(root)
 
 
 def _parse_review_requests(env: dict, me: str) -> list[ReviewRequest]:
@@ -144,16 +171,18 @@ def _parse_review_requests(env: dict, me: str) -> list[ReviewRequest]:
 
 
 def fetch_review_requests(
-    owner: str, repo: str, me: str, include_files: bool = False
+    root: LocalRepo, me: str, include_files: bool = False
 ) -> list[ReviewRequest]:
     """PRs that request MY review, with request/last-review timestamps
     (``assets/graphql/review-requests``). ``include_files`` pulls each PR's changed
     paths for the verdict-withhold gate — a big chunk of the rate-limit cost, so
     the caller passes ``False`` unless auto-approvals are on."""
-    q = f"repo:{owner}/{repo} review-requested:{me} is:pr is:open"
-    env = gh.graphql(
-        "review-requests",
-        variables={"q": q},
-        typed_variables={"withFiles": "true" if include_files else "false"},
-    )
+    typed = {"withFiles": "true" if include_files else "false"}
+    if root.is_gitlab:
+        env = gitlab.review_requests(
+            glab.project("gitlab-review-requests", root, {"reviewer": me}, typed), me,
+            lambda ids: glab.members(root, ids))
+    else:
+        q = f"repo:{root.slug} review-requested:{me} is:pr is:open"
+        env = gh.graphql("review-requests", variables={"q": q}, typed_variables=typed)
     return _parse_review_requests(env, me)

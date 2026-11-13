@@ -78,7 +78,7 @@ def watched(store, monkeypatch):  # noqa: F811 — the shared Store fixture
                         lambda *a, **k: [])
     store.asked = []
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues",
-                        lambda *repo: store.asked.append(repo) or found)
+                        lambda root: store.asked.append(root.slug) or found)
     monkeypatch.setattr("diplomat_app.bans.read", lambda: [])
     store.found = found
     return store
@@ -98,7 +98,7 @@ def test_an_issue_filed_after_the_first_poll_is_queued_as_a_fix(watched):
     [ask] = watched.requested_work
     assert (ask.key, ask.author, ask.url) == (f"issues:{PRIMARY}#7", "carol",
                                               f"https://github.com/{PRIMARY}/issues/7")
-    assert ask.repo == PRIMARY and watched.asked[-1] == tuple(PRIMARY.split("/"))
+    assert ask.repo == PRIMARY and watched.asked[-1] == PRIMARY
     assert ask.config["target"] == "contributors"
     assert [t.id for t in watched.queued_tasks] == [f"issues:{PRIMARY}#7"]
     assert watched.queued_tasks[0].job.prompt == "PROMPT:issues:7"
@@ -151,7 +151,7 @@ def test_a_failed_read_is_logged_and_keeps_the_mark(watched, monkeypatch):
     """Not a poll failure: nothing owed is read from it."""
     watched._autofix_poll_once()
 
-    def down(*repo):
+    def down(root):
         raise RuntimeError("gh: network down")
 
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues", down)
@@ -163,7 +163,7 @@ def test_a_failed_read_is_logged_and_keeps_the_mark(watched, monkeypatch):
     assert logged.count("root-read-failed") == 1
 
     monkeypatch.setattr("diplomat_app.autofixmonitor.fetch_open_issues",
-                        lambda *repo: watched.found)
+                        lambda root: watched.found)
     watched.found[:] = [_filed(7)]
     watched._autofix_poll_once()
     assert [a.key for a in watched.requested_work] == [f"issues:{PRIMARY}#7"]

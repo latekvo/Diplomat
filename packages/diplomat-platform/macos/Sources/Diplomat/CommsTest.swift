@@ -41,10 +41,16 @@ enum CommsTest {
         // The repo roots: scratch checkouts whose remotes name `o/r`, the primary every
         // target is in, and `o/second`, a second root for the checks that load both.
         unsetenv("DIPLOMAT_REPO")
-        func checkout(_ name: String, remote slug: String) -> String {
+        // An empty glab config, so only gitlab.com and gitlab.* are GitLab, never the operator's hosts.
+        let glabConfig = scratch.appendingPathComponent("glab")
+        try? FileManager.default.createDirectory(at: glabConfig, withIntermediateDirectories: true)
+        try? "hosts:\n".write(to: glabConfig.appendingPathComponent("config.yml"), atomically: true,
+                              encoding: .utf8)
+        setenv("GLAB_CONFIG_DIR", glabConfig.path, 1)
+        func checkout(_ name: String, remote slug: String, host: String = "github.com") -> String {
             let dir = scratch.appendingPathComponent("roots/\(name)")
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            for args in [["init", "-q"], ["remote", "add", "origin", "https://github.com/\(slug).git"]] {
+            for args in [["init", "-q"], ["remote", "add", "origin", "https://\(host)/\(slug).git"]] {
                 let git = Process()
                 git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
                 git.arguments = ["-C", dir.path] + args
@@ -82,6 +88,10 @@ enum CommsTest {
             90041: CommsTarget(number: 90041, url: "https://github.com/o/r/pull/90041",
                                author: "erin", isOpen: true, state: "OPEN"),
             90050: CommsTarget(number: 90050, url: "https://github.com/o/r/issues/90050",
+                               author: "frank", isOpen: true, state: "OPEN"),
+            90051: CommsTarget(number: 90051, url: "https://github.com/o/r/issues/90051",
+                               author: "frank", isOpen: true, state: "OPEN"),
+            90052: CommsTarget(number: 90052, url: "https://github.com/o/r/issues/90052",
                                author: "frank", isOpen: true, state: "OPEN"),
             90060: CommsTarget(number: 90060, url: "https://github.com/o/r/pull/90060",
                                author: "gina", isOpen: true, state: "OPEN"),
@@ -165,6 +175,22 @@ enum CommsTest {
         // As gh behaves: `pr view` of an issue's number fails, `issue view` answers a PR's
         // number too, and an unknown number fails in gh's words.
         Store.commsGHOverride = { args in
+            // glab's REST answers for the GitLab root g/sub/third.
+            if args.first == "api", let path = args.last,
+               let n = path.split(separator: "/").last.flatMap({ Int($0) }) {
+                ghCalls.append(args)
+                switch n {
+                case 90301: throw GHError.glabProcess(code: 1, stderr: "glab: 404 Not found (HTTP 404)")
+                case 90302: throw GHError.glabProcess(code: 1,
+                                                      stderr: "glab: 404 Project Not Found (HTTP 404)")
+                default:
+                    let kind = path.contains("/merge_requests/") ? "merge_requests" : "issues"
+                    return try JSONSerialization.data(withJSONObject: [
+                        "iid": n, "web_url": "https://gitlab.example.com/g/sub/third/-/\(kind)/\(n)",
+                        "author": ["username": "yuki"], "state": n == 90303 ? "merged" : "opened",
+                    ] as [String: Any])
+                }
+            }
             guard args.count > 2, let n = Int(args[2]) else {
                 throw GHError.process(code: 1, stderr: "unexpected arguments \(args)")
             }
@@ -483,7 +509,7 @@ enum CommsTest {
                                         tails: .present([:]), claims: .present([]),
                                         mergedPRs: .present([]), liveAgents: .present([:]),
                                         sessions: .present([:]), activity: .present([:]))
-        let tick = AgentState.tick(records: [], evidence: quiet, now: Date().timeIntervalSince1970,
+        let tick = AgentState.tick(records: [], evidence: quiet, roots: [], now: Date().timeIntervalSince1970,
                                    limit: 4)
         store.publishForSelfTest(Store.AgentPass(tick: tick, windows: [:], attached: .present([])))
         let finishes = CommsLog.read().filter { $0.kind == .finished }
@@ -495,10 +521,11 @@ enum CommsTest {
 
         // MARK: the same work, asked for twice
         let whole = floor(Date().timeIntervalSince1970)   // the log keeps whole seconds
-        func run(_ id: String, _ pr: Int?, _ kind: String, _ label: String) -> Store.AgentRow {
+        func run(_ id: String, _ pr: Int?, _ kind: String, _ label: String,
+                 link: String? = nil) -> Store.AgentRow {
             Store.AgentRow(record: AgentState.RunRecord(
                 runID: id, dispatchedAt: whole - 5, prNumber: pr,
-                prURL: pr.map { "https://github.com/o/r/pull/\($0)" } ?? "", kind: kind,
+                prURL: link ?? pr.map { "https://github.com/o/r/pull/\($0)" } ?? "", kind: kind,
                 label: label, source: AgentDispatchGate.Source.auto.rawValue),
                 state: .running, reason: "", window: nil)
         }
@@ -607,18 +634,33 @@ enum CommsTest {
                 && folded(askTwin)?.label == monitorRun.record.label)
 
         let reviewRun = run("r3", 90041, "review", "Auto · Review-req · #90041 (@erin)")
-        let fixRun = run("r4", nil, "issues", "Issues · #90050 · deep")
-        let otherFix = run("r5", nil, "issues", "Issues · #900501 · deep")
-        store.pinAgentRows([monitorRun, reviewRun, fixRun, otherFix])
+        let fixRun = run("r4", nil, "issues", "Issues · #90050 · deep",
+                         link: "https://github.com/o/r/issues/90050")
+        let otherFix = run("r5", nil, "issues", "Issues · #900501 · deep",
+                           link: "https://github.com/o/r/issues/900501")
+        // An older build's fix records no link; its label alone names the issue.
+        let legacyFix = run("r7", nil, "issues", "Issues · #90051 · deep", link: "")
+        let legacyOther = run("r8", nil, "issues", "Issues · #900521 · deep", link: "")
+        store.pinAgentRows([monitorRun, reviewRun, fixRun, otherFix, legacyFix, legacyOther])
         let askRunning = item(.review, 90041)
         let askFixRunning = item(.fixIssue, 90050)
-        await apply([askRunning, askFixRunning])
+        let askLegacyRunning = item(.fixIssue, 90051)
+        let askLegacyOther = item(.fixIssue, 90052)
+        await apply([askRunning, askFixRunning, askLegacyRunning, askLegacyOther])
         check("a review of a PR an agent is already reviewing is not queued",
               !ids().contains("review:o/r#90041") && outcome(askRunning) == "already running")
         check("…nor a fix of an issue an agent is already fixing",
               !ids().contains("issues:o/r#90050")
                 && !store.requestedWork.contains { $0.key == "issues:o/r#90050" }
                 && outcome(askFixRunning) == "already running")
+        check("…nor one an older build's run with no link is fixing, known by its label, while "
+              + "a label of another number is not that issue's: \(outcome(askLegacyOther))",
+              outcome(askLegacyRunning) == "already running" && !ids().contains("issues:o/r#90051")
+                && !store.requestedWork.contains { $0.key == "issues:o/r#90051" }
+                && folded(askLegacyRunning)?.label == legacyFix.record.label
+                && outcome(askLegacyOther).hasPrefix("queued"))
+        store.requestedWork.removeAll { $0.key == "issues:o/r#90052" }
+        store.queuedTasks.removeAll { $0.id == "issues:o/r#90052" }
         check("…each recording that run's start, under the label its row wears",
               folded(askRunning)?.startedAt == Date(timeIntervalSince1970: whole - 5)
                 && folded(askRunning)?.label == reviewRun.record.label
@@ -684,7 +726,7 @@ enum CommsTest {
               folded(askDoomed)?.label == doomedRun.record.label)
         var stale = doomedRun.record
         stale.dispatchedAt = Date().timeIntervalSince1970 - 60
-        let failedTick = AgentState.tick(records: [stale], evidence: quiet,
+        let failedTick = AgentState.tick(records: [stale], evidence: quiet, roots: [],
                                          now: Date().timeIntervalSince1970, limit: 4)
         check("…which the next tick calls FAILED",
               failedTick.rows.first?.1.state == .failed)
@@ -1597,6 +1639,53 @@ enum CommsTest {
         check("a PR missing from a second root names that root",
               outcome(gone[0]) == "no PR #90299 in o/second, so nothing was queued")
 
+        let thirdRoot = checkout("third", remote: "g/sub/third", host: "gitlab.example.com")
+        await useRoots([primaryRoot, secondRoot, thirdRoot])
+        await store.refreshRoots()
+        store.pinGitLabMe("yuki-me", host: "gitlab.example.com")
+        check("a GitLab root is watched by its key, its host before its nested slug",
+              store.commsSettings.repos == ["o/r", "o/second", "gitlab.example.com/g/sub/third"]
+                && store.commsSettings.gitlabHosts == ["gitlab.example.com/g/sub/third": "gitlab.example.com"])
+        ghCalls = []
+        let onGitLab = targeted([CommsAsk(.review, 90300, repo: "gitlab.example.com/g/sub/third"),
+                                 CommsAsk(.fixIssue, 90304, repo: "gitlab.example.com/g/sub/third")])
+        await apply(onGitLab)
+        check("…its merge request and issue are asked of glab on its host: \(ghCalls)",
+              Set(ghCalls) == [["api", "--hostname", "gitlab.example.com",
+                               "projects/g%2Fsub%2Fthird/merge_requests/90300"],
+                              ["api", "--hostname", "gitlab.example.com",
+                               "projects/g%2Fsub%2Fthird/issues/90304"]])
+        if case .review(let cfg)? = asked("review:gitlab.example.com/g/sub/third#90300")?.config {
+            check("…and queued to run there as glab's user, told it is on GitLab",
+                  outcome(onGitLab[0]).hasPrefix("queued") && cfg.me == "yuki-me"
+                    && cfg.buildPrompt().contains("hosted on GitLab at gitlab.example.com")
+                    && tasked("review:gitlab.example.com/g/sub/third#90300")?.job.directory == thirdRoot
+                    && tasked("review:gitlab.example.com/g/sub/third#90300")?.job.prURL
+                        == "https://gitlab.example.com/g/sub/third/-/merge_requests/90300"
+                    && asked("review:gitlab.example.com/g/sub/third#90300")?.author == "yuki")
+        } else {
+            check("…and queued to run there as glab's user, told it is on GitLab", false)
+        }
+        check("…the issue too, carrying its link on that host",
+              tasked("issues:gitlab.example.com/g/sub/third#90304")?.job.directory == thirdRoot
+                && tasked("issues:gitlab.example.com/g/sub/third#90304")?.job.prURL
+                    == "https://gitlab.example.com/g/sub/third/-/issues/90304")
+        let glabMisses = [90301, 90302, 90303].map { targeted([CommsAsk(.review, $0, repo: "g/sub/third")]) }
+        for miss in glabMisses { await apply(miss) }
+        check("GitLab's 404 Not found is no such merge request: \(outcome(glabMisses[0][0]))",
+              outcome(glabMisses[0][0]) == "no PR #90301 in g/sub/third, so nothing was queued")
+        check("…its 404 Project Not Found a lookup that failed: \(outcome(glabMisses[1][0]))",
+              outcome(glabMisses[1][0]).hasPrefix("couldn't ask GitLab about PR third#90302 (")
+                && outcome(glabMisses[1][0]).contains("404 Project Not Found")
+                && asked("review:gitlab.example.com/g/sub/third#90302") == nil)
+        check("…and a merged one is not open: \(outcome(glabMisses[2][0]))",
+              outcome(glabMisses[2][0]) == "PR third#90303 is merged, so nothing was queued"
+                && asked("review:gitlab.example.com/g/sub/third#90303") == nil)
+        store.requestedWork.removeAll { $0.key.contains("g/sub/third") }
+        store.queuedTasks.removeAll { $0.id.contains("g/sub/third") }
+        await useRoots([primaryRoot, secondRoot])
+        await store.refreshRoots()
+
         store.requestOne(review(90210))
         store.requestOne(Store.RequestedWork(number: 90210,
                                              url: "https://github.com/o/second/pull/90210",
@@ -1612,16 +1701,27 @@ enum CommsTest {
               outcome(bumpSecond[0]) == "moved review:o/second#90210 to the front of its band"
                 && band(1).first == "review:o/second#90210")
 
-        // An issue fix's run is known by its label alone, which names the repo.
-        store.pinAgentRows([run("r30", nil, "issues", "Issues · second#90230 · deep")])
+        store.pinAgentRows([run("r31", nil, "issues", "Issues · second#90230 · deep",
+                                link: "https://gitlab.example.com/o/second/-/issues/90230")])
+        let fixBesideGitLab = targeted([CommsAsk(.fixIssue, 90230, repo: "o/second")])
+        await apply(fixBesideGitLab)
+        check("a fix running in a GitLab project of a root's slug is not that root's issue's, "
+              + "its label alike: \(outcome(fixBesideGitLab[0]))",
+              outcome(fixBesideGitLab[0]).hasPrefix("queued") && tasked("issues:o/second#90230") != nil)
+        store.requestedWork.removeAll { $0.key == "issues:o/second#90230" }
+        store.queuedTasks.removeAll { $0.id == "issues:o/second#90230" }
+        store.pinAgentRows([run("r30", nil, "issues", "Issues · second#90230 · deep",
+                                link: "https://github.com/o/second/issues/90230")])
         let fixSecond = targeted([CommsAsk(.fixIssue, 90230, repo: "o/second")])
         let fixPrimary = targeted([CommsAsk(.fixIssue, 90230)])
         await apply(fixSecond + fixPrimary)
         check("a fix of an issue an agent is fixing in that root is not queued again",
               outcome(fixSecond[0]) == "already running" && tasked("issues:o/second#90230") == nil)
-        check("…while the same number in the primary root is",
+        check("…while the same number in the primary root is, carrying its issue's link and no PR",
               outcome(fixPrimary[0]).hasPrefix("queued") && tasked("issues:o/r#90230") != nil
-                && tasked("issues:o/r#90230")?.job.directory == primaryRoot)
+                && tasked("issues:o/r#90230")?.job.directory == primaryRoot
+                && tasked("issues:o/r#90230")?.job.prURL == "https://github.com/o/r/issues/90230"
+                && tasked("issues:o/r#90230")?.job.prNumber == nil)
         store.pinAgentRows([])
 
         let investigateSecond = CommsTickResult.Item(
@@ -1688,7 +1788,7 @@ enum CommsTest {
         let heldTick = store.commsHeldTick()
         check("while the first root path does not resolve, a tick is held: no pings, no items",
               heldTick == CommsTickResult(me: nil, items: [], error: "waiting for the first repo root, "
-                                          + "\(missingFirst), to resolve to a GitHub checkout"))
+                                          + "\(missingFirst), to resolve to a GitHub or GitLab checkout"))
         if let heldTick { await store.applyComms(heldTick) }
         check("…and says why as the Comms error", heldTick != nil && store.commsError == heldTick?.error)
         check("…replaying no ping an earlier apply left undone",

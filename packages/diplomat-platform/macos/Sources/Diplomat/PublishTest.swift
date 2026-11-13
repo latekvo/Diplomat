@@ -76,7 +76,7 @@ enum PublishTest {
             sessions: .present([:]),
             activity: .present([:]))
         let t = AgentState.tick(records: [live, idle, gone, landed],
-                                evidence: evidence, now: now, limit: 4)
+                                evidence: evidence, roots: [], now: now, limit: 4)
 
         // The fixture has to actually contain both halves, or everything below passes
         // on a tick that never had an ended run in it.

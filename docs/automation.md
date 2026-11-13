@@ -34,7 +34,10 @@ root its PR or issue belongs to.
   re-qualifies, and a review left unaddressed (agent died, window closed) is
   retried on the same 5m→3h backoff until the review actually lands. Force-push
   dedup: a push re-stamps the review request, which would double-spawn - a new
-  request within 1h of a dispatch is treated as churn and suppressed. Banned
+  request within 1h of a dispatch is treated as churn and suppressed. GitLab keeps a
+  request only as a note: one older than the merge request's last 100 activity notes is
+  answered when GitLab's review state says I reviewed, approved or requested changes,
+  and otherwise reads as made at the oldest of those notes. Banned
   authors are never auto-reviewed, and Settings carries an **author allowlist**
   (*Only these authors*) that narrows the monitor further: blank means anyone who
   requests me, a list means only those logins and everyone else is left to me. It
@@ -45,7 +48,10 @@ root its PR or issue belongs to.
   queues a [Fix-issues](actions.md#fix-issues) fix (default depth, bugs only, a draft PR
   and a comment on the issue thanking the reporter) for each one filed from outside the org (author
   association other than `MEMBER` / `OWNER`) that nobody is assigned to and nobody on the
-  team (`MEMBER` / `OWNER` / `COLLABORATOR`) has commented on. The fix claims the issue, reproduces it, and fixes it only if it
+  team (`MEMBER` / `OWNER` / `COLLABORATOR`) has commented on. GitLab has no author
+  association: there a project member (direct, inherited from its groups, or through a
+  group shared with the project or one of its groups) reads as `MEMBER`, anyone else as an
+  outsider. The fix claims the issue, reproduces it, and fixes it only if it
   reproduces. Only issues filed after the monitor's first scan of that repo count: the mark is the
   newest `createdAt` it has seen there, kept per repo, so switching it on or adding a
   root never queues a backlog, and each
@@ -330,7 +336,9 @@ task drops out the moment the work is taken by an agent, resolved, or its author
 banned or outside the auto-review list. Every poll also re-checks the rows it is about to run against the fetches it
 has just made - a conflict fix on a PR GitHub no longer calls conflicting, or a
 reply on threads that have been answered, leaves the list instead of opening an
-agent on work somebody already did. **A PR that has merged or closed retires every
+agent on work somebody already did. GitLab rechecks a merge request's merge status only
+when asked, so each of mine it reads as undecided is asked once more per poll, and one
+still undecided keeps its conflict fix. **A PR that has merged or closed retires every
 kind of row that names it**, whoever queued it: waiting for a bay can take a day at
 two at a time, and a review of a landed diff is one nobody will read. (A queued fix
 is numbered in the ISSUE space and no PR speaks for it, so that pass steps over it:

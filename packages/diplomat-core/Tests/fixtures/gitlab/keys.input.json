@@ -1,0 +1,76 @@
+{
+  "_comment": "Item keys and root keys. roots: LocalRepo coordinates -> its key, and #5 of it as an item key. urls: a link -> its item key. split: an item key -> [root key, number]. prompts: the prompt text (or a golden prompt by file name) an agent runs -> the item keys the live-agent scan reads off it among the root keys given.",
+  "roots": [
+    {
+      "owner": "Acme",
+      "repo": "Widget",
+      "host": "github.com"
+    },
+    {
+      "owner": "Acme",
+      "repo": "Widget",
+      "host": "GitLab.Example.com"
+    },
+    {
+      "owner": "group/sub",
+      "repo": "proj",
+      "host": "gitlab.example.com"
+    }
+  ],
+  "urls": [
+    "https://github.com/Acme/Widget/pull/5",
+    "https://github.com/acme/widget/issues/5",
+    "https://GitLab.Example.com:8443/Acme/Widget/-/merge_requests/5",
+    "https://gitlab.example.com/group/sub/proj/-/issues/7",
+    "https://gitlab.example.com/group/sub/proj/-/work_items/7",
+    "https://example.com/acme/widget"
+  ],
+  "split": [
+    "acme/widget#5",
+    "gitlab.example.com/acme/widget#5",
+    "gitlab.example.com/group/sub/proj#7",
+    "acme#5",
+    "gitlab.example.com/group/sub/proj"
+  ],
+  "prompts": [
+    {
+      "golden": "review-single-gitlab.txt",
+      "roots": [
+        "group/sub/proj",
+        "gitlab.example.com/group/sub/proj"
+      ]
+    },
+    {
+      "golden": "review-single-gitlab.txt",
+      "roots": [
+        "group/sub/proj"
+      ]
+    },
+    {
+      "golden": "review-single-gitlab.txt",
+      "roots": [
+        "other.example.com/group/sub/proj"
+      ]
+    },
+    {
+      "golden": "review-single-unknown.txt",
+      "roots": [
+        "software-mansion/argent",
+        "gitlab.example.com/software-mansion/argent"
+      ]
+    },
+    {
+      "golden": "conflicts-single.txt",
+      "roots": [
+        "gitlab.example.com/software-mansion/argent"
+      ]
+    },
+    {
+      "text": "Review PR #5 in acme/widget. Use the `gh` CLI to fetch it.",
+      "roots": [
+        "acme/widget",
+        "gitlab.example.com/acme/widget"
+      ]
+    }
+  ]
+}

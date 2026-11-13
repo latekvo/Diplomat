@@ -41,7 +41,7 @@ from diplomat_runtime import (
     usagescan,
 )
 from diplomat_runtime.models import Fmt
-from diplomat_runtime.prref import LocalRepo
+from diplomat_runtime.prref import LocalRepo, root_label
 from . import (
     glyphs,
     szpont,
@@ -228,7 +228,8 @@ class SettingsView(QWidget):
             "GitHub username", field, stacked=True,
             detail="Blank = whoever `gh` is authenticated as. Scopes the “My …” "
                    "tools and the Review wizard: which PRs count as mine, and whose "
-                   "reviews the monitors owe.",
+                   "reviews the monitors owe. In a GitLab repo root “me” is `glab`'s "
+                   "user on its host, which this does not change.",
         ))
         body.addWidget(self._identity_row)
 
@@ -412,7 +413,7 @@ class SettingsView(QWidget):
             return "Folder not found"
         if not os.path.exists(os.path.join(where, ".git")):
             return "Not a git checkout"
-        return "" if root else "No GitHub remote, or a repo listed above"
+        return "" if root else "No GitHub or GitLab remote, or a repo listed above"
 
     def _refresh_repo_ui(self) -> None:
         """One row per picked root, primary first, each named by the repo it resolved
@@ -431,7 +432,8 @@ class SettingsView(QWidget):
             root = None if shadowed else resolved.get(os.path.expanduser(path))
             problem = "" if shadowed else self._root_problem(path, root)
             problems += bool(problem)
-            self._roots_list.addWidget(self._root_row(i, path, root, problem))
+            name = root_label(root, list(resolved.values())) if root else ""
+            self._roots_list.addWidget(self._root_row(i, path, name, problem))
         self._roots_host.setVisible(bool(paths))
 
         primary = review.repo_path()
@@ -465,8 +467,7 @@ class SettingsView(QWidget):
             f"environment outranks the list."
         ))
 
-    def _root_row(self, index: int, path: str, root: LocalRepo | None,
-                  problem: str) -> QWidget:
+    def _root_row(self, index: int, path: str, label: str, problem: str) -> QWidget:
         row = QWidget()
         line = QHBoxLayout(row)
         line.setContentsMargins(0, 0, 0, 0)
@@ -475,7 +476,7 @@ class SettingsView(QWidget):
             name = QLabel(f"⚠ {problem}")
             name.setStyleSheet(f"font-size: 11px; font-weight: 600; color: {_ORANGE};")
         else:
-            name = QLabel(root.slug if root else "")
+            name = QLabel(label)
             name.setStyleSheet("font-size: 11px; font-weight: 600;")
         name.setTextFormat(Qt.TextFormat.PlainText)
         line.addWidget(name)
@@ -523,7 +524,7 @@ class SettingsView(QWidget):
             "Checkouts a pasted link may name", col, stacked=True,
             detail="The wizards accept a PR or issue link to any of these repos; "
                    "the agent works in that checkout. Each checkout answers for every "
-                   "GitHub remote it has, so a fork clone takes links to both its "
+                   "GitHub or GitLab remote it has, so a fork clone takes links to both its "
                    "upstream and its origin. A bare "
                    "#number still means the selected repo root, and a run here is never "
                    "routed over the mesh: a peer would start it in its own repo root.",
@@ -544,7 +545,7 @@ class SettingsView(QWidget):
 
     def _refresh_other_repos_ui(self) -> None:
         """One row per listed checkout: the repo it is named by and its path, or a
-        warning where it answers for no GitHub repo at all."""
+        warning where it answers for no GitHub or GitLab repo at all."""
         while self._other_repos_list.count():
             item = self._other_repos_list.takeAt(0)
             if item.widget():
@@ -562,7 +563,7 @@ class SettingsView(QWidget):
             else:
                 unusable += 1
                 missing = not os.path.isdir(os.path.expanduser(checkout.path))
-                name = QLabel("⚠ Folder not found" if missing else "⚠ No GitHub remote")
+                name = QLabel("⚠ Folder not found" if missing else "⚠ No GitHub or GitLab remote")
                 name.setStyleSheet(f"font-size: 11px; font-weight: 600; color: {_ORANGE};")
             name.setTextFormat(Qt.TextFormat.PlainText)
             line.addWidget(name)
