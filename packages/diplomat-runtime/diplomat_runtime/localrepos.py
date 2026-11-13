@@ -146,10 +146,10 @@ _entries: tuple[tuple[str, int, int] | None, dict[str, str]] = (None, {})
 
 
 def glab_host_entry(host: str) -> str | None:
-    """``host``'s entry in glab's config (:func:`config_entries`), ``None`` for none.
-    The file is read only when its :func:`glab_config_stamp` moved, which glab's own
-    writes (its update check's timestamp) do too, so an unchanged entry is the same
-    login."""
+    """``host``'s entry in glab's config (:func:`config_entries`), ``None`` for none,
+    the file read again only once its :func:`glab_config_stamp` moved. glab rewrites the
+    file on its own (its update check's timestamp), so the entry, not the file, says
+    who is signed in."""
     global _entries
     stamp = glab_config_stamp()
     if stamp != _entries[0]:
