@@ -1,6 +1,5 @@
-# The PR auto-fix monitor's snapshot of my open merge requests: the GitLab twin of
-# monitor-prs.graphql. A resolvable discussion is a review thread; its system notes (a push's
-# "changed this line") are not comments.
+# GitLab twin of monitor-prs.graphql. A resolvable discussion is a review thread;
+# its system notes (a push's "changed this line") are not comments.
 query($path: ID!, $author: String!) {
   project(fullPath: $path) {
     mergeRequests(state: opened, authorUsername: $author, first: 30, sort: UPDATED_DESC) {

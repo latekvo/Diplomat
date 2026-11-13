@@ -5,8 +5,8 @@ Three GraphQL searches over the `gh` CLI, decoded into the pure types in
 :mod:`autofix`. The queries themselves are the shared ones in ``assets/graphql/``
 (single source of truth with the macOS monitor), driven by a search ``$q``
 qualifier rather than the owner/name form :func:`gh.graphql` fills in itself. A GitLab
-root asks the ``gitlab-*`` twins of them through ``glab`` instead, and :mod:`gitlab`
-hands the same parsers the GitHub shape.
+root asks their ``gitlab-*`` twins through ``glab``, which :mod:`gitlab` adapts into the
+GitHub shape.
 
 They are the heaviest requests the applet makes and the only two on the poll's hot
 path, where either one failing costs the cycle: the queue drain stands down and
@@ -63,10 +63,9 @@ def _parse_snapshots(env: dict, me: str) -> list[PRSnapshot]:
 
 
 def _recheck(root: LocalRepo, number: int) -> str:
-    """GitLab checks a merge request's status lazily: after a push to its target it
-    reads unchecked until something asks again, and a GraphQL read never does. The
-    REST read of one merge request asks it to recheck, and answers definitively when
-    it can. A failed read leaves it undecided."""
+    """GitLab rechecks a merge status only when asked, and GraphQL never asks, so after
+    a push to the target it reads unchecked. This REST read asks, and answers when it
+    can; a failed read stays undecided."""
     project = urllib.parse.quote(root.slug, safe="")
     path = f"projects/{project}/merge_requests/{number}?with_merge_status_recheck=true"
     try:

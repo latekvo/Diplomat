@@ -1,11 +1,11 @@
 """Parse a PR or issue reference from a wizard's single-item text field.
 
-Mirrors ``PRRef.swift`` verbatim: accepts a bare number (``337`` / ``#337``, and
-``!337`` for a merge request of a GitLab home repo), a
+Mirrors ``PRRef.swift`` verbatim: accepts a bare number (``337`` / ``#337``, or a
+merge request's ``!337`` on a GitLab home repo), a
 full GitHub URL (``https://github.com/owner/repo/pull/337`` with any trailing
 path/query), a GitLab one (``https://<host>/group/sub/proj/-/merge_requests/337``), or
-the ``owner/repo#337`` shorthand, whose owner may be a nested GitLab namespace (and
-``group/proj!337`` names a merge request). When the input names a repo it's
+the ``owner/repo#337`` shorthand (owner may be a nested namespace; ``group/proj!337``
+is a merge request). When the input names a repo it's
 checked against the home repo (the root the wizard works on, else the configured repo)
 and then the local checkouts listed in Settings (:mod:`localrepos`), so a link to an
 unknown project is rejected instead of silently reviewing the wrong PR, and a link to a
@@ -33,8 +33,8 @@ _URL = {
     )
     for kind in ("pull", "issues")
 }
-# HOST/NAMESPACE.../PROJECT/-/<segment>/N — GitLab's spelling, on any host. GitLab
-# serves an issue at work_items as well as issues.
+# HOST/NAMESPACE.../PROJECT/-/<segment>/N on any host; GitLab serves issues at
+# work_items too.
 _GITLAB_URL = {
     kind: re.compile(
         rf"(?:https?://)?([A-Za-z0-9.-]+)(?::[0-9]+)?/([\w.-]+(?:/[\w.-]+)*)/([\w.-]+)"
@@ -43,8 +43,8 @@ _GITLAB_URL = {
     )
     for kind, segment in (("pull", "merge_requests"), ("issues", "(?:issues|work_items)"))
 }
-# OWNER/REPO#N shorthand (whole string). OWNER may be a nested namespace, and a merge
-# request may be written OWNER/REPO!N.
+# OWNER/REPO#N shorthand (whole string); OWNER may be nested, and a merge request may
+# be OWNER/REPO!N.
 _SHORTHAND = {
     "pull": re.compile(r"^([\w.-]+(?:/[\w.-]+)*)/([\w.-]+)[#!]([0-9]+)$"),
     "issues": re.compile(r"^([\w.-]+(?:/[\w.-]+)*)/([\w.-]+)#([0-9]+)$"),
@@ -115,8 +115,8 @@ def _link(url: str, kind: str) -> tuple[str, str, str, str] | None:
 
 
 def item_key_from_url(url: str) -> str | None:
-    """:func:`item_key` of a github.com PR or issue link, or of a GitLab merge request
-    or issue one, or ``None`` for any other."""
+    """:func:`item_key` of a GitHub or GitLab PR (merge request) or issue link, or
+    ``None`` for any other."""
     for kind in ("pull", "issues"):
         found = _link(url, kind)
         if found:

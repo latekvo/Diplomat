@@ -1,6 +1,5 @@
-# A GitLab project's open issues: the GitLab twin of issues.graphql (number = iid).
-# Members stand in for GitHub's author association; an author past a full member page
-# is looked up by id in the REST projects/:id/members/all.
+# GitLab twin of issues.graphql (number = iid). Members stand in for author
+# association; an author past a full member page is looked up in REST members/all.
 query($path: ID!) {
   project(fullPath: $path) {
     projectMembers(first: 100, relations: [DIRECT, INHERITED, INVITED_GROUPS, SHARED_INTO_ANCESTORS]) {

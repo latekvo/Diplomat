@@ -1239,10 +1239,10 @@ _LIVE_AGENT_RE = re.compile(r"PR #([0-9]+) in ([\w.-]+(?:/[\w.-]+)+)")
 
 def prompt_items(text: str, slugs: set[str]):
     """Yield the item key of every ``PR #<n> in <owner>/<repo>`` in a prompt whose repo
-    is one of ``slugs``, the owner a GitLab namespace of any depth. Every single-PR
-    prompt the applet dispatches opens that way.
+    is one of ``slugs``, the owner a namespace of any depth. Every single-PR prompt the
+    applet dispatches opens that way.
 
-    The longest leading run of the path's segments that is in ``slugs`` is the repo.
+    The longest leading run of path segments in ``slugs`` is the repo.
     The prompt goes on ``. Use the `gh` CLI``, and ``.`` is a repo-name character, so
     the whole path read with a trailing dot is taken without it when only that is in
     ``slugs``.

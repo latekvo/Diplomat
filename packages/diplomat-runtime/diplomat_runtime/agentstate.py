@@ -1295,8 +1295,8 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
     They count as automatic. An agent whose trigger is unknown spending a bay defers
     work; the opposite error dispatches a second agent onto a PR that has one.
 
-    Its link is its repo's: a merge request's when ``roots`` names its slug as a GitLab
-    root, else a github.com PR's.
+    Its link is a merge request's when ``roots`` has its slug as a GitLab root, else a
+    github.com PR's.
     """
     if not live_agents.ok:
         return records
@@ -1544,8 +1544,7 @@ def tick(records: list[RunRecord], evidence: Evidence, now: float, limit: int,
     Released records are made LAST, from the verdicts, so the caller persists each
     before it forgets the run that ended.
     Both front-ends and the parity CLI go through here, so neither can get the
-    sequence subtly different from the other. ``roots`` are the repo roots, which link
-    an untracked agent's record.
+    sequence subtly different from the other. ``roots`` link untracked agents' records.
     """
     records = observe_claims(records, evidence.claims, now)
     records = adopt_ttys(records, evidence.processes, evidence.live_agents)

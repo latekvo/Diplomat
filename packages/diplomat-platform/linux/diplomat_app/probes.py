@@ -596,9 +596,8 @@ def mesh_claims(enabled: bool = True) -> Observation:
 
 def merged_prs(items: set[str], roots: Iterable[LocalRepo] = ()) -> Observation:
     """Which of these PRs (item keys) their host calls MERGED — the one terminal outcome
-    that outranks anything a process is doing. Each is asked of its own repo: the one
-    of ``roots`` it is in, so a GitLab root's merge request is asked of its GitLab, and
-    any other repo of GitHub.
+    that outranks anything a process is doing. Each is asked of its repo's host: a
+    GitLab root's (in ``roots``) of its GitLab, any other of GitHub.
 
     One ``gh`` or ``glab`` call per PR, so this belongs on the slow refresh, not the 8-second
     tick. The reading is always PRESENT: a PR whose probe fails is simply absent from

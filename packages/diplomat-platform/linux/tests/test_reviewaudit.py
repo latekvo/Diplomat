@@ -305,8 +305,8 @@ def test_no_login_says_it_could_not_check(monkeypatch):
 
 
 def test_a_merge_request_run_needs_no_gh_login(monkeypatch):
-    """Only a github.com PR's reviews are read, so a GitLab run is not one the missing
-    gh login kept from being checked."""
+    """Only github.com PRs' reviews are audited, so a missing gh login warns about no
+    GitLab run."""
     mr = "https://gitlab.example.com/group/sub/proj/-/merge_requests/7"
     _, warns = _retire(monkeypatch, [_run("r1", pr_url=mr)], me="")
     assert warns == []

@@ -1,7 +1,6 @@
-# A GitLab project's open merge requests for the panel: the GitLab twin of prs.graphql,
-# adapted into its shape (number = iid). System notes carry the ready-for-review time; in a
-# discussion they are not comments. A full page took a self-hosted GitLab about 26 s
-# (complexity 92 of its 250), inside glab's 60 s timeout.
+# GitLab twin of prs.graphql (number = iid). System notes carry the ready-for-review
+# time; in a discussion they are not comments. A full page took a self-hosted GitLab
+# about 26 s (complexity 92 of its 250), inside glab's 60 s timeout.
 query($path: ID!) {
   project(fullPath: $path) {
     mergeRequests(state: opened, first: 100, sort: CREATED_DESC) {

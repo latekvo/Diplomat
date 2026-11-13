@@ -51,7 +51,6 @@ class RepoConfig:
 
     @property
     def home_host(self) -> str:
-        """The host of :attr:`home_repo`."""
         return self.home.host if self.home else GITHUB
 
     @property
@@ -68,14 +67,12 @@ class RepoConfig:
 
     @property
     def target_root(self) -> LocalRepo:
-        """The repo this run works on: :attr:`listed_repo`, else :attr:`home`, else the
-        configured repo (with no path). What the prompt names, ``gh`` or ``glab`` asks
+        """The repo this run works on: what the prompt names, ``gh`` or ``glab`` asks
         about, and links point at."""
         return self.listed_repo or self.home or LocalRepo(*self.configured_repo, "")
 
     @property
     def target_repo(self) -> tuple[str, str]:
-        """:attr:`target_root` as (owner, repo)."""
         return self.target_root.owner, self.target_root.repo
 
     @property
@@ -121,8 +118,8 @@ def listed_payload(local_repos: Sequence[LocalRepo],
                    home: LocalRepo | None = None) -> dict:
     """The listed checkouts as the ``localRepos`` of a prompt payload and the home
     root as its ``home``, each left out when there is none, so a payload stored before
-    either existed reads the same. A repo carries its ``host`` only off github.com,
-    which a payload without one means."""
+    either existed reads the same. ``host`` is written only off github.com, the
+    default when absent."""
     out: dict = {}
     if local_repos:
         out["localRepos"] = [_repo_json(r) for r in local_repos]
