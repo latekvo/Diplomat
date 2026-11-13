@@ -401,8 +401,8 @@ def test_the_overlay_is_live_runs_and_queued_asks():
     home = LocalRepo(cfg["owner"], cfg["repo"], "")
     other = LocalRepo("acme", "widgets", "")
 
-    def run(n, label, kind, *, pr=None, released=False, repo=home):
-        url = f"https://github.com/{repo.slug}/pull/{pr}" if pr else ""
+    def run(n, label, kind, *, pr=None, released=False, repo=home, link=""):
+        url = f"https://github.com/{repo.slug}/pull/{pr}" if pr else link
         return agentstate.RunRecord(run_id=f"r{n}", dispatched_at=0, pr_number=pr, pr_url=url,
                                     kind=kind, label=label, released=released)
 
@@ -418,11 +418,17 @@ def test_the_overlay_is_live_runs_and_queued_asks():
         # Another root's PR and issue under the same numbers: not the goals'.
         run(8, "Review-req · widgets#1813 (@hubert)", "review", pr=1813, repo=other),
         run(9, "Issues · widgets#1814 · deep", "issues"),
+        # An issue fix with a link is known by it: the GitLab project of the goals' slug
+        # is not the goals' repo, whatever its label says.
+        run(10, f"Issues · {cfg['repo']}#1819 · deep", "issues",
+            link=f"https://gitlab.example.com/{home.slug}/-/issues/1819"),
+        run(11, "Issues · deep", "issues", link=f"https://github.com/{home.slug}/issues/1820"),
     ]
     states = {f"r{n}": agentstate.Resolution(f"r{n}", s, "") for n, s in (
         (1, agentstate.RUNNING), (2, agentstate.STARTING), (3, agentstate.AWAITING_INPUT),
         (4, agentstate.FINISHED), (5, agentstate.RUNNING), (6, agentstate.MERGED),
-        (7, agentstate.RUNNING), (8, agentstate.RUNNING), (9, agentstate.RUNNING))}
+        (7, agentstate.RUNNING), (8, agentstate.RUNNING), (9, agentstate.RUNNING),
+        (10, agentstate.RUNNING), (11, agentstate.RUNNING))}
     asks = [autofix.RequestedWork(1811, "", "", {"kind": "review"}, repo=home.slug),
             autofix.RequestedWork(1808, "", "", {"kind": "issues"}, repo=home.slug),
             autofix.RequestedWork(1815, "", "", {"kind": "review"}, repo=other.slug),
@@ -438,7 +444,7 @@ def test_the_overlay_is_live_runs_and_queued_asks():
               task("conflicts:acme/widgets#1817", "conflicts", pr=1817, repo=other),
               task("issues:acme/widgets#1818", "issues")]
     assert goal_overlay(records, states, asks, queued, home) == GoalOverlay(
-        agent_prs=frozenset({1810}), agent_issues=frozenset({1802, 1803}),
+        agent_prs=frozenset({1810}), agent_issues=frozenset({1802, 1803, 1820}),
         queued_prs=frozenset({1811, 1812}), queued_issues=frozenset({1808, 1809}))
 
 

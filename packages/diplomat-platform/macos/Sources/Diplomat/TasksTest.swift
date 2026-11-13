@@ -353,9 +353,9 @@ enum TasksTest {
         let home = PRRef.LocalRepo(owner: owner, repo: repo, path: "")
         func url(_ pr: Int, in slug: String = "\(owner)/\(repo)") -> String { "https://github.com/\(slug)/pull/\(pr)" }
         func run(_ id: String, _ pr: Int?, _ kind: String, _ label: String, _ state: AgentState.RunState,
-                 released: Bool = false, in slug: String = "\(owner)/\(repo)") -> Store.AgentRow {
+                 released: Bool = false, in slug: String = "\(owner)/\(repo)", link: String = "") -> Store.AgentRow {
             Store.AgentRow(record: AgentState.RunRecord(runID: id, dispatchedAt: 0, prNumber: pr,
-                                                        prURL: pr.map { url($0, in: slug) } ?? "", kind: kind,
+                                                        prURL: pr.map { url($0, in: slug) } ?? link, kind: kind,
                                                         label: label, released: released),
                            state: state, reason: "", window: nil)
         }
@@ -377,7 +377,13 @@ enum TasksTest {
                    run("g", nil, "review", "Issues · #1804 · deep", .running),
                    // Another root's PR and issue under the goals' numbers: not theirs.
                    run("h", 1823, "review", "Review · widgets#1823 · deep", .running, in: "acme/widgets"),
-                   run("i", nil, "issues", "Issues · widgets#1805 · deep", .running)],
+                   run("i", nil, "issues", "Issues · widgets#1805 · deep", .running),
+                   // An issue fix with a link is known by it: the GitLab project of the goals' slug
+                   // is not the goals' repo, whatever its label says.
+                   run("j", nil, "issues", "Issues · \(repo)#1819 · deep", .running,
+                       link: "https://gitlab.example.com/\(owner)/\(repo)/-/issues/1819"),
+                   run("k", nil, "issues", "Issues · deep", .running,
+                       link: "https://github.com/\(owner)/\(repo)/issues/1820")],
             queued: [task("issues:\(key(1802))", pr: nil),
                      task("review-req:\(key(1812))", pr: 1812),
                      task("issues:acme/widgets#1806", pr: nil),
@@ -386,8 +392,8 @@ enum TasksTest {
                         store.goalFixAsk(number: 1807, url: "https://github.com/acme/widgets/issues/1807",
                                          author: nil)],
             startingFixes: [1830], watched: home)
-        check("agents: live PR runs, issue fixes by label, spawning fixes, the goals' repo alone",
-              composed.agentPRs == [1810, 1821] && composed.agentIssues == [1803, 1830, 18030], "\(composed)")
+        check("agents: live PR runs, issue fixes by link or label, spawning fixes, the goals' repo alone",
+              composed.agentPRs == [1810, 1821] && composed.agentIssues == [1803, 1820, 1830, 18030], "\(composed)")
         check("queued: PR tasks, issues: tasks and asked-for fixes, the goals' repo alone",
               composed.queuedPRs == [1812] && composed.queuedIssues == [1801, 1802], "\(composed)")
         let watched = (owner: owner, repo: repo)

@@ -101,8 +101,9 @@ def goal_overlay(records: list, states: dict, asks: list[autofix.RequestedWork],
                  queued: list[autofix.QueuedTask], watched: LocalRepo) -> GoalOverlay:
     """A run counts as the dispatch dedup counts it (:func:`agentstate.in_flight`): not
     released, in a blocking state. A PR's run is known by its item; an issue fix run
-    has none, and is known by its kind and label. Queued: the asks, and every queued
-    task, by its key's verb. Only ``watched``'s items count: the goals are its."""
+    has none, and is known by its kind and its link's item (by its label when it has no
+    link). Queued: the asks, and every queued task, by its key's verb. Only
+    ``watched``'s items count: the goals are its."""
     def number(item: str | None) -> int | None:
         split = split_item_key(item or "")
         return split[1] if split and split[0] == watched.key else None
@@ -111,9 +112,15 @@ def goal_overlay(records: list, states: dict, asks: list[autofix.RequestedWork],
             and states[r.run_id].state in agentstate.BLOCKING]
     agent_issues = set()
     for r in live:
+        if r.pr_number is not None or r.kind != autofix.QUEUE_ISSUES_ACTION:
+            continue
+        if r.pr_url:
+            n = number(item_key_from_url(r.pr_url))
+            if n is not None:
+                agent_issues.add(n)
+            continue
         m = _ISSUE_RUN.search(r.label)
-        if (r.pr_number is None and r.kind == autofix.QUEUE_ISSUES_ACTION and m
-                and m[1].lower() in ("", watched.repo.lower())):
+        if m and m[1].lower() in ("", watched.repo.lower()):
             agent_issues.add(int(m[2]))
     keys = [a.key for a in asks] + [t.id for t in queued]
 

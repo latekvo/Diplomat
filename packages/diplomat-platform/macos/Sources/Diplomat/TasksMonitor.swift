@@ -171,9 +171,9 @@ extension Store {
     /// The agents and queued work behind `GoalOverlay`, `watched`'s alone (the goals are
     /// its):
     /// - a PR has an agent while a run on it is in a blocking state (`AgentState.inFlight`'s
-    ///   rule); an issue while an issue fix run's label (`RequestedWork.label`,
-    ///   `IssueWizard`: "Issues · #N · …" or "Issues · repo#N · …") names it, or its goal
-    ///   fix is spawning
+    ///   rule); an issue while an issue fix run's link names it (its label, `IssueWizard`'s
+    ///   "Issues · #N · …" or "Issues · repo#N · …", when it has no link), or its goal fix
+    ///   is spawning
     /// - queued: every queued or starting task about a PR, every `issues:` one, and every
     ///   asked-for review or fix
     static func goalOverlay(rows: [AgentRow], queued: [QueuedAgentTask], requested: [RequestedWork],
@@ -186,9 +186,11 @@ extension Store {
         for row in rows where !row.record.released && AgentState.blocking.contains(row.state) {
             if row.record.prNumber != nil {
                 if let n = number(row.record.item) { out.agentPRs.insert(n) }
-            } else if row.record.kind == AgentTaskQueue.issuesAction,
-                      let n = issueNumber(inLabel: row.record.label, repo: watched.repo) {
-                out.agentIssues.insert(n)
+            } else if row.record.kind == AgentTaskQueue.issuesAction {
+                let n = row.record.prURL.isEmpty
+                    ? issueNumber(inLabel: row.record.label, repo: watched.repo)
+                    : number(PRRef.itemKey(url: row.record.prURL))
+                if let n { out.agentIssues.insert(n) }
             }
         }
         let issueKey = AgentTaskQueue.issuesAction + ":"
