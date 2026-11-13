@@ -3110,7 +3110,7 @@ private func severalTargetsSmoke() throws {
     }
     check(text("x gitlab.com/g/radon/-/issues/1 wymaga radon#292") == "x  wymaga ",
           "a GitLab link names a repository for name#N as a GitHub one does")
-    let lab = CommsSettings(owner: "group/sub", repo: "proj")
+    let lab = CommsSettings(repos: ["group/sub/proj"], gitlabHosts: ["group/sub/proj": "gitlab.example.com"])
     let labLink = "https://gitlab.example.com/Group/Sub/Proj/-/merge_requests/12"
     check(CommsDecision.ownRepoText("\(labLink) and https://gitlab.example.com/group/proj/-/issues/13",
                                     settings: lab) == "\(labLink) and ",

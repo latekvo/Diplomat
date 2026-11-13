@@ -1252,17 +1252,23 @@ enum QueueTest {
                 && glabArgv().contains("iid=7"))
         // gh and glab both call it merged, so asking either shows.
         let mergedGH = feed.appendingPathComponent("gh-merged")
-        try? "#!/bin/sh\necho '{\"state\":\"MERGED\"}'\n".write(to: mergedGH, atomically: true, encoding: .utf8)
+        let ghArgv = feed.appendingPathComponent("gh-argv")
+        try? ("#!/bin/sh\nprintf '%s ' \"$@\" >> '\(ghArgv.path)'\necho >> '\(ghArgv.path)'\n"
+              + "echo '{\"state\":\"MERGED\"}'\n").write(to: mergedGH, atomically: true, encoding: .utf8)
         chmod(mergedGH.path, 0o755)
         let ghBefore = ProcessInfo.processInfo.environment["DIPLOMAT_GH"]
         setenv("DIPLOMAT_GH", mergedGH.path, 1)
         let callsBefore = glabCallCount()
-        let strayKey = await AgentProbes.mergedPRs(["gitlab.example.com/g/gone#7", "o/gone#7"], roots: [rootA])
+        let strayKey = await AgentProbes.mergedPRs(["gitlab.example.com/g/gone#7", "localhost/g/gone#7",
+                                                    "o/gone#7"], roots: [rootA])
         if let ghBefore { setenv("DIPLOMAT_GH", ghBefore, 1) } else { unsetenv("DIPLOMAT_GH") }
-        check("…while a GitLab key no root has is asked of no host, so it is never merged; a "
-              + "GitHub one is asked of GitHub: \(strayKey)",
+        let ghAsked = ((try? String(contentsOf: ghArgv, encoding: .utf8)) ?? "")
+            .split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        check("…while a GitLab key no root has, a dotless host's too, is asked of no host, so it "
+              + "is never merged; a GitHub one is asked of GitHub: \(strayKey) \(ghAsked)",
               { if case .present(let s) = strayKey { return s == ["o/gone#7"] }; return false }()
-                && glabCallCount() == callsBefore)
+                && glabCallCount() == callsBefore
+                && ghAsked == ["pr view 7 --repo o/gone --json state"])
 
         // 24a''. An unchecked GitLab merge request keeps its queued conflict fix (GitLab
         //        has not looked yet); a GitHub PR's UNKNOWN drops it.

@@ -122,6 +122,43 @@ func gitlabSmoke() async throws {
     check(switched == "second" && kept == "second" && logins.known(host: "gl.example.com") == "second"
           && reads.hosts.count == 2,
           "a rewritten glab config (`glab auth login`) reads the login again, once: \(reads.hosts)")
+    func glabConfig(_ check: String, _ lab: String, _ other: String = "    user: o\n") throws {
+        try "last_update_check_timestamp: \(check)\nhosts:\n  GL.example.com:8443:\n\(lab)  other.example.com:\n\(other)"
+            .write(to: loginConfig, atomically: true, encoding: .utf8)
+    }
+    let twoHosts = GitLabLogins(env: ["HOME": emptyHome, "GLAB_CONFIG_DIR": loginDir.path]) { host in
+        reads.hosts.append(host)
+        return reads.login
+    }
+    reads.hosts = []
+    reads.login = "me"
+    try glabConfig("2026-11-01T00:00:00Z", "    user: me\n    token: a\n")
+    _ = try await twoHosts.login(host: "gl.example.com")
+    try glabConfig("2026-11-13T09:30:00.123456+01:00", "    user: me\n    token: a\n")
+    let afterCheck = try await twoHosts.login(host: "gl.example.com")
+    check(afterCheck == "me" && twoHosts.known(host: "gl.example.com") == "me"
+          && reads.hosts == ["gl.example.com"],
+          "glab's update check rewriting its config keeps the host's login, unasked: \(reads.hosts)")
+    // Same size, same stamp, another entry: the parse of the unchanged file is the one kept.
+    let stamp = Date(timeIntervalSince1970: 1_790_000_000)
+    try glabConfig("2026-11-13T09:30:00.123456+01:00", "    user: me\n    token: a\n", "    user: o2\n")
+    try fm.setAttributes([.modificationDate: stamp], ofItemAtPath: loginConfig.path)
+    check(twoHosts.known(host: "gl.example.com") == "me" && reads.hosts.count == 1,
+          "another host's entry changing keeps this host's login")
+    try glabConfig("2026-11-13T09:30:00.123456+01:00", "    user: me\n    token: b\n", "    user: o2\n")
+    try fm.setAttributes([.modificationDate: stamp], ofItemAtPath: loginConfig.path)
+    check(twoHosts.known(host: "gl.example.com") == "me",
+          "a config whose stamp has not moved is not parsed again")
+    try glabConfig("2026-11-13T09:30:00.123456+01:00", "    user: me\n    token: c\n")
+    check(twoHosts.known(host: "gl.example.com") == "", "a host whose token changed has no known login")
+    reads.login = "me-again"
+    let reread = try await twoHosts.login(host: "gl.example.com")
+    check(reread == "me-again" && reads.hosts == ["gl.example.com", "gl.example.com"]
+          && twoHosts.known(host: "gl.example.com") == "me-again",
+          "…and the next login reads glab: \(reads.hosts)")
+    try "last_update_check_timestamp: x\nhosts:\n  other.example.com:\n    user: o\n"
+        .write(to: loginConfig, atomically: true, encoding: .utf8)
+    check(twoHosts.known(host: "gl.example.com") == "", "a host whose entry is gone has no known login")
 
     section("gitlab: remotes and roots")
     func coords(_ url: String, _ hosts: GitLabHosts = []) -> [String]? {
@@ -375,6 +412,26 @@ func gitlabSmoke() async throws {
                                     settings: twinComms, repo: labTwin.key)
               == "see https://gitlab.example.com/acme/widget/-/merge_requests/5 and !7",
           "a GitLab root's own link stays in its own text")
+    func twinText(_ s: String, _ root: PRRef.LocalRepo) -> String {
+        CommsDecision.ownRepoText(s, settings: twinComms, repo: root.key)
+    }
+    let labMR = "https://gitlab.example.com/acme/widget/-/merge_requests/7"
+    for spelling in [labMR, "<\(labMR)|!7>", "[!7](\(labMR))", "gitlab.example.com/acme/widget/-/issues/7"] {
+        check(twinText("see \(spelling) ok", hubTwin) == "see  ok",
+              "the GitLab twin's \(spelling) is no number of the GitHub root of its slug")
+    }
+    for spelling in ["https://github.com/acme/widget/pull/7", "<https://github.com/acme/widget/issues/7|#7>",
+                     "https://gl.other.org/acme/widget/-/merge_requests/7"] {
+        check(twinText("see \(spelling) ok", labTwin) == "see  ok",
+              "\(spelling) is no number of the GitLab root of its slug")
+    }
+    for (kept, root) in [("https://www.GitHub.com/Acme/Widget/pull/7", hubTwin),
+                         ("[#7](https://github.com/acme/widget/issues/7)", hubTwin),
+                         ("https://GitLab.Example.com:8443/Acme/Widget/-/issues/7", labTwin),
+                         ("<\(labMR)|!7>", labTwin)] {
+        check(twinText("see \(kept) ok", root) == "see \(kept) ok",
+              "a link on the root's own host stays: \(kept) for \(root.key)")
+    }
     let otherRoot = PRRef.LocalRepo(owner: "o", repo: "r", path: "/w/o")
     check(PRRef.root(named: "Acme/Widget", in: [labTwin, hubTwin]) == hubTwin
           && PRRef.root(named: "acme/widget", in: [labTwin]) == labTwin
@@ -386,6 +443,11 @@ func gitlabSmoke() async throws {
           && PRRef.repo(ofKey: "gitlab.example.com/g/sub/p").slug == "g/sub/p"
           && PRRef.repo(ofKey: hubTwin.key).webURL(.pull, number: 5) == "https://github.com/acme/widget/pull/5",
           "a key with no root names its repo: a host first is GitLab's, else GitHub's")
+    let dotless = PRRef.repo(ofKey: "localhost/grp/proj")
+    check(dotless.isGitLab && dotless.host == "localhost" && dotless.slug == "grp/proj"
+          && dotless.key == "localhost/grp/proj"
+          && PRRef.repo(ofKey: "o/r") == PRRef.LocalRepo(owner: "o", repo: "r", path: ""),
+          "three segments or more are a GitLab project, a dotless host too; two are a GitHub repo: \(dotless)")
     check([hubTwin, labTwin, otherRoot].map { PRRef.rootLabel($0, roots: [hubTwin, labTwin, otherRoot]) }
               == ["acme/widget", "gitlab.example.com/acme/widget", "o/r"]
           && PRRef.rootLabel(labTwin, roots: [labTwin, otherRoot]) == "acme/widget",
