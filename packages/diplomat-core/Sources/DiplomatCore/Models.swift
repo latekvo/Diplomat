@@ -316,9 +316,21 @@ public enum API {
         try await graphqlDecoded("viewer", repo: nil, as: ViewerResponse.self).data.viewer.login
     }
 
+    /// How many `prs.graphql` pages the panel reads: the 100 newest open PRs.
+    static let openPRPages = 4
+
     public static func fetchOpenPRs(owner: String, repo: String) async throws -> [OpenPR] {
-        let resp = try await graphqlDecoded("prs", repo: (owner, repo), as: PRResponse.self)
-        return resp.data.repository.pullRequests.nodes.map { n in
+        var nodes: [PRResponse.Node] = []
+        var after: String?
+        for _ in 0..<openPRPages {
+            let page = try await graphqlDecoded("prs", repo: (owner, repo),
+                                                variables: after.map { [("after", $0)] } ?? [],
+                                                as: PRResponse.self).data.repository.pullRequests
+            nodes += page.nodes
+            guard page.pageInfo.hasNextPage, let next = page.pageInfo.endCursor else { break }
+            after = next
+        }
+        return nodes.map { n in
             OpenPR(
                 number: n.number,
                 title: n.title,
@@ -376,8 +388,10 @@ public enum API {
     /// Run a GraphQL query and decode it. The transport retry belongs to
     /// `GH.graphql`, which every GraphQL caller shares; what is left here is
     /// deterministic — a payload that fails to decode fails the same way twice.
-    private static func graphqlDecoded<T: Decodable>(_ queryName: String, repo: (owner: String, repo: String)?, as: T.Type) async throws -> T {
-        let data = try await GH.graphql(queryName, repo: repo)
+    private static func graphqlDecoded<T: Decodable>(_ queryName: String, repo: (owner: String, repo: String)?,
+                                                     variables: [(String, String)] = [],
+                                                     as: T.Type) async throws -> T {
+        let data = try await GH.graphql(queryName, repo: repo, variables: variables)
         try checkGraphQLErrors(data)
         return try makeDecoder().decode(T.self, from: data)
     }
@@ -413,7 +427,8 @@ private struct PRResponse: Decodable {
     let data: D
     struct D: Decodable { let repository: Repo }
     struct Repo: Decodable { let pullRequests: Conn }
-    struct Conn: Decodable { let nodes: [Node] }
+    struct Conn: Decodable { let pageInfo: PageInfo; let nodes: [Node] }
+    struct PageInfo: Decodable { let hasNextPage: Bool; let endCursor: String? }
     struct Node: Decodable {
         let number: Int
         let title: String

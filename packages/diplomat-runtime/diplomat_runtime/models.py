@@ -331,6 +331,11 @@ class Fmt:
 # MARK: - GitHub API (GraphQL via the gh CLI)
 
 
+# How many prs.graphql pages the panel reads: the 100 newest open PRs (mirrors
+# API.openPRPages in Models.swift).
+OPEN_PR_PAGES = 4
+
+
 class API:
     @staticmethod
     def fetch_viewer_login() -> str:
@@ -346,8 +351,16 @@ class API:
 
     @staticmethod
     def fetch_open_prs(owner: str, repo: str) -> list[OpenPR]:
-        env = gh.graphql("prs", repo=(owner, repo))
-        nodes = env["data"]["repository"]["pullRequests"]["nodes"]
+        nodes: list[dict] = []
+        after: str | None = None
+        for _ in range(OPEN_PR_PAGES):
+            env = gh.graphql("prs", repo=(owner, repo),
+                             variables={"after": after} if after else None)
+            page = env["data"]["repository"]["pullRequests"]
+            nodes += page["nodes"]
+            if not page["pageInfo"]["hasNextPage"]:
+                break
+            after = page["pageInfo"]["endCursor"]
         out: list[OpenPR] = []
         for n in nodes:
             author = (n.get("author") or {}).get("login", "ghost")
