@@ -73,8 +73,7 @@ def glab_config_file() -> Path | None:
 
 def glab_config_stamp() -> tuple[str, int, int] | None:
     """Which glab config file there is, with its modification time (ns) and size, or
-    ``None`` for none: ``glab auth login`` rewrites it, so a change may be another
-    account."""
+    ``None`` for none."""
     path = glab_config_file()
     try:
         st = path.stat() if path else None
@@ -83,18 +82,14 @@ def glab_config_stamp() -> tuple[str, int, int] | None:
     return (str(path), st.st_mtime_ns, st.st_size) if st else None
 
 
-def config_hosts(text: str) -> dict[str, str]:
-    """A glab config's top-level ``hosts:`` map, read without a YAML parser, as each host
-    a remote may name to the host glab's API answers on, all lowercased: every bare
-    ``host:`` line at the indent of the map's first entry to itself, and a non-empty
-    ``ssh_host:`` at the indent of that host's first entry to the host. A host's own
-    name wins over another's ``ssh_host``."""
-    hosts: dict[str, str] = {}
-    aliases: dict[str, str] = {}
+def _host_blocks(text: str) -> list[tuple[str | None, list[str]]]:
+    """A glab config's top-level ``hosts:`` map, read without a YAML parser, as each
+    line at the indent of the map's first entry with the deeper lines under it, blank
+    and comment lines left out: the entry's host, lowercased with its port dropped
+    (``None`` for a line that names none), and its lines, its own first."""
+    blocks: list[tuple[str | None, list[str]]] = []
     inside = False
     indent: int | None = None
-    host: str | None = None
-    child: int | None = None
     for line in text.splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -109,14 +104,61 @@ def config_hosts(text: str) -> dict[str, str]:
         indent = lead if indent is None else indent
         if lead == indent:
             m = _GLAB_HOST.match(line)
-            host, child = (m.group(1).lower() if m else None), None
-            if host:
-                hosts[host] = host
-        elif lead > indent and host is not None:
+            blocks.append((m.group(1).lower() if m else None, [line]))
+        elif lead > indent and blocks:
+            blocks[-1][1].append(line)
+    return blocks
+
+
+def config_hosts(text: str) -> dict[str, str]:
+    """A glab config's ``hosts:`` map (:func:`_host_blocks`) as each host a remote may
+    name to the host glab's API answers on, all lowercased: every host to itself, and a
+    non-empty ``ssh_host:`` at the indent of that host's first entry to the host. A
+    host's own name wins over another's ``ssh_host``."""
+    hosts: dict[str, str] = {}
+    aliases: dict[str, str] = {}
+    for host, lines in _host_blocks(text):
+        if host is None:
+            continue
+        hosts[host] = host
+        child: int | None = None
+        for line in lines[1:]:
+            lead = len(line) - len(line.lstrip())
             child = lead if child is None else child
             if lead == child and (m := _GLAB_SSH_HOST.match(line)):
                 aliases.setdefault(m.group(2).lower(), host)
     return {**aliases, **hosts}
+
+
+def config_entries(text: str) -> dict[str, str]:
+    """Each host of a glab config's ``hosts:`` map (:func:`_host_blocks`) to its entry:
+    its host line through its last child line, those of a host listed twice joined."""
+    entries: dict[str, str] = {}
+    for host, lines in _host_blocks(text):
+        if host is not None:
+            entries[host] = entries.get(host, "") + "\n".join(lines) + "\n"
+    return entries
+
+
+#: :func:`glab_config_stamp` and :func:`config_entries` of the glab config last read
+#: by :func:`glab_host_entry`.
+_entries: tuple[tuple[str, int, int] | None, dict[str, str]] = (None, {})
+
+
+def glab_host_entry(host: str) -> str | None:
+    """``host``'s entry in glab's config (:func:`config_entries`), ``None`` for none.
+    The file is read only when its :func:`glab_config_stamp` moved, which glab's own
+    writes (its update check's timestamp) do too, so an unchanged entry is the same
+    login."""
+    global _entries
+    stamp = glab_config_stamp()
+    if stamp != _entries[0]:
+        try:
+            text = Path(stamp[0]).read_text(encoding="utf-8") if stamp else ""
+        except (OSError, UnicodeDecodeError):
+            text = ""
+        _entries = (stamp, config_entries(text))
+    return _entries[1].get(host.lower())
 
 
 def gitlab_hosts() -> Mapping[str, str]:

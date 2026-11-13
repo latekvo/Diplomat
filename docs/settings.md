@@ -132,8 +132,8 @@ Telemetry button and ⏻) swaps the panel to a settings screen:
   names that host too; a GitLab project's owner
   is its whole namespace (`group/sub`). A GitLab root is read through `glab`, signed in
   to its host, and "me" there is glab's user on that host, not the GitHub username
-  above, read again whenever glab's `config.yml` changes (`glab auth login` as another
-  account rewrites it); its agents are told to use `glab`. GitHub-only whatever the roots: Tasks
+  above, read again whenever that host's entry in glab's `config.yml` changes (`glab auth
+  login` as another account rewrites it); its agents are told to use `glab`. GitHub-only whatever the roots: Tasks
   mirroring, the review audit, goal grouping, the username override,
   [the narrow agent token](#a-narrow-github-token-for-agents) (an agent on a GitLab root
   runs on your full `glab` login) and [Comms](comms.md)' answers to questions (the

@@ -466,32 +466,48 @@ def test_me_on_gitlab_is_the_glab_login_read_once_and_only_once_it_is_read(store
     assert {a[2] for a in fake.asked} == {HOST}
 
 
-def test_a_rewritten_glab_config_reads_the_gitlab_login_again(store,  # noqa: F811
-                                                              monkeypatch):
-    """``glab auth login`` as another account rewrites glab's config; while it is
-    unchanged the kept login is used without asking glab."""
+def test_the_gitlab_login_is_kept_while_its_hosts_glab_entry_is_unchanged(store,  # noqa: F811
+                                                                          monkeypatch):
+    """glab rewrites its config on its own (its update check's timestamp), so the file
+    moving says nothing about who is signed in; that host's entry in it does. While the
+    entry stands the login is kept without asking glab, and the file is parsed only
+    when it moved; once the entry changed or is gone, the login is "" until read again."""
     import os
 
     config = localrepos.glab_config_file()
+
+    def rewrite(text: str) -> None:
+        read = config.stat()
+        config.write_text(text)
+        os.utime(config, ns=(read.st_atime_ns, read.st_mtime_ns + 1_000_000_000))
+
+    hosts = (f"hosts:\n    {HOST}:8443:\n        token: t1\n        user: carol\n"
+             f"    other.example.net:\n        user: bob\n")
+    rewrite(f"last_update_check_timestamp: 1\n{hosts}")
     fake = FakeGlab(monkeypatch, viewer={"data": {"currentUser": {"username": "carol"}}})
     assert store.me_for(LAB) == "carol"
-    assert store.me_for(LAB) == store.known_me(LAB) == "carol"
+    parse = localrepos.config_entries
+    parsed = []
+    monkeypatch.setattr(localrepos, "config_entries", lambda t: parsed.append(t) or parse(t))
+    assert store.me_for(LAB) == store.known_me(LAB) == store.known_me(LAB) == "carol"
+    assert parsed == [], "an unmoved file is not parsed again"
+
+    rewrite(f"last_update_check_timestamp: 1700000000\n{hosts}")
+    assert store.known_me(LAB) == store.me_for(LAB) == store.known_me(LAB) == "carol"
+    assert len(parsed) == 1, "a moved file is parsed once"
+    rewrite(f"last_update_check_timestamp: 1700000000\n{hosts.replace('bob', 'dan')}")
+    assert store.known_me(LAB) == store.me_for(LAB) == "carol", "another host's entry"
     assert fake.names() == ["viewer"]
+
     fake.answers["viewer"] = {"data": {"currentUser": {"username": "dave"}}}
-    config.write_text(f"hosts:\n    {HOST}:\n        user: dave\n")
+    rewrite(config.read_text().replace("token: t1", "token: t2"))
     assert store.known_me(LAB) == ""
-    assert store.me_for(LAB) == "dave"
-    assert store.me_for(LAB) == "dave"
+    assert store.me_for(LAB) == store.known_me(LAB) == "dave"
     assert fake.names() == ["viewer"] * 2
-    read = config.stat()
-    config.write_text(config.read_text().replace("dave", "erin"))
-    os.utime(config, ns=(read.st_atime_ns, read.st_mtime_ns + 1_000_000_000))
-    assert store.known_me(LAB) == "", "the same size, a later time"
-    assert store.me_for(LAB) == "dave"
-    read = config.stat()
-    config.write_text(config.read_text().replace("erin", "frank"))
-    os.utime(config, ns=(read.st_atime_ns, read.st_mtime_ns))
-    assert store.known_me(LAB) == "", "the same time, another size"
+
+    rewrite("last_update_check_timestamp: 1700000001\nhosts:\n"
+            "    other.example.net:\n        user: dan\n")
+    assert store.known_me(LAB) == "", "its entry is gone"
 
 
 @pytest.fixture
