@@ -1,9 +1,9 @@
-"""GitLab repo roots: every read of one goes through ``glab`` and comes back in the
-GitHub shape, so the parsers, keys and dispatch past it are the GitHub path's.
+"""GitLab repo roots: every read goes through ``glab`` and comes back in the GitHub
+shape, so everything past it is the GitHub path.
 
 The adapters are pinned by the fixtures shared with ``GitLab.swift``; the rest pins
-what a GitLab root changes on the way there: which CLI is asked, with what, as whom,
-and which link names the item."""
+what a GitLab root changes: which CLI is asked, with what, as whom, and which link
+names the item."""
 
 from __future__ import annotations
 
@@ -37,8 +37,8 @@ def _review_requests(env: dict, lookup) -> dict:
     return gitlab.review_requests(env, "carol", lookup)
 
 
-#: The review-requests fixtures are answers to the query asked for reviewer ``carol``.
-#: Their member pages hold every member, so no adapter looks one up.
+#: The review-requests fixtures are asked for reviewer ``carol``, and their member pages
+#: are complete, so nothing is looked up.
 ADAPTERS = {
     "prs": gitlab.prs, "monitor-prs": gitlab.monitor_prs, "closed-prs": gitlab.closed_prs,
     **{name: lambda env: _review_requests(env, _unasked)
@@ -46,9 +46,9 @@ ADAPTERS = {
                     "review-requests-left-review", "review-requests-dst")},
     "issues": lambda env: gitlab.issues(env, _unasked), "mr": gitlab.mr,
 }
-#: Fixtures whose member page has more: ``{answer, members}`` in, where ``members`` is
-#: the ``members/all`` answer the lookup reads whatever it is asked, and ``{asked,
-#: result}`` out, ``asked`` the id lists the adapter looked up.
+#: Fixtures with a full member page: in ``{answer, members}``, ``members`` the
+#: ``members/all`` answer to any lookup; out ``{asked, result}``, ``asked`` the id lists
+#: looked up.
 PAGED = {"issues-paged": gitlab.issues, "review-requests-paged": _review_requests}
 QUERIES = ("viewer", "prs", "monitor-prs", "closed-prs", "review-requests", "issues", "mr")
 RELATIONS = "relations: [DIRECT, INHERITED, INVITED_GROUPS, SHARED_INTO_ANCESTORS]"
@@ -97,8 +97,8 @@ def test_every_fixture_has_an_adapter():
 
 def test_the_queries_ask_what_their_adapters_read():
     """System-note discussions fill the discussions page, a thread's adapted comment is
-    its LAST note that is no system note, a request older than the activity window falls
-    back on the MR's creation, and no adapter of ``prs`` reads members."""
+    its LAST non-system note, a request older than the activity window falls back on the
+    MR's creation, and the ``prs`` adapter reads no members."""
     for name in ("prs", "monitor-prs"):
         text = core.read_graphql(f"gitlab-{name}")
         assert "discussions(first: 100)" in text, name
@@ -120,10 +120,9 @@ def test_the_queries_ask_what_their_adapters_read():
 
 
 class FakeGlab:
-    """``glab.run`` answering each shared ``gitlab-*`` query from ``answers`` (a dict,
-    or an exception to raise), recording ``(query, -f/-F variables, host)``; a REST
-    path from ``rest`` the same way, recorded in ``rest_asked``, and one missing
-    there is a 404."""
+    """``glab.run`` answering each ``gitlab-*`` query from ``answers`` (a dict, or an
+    exception to raise) and recording ``(query, -f/-F variables, host)``; REST paths
+    likewise from ``rest`` into ``rest_asked``, a missing one a 404."""
 
     def __init__(self, monkeypatch, **answers):
         self.answers = {k.replace("_", "-"): v for k, v in answers.items()}
@@ -274,8 +273,8 @@ def test_the_monitor_reads_ask_for_me_by_username(monkeypatch):
 
 
 def test_an_undecided_merge_status_takes_the_answer_of_a_recheck(monkeypatch):
-    """GraphQL never makes GitLab recheck a merge request it left unchecked; the REST
-    read with ``with_merge_status_recheck`` does, and only undecided ones are asked."""
+    """GraphQL never makes GitLab recheck a merge status; the REST read with
+    ``with_merge_status_recheck`` does, and only undecided ones are asked."""
     from diplomat_app import autofixmonitor
 
     fake = FakeGlab(monkeypatch, monitor_prs=_fixture("monitor-prs", "input"))
@@ -482,8 +481,8 @@ def test_a_poll_of_a_gitlab_root_queues_its_work_as_the_glab_login(lab_only, mon
 
 def test_without_a_github_login_a_gitlab_root_is_polled_and_a_github_one_held(lab_only,
                                                                               monkeypatch):
-    """No GitHub login stands the poll down only with no GitLab root: the GitHub roots
-    are then unread like a root whose read failed, and the GitLab ones are read."""
+    """No GitHub login stops the whole poll only with no GitLab root; with one, the
+    GitHub roots go unread like failed reads and the GitLab ones are read."""
     from diplomat_app import store as store_mod
 
     monkeypatch.setattr(review, "repo_roots", lambda: [HUB, LAB])
@@ -537,8 +536,8 @@ def test_the_goal_pass_waits_for_the_github_login(lab_only, monkeypatch):
 
 def test_the_review_wizard_asks_who_i_am_in_a_gitlab_checkout_it_never_read(lab_only,
                                                                            monkeypatch):
-    """A merge request of another root than the one on the panel: its author is
-    compared with glab's login on that host, read for the poll, not with nothing."""
+    """A merge request of a root not on the panel: its author is compared with glab's
+    login on that host, read on demand, not with nothing."""
     from diplomat_app.wizardview import WizardView
     from diplomat_runtime.prtarget import PRTarget
     from PySide6.QtWidgets import QApplication
@@ -848,9 +847,9 @@ def test_a_gitlab_checkout_is_its_own_root_and_never_the_configured_repo():
 
 
 def test_a_github_remote_outranks_a_gitlab_origin():
-    """A GitLab mirror checked out beside a GitHub remote resolves to the GitHub repo:
-    the configured one when the remote names it, else that GitHub sibling. Only a
-    checkout with no GitHub remote is a GitLab root, upstream before origin."""
+    """A checkout with a GitHub remote resolves to a GitHub repo, the configured one
+    when the remote names it; only one with none is a GitLab root, upstream before
+    origin."""
     remotes = {
         "/mirror": "remote.origin.url git@gitlab.com:acme/widget.git\n"
                    "remote.github.url git@github.com:acme/widget.git\n",

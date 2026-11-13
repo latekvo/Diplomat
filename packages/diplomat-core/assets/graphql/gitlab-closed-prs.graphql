@@ -1,5 +1,4 @@
-# The merge requests that recently left the open state: the GitLab twin of
-# closed-prs.graphql. GitLab tells merged from closed, so both are asked.
+# GitLab twin of closed-prs.graphql; merged and closed are separate states here.
 query($path: ID!) {
   project(fullPath: $path) {
     merged: mergeRequests(state: merged, first: 50, sort: UPDATED_DESC) { nodes { iid } }

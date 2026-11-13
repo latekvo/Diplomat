@@ -1,19 +1,13 @@
-"""GitLab GraphQL answers in the shape of their GitHub twins.
+"""Each ``gitlab-*.graphql`` answer turned into the envelope of its GitHub twin, so one
+parser reads both. Twin of ``GitLab.swift``, pinned to it by the shared fixtures in
+``diplomat-core/Tests/fixtures/gitlab``; nothing here calls glab but ``lookup``.
 
-Each ``assets/graphql/gitlab-*.graphql`` answer is turned into the exact envelope the
-GitHub query of the same job returns, so one parser reads both. Twin of
-``GitLab.swift``; nothing here calls glab but the ``lookup`` an adapter is handed. The
-shared fixtures in ``packages/diplomat-core/Tests/fixtures/gitlab`` pin the two twins to
-one output.
-
-GitLab has no author association, so a project member reads as ``MEMBER`` and anyone
-else as ``NONE``; an author past a full member page is asked of ``lookup``, which reads
-their ids off the REST ``members/all`` (:func:`member_paths`). GitLab records a review
-request, an approval, a requested change and a ready-for-review as system ("activity")
-notes only, so those are read off note bodies; publishing a review without approving is
-the note "left review comments", GitHub's COMMENTED review. Every time is given in UTC as
-GitHub gives it (``2026-10-25T00:40:00Z``), where GitLab gives the instance's offset, so
-times compare as strings.
+GitLab has no author association: a project member reads as ``MEMBER``, anyone else as
+``NONE``, and an author past a full member page is asked of ``lookup``. Review
+requests, approvals, requested changes and ready-for-review exist only as system notes,
+so they are read off note bodies; "left review comments" is GitHub's COMMENTED review.
+GitLab gives times in the instance's offset; they are converted to UTC ``Z`` form, as
+GitHub's, so they compare as strings.
 """
 
 from __future__ import annotations
@@ -37,10 +31,9 @@ _REVIEWED = ("approved this merge request", "requested changes", "left review co
 _MENTION = re.compile(r"@([\w.-]+)")
 _MR_STATES = {"opened": "OPEN", "locked": "OPEN", "closed": "CLOSED", "merged": "MERGED"}
 _USER_GID = re.compile(r"gid://gitlab/User/([0-9]+)")
-#: User ids one ``members/all`` read asks about. Fewer than its page of 100, so one page
-#: holds every member among them, and few enough for the answer's ``Link`` header, which
-#: repeats every id twice: a self-hosted GitLab answered 502 past about 80 ids, the header
-#: outgrowing its proxy's buffer.
+#: User ids per ``members/all`` read: under its page of 100, so one page answers them
+#: all, and few enough for the ``Link`` header, which repeats each id twice: a
+#: self-hosted GitLab's proxy answered 502 past about 80 ids.
 _MEMBER_CHUNK = 40
 
 
@@ -67,8 +60,8 @@ def _login(user: dict | None) -> dict | None:
 
 
 def _members(project: dict, users: list[dict | None], lookup: Lookup) -> set[str]:
-    """The lowercased usernames of the project's members: its member page, and when that
-    page is full, those of ``users`` the page does not hold whose ids ``lookup`` answers."""
+    """Lowercased member usernames: the member page, plus, when it is full, those of
+    ``users`` missing from it that ``lookup`` confirms."""
     page = project.get("projectMembers") or {}
     members = {(m.get("user") or {}).get("username", "").lower() for m in _nodes(page)} - {""}
     if (page.get("pageInfo") or {}).get("hasNextPage"):
@@ -86,9 +79,8 @@ def _user_id(user: dict) -> int:
 
 
 def member_paths(slug: str, ids: list[int]) -> list[str]:
-    """The REST reads of which of ``ids`` are members of project ``slug``, direct,
-    inherited or through a shared group: at most 40 ids to a read, in the order
-    given."""
+    """REST reads of which of ``ids`` are members of ``slug`` (direct, inherited or via
+    a shared group), :data:`_MEMBER_CHUNK` ids a read, in order."""
     project = urllib.parse.quote(slug, safe="")
     return [f"projects/{project}/members/all?per_page=100"
             + "".join(f"&user_ids[]={i}" for i in ids[start:start + _MEMBER_CHUNK])
@@ -107,8 +99,7 @@ def _mergeable(mr: dict) -> str:
 
 
 def rest_mergeable(obj: dict) -> str:
-    """A REST ``projects/:id/merge_requests/:iid`` answer's mergeable, mapped as the
-    GraphQL one is."""
+    """A REST merge request answer's mergeable, mapped as the GraphQL one is."""
     status = obj.get("detailed_merge_status")
     return _mergeable({"conflicts": obj.get("has_conflicts"),
                        "detailedMergeStatus": status.upper() if status else None})
@@ -125,10 +116,9 @@ def _review_decision(mr: dict) -> str | None:
 
 
 def _threads(mr: dict) -> dict:
-    """Resolvable discussions as GitHub review threads, which are asked
-    ``comments(last: 1)``: the count of the notes people wrote, and the last of them.
-    A system note (a push's "changed this line") is no comment, so it never answers
-    the thread; whether I can resolve it is still read off its last note."""
+    """Resolvable discussions as GitHub review threads (asked ``comments(last: 1)``):
+    the count of human notes and the last one. A system note (a push's "changed this
+    line") never answers a thread, but resolvability is read off the last note."""
     out = []
     for d in _nodes(mr.get("discussions")):
         if d.get("resolvable") is not True:
@@ -202,8 +192,8 @@ def closed_prs(env: dict) -> dict:
 
 
 def _requests(notes: list[dict]) -> list[dict]:
-    """One ``ReviewRequestedEvent`` per user a "requested review from" note names,
-    leaving out the users the same note removed a request for."""
+    """One ``ReviewRequestedEvent`` per user a "requested review from" note adds, minus
+    those the same note un-requests."""
     out = []
     for n in notes:
         body = n.get("body") or ""
@@ -217,9 +207,9 @@ def _requests(notes: list[dict]) -> list[dict]:
 
 
 def _request_of(reviewer: str, events: list[dict], mr: dict, activity: list[dict]) -> list[dict]:
-    """``reviewer``'s request when no note in the window names them: the query only
-    answers merge requests that request their review, so it is at least as old as the
-    window's oldest note, or the merge request when the window is empty."""
+    """``reviewer``'s request when no note in the window names them: the query answers
+    only merge requests requesting their review, so it is at least as old as the
+    window's oldest note (the merge request, for an empty window)."""
     if any(e["requestedReviewer"]["login"].lower() == reviewer.lower() for e in events):
         return []
     times = [_utc(n["createdAt"]) for n in activity if n.get("createdAt")]

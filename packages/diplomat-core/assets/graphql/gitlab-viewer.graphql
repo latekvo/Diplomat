@@ -1,4 +1,4 @@
-# The signed-in GitLab user on one host: what a GitLab root reads as "me".
+# The signed-in user on one host: "me" in its GitLab roots.
 query {
   currentUser {
     username

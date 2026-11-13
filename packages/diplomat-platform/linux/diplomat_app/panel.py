@@ -1219,8 +1219,8 @@ class Panel(QWidget):
     def _rebuild_lookup(self, n: int) -> None:
         r = self.store.lookup(n)
         repo = self.store.selected_repo
-        # GitLab numbers merge requests and issues apart, so a number on no list has
-        # no link there.
+        # GitLab numbers merge requests and issues apart, so an unlisted number has no
+        # link.
         link = r.url or (None if repo.is_gitlab else repo.link("issues", n))
 
         container = QWidget()

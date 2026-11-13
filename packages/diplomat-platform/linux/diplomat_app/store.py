@@ -164,10 +164,9 @@ def _count(n: int, noun: str) -> str:
 
 
 def _undecided_merge_request(snap, lab: set[str]) -> bool:
-    """An undecided merge status on a root of ``lab`` (GitLab slugs). GitLab leaves a
-    merge request unchecked after a push to its target until something asks it again,
-    so there an undecided one may still conflict, and a conflict fix queued for it
-    stands."""
+    """An undecided merge status on a root of ``lab`` (GitLab slugs). After a push to
+    the target GitLab leaves it unchecked until asked, so it may still conflict, and a
+    conflict fix queued for it stands."""
     return snap.mergeable == "UNKNOWN" and (snap.item or "").partition("#")[0] in lab
 
 
@@ -391,7 +390,7 @@ class Store(QObject):
         self.selected: str = tools()[0].id
         self.has_loaded = False
         self.me = ""
-        # The glab login of each GitLab host a root is on, once read (:meth:`me_for`).
+        # glab's login per GitLab host, once read (:meth:`me_for`).
         self._gitlab_me: dict[str, str] = {}
 
         # Live device-allocator state (pool + holders) and install status.
@@ -1422,9 +1421,8 @@ class Store(QObject):
         return o if o else self.me
 
     def me_for(self, root: LocalRepo) -> str:
-        """Who "me" is in ``root``: :attr:`effective_me` on GitHub; on GitLab the login
-        glab is signed in to on its host, read once per host and kept once read. Raises
-        while that read fails or the GitHub login is unknown, which leaves the root
+        """Who "me" is in ``root``: :attr:`effective_me` on GitHub, glab's login on a
+        GitLab host (kept once read). Raises while it is unknown, leaving the root
         unread like any failed read."""
         if not root.is_gitlab:
             if not self.effective_me:
@@ -1617,8 +1615,7 @@ class Store(QObject):
             if not self.effective_me:
                 self.fetch_me()
             if not self.effective_me and not any(r.is_gitlab for r in review.repo_roots()):
-                # With a GitLab root the GitHub roots fail their reads alone
-                # (:meth:`me_for`), and the GitLab ones go on.
+                # With a GitLab root only the GitHub roots fail (:meth:`me_for`).
                 self._note_poll_failure(GITHUB_LOGIN_UNKNOWN)
             elif review.roots_guessed():
                 # Its one root would be the configured repo at the first path, which
@@ -1841,8 +1838,8 @@ class Store(QObject):
         keep = {s.item for s in snaps if s.mergeable != "MERGEABLE"}
         self._save_attempts(key, {k: v for k, v in attempts.items()
                                   if k in keep or self._held(k)})
-        # Re-offered as it stands, so this cycle's commit keeps it; nothing new starts on
-        # a status nobody has decided.
+        # Re-staged unchanged, so this cycle's commit keeps it; nothing new starts on an
+        # undecided status.
         lab = {r.slug.lower() for r in review.repo_roots() if r.is_gitlab}
         queued = {e.id: e for e in self.queued_tasks}
         self._staged_queue = self._staged_queue + [

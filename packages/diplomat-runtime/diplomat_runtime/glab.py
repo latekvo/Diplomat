@@ -1,8 +1,8 @@
-"""Thin wrapper around the ``glab`` CLI: the GitLab twin of :mod:`gh` (GLab.swift).
+"""The ``glab`` CLI: the GitLab twin of :mod:`gh` (``GLab.swift``).
 
-Same contract as :mod:`gh`: the binary runs with args passed literally and its own
-per-host auth, queries come from the shared ``assets/graphql`` assets, and every
-failure is a :class:`gh.GHError`, so a caller's existing catch covers both hosts.
+Same contract as :mod:`gh`: literal args, glab's own per-host auth, queries from the
+shared ``assets/graphql``, and every failure a :class:`gh.GHError`, so one catch covers
+both hosts.
 """
 
 from __future__ import annotations
@@ -42,7 +42,6 @@ def _forget(path: str) -> None:
 
 
 def run(args: list[str], timeout: float = 60.0) -> bytes:
-    """Run glab with the given argv, returning stdout bytes (raises on failure)."""
     path = glab_path()
     try:
         proc = subprocess.run([path, *args], capture_output=True, timeout=timeout,
@@ -60,13 +59,12 @@ def run(args: list[str], timeout: float = 60.0) -> bytes:
 
 def graphql(query_name: str, host: str, variables: dict[str, str] | None = None,
             typed_variables: dict[str, str] | None = None) -> dict:
-    """Run a shared ``assets/graphql`` query against ``host``'s GitLab, returning the
-    decoded JSON envelope. ``variables`` go through ``-f`` (strings), ``typed_variables``
-    through ``-F`` (parsed into the declared type), as in :func:`gh.graphql`.
+    """A shared query asked of ``host``'s GitLab, as :func:`gh.graphql` asks GitHub:
+    ``variables`` through ``-f`` (strings), ``typed_variables`` through ``-F`` (typed),
+    retried once.
 
-    A query asking for ``project(fullPath: $path)`` that answers ``null`` raises: a
-    project missing or hidden from this login is an unreadable root, never one with
-    nothing open. Retries once on failure, like :func:`gh.graphql`."""
+    A ``null`` ``project`` raises: a project missing or hidden from this login is an
+    unreadable root, never an empty one."""
     query = core.read_graphql(query_name)
     args = ["api", "--hostname", host, "graphql", "-f", f"query={query}"]
     for k, v in (variables or {}).items():
@@ -90,8 +88,7 @@ def graphql(query_name: str, host: str, variables: dict[str, str] | None = None,
 
 
 def _twice(call: Callable[[], T]) -> T:
-    """``call()``, asked once more after a pause when it raises; the second failure is
-    the one raised."""
+    """``call()``, retried once after a pause; the second failure is raised."""
     try:
         return call()
     except Exception:  # noqa: BLE001 — retried, and a second failure bubbles up
@@ -101,15 +98,14 @@ def _twice(call: Callable[[], T]) -> T:
 
 def project(query_name: str, root: LocalRepo, variables: dict[str, str] | None = None,
             typed_variables: dict[str, str] | None = None) -> dict:
-    """:func:`graphql` of a query about ``root``'s project, which is its ``$path``."""
+    """:func:`graphql` with ``root``'s project as ``$path``."""
     return graphql(query_name, root.host, {"path": root.slug, **(variables or {})},
                    typed_variables)
 
 
 def members(root: LocalRepo, ids: list[int]) -> set[int]:
-    """The members of ``root``'s project among user ``ids``: one REST read per chunk of
-    them (:func:`gitlab.member_paths`), each retried once like :func:`graphql`, and any
-    failure raised as a failed read is."""
+    """Which of user ``ids`` are members of ``root``'s project: one REST read per chunk
+    (:func:`gitlab.member_paths`), each retried once, any failure raised."""
     found: set[int] = set()
     for path in gitlab.member_paths(root.slug, ids):
         found |= {m["id"] for m in _twice(lambda: json.loads(

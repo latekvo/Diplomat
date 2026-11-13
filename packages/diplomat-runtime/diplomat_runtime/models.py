@@ -333,12 +333,11 @@ class Fmt:
 
 
 class API:
-    """Each read of a repo root asks its host: ``gh`` for github.com, else ``glab``,
-    whose answer :mod:`gitlab` turns into the GitHub one the parsing here reads."""
+    """Each read asks the root's host: ``gh`` for github.com, else ``glab``, whose
+    answer :mod:`gitlab` turns into GitHub's shape for the parsing here."""
 
     @staticmethod
     def fetch_viewer_login(host: str = GITHUB) -> str:
-        """The signed-in login on ``host``."""
         if host == GITHUB:
             return gh.graphql("viewer")["data"]["viewer"]["login"]
         return gitlab.viewer(glab.graphql("gitlab-viewer", host), host)

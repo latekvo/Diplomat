@@ -46,13 +46,13 @@ _HOSTED_REMOTE = re.compile(
     r"([\w.-]+(?:/[\w.-]+)*)/([\w.-]+?)(?:\.git)?/?$",
     re.IGNORECASE,
 )
-#: A host key of glab's ``hosts:`` map (any port is dropped: a remote names none).
+#: A host key of glab's ``hosts:`` map; its port is dropped, as a remote's is.
 _GLAB_HOST = re.compile(r"^\s+([A-Za-z0-9.-]+)(?::[0-9]+)?:\s*$")
 
 
 def glab_config_file() -> Path | None:
-    """glab's config, the first that exists of ``$GLAB_CONFIG_DIR/config.yml``,
-    ``$XDG_CONFIG_HOME/glab-cli/config.yml`` (``~/.config`` by default) and, on macOS,
+    """The first existing glab config of ``$GLAB_CONFIG_DIR/config.yml``,
+    ``${XDG_CONFIG_HOME:-~/.config}/glab-cli/config.yml`` and, on macOS,
     ``~/Library/Application Support/glab-cli/config.yml``."""
     candidates = []
     if os.environ.get("GLAB_CONFIG_DIR"):
@@ -66,9 +66,8 @@ def glab_config_file() -> Path | None:
 
 
 def config_hosts(text: str) -> set[str]:
-    """The keys of the column-0 ``hosts:`` map of a glab config, lowercased. Read
-    without a YAML parser: every line at the indent of the map's first entry that is a
-    bare ``host:`` key, up to the next column-0 key."""
+    """Lowercased keys of a glab config's top-level ``hosts:`` map, read without a YAML
+    parser: the bare ``host:`` lines at the indent of its first entry."""
     hosts: set[str] = set()
     inside = False
     indent: int | None = None
@@ -90,8 +89,8 @@ def config_hosts(text: str) -> set[str]:
 
 
 def gitlab_hosts() -> frozenset[str]:
-    """:data:`GITLAB_HOSTS` and every host glab is configured for
-    (:func:`glab_config_file`); a missing or unreadable config adds none."""
+    """:data:`GITLAB_HOSTS` plus every host in glab's config; a missing or unreadable
+    one adds none."""
     path = glab_config_file()
     try:
         text = path.read_text(encoding="utf-8") if path else ""
@@ -101,8 +100,8 @@ def gitlab_hosts() -> frozenset[str]:
 
 
 def is_gitlab_host(host: str, hosts: frozenset[str] = GITLAB_HOSTS) -> bool:
-    """Whether ``host`` is a GitLab: one of ``hosts``, or any of two or more non-empty
-    DNS labels whose first is ``gitlab``."""
+    """Whether ``host`` is one of ``hosts`` or has two or more non-empty DNS labels, the
+    first ``gitlab``."""
     host = host.lower()
     labels = host.split(".")
     return host != GITHUB and (host in hosts or len(labels) >= 2 and labels[0] == "gitlab"
@@ -111,9 +110,8 @@ def is_gitlab_host(host: str, hosts: frozenset[str] = GITLAB_HOSTS) -> bool:
 
 def parse_remote(url: str, hosts: frozenset[str] = GITLAB_HOSTS
                  ) -> tuple[str, str, str] | None:
-    """``(host, owner, repo)`` of a GitHub remote URL, or of a GitLab one on a host
-    :func:`is_gitlab_host` takes (``owner`` its whole namespace), else ``None``. The
-    host is lowercased."""
+    """Lowercased ``host``, ``owner`` and ``repo`` of a GitHub remote, or of a GitLab
+    one (``owner`` its whole namespace) on a host :func:`is_gitlab_host` takes."""
     url = url.strip()
     m = _GITHUB_REMOTE.match(url)
     if m:
@@ -149,9 +147,9 @@ def remote_config(path: str) -> str | None:
 def entries(path: str, remotes: str, only: tuple[str, ...] = (),
             hosts: frozenset[str] = GITLAB_HOSTS) -> list[LocalRepo]:
     """Every GitHub or GitLab remote in ``remotes`` (:func:`remote_config` output), or
-    every one named in ``only``, as a repo cloned at ``path``, each once: the GitHub
-    ones before the GitLab ones, and within each ``upstream`` first, then ``origin``,
-    then the rest in config order. Twin of ``LocalRepo.entries(path:remotes:only:)``."""
+    every one named in ``only``, as a repo cloned at ``path``, each once: GitHub before
+    GitLab, and within each ``upstream``, ``origin``, then the rest in config order.
+    Twin of ``LocalRepo.entries(path:remotes:only:)``."""
     named: list[tuple[str, LocalRepo]] = []
     for line in remotes.split("\n"):
         key, sep, url = line.partition(" ")
@@ -216,16 +214,16 @@ def resolve_roots(paths: list[str], remotes: dict[str, str],
     """The repo roots ``paths`` name, primary first. Twin of ``RepoRoots.resolve``.
 
     ``remotes`` maps an expanded path to its :func:`remote_config` output; a path
-    missing from it is no checkout. A path with a GitHub remote answers for a GitHub
-    repo: the ``configured`` one when its GitHub ``upstream`` or ``origin`` (any GitHub
-    remote, with neither) is that repo, or a repo of that name under another owner (a
-    fork's ``origin``, or a URL from before the repo moved); else its first GitHub
-    remote (:func:`entries`). Another remote naming it is a sibling fetched from, not
-    what the checkout is. Only a path with no GitHub remote answers for a GitLab project:
-    its first GitLab remote, which is only ever itself. A path with no GitHub or GitLab
-    remote is skipped, and of two answering for one repo the first wins. When nothing
-    resolves, the first path stands for the configured repo, so a missing checkout reads
-    as the single root it always did (:func:`guessed` tells the case of several)."""
+    missing from it is no checkout. A path with a GitHub remote answers for the
+    ``configured`` repo when its GitHub ``upstream`` or ``origin`` (any GitHub remote,
+    with neither) is that repo, or a repo of that name under another owner (a fork's
+    ``origin``, or a URL from before the repo moved); else for its first GitHub remote.
+    Another remote naming it is a sibling fetched from, not what the checkout is. Only a
+    path with no GitHub remote answers for a GitLab project: its first GitLab remote,
+    never the configured repo. A path with neither is skipped, and of two answering for
+    one repo the first wins. When nothing resolves, the first path stands for the
+    configured repo, so a missing checkout reads as the single root it always did
+    (:func:`guessed` tells the case of several)."""
     want = f"{configured[0]}/{configured[1]}".lower()
     roots: list[LocalRepo] = []
     seen: set[str] = set()
