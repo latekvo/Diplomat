@@ -69,7 +69,7 @@ def test_a_repo_name_with_dots_keeps_them():
     ("ssh://git@GitLab.Example.com:2222/a/b/c/proj", localrepos.GITLAB_HOSTS,
      ("gitlab.example.com", "a/b/c", "proj")),
     ("git@code.example.org:group/proj.git", localrepos.GITLAB_HOSTS, None),
-    ("git@code.example.org:group/proj.git", frozenset({"code.example.org"}),
+    ("git@code.example.org:group/proj.git", {"code.example.org": "code.example.org"},
      ("code.example.org", "group", "proj")),
     ("https://gitlab.com/proj", localrepos.GITLAB_HOSTS, None),
 ])

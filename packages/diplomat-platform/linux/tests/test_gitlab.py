@@ -43,7 +43,8 @@ ADAPTERS = {
     "prs": gitlab.prs, "monitor-prs": gitlab.monitor_prs, "closed-prs": gitlab.closed_prs,
     **{name: lambda env: _review_requests(env, _unasked)
        for name in ("review-requests", "review-requests-nofiles", "review-requests-window",
-                    "review-requests-left-review", "review-requests-dst")},
+                    "review-requests-left-review", "review-requests-dst",
+                    "review-requests-reviewed")},
     "issues": lambda env: gitlab.issues(env, _unasked), "mr": gitlab.mr,
 }
 #: Fixtures with a full member page: in ``{answer, members}``, ``members`` the
@@ -92,13 +93,14 @@ def test_an_author_with_no_readable_id_fails_the_read():
 
 def test_every_fixture_has_an_adapter():
     names = {p.name.split(".")[0] for p in FIXTURES.glob("*.json")}
-    assert names == set(ADAPTERS) | set(PAGED) | {"member-paths"}
+    assert names == set(ADAPTERS) | set(PAGED) | {"member-paths", "glab-config"}
 
 
 def test_the_queries_ask_what_their_adapters_read():
     """System-note discussions fill the discussions page, a thread's adapted comment is
-    its LAST non-system note, a request older than the activity window falls back on the
-    MR's creation, and the ``prs`` adapter reads no members."""
+    its LAST non-system note, a request older than the activity window is decided by my
+    review state or falls back on the MR's creation, and the ``prs`` adapter reads no
+    members."""
     for name in ("prs", "monitor-prs"):
         text = core.read_graphql(f"gitlab-{name}")
         assert "discussions(first: 100)" in text, name
@@ -107,6 +109,8 @@ def test_the_queries_ask_what_their_adapters_read():
     requests = core.read_graphql("gitlab-review-requests")
     assert "notes(last: 100, filter: ONLY_ACTIVITY)" in requests
     assert "diffHeadSha createdAt" in requests
+    assert "reviewers { nodes { username mergeRequestInteraction { reviewState } } }" \
+        in requests
     for name in ("issues", "review-requests"):
         text = core.read_graphql(f"gitlab-{name}")
         assert f"projectMembers(first: 100, {RELATIONS}) {{\n      pageInfo {{ hasNextPage }}" \
@@ -364,6 +368,20 @@ def test_a_request_older_than_the_activity_window_is_answered_inside_it(monkeypa
     assert answered.requested_at == "2026-11-06T08:00:00Z"
     assert not answered.owe_review
     assert silent.requested_at == "2026-11-02T07:00:00Z" and silent.owe_review
+
+
+def test_a_long_merge_request_i_reviewed_is_not_owed_again(monkeypatch):
+    """My request and response both older than the windows: GitLab's review state says
+    whether I answered. Unanswered, the request reads as made at the window's oldest
+    note; re-requested inside the window, the note decides."""
+    from diplomat_app import autofixmonitor
+
+    FakeGlab(monkeypatch, review_requests=_fixture("review-requests-reviewed", "input"))
+    got = {r.number: r for r in autofixmonitor.fetch_review_requests(LAB, "carol")}
+    assert sorted(got) == [44, 45, 46, 47]
+    assert [n for n, r in sorted(got.items()) if r.owe_review] == [44, 45, 46]
+    assert got[44].requested_at == "2026-11-06T08:00:00Z"
+    assert got[45].requested_at == "2026-11-09T08:00:00Z"
 
 
 def test_a_review_left_as_comments_alone_answers_the_request(monkeypatch):
@@ -792,8 +810,8 @@ editor:
 
 def test_the_hosts_glab_is_configured_for_count_as_gitlab(tmp_path, monkeypatch):
     assert localrepos.config_hosts(GLAB_CONFIG) == {
-        "gitlab.com", "code.example.org", "other.example.net"}
-    assert localrepos.config_hosts("hosts:\n") == set()
+        h: h for h in ("gitlab.com", "code.example.org", "other.example.net")}
+    assert localrepos.config_hosts("hosts:\n") == {}
     (tmp_path / "glab" / "config.yml").write_text(GLAB_CONFIG)
     hosts = localrepos.gitlab_hosts()
     assert localrepos.is_gitlab_host("other.example.net", hosts)
@@ -801,9 +819,36 @@ def test_the_hosts_glab_is_configured_for_count_as_gitlab(tmp_path, monkeypatch)
     assert localrepos.is_gitlab_host("gitlab.internal.example")
     for bare in ("gitlab", "gitlab.", "gitlab..example.com", "gitlab.example.com."):
         assert not localrepos.is_gitlab_host(bare), bare
-    assert not localrepos.is_gitlab_host("github.com", frozenset({"github.com"}))
+    assert not localrepos.is_gitlab_host("github.com", {"github.com": "github.com"})
     assert localrepos.parse_remote("git@code.example.org:a/b/c.git", hosts) == (
         "code.example.org", "a/b", "c")
+
+
+def test_a_hosts_ssh_host_names_that_gitlab_host():
+    """A remote on a configured host's non-empty ``ssh_host`` is on that host; an empty
+    one, one nested deeper and one outside ``hosts:`` name nothing, and a configured
+    host's own name wins over another's ``ssh_host``."""
+    case = _fixture("glab-config", "input")
+    expected = _fixture("glab-config", "expected")
+    hosts = localrepos.config_hosts(case["config"])
+    assert hosts == expected["hosts"]
+    assert [list(r) if (r := localrepos.parse_remote(u, hosts)) else None
+            for u in case["remotes"]] == expected["remotes"]
+
+
+def test_a_root_on_an_ssh_host_is_on_its_gitlab_host(tmp_path, monkeypatch):
+    import subprocess
+
+    from diplomat_runtime import appconfig
+
+    monkeypatch.delenv("DIPLOMAT_REPO", raising=False)
+    (tmp_path / "glab" / "config.yml").write_text(_fixture("glab-config", "input")["config"])
+    clone = tmp_path / "c"
+    clone.mkdir()
+    for args in (["init", "-q"], ["remote", "add", "origin", "git@ssh.gl.example.com:ns/p.git"]):
+        subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
+    appconfig.set_repo_roots([str(clone)])
+    assert review.repo_roots() == [LocalRepo("ns", "p", str(clone), "gl.example.com")]
 
 
 def test_the_roots_read_the_hosts_glab_is_configured_for(tmp_path, monkeypatch):

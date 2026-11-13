@@ -28,6 +28,8 @@ _READY = "marked this merge request as **ready**"
 _REQUESTED = "requested review from "
 _UNREQUESTED = " and removed review request"
 _REVIEWED = ("approved this merge request", "requested changes", "left review comments")
+#: A reviewer's ``reviewState`` once they have answered the request.
+_ANSWERED = {"REVIEWED", "APPROVED", "REQUESTED_CHANGES"}
 _MENTION = re.compile(r"@([\w.-]+)")
 _MR_STATES = {"opened": "OPEN", "locked": "OPEN", "closed": "CLOSED", "merged": "MERGED"}
 _USER_GID = re.compile(r"gid://gitlab/User/([0-9]+)")
@@ -206,27 +208,39 @@ def _requests(notes: list[dict]) -> list[dict]:
     return out
 
 
-def _request_of(reviewer: str, events: list[dict], mr: dict, activity: list[dict]) -> list[dict]:
-    """``reviewer``'s request when no note in the window names them: the query answers
-    only merge requests requesting their review, so it is at least as old as the
-    window's oldest note (the merge request, for an empty window)."""
+def _request_of(reviewer: str, events: list[dict], mr: dict,
+                activity: list[dict]) -> list[dict] | None:
+    """``reviewer``'s request when no note in the window names them: ``None`` when their
+    ``reviewState`` says they answered it, as GitHub drops an answered request from
+    ``review-requested:``; else at least as old as the window's oldest note (the merge
+    request, for an empty window), the query answering only merge requests requesting
+    their review."""
     if any(e["requestedReviewer"]["login"].lower() == reviewer.lower() for e in events):
         return []
+    if any((r.get("username") or "").lower() == reviewer.lower()
+           and (r.get("mergeRequestInteraction") or {}).get("reviewState") in _ANSWERED
+           for r in _nodes(mr.get("reviewers"))):
+        return None
     times = [_utc(n["createdAt"]) for n in activity if n.get("createdAt")]
     return [{"createdAt": min(times) if times else _utc(mr.get("createdAt")),
              "requestedReviewer": {"__typename": "User", "login": reviewer}}]
 
 
 def review_requests(env: dict, reviewer: str, lookup: Lookup) -> dict:
-    """``gitlab-review-requests`` asked for ``reviewer`` as ``review-requests``;
-    ``files`` only when the query asked for ``diffStats``."""
+    """``gitlab-review-requests`` asked for ``reviewer`` as ``review-requests``, less the
+    merge requests ``reviewer`` answered (:func:`_request_of`); ``files`` only when the
+    query asked for ``diffStats``."""
     project = _project(env)
-    members = _members(project, [mr.get("author") for mr in _nodes(project.get("mergeRequests"))],
-                       lookup)
-    nodes = []
+    owed = []
     for mr in _nodes(project.get("mergeRequests")):
         activity = _nodes(mr.get("activity"))
         events = _requests(activity)
+        mine = _request_of(reviewer, events, mr, activity)
+        if mine is not None:
+            owed.append((mr, activity, mine + events))
+    members = _members(project, [mr.get("author") for mr, _, _ in owed], lookup)
+    nodes = []
+    for mr, activity, requests in owed:
         node = {
             "number": int(mr["iid"]),
             "title": mr.get("title"),
@@ -234,7 +248,7 @@ def review_requests(env: dict, reviewer: str, lookup: Lookup) -> dict:
             "author": _login(mr.get("author")),
             "authorAssociation": _association(mr.get("author"), members),
             "headRefOid": mr.get("diffHeadSha"),
-            "timelineItems": {"nodes": _request_of(reviewer, events, mr, activity) + events},
+            "timelineItems": {"nodes": requests},
             "reviews": {"nodes": [
                 {"author": _login(n.get("author")), "submittedAt": _utc(n.get("createdAt"))}
                 for n in activity if (n.get("body") or "").startswith(_REVIEWED)]},
