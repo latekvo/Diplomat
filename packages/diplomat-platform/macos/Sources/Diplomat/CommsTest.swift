@@ -41,8 +41,7 @@ enum CommsTest {
         // The repo roots: scratch checkouts whose remotes name `o/r`, the primary every
         // target is in, and `o/second`, a second root for the checks that load both.
         unsetenv("DIPLOMAT_REPO")
-        // A glab config naming no host: the GitLab hosts are gitlab.com and gitlab.*, never
-        // the operator's.
+        // An empty glab config, so only gitlab.com and gitlab.* are GitLab, never the operator's hosts.
         let glabConfig = scratch.appendingPathComponent("glab")
         try? FileManager.default.createDirectory(at: glabConfig, withIntermediateDirectories: true)
         try? "hosts:\n".write(to: glabConfig.appendingPathComponent("config.yml"), atomically: true,
@@ -1620,7 +1619,6 @@ enum CommsTest {
         check("a PR missing from a second root names that root",
               outcome(gone[0]) == "no PR #90299 in o/second, so nothing was queued")
 
-        // A GitLab root: looked up through glab's REST API, its "me" glab's user there.
         let thirdRoot = checkout("third", remote: "g/sub/third", host: "gitlab.example.com")
         await useRoots([primaryRoot, secondRoot, thirdRoot])
         await store.refreshRoots()

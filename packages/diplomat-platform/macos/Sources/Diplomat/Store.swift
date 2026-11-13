@@ -257,7 +257,6 @@ final class Store: ObservableObject {
     private var panelLists: [String: PanelLists] = [:]
     /// The slug `prs` and `issues` belong to.
     private(set) var listedSlug = ""
-    /// Who "me" is in the lists shown (`knownMe(for:)` of their root).
     var listedMe: String { knownMe(for: roots.first { $0.slug.lowercased() == listedSlug }) }
 
     /// Put the selected root's lists on the panel, from its cache, and fetch them afresh.
@@ -1024,13 +1023,12 @@ final class Store: ObservableObject {
 
     static let githubLoginUnknown = "GitHub login unknown — is `gh` installed and authenticated?"
 
-    /// The signed-in glab user of each GitLab host read so far, by host. Only a success is
-    /// kept, so a host that failed is asked again on the next read.
+    /// glab's signed-in user by GitLab host. Only successes are kept, so a failed host is
+    /// asked again.
     private var gitlabMe: [String: String] = [:]
 
-    /// Who "me" is in `root`: `effectiveMe` on GitHub, else glab's signed-in user on the
-    /// root's host, read once per host. Throws while that is unknown, which leaves the
-    /// root unreadable for the cycle like any failed read of it.
+    /// Who "me" is in `root`. Throws while unknown, failing the root's read for the cycle
+    /// like any other failed read.
     func me(for root: PRRef.LocalRepo) async throws -> String {
         guard root.isGitLab else {
             guard !effectiveMe.isEmpty else {
@@ -1050,9 +1048,8 @@ final class Store: ObservableObject {
         return gitlabMe[root.host] ?? ""
     }
 
-    /// `cfg` as a wizard runs it: homed on the selected root, its single-item link free to
-    /// name any root or listed checkout, and "me" that of the root the run targets, which
-    /// such a link moves off the selected one.
+    /// `cfg` as a wizard runs it. "me" follows `targetLocal`, not the selected root: a
+    /// pasted link can name another root or checkout.
     func wizardRun<C: WizardRunConfig>(_ cfg: C) -> C {
         var cfg = cfg
         cfg.home = selectedRoot
@@ -1626,7 +1623,7 @@ final class Store: ObservableObject {
             async let p = API.fetchOpenPRs(root)
             async let i = API.fetchOpenIssues(root)
             if root.isGitLab {
-                // The lists are read as glab's user's; the GitHub login is not needed for them.
+                // Only glab's user can fail these lists; the GitHub login is not needed.
                 _ = try await me(for: root)
                 await fetchMe()
             } else {
@@ -2538,8 +2535,8 @@ final class Store: ObservableObject {
         if effectiveMe.isEmpty, !roots.contains(where: \.isGitLab) {
             // The most common total-breakage mode (gh missing/unauthenticated) used to
             // bail before the failure surfacing — the toggles said "on" and nothing
-            // ever polled, silently. With a GitLab root the GitHub roots fail their reads
-            // alone (`me(for:)`), and the GitLab ones go on.
+            // ever polled, silently. With a GitLab root, only the GitHub roots' reads fail
+            // (`me(for:)`).
             pollErrorThisCycle = Store.githubLoginUnknown
         } else if rootsGuessed {
             // Its one root would be the configured repo at the first path, which may
@@ -2767,9 +2764,9 @@ final class Store: ObservableObject {
     /// edge-trigger baselines) still gets an agent. The record is pruned once the PR is
     /// known mergeable again.
     ///
-    /// A GitLab merge request GitLab has not checked (`AgentTaskQueue.conflicting`) is
-    /// offered again only when its fix is already queued, as the commit keeps only what
-    /// this cycle offered: an unchecked status keeps a fix, never starts one.
+    /// An unchecked GitLab merge request (`AgentTaskQueue.conflicting`) is re-offered only
+    /// while its fix is queued, since the commit drops what a cycle does not offer: it
+    /// keeps a fix, never starts one.
     ///
     /// Not private: the queue self-test drives it.
     func reconcileMyConflicts(snaps: [PRSnapshot], now: Date) async {
@@ -2818,7 +2815,7 @@ final class Store: ObservableObject {
     /// A failed read keeps its root's mark and is logged (`noteRootsRead`), never failed
     /// as a poll, even in every root: nothing owed is read from it, so the other roots'
     /// drain and commit go on (a repo gh cannot see would hold them forever). A root whose
-    /// "me" (`me(for:)`) cannot be read is held the same way: its fixes would run as nobody.
+    /// "me" cannot be read is held the same way: its fixes would run as nobody.
     ///
     /// Not private: the queue self-test drives it.
     func pollCommunityIssues(_ polled: [PRRef.LocalRepo]) async {
@@ -4547,8 +4544,7 @@ final class Store: ObservableObject {
         defer { mergingPRs.remove(key) }
         do {
             if let root = root(ofItem: key), root.isGitLab {
-                // Merged now or refused, as `gh pr merge` does: glab would otherwise set
-                // the MR to merge once a running pipeline passes.
+                // Merge now or fail, like `gh pr merge`, not once a running pipeline passes.
                 _ = try await GLab.run(["mr", "merge", "\(pr.number)", "--squash", "--yes",
                                         "--auto-merge=false"]
                                        + GLab.repoFlag(host: root.host, slug: root.slug))

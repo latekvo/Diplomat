@@ -2,18 +2,16 @@ import Foundation
 import DiplomatCore
 
 // macOS side of the PR auto-fix monitor: fetch a snapshot of my open PRs (one GraphQL
-// call via the `gh` CLI, or `glab` on a GitLab root) so the shared AutofixDiff can decide
-// what changed. The diffing lives in DiplomatCore; the spawn/track happens in Store. This
-// file is just the read. The queries themselves live in `assets/graphql/` with the other
-// shared queries (single source of truth; the Linux monitor reuses them as-is). A GitLab
-// answer is put in its GitHub twin's shape (`GitLab`), so one parser reads both.
+// call via `gh`, or `glab` on a GitLab root) so the shared AutofixDiff can decide what
+// changed. The diffing lives in DiplomatCore; the spawn/track happens in Store. The
+// queries live in `assets/graphql/`, shared with the Linux monitor. A GitLab answer is
+// put in its GitHub twin's shape (`GitLab`), so one parser reads both.
 enum AutofixMonitor {
     /// One GraphQL search over my open, authored PRs in `root`, with each PR's
-    /// mergeability, review verdict, and review-thread resolution — everything the diff
-    /// and the reconcilers need, in a single request (`assets/graphql/monitor-prs`,
-    /// `gitlab-monitor-prs` on GitLab). A merge request GitLab has not checked is asked
-    /// again, through a read that rechecks it (`API.recheckedMergeable`); one that read
-    /// fails for stays `UNKNOWN`.
+    /// mergeability, review verdict and review-thread resolution (`assets/graphql/monitor-prs`,
+    /// `gitlab-monitor-prs` on GitLab). GraphQL never makes GitLab check mergeability, so an
+    /// unchecked merge request is re-read through `API.recheckedMergeable`, staying
+    /// `UNKNOWN` if that has no definite answer.
     static func fetchSnapshots(root: PRRef.LocalRepo, me: String) async throws -> [PRSnapshot] {
         guard root.isGitLab else {
             let q = "repo:\(root.owner)/\(root.repo) author:\(me) is:pr is:open"
@@ -98,12 +96,11 @@ enum AutofixMonitor {
     }
 
     /// PRs that request MY review, with request/last-review timestamps (one GraphQL
-    /// call, `assets/graphql/review-requests`, `gitlab-review-requests` on GitLab, which
-    /// past a full member page also looks authors up, `GLab.members`).
-    /// `includeFiles` pulls each PR's changed paths for the verdict-withhold gate — a big
-    /// chunk of the query's rate-limit cost, and pointless unless auto-approvals are on
-    /// (verdicts are off by default), so the caller passes `false` then and the
-    /// `@include` directive skips it.
+    /// call, `assets/graphql/review-requests`; on GitLab `gitlab-review-requests`, plus
+    /// `GLab.members` reads past a full member page). `includeFiles` pulls each PR's changed
+    /// paths for the verdict-withhold gate — a big chunk of the query's rate-limit
+    /// cost, and pointless unless auto-approvals are on (verdicts are off by default),
+    /// so the caller passes `false` then and the `@include` directive skips it.
     static func fetchReviewRequests(root: PRRef.LocalRepo, me: String,
                                     includeFiles: Bool = false) async throws -> [ReviewRequest] {
         let data: Data
