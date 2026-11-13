@@ -1,0 +1,373 @@
+{
+  "data": {
+    "project": {
+      "projectMembers": {
+        "pageInfo": {
+          "hasNextPage": false
+        },
+        "nodes": [
+          {
+            "user": {
+              "username": "alice"
+            }
+          }
+        ]
+      },
+      "mergeRequests": {
+        "nodes": [
+          {
+            "iid": "41",
+            "title": "Long, reviewed",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/41",
+            "diffHeadSha": "1111111111111111111111111111111111111111",
+            "createdAt": "2026-09-01T09:00:00+01:00",
+            "author": {
+              "id": "gid://gitlab/User/11",
+              "username": "alice"
+            },
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "bob",
+                  "mergeRequestInteraction": {
+                    "reviewState": "UNREVIEWED"
+                  }
+                },
+                {
+                  "username": "carol",
+                  "mergeRequestInteraction": {
+                    "reviewState": "REVIEWED"
+                  }
+                }
+              ]
+            },
+            "activity": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-06T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-07T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-08T09:00:00+01:00",
+                  "body": "added 1 commit"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": []
+            }
+          },
+          {
+            "iid": "42",
+            "title": "Long, approved",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/42",
+            "diffHeadSha": "2222222222222222222222222222222222222222",
+            "createdAt": "2026-09-01T09:00:00+01:00",
+            "author": {
+              "id": "gid://gitlab/User/11",
+              "username": "alice"
+            },
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "Carol",
+                  "mergeRequestInteraction": {
+                    "reviewState": "APPROVED"
+                  }
+                }
+              ]
+            },
+            "activity": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-06T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-07T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-08T09:00:00+01:00",
+                  "body": "added 1 commit"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": []
+            }
+          },
+          {
+            "iid": "43",
+            "title": "Long, changes requested",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/43",
+            "diffHeadSha": "3333333333333333333333333333333333333333",
+            "createdAt": "2026-09-01T09:00:00+01:00",
+            "author": {
+              "id": "gid://gitlab/User/11",
+              "username": "alice"
+            },
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "carol",
+                  "mergeRequestInteraction": {
+                    "reviewState": "REQUESTED_CHANGES"
+                  }
+                }
+              ]
+            },
+            "activity": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-06T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-07T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-08T09:00:00+01:00",
+                  "body": "added 1 commit"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": []
+            }
+          },
+          {
+            "iid": "44",
+            "title": "Long, unreviewed",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/44",
+            "diffHeadSha": "4444444444444444444444444444444444444444",
+            "createdAt": "2026-09-01T09:00:00+01:00",
+            "author": {
+              "id": "gid://gitlab/User/11",
+              "username": "alice"
+            },
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "carol",
+                  "mergeRequestInteraction": {
+                    "reviewState": "UNREVIEWED"
+                  }
+                },
+                {
+                  "username": "bob",
+                  "mergeRequestInteraction": {
+                    "reviewState": "APPROVED"
+                  }
+                }
+              ]
+            },
+            "activity": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-06T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-07T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-08T09:00:00+01:00",
+                  "body": "added 1 commit"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": []
+            }
+          },
+          {
+            "iid": "45",
+            "title": "Re-requested",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/45",
+            "diffHeadSha": "5555555555555555555555555555555555555555",
+            "createdAt": "2026-09-01T09:00:00+01:00",
+            "author": {
+              "id": "gid://gitlab/User/11",
+              "username": "alice"
+            },
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "carol",
+                  "mergeRequestInteraction": {
+                    "reviewState": "REVIEWED"
+                  }
+                }
+              ]
+            },
+            "activity": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-06T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-07T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-08T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-09T09:00:00+01:00",
+                  "body": "requested review from @carol"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": []
+            }
+          },
+          {
+            "iid": "46",
+            "title": "No state of mine",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/46",
+            "diffHeadSha": "6666666666666666666666666666666666666666",
+            "createdAt": "2026-11-02T08:00:00+01:00",
+            "author": {
+              "id": "gid://gitlab/User/11",
+              "username": "alice"
+            },
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "bob",
+                  "mergeRequestInteraction": {
+                    "reviewState": "REVIEW_STARTED"
+                  }
+                },
+                {
+                  "username": "carol",
+                  "mergeRequestInteraction": null
+                }
+              ]
+            },
+            "activity": {
+              "nodes": []
+            },
+            "comments": {
+              "nodes": []
+            }
+          },
+          {
+            "iid": "47",
+            "title": "Review started",
+            "webUrl": "https://gitlab.example.com/group/sub/proj/-/merge_requests/47",
+            "diffHeadSha": "7777777777777777777777777777777777777777",
+            "createdAt": "2026-09-01T09:00:00+01:00",
+            "author": {
+              "id": "gid://gitlab/User/11",
+              "username": "alice"
+            },
+            "reviewers": {
+              "nodes": [
+                {
+                  "username": "carol",
+                  "mergeRequestInteraction": {
+                    "reviewState": "REVIEW_STARTED"
+                  }
+                }
+              ]
+            },
+            "activity": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-06T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-07T09:00:00+01:00",
+                  "body": "added 1 commit"
+                },
+                {
+                  "author": {
+                    "username": "alice"
+                  },
+                  "createdAt": "2026-11-08T09:00:00+01:00",
+                  "body": "added 1 commit"
+                }
+              ]
+            },
+            "comments": {
+              "nodes": [
+                {
+                  "author": {
+                    "username": "carol"
+                  },
+                  "createdAt": "2026-11-08T10:00:00+01:00"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

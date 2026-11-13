@@ -1,0 +1,50 @@
+{
+  "hosts": {
+    "gitlab.com": "gitlab.com",
+    "gl.example.com": "gl.example.com",
+    "ssh.gl.example.com": "gl.example.com",
+    "code.example.org": "code.example.org",
+    "git.example.org": "code.example.org",
+    "lab.example.net": "lab.example.net",
+    "other.example.net": "other.example.net"
+  },
+  "remotes": [
+    [
+      "gl.example.com",
+      "ns",
+      "p"
+    ],
+    [
+      "gl.example.com",
+      "ns/sub",
+      "p"
+    ],
+    [
+      "gl.example.com",
+      "ns",
+      "p"
+    ],
+    [
+      "code.example.org",
+      "a",
+      "b"
+    ],
+    [
+      "gitlab.com",
+      "a",
+      "b"
+    ],
+    [
+      "other.example.net",
+      "a",
+      "b"
+    ],
+    null,
+    null,
+    [
+      "github.com",
+      "o",
+      "r"
+    ]
+  ]
+}

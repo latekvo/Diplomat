@@ -1,0 +1,123 @@
+{
+  "data": {
+    "search": {
+      "nodes": [
+        {
+          "number": 44,
+          "title": "Long, unreviewed",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/44",
+          "author": {
+            "login": "alice"
+          },
+          "authorAssociation": "MEMBER",
+          "headRefOid": "4444444444444444444444444444444444444444",
+          "timelineItems": {
+            "nodes": [
+              {
+                "createdAt": "2026-11-06T08:00:00Z",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              }
+            ]
+          },
+          "reviews": {
+            "nodes": []
+          },
+          "comments": {
+            "nodes": []
+          }
+        },
+        {
+          "number": 45,
+          "title": "Re-requested",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/45",
+          "author": {
+            "login": "alice"
+          },
+          "authorAssociation": "MEMBER",
+          "headRefOid": "5555555555555555555555555555555555555555",
+          "timelineItems": {
+            "nodes": [
+              {
+                "createdAt": "2026-11-09T08:00:00Z",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              }
+            ]
+          },
+          "reviews": {
+            "nodes": []
+          },
+          "comments": {
+            "nodes": []
+          }
+        },
+        {
+          "number": 46,
+          "title": "No state of mine",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/46",
+          "author": {
+            "login": "alice"
+          },
+          "authorAssociation": "MEMBER",
+          "headRefOid": "6666666666666666666666666666666666666666",
+          "timelineItems": {
+            "nodes": [
+              {
+                "createdAt": "2026-11-02T07:00:00Z",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              }
+            ]
+          },
+          "reviews": {
+            "nodes": []
+          },
+          "comments": {
+            "nodes": []
+          }
+        },
+        {
+          "number": 47,
+          "title": "Review started",
+          "url": "https://gitlab.example.com/group/sub/proj/-/merge_requests/47",
+          "author": {
+            "login": "alice"
+          },
+          "authorAssociation": "MEMBER",
+          "headRefOid": "7777777777777777777777777777777777777777",
+          "timelineItems": {
+            "nodes": [
+              {
+                "createdAt": "2026-11-06T08:00:00Z",
+                "requestedReviewer": {
+                  "__typename": "User",
+                  "login": "carol"
+                }
+              }
+            ]
+          },
+          "reviews": {
+            "nodes": []
+          },
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "carol"
+                },
+                "createdAt": "2026-11-08T09:00:00Z"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

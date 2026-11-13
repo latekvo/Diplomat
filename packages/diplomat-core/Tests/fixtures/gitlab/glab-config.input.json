@@ -1,0 +1,14 @@
+{
+  "config": "git_protocol: ssh\nhosts:\n    gitlab.com:\n        api_host: gitlab.com\n        # Alternate hostname for SSH git operations (e.g., 'ssh.example.com')\n        ssh_host:\n        token: x\n    gl.example.com:\n        ssh_host: ssh.gl.example.com\n        user: alice\n    Code.Example.org:8443:\n        api_protocol: https\n        ssh_host: \"Git.Example.org:2222\" # its SSH port\n    lab.example.net:\n        ssh_host: gl.example.com\n        aliases:\n            ssh_host: nested.example.com\n    other.example.net:\n        user: bob\neditor:\nssh_host: top.example.com\n",
+  "remotes": [
+    "git@ssh.gl.example.com:ns/p.git",
+    "ssh://git@SSH.GL.example.com:22/ns/sub/p",
+    "https://gl.example.com/ns/p.git",
+    "git@git.example.org:a/b.git",
+    "git@gitlab.com:a/b.git",
+    "git@other.example.net:a/b.git",
+    "git@nested.example.com:a/b.git",
+    "git@top.example.com:a/b.git",
+    "git@github.com:o/r.git"
+  ]
+}
