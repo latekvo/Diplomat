@@ -89,6 +89,10 @@ enum CommsTest {
                                author: "erin", isOpen: true, state: "OPEN"),
             90050: CommsTarget(number: 90050, url: "https://github.com/o/r/issues/90050",
                                author: "frank", isOpen: true, state: "OPEN"),
+            90051: CommsTarget(number: 90051, url: "https://github.com/o/r/issues/90051",
+                               author: "frank", isOpen: true, state: "OPEN"),
+            90052: CommsTarget(number: 90052, url: "https://github.com/o/r/issues/90052",
+                               author: "frank", isOpen: true, state: "OPEN"),
             90060: CommsTarget(number: 90060, url: "https://github.com/o/r/pull/90060",
                                author: "gina", isOpen: true, state: "OPEN"),
             90070: CommsTarget(number: 90070, url: "https://github.com/o/r/pull/90070",
@@ -634,16 +638,29 @@ enum CommsTest {
                          link: "https://github.com/o/r/issues/90050")
         let otherFix = run("r5", nil, "issues", "Issues · #900501 · deep",
                            link: "https://github.com/o/r/issues/900501")
-        store.pinAgentRows([monitorRun, reviewRun, fixRun, otherFix])
+        // An older build's fix records no link; its label alone names the issue.
+        let legacyFix = run("r7", nil, "issues", "Issues · #90051 · deep", link: "")
+        let legacyOther = run("r8", nil, "issues", "Issues · #900521 · deep", link: "")
+        store.pinAgentRows([monitorRun, reviewRun, fixRun, otherFix, legacyFix, legacyOther])
         let askRunning = item(.review, 90041)
         let askFixRunning = item(.fixIssue, 90050)
-        await apply([askRunning, askFixRunning])
+        let askLegacyRunning = item(.fixIssue, 90051)
+        let askLegacyOther = item(.fixIssue, 90052)
+        await apply([askRunning, askFixRunning, askLegacyRunning, askLegacyOther])
         check("a review of a PR an agent is already reviewing is not queued",
               !ids().contains("review:o/r#90041") && outcome(askRunning) == "already running")
         check("…nor a fix of an issue an agent is already fixing",
               !ids().contains("issues:o/r#90050")
                 && !store.requestedWork.contains { $0.key == "issues:o/r#90050" }
                 && outcome(askFixRunning) == "already running")
+        check("…nor one an older build's run with no link is fixing, known by its label, while "
+              + "a label of another number is not that issue's: \(outcome(askLegacyOther))",
+              outcome(askLegacyRunning) == "already running" && !ids().contains("issues:o/r#90051")
+                && !store.requestedWork.contains { $0.key == "issues:o/r#90051" }
+                && folded(askLegacyRunning)?.label == legacyFix.record.label
+                && outcome(askLegacyOther).hasPrefix("queued"))
+        store.requestedWork.removeAll { $0.key == "issues:o/r#90052" }
+        store.queuedTasks.removeAll { $0.id == "issues:o/r#90052" }
         check("…each recording that run's start, under the label its row wears",
               folded(askRunning)?.startedAt == Date(timeIntervalSince1970: whole - 5)
                 && folded(askRunning)?.label == reviewRun.record.label

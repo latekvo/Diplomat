@@ -626,7 +626,8 @@ extension Store {
     }
 
     /// Any review agent on that PR (the dispatch gate treats every agent on a PR as that
-    /// PR's), or a fix of that issue, each known by the link its run records.
+    /// PR's), or a fix of that issue, each known by the link its run records; a fix whose
+    /// run records none (an older build's) by the "Issues · <item label> · " it wears.
     private func commsRow(doing key: String) -> AgentRow? {
         guard let parts = Store.commsKeyParts(key) else { return nil }
         let kind: String
@@ -635,8 +636,13 @@ extension Store {
         case AgentTaskQueue.issuesAction: kind = AgentTaskQueue.issuesAction
         default: return nil
         }
+        let label = "Issues · \(itemLabel(parts.item)) · "
         return agentRows.first {
-            $0.record.kind == kind && PRRef.itemKey(url: $0.record.prURL) == parts.item
+            guard $0.record.kind == kind else { return false }
+            guard $0.record.prURL.isEmpty, kind == AgentTaskQueue.issuesAction else {
+                return PRRef.itemKey(url: $0.record.prURL) == parts.item
+            }
+            return $0.record.label.contains(label)
         }
     }
 
