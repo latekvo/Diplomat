@@ -18,7 +18,7 @@ from test_comms_store import needs_core
 from diplomat_runtime import (
     autofix, configbase, core, gh, gitlab, glab, localrepos, prref, review,
 )
-from diplomat_runtime.models import API
+from diplomat_runtime.models import API, OPEN_PR_PAGES
 from diplomat_runtime.prref import LocalRepo, item_key_from_url, parse_pr_ref
 
 pytest.importorskip("PySide6")
@@ -418,10 +418,10 @@ def test_an_unreadable_time_fails_the_read():
         _review_requests(env, _unasked)
 
 
-def test_the_panel_reads_a_page_of_merge_requests_as_long_as_githubs_of_pull_requests():
+def test_the_panel_reads_as_many_merge_requests_as_its_pages_of_pull_requests():
     page = re.compile(r"(?:pullRequests\(states: OPEN|mergeRequests\(state: opened), first: (\d+)")
-    assert page.search(core.read_graphql("gitlab-prs"))[1] \
-        == page.search(core.read_graphql("prs"))[1]
+    assert int(page.search(core.read_graphql("gitlab-prs"))[1]) \
+        == int(page.search(core.read_graphql("prs"))[1]) * OPEN_PR_PAGES
 
 
 def test_the_closed_read_keys_merge_requests_by_the_whole_namespace(nothing_closed,

@@ -332,6 +332,11 @@ class Fmt:
 # MARK: - GitHub / GitLab API (GraphQL via the gh and glab CLIs)
 
 
+# How many prs.graphql pages the panel reads: the 100 newest open PRs (mirrors
+# API.openPRPages in Models.swift).
+OPEN_PR_PAGES = 4
+
+
 class API:
     """Each read asks the root's host: ``gh`` for github.com, else ``glab``, whose
     answer :mod:`gitlab` turns into GitHub's shape for the parsing here."""
@@ -353,9 +358,20 @@ class API:
 
     @staticmethod
     def fetch_open_prs(root: LocalRepo) -> list[OpenPR]:
-        env = (gitlab.prs(glab.project("gitlab-prs", root)) if root.is_gitlab
-               else gh.graphql("prs", repo=(root.owner, root.repo)))
-        nodes = env["data"]["repository"]["pullRequests"]["nodes"]
+        if root.is_gitlab:
+            env = gitlab.prs(glab.project("gitlab-prs", root))
+            nodes = env["data"]["repository"]["pullRequests"]["nodes"]
+        else:
+            nodes = []
+            after: str | None = None
+            for _ in range(OPEN_PR_PAGES):
+                env = gh.graphql("prs", repo=(root.owner, root.repo),
+                                 variables={"after": after} if after else None)
+                page = env["data"]["repository"]["pullRequests"]
+                nodes += page["nodes"]
+                if not page["pageInfo"]["hasNextPage"]:
+                    break
+                after = page["pageInfo"]["endCursor"]
         out: list[OpenPR] = []
         for n in nodes:
             author = (n.get("author") or {}).get("login", "ghost")

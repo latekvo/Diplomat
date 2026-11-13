@@ -3914,6 +3914,52 @@ do {
     unsetenv("DIPLOMAT_GH")
 }
 
+// ---- API: the panel's open PRs are read a page at a time (mirrors test_open_prs.py) ----
+// The stub answers the page `<owner>-<after>.json` names (`-.json` for the first) and
+// logs each call's cursor; a page it has no file for fails the call.
+do {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-prs-\(getpid())")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let gh = dir.appendingPathComponent("gh"), log = dir.appendingPathComponent("log")
+    try """
+    #!/bin/sh
+    owner=; after=
+    for a in "$@"; do case "$a" in owner=*) owner="${a#owner=}";; after=*) after="${a#after=}";; esac; done
+    echo "$owner-$after" >> '\(log.path)'
+    exec cat "\(dir.path)/$owner-$after.json"
+    """.write(to: gh, atomically: true, encoding: .utf8)
+    chmod(gh.path, 0o755)
+    func page(_ owner: String, _ after: String, _ number: Int, next: String?) throws {
+        let pr = #"{"number":\#(number),"title":"t","url":"u","isDraft":false,"createdAt":"2026-01-01T00:00:00Z","#
+            + #""reviewDecision":null,"mergeable":"MERGEABLE","author":{"login":"a"},"files":{"nodes":[]},"#
+            + #""timelineItems":{"nodes":[]},"reviewThreads":{"nodes":[]}}"#
+        let info = next.map { #"{"hasNextPage":true,"endCursor":"\#($0)"}"# } ?? #"{"hasNextPage":false,"endCursor":"end"}"#
+        try #"{"data":{"repository":{"pullRequests":{"pageInfo":\#(info),"nodes":[\#(pr)]}}}}"#
+            .write(to: dir.appendingPathComponent("\(owner)-\(after).json"), atomically: true, encoding: .utf8)
+    }
+    for i in 1...5 { try page("many", i == 1 ? "" : "c\(i - 1)", i, next: "c\(i)") }
+    try page("two", "", 1, next: "c1")
+    try page("two", "c1", 2, next: nil)
+    setenv("DIPLOMAT_GH", gh.path, 1)
+    defer { unsetenv("DIPLOMAT_GH") }
+    func calls() -> [String] {
+        defer { try? FileManager.default.removeItem(at: log) }
+        return ((try? String(contentsOf: log, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+    }
+
+    let many = try await API.fetchOpenPRs(PRRef.LocalRepo(owner: "many", repo: "r", path: "")).map(\.number)
+    check(many == [1, 2, 3, 4], "four pages, in order, and no fifth, got: \(many)")
+    let manyCalls = calls()
+    check(manyCalls == ["many-", "many-c1", "many-c2", "many-c3"],
+          "each page asks after the one before, got: \(manyCalls)")
+    let two = try await API.fetchOpenPRs(PRRef.LocalRepo(owner: "two", repo: "r", path: "")).map(\.number)
+    let twoCalls = calls()
+    check(two == [1, 2] && twoCalls == ["two-", "two-c1"],
+          "the last page ends the reading, got: \(two) after \(twoCalls)")
+    print("open PRs paged ok")
+}
+
 // ---- GH: the login shell's answer is read without waiting on what it left behind ----
 // A profile that starts a job in the background leaves stdout held after the shell
 // exits; the lookup reads a file rather than draining a pipe, so the answer is back

@@ -322,17 +322,31 @@ public enum API {
         try GitLab.viewer(try await GLab.graphql("gitlab-viewer", host: host), host: host)
     }
 
+    /// How many `prs.graphql` pages the panel reads: the 100 newest open PRs.
+    static let openPRPages = 4
+
     public static func fetchOpenPRs(_ root: PRRef.LocalRepo) async throws -> [OpenPR] {
-        try openPRs(root.isGitLab
-            ? try GitLab.prs(try await GLab.graphql("gitlab-prs", host: root.host,
-                                                    variables: [("path", root.slug)]))
-            : try await GH.graphql("prs", repo: (root.owner, root.repo)))
+        guard !root.isGitLab else {
+            let data = try GitLab.prs(try await GLab.graphql("gitlab-prs", host: root.host,
+                                                             variables: [("path", root.slug)]))
+            return openPRs(try decoded(data, as: PRResponse.self).data.repository.pullRequests.nodes)
+        }
+        var nodes: [PRResponse.Node] = []
+        var after: String?
+        for _ in 0..<openPRPages {
+            let page = try await graphqlDecoded("prs", repo: (root.owner, root.repo),
+                                                variables: after.map { [("after", $0)] } ?? [],
+                                                as: PRResponse.self).data.repository.pullRequests
+            nodes += page.nodes
+            guard let info = page.pageInfo, info.hasNextPage, let next = info.endCursor else { break }
+            after = next
+        }
+        return openPRs(nodes)
     }
 
-    /// The panel's PR list from a `prs.graphql`-shaped answer.
-    static func openPRs(_ data: Data) throws -> [OpenPR] {
-        let resp = try decoded(data, as: PRResponse.self)
-        return resp.data.repository.pullRequests.nodes.map { n in
+    /// The panel's PR list from `prs.graphql`-shaped nodes.
+    private static func openPRs(_ nodes: [PRResponse.Node]) -> [OpenPR] {
+        nodes.map { n in
             OpenPR(
                 number: n.number,
                 title: n.title,
@@ -422,8 +436,10 @@ public enum API {
     /// Run a GraphQL query and decode it. The transport retry belongs to
     /// `GH.graphql`, which every GraphQL caller shares; what is left here is
     /// deterministic — a payload that fails to decode fails the same way twice.
-    private static func graphqlDecoded<T: Decodable>(_ queryName: String, repo: (owner: String, repo: String)?, as: T.Type) async throws -> T {
-        try decoded(try await GH.graphql(queryName, repo: repo), as: T.self)
+    private static func graphqlDecoded<T: Decodable>(_ queryName: String, repo: (owner: String, repo: String)?,
+                                                     variables: [(String, String)] = [],
+                                                     as: T.Type) async throws -> T {
+        try decoded(try await GH.graphql(queryName, repo: repo, variables: variables), as: T.self)
     }
 
     private static func decoded<T: Decodable>(_ data: Data, as: T.Type) throws -> T {
@@ -462,7 +478,9 @@ private struct PRResponse: Decodable {
     let data: D
     struct D: Decodable { let repository: Repo }
     struct Repo: Decodable { let pullRequests: Conn }
-    struct Conn: Decodable { let nodes: [Node] }
+    /// nil in a `gitlab-prs` answer, which is one page.
+    struct Conn: Decodable { let pageInfo: PageInfo?; let nodes: [Node] }
+    struct PageInfo: Decodable { let hasNextPage: Bool; let endCursor: String? }
     struct Node: Decodable {
         let number: Int
         let title: String
