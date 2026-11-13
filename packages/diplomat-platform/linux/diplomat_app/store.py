@@ -455,7 +455,7 @@ class Store(QObject):
         # draws from it. Its own short mutex guards the swap and the cache stamp.
         self._tick: agentstate.Tick | None = None
         self._tick_lock = threading.Lock()
-        # What the last merged-status probe found. It costs a `gh` call per PR, so it
+        # What the last merged-status probe found. It costs a `gh` or `glab` call per PR, so it
         # rides the slow refresh rather than the 8-second tick, and the fast ticks
         # carry the answer forward (UNAVAILABLE until the first one runs).
         self._merged_prs = agentstate.Observation.unavailable(
@@ -3849,10 +3849,10 @@ class Store(QObject):
         return item is not None and self._agent_tick().in_flight(item)
 
     def refresh_merged_statuses(self) -> None:
-        """Ask GitHub which of the tracked PRs have landed — the one terminal outcome
+        """Ask GitHub or GitLab which of the tracked PRs have landed — the one terminal outcome
         that outranks whatever a process is doing.
 
-        On the slow refresh, not the 8-second tick: it costs a ``gh`` call per PR. The
+        On the slow refresh, not the 8-second tick: it costs a ``gh`` or ``glab`` call per PR. The
         answer is carried forward by the fast ticks in between.
 
         Only the runs this applet dispatched: the resolver ends no untracked run on a

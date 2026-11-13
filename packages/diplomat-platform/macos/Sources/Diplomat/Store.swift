@@ -1653,10 +1653,10 @@ final class Store: ObservableObject {
         await refreshTokenBudget()
     }
 
-    /// Ask GitHub which of the tracked PRs have landed — the one terminal outcome that
+    /// Ask GitHub or GitLab which of the tracked PRs have landed — the one terminal outcome that
     /// outranks whatever a process is doing.
     ///
-    /// On the slow refresh, not the 8-second tick: it costs a `gh` call per PR. The answer
+    /// On the slow refresh, not the 8-second tick: it costs a `gh` or `glab` call per PR. The answer
     /// is carried forward by the fast ticks in between.
     ///
     /// Only the runs this applet dispatched: the resolver ends no untracked run on a
@@ -2390,7 +2390,7 @@ final class Store: ObservableObject {
     private var markerWarned = false
     private var quotaWarned = false
 
-    /// Which of the tracked PRs GitHub calls MERGED, carried forward by the fast ticks
+    /// Which of the tracked PRs GitHub or GitLab calls MERGED, carried forward by the fast ticks
     /// between the slow refreshes that probe it. `.unavailable` until the first, which
     /// reads as "nothing is known about any PR" rather than as "none of them landed".
     private var mergedPRs: Observation<Set<String>> = .unavailable("have not been probed yet")

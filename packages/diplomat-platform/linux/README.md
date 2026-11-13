@@ -218,7 +218,8 @@ too - the repo roots, the agent runner and model, the automatic-task cap and the
 spending budget's four knobs - and the run deadline beside the cap, which live in
 the shared `~/.diplomat/config.json` ([`appconfig.py`](../../diplomat-runtime/diplomat_runtime/appconfig.py)):
 
-- **GitHub username** — overrides the `gh`-authenticated login for the "My …" tools.
+- **GitHub username** — overrides the `gh`-authenticated login for the "My …" tools
+  (on a GitLab root "me" is `glab`'s user on that host, which the override does not change).
 - **Repo roots** — the local checkouts Diplomat watches and spawned agents `cd`
   into, one row each with **Choose…**, **↑** (the first is the primary) and **✕**,
   plus **Add…**. None = `~/dev/<repo>` for the repo `assets/config.json` targets;
