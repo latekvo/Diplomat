@@ -390,8 +390,9 @@ class Store(QObject):
         self.selected: str = tools()[0].id
         self.has_loaded = False
         self.me = ""
-        # glab's login per GitLab host, once read (:meth:`me_for`).
-        self._gitlab_me: dict[str, str] = {}
+        # glab's login per GitLab host, with the glab config it was read under
+        # (:meth:`me_for`).
+        self._gitlab_me: dict[str, tuple[str, tuple | None]] = {}
 
         # Live device-allocator state (pool + holders) and install status.
         self.device_state: dict | None = None
@@ -1422,19 +1423,26 @@ class Store(QObject):
 
     def me_for(self, root: LocalRepo) -> str:
         """Who "me" is in ``root``: :attr:`effective_me` on GitHub, glab's login on a
-        GitLab host (kept once read). Raises while it is unknown, leaving the root
-        unread like any failed read."""
+        GitLab host, kept until glab's config file changes (:meth:`known_me`). Raises
+        while it is unknown, leaving the root unread like any failed read."""
         if not root.is_gitlab:
             if not self.effective_me:
                 raise GHError(GITHUB_LOGIN_UNKNOWN)
             return self.effective_me
-        if root.host not in self._gitlab_me:
-            self._gitlab_me[root.host] = API.fetch_viewer_login(root.host)
-        return self._gitlab_me[root.host]
+        stamp = localrepos.glab_config_stamp()
+        login, read_at = self._gitlab_me.get(root.host, ("", None))
+        if not login or read_at != stamp:
+            login = API.fetch_viewer_login(root.host)
+            self._gitlab_me[root.host] = (login, stamp)
+        return login
 
     def known_me(self, root: LocalRepo) -> str:
-        """:meth:`me_for` without reading anything: on a GitLab host not read yet, ""."""
-        return self._gitlab_me.get(root.host, "") if root.is_gitlab else self.effective_me
+        """:meth:`me_for` without reading anything: "" on a GitLab host not read since
+        glab's config file last changed (``glab auth login`` rewrites it)."""
+        if not root.is_gitlab:
+            return self.effective_me
+        login, stamp = self._gitlab_me.get(root.host, ("", None))
+        return login if stamp == localrepos.glab_config_stamp() else ""
 
     def tint(self, tool_id: str) -> str:
         """A tool's tint as #RRGGBB: the user's override if set, else its default."""

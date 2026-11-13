@@ -465,6 +465,34 @@ def test_me_on_gitlab_is_the_glab_login_read_once_and_only_once_it_is_read(store
     assert {a[2] for a in fake.asked} == {HOST}
 
 
+def test_a_rewritten_glab_config_reads_the_gitlab_login_again(store,  # noqa: F811
+                                                              monkeypatch):
+    """``glab auth login`` as another account rewrites glab's config; while it is
+    unchanged the kept login is used without asking glab."""
+    import os
+
+    config = localrepos.glab_config_file()
+    fake = FakeGlab(monkeypatch, viewer={"data": {"currentUser": {"username": "carol"}}})
+    assert store.me_for(LAB) == "carol"
+    assert store.me_for(LAB) == store.known_me(LAB) == "carol"
+    assert fake.names() == ["viewer"]
+    fake.answers["viewer"] = {"data": {"currentUser": {"username": "dave"}}}
+    config.write_text(f"hosts:\n    {HOST}:\n        user: dave\n")
+    assert store.known_me(LAB) == ""
+    assert store.me_for(LAB) == "dave"
+    assert store.me_for(LAB) == "dave"
+    assert fake.names() == ["viewer"] * 2
+    read = config.stat()
+    config.write_text(config.read_text().replace("dave", "erin"))
+    os.utime(config, ns=(read.st_atime_ns, read.st_mtime_ns + 1_000_000_000))
+    assert store.known_me(LAB) == "", "the same size, a later time"
+    assert store.me_for(LAB) == "dave"
+    read = config.stat()
+    config.write_text(config.read_text().replace("erin", "frank"))
+    os.utime(config, ns=(read.st_atime_ns, read.st_mtime_ns))
+    assert store.known_me(LAB) == "", "the same time, another size"
+
+
 @pytest.fixture
 def lab_only(store, monkeypatch):  # noqa: F811 — the shared Store fixture
     """One GitLab root, the monitors off so a poll queues what it finds."""

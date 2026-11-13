@@ -71,6 +71,18 @@ def glab_config_file() -> Path | None:
     return next((c for c in candidates if c.is_file()), None)
 
 
+def glab_config_stamp() -> tuple[str, int, int] | None:
+    """Which glab config file there is, with its modification time (ns) and size, or
+    ``None`` for none: ``glab auth login`` rewrites it, so a change may be another
+    account."""
+    path = glab_config_file()
+    try:
+        st = path.stat() if path else None
+    except OSError:
+        return None
+    return (str(path), st.st_mtime_ns, st.st_size) if st else None
+
+
 def config_hosts(text: str) -> dict[str, str]:
     """A glab config's top-level ``hosts:`` map, read without a YAML parser, as each host
     a remote may name to the host glab's API answers on, all lowercased: every bare
