@@ -545,9 +545,9 @@ enum AgentProbes {
 
     // MARK: - GitHub and GitLab
 
-    /// Which of these items (`PRRef.itemKey`) GitHub (or GitLab, for an item of a GitLab
-    /// root among `roots`) calls MERGED: the one terminal outcome that outranks anything a
-    /// process is doing. Each is asked of its own repo; one in no root is asked of GitHub.
+    /// Which of these items (`PRRef.itemKey`) their host calls MERGED: the one terminal
+    /// outcome that outranks anything a process is doing. An item of a GitLab root in
+    /// `roots` is asked of GitLab, any other of GitHub.
     ///
     /// One `gh` or `glab` call per PR, so this belongs on the slow refresh, not the process
     /// poll. A PR whose probe fails is simply absent from the answer; a partial answer is

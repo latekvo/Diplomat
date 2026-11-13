@@ -684,9 +684,9 @@ extension Store {
 
     enum CommsLookup {
         case found(CommsTarget)
-        /// GitHub (GitLab) says the repo has no such PR or issue.
+        /// The host says the repo has no such PR or issue.
         case missing
-        /// No answer: gh (glab) failed, timed out or printed no PR or issue.
+        /// No answer: gh or glab failed, timed out or printed no PR or issue.
         case unasked(String)
     }
 
@@ -753,7 +753,7 @@ extension Store {
             return .unasked("\(tool) printed no PR or issue")
         }
         let url = obj["url"] as? String ?? ""
-        // GitLab numbers merge requests and issues apart, so its issue answer is an issue.
+        // GitLab's issues endpoint answers only issues.
         if kind == .issue, !root.isGitLab, !url.contains("/issues/") { return .missing }
         let author = (obj["author"] as? [String: Any])?["login"] as? String ?? ""
         return .found(CommsTarget(number: n, url: url, author: author, isOpen: raw == "OPEN",

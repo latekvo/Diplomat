@@ -64,8 +64,8 @@ enum AgentWindows {
     ///
     /// The mirror of `focus`, used for a run a BACKSTOP ended (`AgentState.reapable`)
     /// and for an automatic run its own runner reported done
-    /// (`AgentState.closeOnRetire`), whose work is on GitHub, on GitLab or in a report
-    /// rather than on its screen. The quiescence backstop is twenty minutes of a screen that has not
+    /// (`AgentState.closeOnRetire`), whose work is on GitHub/GitLab or in a report rather than
+    /// on its screen. The quiescence backstop is twenty minutes of a screen that has not
     /// moved, so nothing is being read and nothing is being typed. The run deadline is
     /// the operator's own instruction to give up on a task at four hours — and there the
     /// agent may well be working, which is the point: they asked for the bay back

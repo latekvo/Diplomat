@@ -29,7 +29,7 @@ enum RepoPathsTest {
         let fm = FileManager.default
         let scratch = fm.temporaryDirectory.appendingPathComponent("diplomat-repopaths-\(getpid())")
         defer { try? fm.removeItem(at: scratch) }
-        // glab's config, the hosts it names GitLab besides gitlab.com and gitlab.*.
+        // glab configured for gl.example.org, a GitLab host no default pattern matches.
         let glabDir = scratch.appendingPathComponent("glab")
         try? fm.createDirectory(at: glabDir, withIntermediateDirectories: true)
         try? "hosts:\n    gl.example.org:\n        token: x\n"

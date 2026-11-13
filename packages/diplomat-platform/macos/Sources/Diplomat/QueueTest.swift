@@ -1116,11 +1116,10 @@ enum QueueTest {
               !store.meshRoutable(routed(nil)) && !store.meshRoutable(checkout: gitlabNamesake.path))
         store.pinRoots([rootA, rootB])
 
-        // 24a. "Me" in a GitLab root is glab's user on its host, read once; a read that
-        //      fails leaves it unknown, to be asked again.
+        // 24a. "Me" in a GitLab root: glab's user on its host, cached only once read.
         let glabStub = feed.appendingPathComponent("glab")
         let glabCalls = feed.appendingPathComponent("glab-calls")
-        // A REST read that rechecks a merge status answers from glab-rest, logging its path.
+        // A merge-status recheck answers from glab-rest, logging its path; the rest from glab-out.
         try? ("#!/bin/sh\necho x >> '\(glabCalls.path)'\n"
               + "case \"$*\" in *with_merge_status_recheck*) echo \"$3 $4\" >> '\(feed.path)/glab-rechecks'\n"
               + "  cat '\(feed.path)/glab-rest'; exit \"$(cat '\(feed.path)/glab-rest-code')\" ;; esac\n"
@@ -1156,8 +1155,8 @@ enum QueueTest {
         check("…while a GitHub root's me stays the GitHub one",
               await meIn(rootA) == "alice" && store.knownMe(for: rootA) == "alice"
                 && store.knownMe(for: nil) == "alice")
-        // A wizard's run is "me" of the root it targets: a link to a GitLab root's item
-        // from the GitHub root shown names glab's user there, a sweep the shown root's me.
+        // A link to a GitLab item from the GitHub root shown runs as glab's user; a sweep as
+        // the shown root's me.
         let rootsBefore = store.roots
         store.pinRoots([rootA, onGitLab])
         let mrLink = "https://gitlab.example.com/g/sub/p/-/merge_requests/3"
@@ -1170,8 +1169,7 @@ enum QueueTest {
         store.pinRoots(rootsBefore)
         store.usernameOverride = overrideBefore
 
-        // 24a'. The monitors' reads of a GitLab root, through glab and the GitHub parsers,
-        //       on the shared parity fixtures.
+        // 24a'. The monitors' GitLab reads, on the shared parity fixtures.
         let fixtures = (try? CoreAssets.assetsDir())?.deletingLastPathComponent()
             .appendingPathComponent("Tests/fixtures/gitlab")
         func fixture(_ name: String) -> String {
@@ -1249,9 +1247,8 @@ enum QueueTest {
                 && glabArgv().contains("gitlab.example.com")
                 && glabArgv().contains("iid=7"))
 
-        // 24a''. A conflict fix waiting on a GitLab merge request that reads unchecked
-        //        stays queued: GitLab has not looked, which says nothing of the conflict.
-        //        A GitHub PR's UNKNOWN is no conflict, so its fix leaves.
+        // 24a''. An unchecked GitLab merge request keeps its queued conflict fix (GitLab
+        //        has not looked yet); a GitHub PR's UNKNOWN drops it.
         store.pinRoots([rootA, onGitLab])
         store.requestedWork = []
         store.queuedTasks = []
@@ -1291,8 +1288,8 @@ enum QueueTest {
         emptyBook()
         store.queuedTasks = []
 
-        // 24a'''. A community issue in a GitLab root whose glab user cannot be read is not
-        //         queued to run as nobody: the root is held, its mark kept for the next read.
+        // 24a'''. A GitLab root whose glab user is unknown is held, not run as nobody; its
+        //         mark waits for the next read.
         let signedOutRoot = PRRef.LocalRepo(owner: "g", repo: "lab", path: "/w/lab",
                                             host: "gitlab.signedout.example")
         store.pinRoots([signedOutRoot])
@@ -1310,7 +1307,7 @@ enum QueueTest {
             if case .issues(let cfg) = w.config { return "\(w.key) \(cfg.me)" }
             return nil
         }
-        // The feed, whose root-read lines a later section counts from the start.
+        // A later section counts the feed's root-read lines from the start: drop these.
         let auditFeed = feed.appendingPathComponent("audit.jsonl")
         let auditLines = ((try? String(contentsOf: auditFeed, encoding: .utf8)) ?? "").split(separator: "\n")
         func isLab(_ line: Substring) -> Bool {
