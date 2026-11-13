@@ -168,7 +168,8 @@ public struct PRRef: Equatable {
 extension PRRef {
     /// One PR or issue across every repo this machine works: its root's `LocalRepo.key`
     /// and number, `owner/repo#n` on GitHub and `host/ns/proj#n` on GitLab, lowercased.
-    /// The two cannot clash: a host has a dot, a GitHub owner never does. GitHub numbers
+    /// The two cannot clash: a GitHub repo is exactly owner/repo, a GitLab project always
+    /// has a namespace, so its key has three segments or more. GitHub numbers
     /// PRs and issues in one space per repo, so the key carries no kind; GitLab's iids
     /// number them separately, and the queue tells the two apart by verb. Python twin:
     /// `prref.item_key`.
@@ -210,11 +211,12 @@ extension PRRef {
         return roots.first { $0.key == want } ?? slugs.first { !$0.isGitLab } ?? slugs.first
     }
 
-    /// The repo a `LocalRepo.key` names, with no checkout: a GitLab project when its first
-    /// segment has a dot (a host), else a GitHub repo. Python twin: `prref.repo_of_key`.
+    /// The repo a `LocalRepo.key` names, with no checkout: a GitLab project on its first
+    /// segment's host when it has three segments or more, else a GitHub repo. Python
+    /// twin: `prref.repo_of_key`.
     public static func repo(ofKey key: String) -> LocalRepo {
         let parts = key.split(separator: "/", maxSplits: 1).map(String.init)
-        let (host, rest) = parts.count == 2 && parts[0].contains(".")
+        let (host, rest) = parts.count == 2 && parts[1].contains("/")
             ? (parts[0], parts[1]) : (LocalRepo.github, key)
         let (owner, repo) = splitSlug(rest) ?? ("", rest)
         return LocalRepo(owner: owner, repo: repo, path: "", host: host)

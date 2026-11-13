@@ -406,6 +406,11 @@ func gitlabSmoke() async throws {
           && PRRef.repo(ofKey: "gitlab.example.com/g/sub/p").slug == "g/sub/p"
           && PRRef.repo(ofKey: hubTwin.key).webURL(.pull, number: 5) == "https://github.com/acme/widget/pull/5",
           "a key with no root names its repo: a host first is GitLab's, else GitHub's")
+    let dotless = PRRef.repo(ofKey: "localhost/grp/proj")
+    check(dotless.isGitLab && dotless.host == "localhost" && dotless.slug == "grp/proj"
+          && dotless.key == "localhost/grp/proj"
+          && PRRef.repo(ofKey: "o/r") == PRRef.LocalRepo(owner: "o", repo: "r", path: ""),
+          "three segments or more are a GitLab project, a dotless host too; two are a GitHub repo: \(dotless)")
     check([hubTwin, labTwin, otherRoot].map { PRRef.rootLabel($0, roots: [hubTwin, labTwin, otherRoot]) }
               == ["acme/widget", "gitlab.example.com/acme/widget", "o/r"]
           && PRRef.rootLabel(labTwin, roots: [labTwin, otherRoot]) == "acme/widget",
