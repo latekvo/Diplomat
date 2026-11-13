@@ -137,26 +137,31 @@ public enum GLab {
         return GitLabHosts.parse(config: text)
     }
 
-    /// `configFile`'s modification time and size, nil without one: `glab auth login`
-    /// rewrites it, so a change may mean another account.
+    /// `configFile`'s path, modification time and size, nil without one.
     static func configStamp(env: [String: String]) -> ConfigStamp? {
         guard let file = configFile(env: env),
               let a = try? FileManager.default.attributesOfItem(atPath: file) else { return nil }
-        return ConfigStamp(modified: a[.modificationDate] as? Date, size: (a[.size] as? NSNumber)?.intValue)
+        return ConfigStamp(file: file, modified: a[.modificationDate] as? Date,
+                           size: (a[.size] as? NSNumber)?.intValue)
     }
 
     struct ConfigStamp: Equatable {
+        let file: String
         let modified: Date?
         let size: Int?
     }
 }
 
 /// glab's signed-in user by GitLab host: what a GitLab root reads as "me". A host's login
-/// is kept until glab's config file changes; only successes are kept, so a failed host is
-/// asked again. Python twin: `Store.me_for`.
+/// is kept while that host's own entry in glab's config file (`GitLabHosts.entries`) is
+/// unchanged: `glab auth login` and `logout` rewrite it, while glab's own writes to the
+/// file elsewhere (its update check's timestamp) leave it be. Only successes are kept, so
+/// a failed host is asked again. Python twin: `Store.me_for`.
 public final class GitLabLogins: @unchecked Sendable {
     private let lock = NSLock()
-    private var logins: [String: (login: String, stamp: GLab.ConfigStamp?)] = [:]
+    private var logins: [String: (login: String, entry: String?)] = [:]
+    /// The config file's entries as last parsed, and the stamp they were parsed at.
+    private var parsed: (stamp: GLab.ConfigStamp?, entries: [String: String])?
     private let env: [String: String]
     private let fetch: (String) async throws -> String
 
@@ -166,25 +171,40 @@ public final class GitLabLogins: @unchecked Sendable {
         self.fetch = fetch
     }
 
-    /// `host`'s login: the kept one while glab's config file is unchanged, else read.
+    /// `host`'s login: the kept one while its config entry is unchanged, else read.
     public func login(host: String) async throws -> String {
         let h = host.lowercased()
-        let stamp = GLab.configStamp(env: env)
-        if let kept = locked({ logins[h] }), kept.stamp == stamp { return kept.login }
+        let entry = entry(h)
+        if let kept = locked({ logins[h] }), kept.entry == entry { return kept.login }
         let login = try await fetch(h)
-        locked { logins[h] = (login, stamp) }
+        locked { logins[h] = (login, entry) }
         return login
     }
 
-    /// `login(host:)` as last read, without asking: "" for a host not read yet.
+    /// `login(host:)` as last read, without asking: "" for a host not read yet or whose
+    /// config entry changed since.
     public func known(host: String) -> String {
-        locked { logins[host.lowercased()]?.login ?? "" }
+        let h = host.lowercased()
+        let entry = entry(h)
+        return locked { logins[h].flatMap { $0.entry == entry ? $0.login : nil } ?? "" }
     }
 
     /// Keep `login` for `host` as if just read.
     public func pin(_ login: String, host: String) {
+        let h = host.lowercased()
+        let entry = entry(h)
+        locked { logins[h] = (login, entry) }
+    }
+
+    /// `host`'s entry in glab's config file, nil for none; the file is parsed again only
+    /// when its stamp moved.
+    private func entry(_ host: String) -> String? {
         let stamp = GLab.configStamp(env: env)
-        locked { logins[host.lowercased()] = (login, stamp) }
+        if let p = locked({ parsed }), p.stamp == stamp { return p.entries[host] }
+        let text = stamp.flatMap { try? String(contentsOfFile: $0.file, encoding: .utf8) } ?? ""
+        let entries = GitLabHosts.entries(config: text)
+        locked { parsed = (stamp, entries) }
+        return entries[host]
     }
 
     private func locked<T>(_ body: () -> T) -> T {

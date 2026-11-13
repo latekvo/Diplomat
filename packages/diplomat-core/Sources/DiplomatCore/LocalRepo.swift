@@ -117,43 +117,69 @@ public struct GitLabHosts: Equatable, ExpressibleByArrayLiteral {
     public static func parse(config: String) -> GitLabHosts {
         var named: [String: String] = [:]
         var aliases: [String: String] = [:]
-        var inHosts = false
-        var indent: Int?
-        var host: String?
-        var child: Int?
-        let key = try? NSRegularExpression(pattern: #"^\s+([A-Za-z0-9.-]+)(?::[0-9]+)?:\s*$"#)
         let sshHost = try? NSRegularExpression(
             pattern: #"^\s+ssh_host:\s*(["']?)([A-Za-z0-9.-]+)(?::[0-9]+)?\1\s*(?:#.*)?$"#)
-        func capture(_ re: NSRegularExpression?, _ group: Int, _ line: String) -> String? {
-            re?.firstMatch(in: line, range: NSRange(line.startIndex..., in: line))
-                .flatMap { Range($0.range(at: group), in: line) }.map { line[$0].lowercased() }
+        for (host, lines) in hostBlocks(config) {
+            named[host] = host
+            guard let child = lines.dropFirst().first.map(depth) else { continue }
+            for line in lines.dropFirst() where depth(line) == child {
+                if let alias = capture(sshHost, 2, line), aliases[alias] == nil { aliases[alias] = host }
+            }
         }
+        return GitLabHosts(aliases.merging(named) { _, own in own })
+    }
+
+    /// Each host's entry in a glab `config.yml` by host (as `parse` reads them: lowercased,
+    /// `:port` dropped): its host line through its last child line, blank and comment
+    /// lines left out. A host listed twice has both entries.
+    public static func entries(config: String) -> [String: String] {
+        var out: [String: String] = [:]
+        for (host, lines) in hostBlocks(config) {
+            out[host] = (out[host].map { $0 + "\n" } ?? "") + lines.joined(separator: "\n")
+        }
+        return out
+    }
+
+    /// The column-0 `hosts:` map's bare `key:` lines at its first entry's indent, each with
+    /// the lines below it (deeper ones), in order.
+    private static func hostBlocks(_ config: String) -> [(host: String, lines: [String])] {
+        var out: [(host: String, lines: [String])] = []
+        var inHosts = false
+        var indent: Int?
+        var current = false
+        let key = try? NSRegularExpression(pattern: #"^\s+([A-Za-z0-9.-]+)(?::[0-9]+)?:\s*$"#)
         for raw in config.split(separator: "\n", omittingEmptySubsequences: false) {
             let line = String(raw)
             let body = line.trimmingCharacters(in: .whitespaces)
             if body.isEmpty || body.hasPrefix("#") { continue }
-            let depth = line.prefix { $0 == " " || $0 == "\t" }.count
-            if depth == 0 {
+            let at = depth(line)
+            if at == 0 {
                 inHosts = body == "hosts:"
                 indent = nil
+                current = false
                 continue
             }
             guard inHosts else { continue }
-            let first = indent ?? depth
+            let first = indent ?? at
             indent = first
-            if depth == first {
-                host = capture(key, 1, line)
-                child = nil
-                if let host { named[host] = host }
-            } else if depth > first, let host {
-                let at = child ?? depth
-                child = at
-                if depth == at, let alias = capture(sshHost, 2, line), aliases[alias] == nil {
-                    aliases[alias] = host
+            if at == first {
+                current = false
+                if let host = capture(key, 1, line) {
+                    out.append((host, [line]))
+                    current = true
                 }
+            } else if at > first, current {
+                out[out.count - 1].lines.append(line)
             }
         }
-        return GitLabHosts(aliases.merging(named) { _, own in own })
+        return out
+    }
+
+    private static func depth(_ line: String) -> Int { line.prefix { $0 == " " || $0 == "\t" }.count }
+
+    private static func capture(_ re: NSRegularExpression?, _ group: Int, _ line: String) -> String? {
+        re?.firstMatch(in: line, range: NSRange(line.startIndex..., in: line))
+            .flatMap { Range($0.range(at: group), in: line) }.map { line[$0].lowercased() }
     }
 }
 

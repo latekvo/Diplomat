@@ -122,6 +122,43 @@ func gitlabSmoke() async throws {
     check(switched == "second" && kept == "second" && logins.known(host: "gl.example.com") == "second"
           && reads.hosts.count == 2,
           "a rewritten glab config (`glab auth login`) reads the login again, once: \(reads.hosts)")
+    func glabConfig(_ check: String, _ lab: String, _ other: String = "    user: o\n") throws {
+        try "last_update_check_timestamp: \(check)\nhosts:\n  GL.example.com:8443:\n\(lab)  other.example.com:\n\(other)"
+            .write(to: loginConfig, atomically: true, encoding: .utf8)
+    }
+    let twoHosts = GitLabLogins(env: ["HOME": emptyHome, "GLAB_CONFIG_DIR": loginDir.path]) { host in
+        reads.hosts.append(host)
+        return reads.login
+    }
+    reads.hosts = []
+    reads.login = "me"
+    try glabConfig("2026-11-01T00:00:00Z", "    user: me\n    token: a\n")
+    _ = try await twoHosts.login(host: "gl.example.com")
+    try glabConfig("2026-11-13T09:30:00.123456+01:00", "    user: me\n    token: a\n")
+    let afterCheck = try await twoHosts.login(host: "gl.example.com")
+    check(afterCheck == "me" && twoHosts.known(host: "gl.example.com") == "me"
+          && reads.hosts == ["gl.example.com"],
+          "glab's update check rewriting its config keeps the host's login, unasked: \(reads.hosts)")
+    // Same size, same stamp, another entry: the parse of the unchanged file is the one kept.
+    let stamp = Date(timeIntervalSince1970: 1_790_000_000)
+    try glabConfig("2026-11-13T09:30:00.123456+01:00", "    user: me\n    token: a\n", "    user: o2\n")
+    try fm.setAttributes([.modificationDate: stamp], ofItemAtPath: loginConfig.path)
+    check(twoHosts.known(host: "gl.example.com") == "me" && reads.hosts.count == 1,
+          "another host's entry changing keeps this host's login")
+    try glabConfig("2026-11-13T09:30:00.123456+01:00", "    user: me\n    token: b\n", "    user: o2\n")
+    try fm.setAttributes([.modificationDate: stamp], ofItemAtPath: loginConfig.path)
+    check(twoHosts.known(host: "gl.example.com") == "me",
+          "a config whose stamp has not moved is not parsed again")
+    try glabConfig("2026-11-13T09:30:00.123456+01:00", "    user: me\n    token: c\n")
+    check(twoHosts.known(host: "gl.example.com") == "", "a host whose token changed has no known login")
+    reads.login = "me-again"
+    let reread = try await twoHosts.login(host: "gl.example.com")
+    check(reread == "me-again" && reads.hosts == ["gl.example.com", "gl.example.com"]
+          && twoHosts.known(host: "gl.example.com") == "me-again",
+          "…and the next login reads glab: \(reads.hosts)")
+    try "last_update_check_timestamp: x\nhosts:\n  other.example.com:\n    user: o\n"
+        .write(to: loginConfig, atomically: true, encoding: .utf8)
+    check(twoHosts.known(host: "gl.example.com") == "", "a host whose entry is gone has no known login")
 
     section("gitlab: remotes and roots")
     func coords(_ url: String, _ hosts: GitLabHosts = []) -> [String]? {
