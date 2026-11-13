@@ -26,7 +26,6 @@ pytest.importorskip("PySide6")
 FIXTURES = Path(__file__).resolve().parents[3] / "diplomat-core/Tests/fixtures/gitlab"
 HOST = "gitlab.example.com"
 LAB = LocalRepo("group/sub", "proj", "/src/proj", HOST)
-#: LAB's root key: its items' keys are ``KEY#n``.
 KEY = f"{HOST}/group/sub/proj"
 HUB = LocalRepo("o", "r", "/src/r")
 
@@ -468,10 +467,10 @@ def test_me_on_gitlab_is_the_glab_login_read_once_and_only_once_it_is_read(store
 
 def test_the_gitlab_login_is_kept_while_its_hosts_glab_entry_is_unchanged(store,  # noqa: F811
                                                                           monkeypatch):
-    """glab rewrites its config on its own (its update check's timestamp), so the file
-    moving says nothing about who is signed in; that host's entry in it does. While the
-    entry stands the login is kept without asking glab, and the file is parsed only
-    when it moved; once the entry changed or is gone, the login is "" until read again."""
+    """glab rewrites its config on its own (its update check's timestamp), so only the
+    host's entry says who is signed in: while it stands the login is kept without asking
+    glab, the file parsed only when it moved; once it changed or is gone, the login is
+    "" until read again."""
     import os
 
     config = localrepos.glab_config_file()
@@ -1015,8 +1014,8 @@ TWIN_LAB = LocalRepo("acme", "widget", "/src/lab", HOST)
 
 
 def test_keys_name_a_gitlab_item_by_its_host():
-    """GitHub keys stay ``owner/repo#n``; a GitLab one carries its host, so the two
-    twins agree on every key (the fixture ``GitLab.swift``'s smoke reads too)."""
+    """GitHub keys are ``owner/repo#n``, GitLab ones carry the host; ``GitLabSmoke.swift``
+    reads this fixture too."""
     case, want = _fixture("keys", "input"), _fixture("keys", "expected")
     roots = [LocalRepo(r["owner"], r["repo"], "", r["host"]) for r in case["roots"]]
     assert [{"key": r.key, "item": prref.item_key(r.owner, r.repo, 5, r.host)}

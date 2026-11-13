@@ -107,9 +107,9 @@ class LocalRepo:
 def item_key(owner: str, repo: str, number: int, host: str = GITHUB) -> str:
     """One PR or issue across every repo root, its repo's :attr:`LocalRepo.key` and
     number: ``owner/repo#n`` on GitHub, ``host/owner/repo#n`` on GitLab. A GitLab
-    project always has a namespace, so its key has three segments or more where a GitHub
-    one has two, and the two cannot clash. GitHub numbers a repo's PRs and issues in one
-    space, so the key carries no kind."""
+    project always has a namespace, so its three-plus segments never clash with GitHub's
+    two. GitHub numbers a repo's PRs and issues in one space, so the key carries no
+    kind."""
     return f"{LocalRepo(owner, repo, '', host).key}#{number}"
 
 
@@ -181,8 +181,7 @@ def migrate_queue_key(key: str, primary: str) -> str:
 
 
 def item_label(item: str, roots: int) -> str:
-    """``#N`` while one repo is loaded, else ``repo#N`` by the repo's name alone, no
-    host or namespace."""
+    """``#N`` while one repo is loaded, else ``repo#N`` by the repo's name alone."""
     split = split_item_key(item)
     if split is None:
         return item

@@ -90,10 +90,9 @@ class IssueConfig(RepoConfig):
 
     # An issue run is deliberately NOT PR-scoped, so ``single_pr_number`` /
     # ``single_pr_url`` stay ``None`` (inherited from RepoConfig, as for the audit).
-    # The dispatch pipeline's dedup is PR-shaped throughout, keyed on a PR number, so
-    # handing it an issue number would collide with the PR that happens to share it.
-    # What keeps two agents off one issue instead is ``assign_to_me``, which claims it
-    # on its host where every machine can see the claim, not just this one.
+    # The dispatch dedup keys on a PR number, which an issue's would collide with; what
+    # keeps two agents off one issue is ``assign_to_me``'s claim on its host, which every
+    # machine sees.
 
     @property
     def author_handle(self) -> str:

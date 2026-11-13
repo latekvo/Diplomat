@@ -1035,8 +1035,7 @@ class AgentJob:
     audit_action: str  # activity-feed verb
     label: str  # label core (source prefix / retry suffix added by dispatch_label)
     prompt: str
-    # The link of the PR or issue the job is about, which its run records; None for
-    # neither. PR-scoped only with ``pr_number``.
+    # The PR or issue link its run records; None for neither.
     pr_url: str | None = None
     # Set for a PR-scoped job only, never an issue's, and None for a PR in another
     # listed checkout; with ``pr_url`` it makes :attr:`item`, the dedup key.
@@ -1108,8 +1107,7 @@ class RequestedWork:
     #: The wizard config's ``prompt_payload`` for this one item. Its ``kind`` is also
     #: the queue verb the ask waits under, so the payload carries its own discriminator.
     config: dict
-    #: The repo root the item is in, as its key (``LocalRepo.key``); "" in a row
-    #: single-repo builds stored.
+    #: The item's root, as its ``LocalRepo.key``; "" in a row single-repo builds stored.
     repo: str = ""
 
     @property
@@ -1224,8 +1222,7 @@ class RunningAgent:
     # guesswork this whole mechanism replaced.
     state: str = "running"
     reason: str = ""
-    # The item key of the PR or issue the run is about, read off its link; None for a
-    # run about neither.
+    # The run's PR or issue item key, read off its link; None for neither.
     item: str | None = None
 
     @property
@@ -1247,9 +1244,8 @@ _GITLAB_NOTE_RE = re.compile(
 def prompt_items(text: str, keys: set[str]):
     """Yield the item key of every ``PR #<n> in <owner>/<repo>`` in a prompt whose repo
     root's key is one of ``keys`` (``LocalRepo.key``), the owner a namespace of any
-    depth. Every single-PR prompt the applet dispatches opens that way. The repo is the
-    GitLab one when the prompt's GitLab note names its host and that project, else the
-    GitHub one.
+    depth. Every single-PR prompt the applet dispatches opens that way. The repo is
+    GitLab's when the prompt's GitLab note names that project, else GitHub's.
 
     The longest leading run of path segments in ``keys`` is the repo.
     The prompt goes on ``. Use the `gh` CLI``, and ``.`` is a repo-name character, so
@@ -1413,8 +1409,8 @@ class AgentLine:
 def agent_lines(ps_output: str, keys: set[str]):
     """Yield an :class:`AgentLine` for every live agent in a ``ps`` dump whose prompt
     names a PR of a repo root whose key is in ``keys`` (:func:`prompt_items`) — the one
-    parse the answers above are each a projection of, so they can never come to disagree about
-    what counts as an agent.
+    parse the answers above are each a projection of, so they can never come to disagree
+    about what counts as an agent.
 
     The tty is whatever leads the line, normalised free of ``/dev/`` (``ps`` omits it,
     tmux does not), and the elapsed time is the token after it. On a bare ``args=``

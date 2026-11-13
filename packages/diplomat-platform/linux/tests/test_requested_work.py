@@ -293,10 +293,8 @@ def test_the_unassigned_filter_is_applied_before_anything_is_queued(swept_store)
 
 
 def test_a_queued_fix_is_not_pr_scoped(swept_store):
-    """The dedup key of the pipeline is a PR, so an issue number in it would collide
-    with the PR that shares it: the job carries its issue's link, which its run records,
-    and no PR number. What keeps two agents off one issue is the GitHub assignee claim,
-    which every machine can see."""
+    """The dedup keys on a PR number, which an issue's would collide with: the job
+    carries its issue's link, for its run to record, and no PR number."""
     swept_store.request_issue_sweep(_issue_sweep(swept_store))
     task = swept_store.queued_tasks[0]
     job = task.job

@@ -410,7 +410,7 @@ class RunRecord:
     run_id: str
     dispatched_at: float
     pr_number: int | None = None
-    #: The link of the PR or issue the run is about; "" for neither.
+    #: The run's PR or issue link; "" for neither.
     pr_url: str = ""
     kind: str = ""
     label: str = ""
@@ -1295,9 +1295,6 @@ def synthesize_untracked(records: list[RunRecord], live_agents: Observation,
 
     They count as automatic. An agent whose trigger is unknown spending a bay defers
     work; the opposite error dispatches a second agent onto a PR that has one.
-
-    Its link is that of the PR in the root of ``roots`` its item key names, else in
-    the repo the key names (:func:`prref.repo_of_key`).
     """
     if not live_agents.ok:
         return records

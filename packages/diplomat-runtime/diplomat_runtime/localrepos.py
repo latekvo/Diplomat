@@ -28,9 +28,9 @@ from .prref import GITHUB, LocalRepo
 #: near this is a wedged filesystem, and the caller is the GUI thread.
 GIT_TIMEOUT = 5.0
 
-#: The GitLab hosts known without asking glab, each to the host its API answers on: a
-#: ``hosts`` mapping of :func:`parse_remote`. Any host whose first DNS label is
-#: ``gitlab`` counts as well (:func:`is_gitlab_host`).
+#: The GitLab hosts known without asking glab, each to its API host (a ``hosts`` of
+#: :func:`parse_remote`). Any host whose first DNS label is ``gitlab`` counts as well
+#: (:func:`is_gitlab_host`).
 GITLAB_HOSTS: Mapping[str, str] = MappingProxyType({"gitlab.com": "gitlab.com"})
 
 #: A GitHub remote in either spelling git writes: scp-like (``git@github.com:o/r``) or
@@ -72,8 +72,7 @@ def glab_config_file() -> Path | None:
 
 
 def glab_config_stamp() -> tuple[str, int, int] | None:
-    """Which glab config file there is, with its modification time (ns) and size, or
-    ``None`` for none."""
+    """``(path, mtime_ns, size)`` of glab's config file, or ``None`` for none."""
     path = glab_config_file()
     try:
         st = path.stat() if path else None
@@ -83,10 +82,10 @@ def glab_config_stamp() -> tuple[str, int, int] | None:
 
 
 def _host_blocks(text: str) -> list[tuple[str | None, list[str]]]:
-    """A glab config's top-level ``hosts:`` map, read without a YAML parser, as each
-    line at the indent of the map's first entry with the deeper lines under it, blank
-    and comment lines left out: the entry's host, lowercased with its port dropped
-    (``None`` for a line that names none), and its lines, its own first."""
+    """A glab config's top-level ``hosts:`` map, read without a YAML parser: per line at
+    the indent of the map's first entry, its host lowercased without port (``None`` for
+    a line naming none) and that line with the deeper ones under it, blank and comment
+    lines left out."""
     blocks: list[tuple[str | None, list[str]]] = []
     inside = False
     indent: int | None = None
@@ -111,10 +110,10 @@ def _host_blocks(text: str) -> list[tuple[str | None, list[str]]]:
 
 
 def config_hosts(text: str) -> dict[str, str]:
-    """A glab config's ``hosts:`` map (:func:`_host_blocks`) as each host a remote may
-    name to the host glab's API answers on, all lowercased: every host to itself, and a
-    non-empty ``ssh_host:`` at the indent of that host's first entry to the host. A
-    host's own name wins over another's ``ssh_host``."""
+    """Each host a remote may name to the glab ``hosts:`` host (:func:`_host_blocks`)
+    whose API answers for it, all lowercased: every host to itself, and a non-empty
+    ``ssh_host`` directly under a host to that host. A host's own name wins over
+    another's ``ssh_host``."""
     hosts: dict[str, str] = {}
     aliases: dict[str, str] = {}
     for host, lines in _host_blocks(text):
@@ -140,16 +139,14 @@ def config_entries(text: str) -> dict[str, str]:
     return entries
 
 
-#: :func:`glab_config_stamp` and :func:`config_entries` of the glab config last read
-#: by :func:`glab_host_entry`.
+#: :func:`glab_host_entry`'s cache: the config's stamp and its entries.
 _entries: tuple[tuple[str, int, int] | None, dict[str, str]] = (None, {})
 
 
 def glab_host_entry(host: str) -> str | None:
     """``host``'s entry in glab's config (:func:`config_entries`), ``None`` for none,
-    the file read again only once its :func:`glab_config_stamp` moved. glab rewrites the
-    file on its own (its update check's timestamp), so the entry, not the file, says
-    who is signed in."""
+    re-read only once the file's stamp moved. glab rewrites the file on its own (its
+    update check's timestamp), so the entry, not the file, says who is signed in."""
     global _entries
     stamp = glab_config_stamp()
     if stamp != _entries[0]:

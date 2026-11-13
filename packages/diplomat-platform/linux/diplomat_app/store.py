@@ -396,8 +396,8 @@ class Store(QObject):
         self.selected: str = tools()[0].id
         self.has_loaded = False
         self.me = ""
-        # glab's login per GitLab host, with that host's glab config entry it was read
-        # under (:meth:`me_for`).
+        # Per GitLab host: glab's login and the glab config entry it was read under
+        # (:meth:`me_for`).
         self._gitlab_me: dict[str, tuple[str, str | None]] = {}
 
         # Live device-allocator state (pool + holders) and install status.
@@ -647,8 +647,8 @@ class Store(QObject):
         # whenever the list is set: each is a `git` call, and the wizards read this on
         # every keystroke.
         self._local_checkouts: list[localrepos.Checkout] | None = None
-        # The panel's last fetch of each repo root, by its key, so switching
-        # the header's picker shows that root's lists at once while they refresh.
+        # The panel's last fetch of each repo root, by its key, so switching the
+        # header's picker shows that root's lists at once while they refresh.
         self._panel_data: dict[str, tuple[list[OpenPR], list[OpenIssue], datetime]] = {}
         # The root whose lists `prs`/`issues` hold; None before any was shown.
         self._shown_key: str | None = None
@@ -812,8 +812,8 @@ class Store(QObject):
         return next((r for r in roots if r.key == want), roots[0])
 
     def select_repo(self, key: str) -> None:
-        """Point the right column at another root (by its key), showing its last fetch
-        at once; the caller asks for the refresh (:meth:`refresh`)."""
+        """Point the right column at another root, showing its last fetch at once; the
+        caller asks for the refresh (:meth:`refresh`)."""
         self._settings.setValue("selectedRepo", key.lower())
         self._show_panel_data(self.selected_repo)
         self.selected_repo_changed.emit()
@@ -1754,8 +1754,8 @@ class Store(QObject):
 
     @staticmethod
     def _root_gone(key: str) -> bool:
-        """Whether the root of key ``key`` was taken out of the roots: every root
-        resolved, and none is that repo."""
+        """Whether root ``key`` was taken out of the roots: every root resolved, and none
+        has that key."""
         return review.roots_complete() and key.lower() not in {
             r.key for r in review.repo_roots()}
 
@@ -2989,14 +2989,12 @@ class Store(QObject):
         cached = self._requested_tasks.get(entry.key)
         if cached is not None and cached[0] == stamp:
             return cached[1]
-        # A fix is deliberately NOT PR-scoped: it carries its issue's link but no PR
-        # number. The dispatch pipeline's dedup is PR-shaped throughout, keyed on a PR
-        # number, so handing it an issue number would collide with the PR that happens
-        # to share it. What keeps two agents off one issue instead is the assignee
-        # claim, which every machine can see rather than just this one.
+        # A fix carries its issue's link but no PR number: the dispatch dedup keys on a
+        # PR number, which an issue's would collide with. The assignee claim, which
+        # every machine sees, keeps two agents off one issue.
         is_pr = entry.action == autofix.QUEUE_REVIEW_ACTION
-        # An issue's link is its root's, by the ask's key (an ask may carry no url), so
-        # its run is that root's even once the root is gone.
+        # Built from the ask's root key, not its url (which may be empty), so the run
+        # stays that root's even once the root is gone.
         link = entry.url if is_pr else (
             (self._root_named(entry.repo) or repo_of_key(entry.repo)).link(
                 "issues", entry.number) if entry.item else None)
@@ -4149,8 +4147,7 @@ class Store(QObject):
             cls.COMMS_BAN_REFUSAL + ")")
 
     def comms_settings_payload(self) -> dict:
-        """The ``CommsSettings`` JSON a tick and a plan are given: the roots by key, and
-        each GitLab root's host by its key."""
+        """The ``CommsSettings`` JSON a tick and a plan are given."""
         roots = review.repo_roots()
         return {
             "keywordsRaw": self.comms_keywords_raw,
@@ -4304,9 +4301,8 @@ class Store(QObject):
 
     @staticmethod
     def _comms_root(repo: str) -> LocalRepo | None:
-        """The repo root an effect's ``repo`` names ("" for the primary,
-        :func:`prref.root_named`), or ``None`` when Settings dropped it after the ping
-        was triaged."""
+        """The repo root an effect's ``repo`` names (:func:`prref.root_named`; "" for the
+        primary), or ``None`` when Settings dropped it after the ping was triaged."""
         roots = review.repo_roots()
         return root_named(repo, roots) if repo else roots[0]
 

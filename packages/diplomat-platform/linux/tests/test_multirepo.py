@@ -823,7 +823,6 @@ def test_the_header_offers_a_picker_only_with_several_roots(make_panel):
 
 
 def _one_slug_roots(base: str) -> list[LocalRepo]:
-    """``acme/widget`` on GitHub and on two GitLab hosts, and a GitLab slug of its own."""
     return [LocalRepo("Acme", "Widget", f"{base}/hub"),
             LocalRepo("acme", "widget", f"{base}/lab", "gitlab.example.com"),
             LocalRepo("acme", "widget", f"{base}/elsewhere", "gitlab.other.org"),

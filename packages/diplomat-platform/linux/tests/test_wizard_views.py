@@ -434,9 +434,8 @@ def test_issues_config_mirrors_the_widgets(store):
 
 
 def test_issues_local_spawn_dispatches_an_unscoped_issues_job(store, dispatched, local_only):
-    """Not PR-scoped: the pipeline's dedup key is a PR, so handing it an issue number
-    would collide with the PR that shares it; the job carries its issue's link alone.
-    The GitHub assignee claim is what keeps two agents off one issue.
+    """Not PR-scoped: the dedup keys on a PR number, which an issue's would collide
+    with, so the job carries its issue's link alone.
 
     Nor is there an author to ban-check: whoever filed the issue is not the handle
     typed into the scope picker, and this wizard never fetches it. A swept issue is

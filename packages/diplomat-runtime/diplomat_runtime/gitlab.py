@@ -28,7 +28,6 @@ _READY = "marked this merge request as **ready**"
 _REQUESTED = "requested review from "
 _UNREQUESTED = " and removed review request"
 _REVIEWED = ("approved this merge request", "requested changes", "left review comments")
-#: A reviewer's ``reviewState`` once they have answered the request.
 _ANSWERED = {"REVIEWED", "APPROVED", "REQUESTED_CHANGES"}
 _MENTION = re.compile(r"@([\w.-]+)")
 _MR_STATES = {"opened": "OPEN", "locked": "OPEN", "closed": "CLOSED", "merged": "MERGED"}
@@ -210,11 +209,10 @@ def _requests(notes: list[dict]) -> list[dict]:
 
 def _request_of(reviewer: str, events: list[dict], mr: dict,
                 activity: list[dict]) -> list[dict] | None:
-    """``reviewer``'s request when no note in the window names them: ``None`` when their
-    ``reviewState`` says they answered it, as GitHub drops an answered request from
-    ``review-requested:``; else at least as old as the window's oldest note (the merge
-    request, for an empty window), the query answering only merge requests requesting
-    their review."""
+    """``reviewer``'s request when no note in the window names them: ``None`` once their
+    ``reviewState`` says they answered (GitHub's ``review-requested:`` drops it too); else
+    dated at the window's oldest note (the merge request's creation, for an empty
+    window), the query answering only merge requests requesting their review."""
     if any(e["requestedReviewer"]["login"].lower() == reviewer.lower() for e in events):
         return []
     if any((r.get("username") or "").lower() == reviewer.lower()

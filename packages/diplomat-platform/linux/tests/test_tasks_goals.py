@@ -418,8 +418,8 @@ def test_the_overlay_is_live_runs_and_queued_asks():
         # Another root's PR and issue under the same numbers: not the goals'.
         run(8, "Review-req · widgets#1813 (@hubert)", "review", pr=1813, repo=other),
         run(9, "Issues · widgets#1814 · deep", "issues"),
-        # An issue fix with a link is known by it: the GitLab project of the goals' slug
-        # is not the goals' repo, whatever its label says.
+        # A linked fix is known by its link: the GitLab project of the goals' slug is
+        # not the goals' repo, whatever its label says.
         run(10, f"Issues · {cfg['repo']}#1819 · deep", "issues",
             link=f"https://gitlab.example.com/{home.slug}/-/issues/1819"),
         run(11, "Issues · deep", "issues", link=f"https://github.com/{home.slug}/issues/1820"),

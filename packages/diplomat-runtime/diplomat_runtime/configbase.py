@@ -108,8 +108,7 @@ class RepoConfig:
 
     @property
     def single_link(self) -> str | None:
-        """The link of the one PR or issue this run is about, which its run records;
-        ``None`` when it is about no one item."""
+        """The link of the one PR or issue the run records; ``None`` for no one item."""
         return self.single_pr_url
 
 
