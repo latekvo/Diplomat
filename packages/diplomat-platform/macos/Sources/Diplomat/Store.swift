@@ -193,8 +193,7 @@ final class Store: ObservableObject {
         roots.first { $0.key == selectedRepo } ?? roots[0]
     }
 
-    /// Whether the root of key `key` was taken out of the roots: every root resolved, and
-    /// none is that repo.
+    /// Whether root `key` was taken out of the roots: every root resolved, and none is it.
     private func rootGone(_ key: String) -> Bool {
         rootsResolved && !roots.contains { $0.key == key.lowercased() }
     }
@@ -3476,9 +3475,8 @@ final class Store: ObservableObject {
 
         var label: String { label(roots: 1) }
 
-        /// The link a fix of this issue records on its run: the issue's in the root of
-        /// `roots` that `repo` names, else in the repo that key names, so the run stays
-        /// that root's once the root is gone.
+        /// The issue's link a fix records on its run; built from `repo`'s key once its root
+        /// is gone, so the run stays that repo's.
         func issueLink(in roots: [PRRef.LocalRepo]) -> String {
             (roots.first { $0.key == repo } ?? PRRef.repo(ofKey: repo)).webURL(.issues, number: number)
         }
@@ -3651,11 +3649,9 @@ final class Store: ObservableObject {
         case .investigate:
             break
         }
-        // A fix is deliberately NOT PR-scoped: it carries its issue's link but no PR
-        // number. The dispatch pipeline's dedup is PR-shaped throughout, keyed on a PR
-        // number, so handing it an issue number would collide with the PR that happens
-        // to share it. What keeps two agents off one issue instead is the assignee
-        // claim, which every machine can see rather than just this one.
+        // A fix is deliberately NOT PR-scoped (an issue link, no PR number): the dispatch
+        // dedup keys on a PR number, so an issue number would collide with the PR sharing
+        // it. The assignee claim, visible to every machine, keeps two agents off one issue.
         let isPR = action == AgentTaskQueue.reviewAction
         let link: String? = isPR ? entry.url
             : action == AgentTaskQueue.issuesAction ? entry.issueLink(in: roots) : nil
@@ -4080,8 +4076,8 @@ final class Store: ObservableObject {
         var auditAction: String     // activity-feed verb
         var label: String           // label core (source prefix / retry suffix added by the gate)
         var prompt: String
-        /// The link of the PR or issue the job is about, which its run records; nil for
-        /// neither (sweeps, audits). PR-scoped, so deduped, only with `prNumber`.
+        /// The PR's or issue's link, which its run records; nil for neither (sweeps,
+        /// audits). Deduped as PR-scoped only with `prNumber`.
         var prURL: String?
         var prNumber: Int?
         var authorLogin: String?    // whose PR we'd be reviewing — the ban dimension (nil = none)

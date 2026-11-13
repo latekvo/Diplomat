@@ -1250,7 +1250,7 @@ enum QueueTest {
               { if case .present(let s) = landed { return s == ["gitlab.example.com/g/sub/p#7"] }; return false }()
                 && glabArgv().contains("gitlab.example.com")
                 && glabArgv().contains("iid=7"))
-        // gh and glab both call it merged, so asking either shows.
+        // gh and glab both answer MERGED, so any wrong ask shows.
         let mergedGH = feed.appendingPathComponent("gh-merged")
         let ghArgv = feed.appendingPathComponent("gh-argv")
         try? ("#!/bin/sh\nprintf '%s ' \"$@\" >> '\(ghArgv.path)'\necho >> '\(ghArgv.path)'\n"

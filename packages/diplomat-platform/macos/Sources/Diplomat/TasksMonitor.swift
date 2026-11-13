@@ -171,9 +171,8 @@ extension Store {
     /// The agents and queued work behind `GoalOverlay`, `watched`'s alone (the goals are
     /// its):
     /// - a PR has an agent while a run on it is in a blocking state (`AgentState.inFlight`'s
-    ///   rule); an issue while an issue fix run's link names it (its label, `IssueWizard`'s
-    ///   "Issues · #N · …" or "Issues · repo#N · …", when it has no link), or its goal fix
-    ///   is spawning
+    ///   rule); an issue while an issue fix run's link (else its `IssueWizard` label) names
+    ///   it, or its goal fix is spawning
     /// - queued: every queued or starting task about a PR, every `issues:` one, and every
     ///   asked-for review or fix
     static func goalOverlay(rows: [AgentRow], queued: [QueuedAgentTask], requested: [RequestedWork],

@@ -1701,7 +1701,6 @@ enum CommsTest {
               outcome(bumpSecond[0]) == "moved review:o/second#90210 to the front of its band"
                 && band(1).first == "review:o/second#90210")
 
-        // An issue fix's run is known by the issue link it records, whatever its label.
         store.pinAgentRows([run("r31", nil, "issues", "Issues · second#90230 · deep",
                                 link: "https://gitlab.example.com/o/second/-/issues/90230")])
         let fixBesideGitLab = targeted([CommsAsk(.fixIssue, 90230, repo: "o/second")])

@@ -119,8 +119,8 @@ public struct IssueConfig: Codable, Equatable {
     /// The repo `targetRepo` names, nil for `assets/config.json`'s.
     public var targetLocal: PRRef.LocalRepo? { (isSingleIssue ? issueRef.repo : nil) ?? home }
 
-    /// The link of the one issue this run fixes, which its run records; nil for a sweep.
-    /// Python twin: `IssueConfig.single_link`.
+    /// The fixed issue's link, which its run records; nil for a sweep. Python twin:
+    /// `IssueConfig.single_link`.
     public var singleLink: String? {
         guard isSingleIssue, let n = issueRef.number else { return nil }
         let (owner, repo) = targetRepo

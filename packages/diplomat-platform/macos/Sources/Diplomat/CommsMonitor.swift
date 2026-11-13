@@ -626,8 +626,8 @@ extension Store {
     }
 
     /// Any review agent on that PR (the dispatch gate treats every agent on a PR as that
-    /// PR's), or a fix of that issue, each known by the link its run records; a fix whose
-    /// run records none (an older build's) by the "Issues · <item label> · " it wears.
+    /// PR's), or a fix of that issue, each known by the link its run records; a linkless
+    /// fix (an older build's) by the "Issues · <item label> · " it wears.
     private func commsRow(doing key: String) -> AgentRow? {
         guard let parts = Store.commsKeyParts(key) else { return nil }
         let kind: String

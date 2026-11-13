@@ -70,7 +70,7 @@ func gitlabSmoke() async throws {
           "on macOS, ~/Library/Application Support/glab-cli/config.yml")
     #endif
 
-    // glab-config: {config, remotes} -> {hosts: the parsed map, remotes: each parsed or null}.
+    // glab-config: {config, remotes} -> {hosts, remotes: each parsed or null}.
     let glabFixtures = try CoreAssets.assetsDir().deletingLastPathComponent()
         .appendingPathComponent("Tests/fixtures/gitlab")
     let glabCase = try JSONSerialization.jsonObject(
@@ -139,7 +139,6 @@ func gitlabSmoke() async throws {
     check(afterCheck == "me" && twoHosts.known(host: "gl.example.com") == "me"
           && reads.hosts == ["gl.example.com"],
           "glab's update check rewriting its config keeps the host's login, unasked: \(reads.hosts)")
-    // Same size, same stamp, another entry: the parse of the unchanged file is the one kept.
     let stamp = Date(timeIntervalSince1970: 1_790_000_000)
     try glabConfig("2026-11-13T09:30:00.123456+01:00", "    user: me\n    token: a\n", "    user: o2\n")
     try fm.setAttributes([.modificationDate: stamp], ofItemAtPath: loginConfig.path)
@@ -475,7 +474,7 @@ func gitlabSmoke() async throws {
     }
     let inputs = ((try? fm.contentsOfDirectory(atPath: fixtures.path)) ?? [])
         .filter { $0.hasSuffix(".input.json") }.sorted()
-    // glab-config and keys pin no adapter; they are read in their own sections.
+    // Not adapter fixtures; read in their own sections.
     let names = inputs.map { String($0.dropLast(".input.json".count)) }
         .filter { $0 != "glab-config" && $0 != "keys" }
     check(Set(["prs", "issues", "monitor-prs", "closed-prs", "review-requests",
