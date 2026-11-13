@@ -51,6 +51,11 @@ prompt:
   APPROVE-with-comments when only LOW findings are left, or leave **changes
   requested** on real blockers.
 
+Whatever the depth, every review judges the PR's **premise** before its diff: what it
+sets out to solve, whether its diagnosis and assumptions hold against the code, and
+whether the change removes the cause or only hides the symptom. A proven workaround for
+a cause the repo could fix at its origin is a finding of at least MEDIUM.
+
 Contextual controls (the action checkboxes, the someone-else's handle field, and the
 single-PR field) **appear only where they apply** - for a specific PR the wizard
 polls the author first and hides the toggles that don't fit (mine → fix-on-branch,

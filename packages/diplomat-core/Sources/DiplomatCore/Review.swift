@@ -297,6 +297,7 @@ public struct ReviewConfig: Codable, Equatable {
         // For someone else's PRs, frame the whole task as look-don't-touch up front.
         if isReviewOnly, let b = blocks["reviewOnly"] { out.append(b) }
         let chosen = ReviewCatalog.depth(id: depth)
+        if let b = blocks["premise"] { out.append(b) }
         out.append(chosen.fragment)
         // The depth's on-branch fix step only when we may actually commit — never
         // for someone else's branch, which we don't touch.
@@ -343,6 +344,7 @@ public struct ReviewConfig: Codable, Equatable {
         // First and foremost: screen + verify + fix/dismiss + respond to every reviewer
         // finding already on the PR, BEFORE the agent's own review.
         out.append(fill(specific["reviewerFindingsFirst"] ?? ""))
+        if let b = blocks["premise"] { out.append(b) }
         out.append(chosen.fragment)
         if let bar = blocks["bar"] { out.append(bar) }
         if let ob = chosen.onBranch, !ob.isEmpty { out.append(ob) }
@@ -378,6 +380,7 @@ public struct ReviewConfig: Codable, Equatable {
         out.append(fill(scope["single"] ?? ""))
         if let n = PRRef.LocalRepo.gitlabNote(targetLocal) { out.append(n) }
         out.append(fill(specific["theirsOnly"] ?? ""))
+        if let b = blocks["premise"] { out.append(b) }
         out.append(chosen.fragment)
         if let bar = blocks["bar"] { out.append(bar) }
         if let b = blocks["reviewOnly"] { out.append(b) }
@@ -428,6 +431,7 @@ public struct ReviewConfig: Codable, Equatable {
         // The review work itself is the same regardless of author; only the
         // disposition differs, so everything both cases share comes before the split
         // and CASE B is the last section: whatever follows its header is CASE B's alone.
+        if let b = blocks["premise"] { out.append(b) }
         out.append(chosen.fragment)
         if let bar = blocks["bar"] { out.append(bar) }
         if let trailer = blocks["trailer"] { out.append(trailer) }
