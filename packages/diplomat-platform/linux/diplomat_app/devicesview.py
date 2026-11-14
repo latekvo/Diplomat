@@ -121,6 +121,10 @@ SNAPSHOT_PREDATES_POOL_NOTE = ("The allocator's snapshot has no remote pool: the
                                "that wrote it predates one.")
 
 
+#: Twin of ``RemoteUI.examplesURL``.
+EXAMPLES_URL = "https://github.com/latekvo/Diplomat/tree/main/docs/examples"
+
+
 def predates_pool(s: dict | None) -> tuple[str, str | None]:
     """The REMOTE POOL card's note and offer over a snapshot with no remote pool while a
     provider is set. The snapshot outlives its daemon, so only one that answers is
@@ -916,6 +920,11 @@ class DevicesView(QWidget):
         choose = QPushButton("Choose…")
         choose.clicked.connect(self._choose_provider)
         row.addWidget(choose)
+        self.provider_example = QPushButton("See an example")
+        self.provider_example.setToolTip("A provider module for Argent Fleet, in the Diplomat repo")
+        self.provider_example.clicked.connect(
+            lambda: QtGui.QDesktopServices.openUrl(QUrl(EXAMPLES_URL)))
+        row.addWidget(self.provider_example)
         return host
 
     def _on_provider_edited(self, text: str) -> None:

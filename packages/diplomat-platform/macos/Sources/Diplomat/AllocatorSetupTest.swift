@@ -222,6 +222,14 @@ enum AllocatorSetupTest {
               snapshot(#"{"devices":[],"remote":{"state":"x","retryAt":1793124300000}}"#)?.remote?.retryAt
                 == Date(timeIntervalSince1970: 1_793_124_300))
 
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../../../..").standardized
+        let examples = RemoteUI.examplesURL.absoluteString.components(separatedBy: "/tree/main/")
+        check("See an example opens a directory this checkout has",
+              examples.count == 2 && FileManager.default.fileExists(
+                  atPath: repo.appendingPathComponent(examples[1]).appendingPathComponent("README.md").path),
+              RemoteUI.examplesURL.absoluteString)
+
         // ---- the daemon's replies to the remote-pool calls ----
 
         func reply(_ body: String, _ code: Int) -> DaemonReply? {

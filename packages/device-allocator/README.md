@@ -62,6 +62,7 @@ pool itself is a **provider module** outside this package: point Diplomat's
 [`src/remote.js`](src/remote.js) loads it and documents its contract — `acquire` a
 lease, `attach` it to this machine (an adb serial on a local port), `release` it, plus
 a `status` for the snapshot and, optionally, `signIn` and `devices` for the panel.
+[`docs/examples`](../../docs/examples/README.md) has one for Argent Fleet.
 
 A request tries the pool first and falls back to a local device, saying why in
 `remoteSkipped`; `source: 'remote' | 'local'` pins it to one side (a `deviceId` claim

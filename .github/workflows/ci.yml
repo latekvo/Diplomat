@@ -507,6 +507,10 @@ jobs:
         env:
           DIPLOMAT_FULL_VOLUME_REQUIRED: '1'
         run: npm test
+      # The example provider, loaded by this daemon against a fake farm, so it keeps to
+      # the contract it demonstrates.
+      - name: Example provider (docs/examples/agfleet)
+        run: node ../../docs/examples/agfleet/test/provider.test.mjs
 
   # The remote-machines MCP server + daemon, on the same shared daemon-core as the
   # allocator. Its tests stand in a fake ssh (test/lib/fake-ssh.mjs) for every host, so

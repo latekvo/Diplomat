@@ -239,6 +239,9 @@ struct DevicesScreen: View {
                 .buttonStyle(.borderedProminent).controlSize(.small).disabled(!dirty)
             Button("Choose…", action: chooseProvider)
                 .buttonStyle(.bordered).controlSize(.small)
+            Button("See an example") { NSWorkspace.shared.open(RemoteUI.examplesURL) }
+                .buttonStyle(.bordered).controlSize(.small)
+                .tooltip("A provider module for Argent Fleet, in the Diplomat repo")
         }
         .padding(7)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.12)))
@@ -348,6 +351,9 @@ struct DevicesScreen: View {
 // MARK: - remote pool pieces
 
 enum RemoteUI {
+    /// Twin of `devicesview.EXAMPLES_URL`.
+    static let examplesURL = URL(string: "https://github.com/latekvo/Diplomat/tree/main/docs/examples")!
+
     static func pill(_ r: RemoteStatus?, snapshot: Bool) -> StatusPill {
         guard let r else {
             return StatusPill(text: snapshot ? "not available" : "unknown", tint: .secondary,
