@@ -532,6 +532,18 @@ def test_a_running_daemon_can_be_restarted_from_the_allocator_card(screen):
     assert "leases" in controls.restart.toolTip()
 
 
+def test_see_an_example_opens_a_directory_this_checkout_has(screen, monkeypatch):
+    from PySide6 import QtGui
+
+    view = screen("devices-screen")
+    opened = []
+    monkeypatch.setattr(QtGui.QDesktopServices, "openUrl", lambda u: opened.append(u.toString()))
+    view.provider_example.click()
+    assert opened == ["https://github.com/latekvo/Diplomat/tree/main/docs/examples"]
+    repo = os.path.join(os.path.dirname(__file__), *[".."] * 4)
+    assert os.path.isfile(os.path.join(repo, opened[0].split("/tree/main/")[1], "README.md"))
+
+
 def test_a_daemon_predating_the_pool_is_offered_a_restart_where_the_screen_says_so(
         screen, monkeypatch):
     from PySide6.QtWidgets import QPushButton

@@ -50,7 +50,8 @@ it, after updating the checkout if it has no remote pool either.
 - **Provider module** - the module's path (`~` allowed). Blank means no remote pool. It is
   `deviceRemoteProvider` in `~/.diplomat/config.json`, which the daemon re-reads on every request
   and the screen while it is open; `DA_REMOTE_PROVIDER` overrides it. A change that cannot be
-  written there says so on the screen.
+  written there says so on the screen. **See an example** opens [`docs/examples`](examples/README.md),
+  which has a provider for Argent Fleet.
 - The status block shows the provider, its state (*on*, *signed out*, *signing in*, *error*, ...),
   and whatever else it reports: a sign-in link while signing in, and, after a sign-in nobody
   answered, the time until which it will not ask again.
