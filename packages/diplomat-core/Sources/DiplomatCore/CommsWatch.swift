@@ -693,9 +693,10 @@ public enum CommsWatch {
     }
 
     /// Triages the due batch, if one is: see `tick`. A batch with an `injection`
-    /// among its answers is triaged again one message per call, each with only its own
-    /// conversation's context, so no sender is banned, nor anything asked, on the strength
-    /// of another batch message's text.
+    /// among its answers is triaged again one message per call, each with only what came
+    /// before it in its own conversation, less the messages of a sender this pass answers
+    /// `injection` for, so no sender is banned, nor anything asked, on the strength of
+    /// another conversation's text.
     private static func flush(_ state: inout CommsState, settings: CommsSettings, now: Date,
                               dir: URL, assets: CoreAssets.CommsModel, notice: (String) -> Void,
                               classify: (CommsBatch) -> [CommsDecision]) {
@@ -745,10 +746,13 @@ public enum CommsWatch {
                                                 assets: assets))
         var decisions = triage(batch, settings: settings, classify)
         if messages.count > 1, decisions.contains(where: { $0.action == .injection }) {
+            var flagged: Set<String> = []
             decisions = messages.map { m in
-                triage(CommsBatch(messages: [m],
-                                  context: batch.context.filter { $0.channelID == m.channelID }),
-                       settings: settings, classify)[0]
+                let context = batch.earlier(than: m).filter { !flagged.contains($0.userID) }
+                let d = triage(CommsBatch(messages: [m], context: context), settings: settings,
+                               classify)[0]
+                if d.action == .injection { flagged.insert(m.userID) }
+                return d
             }
         }
         let answered = Array(zip(messages, decisions))

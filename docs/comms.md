@@ -24,7 +24,7 @@ conversations, so "can you review it?" after "#412 is ready" is understood as a 
 | **investigate** | queues an **Investigate** agent that reproduces and researches the report and writes a markdown report |
 | **question** | answers it while you are away, when the project's documentation settles it (see [Reply to…](#settings)) |
 | **none** | the ping, and nothing else |
-| **injection** | [bans the sender](#bans): the message tries to hijack an agent instead of asking you for something, including an order to delete someone else's account or hand over data or keys, and a DM claiming you already agreed |
+| **injection** | [bans the sender](#bans): the message tries to hijack an agent instead of asking you for something, including an order to delete someone else's account or hand over data or keys, and a DM claiming you already agreed; never a prompt or rule the sender shows you when their conversation says that is what it is |
 
 A message listing several PRs or issues acts on all of them, up to twenty: each gets its own row and
 its own place in the queue, the first it names first. Each also gets its own kind of work, so
@@ -81,9 +81,11 @@ Slack text is written by other people, so Comms treats it as data from end to en
   whitespace and the fence's `|` quoting aside), becomes `none`. Each number must name an **open** PR
   (for a review) or an **open** issue (for a fix) of its watched repo, or nothing is queued for it.
 - A batch with an `injection` among its answers is **triaged again, one message per call**, each
-  with only its own conversation's earlier pings, and those answers stand: nobody is banned, and
-  nothing is asked, on the strength of another batch message's words. A banned sender's messages, and messages triaged as injections, are
-  never anyone's context.
+  with only what came before it in its own conversation (its earlier pings, and the batch's own
+  earlier messages there), and those answers stand: nobody is banned, and nothing is asked, on the
+  strength of another conversation's words. A banned sender's messages, and messages triaged as
+  injections, are never anyone's context, nor, from then on, the other messages of a sender that
+  pass answers `injection` for.
 - Your own messages, bots, and people from other organisations (Slack Connect) are never pinged:
   each sender's Slack profile must name your organisation (or, in a workspace without one, share
   your email domain). A **sender allowlist** narrows it to the people you name.
